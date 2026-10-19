@@ -71,9 +71,9 @@ describe("service role policy", () => {
     expect(serviceRoleStatements(scope).find((s) => s.Sid === "IamRoles")!.Action).toContain("iam:UpdateRoleDescription");
   });
 
-  it("creates only the ECS, load balancer and database service-linked roles", () => {
+  it("creates only the ECS, load balancer, database and Route 53 Resolver service-linked roles", () => {
     const linked = serviceRoleStatements(scope).find((s) => s.Sid === "ServiceLinkedRoles")!;
-    expect(linked.Condition).toEqual({ StringLike: { "iam:AWSServiceName": ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com"] } });
+    expect(linked.Condition).toEqual({ StringLike: { "iam:AWSServiceName": ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com", "route53resolver.amazonaws.com"] } });
   });
 
   it("never grants iam:* or wildcard IAM user, group or policy management", () => {
@@ -274,7 +274,7 @@ describe("default permission boundary", () => {
     expect(byId.ServiceLinkedRoles).toEqual({
       Sid: "ServiceLinkedRoles", Effect: "Allow", Action: ["iam:CreateServiceLinkedRole"],
       Resource: "arn:aws:iam::123456789012:role/aws-service-role/*",
-      Condition: { StringLike: { "iam:AWSServiceName": ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com"] } },
+      Condition: { StringLike: { "iam:AWSServiceName": ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com", "route53resolver.amazonaws.com"] } },
     });
   });
 

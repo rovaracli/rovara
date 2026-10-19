@@ -71,8 +71,12 @@ export const SERVICE_ROLE_SERVICES: readonly string[] = [
  */
 export const BOUNDARY_SERVICES: readonly string[] = [...SERVICE_ROLE_SERVICES, "bedrock", "budgets", "codebuild", "execute-api", "xray"];
 
-/** Service-linked roles the service role may create while deploying. */
-const SERVICE_LINKED_ROLE_SERVICES = ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com"];
+/**
+ * Service-linked roles the service role may create while deploying. route53resolver: associating
+ * the DNS firewall's query logging config makes Resolver create AWSServiceRoleForRoute53Resolver
+ * for the caller on first use in an account.
+ */
+export const SERVICE_LINKED_ROLE_SERVICES: readonly string[] = ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com", "route53resolver.amazonaws.com"];
 
 /** Role management the service role needs on this environment's roles. */
 const ROLE_ACTIONS = [

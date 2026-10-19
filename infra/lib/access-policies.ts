@@ -6,6 +6,7 @@
 // unchanged.
 export {
   BOUNDARY_SERVICES,
+  SERVICE_LINKED_ROLE_SERVICES,
   SERVICE_ROLE_SERVICES,
   defaultBoundaryArn,
   defaultBoundaryName,
