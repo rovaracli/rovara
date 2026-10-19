@@ -159,6 +159,6 @@ describe("cloud identity infrastructure", () => {
 
   it("puts no em dash in any resource description or name", () => {
     const text = JSON.stringify(cloud().toJSON());
-    expect(text).not.toContain("—");
+    expect(text).not.toContain(String.fromCharCode(0x2014));
   });
 });
