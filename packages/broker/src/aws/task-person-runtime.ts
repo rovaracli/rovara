@@ -13,6 +13,7 @@ import {
   type TaskPersonIdentityDependencies,
 } from "../developer/task-person-identity.js";
 import type { ProjectAuthorityReader, ProjectAuthorityWitness } from "../developer/task-project-access.js";
+import { orgOf } from "../org/resolve.js";
 import { readProjectAuthority } from "../developer/task-project-access.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { taskOwnerKey } from "../developer/task-records.js";
@@ -46,6 +47,8 @@ export interface TaskPersonRuntimePorts {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** The org a task belongs to: its own `orgId` when it has one, else the install's single org. */
+const taskOrg = (fallback: OrgId, task: DeveloperTaskRecord): OrgId => orgOf(fallback, task as unknown as Record<string, unknown>);
 const unavailable = () => agentXError("SLACK_UNAVAILABLE", "task person identity proof is unavailable");
 const refused = () => agentXError("PROJECT_ACCESS_DENIED", "task person identity could not be verified");
 
@@ -179,7 +182,7 @@ export interface TaskPersonRuntime {
 
 /** Creates a guard-local checker. Its injected ports expose only the bounded People read set. */
 export function createTaskPersonRuntime(input: {
-  /** The org the task's project and grants are read in: the install's single org until tasks record theirs (Task 5). */
+  /** The install's single org: the org of a task that names none of its own. */
   orgId: OrgId;
   admission: TaskAuthorityAdmission;
   ports: TaskPersonRuntimePorts;
@@ -196,7 +199,7 @@ export function createTaskPersonRuntime(input: {
   const currentWitness = async (task: DeveloperTaskRecord, developerId: string, witness: TaskPersonStateAuthorityWitness | undefined): Promise<TaskPersonStateAuthorityWitness | undefined> => {
     if (witness === undefined || witness.taskId !== task.taskId || witness.developerId !== developerId || witness.project !== task.project) return undefined;
     input.admission.assertOpen();
-    const latest = await input.ports.projectAuthorityReader.latestRevision(input.orgId, task.project, input.admission, input.admission.admitStateRead());
+    const latest = await input.ports.projectAuthorityReader.latestRevision(taskOrg(input.orgId, task), task.project, input.admission, input.admission.admitStateRead());
     input.admission.assertOpen();
     const revision = latest.revision;
     const validRevision = revision !== undefined && Number.isSafeInteger(revision.revision) && revision.revision >= 0
@@ -216,7 +219,7 @@ export function createTaskPersonRuntime(input: {
       if (!UUID.test(task.taskId) || !SlackTeamIdSchema.safeParse(input.slackTeamId).success) throw refused();
       let projectWitness: ProjectAuthorityWitness | undefined;
       const dependencies = identityDependencies({
-        orgId: input.orgId, task, developerId, stateTableName: input.stateTableName, slackTeamId: input.slackTeamId,
+        orgId: taskOrg(input.orgId, task), task, developerId, stateTableName: input.stateTableName, slackTeamId: input.slackTeamId,
         now: () => input.now(), uuid: () => input.uuid(),
         ...(input.trustedCaller === undefined ? {} : { trustedCaller: input.trustedCaller }),
         admission: input.admission,

@@ -197,3 +197,20 @@ describe("two orgs read their own activity and projects", () => {
     expect(await list(OMAR)).toEqual([["web", 4]]);
   });
 });
+
+describe("background readers use the org a record names (Task 3 fix round 1)", () => {
+  const binding = (volumeSizeGiB: number) => ({ deploymentMode: "ec2-ebs", launchTemplateId: "lt-0123456789abcdef0",
+    subnets: [{ availabilityZone: "us-east-1a", subnetId: "subnet-0123456789abcdef0" }], volumeSizeGiB, volumeType: "gp3" });
+  const workspace = (id: string, extra: Record<string, unknown>) => ({ pk: `WORKSPACE#${id}`, sk: "META", deploymentMode: "ec2-ebs", projectName: "web", projectRevision: 1, ...extra });
+
+  it("reads a workspace's binding in the org on its record, and in the install's org when it names none", async () => {
+    const { workspaceBinding } = await import("../../packages/broker/src/aws/sessions.js");
+    const db = new FakeDynamoDb();
+    db.set({ ...projectRevisionKey(ORG_A, "web", 1), entityType: "PROJECT", runtimeBinding: binding(20) });
+    db.set({ ...projectRevisionKey(ORG_B, "web", 1), entityType: "PROJECT", runtimeBinding: binding(40) });
+    db.set(workspace("11111111-1111-4111-8111-111111111111", { orgId: ORG_B }));
+    db.set(workspace("22222222-2222-4222-8222-222222222222", {}));
+    expect((await workspaceBinding(db, "state", ORG_A, "11111111-1111-4111-8111-111111111111"))?.volumeSizeGiB).toBe(40);
+    expect((await workspaceBinding(db, "state", ORG_A, "22222222-2222-4222-8222-222222222222"))?.volumeSizeGiB).toBe(20);
+  });
+});

@@ -5,7 +5,7 @@ import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { GetCommand, QueryCommand, DynamoDBDocumentClient, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
 import { Ec2RuntimeBindingSchema, ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, SlackTeamIdSchema, WORKER_PING_FEATURES_FIELD, WorkerInvocationSchema, agentXError, projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey, workspaceSessionKey, MEMBER_GRANT_SK_PREFIX, PROJECT_REVISION_SK_PREFIX, memberGrantsPk, projectMemberKey, projectPk, projectRevisionKey, type OrgId, type SlackChannelBinding, type WorkerInvocation } from "@agentx/contracts";
-import { installOrgIdFromEnvironment } from "../org/resolve.js";
+import { installOrgIdFromEnvironment, orgOf } from "../org/resolve.js";
 import { requiredEnvironment, type DurableOutboxRecord, type Ec2OutboxRecord } from "./lambda.js";
 import type { Ec2Delivery } from "./ec2-delivery.js";
 import { failOutboxOperation } from "./outbox-failure.js";
@@ -149,7 +149,7 @@ export function createProjectSetupDispatchLifecycle(input: { documentClient: Dyn
 }
 
 /** Loads only the binding pinned by the stored setup execution and its registered project revision. */
-/** `orgId`: the org the setup execution's project is registered in (the install's single org until records name theirs, Task 5). */
+/** `orgId`: the install's single org, used when the setup execution row names no org of its own. */
 export function createProjectSetupBindingReader(input: { documentClient: DynamoDBDocumentClient; tableName?: string; orgId: OrgId }) {
   return async ({ setupExecutionId, subjectId }: { setupExecutionId: string; subjectId: string }) => {
     const table = input.tableName ?? requiredEnvironment("STATE_TABLE_NAME");
@@ -158,7 +158,7 @@ export function createProjectSetupBindingReader(input: { documentClient: DynamoD
     const row = ProjectSetupExecutionSchema.safeParse(setupDomainRow(item.Item, projectSetupExecutionKey(setupExecutionId), "PROJECT_SETUP_EXECUTION"));
     if (!row.success || row.data.subjectId !== subjectId) return undefined;
     const project = (await input.documentClient.send(new GetCommand({ TableName: table,
-      Key: projectRevisionKey(input.orgId, row.data.projectName, row.data.projectRevision), ConsistentRead: true }))).Item as { runtimeBinding?: unknown } | undefined;
+      Key: projectRevisionKey(orgOf(input.orgId, item.Item), row.data.projectName, row.data.projectRevision), ConsistentRead: true }))).Item as { runtimeBinding?: unknown } | undefined;
     const binding = Ec2RuntimeBindingSchema.safeParse(project?.runtimeBinding);
     return binding.success && binding.data.deploymentMode === "ec2-ebs" ? binding.data : undefined;
   };
@@ -344,7 +344,7 @@ function taskPersonRuntimePorts(input: {
     return { items, complete: true };
   };
   const taskProjection = (sortKey: string): readonly string[] => sortKey === "META"
-    ? ["pk", "sk", "entityType", "taskId", "project", "developerId", "provider", "slackUserId", "developerName", "share"]
+    ? ["pk", "sk", "entityType", "orgId", "taskId", "project", "developerId", "provider", "slackUserId", "developerName", "share"]
     : sortKey.startsWith("PERSON_SUBJECT#")
       ? ["pk", "sk", "schemaVersion", "personId", "developerId", "createdAt"]
       : ["pk", "sk", "schemaVersion", "personId", "developerId", "slackUserId", "name", "method", "issuer", "subject", "createdAt"];
@@ -485,14 +485,16 @@ export function createProjectSetupDispatchGuard(input: { documentClient: DynamoD
     || operation.data.status !== "ACCEPTED" && operation.data.status !== "DISPATCHING"
     || operation.data.transportCorrelationId !== row.transportCorrelationId || operation.data.fence !== row.fence) return "PARKED";
   const stateTable = input.tableName;
+  // The org the setup execution row names, else the install's single org.
+  const orgId = orgOf(input.orgId, executionItem.Item);
   const projectItem = (await input.documentClient.send(new GetCommand({ TableName: stateTable,
-    Key: projectRevisionKey(input.orgId, row.projectName, row.projectRevision), ConsistentRead: true }))).Item as Record<string, unknown> | undefined;
+    Key: projectRevisionKey(orgId, row.projectName, row.projectRevision), ConsistentRead: true }))).Item as Record<string, unknown> | undefined;
   const project = projectItem as { registeredBy?: unknown; definition?: { revision?: unknown }; runtimeBinding?: unknown; setupApproval?: { proposalSha256?: unknown; proposalRef?: unknown; decision?: unknown } } | undefined;
   if (!project || project.registeredBy !== row.ownerKey || project.definition?.revision !== row.projectRevision
     || project.setupApproval?.decision !== "approve" || project.setupApproval.proposalSha256 !== row.proposalSha256
     || project.setupApproval.proposalRef !== row.proposalRef) return "PARKED";
   const membership = (await input.documentClient.send(new GetCommand({ TableName: stateTable,
-    Key: projectMemberKey(input.orgId, row.ownerKey, row.projectName), ConsistentRead: true }))).Item as { role?: unknown } | undefined;
+    Key: projectMemberKey(orgId, row.ownerKey, row.projectName), ConsistentRead: true }))).Item as { role?: unknown } | undefined;
   if (membership?.role !== "administrator") return "PARKED";
   const approved = (await input.documentClient.send(new GetCommand({ TableName: stateTable,
     Key: { pk: `PROJECT_SETUP#${row.projectName}`, sk: `PROPOSAL#${row.proposalSha256}` }, ConsistentRead: true }))).Item as Record<string, unknown> | undefined;

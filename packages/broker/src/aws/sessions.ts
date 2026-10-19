@@ -25,6 +25,7 @@ import {
   type ProjectSetupSession,
 } from "@agentx/contracts";
 import { createHash } from "node:crypto";
+import { orgOf } from "../org/resolve.js";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { failOutboxOperation } from "./outbox-failure.js";
 
@@ -592,7 +593,8 @@ export class ProjectSetupSessionManager {
 export async function workspaceBinding(
   documentClient: Pick<DynamoDBDocumentClient, "send">,
   tableName: string,
-  orgId: OrgId,
+  /** The install's single org: used when the workspace record names no org of its own. */
+  fallbackOrg: OrgId,
   workspaceId: string,
 ): Promise<Ec2RuntimeBinding | undefined> {
   // Strongly consistent: a lazy Slack thread's first preparation moves the record to the latest
@@ -603,7 +605,7 @@ export async function workspaceBinding(
   if (workspace?.deploymentMode !== "ec2-ebs" || typeof workspace.projectName !== "string" || typeof workspace.projectRevision !== "number") return undefined;
   const project = (await documentClient.send(new GetCommand({
     TableName: tableName,
-    Key: projectRevisionKey(orgId, workspace.projectName, workspace.projectRevision),
+    Key: projectRevisionKey(orgOf(fallbackOrg, workspace), workspace.projectName, workspace.projectRevision),
   }))).Item as { runtimeBinding?: unknown } | undefined;
   const parsed = Ec2RuntimeBindingSchema.safeParse(project?.runtimeBinding);
   return parsed.success ? parsed.data : undefined;

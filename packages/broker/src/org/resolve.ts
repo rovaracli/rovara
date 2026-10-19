@@ -2,7 +2,7 @@
 // Multi-tenancy (ruling R1): which org a caller belongs to. The resolver is injected where
 // identities and developer callers are built. The default serves a single-org install (ruling R3);
 // Task 5 sources the org from the sign-in token, and a test can inject a resolver with two orgs.
-import { agentXError, singleOrgIdForEnv, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, agentXError, singleOrgIdForEnv, type OrgId } from "@agentx/contracts";
 
 /** Who is asking: an admin or workspace owner by `ownerKey`, a developer by `developerId`. */
 export interface OrgSubject {
@@ -33,6 +33,18 @@ export function requireOrgId(orgId: OrgId | undefined): OrgId {
 export function installEnvironmentName(env: NodeJS.ProcessEnv = process.env): string {
   const name = env.AGENTX_ENV;
   return name === undefined || name === "" ? "default" : name;
+}
+
+/**
+ * The org a stored row belongs to: the first record that names one (Task 5 stamps `orgId` on records), else
+ * `fallback`, the install's single org. Background readers (Lambdas with no caller) use it on the row they read.
+ */
+export function orgOf(fallback: OrgId, ...records: ReadonlyArray<Record<string, unknown> | undefined>): OrgId {
+  for (const candidate of records) {
+    const parsed = OrgIdSchema.safeParse(candidate?.orgId);
+    if (parsed.success) return parsed.data;
+  }
+  return fallback;
 }
 
 /** The install's single org id (ruling R3), for a Lambda that has no caller and whose records name no org yet. */

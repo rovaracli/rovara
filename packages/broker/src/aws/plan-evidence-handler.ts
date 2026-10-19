@@ -19,7 +19,7 @@ import {
 } from "../developer/plan-evidence-jobs.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { OrgId, PlanDocument } from "@agentx/contracts";
-import { installOrgIdFromEnvironment } from "../org/resolve.js";
+import { installOrgIdFromEnvironment, orgOf } from "../org/resolve.js";
 
 /** All cited code must be read inside this; the Lambda's own timeout (150 s) leaves room to attach and clean up. */
 const RESOLVE_DEADLINE_MS = 120_000;
@@ -36,7 +36,7 @@ export interface PlanEvidenceRunDependencies {
   s3: { send(command: never): Promise<unknown> };
   tableName: string;
   bucketName: string;
-  /** The org the task's project is registered in: the install's single org until tasks record theirs (Task 5). */
+  /** The org of a task that names none of its own: the install's single org. */
   orgId: OrgId;
   github: { getFileAtCommit: (url: string, path: string, commit: string, options: { untilLine?: number; timeoutMs?: number }) => Promise<string | undefined> };
   now: () => number;
@@ -132,7 +132,7 @@ export async function runPlanEvidenceJob(deps: PlanEvidenceRunDependencies, even
   let plan: PlanDocument | undefined;
   try {
     plan = await loadPlan();
-    const project = await requireProject(deps, deps.orgId, task.project, task.startingRevision);
+    const project = await requireProject(deps, orgOf(deps.orgId, task as unknown as Record<string, unknown>), task.project, task.startingRevision);
     const deadline = deps.now() + RESOLVE_DEADLINE_MS;
     const bundle = await resolvePlanEvidence(plan, {
       ...planEvidenceSources(project, task),

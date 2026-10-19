@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { agentXError } from "../../packages/contracts/src/index.js";
+import { agentXError, type OrgId } from "../../packages/contracts/src/index.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { guardTaskDispatch, isTaskDispatchGuardRetryError, resumeTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
 import { createTaskAuthorityAdmission } from "../../packages/broker/src/aws/task-authority-admission.js";
@@ -218,6 +218,40 @@ describe("task dispatch access", () => {
     }, h.outbox)).resolves.toBe("ALLOWED");
     expect(grantRemoved).toBe(true);
     expect(witnessReads).toBe(2);
+  });
+
+  describe("a task that names its own org (Task 3 fix round 1)", () => {
+    const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
+    const seeded = (witnessOrg: OrgId) => {
+      const h = harness();
+      h.db.set({ ...h.current, orgId: ORG_B });
+      const revision = { ...projectRevisionKey(witnessOrg, "payments", 7), definition: { revision: 7, developerTasks: { enabled: true, channelMembersMayUse: true } } };
+      const membership = { ...projectMemberKey(witnessOrg, OWNER, "payments"), projectName: "payments", role: "developer" };
+      h.db.set(revision);
+      h.db.set(membership);
+      const witness: ProjectAuthorityWitness & { taskId: string; developerId: string; project: string } = {
+        taskId: TASK_ID, developerId: OWNER, project: "payments", access: "granted",
+        projectRevision: { pk: revision.pk, sk: revision.sk, revision: 7, developerTasksPresent: true, developerTasks: revision.definition.developerTasks },
+        membership: { pk: membership.pk, sk: membership.sk, projectName: "payments", role: "developer" },
+      };
+      return { h, witness };
+    };
+
+    it("allows a witness in the task's org although the guard's own org is another", async () => {
+      const { h, witness } = seeded(ORG_B);
+      await expect(guardTaskDispatch({
+        documentClient: h.db, tableName: "state", orgId: TEST_ORG, checkTaskPerson: h.checkTaskPerson,
+        stateAuthorityWitnessForOwnerActor: async (_task, actorId) => actorId === taskOwnerKey(OWNER, TASK_ID) ? witness : undefined,
+      }, h.outbox)).resolves.toBe("ALLOWED");
+    });
+
+    it("refuses a witness in the guard's org when the task names another", async () => {
+      const { h, witness } = seeded(TEST_ORG);
+      await expect(guardTaskDispatch({
+        documentClient: h.db, tableName: "state", orgId: TEST_ORG, checkTaskPerson: h.checkTaskPerson,
+        stateAuthorityWitnessForOwnerActor: async (_task, actorId) => actorId === taskOwnerKey(OWNER, TASK_ID) ? witness : undefined,
+      }, h.outbox)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    });
   });
 
   it("leaves legacy work without a PEOPLE sidecar unchanged", async () => {

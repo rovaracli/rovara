@@ -20,7 +20,7 @@ import {
   type OrgId,
   type UsageIndexRecord,
 } from "@agentx/contracts";
-import { installOrgIdFromEnvironment } from "../org/resolve.js";
+import { installOrgIdFromEnvironment, orgOf } from "../org/resolve.js";
 import { failureCategory, taskKey, taskPointerKey } from "../developer/task-records.js";
 import type { StreamRecord } from "../developer/notifications.js";
 
@@ -112,15 +112,6 @@ function requesterOf(value: unknown, developerName: string | undefined): AdminRe
 }
 
 const link = (context: Context) => ({ ...(context.taskId === undefined ? {} : { taskId: context.taskId }), ...(context.thread === undefined ? {} : { thread: context.thread }) });
-
-/** The org an index row belongs to: the first record that names one (Task 5 adds it), else the install's single org. */
-function orgOf(fallback: OrgId, ...records: ReadonlyArray<Record<string, unknown> | undefined>): OrgId {
-  for (const candidate of records) {
-    const parsed = OrgIdSchema.safeParse(candidate?.orgId);
-    if (parsed.success) return parsed.data;
-  }
-  return fallback;
-}
 
 async function failureItem(store: IndexStore, fallbackOrg: OrgId, next: Record<string, unknown>): Promise<Record<string, unknown> | "invalid"> {
   const workspaceId = String(next.workspaceId);

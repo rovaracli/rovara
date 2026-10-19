@@ -1,5 +1,5 @@
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { agentXError, orgOfProjectPk, projectMemberKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, agentXError, orgOfProjectPk, projectMemberKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { taskOpen } from "../developer/task-access.js";
 import { resolveTaskDispatchPeople, type CheckTaskPerson } from "../developer/task-people.js";
@@ -13,7 +13,7 @@ export interface TaskDispatchAccessDependencies {
   documentClient: { send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<unknown> };
   tableName: string;
   checkTaskPerson?: CheckTaskPerson;
-  /** The org the task's project is registered in; when given, a State authority witness naming another org is refused. */
+  /** The install's single org: the org of a task that names none of its own. A State authority witness naming another org is refused. */
   orgId?: OrgId;
   /** One admission shared by every read, owner, and optimistic retry for this guard. */
   admission?: TaskAuthorityAdmission;
@@ -147,7 +147,10 @@ async function allowedStillCurrent(
     const witness = authorityWitness;
     // The witness's org is the one its revision key names; every other key it carries must name the same one.
     const witnessOrg = orgOfProjectPk(witness.projectRevision.pk);
-    if (witnessOrg === undefined || (deps.orgId !== undefined && deps.orgId !== witnessOrg)) return false;
+    // The org the task names, else the one the guard was given; the witness must be in it.
+    const named = OrgIdSchema.safeParse((task as unknown as Record<string, unknown>).orgId);
+    const expectedOrg = named.success ? named.data : deps.orgId;
+    if (witnessOrg === undefined || (expectedOrg !== undefined && expectedOrg !== witnessOrg)) return false;
     const expectedRevision = projectRevisionKey(witnessOrg, task.project, witness.projectRevision.revision);
     if (witness.taskId !== task.taskId || witness.project !== task.project || witness.projectRevision.pk !== expectedRevision.pk
       || witness.projectRevision.sk !== expectedRevision.sk || !Number.isSafeInteger(witness.projectRevision.revision)
