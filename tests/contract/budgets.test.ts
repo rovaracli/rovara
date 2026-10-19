@@ -211,6 +211,9 @@ describe("mintCap (ruling R30)", () => {
     const task = await rejection(mint(25, [keyIdOf("sk-first")]));
     expect(task).toMatchObject({ code: "BUDGET_EXCEEDED", statusCode: 402 });
     expect(task.message).toContain("This task has used its AI budget ($25.40 of $25.00)");
+    // Ruling R38: the way on is Continue, never a new task.
+    expect(task.message).toBe("BUDGET_EXCEEDED: This task has used its AI budget ($25.40 of $25.00). Choose Continue to resume this task with a fresh budget.");
+    expect(task.message).not.toContain("new task");
     access.setMemberSpent(TEST_ORG, "dev1", 29);
     expect((await rejection(mint(25))).message).toBe(`BUDGET_EXCEEDED: ${BUDGET_EXCEEDED_TEXT("29.00", "29.00")}`);
     access.setMemberSpent(TEST_ORG, "dev1", 0);

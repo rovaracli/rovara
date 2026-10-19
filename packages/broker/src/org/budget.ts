@@ -303,7 +303,8 @@ export async function mintCap(deps: BudgetDependencies, input: { orgId: OrgId; d
   const windowSpent = clean(Math.max(0, taskSpent - (input.budgetBaselineUsd ?? 0)));
   const taskRemaining = clean(Math.max(0, input.budgetUsd - windowSpent));
   if (taskRemaining <= 0) {
-    throw agentXError("BUDGET_EXCEEDED", `${TASK_BUDGET_EXCEEDED_PREFIX} ($${dollars(windowSpent)} of $${dollars(input.budgetUsd)}). Start a new task to continue.`);
+    // Ruling R38: the way on is the owner's Continue, which starts a new window of this task's cap; a new task would lose its work.
+    throw agentXError("BUDGET_EXCEEDED", `${TASK_BUDGET_EXCEEDED_PREFIX} ($${dollars(windowSpent)} of $${dollars(input.budgetUsd)}). Choose Continue to resume this task with a fresh budget.`);
   }
   return { maxBudgetUsd: clean(Math.min(taskRemaining, memberLeft ?? Infinity, orgLeft ?? Infinity)) };
 }

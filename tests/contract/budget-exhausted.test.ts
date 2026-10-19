@@ -113,7 +113,7 @@ describe("the worker's model access meets a spent budget at a re-mint (ruling R3
   it.each([
     ["the organisation's", "ORG_BUDGET_EXCEEDED", "Your company's monthly AI budget is used up. Ask an admin to raise it.", "org"],
     ["the member's", "BUDGET_EXCEEDED", "Your monthly AI budget is used up ($29.00 of $29.00). Ask an admin to raise it.", "member"],
-    ["the task's own", "BUDGET_EXCEEDED", "This task has used its AI budget ($25.00 of $25.00). Start a new task to continue.", "task"],
+    ["the task's own", "BUDGET_EXCEEDED", "This task has used its AI budget ($25.00 of $25.00). Choose Continue to resume this task with a fresh budget.", "task"],
   ] as const)("ends on %s 402 with ModelBudgetExhaustedError", async (_name, code, message, scope) => {
     const error = await caught(new Response(body(code, message), { status: 402 }));
     // By name: the worker's source imports the package's built copy of the class, this test its source's.
