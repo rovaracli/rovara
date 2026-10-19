@@ -28,6 +28,9 @@ export const AgentXErrorCodeSchema = z.enum([
   "CONFIRMATION_DECLINED",
   "CONFIRMATION_EXPIRED",
   "CHANGE_STALE",
+  "ALREADY_IN_ORG",
+  "INVITE_INVALID",
+  "SLACK_TEAM_TAKEN",
 ]);
 
 export type AgentXErrorCode = z.infer<typeof AgentXErrorCodeSchema>;
