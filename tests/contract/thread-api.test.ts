@@ -76,9 +76,9 @@ describe("the Slack service's thread client", () => {
   it("reports a refused request with the broker's code, as before the move", async () => {
     const { handler } = createBroker();
     await registerSlackProject(handler, { bind: false });
-    await expect(threadApi(handler).ensureWorkspace(randomUUID())).rejects.toThrow(/^thread workspace request failed: FORBIDDEN /);
-    await expect(threadApi(handler).prepareWorkspace!(randomUUID())).rejects.toThrow(/^thread workspace preparation failed: FORBIDDEN /);
-    await expect(threadApi(handler).listProjectModels!()).rejects.toThrow(/^project model list failed: FORBIDDEN /);
+    await expect(threadApi(handler).ensureWorkspace(randomUUID())).rejects.toThrow(/^thread workspace request failed: SLACK_TEAM_NOT_BOUND /);
+    await expect(threadApi(handler).prepareWorkspace!(randomUUID())).rejects.toThrow(/^thread workspace preparation failed: SLACK_TEAM_NOT_BOUND /);
+    await expect(threadApi(handler).listProjectModels!()).rejects.toThrow(/^project model list failed: SLACK_TEAM_NOT_BOUND /);
   });
 
   it("opts into lazy preparation, so a new thread gets a record without compute", async () => {

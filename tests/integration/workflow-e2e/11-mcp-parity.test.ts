@@ -2,6 +2,7 @@
 // Slack buttons. 11.3 (an MCP-started task's Slack press) is covered by developer-task-workflow-flow.test.ts. Here: an
 // MCP-started Quick task to its draft PR, a Slack-started task decided through MCP, each recovery tool against its Slack
 // button, PR feedback decided through MCP [R4, decision D4], and agentx_get_task's next step at every stage.
+import { slackBindingPk } from "../../../packages/contracts/src/org-scoped-keys.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it } from "vitest";
@@ -106,8 +107,8 @@ function actualInviteComposition(e2e: WorkflowE2E, directory: ReturnType<typeof 
       return { complete: true, items: readRows(memberGrantsPk(orgId, developerId)).map((row) => ({ pk: String(row.pk), sk: String(row.sk),
         projectName: String(row.projectName), ...(typeof row.role === "string" ? { role: row.role } : {}) })) };
     },
-    async bindings(teamId) {
-      return { complete: true, items: readRows(`SLACK_BINDING#${teamId}`).map((row) => ({ pk: String(row.pk), sk: String(row.sk),
+    async bindings(orgId, teamId) {
+      return { complete: true, items: readRows(slackBindingPk(orgId, teamId)).map((row) => ({ pk: String(row.pk), sk: String(row.sk),
         teamId: String(row.teamId), channelId: String(row.channelId), projectName: String(row.projectName), updatedAt: String(row.updatedAt) })) };
     },
   };

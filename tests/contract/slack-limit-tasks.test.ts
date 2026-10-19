@@ -1,5 +1,7 @@
 // tests/contract/slack-limit-tasks.test.ts
 // Spec 025 C16 (25b owner decision 10): a member whose AI-tool tasks fill the limit is told so.
+import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { limitMessage } from "../../packages/slack-service/src/messages.js";
@@ -71,7 +73,7 @@ describe("a Slack thread at the limit first gives back slots finished tasks stil
     db.set({ ...workspace, status: "READY" });
     const opened = await serviceCall(handler, subject, MAYA.slackUserId!, "POST", "/v1/service/threads/workspace", { requestId: randomUUID() });
     expect(opened.body).toMatchObject({ outcome: "WORKSPACE", created: true });
-    const member = db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId!}`)!;
+    const member = db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId!}`)!;
     expect(member.count).toBe(3);
     expect((member.tasks as Set<string>).has(String(task.taskId))).toBe(false);
     expect(db.get(`WORKSPACE#${String(task.workspaceId)}`, "META")?.status).toBe("CLOSED");
@@ -98,7 +100,7 @@ describe("the Slack limit refusal counts only the member's own tasks (C16)", () 
     }
     const asked = await serviceCall(harness.handler, `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000013`, MAYA.slackUserId!, "POST", "/v1/service/threads/workspace", { requestId: randomUUID(), includeOpenTaskCount: true });
     expect(result(asked.body)).toMatchObject({ outcome: "LIMIT_REACHED", limit: "MEMBER", maximum: 3, openTaskCount: 1 });
-    expect(harness.db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${PRIYA.slackUserId}`)).toMatchObject({ count: 2 });
+    expect(harness.db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${PRIYA.slackUserId}`)).toMatchObject({ count: 2 });
   });
 
   it("shows no AI-tool tasks and today's words when Slack threads alone fill the limit", async () => {

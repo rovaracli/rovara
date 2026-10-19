@@ -1,4 +1,5 @@
 // Spec 025 Task 8: POST /v1/dev/tasks, the start of a developer task (FR-017 to FR-020, R8, R9, R12).
+import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -27,8 +28,8 @@ describe("POST /v1/dev/tasks (FR-018)", () => {
     expect(db.get(`WORKSPACE#${record.workspaceId}`, "DEVELOPER_TASK")).toMatchObject({ taskId: task.taskId, pendingPrompt: "Fix the flaky retry test", conversationId: record.conversationId });
     expect(db.get(`WORKSPACE#${record.workspaceId}`, `CONVERSATION#${record.conversationId}`)).toMatchObject({ entityType: "CONVERSATION" });
     expect(db.find((item) => item.entityType === "OUTBOX" && item.workspaceId === record.workspaceId).map((item) => (item.invocation as { kind: string }).kind)).toEqual(["prepare"]);
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 1, tasks: new Set([task.taskId]) });
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, "ORGANIZATION")).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 1, tasks: new Set([task.taskId]) });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toMatchObject({ count: 1 });
     expect(db.find((item) => item.pk === `TASK#${task.taskId}`)).toEqual([expect.objectContaining({ origin: "ai_tool", action: "start", phase: "accepted", requestText: "Fix the flaky retry test", client: "Claude Code" })]);
   });
 
@@ -142,7 +143,7 @@ describe("developers without a Slack link (FR-020, R6)", () => {
     const response = await dev(OMAR, "POST", "/v1/dev/tasks", start());
     expect(response.status).toBe(200);
     expect(db.get(`DEVELOPER_LIMIT#${OMAR.developerId}`, "MEMBER")).toMatchObject({ count: 1 });
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, "ORGANIZATION")).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toMatchObject({ count: 1 });
   });
 
   it("counts on the developer organization counter when the environment has no Slack team ID", async () => {
@@ -262,7 +263,7 @@ describe("the start's transaction and the workspace limit (FR-020, R6)", () => {
       if (isTransaction(command) && !raced) {
         raced = true;
         // Another Slack thread takes the member's last slot between the check and the transaction.
-        db.set({ pk: `SLACK_LIMIT#${SLACK_TEAM}`, sk: `MEMBER#${MAYA.slackUserId}`, entityType: "SLACK_LIMIT", count: 1, threads: ["elsewhere"] });
+        db.set({ pk: slackLimitPk(TEST_ORG, SLACK_TEAM), sk: `MEMBER#${MAYA.slackUserId}`, entityType: "SLACK_LIMIT", count: 1, threads: ["elsewhere"] });
       }
       return original(command);
     });
@@ -281,7 +282,7 @@ describe("the start's transaction and the workspace limit (FR-020, R6)", () => {
     intercept(db, async (command, original) => {
       if (isTransaction(command) && !raced) {
         raced = true;
-        db.set({ pk: `SLACK_LIMIT#${SLACK_TEAM}`, sk: "ORGANIZATION", entityType: "SLACK_LIMIT", count: 1 });
+        db.set({ pk: slackLimitPk(TEST_ORG, SLACK_TEAM), sk: "ORGANIZATION", entityType: "SLACK_LIMIT", count: 1 });
       }
       return original(command);
     });
@@ -303,7 +304,7 @@ describe("the start's transaction and the workspace limit (FR-020, R6)", () => {
     expect(response.status).toBe(200);
     const taskId = (response.body.task as { taskId: string }).taskId;
     expect(db.get(`DEVTASK#${taskId}`, "META")).toBeDefined();
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 1, tasks: new Set([taskId]) });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 1, tasks: new Set([taskId]) });
     expect(workspaces(db)).toHaveLength(1);
     expect(refusals(db)).toHaveLength(0);
   });
@@ -325,7 +326,7 @@ describe("the start's transaction and the workspace limit (FR-020, R6)", () => {
     expect(second.status).toBe(200);
     expect((second.body.task as { taskId: string }).taskId).toBe((winner.body.task as { taskId: string }).taskId);
     expect(workspaces(db)).toHaveLength(1);
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 1 });
     expect(db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(1);
     expect(db.find((item) => typeof item.pk === "string" && item.pk.startsWith("TASK#") && item.phase === "accepted")).toHaveLength(1);
   });
@@ -347,7 +348,7 @@ describe("the start's transaction and the workspace limit (FR-020, R6)", () => {
     expect(second.body.error).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
     expect(workspaces(db)).toHaveLength(1);
     expect(db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(1);
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 1 });
   });
 
   it("answers WORKSPACE_BUSY, and records and charges nothing, when a revision is registered between the access check and the start", async () => {
@@ -369,8 +370,8 @@ describe("the start's transaction and the workspace limit (FR-020, R6)", () => {
     expect(workspaces(db)).toHaveLength(0);
     expect(refusals(db)).toHaveLength(0);
     expect(db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(0);
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId}`)).toBeUndefined();
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, "ORGANIZATION")).toBeUndefined();
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`)).toBeUndefined();
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toBeUndefined();
   });
 
   it("answers WORKSPACE_BUSY, asking for the same request ID, when another write conflicts", async () => {

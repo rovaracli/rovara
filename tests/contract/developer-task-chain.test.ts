@@ -1,3 +1,5 @@
+import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { STUCK_SETUP_MESSAGE, sweepStuckSetups } from "../../packages/broker/src/aws/stuck-setup.js";
@@ -173,8 +175,8 @@ describe("the first task is queued by the prepare's result (R3, FR-018)", () => 
     expect(read.body).toMatchObject({ task: { status: "FAILED", failure: { category: "setup_failed" } } });
     const closed = await dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/close`, { requestId: randomUUID() });
     expect(closed.body).toMatchObject({ closed: true, task: { status: "CLOSED" } });
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 0 });
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, "ORGANIZATION")).toMatchObject({ count: 0 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 0 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toMatchObject({ count: 0 });
   });
 
   it.each([
@@ -215,7 +217,7 @@ describe("the first task is queued by the prepare's result (R3, FR-018)", () => 
     await finish(task.workspaceId, prepareId, "SUCCEEDED");
     expect(taskOperations()).toHaveLength(1);
     expect(taskOutbox()).toHaveLength(1);
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 1 });
   });
 
   it("answers a temporary error from the queuing write with 503, and the next try queues the task once (FR-055, C19)", async () => {
@@ -244,7 +246,7 @@ describe("the first task is queued by the prepare's result (R3, FR-018)", () => 
     await finish(task.workspaceId, prepareId, "SUCCEEDED");
     expect(taskOperations()).toHaveLength(1);
     expect(taskOutbox()).toHaveLength(1);
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 1 });
   });
 
   it("leaves a prepare whose every try met a temporary error to the stuck-setup sweep (D21)", async () => {
@@ -269,7 +271,7 @@ describe("the first task is queued by the prepare's result (R3, FR-018)", () => 
     // Closing the failed task frees the member's slot.
     const closed = await dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/close`, { requestId: randomUUID() });
     expect(closed.body).toMatchObject({ closed: true, task: { status: "CLOSED" } });
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 0 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 0 });
   });
 
   it("a Slack thread's failed prepare creates no developer task pointer", async () => {

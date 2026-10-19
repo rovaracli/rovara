@@ -1,3 +1,5 @@
+import { slackTeamOrgKey } from "../../packages/contracts/src/org.js";
+import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
@@ -43,7 +45,8 @@ describe("thread-authenticated GitHub MCP routes", () => {
     });
     const membershipKey = key(projectMemberKey(TEST_ORG, ownerKey, "demo").pk, "PROJECT#demo");
     records.set(membershipKey, { ownerKey, projectName: "demo", role: "developer" });
-    records.set(key(`SLACK_BINDING#${teamId}`, `CHANNEL#${channelId}`), {
+    records.set(key(`SLACK_TEAM#${teamId}`, "ORG"), { ...slackTeamOrgKey(teamId), entityType: "SLACK_TEAM_ORG", orgId: TEST_ORG });
+    records.set(key(slackBindingPk(TEST_ORG, teamId), `CHANNEL#${channelId}`), {
       teamId, channelId, projectName: "demo", projectRevision: 2, updatedAt: now,
     });
     const repository = { name: "demo", url: "https://github.com/example/demo.git", credentialRef: "github-app" };

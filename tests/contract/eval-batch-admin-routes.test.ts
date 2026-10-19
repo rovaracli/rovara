@@ -1,5 +1,7 @@
 // Spec 052 Task 5: the admin routes of eval batches (FR-001, FR-003, FR-009, FR-010). Each is behind
 // the administrator claim and the administrator membership of the channel's project.
+import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { swebenchDeploymentForTests } from "../support/eval-batch-admin.js";
 import { finalizeBatch, withEvalBatches } from "../../packages/broker/src/aws/eval-batch.js";
@@ -160,7 +162,7 @@ describe("the project's administrator (spec 052 Task 5)", () => {
     const { handler, db } = await batchBroker();
     const batchId = ((await start(handler)).body.batch as { batchId: string }).batchId;
     // The channel is rebound to another project; the batch still belongs to payments.
-    const binding = db.get(`SLACK_BINDING#${SLACK_TEAM}`, `CHANNEL#${SLACK_CHANNEL}`);
+    const binding = db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), `CHANNEL#${SLACK_CHANNEL}`);
     expect(binding).toBeDefined();
     binding!.projectName = "elsewhere";
     expect((await call(handler, { method: "GET", path: `${base}/${batchId}`, user: administrator })).status).toBe(200);

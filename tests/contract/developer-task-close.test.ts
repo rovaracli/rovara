@@ -1,4 +1,6 @@
 // Spec 025 Task 12: closing a developer task (FR-016, FR-030, R6, R15, R22, owner decisions 5 and 6).
+import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { agentXError } from "@agentx/contracts";
@@ -17,7 +19,7 @@ async function finished(options: { memberLimit?: number } = {}) {
   await harness.finish(task.workspaceId, active(), "SUCCEEDED");
   await harness.finish(task.workspaceId, active(), "SUCCEEDED");
   const close = (requestId: string, discardUnpublished = false) => harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/close`, { requestId, ...(discardUnpublished ? { discard_unpublished: true } : {}) });
-  const member = () => harness.db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId}`);
+  const member = () => harness.db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`);
   return { ...harness, taskId, task, active, close, member };
 }
 
@@ -33,7 +35,7 @@ async function setupFailed() {
 }
 
 const SAFE = { result: { safeToClose: true, repositories: [] } };
-const organization = (db: FakeDynamoDb) => db.get(`SLACK_LIMIT#${SLACK_TEAM}`, "ORGANIZATION");
+const organization = (db: FakeDynamoDb) => db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION");
 /** A task's close records as `phase:outcome`, sorted, so a count also says which records they are. */
 const closePhases = (db: FakeDynamoDb, taskId: string) =>
   db.find((item) => item.pk === `TASK#${taskId}` && item.action === "close").map((item) => `${String(item.phase)}:${String(item.outcome)}`).sort();
@@ -51,7 +53,7 @@ describe("closing a task (R15)", () => {
     expect(db.get(`WORKSPACE#${task.workspaceId}`, "META")).toMatchObject({ status: "CLOSED" });
     expect(member()).toMatchObject({ count: 0 });
     expect(member()).not.toHaveProperty("tasks");
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, "ORGANIZATION")).toMatchObject({ count: 0 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toMatchObject({ count: 0 });
     expect(db.get(`DEVTASK#${taskId}`, "META")).toHaveProperty("closedAt");
     expect(db.get(`DEVELOPER#${MAYA.developerId}`, `TASK#${task.createdAt}#${taskId}`)).toMatchObject({ status: "CLOSED" });
     expect((await close(requestId)).body).toMatchObject({ closed: true, task: { status: "CLOSED" } });
@@ -124,7 +126,7 @@ describe("closing a task (R15)", () => {
     await harness.finish(workspaceId, String((harness.db.get(`WORKSPACE#${workspaceId}`, "META") as { activeOperationId: string }).activeOperationId), "FAILED", { error: "npm ci exited 1" });
     const closed = await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/close`, { requestId: randomUUID() });
     expect(closed.body).toMatchObject({ closed: true, task: { status: "CLOSED" } });
-    expect(harness.db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 0 });
+    expect(harness.db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 0 });
     expect(organization(harness.db)).toMatchObject({ count: 0 });
   });
 
@@ -151,7 +153,7 @@ describe("closing a task (R15)", () => {
     await close(requestId);
     await finish(task.workspaceId, active(), "SUCCEEDED", { result: { safeToClose: true, repositories: [] } });
     expect(member()).toMatchObject({ count: 0 });
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, "MEMBER#U0MAYANEW")).toBeUndefined();
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "MEMBER#U0MAYANEW")).toBeUndefined();
   });
 
   it("frees the slot for a new task", async () => {
@@ -233,7 +235,7 @@ describe("closing a task: repeats, races and audit records (R12, R15)", () => {
     expect(records[0]).toMatchObject({ phase: "accepted", outcome: "accepted" });
     expect(records[1]).toMatchObject({ phase: "completed", outcome: "succeeded" });
     expect(harness.db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ status: "CLOSED" });
-    expect(harness.db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 0 });
+    expect(harness.db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 0 });
     expect(organization(harness.db)).toMatchObject({ count: 0 });
   });
 
@@ -249,7 +251,7 @@ describe("closing a task: repeats, races and audit records (R12, R15)", () => {
     await expect(finishTaskClose({ tableName: actions.tableName, actions, documentClient: db }, stale, closeId)).resolves.toBeUndefined();
     expect(deleteEc2Session!.mock.calls.length).toBe(calls);
     expect(member()).toMatchObject({ count: 0 });
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, "ORGANIZATION")).toMatchObject({ count: 0 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toMatchObject({ count: 0 });
   });
 
   it("closes a task whose counters were already released, without releasing them again", async () => {
@@ -259,7 +261,7 @@ describe("closing a task: repeats, races and audit records (R12, R15)", () => {
     const closeId = active();
     await finish(task.workspaceId, closeId, "SUCCEEDED", SAFE);
     // An earlier release took this task's slot back, but the close itself never landed.
-    const counter = db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId}`) as Record<string, unknown>;
+    const counter = db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`) as Record<string, unknown>;
     counter.count = 0;
     delete counter.tasks;
     (organization(db) as Record<string, unknown>).count = 0;
@@ -281,7 +283,7 @@ describe("closing a task: repeats, races and audit records (R12, R15)", () => {
     const { db, close, taskId } = await setupFailed();
     // A task whose setup failed before #213 still holds its charge, and here the organization
     // counter lost it: not a race, not already released.
-    Object.assign(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId}`) as Record<string, unknown>, { count: 1, tasks: new Set([taskId]) });
+    Object.assign(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`) as Record<string, unknown>, { count: 1, tasks: new Set([taskId]) });
     (organization(db) as Record<string, unknown>).count = 0;
     const refused = await close();
     expect(refused.body.error).toEqual({ code: "WORKSPACE_BUSY", message: "AgentX could not close this task just now; try agentx_close_task again, and ask an admin if it keeps failing" });

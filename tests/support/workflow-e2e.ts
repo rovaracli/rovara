@@ -19,6 +19,7 @@ import {
   WorkerInvocationSchema,
   WorkflowSnapshotSchema,
   sharedTaskKey,
+  slackBindingPk,
   slackThreadSubject,
   type ChannelMembersRequest,
   type ChannelMembersResponse,
@@ -90,6 +91,8 @@ import { StrictSlackWeb } from "./strict-slack.js";
 import { FakeGitHub, type FakeGitHubOptions } from "./workflow-e2e-github.js";
 import { trackJourney, type JourneyLedgerEntry } from "./workflow-e2e-invariants.js";
 import { TEST_ORG } from "./orgs.js";
+import { resolveSlackOrg } from "../../packages/broker/src/org/resolve.js";
+import { OrgStore } from "../../packages/broker/src/org/store.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -1039,8 +1042,10 @@ export async function createWorkflowE2E(options: {
     secrets: async () => ({ signingSecret: SIGNING_SECRET, botToken: "xoxb-e2e" }),
     // The test's clock (e2e.clock), which Slack's signed timestamps also come from.
     now: () => Date.now(),
-    getBinding: async (teamId, channelId) => {
-      const item = db.get(`SLACK_BINDING#${teamId}`, `CHANNEL#${channelId}`);
+    // The team's binding is the one the admin path wrote when the channel was bound (the real, read-only lookup).
+    resolveOrg: (teamId) => resolveSlackOrg(new OrgStore({ documentClient: db, tableName: "state", now: Date.now }), teamId),
+    getBinding: async (orgId, teamId, channelId) => {
+      const item = db.get(slackBindingPk(orgId, teamId), `CHANNEL#${channelId}`);
       return item === undefined ? undefined : SlackChannelBindingSchema.parse({ teamId: item.teamId, channelId: item.channelId, projectName: item.projectName, updatedAt: item.updatedAt });
     },
     claimEvent: async (eventId) => {

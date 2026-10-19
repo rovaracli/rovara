@@ -1,3 +1,4 @@
+import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { GetCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 import { SLACK_OIDC_ISSUER } from "@agentx/contracts";
 import { describe, expect, it, vi } from "vitest";
@@ -39,7 +40,7 @@ function ports(input: { task?: DeveloperTaskRecord; memberOf?: string[]; develop
     })),
     memberships: vi.fn(async (_developerId: string, _admission: unknown, signal: AbortSignal) => ({ items: [], complete: !signal.aborted })),
     bindings: vi.fn(async (_teamId: string, _admission: unknown, signal: AbortSignal) => ({
-      items: [{ pk: `SLACK_BINDING#${slackTeamId}`, sk: `CHANNEL#${channelId}`, teamId: slackTeamId, channelId, projectName: "payments-api", updatedAt: "2026-01-01T00:00:00.000Z" }], complete: !signal.aborted,
+      items: [{ pk: slackBindingPk(TEST_ORG, slackTeamId), sk: `CHANNEL#${channelId}`, teamId: slackTeamId, channelId, projectName: "payments-api", updatedAt: "2026-01-01T00:00:00.000Z" }], complete: !signal.aborted,
     })),
   };
   const taskPersonProof = vi.fn<TaskPersonRuntimePorts["taskPersonProof"]>(async (request, admission) => {
@@ -104,7 +105,7 @@ describe("task person runtime factory", () => {
     await expect(checker.stateAuthorityWitnessForOwnerActor(nativeTask(), taskOwnerKey(nativeDeveloperId, taskId))).resolves.toMatchObject({
       taskId, developerId: nativeDeveloperId, project: "payments-api", access: "channel",
       projectRevision: { ...projectRevisionKey(TEST_ORG, "payments-api", 7), revision: 7, developerTasksPresent: false },
-      binding: { pk: `SLACK_BINDING#${slackTeamId}`, sk: `CHANNEL#${channelId}`, teamId: slackTeamId, channelId, projectName: "payments-api" },
+      binding: { pk: slackBindingPk(TEST_ORG, slackTeamId), sk: `CHANNEL#${channelId}`, teamId: slackTeamId, channelId, projectName: "payments-api" },
     });
     expect(injected.projectAuthorityReader.latestRevision.mock.calls).toHaveLength(2);
 

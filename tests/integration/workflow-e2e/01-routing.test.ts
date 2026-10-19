@@ -152,7 +152,7 @@ describe("Suite 1: routing and start", () => {
     // Product decision (pinned by tests/contract/slack-ingress.test.ts "ignores an unbound channel without queueing
     // work"): the ingress ignores an unbound channel before it claims or answers anything.
     const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS } });
-    const [binding] = e2e.db.find((item) => String(item.pk).startsWith("SLACK_BINDING#"));
+    const [binding] = e2e.db.find((item) => String(item.pk).includes("#SLACK_BINDING#"));
     e2e.db.delete(String(binding!.pk), String(binding!.sk));
     expect(await e2e.mention("quick: Add a greet(name) function", { ts: "1695500600.000001", threadTs: "1695500600.000001" })).toBe(200);
     await e2e.settle();
@@ -163,7 +163,7 @@ describe("Suite 1: routing and start", () => {
 
   it("1.15 says, word for word, that the channel isn't connected when it is unbound while the request is on its way", async () => {
     const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS } });
-    const [binding] = e2e.db.find((item) => String(item.pk).startsWith("SLACK_BINDING#"));
+    const [binding] = e2e.db.find((item) => String(item.pk).includes("#SLACK_BINDING#"));
     // An admin unbinds the channel after the Slack ingress read the binding and before the broker reads it: the broker's
     // read of the binding is the moment the binding goes (the match removes it and lets the read through).
     e2e.db.injectFault({ command: "GetCommand", error: { name: "Unused" },

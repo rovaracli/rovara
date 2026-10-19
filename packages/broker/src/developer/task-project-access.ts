@@ -4,6 +4,7 @@ import {
   developerTaskPolicy,
   projectMemberKey,
   projectRevisionKey,
+  slackBindingKey,
   type DeveloperTaskPolicy,
   type OrgId,
   type SlackChannelBinding,
@@ -39,7 +40,7 @@ export interface ProjectAuthorityReader {
   /** Use the supplied signal for page one; count each later Query page before issue. */
   latestRevision(orgId: OrgId, project: string, admission: BoundedProjectReadAdmission, abortSignal: AbortSignal): Promise<{ revision?: ProjectAuthorityRevision; complete: boolean }>;
   memberships(orgId: OrgId, developerId: string, admission: BoundedProjectReadAdmission, abortSignal: AbortSignal): Promise<{ items: readonly ProjectDeveloperMembership[]; complete: boolean }>;
-  bindings(teamId: string, admission: BoundedProjectReadAdmission, abortSignal: AbortSignal): Promise<{ items: readonly ProjectChannelBinding[]; complete: boolean }>;
+  bindings(orgId: OrgId, teamId: string, admission: BoundedProjectReadAdmission, abortSignal: AbortSignal): Promise<{ items: readonly ProjectChannelBinding[]; complete: boolean }>;
 }
 
 /** Pure policy evaluation. It performs no I/O, logging, name lookup, or human error decoration. */
@@ -68,8 +69,12 @@ export function evaluateProjectAuthority(input: {
     const expected = projectMemberKey(input.orgId, input.developerId!, input.project);
     return row.pk !== expected.pk || row.sk !== expected.sk;
   })) return { kind: "unavailable" };
-  if (input.teamId !== undefined && input.bindings.some((binding) => binding.projectName === input.project
-    && (binding.pk !== `SLACK_BINDING#${input.teamId}` || binding.sk !== `CHANNEL#${binding.channelId}` || binding.teamId !== input.teamId))) return { kind: "unavailable" };
+  if (input.teamId !== undefined && input.bindings.some((binding) => {
+    if (binding.projectName !== input.project) return false;
+    if (input.orgId === undefined) return true;
+    const expected = slackBindingKey(input.orgId, input.teamId!, binding.channelId);
+    return binding.pk !== expected.pk || binding.sk !== expected.sk || binding.teamId !== input.teamId;
+  })) return { kind: "unavailable" };
 
   const policy = developerTaskPolicy(input.revision.definition);
   const matchingBindings = input.bindings.filter((binding) => binding.projectName === input.project);
@@ -134,7 +139,7 @@ export async function readProjectAuthority(
     input.admission.assertOpen();
     if (!memberships.complete) return { kind: "unavailable" };
 
-    const bindings = await reader.bindings(input.teamId, input.admission, input.admission.admitStateRead());
+    const bindings = await reader.bindings(input.orgId, input.teamId, input.admission, input.admission.admitStateRead());
     input.admission.assertOpen();
     if (!bindings.complete) return { kind: "unavailable" };
 

@@ -1,6 +1,8 @@
 // Issue #213, part one: a workspace whose preparation failed stops counting toward the per-person
 // and organization workspace limits at once, a new message in its Slack thread starts fresh, and a
 // later close never gives the slot back a second time.
+import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { releaseFailedPreparation } from "../../packages/broker/src/aws/failed-preparation.js";
@@ -24,8 +26,8 @@ beforeAll(async () => {
   await loadSlackBroker();
 });
 
-const member = (db: FakeDynamoDb, userId: string) => db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${userId}`);
-const organization = (db: FakeDynamoDb) => db.get(`SLACK_LIMIT#${SLACK_TEAM}`, "ORGANIZATION");
+const member = (db: FakeDynamoDb, userId: string) => db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${userId}`);
+const organization = (db: FakeDynamoDb) => db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION");
 const threadRecord = (db: FakeDynamoDb, subject: string) => db.find((item) => item.entityType === "SLACK_THREAD" && item.thread === subject)[0];
 const outboxOf = (db: FakeDynamoDb, operationId: string) => db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0] as unknown as DurableOutboxRecord;
 

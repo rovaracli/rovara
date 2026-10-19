@@ -3,6 +3,7 @@
 // brief limit, webhooks replayed after completion, a page read while the task moves [LIVE-BUG B12], deploy skew both
 // ways, the item size limit, and DynamoDB's map order on every read [LIVE-BUG B3]. 9.13 (old stored records) is covered by
 // slack-workflow-e2e.test.ts.
+import { slackBindingPk } from "../../../packages/contracts/src/org-scoped-keys.js";
 import { describe, expect, it, vi } from "vitest";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
@@ -105,7 +106,7 @@ function installProductionDispatcher(e2e: WorkflowE2E, options: {
     }
     const hasBindingFence = input?.TransactItems?.some((item) => {
       const key = item.ConditionCheck?.Key;
-      return typeof key?.pk === "string" && key.pk.startsWith("SLACK_BINDING#")
+      return typeof key?.pk === "string" && key.pk.includes("#SLACK_BINDING#")
         && typeof key.sk === "string" && key.sk.startsWith("CHANNEL#");
     }) === true;
     if (hasBindingFence) {
@@ -113,7 +114,7 @@ function installProductionDispatcher(e2e: WorkflowE2E, options: {
       if (bindingFenceCount === options.removeBindingAtFence) {
         const task = e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META") as { share?: { teamId?: string; channelId?: string } } | undefined;
         if (task?.share?.teamId === undefined || task.share.channelId === undefined) throw new Error("the dispatch task has no channel binding to revoke");
-        e2e.db.delete(`SLACK_BINDING#${task.share.teamId}`, `CHANNEL#${task.share.channelId}`);
+        e2e.db.delete(slackBindingPk(TEST_ORG, task.share.teamId), `CHANNEL#${task.share.channelId}`);
       }
     }
     return e2e.db.send(command as never) as never;

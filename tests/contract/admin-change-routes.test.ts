@@ -1,6 +1,7 @@
 // tests/contract/admin-change-routes.test.ts
 // Spec 025 FR-039 to FR-041, FR-051, FR-052, SC-005 and SC-011 at the routes: a change is planned,
 // stored and audited, and applies at most once, only after a valid confirmation.
+import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminChangePendingRecordSchema, type ChannelInfoRequest, type ChannelMembersRequest } from "@agentx/contracts";
 import { adminChangeOutcomeMessage } from "../../packages/broker/src/developer/change-messages.js";
@@ -13,7 +14,7 @@ import { TEST_ORG } from "../support/orgs.js";
 import { orgSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const BIND = { kind: "bind_channel" as const, channel: "#ledger-dev", project: "payments" };
-const binding = (db: { get(pk: string, sk: string): unknown }) => db.get(`SLACK_BINDING#${SLACK_TEAM}`, "CHANNEL#C0LEDGER01") as { projectName?: string } | undefined;
+const binding = (db: { get(pk: string, sk: string): unknown }) => db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01") as { projectName?: string } | undefined;
 const changeId = (answer: { body: Record<string, unknown> }) => (answer.body.change as { changeId: string }).changeId;
 const PLANTED = `ghp_${"P".repeat(36)}`;
 let lines: string[] = [];
@@ -155,7 +156,7 @@ describe("confirming by the pop-up (FR-040, SC-005)", () => {
   it("refuses a stale change and leaves the binding as the other admin set it", async () => {
     const broker = await createAdminChangeBroker();
     const id = changeId(await broker.propose(BIND));
-    broker.db.set({ pk: `SLACK_BINDING#${SLACK_TEAM}`, sk: "CHANNEL#C0LEDGER01", entityType: "SLACK_BINDING", teamId: SLACK_TEAM, channelId: "C0LEDGER01", projectName: "payments-legacy", updatedAt: new Date().toISOString() });
+    broker.db.set({ pk: slackBindingPk(TEST_ORG, SLACK_TEAM), sk: "CHANNEL#C0LEDGER01", entityType: "SLACK_BINDING", teamId: SLACK_TEAM, channelId: "C0LEDGER01", projectName: "payments-legacy", updatedAt: new Date().toISOString() });
     const answer = await broker.apply(id);
     // #216: a re-plan the planner refuses says why, and names no change ID.
     expect(answer.body.error).toEqual({ code: "CHANGE_STALE", message: "what this change was planned against has changed since you asked (project not found); ask for the change again" });
@@ -171,7 +172,7 @@ describe("confirming by the pop-up (FR-040, SC-005)", () => {
     const answer = await broker.apply(id);
     expect(answer.body.error).toMatchObject({ code: "CHANGE_STALE", message: expect.stringMatching(/^what this change was planned against has changed since you asked \(.+\); ask for the change again$/u) as unknown });
     expect(JSON.stringify(answer.body)).not.toContain(id);
-    expect(broker.db.get(`SLACK_BINDING#${SLACK_TEAM}`, `CHANNEL#${SLACK_CHANNEL}`)).toBeUndefined();
+    expect(broker.db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), `CHANNEL#${SLACK_CHANNEL}`)).toBeUndefined();
     expect(broker.audit(id)).toMatchObject({ status: "failed", outcome: "failed", refusedAttempts: [expect.objectContaining({ reason: "stale_state" })] });
     expect(logged("admin_change.claimed")).toEqual([]);
   });
@@ -401,14 +402,14 @@ describe("confirming by the Slack button (FR-041, E13, E14)", () => {
     broker.clock.advance(10 * 60_000 + 1);
     expect(await broker.press(late, "confirm")).toMatchObject({ outcome: "expired" });
     expect(broker.audit(late)).toMatchObject({ outcome: "expired", expiredAt: expect.any(String) as unknown });
-    expect(broker.db.get(`SLACK_BINDING#${SLACK_TEAM}`, `CHANNEL#${SLACK_CHANNEL}`)).toBeDefined();
+    expect(broker.db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), `CHANNEL#${SLACK_CHANNEL}`)).toBeDefined();
   });
 
   it("answers stale for a press on a change whose state moved, and applies nothing", async () => {
     const broker = await createAdminChangeBroker();
     const id = changeId(await broker.propose(BIND, ["slack"]));
     await broker.slack(id);
-    broker.db.set({ pk: `SLACK_BINDING#${SLACK_TEAM}`, sk: "CHANNEL#C0LEDGER01", entityType: "SLACK_BINDING", teamId: SLACK_TEAM, channelId: "C0LEDGER01", projectName: "payments-legacy", updatedAt: new Date().toISOString() });
+    broker.db.set({ pk: slackBindingPk(TEST_ORG, SLACK_TEAM), sk: "CHANNEL#C0LEDGER01", entityType: "SLACK_BINDING", teamId: SLACK_TEAM, channelId: "C0LEDGER01", projectName: "payments-legacy", updatedAt: new Date().toISOString() });
     expect(await broker.press(id, "confirm")).toMatchObject({ outcome: "stale", changeId: id });
     expect(binding(broker.db)).toMatchObject({ projectName: "payments-legacy" });
     expect(broker.audit(id)).toMatchObject({ status: "failed", outcome: "failed", methodUsed: "slack", refusedAttempts: [expect.objectContaining({ reason: "stale_state", slackUserId: ADMIN_SLACK })] });

@@ -1,5 +1,7 @@
 // tests/contract/stuck-setup.test.ts
 // Spec 025 FR-055, D21, C17, C18: a developer task's setup is failed 50 minutes after it started.
+import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { STUCK_SETUP_MESSAGE, STUCK_SETUP_MS, setupWatchKey, sweepStuckSetups } from "../../packages/broker/src/aws/stuck-setup.js";
@@ -55,9 +57,9 @@ describe("the sweep (FR-055)", () => {
     expect((await dev(MAYA, "GET", `/v1/dev/tasks/${taskId}`)).body.task).toMatchObject({ status: "FAILED", failure: { category: "setup_failed", message: STUCK_SETUP_MESSAGE } });
     // #213 (replacing ruling F20): the failed setup releases the slot at once, as any failed setup
     // does, and the close that follows does not release it again.
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 0 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 0 });
     expect((await dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/close`, { requestId: randomUUID() })).body).toMatchObject({ closed: true });
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 0 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 0 });
   });
 
   it("stamps the failed operation with the sweep's time, so the notifier does not drop its notice (F7)", async () => {

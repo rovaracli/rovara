@@ -173,7 +173,7 @@ describe("Suite 12: merge recovery without a webhook", () => {
     const charge = original.charge as { member: { pk: string; sk: string }; organization: { pk: string; sk: string } };
     const developer = e2e.db.get(`DEVELOPER#${developerId}`, "META")!;
     e2e.db.set({ ...developer, revoked: true });
-    for (const binding of e2e.db.find((item) => String(item.pk).startsWith("SLACK_BINDING#"))) e2e.db.delete(String(binding.pk), String(binding.sk));
+    for (const binding of e2e.db.find((item) => String(item.pk).includes("#SLACK_BINDING#"))) e2e.db.delete(String(binding.pk), String(binding.sk));
     e2e.github.merge(pullRequest.number);
     e2e.clock.advance(5 * 60_000);
 

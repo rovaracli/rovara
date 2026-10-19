@@ -145,7 +145,7 @@ describe("probing the Slack URLs", () => {
     const unused = () => { throw new Error("test setup: a URL check must not reach this"); };
     const secrets = async () => ({ signingSecret: TEST_SIGNING_SECRET, botToken: TEST_BOT_TOKEN });
     const ingress = createSlackIngressHandler({
-      secrets, now: () => T0, getBinding: unused, claimEvent: unused, releaseEvent: unused, changePending: unused, enqueue: unused, postMessage: unused,
+      secrets, now: () => T0, resolveOrg: unused, getBinding: unused, claimEvent: unused, releaseEvent: unused, changePending: unused, enqueue: unused, postMessage: unused,
     });
     const interactivity = createSlackInteractivityHandler({ secrets, now: () => T0, handlers: [] });
     const statuses: number[] = [];

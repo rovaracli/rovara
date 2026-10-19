@@ -1,5 +1,5 @@
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, agentXError, orgOfProjectPk, projectMemberKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, agentXError, orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId } from "@agentx/contracts";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { taskOpen } from "../developer/task-access.js";
 import { resolveTaskDispatchPeople, type CheckTaskPerson } from "../developer/task-people.js";
@@ -173,7 +173,7 @@ async function allowedStillCurrent(
         ExpressionAttributeValues: { ":project": task.project, ":developer": "developer" } } });
     } else {
       const binding = witness.binding;
-      if (binding === undefined || binding.pk !== `SLACK_BINDING#${binding.teamId}` || binding.sk !== `CHANNEL#${binding.channelId}`
+      if (binding === undefined || binding.pk !== slackBindingPk(witnessOrg, binding.teamId) || binding.sk !== `${SLACK_BINDING_SK_PREFIX}${binding.channelId}`
         || binding.projectName !== task.project || typeof binding.updatedAt !== "string" || binding.updatedAt.length === 0) return false;
       checks.push({ ConditionCheck: { TableName: deps.tableName, Key: { pk: binding.pk, sk: binding.sk },
         ConditionExpression: "teamId = :teamId AND channelId = :channelId AND projectName = :projectName AND updatedAt = :updatedAt",

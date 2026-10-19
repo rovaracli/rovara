@@ -1,5 +1,7 @@
 // tests/integration/hosted-lazy-workspace.test.ts
 // The Slack processor, its real control-plane client and real tools against the real broker.
+import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { SlackRequestMessage } from "../../packages/contracts/src/index.js";
 import { ControlPlaneApi } from "../../packages/orchestrator/src/control-plane-api.js";
@@ -144,7 +146,7 @@ describe("workspace only when needed, end to end", () => {
     expect(postsIn(s, 1).slice(-3)).toEqual([WORKING, SETTING_UP, CODING_ANSWER]);
     expect(s.db.find((item) => item.entityType === "OPERATION" && item.kind === "prepare")).toHaveLength(1);
     expect(s.db.find((item) => item.entityType === "OPERATION" && item.kind === "task")).toHaveLength(1);
-    expect(s.db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${pratik}`)).toMatchObject({ count: 1, threads: [subject(1)] });
+    expect(s.db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${pratik}`)).toMatchObject({ count: 1, threads: [subject(1)] });
     expect(s.toolResults.at(-1)).toContain("\"status\":\"ACCEPTED\"");
   });
 
@@ -164,7 +166,7 @@ describe("workspace only when needed, end to end", () => {
     expect(s.toolResults.at(-2)).toContain("SUCCEEDED");
     expect(s.toolResults.at(-1)).toBe(JSON.stringify(LIMIT_REFUSAL));
     expect(s.db.find((item) => item.entityType === "OPERATION" && item.kind === "task")).toHaveLength(1);
-    expect(s.db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${pratik}`)).toMatchObject({ count: 1 });
+    expect(s.db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${pratik}`)).toMatchObject({ count: 1 });
     const threadTwo = s.db.find((item) => item.entityType === "SLACK_THREAD" && item.thread === subject(2))[0];
     expect(s.db.get(`WORKSPACE#${String(threadTwo?.workspaceId)}`, "META")).toMatchObject({ status: "UNPREPARED" });
   });
@@ -180,12 +182,12 @@ describe("workspace only when needed, end to end", () => {
     ]);
     expect(s.toolResults.at(-1)).toBe(JSON.stringify(unavailableRefusal("workspace setup failed")));
     // #213: the failed workspace no longer counts toward the limit.
-    expect(s.db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${pratik}`)).toMatchObject({ count: 0, threads: [] });
+    expect(s.db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${pratik}`)).toMatchObject({ count: 0, threads: [] });
 
     s.prepareOutcome = "SUCCEEDED";
     await turnIn(s, 1, "what's open?", { coding: false });
     expect(postsIn(s, 1).slice(-3)).toEqual([STILL, WORKING, CONNECTOR_ANSWER]);
-    expect(s.db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${pratik}`)).toMatchObject({ count: 1 });
+    expect(s.db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${pratik}`)).toMatchObject({ count: 1 });
   });
 
   it("tells a connector-only thread there is nothing to close, and keeps answering in it", async () => {

@@ -18,9 +18,11 @@ import {
   agentXError,
   MEMBER_GRANT_SK_PREFIX,
   PROJECT_REVISION_SK_PREFIX,
+  SLACK_BINDING_SK_PREFIX,
   developerTaskPolicy,
   memberGrantsPk,
   projectPk,
+  slackBindingPk,
   workspaceRecordFields,
   type ChannelByNameRequest,
   type ChannelByNameResponse,
@@ -544,13 +546,14 @@ async function grantsOf(deps: DeveloperRouteDependencies, caller: ProjectAccessC
     .map((membership) => membership.projectName);
 }
 
-async function bindingsOf(deps: DeveloperRouteDependencies): Promise<SlackChannelBinding[]> {
-  return deps.developer.slackTeamId === undefined ? [] : queryAll<SlackChannelBinding>(deps, `SLACK_BINDING#${deps.developer.slackTeamId}`, "CHANNEL#");
+/** The install's Slack team's channel bindings inside one org. */
+async function bindingsOf(deps: DeveloperRouteDependencies, orgId: OrgId): Promise<SlackChannelBinding[]> {
+  return deps.developer.slackTeamId === undefined ? [] : queryAll<SlackChannelBinding>(deps, slackBindingPk(orgId, deps.developer.slackTeamId), SLACK_BINDING_SK_PREFIX);
 }
 
 async function listProjects(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<DeveloperProjectsResponse> {
   const grants = await grantsOf(deps, caller);
-  const bindings = await bindingsOf(deps);
+  const bindings = await bindingsOf(deps, caller.orgId);
   const policies = await projectsWithPolicy(deps, caller.orgId, [...grants, ...bindings.map((binding) => binding.projectName)]);
   const access = await resolveDeveloperAccess({
     grants,
@@ -597,7 +600,7 @@ export async function checkProjectAccess(
   const known = (await projectsWithPolicy(deps, caller.orgId, [project])).get(project);
   if (known === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${project}\` doesn't exist in this AgentX`);
   const grants = (await grantsOf(deps, caller)).filter((name) => name === project);
-  const bindings = (await bindingsOf(deps)).filter((binding) => binding.projectName === project);
+  const bindings = (await bindingsOf(deps, caller.orgId)).filter((binding) => binding.projectName === project);
   const projectMemberships = grants.map((projectName) => ({ projectName, role: "developer" }));
   const evaluate = (freshMemberOf?: readonly string[]) => evaluateProjectAuthority({
     project,
@@ -700,7 +703,7 @@ export function developerTaskRouteDependencies(
   initialSlackThread?: { teamId: string; channelId: string; threadTs: string },
   trustedCaller: DeveloperCaller | null = caller,
 ): DeveloperTaskRouteDependencies {
-  const projectChannelIds = async (project: string) => (await bindingsOf(deps))
+  const projectChannelIds = async (project: string) => (await bindingsOf(deps, caller.orgId))
     .filter((binding) => binding.projectName === project)
     .map((binding) => binding.channelId)
     .sort();
@@ -720,7 +723,7 @@ export function developerTaskRouteDependencies(
         if (revision === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${project}\` doesn't exist in this AgentX`);
         const [memberships, allBindings] = await Promise.all([
           queryAll<{ projectName: string; role?: string }>(deps, memberGrantsPk(caller.orgId, subject.developerId), MEMBER_GRANT_SK_PREFIX),
-          bindingsOf(deps),
+          bindingsOf(deps, caller.orgId),
         ]);
         const result = evaluateProjectAuthority({
           project,

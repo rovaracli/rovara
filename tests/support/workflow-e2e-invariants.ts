@@ -108,8 +108,8 @@ function checkSlot(journey: JourneyView): string[] {
     ];
   });
   // The counters agree with what they hold: a member's count is its tasks and threads, an organization's is its members'.
-  const counters = journey.db.find((item) => typeof item.pk === "string" && (item.pk.startsWith("SLACK_LIMIT#") || item.pk.startsWith("DEVELOPER_LIMIT#")));
-  const organizationOf = (item: Item) => (String(item.pk).startsWith("SLACK_LIMIT#") ? String(item.pk) : "DEVELOPER_LIMIT#ORGANIZATION");
+  const counters = journey.db.find((item) => typeof item.pk === "string" && (item.pk.includes("#SLACK_LIMIT#") || item.pk.startsWith("DEVELOPER_LIMIT#")));
+  const organizationOf = (item: Item) => (String(item.pk).includes("#SLACK_LIMIT#") ? String(item.pk) : "DEVELOPER_LIMIT#ORGANIZATION");
   const sums = new Map<string, number>();
   for (const item of counters) {
     const count = typeof item.count === "number" ? item.count : 0;

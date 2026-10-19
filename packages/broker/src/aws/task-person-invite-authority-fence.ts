@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { orgOfProjectPk, projectMemberKey, projectRevisionKey } from "@agentx/contracts";
+import { orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX } from "@agentx/contracts";
 import type { ProjectAuthorityWitness } from "../developer/task-project-access.js";
 
 export type TaskPersonProjectAuthorityWitness = ProjectAuthorityWitness & {
@@ -52,8 +52,9 @@ function positiveRowCondition(
     return { kind: "developer-grant", pk: membership.pk, sk: membership.sk, projectName: membership.projectName, role: membership.role };
   }
   const binding = witness.binding;
-  if (binding === undefined || witness.membership !== undefined
-    || binding.pk !== `SLACK_BINDING#${teamId}` || binding.sk !== `CHANNEL#${binding.channelId}`
+  const bindingOrg = orgOfProjectPk(witness.projectRevision.pk);
+  if (binding === undefined || witness.membership !== undefined || bindingOrg === undefined
+    || binding.pk !== slackBindingPk(bindingOrg, teamId) || binding.sk !== `${SLACK_BINDING_SK_PREFIX}${binding.channelId}`
     || binding.teamId !== teamId || binding.projectName !== project || typeof binding.updatedAt !== "string"
     || binding.updatedAt.length === 0) return undefined;
   return {

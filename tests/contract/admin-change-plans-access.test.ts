@@ -1,5 +1,6 @@
 // tests/contract/admin-change-plans-access.test.ts
 // Spec 025 E7 to E10, E19: stopping work, granting and revoking access, ending a sign-in, and the limits.
+import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { planChange, stateHash, type PlanDependencies } from "../../packages/broker/src/aws/admin-change-plans.js";
@@ -181,9 +182,9 @@ describe("a developer named by email (Q4, FR-051)", () => {
 describe("the workspace limits (E19, FR-053)", () => {
   it("shows the current and new limits, the counts, and who is at or over the new limit", async () => {
     const { deps, identity, db } = await harness();
-    db.set({ pk: "SLACK_LIMIT#T0BSHLLUGBD", sk: "MEMBER#U0PRIYA001", count: 3 });
-    db.set({ pk: "SLACK_LIMIT#T0BSHLLUGBD", sk: "MEMBER#U0OMAR0001", count: 1 });
-    db.set({ pk: "SLACK_LIMIT#T0BSHLLUGBD", sk: "ORGANIZATION", count: 4 });
+    db.set({ pk: slackLimitPk(TEST_ORG, "T0BSHLLUGBD"), sk: "MEMBER#U0PRIYA001", count: 3 });
+    db.set({ pk: slackLimitPk(TEST_ORG, "T0BSHLLUGBD"), sk: "MEMBER#U0OMAR0001", count: 1 });
+    db.set({ pk: slackLimitPk(TEST_ORG, "T0BSHLLUGBD"), sk: "ORGANIZATION", count: 4 });
     const plan = await planChange(deps, identity, { kind: "set_workspace_limits", perPerson: 2 });
     expect(plan.effect).toBe("Set the workspace limits to 2 per person (now 3) and 20 for the organization (unchanged). Open workspaces: 4 of 20. At or over 2 per person: Slack member U0PRIYA001 (3 open). Existing workspaces keep running; a new one is refused while its person or the organization is at the limit.");
     await expect(planChange(deps, identity, { kind: "set_workspace_limits" })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: "CONFIG_INVALID: give per_person, per_organization or both" });
@@ -211,7 +212,7 @@ describe("the workspace limits (E19, FR-053)", () => {
 
   it("says that people who use only an AI tool count in the total but are not named, when there are some (final review T6)", async () => {
     const { deps, identity, db } = await harness();
-    db.set({ pk: "SLACK_LIMIT#T0BSHLLUGBD", sk: "ORGANIZATION", count: 2 });
+    db.set({ pk: slackLimitPk(TEST_ORG, "T0BSHLLUGBD"), sk: "ORGANIZATION", count: 2 });
     const without = await planChange(deps, identity, { kind: "set_workspace_limits", perPerson: 5 });
     expect(without.effect).not.toContain("only an AI tool");
     db.set({ ...orgLimitKey(TEST_ORG), count: 3 });
@@ -221,8 +222,8 @@ describe("the workspace limits (E19, FR-053)", () => {
 
   it("says when the organization is already at or over its new limit, and caps the named people", async () => {
     const { deps, identity, db } = await harness();
-    for (let index = 0; index < 14; index += 1) db.set({ pk: "SLACK_LIMIT#T0BSHLLUGBD", sk: `MEMBER#U0PERSON${String(index).padStart(2, "0")}`, count: 2 });
-    db.set({ pk: "SLACK_LIMIT#T0BSHLLUGBD", sk: "ORGANIZATION", count: 28 });
+    for (let index = 0; index < 14; index += 1) db.set({ pk: slackLimitPk(TEST_ORG, "T0BSHLLUGBD"), sk: `MEMBER#U0PERSON${String(index).padStart(2, "0")}`, count: 2 });
+    db.set({ pk: slackLimitPk(TEST_ORG, "T0BSHLLUGBD"), sk: "ORGANIZATION", count: 28 });
     const plan = await planChange(deps, identity, { kind: "set_workspace_limits", perPerson: 2, perOrganization: 25 });
     expect(plan.effect).toContain("Open workspaces: 28 of 25.");
     expect(plan.effect).toContain("Slack member U0PERSON09 (2 open), and 4 more.");

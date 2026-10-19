@@ -1,3 +1,4 @@
+import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { describe, expect, it, vi } from "vitest";
 import { createTaskAuthorityAdmission } from "../../packages/broker/src/aws/task-authority-admission.js";
 import { evaluateProjectAuthority, readProjectAuthority, type ProjectAuthorityReader } from "../../packages/broker/src/developer/task-project-access.js";
@@ -6,7 +7,7 @@ import { TEST_ORG } from "../support/orgs.js";
 import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const binding = (channelId: string, projectName = "payments-api"): SlackChannelBinding & { pk: string; sk: string } => ({
-  pk: "SLACK_BINDING#T0BSHLLUGBD", sk: `CHANNEL#${channelId}`,
+  pk: slackBindingPk(TEST_ORG, "T0BSHLLUGBD"), sk: `CHANNEL#${channelId}`,
   teamId: "T0BSHLLUGBD", channelId, projectName, updatedAt: "2026-01-01T00:00:00.000Z",
 });
 const revision = (definition: { developerTasks?: unknown }) => ({

@@ -1,6 +1,8 @@
 // Spec 025 Testing section: the MCP SDK's client drives `agentx mcp`'s server against the broker in
 // process, through User Stories 1 and 2. The client lists the tools first, as real AI tools do, so
 // every error result is also checked against SDK 1.30.1's output-schema validation (ruling F3).
+import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { DeveloperTaskResponseSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, canonicalPlanJson, planDocumentMarkdown, readCanonicalPlan, type WorkflowSnapshot } from "@agentx/contracts";
@@ -179,8 +181,8 @@ describe("busy answers name the right next step (final review M1)", () => {
     await harness.finish(workspaceId, activeOf(harness, workspaceId), "FAILED", { error: "npm ci exited 1" });
     // A task whose setup failed before #213 still holds its charge, and here the organization
     // counter lost it: not a race, not already released.
-    Object.assign(harness.db.get("SLACK_LIMIT#T0BSHLLUGBD", `MEMBER#${MAYA.slackUserId}`) as Record<string, unknown>, { count: 1, tasks: new Set([taskId]) });
-    (harness.db.get("SLACK_LIMIT#T0BSHLLUGBD", "ORGANIZATION") as Record<string, unknown>).count = 0;
+    Object.assign(harness.db.get(slackLimitPk(TEST_ORG, "T0BSHLLUGBD"), `MEMBER#${MAYA.slackUserId}`) as Record<string, unknown>, { count: 1, tasks: new Set([taskId]) });
+    (harness.db.get(slackLimitPk(TEST_ORG, "T0BSHLLUGBD"), "ORGANIZATION") as Record<string, unknown>).count = 0;
     const answer = await tool("agentx_close_task", { task_id: taskId });
     expect(answer.error).toEqual({
       code: "TASK_BUSY",

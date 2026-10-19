@@ -18,6 +18,7 @@ import { WORKFLOW_CHOICE_WAITING_NOTICE, WorkflowChoiceWaitingError, workflowCho
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { chatPostEphemeral } from "../../packages/broker/src/aws/slack-web.js";
 import { StrictSlackWeb } from "../support/strict-slack.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const signingSecret = "8f742231b10e8888abcd99yyyzzz85a5";
 const team = "T0BSHLLUGBD";
@@ -82,7 +83,8 @@ function harness(options: {
   let releaseFailures = options.failRelease ?? 0;
   const handler = createSlackIngressHandler({
     secrets: async () => ({ signingSecret, botToken: "xoxb-test" }),
-    getBinding: async (teamId, channelId) =>
+    resolveOrg: async () => TEST_ORG,
+    getBinding: async (_orgId, teamId, channelId) =>
       options.bound === false || channelId !== channel
         ? undefined
         : { teamId, channelId, projectName: "payments", updatedAt: "2026-09-23T21:00:00.000Z" },

@@ -1,3 +1,4 @@
+import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentXError, type ChannelInfoRequest, type ChannelMembersRequest, type ChannelMembersResponse, type TaskPersonProofRequest } from "@agentx/contracts";
 import { channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerSinceFromEnvironment, developerTaskRouteDependencies, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
@@ -70,8 +71,8 @@ beforeEach(async () => {
   ({ db, handler } = await createAdminBroker({ developer: config }));
   db.set({ pk: "SESSION#s-1", sk: "META", sessionId: "s-1", developerId, amr: "slack", slackUserId: "U0MAYA001", startedAt: new Date(T0).toISOString(), endsAt: T0 / 1000 + 604_800 });
   db.set({ pk: `DEVELOPER#${developerId}`, sk: "META", developerId, provider: "slack", issuer: "https://slack.com", subject: "U0MAYA001", displayName: "Maya Chen", slackUserId: "U0MAYA001", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
-  db.set({ pk: "SLACK_BINDING#T0TEAM1", sk: "CHANNEL#C0PAY0001", teamId: "T0TEAM1", channelId: "C0PAY0001", projectName: "payments-api", updatedAt: "2026-09-27T00:00:00.000Z" });
-  db.set({ pk: "SLACK_BINDING#T0TEAM1", sk: "CHANNEL#C0LEDGER1", teamId: "T0TEAM1", channelId: "C0LEDGER1", projectName: "ledger", updatedAt: "2026-09-27T00:00:00.000Z" });
+  db.set({ pk: slackBindingPk(TEST_ORG, "T0TEAM1"), sk: "CHANNEL#C0PAY0001", teamId: "T0TEAM1", channelId: "C0PAY0001", projectName: "payments-api", updatedAt: "2026-09-27T00:00:00.000Z" });
+  db.set({ pk: slackBindingPk(TEST_ORG, "T0TEAM1"), sk: "CHANNEL#C0LEDGER1", teamId: "T0TEAM1", channelId: "C0LEDGER1", projectName: "ledger", updatedAt: "2026-09-27T00:00:00.000Z" });
   db.set({ ...projectRevisionKey(TEST_ORG, "payments-api", 7), entityType: "PROJECT", definition: { name: "payments-api", revision: 7 } });
   db.set({ ...projectRevisionKey(TEST_ORG, "ledger", 2), entityType: "PROJECT", definition: { name: "ledger", revision: 2 } });
   db.set({ ...projectRevisionKey(TEST_ORG, "solo", 1), entityType: "PROJECT", definition: { name: "solo", revision: 1 } });
@@ -122,7 +123,7 @@ describe("GET /v1/dev/projects (FR-016, FR-013)", () => {
 
   it("reads every page of grants and bindings", async () => {
     db.set({ ...projectMemberKey(TEST_ORG, developerId, "ledger"), entityType: "MEMBERSHIP", ownerKey: developerId, projectName: "ledger", role: "developer" });
-    db.set({ pk: "SLACK_BINDING#T0TEAM1", sk: "CHANNEL#C0DOCS001", teamId: "T0TEAM1", channelId: "C0DOCS001", projectName: "docs", updatedAt: "2026-09-27T00:00:00.000Z" });
+    db.set({ pk: slackBindingPk(TEST_ORG, "T0TEAM1"), sk: "CHANNEL#C0DOCS001", teamId: "T0TEAM1", channelId: "C0DOCS001", projectName: "docs", updatedAt: "2026-09-27T00:00:00.000Z" });
     db.set({ ...projectRevisionKey(TEST_ORG, "docs", 3), entityType: "PROJECT", definition: { name: "docs", revision: 3 } });
     channelMembers.mockResolvedValueOnce({ ok: true, memberOf: ["C0DOCS001", "C0PAY0001"] });
     const original = db.send;
@@ -131,7 +132,7 @@ describe("GET /v1/dev/projects (FR-016, FR-013)", () => {
     vi.spyOn(db, "send").mockImplementation(async (command) => {
       const { constructor, input } = command;
       const pk = (input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"];
-      if (constructor.name !== "QueryCommand" || typeof pk !== "string" || !(pk.includes("#MEMBER#") || pk.startsWith("SLACK_BINDING#"))) return original(command);
+      if (constructor.name !== "QueryCommand" || typeof pk !== "string" || !(pk.includes("#MEMBER#") || pk.includes("#SLACK_BINDING#"))) return original(command);
       const all = ((await original(command)) as { Items: Array<Record<string, unknown>> }).Items;
       const start = input.ExclusiveStartKey as { sk: string } | undefined;
       if (start !== undefined) pagedStarts.push(start);
@@ -423,7 +424,7 @@ describe("GET /v1/dev/projects with the task policy (FR-014, FR-016)", () => {
   });
 
   it("names public bound channels when DeveloperIdentity can read them, and only flags private ones", async () => {
-    db.set({ pk: "SLACK_BINDING#T0TEAM1", sk: "CHANNEL#C0PAYSEC1", teamId: "T0TEAM1", channelId: "C0PAYSEC1", projectName: "payments-api", updatedAt: "2026-09-27T00:00:00.000Z" });
+    db.set({ pk: slackBindingPk(TEST_ORG, "T0TEAM1"), sk: "CHANNEL#C0PAYSEC1", teamId: "T0TEAM1", channelId: "C0PAYSEC1", projectName: "payments-api", updatedAt: "2026-09-27T00:00:00.000Z" });
     config.channelInfo = vi.fn(async () => ({ ok: true as const, channels: [
       { channelId: "C0PAY0001", name: "payments-dev", isPrivate: false },
       { channelId: "C0PAYSEC1", name: "payments-sec", isPrivate: true },
@@ -443,7 +444,7 @@ describe("GET /v1/dev/projects with the task policy (FR-014, FR-016)", () => {
   });
 
   it("never names a private channel anywhere in the answer, and only asks for the channels of listed projects", async () => {
-    db.set({ pk: "SLACK_BINDING#T0TEAM1", sk: "CHANNEL#C0PAYSEC1", teamId: "T0TEAM1", channelId: "C0PAYSEC1", projectName: "payments-api", updatedAt: "2026-09-27T00:00:00.000Z" });
+    db.set({ pk: slackBindingPk(TEST_ORG, "T0TEAM1"), sk: "CHANNEL#C0PAYSEC1", teamId: "T0TEAM1", channelId: "C0PAYSEC1", projectName: "payments-api", updatedAt: "2026-09-27T00:00:00.000Z" });
     const channelInfo = vi.fn(async (request: ChannelInfoRequest) => ({ ok: true as const, channels: request.channelIds.map((channelId) => ({ channelId, name: `planted-private-${channelId}`, isPrivate: true })) }));
     config.channelInfo = channelInfo;
     const response = await call("/v1/dev/projects", claims());
@@ -501,8 +502,8 @@ describe("checkProjectAccess, FR-018's first three checks (FR-013, FR-014, FR-04
   });
 
   it("names only public bound channels in PROJECT_ACCESS_DENIED, never a private one the caller is not in", async () => {
-    db.set({ pk: "SLACK_BINDING#T0TEAM1", sk: "CHANNEL#C0LEDSEC1", teamId: "T0TEAM1", channelId: "C0LEDSEC1", projectName: "ledger", updatedAt: "2026-09-27T00:00:00.000Z" });
-    db.set({ pk: "SLACK_BINDING#T0TEAM1", sk: "CHANNEL#C0LEDOPS1", teamId: "T0TEAM1", channelId: "C0LEDOPS1", projectName: "ledger", updatedAt: "2026-09-27T00:00:00.000Z" });
+    db.set({ pk: slackBindingPk(TEST_ORG, "T0TEAM1"), sk: "CHANNEL#C0LEDSEC1", teamId: "T0TEAM1", channelId: "C0LEDSEC1", projectName: "ledger", updatedAt: "2026-09-27T00:00:00.000Z" });
+    db.set({ pk: slackBindingPk(TEST_ORG, "T0TEAM1"), sk: "CHANNEL#C0LEDOPS1", teamId: "T0TEAM1", channelId: "C0LEDOPS1", projectName: "ledger", updatedAt: "2026-09-27T00:00:00.000Z" });
     config.channelInfo = names({ C0LEDGER1: { name: "ledger-dev", isPrivate: false }, C0LEDOPS1: { name: "ledger-ops", isPrivate: false }, C0LEDSEC1: { name: "planted-secret", isPrivate: true } });
     channelMembers.mockResolvedValueOnce({ ok: true, memberOf: [] });
     const denied = await refusal("ledger");
@@ -589,7 +590,7 @@ describe("D2 task-person route dependencies", () => {
       people: [{ developerId: ownerId, slackUserId: "U0MAYA001", name: "Maya Chen", role: "owner" }] };
     db.set(storedTask);
     db.set(originalPeople);
-    db.set({ pk: "SLACK_BINDING#T0TEAM1", sk: "CHANNEL#C0PAY0001", teamId: "T0TEAM1", channelId: "C0PAY0001",
+    db.set({ pk: slackBindingPk(TEST_ORG, "T0TEAM1"), sk: "CHANNEL#C0PAY0001", teamId: "T0TEAM1", channelId: "C0PAY0001",
       projectName: "payments-api", updatedAt: "2026-09-27T00:00:00.000Z" });
     if (mode === "tasks-disabled") {
       db.set({ ...projectMemberKey(TEST_ORG, ownerId, "payments-api"), entityType: "MEMBERSHIP", ownerKey: ownerId,
@@ -837,7 +838,7 @@ describe("the projects list's cost and consistency (Task 7 fix round 1)", () => 
   it("reads only the revision and policy of each latest revision, at most 8 at a time", async () => {
     for (let index = 0; index < 20; index += 1) {
       const name = `proj-${index}`;
-      db.set({ pk: "SLACK_BINDING#T0TEAM1", sk: `CHANNEL#C0PRJ${String(index).padStart(4, "0")}`, teamId: "T0TEAM1", channelId: `C0PRJ${String(index).padStart(4, "0")}`, projectName: name, updatedAt: "2026-09-27T00:00:00.000Z" });
+      db.set({ pk: slackBindingPk(TEST_ORG, "T0TEAM1"), sk: `CHANNEL#C0PRJ${String(index).padStart(4, "0")}`, teamId: "T0TEAM1", channelId: `C0PRJ${String(index).padStart(4, "0")}`, projectName: name, updatedAt: "2026-09-27T00:00:00.000Z" });
       db.set({ ...projectRevisionKey(TEST_ORG, name, 1), entityType: "PROJECT", definition: { name, revision: 1 } });
     }
     const original = db.send;

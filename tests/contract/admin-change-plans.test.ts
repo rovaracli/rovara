@@ -1,6 +1,7 @@
 // tests/contract/admin-change-plans.test.ts
 // Spec 025 E6, E7, E11, E12: a plan says exactly what will happen, against current state, and
 // changes nothing; its hash moves when the state it covers moves.
+import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { describe, expect, it, vi } from "vitest";
 import { CredentialUnavailable } from "@agentx/gateway";
 import { redactSecrets, type ChannelInfoRequest, type ChannelMembersRequest } from "@agentx/contracts";
@@ -47,7 +48,7 @@ describe("binding and unbinding (E7, E12)", () => {
     const plan = await planChange(deps, identity, { kind: "bind_channel", channel: "#ledger-dev", project: "payments" });
     expect(plan.effect).toBe("Bind channel #ledger-dev (C0LEDGER01) to project payments. It is bound to nothing today. New threads in #ledger-dev will use payments revision 7.");
     expect(plan.confirmationEffect).toBeUndefined();
-    expect(db.get(`SLACK_BINDING#${SLACK_TEAM}`, "CHANNEL#C0LEDGER01")).toBeUndefined();
+    expect(db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toBeUndefined();
     // E12: with or without the "#".
     const bare = await planChange(deps, identity, { kind: "bind_channel", channel: "ledger-dev", project: "payments" });
     expect(bare.effect).toBe(plan.effect);
@@ -64,7 +65,7 @@ describe("binding and unbinding (E7, E12)", () => {
     const after = await planChange(deps, identity, { kind: "bind_channel", channel: "C0LEDGER01", project: "payments" });
     expect(stateHash(after.snapshot)).not.toBe(stateHash(before.snapshot));
     await after.apply(identity);
-    expect(db.get(`SLACK_BINDING#${SLACK_TEAM}`, "CHANNEL#C0LEDGER01")).toMatchObject({ projectName: "payments" });
+    expect(db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toMatchObject({ projectName: "payments" });
   });
 
   it("names a private channel by ID only, and refuses a private channel's name", async () => {
@@ -94,9 +95,9 @@ describe("binding and unbinding (E7, E12)", () => {
     const plan = await planChange(deps, identity, { kind: "unbind_channel", channel: SLACK_CHANNEL });
     expect(plan.effect).toBe(`Unbind channel #payments-dev (${SLACK_CHANNEL}) from project payments. New messages there will get no reply; existing thread workspaces are kept.`);
     await expect(planChange(deps, identity, { kind: "unbind_channel", channel: "C0NOTBOUND1" })).rejects.toMatchObject({ code: "NOT_FOUND", message: "NOT_FOUND: channel #ledger-dev (C0NOTBOUND1) is not bound to any project; list the bindings with agentx admin slack bindings" });
-    expect(db.get(`SLACK_BINDING#${SLACK_TEAM}`, `CHANNEL#${SLACK_CHANNEL}`)).toBeDefined();
+    expect(db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), `CHANNEL#${SLACK_CHANNEL}`)).toBeDefined();
     await plan.apply(identity);
-    expect(db.get(`SLACK_BINDING#${SLACK_TEAM}`, `CHANNEL#${SLACK_CHANNEL}`)).toBeUndefined();
+    expect(db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), `CHANNEL#${SLACK_CHANNEL}`)).toBeUndefined();
   });
 
   it("rechecks project administration at apply: a bind or unbind by an admin who lost it changes nothing (E6, FR-015)", async () => {
@@ -106,8 +107,8 @@ describe("binding and unbinding (E7, E12)", () => {
     db.delete(projectMemberKey(TEST_ORG, identity.ownerKey, "payments"));
     await expect(bind.apply(identity)).rejects.toMatchObject({ code: expect.stringMatching(/^(FORBIDDEN|NOT_FOUND)$/) as unknown });
     await expect(unbind.apply(identity)).rejects.toMatchObject({ code: expect.stringMatching(/^(FORBIDDEN|NOT_FOUND)$/) as unknown });
-    expect(db.get(`SLACK_BINDING#${SLACK_TEAM}`, "CHANNEL#C0LEDGER01")).toBeUndefined();
-    expect(db.get(`SLACK_BINDING#${SLACK_TEAM}`, `CHANNEL#${SLACK_CHANNEL}`)).toMatchObject({ projectName: "payments" });
+    expect(db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toBeUndefined();
+    expect(db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), `CHANNEL#${SLACK_CHANNEL}`)).toMatchObject({ projectName: "payments" });
   });
 
   it("refuses an admin who does not administer the project (FR-015)", async () => {

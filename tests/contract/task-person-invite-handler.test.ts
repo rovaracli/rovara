@@ -1,3 +1,4 @@
+import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it, vi } from "vitest";
@@ -64,13 +65,13 @@ function fixture(overrides: Partial<TaskPersonInviteHandlerPorts> = {}) {
   };
   const targetAuthority: TaskPersonProjectAuthorityWitness = {
     taskId, developerId: targetId, project: "project-alpha", access: "channel", projectRevision,
-    binding: { pk: `SLACK_BINDING#${teamId}`, sk: "CHANNEL#C0OTHER001", teamId, channelId: "C0OTHER001", projectName: "project-alpha", updatedAt: "2026-10-12T11:59:00.000Z" },
+    binding: { pk: slackBindingPk(TEST_ORG, teamId), sk: "CHANNEL#C0OTHER001", teamId, channelId: "C0OTHER001", projectName: "project-alpha", updatedAt: "2026-10-12T11:59:00.000Z" },
   };
   const authorityConditions = taskPersonInviteStateConditions({ taskId, project: "project-alpha", teamId, actor: actorAuthority, target: targetAuthority })!;
   const authorityRows = new Map<string, Record<string, unknown>>([
     [`${projectRevisionKey(TEST_ORG, "project-alpha", 7).pk}/${projectRevisionKey(TEST_ORG, "project-alpha", 7).sk}`, { ...projectRevisionKey(TEST_ORG, "project-alpha", 7), definition: { revision: 7 } }],
     [`${projectMemberKey(TEST_ORG, actorId, "project-alpha").pk}/${projectMemberKey(TEST_ORG, actorId, "project-alpha").sk}`, { ...projectMemberKey(TEST_ORG, actorId, "project-alpha"), projectName: "project-alpha", role: "developer" }],
-    [`SLACK_BINDING#${teamId}/CHANNEL#C0OTHER001`, targetAuthority.binding!],
+    [`${slackBindingPk(TEST_ORG, teamId)}/CHANNEL#C0OTHER001`, targetAuthority.binding!],
   ]);
   const conditionMatches = (condition: typeof authorityConditions[number]): boolean => {
     const row = authorityRows.get(`${condition.pk}/${condition.sk}`);
@@ -167,7 +168,7 @@ describe("Task Person invite handler", () => {
       authorityConditions: [
         { kind: "project-revision", ...projectRevisionKey(TEST_ORG, "project-alpha", 7), developerTasksPresent: false },
         { kind: "developer-grant", ...projectMemberKey(TEST_ORG, actorId, "project-alpha") },
-        { kind: "channel-binding", pk: `SLACK_BINDING#${teamId}`, sk: "CHANNEL#C0OTHER001" },
+        { kind: "channel-binding", pk: slackBindingPk(TEST_ORG, teamId), sk: "CHANNEL#C0OTHER001" },
       ],
     });
   });
@@ -183,7 +184,7 @@ describe("Task Person invite handler", () => {
   it("refuses the effect when a captured target binding is deleted before receipt CAS", async () => {
     const f = fixture();
     f.ports.readChannelInfo = async () => {
-      f.authorityRows.delete(`SLACK_BINDING#${teamId}/CHANNEL#C0OTHER001`);
+      f.authorityRows.delete(`${slackBindingPk(TEST_ORG, teamId)}/CHANNEL#C0OTHER001`);
       return { isPrivate: false, botIsMember: true, slackCallsUsed: 1 };
     };
     const result = await createTaskPersonInviteHandler(f.ports)(f.request);

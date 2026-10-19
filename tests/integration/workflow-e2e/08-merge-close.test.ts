@@ -2,6 +2,8 @@
 // suite 7. Here: a merge in every stage (while the feedback review runs, while a proposal waits, while the fix is made,
 // while it is pushed [LIVE-BUG B4], at someone else's head), closing from Slack (while waiting for the merge, and a
 // blocked task's discard), a teammate's Close, and the Canvas closeout.
+import { slackLimitPk } from "../../../packages/contracts/src/org-scoped-keys.js";
+import { TEST_ORG } from "../../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { WORKFLOW_BLOCK_REASONS, agentXError } from "@agentx/contracts";
@@ -413,8 +415,8 @@ describe("Suite 8: merge and close", () => {
   }, 120_000);
 
   describe("8.12 a finished task gives back its open-task slot and its workspace (0.2.12 live test)", () => {
-    const MEMBER = { pk: `SLACK_LIMIT#${SLACK_TEAM}`, sk: `MEMBER#${OWNER}` };
-    const ORGANIZATION = { pk: `SLACK_LIMIT#${SLACK_TEAM}`, sk: "ORGANIZATION" };
+    const MEMBER = { pk: slackLimitPk(TEST_ORG, SLACK_TEAM), sk: `MEMBER#${OWNER}` };
+    const ORGANIZATION = { pk: slackLimitPk(TEST_ORG, SLACK_TEAM), sk: "ORGANIZATION" };
     const counter = (e2e: WorkflowE2E, key: { pk: string; sk: string }) => {
       const item = e2e.db.get(key.pk, key.sk);
       return { count: item?.count, tasks: [...((item?.tasks as Set<string> | undefined) ?? [])].sort() };

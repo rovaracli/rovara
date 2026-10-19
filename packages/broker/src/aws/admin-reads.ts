@@ -32,6 +32,9 @@ import {
   projectPk,
   PROJECT_REVISION_SK_PREFIX,
   redactAndCap,
+  SLACK_BINDING_SK_PREFIX,
+  slackBindingPk,
+  slackOrganizationLimitKey,
   slackThreadUrl,
   workspaceRecordFields,
   type AdminBindingsResponse,
@@ -125,7 +128,7 @@ export async function adminProjects(deps: AdminReadDependencies, identity: Authe
   const orgId = requireOrgId(identity.orgId);
   const [catalog, bindings, memberships] = await Promise.all([
     queryAllItems(deps, orgProjectCatalogPk(orgId), "PROJECT#"),
-    deps.slackTeamId === undefined ? Promise.resolve([]) : queryAllItems(deps, `SLACK_BINDING#${deps.slackTeamId}`, "CHANNEL#"),
+    deps.slackTeamId === undefined ? Promise.resolve([]) : queryAllItems(deps, slackBindingPk(orgId, deps.slackTeamId), SLACK_BINDING_SK_PREFIX),
     queryAllItems(deps, memberGrantsPk(orgId, identity.ownerKey), MEMBER_GRANT_SK_PREFIX),
   ]);
   const names = new Set<string>();
@@ -258,7 +261,7 @@ async function listBindings(deps: AdminReadDependencies, identity: Authenticated
   const team = asked === null ? deps.slackTeamId : SlackTeamIdSchema.safeParse(asked).success ? asked : null;
   if (team === null) throw agentXError("CONFIG_INVALID", "team must be a Slack team ID, such as T0123456789");
   if (team === undefined) throw agentXError("CONFIG_INVALID", "this environment records no Slack team; send team=<team ID>, such as team=T0123456789");
-  const items = await queryAllItems(deps, `SLACK_BINDING#${team}`, "CHANNEL#");
+  const items = await queryAllItems(deps, slackBindingPk(requireOrgId(identity.orgId), team), SLACK_BINDING_SK_PREFIX);
   const rows = items.filter((item) => typeof item.channelId === "string" && typeof item.projectName === "string");
   const reveal = memberReveal(deps, identity, authorization);
   const { labels, available } = await channelLabels(deps, rows.map((item) => String(item.channelId)), reveal === undefined ? {} : { reveal });
@@ -589,7 +592,7 @@ async function listWorkspaces(deps: AdminReadDependencies, identity: Authenticat
   }
   const orgId = requireOrgId(identity.orgId);
   const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, orgId, deps.limitDefaults, (entry) => deps.log(entry));
-  const organization = deps.slackTeamId === undefined ? 0 : await counterCount(deps, { pk: `SLACK_LIMIT#${deps.slackTeamId}`, sk: "ORGANIZATION" });
+  const organization = deps.slackTeamId === undefined ? 0 : await counterCount(deps, slackOrganizationLimitKey(orgId, deps.slackTeamId));
   const developerOrganization = await counterCount(deps, orgLimitKey(orgId));
   return {
     workspaces,

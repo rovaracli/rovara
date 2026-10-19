@@ -1,3 +1,4 @@
+import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
@@ -122,7 +123,7 @@ describe("task dispatch access", () => {
       ...projectRevisionKey(TEST_ORG, "payments", 7),
       definition: { revision: 7, developerTasks: { enabled: true, channelMembersMayUse: true } },
     };
-    const binding = { pk: "SLACK_BINDING#T0PEOPLE1", sk: "CHANNEL#C0PEOPLE1", teamId: "T0PEOPLE1", channelId: "C0PEOPLE1", projectName: "payments", updatedAt: "2026-10-11T10:00:00.000Z" };
+    const binding = { pk: slackBindingPk(TEST_ORG, "T0PEOPLE1"), sk: "CHANNEL#C0PEOPLE1", teamId: "T0PEOPLE1", channelId: "C0PEOPLE1", projectName: "payments", updatedAt: "2026-10-11T10:00:00.000Z" };
     h.db.set(revision);
     h.db.set(binding);
     h.checkTaskPerson.mockImplementationOnce(async () => ({
@@ -184,7 +185,7 @@ describe("task dispatch access", () => {
       definition: { revision: 7, developerTasks: { enabled: true, channelMembersMayUse: true } },
     };
     const membership = { ...projectMemberKey(TEST_ORG, OWNER, "payments"), projectName: "payments", role: "developer" };
-    const binding = { pk: "SLACK_BINDING#T0PEOPLE1", sk: "CHANNEL#C0PEOPLE1", teamId: "T0PEOPLE1", channelId: "C0PEOPLE1", projectName: "payments", updatedAt: "2026-10-11T10:00:00.000Z" };
+    const binding = { pk: slackBindingPk(TEST_ORG, "T0PEOPLE1"), sk: "CHANNEL#C0PEOPLE1", teamId: "T0PEOPLE1", channelId: "C0PEOPLE1", projectName: "payments", updatedAt: "2026-10-11T10:00:00.000Z" };
     h.db.set(revision);
     h.db.set(membership);
     h.db.set(binding);

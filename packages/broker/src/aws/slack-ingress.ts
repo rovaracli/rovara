@@ -11,6 +11,7 @@ import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-sec
 import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import {
+  AgentXError,
   CLOSED_SHARED_NOTICE,
   routeAttributes,
   SharedTaskRecordSchema,
@@ -27,14 +28,18 @@ import {
   queuedBehindAttributes,
   sharedNoticeClaim,
   sharedTaskKey,
+  slackBindingKey,
   slackRequestText,
   slackThreadSubject,
   taskQuestionAttributes,
+  type OrgId,
   type SlackChannelBinding,
   type SlackRequestMessage,
   type SlackThread,
   type TaskQuestionRoute,
 } from "@agentx/contracts";
+import { resolveSlackOrg } from "../org/resolve.js";
+import { OrgStore } from "../org/store.js";
 import { requiredEnvironment, type HttpApiV2Event } from "./lambda.js";
 import { createSlackMemberCheck, type SlackMemberCheck } from "./slack-members.js";
 import { createAwsSlackInteractivityHandler } from "./slack-interactivity.js";
@@ -80,7 +85,13 @@ export type SlackIngressLog = (event: string, fields: Readonly<Record<string, st
 
 export interface SlackIngressDependencies {
   secrets: () => Promise<SlackSecrets>;
-  getBinding: (teamId: string, channelId: string) => Promise<SlackChannelBinding | undefined>;
+  /**
+   * The org a Slack team is bound to; throws SLACK_TEAM_NOT_BOUND for a team no org has bound. The ingress
+   * reads the binding only, so the team is bound by the admin path (a channel binding), never here.
+   */
+  resolveOrg: (teamId: string) => Promise<OrgId>;
+  /** A channel's binding inside one org; another org's binding for the same team and channel is never read. */
+  getBinding: (orgId: OrgId, teamId: string, channelId: string) => Promise<SlackChannelBinding | undefined>;
   claimEvent: (eventId: string, expiresAtSeconds: number) => Promise<boolean>;
   releaseEvent: (eventId: string) => Promise<void>;
   changePending: (threadSubject: string, delta: 1 | -1) => Promise<number>;
@@ -277,7 +288,14 @@ export function createSlackIngressHandler(dependencies: SlackIngressDependencies
     if (mention.appPosted && !dependencies.appPosted) return ignore(log, "bot_or_edited_message");
     if (mention.appPosted && !dependencies.appPosted?.accept) return ignore(log, "app_posted_disabled");
     const { thread } = mention;
-    const binding = await dependencies.getBinding(thread.teamId, thread.channelId);
+    let orgId: OrgId;
+    try {
+      orgId = await dependencies.resolveOrg(thread.teamId);
+    } catch (error) {
+      if (error instanceof AgentXError && error.code === "SLACK_TEAM_NOT_BOUND") return ignore(log, "slack_team_not_bound", { teamId: thread.teamId });
+      throw error;
+    }
+    const binding = await dependencies.getBinding(orgId, thread.teamId, thread.channelId);
     if (!binding) return ignore(log, "channel_not_bound", { channelId: thread.channelId });
     // Gap 2: a plain message is read only in a Slack-started task's own open thread. Every other channel
     // message is left alone before it is claimed, checked or stored.
@@ -1061,10 +1079,11 @@ function createAwsSlackIngressHandler() {
         }));
       },
     },
-    async getBinding(teamId, channelId) {
+    resolveOrg: (teamId) => resolveSlackOrg(new OrgStore({ documentClient, tableName: stateTableName, now: Date.now }), teamId),
+    async getBinding(orgId, teamId, channelId) {
       const response = await documentClient.send(new GetCommand({
         TableName: stateTableName,
-        Key: { pk: `SLACK_BINDING#${teamId}`, sk: `CHANNEL#${channelId}` },
+        Key: slackBindingKey(orgId, teamId, channelId),
       }));
       const item = response.Item as Record<string, unknown> | undefined;
       return item

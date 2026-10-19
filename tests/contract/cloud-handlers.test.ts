@@ -1,3 +1,5 @@
+import { slackTeamOrgKey } from "../../packages/contracts/src/org.js";
+import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { WorkerInvocation } from "@agentx/contracts";
 import { describe, expect, it, vi } from "vitest";
@@ -273,8 +275,9 @@ describe("AWS control-plane handlers", () => {
       projectName: "demo",
       role: "developer",
     });
-    records.set(key(`SLACK_BINDING#${teamId}`, `CHANNEL#${channelId}`), {
-      pk: `SLACK_BINDING#${teamId}`,
+    records.set(key(`SLACK_TEAM#${teamId}`, "ORG"), { ...slackTeamOrgKey(teamId), entityType: "SLACK_TEAM_ORG", orgId: TEST_ORG });
+    records.set(key(slackBindingPk(TEST_ORG, teamId), `CHANNEL#${channelId}`), {
+      pk: slackBindingPk(TEST_ORG, teamId),
       sk: `CHANNEL#${channelId}`,
       entityType: "SLACK_BINDING",
       teamId,

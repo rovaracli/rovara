@@ -81,3 +81,38 @@ export function orgProjectCatalogPk(orgId: OrgId): string {
 export function orgProjectCatalogKey(orgId: OrgId, name: string): OrgKey {
   return { pk: orgProjectCatalogPk(orgId), sk: `PROJECT#${name}` };
 }
+
+/** The partition holding every channel binding of one Slack team in one org. */
+export function slackBindingPk(orgId: OrgId, teamId: string): string {
+  return orgScoped(orgId, `SLACK_BINDING#${teamId}`);
+}
+
+/** The sort-key prefix of a team's channel bindings, for a query on `slackBindingPk`. */
+export const SLACK_BINDING_SK_PREFIX = "CHANNEL#";
+
+export function slackBindingKey(orgId: OrgId, teamId: string, channelId: string): OrgKey {
+  return { pk: slackBindingPk(orgId, teamId), sk: `${SLACK_BINDING_SK_PREFIX}${channelId}` };
+}
+
+/** The partition holding the workspace counters of one Slack team in one org. */
+export function slackLimitPk(orgId: OrgId, teamId: string): string {
+  return orgScoped(orgId, `SLACK_LIMIT#${teamId}`);
+}
+
+/** The sort-key prefix of a team's member counters, for a query on `slackLimitPk`. */
+export const SLACK_LIMIT_MEMBER_SK_PREFIX = "MEMBER#";
+
+export function slackMemberLimitKey(orgId: OrgId, teamId: string, userId: string): OrgKey {
+  return { pk: slackLimitPk(orgId, teamId), sk: `${SLACK_LIMIT_MEMBER_SK_PREFIX}${userId}` };
+}
+
+export function slackOrganizationLimitKey(orgId: OrgId, teamId: string): OrgKey {
+  return { pk: slackLimitPk(orgId, teamId), sk: "ORGANIZATION" };
+}
+
+const SLACK_LIMIT_PK = /^ORG#org_[0-9a-z]{20}#SLACK_LIMIT#/;
+
+/** Whether a partition key is a `slackLimitPk`, which decides a counter's entity type. */
+export function isSlackLimitPk(pk: string): boolean {
+  return SLACK_LIMIT_PK.test(pk);
+}

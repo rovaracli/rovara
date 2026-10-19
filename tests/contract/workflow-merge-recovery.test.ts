@@ -1,3 +1,5 @@
+import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -35,8 +37,8 @@ function taskRecord(taskId: string, extras: Record<string, unknown> = {}): Recor
     taskId,
     workspaceId: `workspace-${taskId}`,
     charge: {
-      member: { pk: "SLACK_LIMIT#team", sk: `MEMBER#${taskId}` },
-      organization: { pk: "SLACK_LIMIT#team", sk: "ORGANIZATION" },
+      member: { pk: slackLimitPk(TEST_ORG, "team"), sk: `MEMBER#${taskId}` },
+      organization: { pk: slackLimitPk(TEST_ORG, "team"), sk: "ORGANIZATION" },
     },
     ...extras,
   };
@@ -421,15 +423,15 @@ describe("workflow merge recovery outcomes", () => {
     const task = taskRecord(taskId, { closedAt: new Date(h.now()).toISOString() });
     h.db.set(task);
     h.db.set({ pk: `WORKSPACE#workspace-${taskId}`, sk: "META", status: "CLOSED" });
-    h.db.set({ pk: "SLACK_LIMIT#team", sk: `MEMBER#${taskId}`, count: 1, tasks: new Set([taskId]) });
-    h.db.set({ pk: "SLACK_LIMIT#team", sk: "ORGANIZATION", count: 1 });
+    h.db.set({ pk: slackLimitPk(TEST_ORG, "team"), sk: `MEMBER#${taskId}`, count: 1, tasks: new Set([taskId]) });
+    h.db.set({ pk: slackLimitPk(TEST_ORG, "team"), sk: "ORGANIZATION", count: 1 });
     await h.db.send(new TransactWriteCommand({
       TransactItems: releaseItems(TABLE, {
-        member: { pk: "SLACK_LIMIT#team", sk: `MEMBER#${taskId}` },
-        organization: { pk: "SLACK_LIMIT#team", sk: "ORGANIZATION" },
+        member: { pk: slackLimitPk(TEST_ORG, "team"), sk: `MEMBER#${taskId}` },
+        organization: { pk: slackLimitPk(TEST_ORG, "team"), sk: "ORGANIZATION" },
       }, taskId),
     }));
-    expect(h.db.get("SLACK_LIMIT#team", `MEMBER#${taskId}`)).not.toHaveProperty("tasks");
+    expect(h.db.get(slackLimitPk(TEST_ORG, "team"), `MEMBER#${taskId}`)).not.toHaveProperty("tasks");
     await enroll(h.db, taskId, h.now() - 1);
 
     expect(await runDueWorkflowMergeRecovery(h.dependencies)).toEqual({ attempted: 1, reconciled: 1, deferred: 0 });
@@ -442,8 +444,8 @@ describe("workflow merge recovery outcomes", () => {
     const task = taskRecord(taskId, { closedAt: new Date(h.now()).toISOString() });
     h.db.set(task);
     h.db.set({ pk: `WORKSPACE#workspace-${taskId}`, sk: "META", status: "CLOSED" });
-    h.db.set({ pk: "SLACK_LIMIT#team", sk: `MEMBER#${taskId}`, count: 1, tasks: new Set([taskId]) });
-    h.db.set({ pk: "SLACK_LIMIT#team", sk: "ORGANIZATION", count: 1 });
+    h.db.set({ pk: slackLimitPk(TEST_ORG, "team"), sk: `MEMBER#${taskId}`, count: 1, tasks: new Set([taskId]) });
+    h.db.set({ pk: slackLimitPk(TEST_ORG, "team"), sk: "ORGANIZATION", count: 1 });
     await enroll(h.db, taskId, h.now() - 1);
 
     expect(await runDueWorkflowMergeRecovery(h.dependencies)).toEqual({ attempted: 1, reconciled: 0, deferred: 1 });
@@ -456,8 +458,8 @@ describe("workflow merge recovery outcomes", () => {
     const task = taskRecord(taskId, { closedAt: new Date(h.now()).toISOString() });
     h.db.set(task);
     h.db.set({ pk: `WORKSPACE#workspace-${taskId}`, sk: "META", status: "CLOSED" });
-    h.db.set({ pk: "SLACK_LIMIT#team", sk: `MEMBER#${taskId}`, count: "zero" });
-    h.db.set({ pk: "SLACK_LIMIT#team", sk: "ORGANIZATION", count: 0 });
+    h.db.set({ pk: slackLimitPk(TEST_ORG, "team"), sk: `MEMBER#${taskId}`, count: "zero" });
+    h.db.set({ pk: slackLimitPk(TEST_ORG, "team"), sk: "ORGANIZATION", count: 0 });
     await enroll(h.db, taskId, h.now() - 1);
 
     expect(await runDueWorkflowMergeRecovery(h.dependencies)).toEqual({ attempted: 1, reconciled: 0, deferred: 1 });

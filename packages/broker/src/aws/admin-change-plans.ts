@@ -4,7 +4,8 @@
 // the existing handler. Every value it shows passes through redaction first.
 import {
   ADMIN_CHANGE_EFFECT_MAX, AgentXNameSchema, CredentialRegistrationSchema, SlackChannelIdSchema, WorkspaceInstanceSchema, agentXError, developerTaskPolicy,
-  orgLimitKey, redactSecrets, redactText, workspaceRecordFields,
+  SLACK_BINDING_SK_PREFIX, SLACK_LIMIT_MEMBER_SK_PREFIX, orgLimitKey, redactSecrets, redactText, slackBindingKey, slackBindingPk, slackLimitPk, slackOrganizationLimitKey, workspaceRecordFields,
+  type OrgId,
   type AdminChangeInput, type AdminChangeKind, type ChannelByNameRequest, type ConfirmationMethod, type ChannelByNameResponse, type ProjectDefinition,
 } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
@@ -126,11 +127,11 @@ export interface ResolvedChannel { channelId: string; label: string; confirmatio
  * E12 (Q8): a channel ID as it is; a public channel's name (with or without "#") among the
  * bindings, then through Slack. A private channel is never found by name.
  */
-export async function resolveChannel(deps: PlanDependencies, teamId: string, value: string, options: PlanOptions = {}): Promise<ResolvedChannel> {
+export async function resolveChannel(deps: PlanDependencies, orgId: OrgId, teamId: string, value: string, options: PlanOptions = {}): Promise<ResolvedChannel> {
   const text = value.trim().replace(/^#/, "");
   if (SlackChannelIdSchema.safeParse(text).success) return labelled(deps, text, options);
   if (!CHANNEL_NAME.test(text)) throw agentXError("CONFIG_INVALID", "channel must be a Slack channel ID such as C0123456789, or a public channel's name such as #payments-dev");
-  const bound = (await queryAllItems(deps.reads, `SLACK_BINDING#${teamId}`, "CHANNEL#")).map((item) => String(item.channelId));
+  const bound = (await queryAllItems(deps.reads, slackBindingPk(orgId, teamId), SLACK_BINDING_SK_PREFIX)).map((item) => String(item.channelId));
   // No reveal here: only a public channel's name is ever matched.
   const { labels } = await channelLabels(deps.reads, bound);
   for (const [channelId, label] of labels) {
@@ -161,8 +162,8 @@ const teamOf = (deps: PlanDependencies): string => {
   if (deps.reads.slackTeamId === undefined) throw agentXError("CONFIG_INVALID", "this environment records no Slack team, so channels cannot be bound from an AI tool; use agentx admin slack bind");
   return deps.reads.slackTeamId;
 };
-const bindingOf = async (deps: PlanDependencies, teamId: string, channelId: string) => {
-  const item = await getStateItem(deps.reads, { pk: `SLACK_BINDING#${teamId}`, sk: `CHANNEL#${channelId}` });
+const bindingOf = async (deps: PlanDependencies, orgId: OrgId, teamId: string, channelId: string) => {
+  const item = await getStateItem(deps.reads, slackBindingKey(orgId, teamId, channelId));
   return typeof item?.projectName === "string" ? { projectName: item.projectName, updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : "" } : undefined;
 };
 /** "#name" for a named channel, the ID otherwise. */
@@ -178,10 +179,11 @@ function effects(channel: ResolvedChannel, say: (label: string) => string): Pick
 const planBind: Planner = async (deps, identity, input, options) => {
   if (input.kind !== "bind_channel") throw new Error("wrong planner");
   const teamId = teamOf(deps);
-  const channel = await resolveChannel(deps, teamId, input.channel, options);
+  const orgId = requireOrgId(identity.orgId);
+  const channel = await resolveChannel(deps, orgId, teamId, input.channel, options);
   const { channelId, label } = channel;
   await deps.handlers.requireAdministrator(identity, input.project);
-  const current = await bindingOf(deps, teamId, channelId);
+  const current = await bindingOf(deps, orgId, teamId, channelId);
   if (current?.projectName === input.project) throw agentXError("CONFIG_INVALID", `channel ${label} is already bound to ${input.project}; there is nothing to change`);
   if (current !== undefined) await deps.handlers.requireAdministrator(identity, current.projectName);
   const latest = await latestProjectRecord(deps.reads, requireOrgId(identity.orgId), input.project);
@@ -198,9 +200,10 @@ const planBind: Planner = async (deps, identity, input, options) => {
 const planUnbind: Planner = async (deps, identity, input, options) => {
   if (input.kind !== "unbind_channel") throw new Error("wrong planner");
   const teamId = teamOf(deps);
-  const channel = await resolveChannel(deps, teamId, input.channel, options);
+  const orgId = requireOrgId(identity.orgId);
+  const channel = await resolveChannel(deps, orgId, teamId, input.channel, options);
   const { channelId, label } = channel;
-  const current = await bindingOf(deps, teamId, channelId);
+  const current = await bindingOf(deps, orgId, teamId, channelId);
   if (current === undefined) throw agentXError("NOT_FOUND", `channel ${label} is not bound to any project; list the bindings with agentx admin slack bindings`);
   await deps.handlers.requireAdministrator(identity, current.projectName);
   return {
@@ -476,14 +479,14 @@ const planLimits: Planner = async (deps, identity, input) => {
   const next = { perPerson: input.perPerson ?? current.member, perOrganization: input.perOrganization ?? current.organization };
   if (next.perPerson > next.perOrganization) throw agentXError("CONFIG_INVALID", `the per-person limit (${next.perPerson}) cannot be more than the organization limit (${next.perOrganization}); give both, or a smaller per-person limit`);
   const team = deps.reads.slackTeamId;
-  const members = team === undefined ? [] : await queryAllItems(deps.reads, `SLACK_LIMIT#${team}`, "MEMBER#");
+  const members = team === undefined ? [] : await queryAllItems(deps.reads, slackLimitPk(orgId, team), SLACK_LIMIT_MEMBER_SK_PREFIX);
   // Developers without a Slack link count on their own DEVELOPER_LIMIT#<id> rows (one partition
   // each), so they are not named here; the organization's total includes them.
   const over = members
     .filter((item) => counterCount(item) >= next.perPerson)
     .map((item) => `Slack member ${String(item.sk).slice("MEMBER#".length)} (${counterCount(item)} open)`);
   const aiToolOnlyCount = counterCount(await getStateItem(deps.reads, orgLimitKey(orgId)));
-  const organizationCount = (team === undefined ? 0 : counterCount(await getStateItem(deps.reads, { pk: `SLACK_LIMIT#${team}`, sk: "ORGANIZATION" }))) + aiToolOnlyCount;
+  const organizationCount = (team === undefined ? 0 : counterCount(await getStateItem(deps.reads, slackOrganizationLimitKey(orgId, team)))) + aiToolOnlyCount;
   const change = (value: number, was: number) => (value === was ? "(unchanged)" : `(now ${was})`);
   const named = over.slice(0, EFFECT_PEOPLE_MAX).join(", ");
   const more = over.length > EFFECT_PEOPLE_MAX ? `, and ${over.length - EFFECT_PEOPLE_MAX} more` : "";

@@ -1,4 +1,6 @@
 // Pins the thread workspace behaviour that phase 14b must keep for threads that have compute.
+import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { ConnectorCatalogSchema } from "../../packages/contracts/src/connectors.js";
@@ -25,7 +27,7 @@ describe("thread workspaces before lazy preparation (characterization)", () => {
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ outcome: "WORKSPACE", status: "PREPARING", created: true });
     expect(db.find((item) => item.entityType === "OPERATION" && item.kind === "prepare")).toHaveLength(1);
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${pratik}`)).toMatchObject({ count: 1, threads: [thread] });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${pratik}`)).toMatchObject({ count: 1, threads: [thread] });
   });
 
   it("charges a thread to its starter only, never to a member who follows up", async () => {
@@ -33,7 +35,7 @@ describe("thread workspaces before lazy preparation (characterization)", () => {
     await registerSlackProject(handler);
     await ensureWorkspace(handler, thread, pratik);
     await ensureWorkspace(handler, thread, bob);
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${bob}`)).toBeUndefined();
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${bob}`)).toBeUndefined();
     expect(db.find((item) => item.entityType === "SLACK_THREAD")[0]).toMatchObject({ starterUserId: pratik });
   });
 
@@ -50,7 +52,7 @@ describe("thread workspaces before lazy preparation (characterization)", () => {
     expect(retried.body.operationId).not.toBe(first.body.operationId);
     expect(db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ status: "PREPARING", fence: 2 });
     expect(db.find((item) => item.entityType === "OPERATION" && item.kind === "prepare")).toHaveLength(2);
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${pratik}`)).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${pratik}`)).toMatchObject({ count: 1 });
   });
 
   it("refuses to close a workspace that is still being prepared", async () => {

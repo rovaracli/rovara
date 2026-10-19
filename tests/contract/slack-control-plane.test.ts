@@ -1,3 +1,4 @@
+import { slackBindingPk, slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { randomUUID } from "node:crypto";
 import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
@@ -524,7 +525,7 @@ describe("hosted Slack GitHub MCP", () => {
     db.delete(projectMemberKey(TEST_ORG, owner, "payments"));
     expect((await call(handler, { method: "GET", path: `${path}/tools?repository=demo`, service })).status).toBe(404);
     db.set(membership);
-    const binding = db.get(`SLACK_BINDING#${team}`, `CHANNEL#${channel}`)!;
+    const binding = db.get(slackBindingPk(TEST_ORG, team), `CHANNEL#${channel}`)!;
     binding.projectName = "another-project";
     expect((await call(handler, { method: "GET", path: `${path}/tools?repository=demo`, service })).status).toBe(403);
     expect(credentials).toHaveBeenCalledTimes(callsBefore);
@@ -917,7 +918,7 @@ describe("Slack channel bindings", () => {
   it("lets only project administrators bind and unbind channels", async () => {
     const { db, handler } = createBroker();
     await registerProjectAndBind(handler);
-    const stored = db.get(`SLACK_BINDING#${team}`, `CHANNEL#${channel}`);
+    const stored = db.get(slackBindingPk(TEST_ORG, team), `CHANNEL#${channel}`);
     expect(stored).toMatchObject({ projectName: "payments" });
     expect(stored).not.toHaveProperty("projectRevision");
 
@@ -944,12 +945,12 @@ describe("Slack channel bindings", () => {
     });
     expect(olderClient.status).toBe(200);
     expect(olderClient.body).toMatchObject({ binding: { projectName: "payments" }, latestRevision: 1 });
-    expect(db.get(`SLACK_BINDING#${team}`, "CHANNEL#C0222222222")).not.toHaveProperty("projectRevision");
+    expect(db.get(slackBindingPk(TEST_ORG, team), "CHANNEL#C0222222222")).not.toHaveProperty("projectRevision");
 
     expect((await call(handler, { method: "DELETE", path: `/v1/admin/slack/bindings/${team}/C0333333333`, user: admin })).status).toBe(404);
     const removed = await call(handler, { method: "DELETE", path: `/v1/admin/slack/bindings/${team}/${channel}`, user: admin });
     expect(removed.status).toBe(200);
-    expect(db.get(`SLACK_BINDING#${team}`, `CHANNEL#${channel}`)).toBeUndefined();
+    expect(db.get(slackBindingPk(TEST_ORG, team), `CHANNEL#${channel}`)).toBeUndefined();
     expect((await ensureWorkspace(handler, threadOne, pratik)).status).toBe(403);
   });
 });
@@ -1018,8 +1019,8 @@ describe("Slack thread workspaces", () => {
     expect(prepare).toHaveLength(1);
     expect(prepare[0]?.requestedBy).toEqual({ teamId: team, userId: pratik });
     expect(db.find((item) => item.entityType === "OUTBOX")).toHaveLength(1);
-    expect(db.get(`SLACK_LIMIT#${team}`, `MEMBER#${pratik}`)).toMatchObject({ count: 1, threads: [threadOne] });
-    expect(db.get(`SLACK_LIMIT#${team}`, "ORGANIZATION")).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, team), `MEMBER#${pratik}`)).toMatchObject({ count: 1, threads: [threadOne] });
+    expect(db.get(slackLimitPk(TEST_ORG, team), "ORGANIZATION")).toMatchObject({ count: 1 });
 
     const threadRecords = db.find((item) => item.entityType === "SLACK_THREAD");
     expect(threadRecords).toHaveLength(1);
@@ -1059,7 +1060,7 @@ describe("Slack thread workspaces", () => {
     expect(db.get(`WORKSPACE#${String(first.body.workspaceId)}`, "META")).toMatchObject({ projectRevision: 1 });
 
     // A binding stored while bindings named a revision still follows the latest revision.
-    const stored = db.get(`SLACK_BINDING#${team}`, `CHANNEL#${channel}`);
+    const stored = db.get(slackBindingPk(TEST_ORG, team), `CHANNEL#${channel}`);
     if (!stored) throw new Error("binding record is missing");
     stored.projectRevision = 1;
     const third = await ensureWorkspace(handler, threadThree, bob);
@@ -1100,7 +1101,7 @@ describe("Slack thread workspaces", () => {
     const overOrganization = await ensureWorkspace(handler, `${team}/${channel}/1695500000.000004`, carol);
     expect(overOrganization.body).toMatchObject({ outcome: "LIMIT_REACHED", limit: "ORGANIZATION", maximum: 3, starterThreads: [] });
     expect(db.find((item) => item.entityType === "DEFAULT_WORKSPACE")).toHaveLength(3);
-    expect(db.get(`SLACK_LIMIT#${team}`, "ORGANIZATION")).toMatchObject({ count: 3 });
+    expect(db.get(slackLimitPk(TEST_ORG, team), "ORGANIZATION")).toMatchObject({ count: 3 });
   });
 
   it("never exceeds a limit when new threads race for the last slot", async () => {
@@ -1111,7 +1112,7 @@ describe("Slack thread workspaces", () => {
       ensureWorkspace(handler, threadTwo, pratik),
     ]);
     expect(results.map((result) => result.body.outcome).sort()).toEqual(["LIMIT_REACHED", "WORKSPACE"]);
-    expect(db.get(`SLACK_LIMIT#${team}`, `MEMBER#${pratik}`)).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, team), `MEMBER#${pratik}`)).toMatchObject({ count: 1 });
     expect(db.find((item) => item.entityType === "DEFAULT_WORKSPACE")).toHaveLength(1);
   });
 
@@ -1122,7 +1123,7 @@ describe("Slack thread workspaces", () => {
     const first = await ensureWorkspace(handler, threadOne, pratik, requestId);
     const retried = await ensureWorkspace(handler, threadOne, pratik, requestId);
     expect(retried.body).toMatchObject({ workspaceId: first.body.workspaceId, created: false });
-    expect(db.get(`SLACK_LIMIT#${team}`, `MEMBER#${pratik}`)).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, team), `MEMBER#${pratik}`)).toMatchObject({ count: 1 });
   });
 });
 
@@ -1175,8 +1176,8 @@ describe("Slack thread workspace closure", () => {
     const closed = db.get(`WORKSPACE#${workspaceId}`, "META");
     expect(closed).toMatchObject({ status: "CLOSED" });
     expect(typeof closed?.closedAt).toBe("string");
-    expect(db.get(`SLACK_LIMIT#${team}`, "ORGANIZATION")).toMatchObject({ count: 0 });
-    expect(db.get(`SLACK_LIMIT#${team}`, `MEMBER#${pratik}`)).toMatchObject({ count: 0, threads: [] });
+    expect(db.get(slackLimitPk(TEST_ORG, team), "ORGANIZATION")).toMatchObject({ count: 0 });
+    expect(db.get(slackLimitPk(TEST_ORG, team), `MEMBER#${pratik}`)).toMatchObject({ count: 0, threads: [] });
 
     const repeated = await completeClose(handler, threadOne, pratik, operationId);
     expect(repeated.body).toMatchObject({ outcome: "CLOSED", workspaceId, operationId });
@@ -1210,7 +1211,7 @@ describe("Slack thread workspace closure", () => {
     expect(db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ status: "READY", closeError: "workspace contains unpublished work" });
     expect((await completeClose(handler, threadOne, pratik, operationId)).status).toBe(409);
     expect(deleteEc2Session).not.toHaveBeenCalled();
-    expect(db.get(`SLACK_LIMIT#${team}`, "ORGANIZATION")).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, team), "ORGANIZATION")).toMatchObject({ count: 1 });
   });
 
   it("lets only the Slack thread starter explicitly discard unpublished work and close", async () => {
@@ -1238,7 +1239,7 @@ describe("Slack thread workspace closure", () => {
     expect(completed.body).toMatchObject({ outcome: "CLOSED", discardedUnpublished: true });
     expect(deleteEc2Session).toHaveBeenCalledExactlyOnceWith(workspaceId);
     expect(db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ status: "CLOSED" });
-    expect(db.get(`SLACK_LIMIT#${team}`, "ORGANIZATION")).toMatchObject({ count: 0 });
+    expect(db.get(slackLimitPk(TEST_ORG, team), "ORGANIZATION")).toMatchObject({ count: 0 });
     expect((await completeClose(handler, threadOne, pratik, operationId)).body).toMatchObject({ outcome: "CLOSED", discardedUnpublished: true });
     expect((await startClose(handler, threadOne, pratik, randomUUID(), true)).body).toMatchObject({ outcome: "CLOSED", discardedUnpublished: true });
   });
@@ -1262,7 +1263,7 @@ describe("Slack thread workspace closure", () => {
     const failed = await completeClose(handler, threadOne, pratik, operationId);
     expect(failed.status).toBe(503);
     expect(db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ status: "CLOSING" });
-    expect(db.get(`SLACK_LIMIT#${team}`, "ORGANIZATION")).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, team), "ORGANIZATION")).toMatchObject({ count: 1 });
 
     expect((await completeClose(handler, threadOne, pratik, operationId)).status).toBe(200);
     expect(deleteEc2Session).toHaveBeenCalledTimes(2);

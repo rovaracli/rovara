@@ -115,7 +115,7 @@ function identityDependencies(input: {
   const { task, developerId, slackTeamId, admission, ports } = input;
   const readBindings = async (project: string): Promise<readonly string[]> => {
     admission.assertOpen();
-    const result = await ports.projectAuthorityReader.bindings(slackTeamId, admission, admission.admitStateRead());
+    const result = await ports.projectAuthorityReader.bindings(input.orgId, slackTeamId, admission, admission.admitStateRead());
     admission.assertOpen();
     if (!result.complete) throw unavailable();
     return result.items.filter((binding) => binding.projectName === project).map((binding) => binding.channelId).sort();

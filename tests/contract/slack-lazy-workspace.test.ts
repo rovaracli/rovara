@@ -1,3 +1,4 @@
+import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { ConnectorCatalogSchema } from "../../packages/contracts/src/connectors.js";
@@ -144,9 +145,9 @@ describe("preparing a thread's compute on first use", () => {
     });
     const outbox = db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0];
     expect(outbox?.invocation).toMatchObject({ projectRevision: 2, payload: { project: { revision: 2 } } });
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${bob}`)).toMatchObject({ count: 1, threads: [threadOne] });
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${pratik}`)).toBeUndefined();
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, "ORGANIZATION")).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${bob}`)).toMatchObject({ count: 1, threads: [threadOne] });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${pratik}`)).toBeUndefined();
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toMatchObject({ count: 1 });
     expect(db.find((item) => item.entityType === "SLACK_THREAD")[0]).toMatchObject({ starterUserId: bob });
 
     // The model's settings follow the latest revision, as they do for every thread.
@@ -168,8 +169,8 @@ describe("preparing a thread's compute on first use", () => {
       requestId: randomUUID(), operationId: started.body.operationId,
     });
     expect(completed.body).toMatchObject({ outcome: "CLOSED", workspaceId });
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${bob}`)).toMatchObject({ count: 0, threads: [] });
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, "ORGANIZATION")).toMatchObject({ count: 0 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${bob}`)).toMatchObject({ count: 0, threads: [] });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toMatchObject({ count: 0 });
   });
 
   it("refuses at the member limit, lists the member's prepared threads, and leaves the thread usable and uncharged", async () => {
@@ -188,7 +189,7 @@ describe("preparing a thread's compute on first use", () => {
     expect(db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ status: "UNPREPARED", fence: 0 });
     expect(db.find((item) => item.entityType === "OPERATION" && item.workspaceId === workspaceId)).toHaveLength(0);
     expect(db.find((item) => item.entityType === "SLACK_THREAD" && item.thread === threadTwo)[0]).not.toHaveProperty("starterUserId");
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${pratik}`)).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${pratik}`)).toMatchObject({ count: 1 });
     expect((await lazyEnsureWorkspace(handler, threadTwo, pratik)).body).toMatchObject({ outcome: "WORKSPACE", status: "UNPREPARED" });
   });
 
@@ -212,7 +213,7 @@ describe("preparing a thread's compute on first use", () => {
     expect(db.find((item) => item.entityType === "OPERATION" && item.kind === "prepare")).toHaveLength(1);
     expect(db.find((item) => item.entityType === "OUTBOX")).toHaveLength(1);
     expect(members(db).map((item) => item.count)).toEqual([1]);
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, "ORGANIZATION")).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toMatchObject({ count: 1 });
   });
 
   it("never exceeds the member limit when two threads race for the last slot", async () => {
@@ -222,7 +223,7 @@ describe("preparing a thread's compute on first use", () => {
     await lazyEnsureWorkspace(handler, threadTwo, pratik);
     const results = await Promise.all([prepareThread(handler, threadOne, pratik), prepareThread(handler, threadTwo, pratik)]);
     expect(results.map((result) => result.body.outcome).sort()).toEqual(["LIMIT_REACHED", "WORKSPACE"]);
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${pratik}`)).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${pratik}`)).toMatchObject({ count: 1 });
     expect(db.find((item) => item.entityType === "OPERATION" && item.kind === "prepare")).toHaveLength(1);
   });
 
@@ -238,7 +239,7 @@ describe("preparing a thread's compute on first use", () => {
     expect(next.body).toMatchObject({ workspaceId, status: "PREPARING", created: false });
     expect(next.body.operationId).not.toBe(prepared.body.operationId);
     expect(db.find((item) => item.entityType === "OPERATION" && item.kind === "prepare")).toHaveLength(2);
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${pratik}`)).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${pratik}`)).toMatchObject({ count: 1 });
   });
 
   it("answers the current state, without preparing again, for a thread that already has compute", async () => {
@@ -250,7 +251,7 @@ describe("preparing a thread's compute on first use", () => {
     delete answered.body.requestId;
     expect(answered.body).toEqual({ outcome: "WORKSPACE", workspaceId, status: "READY", operationId: null, created: false });
     expect(db.find((item) => item.entityType === "OPERATION" && item.kind === "prepare")).toHaveLength(1);
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${bob}`)).toBeUndefined();
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${bob}`)).toBeUndefined();
   });
 
   it("answers CLOSED for a closed thread", async () => {
@@ -282,7 +283,7 @@ describe("an older Slack service and a thread with no compute", () => {
     const older = await ensureWorkspace(handler, threadOne, bob);
     expect(older.body).toMatchObject({ outcome: "WORKSPACE", workspaceId, status: "PREPARING", created: true });
     expect(PRE_LAZY_STATUSES).toContain(older.body.status);
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${bob}`)).toMatchObject({ count: 1 });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${bob}`)).toMatchObject({ count: 1 });
     expect(db.find((item) => item.entityType === "OPERATION" && item.kind === "prepare")).toHaveLength(1);
     expect((await ensureWorkspace(handler, threadOne, pratik)).body).toMatchObject({ status: "PREPARING", created: false });
   });
@@ -364,8 +365,8 @@ describe("preparing a thread: authorization and the thread record", () => {
       body: { requestId: randomUUID(), userId: "UOTHER" },
     });
     expect(prepared.body).toMatchObject({ outcome: "WORKSPACE", status: "PREPARING", created: true });
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${pratik}`)).toMatchObject({ count: 1, threads: [threadOne] });
-    expect(db.get(`SLACK_LIMIT#${SLACK_TEAM}`, "MEMBER#UOTHER")).toBeUndefined();
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${pratik}`)).toMatchObject({ count: 1, threads: [threadOne] });
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "MEMBER#UOTHER")).toBeUndefined();
     expect(members(db)).toHaveLength(1);
     expect(db.find((item) => item.entityType === "SLACK_THREAD")[0]).toMatchObject({ starterUserId: pratik });
   });

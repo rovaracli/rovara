@@ -1,6 +1,8 @@
 // tests/contract/mcp-admin-change-flow.test.ts
 // Spec 025 User Story 6, SC-005, SC-011, SC-013, end to end: agentx mcp's server, the broker in
 // process, an admin sign-in, a client with or without elicitation, and the Slack press.
+import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import type { ChannelInfoRequest, ChannelMembersRequest } from "@agentx/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,7 +30,7 @@ describe("an admin changes AgentX from an AI tool (US6)", () => {
     await expect.poll(async () => (await mcp.names()).includes("agentx_admin_bind_channel")).toBe(true);
     const bound = await mcp.tool("agentx_admin_bind_channel", { channel: "#ledger-dev", project: "payments" });
     expect(bound.value).toMatchObject({ outcome: "applied", method: "elicitation" });
-    expect(broker.db.get(`SLACK_BINDING#${SLACK_TEAM}`, "CHANNEL#C0LEDGER01")).toMatchObject({ projectName: "payments" });
+    expect(broker.db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toMatchObject({ projectName: "payments" });
     const record = ((await mcp.tool("agentx_admin_changes")).value.changes as Array<Record<string, unknown>>)[0]!;
     expect(record).toMatchObject({
       change_id: bound.value.change_id, outcome: "confirmed", admin: "Ada", client: { cliVersion: expect.any(String) as unknown, mcpClientName: "claude-code", mcpClientVersion: "2.1.0" },
@@ -105,7 +107,7 @@ describe("an admin changes AgentX from an AI tool (US6)", () => {
     await expect.poll(async () => (await mcp.names()).includes("agentx_admin_unbind_channel")).toBe(true);
     const unbound = await mcp.tool("agentx_admin_unbind_channel", { channel: SLACK_CHANNEL });
     expect(unbound.value).toMatchObject({ outcome: "applied", method: "slack" });
-    expect(broker.db.get(`SLACK_BINDING#${SLACK_TEAM}`, `CHANNEL#${SLACK_CHANNEL}`)).toBeUndefined();
+    expect(broker.db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), `CHANNEL#${SLACK_CHANNEL}`)).toBeUndefined();
     expect(await broker.press(String(unbound.value.change_id), "confirm")).toMatchObject({ outcome: "not_pending" });
     expect(broker.audit(String(unbound.value.change_id))).toMatchObject({ outcome: "confirmed", methodUsed: "slack", pressedBy: ADMIN_SLACK });
   });
@@ -121,7 +123,7 @@ describe("an admin changes AgentX from an AI tool (US6)", () => {
     broker.clock.advance(6 * 60_000);
     const record = ((await mcp.tool("agentx_admin_changes")).value.changes as Array<Record<string, unknown>>)[0];
     expect(record).toMatchObject({ change_id: waiting.value.change_id, outcome: "expired" });
-    expect(broker.db.get(`SLACK_BINDING#${SLACK_TEAM}`, "CHANNEL#C0LEDGER01")).toBeUndefined();
+    expect(broker.db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toBeUndefined();
   });
 
   it("offers no change tool, and refuses a direct call, when neither method is available (FR-041, US6 scenario 4)", async () => {
@@ -368,7 +370,7 @@ describe("an apply's own failures and a reused request ID, through the tools (25
     const bound = await mcp.tool("agentx_admin_bind_channel", { channel: "C0LEDGER01", project: "payments" });
     broker.db.send = send;
     expect(bound.value).toMatchObject({ outcome: "applied" });
-    expect(broker.db.get(`SLACK_BINDING#${SLACK_TEAM}`, "CHANNEL#C0LEDGER01")).toMatchObject({ projectName: "payments" });
+    expect(broker.db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toMatchObject({ projectName: "payments" });
     expect(mcp.answers.join("\n")).not.toContain(PLANTED);
   });
 
@@ -403,7 +405,7 @@ describe("an apply's own failures and a reused request ID, through the tools (25
     const reused = await mcp.tool("agentx_admin_unbind_channel", { channel: "C0LEDGER01", request_id: requestId });
     expect(reused.error).toMatchObject({ code: "INVALID_REQUEST", next_step: "use a new request_id or leave it out" });
     expect(String(reused.error?.message)).toContain(requestId);
-    expect(broker.db.get(`SLACK_BINDING#${SLACK_TEAM}`, "CHANNEL#C0LEDGER01")).toMatchObject({ projectName: "payments" });
+    expect(broker.db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01")).toMatchObject({ projectName: "payments" });
     expect(broker.db.find((item) => item.entityType === "ADMIN_CHANGE")).toHaveLength(1);
   });
 });

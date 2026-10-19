@@ -652,7 +652,9 @@ export class ControlPlaneStack extends Stack {
     slackIngress.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem"],
       resources: [state.tableArn],
-      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["SLACK_BINDING#*"] } },
+      // A named environment's channel binding sits in its org's partition, and the Slack team's own row names that
+      // org; the legacy template stays byte-identical.
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": naming.env === undefined ? ["SLACK_BINDING#*"] : ["ORG#*#SLACK_BINDING#*", "SLACK_TEAM#*"] } },
     }));
     slackThreads.grantReadWriteData(slackIngress);
     slackRequestQueue.grantSendMessages(slackIngress);
@@ -880,7 +882,7 @@ export class ControlPlaneStack extends Stack {
         actions: ["sqs:GetQueueAttributes"],
         resources: Object.values(deadLetterQueues).map((queue) => queue.queueArn),
       }));
-      // C10: the ingress reads shared thread records by key; its SLACK_BINDING# statement is unchanged.
+      // C10: the ingress reads shared thread records by key; its channel binding statement is unchanged.
       slackIngress.addEnvironment("SHARED_TASKS", "enabled");
       slackIngress.addToRolePolicy(new iam.PolicyStatement({
         actions: ["dynamodb:GetItem"],

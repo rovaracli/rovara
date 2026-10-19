@@ -6,7 +6,7 @@
 // the task in the member counter's `tasks` set). Each marker is removed in the same transaction
 // that decrements, so a repeated release, or a later close, never gives the slot back twice.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { parseSlackThreadSubject } from "@agentx/contracts";
+import { OrgIdSchema, parseSlackThreadSubject, slackMemberLimitKey, slackOrganizationLimitKey } from "@agentx/contracts";
 import { releaseConflict, releaseItems } from "../developer/limits.js";
 import { taskKey, taskPointerKey, type DeveloperTaskRecord, type DeveloperTaskPointerRecord } from "../developer/task-records.js";
 
@@ -21,12 +21,11 @@ const RELEASE_ATTEMPTS = 4;
 
 const defaultLog: Log = (entry) => console.log(JSON.stringify({ component: "broker", ...entry }));
 
-export const slackOrganizationLimitKey = (teamId: string) => ({ pk: `SLACK_LIMIT#${teamId}`, sk: "ORGANIZATION" });
-export const slackMemberLimitKey = (teamId: string, userId: string) => ({ pk: `SLACK_LIMIT#${teamId}`, sk: `MEMBER#${userId}` });
 export const slackThreadKey = (ownerKey: string) => ({ pk: `SLACK_THREAD#${ownerKey}`, sk: "META" });
 
 interface FailedWorkspace { ownerKey?: unknown; status?: unknown; activeOperationId?: unknown; fence?: unknown }
-interface ThreadRecord { thread?: unknown; starterUserId?: unknown; closedAt?: unknown }
+/** `orgId` is the org whose Slack team counters the thread was charged to, stamped when it was charged. */
+interface ThreadRecord { thread?: unknown; starterUserId?: unknown; closedAt?: unknown; orgId?: unknown }
 
 /**
  * Releases the charge a PREPARATION_FAILED workspace still holds, idempotently. Never throws: the
@@ -71,7 +70,7 @@ async function attemptRelease(client: Client, tableName: string, workspaceId: st
 
   const thread = await get<ThreadRecord>(slackThreadKey(workspace.ownerKey));
   if (thread !== undefined && typeof thread.starterUserId === "string" && thread.closedAt === undefined && typeof thread.thread === "string") {
-    return releaseThreadCharge(client, tableName, get, { subject: thread.thread, starterUserId: thread.starterUserId, ownerKey: workspace.ownerKey }, stillFailed);
+    return releaseThreadCharge(client, tableName, get, { subject: thread.thread, starterUserId: thread.starterUserId, ownerKey: workspace.ownerKey, orgId: thread.orgId }, stillFailed);
   }
   // A Slack thread with no charge left falls through: it has no task pointer, so it ends "not_charged".
 
@@ -99,11 +98,13 @@ async function releaseThreadCharge(
   client: Client,
   tableName: string,
   get: <T>(key: { pk: string; sk: string }) => Promise<T | undefined>,
-  thread: { subject: string; starterUserId: string; ownerKey: string },
+  thread: { subject: string; starterUserId: string; ownerKey: string; orgId: unknown },
   stillFailed: Record<string, unknown>,
 ): Promise<"slack_thread" | "retry"> {
   const { teamId } = parseSlackThreadSubject(thread.subject);
-  const memberKey = slackMemberLimitKey(teamId, thread.starterUserId);
+  // The counters sit in the org that charged them; a thread record that names none cannot be released (logged, the slot stays held).
+  const orgId = OrgIdSchema.parse(thread.orgId);
+  const memberKey = slackMemberLimitKey(orgId, teamId, thread.starterUserId);
   const member = await get<{ count?: unknown; threads?: unknown }>(memberKey);
   const memberCount = typeof member?.count === "number" ? member.count : 0;
   const threads = Array.isArray(member?.threads) ? member.threads as unknown[] : [];
@@ -120,7 +121,7 @@ async function releaseThreadCharge(
       } },
       { Update: {
         TableName: tableName,
-        Key: slackOrganizationLimitKey(teamId),
+        Key: slackOrganizationLimitKey(orgId, teamId),
         UpdateExpression: "SET #count = #count - :one",
         ConditionExpression: "#count >= :one",
         ExpressionAttributeNames: { "#count": "count" },

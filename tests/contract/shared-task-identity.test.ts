@@ -1,5 +1,7 @@
 // tests/contract/shared-task-identity.test.ts
 // Spec 025 FR-054, C11, C13, C14: a shared thread's service calls, resolved by the broker.
+import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { indexExpiresAt, SLACK_OIDC_ISSUER } from "@agentx/contracts";
@@ -84,7 +86,7 @@ describe("a continue thread acts on the task's workspace (FR-054)", () => {
     expect(answer.status).toBe(200);
     expect(answer.body).toMatchObject({ outcome: "WORKSPACE", workspaceId: h.workspaceId, status: "READY", created: false, recoverableOperations: [], sharedTask: { taskId: h.taskId, developerName: "Maya Chen" } });
     expect(h.workspaces()).toBe(before);
-    expect(h.db.get(`SLACK_LIMIT#${SLACK_TEAM}`, `MEMBER#${PRIYA}`)).toBeUndefined();
+    expect(h.db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${PRIYA}`)).toBeUndefined();
   });
 
   it("runs the teammate's request as the teammate, and records who started it (C13)", async () => {

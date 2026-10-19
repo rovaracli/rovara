@@ -1,5 +1,6 @@
 // Spec 041: GET /v1/dev/workspaces -- the projects a developer may use, with the workspaces in
 // them, read through the sparse byWorkspaceProject index.
+import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WORKSPACE_PROJECT_INDEX, type ChannelMembersRequest, type ChannelMembersResponse } from "@agentx/contracts";
 import type { DeveloperApiConfiguration } from "../../packages/broker/src/aws/developer-routes.js";
@@ -77,7 +78,7 @@ beforeEach(async () => {
   ({ db, handler } = await createAdminBroker({ developer: config }));
   db.set({ pk: "SESSION#s-1", sk: "META", sessionId: "s-1", developerId, amr: "slack", slackUserId: "U0MAYA001", startedAt: new Date(T0).toISOString(), endsAt: T0 / 1000 + 604_800 });
   db.set({ pk: `DEVELOPER#${developerId}`, sk: "META", developerId, provider: "slack", issuer: "https://slack.com", subject: "U0MAYA001", displayName: "Maya Chen", slackUserId: "U0MAYA001", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
-  db.set({ pk: "SLACK_BINDING#T0TEAM1", sk: "CHANNEL#C0PAY0001", teamId: "T0TEAM1", channelId: "C0PAY0001", projectName: "payments-api", updatedAt: "2026-09-27T00:00:00.000Z" });
+  db.set({ pk: slackBindingPk(TEST_ORG, "T0TEAM1"), sk: "CHANNEL#C0PAY0001", teamId: "T0TEAM1", channelId: "C0PAY0001", projectName: "payments-api", updatedAt: "2026-09-27T00:00:00.000Z" });
   db.set({ ...projectRevisionKey(TEST_ORG, "payments-api", 7), entityType: "PROJECT", definition: { name: "payments-api", revision: 7 } });
   db.set({ ...projectRevisionKey(TEST_ORG, "solo", 1), entityType: "PROJECT", definition: { name: "solo", revision: 1 } });
   db.set({ ...projectRevisionKey(TEST_ORG, "ledger", 2), entityType: "PROJECT", definition: { name: "ledger", revision: 2 } });

@@ -1,7 +1,7 @@
 // Spec 025 FR-020 and FR-053: one set of workspace limits for Slack threads and developer tasks.
 // The numbers are the admin's setting when there is one, else the stack parameters (R7).
 import { GetCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { orgLimitKey, orgSettingsKey, type OrgId } from "@agentx/contracts";
+import { isSlackLimitPk, orgLimitKey, orgSettingsKey, slackMemberLimitKey, slackOrganizationLimitKey, type OrgId } from "@agentx/contracts";
 import type { CounterKey, WorkspaceCharge } from "./task-records.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
@@ -41,15 +41,15 @@ export async function readWorkspaceLimits(
 export function developerCharge(input: { orgId: OrgId; teamId?: string | undefined; slackUserId?: string | undefined; developerId: string }): WorkspaceCharge {
   return {
     member: input.teamId !== undefined && input.slackUserId !== undefined
-      ? { pk: `SLACK_LIMIT#${input.teamId}`, sk: `MEMBER#${input.slackUserId}` }
+      ? slackMemberLimitKey(input.orgId, input.teamId, input.slackUserId)
       : { pk: `DEVELOPER_LIMIT#${input.developerId}`, sk: "MEMBER" },
     organization: input.teamId !== undefined
-      ? { pk: `SLACK_LIMIT#${input.teamId}`, sk: "ORGANIZATION" }
+      ? slackOrganizationLimitKey(input.orgId, input.teamId)
       : orgLimitKey(input.orgId),
   };
 }
 
-const entityOf = (key: CounterKey) => (key.pk.startsWith("SLACK_LIMIT#") ? "SLACK_LIMIT" : "DEVELOPER_LIMIT");
+const entityOf = (key: CounterKey) => (isSlackLimitPk(key.pk) ? "SLACK_LIMIT" : "DEVELOPER_LIMIT");
 
 /**
  * The same conditions as a Slack thread's charge. The task goes in a string set `tasks`; the

@@ -14,6 +14,7 @@ import { createSlackIngressHandler } from "../../packages/broker/src/aws/slack-i
 import { chatGptActionHandler, createSlackInteractivityHandler } from "../../packages/broker/src/aws/slack-interactivity.js";
 import { createAdminBroker } from "../support/admin-broker.js";
 import { StrictSlackWeb } from "../support/strict-slack.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const signingSecret = "8f742231b10e8888abcd99yyyzzz85a5";
 const team = "T0BSHLLUGBD";
@@ -78,7 +79,8 @@ async function rovara(options: { chatgpt?: boolean } = {}) {
   const queued: unknown[] = [];
   const ingress = createSlackIngressHandler({
     secrets: async () => ({ signingSecret, botToken: "xoxb-test" }),
-    getBinding: async (teamId, channelId) => ({ teamId, channelId, projectName: "payments", updatedAt: "2026-09-23T21:00:00.000Z" }),
+    resolveOrg: async () => TEST_ORG,
+    getBinding: async (_orgId, teamId, channelId) => ({ teamId, channelId, projectName: "payments", updatedAt: "2026-09-23T21:00:00.000Z" }),
     claimEvent: async () => true,
     releaseEvent: async () => undefined,
     changePending: async () => 1,
