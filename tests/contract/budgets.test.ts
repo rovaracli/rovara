@@ -255,13 +255,13 @@ describe("a developer task start", () => {
     expect((await h.start({ workflow: true, workflowPath: "QUICK" })).status).toBe(200);
   });
 
-  it("starts the task with $10 spent of $29, recording an admitted budget of $19 that its key is capped at", async () => {
+  it("starts the task with $10 spent of $29, recording the task's whole $25 budget (R38) while its key is capped at the member's $19", async () => {
     const h = await install({ memberSpent: 10 });
     const started = await h.start();
     expect(started.status).toBe(200);
     const taskId = (started.body.task as { taskId: string }).taskId;
     const task = h.db.get(`DEVTASK#${taskId}`, "META")!;
-    expect(task.budgetUsd).toBe(19);
+    expect(task.budgetUsd).toBe(25);
     expect(await (await worker(h, task))()).toMatchObject({ status: 200 });
     expect(h.access.mintKey).toHaveBeenCalledWith(expect.objectContaining({ orgId: TEST_ORG, developerId: MAYA.developerId, refId: taskId, maxBudgetUsd: 19 }));
     expect(JSON.stringify(started.body)).not.toContain("budgetUsd");

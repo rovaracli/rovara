@@ -7,7 +7,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD,
+  DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, TASK_BUDGET_EXCEEDED_PREFIX,
   AgentXError, agentXError, budgetSyncedKey, orgSettingsKey, type OrgId, type OrgKey,
 } from "@agentx/contracts";
 import type { ModelAccess, SpendFigures } from "../model-proxy/access.js";
@@ -169,17 +169,27 @@ export const keyIdOf = (key: string): string => createHash("sha256").update(key)
  * never restores a spent budget), further limited by what the member and the org have left. Refuses when any of the
  * three is 0: a key capped at nothing could be read by the proxy as no cap.
  */
-export async function mintCap(deps: BudgetDependencies, input: { orgId: OrgId; developerId?: string | undefined; budgetUsd: number; previousKeyIds: readonly string[] }): Promise<{ maxBudgetUsd: number }> {
+export async function mintCap(deps: BudgetDependencies, input: { orgId: OrgId; developerId?: string | undefined; budgetUsd: number; previousKeyIds: readonly string[]; budgetBaselineUsd?: number | undefined }): Promise<{ maxBudgetUsd: number }> {
   await ensureSynced(deps, input.orgId, input.developerId);
   const [taskSpent, figures] = await Promise.all([viaProxy(() => deps.access.keySpend(input.previousKeyIds)), figuresFor(deps, input.orgId, input.developerId)]);
   const { member, org } = figures;
   if (member !== undefined && remaining(member) <= 0) throw budgetExceeded(member.spentUsd, member.limitUsd);
   if (remaining(org) <= 0) throw orgBudgetExceeded();
-  const taskRemaining = clean(Math.max(0, input.budgetUsd - taskSpent));
+  // Ruling R38: a human Continue starts a new window, so what the task's keys had spent by then no longer counts against its cap.
+  const windowSpent = clean(Math.max(0, taskSpent - (input.budgetBaselineUsd ?? 0)));
+  const taskRemaining = clean(Math.max(0, input.budgetUsd - windowSpent));
   if (taskRemaining <= 0) {
-    throw agentXError("BUDGET_EXCEEDED", `This task has used its AI budget ($${dollars(taskSpent)} of $${dollars(input.budgetUsd)}). Start a new task to continue.`);
+    throw agentXError("BUDGET_EXCEEDED", `${TASK_BUDGET_EXCEEDED_PREFIX} ($${dollars(windowSpent)} of $${dollars(input.budgetUsd)}). Start a new task to continue.`);
   }
   return { maxBudgetUsd: clean(Math.min(taskRemaining, member === undefined ? Infinity : remaining(member), remaining(org))) };
+}
+
+/**
+ * Ruling R38: the cumulative spend of a task's keys so far, which a Continue records as the start of the task's new cap window.
+ * Zero when the task has minted none. A proxy that cannot answer is MODEL_PROXY_UNAVAILABLE, so the Continue changes nothing.
+ */
+export async function taskSpendBaseline(deps: BudgetDependencies, keyIds: readonly string[]): Promise<number> {
+  return keyIds.length === 0 ? 0 : clean(await viaProxy(() => deps.access.keySpend(keyIds)));
 }
 
 /**

@@ -4378,12 +4378,12 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     if (task !== undefined) {
       return task.orgId === undefined ? undefined : {
         orgId: task.orgId, developerId: task.developerId as string | undefined, refId: task.taskId, budgetUsd: task.budgetUsd ?? PER_TASK_BUDGET_USD,
-        previousKeyIds: task.modelKeyIds ?? [], owner: taskKey(task.taskId),
+        previousKeyIds: task.modelKeyIds ?? [], owner: taskKey(task.taskId), budgetBaselineUsd: task.budgetBaselineUsd ?? 0,
       };
     }
     return current.orgId === undefined ? undefined : {
       orgId: current.orgId, developerId: await linkedRequester(dependencies, current.orgId, current.requestedBy), refId: current.id,
-      budgetUsd: PER_TASK_BUDGET_USD, previousKeyIds: current.modelKeyIds ?? [], owner: operationKey(current.workspaceId, current.id),
+      budgetUsd: PER_TASK_BUDGET_USD, previousKeyIds: current.modelKeyIds ?? [], owner: operationKey(current.workspaceId, current.id), budgetBaselineUsd: 0,
     };
   };
   const budgets = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access };
@@ -4396,7 +4396,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       if (attempt > 0) scope = await loadScope();
       if (scope === undefined) throw new Error("the operation lost its organisation");
       // Ruling R30: the key's cap is what the task has left across all its keys, further limited by the member's and the org's remainder.
-      const { maxBudgetUsd } = await mintCap(budgets, { orgId: scope.orgId, developerId: scope.developerId, budgetUsd: scope.budgetUsd, previousKeyIds: scope.previousKeyIds });
+      const { maxBudgetUsd } = await mintCap(budgets, { orgId: scope.orgId, developerId: scope.developerId, budgetUsd: scope.budgetUsd, previousKeyIds: scope.previousKeyIds, budgetBaselineUsd: scope.budgetBaselineUsd });
       const minted = await modelAccess.access.mintKey({
         orgId: scope.orgId, ...(scope.developerId === undefined ? {} : { developerId: scope.developerId }), purpose: "task", refId: scope.refId,
         maxBudgetUsd, ttlSeconds: MODEL_KEY_TTL_SECONDS,

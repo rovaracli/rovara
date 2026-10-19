@@ -6,13 +6,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
-import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, DeveloperTaskFailureCategorySchema, agentXError } from "../../packages/contracts/src/index.js";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, DeveloperTaskFailureCategorySchema } from "../../packages/contracts/src/index.js";
 import { ModelBudgetExhaustedError, budgetExhaustedFromMarker, createConfiguredModelRuntime } from "../../packages/model-runtime/src/index.js";
 import { failureCategory } from "../../packages/broker/src/developer/task-records.js";
 import { modelAccessSource } from "../../packages/worker/src/model-access.js";
 import { createDefaultPiSessionAdapter } from "../../packages/worker/src/pi-session.js";
 import { runTaskInvocation } from "../../packages/worker/src/run-task.js";
-import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { MAYA, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
+import { fakeModelAccess } from "../support/fake-model-access.js";
+import { call } from "../support/slack-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const PROXY_URL = "http://internal-proxy.example.test:4000";
 const PROXY_KEY = "sk-proxy-budget-key-0001";
@@ -201,4 +204,75 @@ describe("the control plane reads the task's failure", () => {
   });
 });
 
-void agentXError;
+
+describe("continuing after the budget ran out (ruling R38)", () => {
+  /** A task with a proxy: started, its first model key minted, then ended FAILED for budget. Asks for model access as the worker of the latest operation. */
+  async function exhausted() {
+    const access = fakeModelAccess();
+    const h = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" } } });
+    access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
+    access.setOrgSpent(TEST_ORG, 0);
+    const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "claude-code" });
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    const task = h.db.get(`DEVTASK#${taskId}`, "META") as { workspaceId: string };
+    const active = () => String((h.db.get(`WORKSPACE#${task.workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
+    const ask = () => {
+      const outbox = h.db.find((item) => item.entityType === "OUTBOX" && item.operationId === active())[0]!;
+      const capability = (outbox.invocation as { callbackCapability: string }).callbackCapability;
+      return call(h.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": capability } });
+    };
+    await h.finish(task.workspaceId, active(), "SUCCEEDED");
+    expect((await ask()).status).toBe(200);
+    const record = () => h.db.get(`DEVTASK#${taskId}`, "META") as { budgetUsd: number; budgetBaselineUsd?: number; modelKeyIds?: string[] };
+    const end = () => h.finish(task.workspaceId, active(), "FAILED", { error: EXACT });
+    const cont = () => h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/continue`, { requestId: randomUUID(), instructions: "Carry on." });
+    return { ...h, access, taskId, task, active, ask, record, end, cont };
+  }
+
+  it("mints again after the member's budget is raised, where it was refused before", async () => {
+    const h = await exhausted();
+    h.access.setMemberSpent(TEST_ORG, MAYA.developerId, 29);
+    expect(await h.ask()).toMatchObject({ status: 402, body: { error: { code: "BUDGET_EXCEEDED" } } });
+    await h.end();
+    // The task's budget is its whole $25, whatever the member had left when it started.
+    expect(h.record().budgetUsd).toBe(25);
+    seedMembership(h.db, MAYA.developerId, { orgId: TEST_ORG, role: "admin" });
+    expect((await h.dev(MAYA, "PUT", "/v1/dev/org/budget", { requestId: randomUUID(), memberDefaultMonthlyUsd: 100 })).status).toBe(200);
+    expect((await h.cont()).status).toBe(200);
+    const minted = h.access.mintKey.mock.calls.length;
+    expect((await h.ask()).status).toBe(200);
+    expect(h.access.mintKey).toHaveBeenCalledTimes(minted + 1);
+    expect(h.access.mintKey.mock.calls.at(-1)![0].maxBudgetUsd).toBe(25);
+  });
+
+  it("gives a task that spent its own $25 a fresh window when its owner continues it, and counts only what it spends after", async () => {
+    const h = await exhausted();
+    h.access.setKeySpent(h.access.mintedKeys()[0]!, 25);
+    expect(await h.ask()).toMatchObject({ status: 402, body: { error: { code: "BUDGET_EXCEEDED" } } });
+    await h.end();
+    expect((await h.cont()).status).toBe(200);
+    expect(h.record().budgetBaselineUsd).toBe(25);
+    expect((await h.ask()).status).toBe(200);
+    expect(h.access.mintKey.mock.calls.at(-1)![0].maxBudgetUsd).toBe(25);
+    // The new window is spent in turn: $10 of it leaves $15 for the next key, and $25 of it ends the task again.
+    h.access.setKeySpent(h.access.mintedKeys()[1]!, 10);
+    expect((await h.ask()).status).toBe(200);
+    expect(h.access.mintKey.mock.calls.at(-1)![0].maxBudgetUsd).toBe(15);
+    h.access.setKeySpent(h.access.mintedKeys()[1]!, 25);
+    const spentAgain = await h.ask();
+    expect(spentAgain).toMatchObject({ status: 402, body: { error: { code: "BUDGET_EXCEEDED" } } });
+    expect(JSON.stringify(spentAgain.body)).toContain("This task has used its AI budget ($25.00 of $25.00)");
+  });
+
+  it("refuses a continue with 503 while the proxy is down, and changes nothing", async () => {
+    const h = await exhausted();
+    h.access.setKeySpent(h.access.mintedKeys()[0]!, 25);
+    await h.end();
+    const before = JSON.stringify(h.db.find(() => true));
+    h.access.goDown();
+    const refused = await h.cont();
+    expect(refused).toMatchObject({ status: 503, body: { error: { code: "MODEL_PROXY_UNAVAILABLE" } } });
+    expect(h.record().budgetBaselineUsd).toBeUndefined();
+    expect(JSON.stringify(h.db.find(() => true))).toBe(before);
+  });
+});

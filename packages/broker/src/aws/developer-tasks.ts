@@ -17,6 +17,7 @@ import {
   workflowPullRequestUpdateDue,
   type WorkflowPullRequestUpdateCause,
   CHANNEL_TURNS_MAX,
+  PER_TASK_BUDGET_USD,
   ContinueDeveloperTaskRequestSchema,
   DEVELOPER_EVENTS_DEFAULT,
   DEVELOPER_EVENTS_MAX,
@@ -148,7 +149,7 @@ import {
 import { z } from "zod";
 import { channelLabel, decideMode, decideShare, type BoundChannel, type ShareDecision } from "../developer/share.js";
 import { PULL_REQUEST_PARTIAL_REVIEW_LINE, PULL_REQUEST_STATUS_END, PULL_REQUEST_STATUS_START } from "../developer/pull-request-feedback-section.js";
-import { admitSpend } from "../org/budget.js";
+import { admitSpend, taskSpendBaseline } from "../org/budget.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { chargeConflict, chargeItems, developerCharge, limitReached, readWorkspaceLimits, releaseConflict, releaseItems, type ChargeConflict, type WorkspaceLimits } from "../developer/limits.js";
 import {
@@ -1487,7 +1488,7 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
   const revision = project.definition.revision;
   const title = redactedTitle(request);
   const task: DeveloperTaskRecord = {
-    ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: deps.orgId, ...(admitted === undefined ? {} : { budgetUsd: admitted.maxBudgetUsd }), developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
+    ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: deps.orgId, ...(admitted === undefined ? {} : { budgetUsd: PER_TASK_BUDGET_USD }), developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
     ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
     client, project: request.project, title, workspaceId, ownerKey: identity.ownerKey, conversationId, startingRevision: revision,
     // A workflow task quotes the request in each plan's "why"; every start (Slack and AI tool) comes through here.
@@ -1746,11 +1747,21 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   if (task.workflow !== undefined) throw agentXError("WORKSPACE_BUSY", GATED_TASK_TURN_REFUSAL);
   const turns = turnTable(deps);
   await actionableWorkspace(deps, task);
+  // Ruling R38: a Continue starts a new window of the task's own cap, at what its keys have spent so far. A proxy that cannot
+  // say refuses the Continue before anything is written.
+  const baseline = deps.modelAccess === undefined ? undefined
+    : await taskSpendBaseline({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, task.modelKeyIds ?? []);
   const receivedAt = iso(deps);
   try {
     // acceptTask answers a repeated requestId with its first operation and writes nothing, and
     // refuses a second running turn (TASK_BUSY) before anything is written.
     await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId: request.requestId, conversationId: task.conversationId, prompt: request.instructions }, (operation) => [
+      ...(baseline === undefined ? [] : [{ Update: {
+        TableName: deps.tableName, Key: taskKey(task.taskId),
+        UpdateExpression: "SET budgetBaselineUsd = :baseline",
+        ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt)",
+        ExpressionAttributeValues: { ":baseline": baseline },
+      } }]),
       // R12: the accepted record commits with the operation or not at all.
       putNew(turns, aiToolTurn({
         party: partyOfTaskActor(task, caller), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),

@@ -1,7 +1,7 @@
 // A task's model access (ruling R29): the proxy's address and a key minted for this task alone, from the
 // control plane through the operation's callback capability. The worker holds no provider secret; the key
 // stays in memory until shortly before it expires, is asked for once at a time, and is never logged.
-import { agentXError } from "@agentx/contracts";
+import { TASK_BUDGET_EXCEEDED_PREFIX, agentXError } from "@agentx/contracts";
 import { ModelBudgetExhaustedError, type ModelBudgetScope } from "@agentx/model-runtime";
 
 /** Asked for again this long before the key expires, so no request carries one about to lapse. */
@@ -48,7 +48,7 @@ async function budgetScopeOf(response: Response): Promise<ModelBudgetScope | und
   const { code, message } = body?.error ?? {};
   if (code === "ORG_BUDGET_EXCEEDED") return "org";
   if (code !== "BUDGET_EXCEEDED") return undefined;
-  return typeof message === "string" && message.startsWith("This task has used its AI budget") ? "task" : "member";
+  return typeof message === "string" && message.startsWith(TASK_BUDGET_EXCEEDED_PREFIX) ? "task" : "member";
 }
 
 /** What the runtime needs from the control plane's answer: the proxy's origin once, and the key as often as it is asked for. */
