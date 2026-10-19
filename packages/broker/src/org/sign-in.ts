@@ -141,7 +141,7 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
   }
 
   // Rule 5: a Slack or company sign-in joins the install's single org.
-  if (deps.singleOrgId === undefined) throw agentXError("CONFIG_INVALID", "this environment has no organization for new sign-ins to join");
+  if (deps.singleOrgId === undefined) throw agentXError("CONFIG_INVALID", "Sign in with Rovara on this install: Slack and company sign-ins do not create or join an organization here");
   // No email pointer here: the email index links one person's cloud identities, and a Slack or company
   // sign-in joins by identity alone.
   await orgs.ensureOrg(deps.singleOrgId, deps.singleOrgName ?? "default");

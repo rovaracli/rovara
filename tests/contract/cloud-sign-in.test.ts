@@ -1,8 +1,8 @@
 // Task 6: the `cloud` sign-in method, with an org created on first sign-in (rules 1 to 5 of resolveOrgOnSignIn).
 import { describe, expect, it } from "vitest";
-import { agentXError, developerOrgKey, orgEmailKey, orgInviteKey, orgMetaKey } from "@agentx/contracts";
+import { agentXError, developerOrgKey, orgEmailKey, orgInviteKey, orgMetaKey, singleOrgIdForEnv } from "@agentx/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
-import { developerIdentityConfigFromEnvironment } from "../../packages/broker/src/aws/developer-identity.js";
+import { developerIdentityConfigFromEnvironment, singleOrgIdFor } from "../../packages/broker/src/aws/developer-identity.js";
 import { oidcSignInProvider } from "../../packages/broker/src/developer/providers.js";
 import { membershipOrgResolver, orgResolverFromEnvironment } from "../../packages/broker/src/org/resolve.js";
 import { resolveOrgOnSignIn } from "../../packages/broker/src/org/sign-in.js";
@@ -279,6 +279,41 @@ describe("the Lambda's configuration from its environment", () => {
     expect(config.cloud).toBeDefined();
     expect(config.cloudSettings).toBeUndefined();
     expect(config.cloudProblem).toMatch(/DEVELOPER_CLOUD_CLIENT_ID/);
+  });
+});
+
+describe("ruling R51: a cloud install has no shared system org for Slack and company sign-ins", () => {
+  const base = { AGENTX_ENV: "staging", DEVELOPER_TOKEN_ISSUER: "https://api.example.test/v1/auth" };
+  const slackUser = { userId: "U0MAYA001", name: "Maya Chen", teamId: "T0TEAM1" };
+
+  it("sets the single org only on an install without the cloud method", () => {
+    expect(singleOrgIdFor(developerIdentityConfigFromEnvironment(base))).toBe(singleOrgIdForEnv("staging"));
+    expect(singleOrgIdFor(developerIdentityConfigFromEnvironment({ ...base, DEVELOPER_CLOUD_ISSUER: "https://cloud.example.test", DEVELOPER_CLOUD_CLIENT_ID: "client" }))).toBeUndefined();
+    // An install whose cloud settings are unfinished still has the cloud method configured: no system org either.
+    expect(singleOrgIdFor(developerIdentityConfigFromEnvironment({ ...base, DEVELOPER_CLOUD_ISSUER: "https://cloud.example.test" }))).toBeUndefined();
+  });
+
+  it("refuses a Slack and a company sign-in, creating no org and no membership, while the cloud sign-in still works", async () => {
+    const h = identityHarness({ cloud: {}, slackUsers: [slackUser], oidc: {}, oidcUsers: [maya], singleOrg: false });
+    for (const [method, who] of [["slack", slackUser.userId], ["oidc", maya.sub]] as const) {
+      const location = await h.signIn(method, who);
+      expect(location.searchParams.get("code"), method).toBeNull();
+      expect(location.searchParams.get("error"), method).toBeTruthy();
+    }
+    expect(orgMetas(h.state)).toEqual([]);
+    expect(h.state.find((item) => String(item.pk).startsWith("DEVELOPER_ORG#"))).toEqual([]);
+    const claims = claimsOf((await exchangedAfterSignIn(h, "cloud", maya.sub)).access_token);
+    expect(claims).toMatchObject({ amr: "cloud", org_role: "owner" });
+    expect(orgMetas(h.state)).toHaveLength(1);
+  });
+
+  it("says why: sign in with Rovara on this install", async () => {
+    const orgs = new OrgStore({ documentClient: new FakeDynamoDb(), tableName: "state", now: () => 0 });
+    for (const method of ["slack", "oidc"] as const) {
+      await expect(resolveOrgOnSignIn({ orgs }, { method, developerId: "s".repeat(64), displayName: "Maya", emailVerified: false })).rejects.toMatchObject({
+        code: "CONFIG_INVALID", message: expect.stringContaining("Sign in with Rovara on this install") as string,
+      });
+    }
   });
 });
 

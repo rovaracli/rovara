@@ -161,6 +161,14 @@ function cachedSecret<T>(client: SecretsManagerClient, secretId: string, parse: 
   };
 }
 
+/**
+ * The org a Slack or company sign-in joins, which only a single-org install has (ruling R3). A cloud install has none (ruling R51): there
+ * is no shared system org, so those sign-ins are refused ("Sign in with Rovara on this install") and only the cloud method makes accounts.
+ */
+export function singleOrgIdFor(config: { env: string; cloud?: unknown }): OrgId | undefined {
+  return config.cloud === undefined ? singleOrgIdForEnv(config.env) : undefined;
+}
+
 let built: ReturnType<typeof createDeveloperIdentityHandler> | undefined;
 
 function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentityHandler> {
@@ -197,6 +205,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
   const orgs = new OrgStore({ documentClient, tableName: stateTableName, now });
   const modelAccessFunction = env.MODEL_ACCESS_FUNCTION_NAME ?? "";
   const modelAccess = modelAccessFunction === "" ? undefined : new ModelAccessInvoker({ functionName: modelAccessFunction, lambda: new LambdaClient(region) });
+  const singleOrg = singleOrgIdFor(config);
   return createDeveloperIdentityHandler({
     config,
     store: new DeveloperSignInStore({
@@ -206,7 +215,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     }),
     // Orgs and membership live in the State table, beside the records they scope; the sign-in table holds identities only.
     orgs,
-    singleOrgId: singleOrgIdForEnv(config.env),
+    ...(singleOrg === undefined ? {} : { singleOrgId: singleOrg }),
     ...(modelAccess === undefined ? {} : {
       onOrgJoined: ({ orgId, developerId }: { orgId: OrgId; developerId: string }) => syncBudgets({ documentClient, tableName: stateTableName, access: modelAccess, orgs, cloud: config.cloud !== undefined }, orgId, [developerId]),
     }),
