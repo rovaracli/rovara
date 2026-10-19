@@ -20,6 +20,26 @@ export function singleOrgResolver(env: string): OrgResolver {
   return async () => orgId;
 }
 
+/**
+ * Membership decides: a developer (or an owner key, which is the developer's id for a signed-in developer) belongs to the
+ * org it joined, and any other subject, such as an operator of the admin pool, belongs to none (ruling R6).
+ */
+export function membershipOrgResolver(orgs: Pick<OrgStore, "orgForDeveloper">): OrgResolver {
+  return async (subject) => {
+    const developerId = subject.developerId ?? subject.ownerKey;
+    return developerId === undefined ? undefined : (await orgs.orgForDeveloper(developerId))?.orgId;
+  };
+}
+
+/**
+ * The org resolver an install picks for itself: membership-based once the cloud sign-in is configured
+ * (DEVELOPER_CLOUD_ISSUER), so operators with no membership get no org (ruling R6); otherwise absent, and
+ * the install's single org serves everyone (ruling R3).
+ */
+export function orgResolverFromEnvironment(env: NodeJS.ProcessEnv, orgs: Pick<OrgStore, "orgForDeveloper">): OrgResolver | undefined {
+  return (env.DEVELOPER_CLOUD_ISSUER ?? "") === "" ? undefined : membershipOrgResolver(orgs);
+}
+
 /** Ruling R6: an org-scoped route refuses a caller that has no org. */
 export function requireOrgId(orgId: OrgId | undefined): OrgId {
   if (orgId === undefined) throw agentXError("FORBIDDEN", "this action needs an organization, and your account does not belong to one");

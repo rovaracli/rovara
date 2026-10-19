@@ -3,7 +3,7 @@
 // is called only by a confirmed change (Task 7) or by the CLI's own change path (Tasks 14, 15).
 import { randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { SLACK_OIDC_ISSUER, SlackUserIdSchema, agentXError, projectMemberKey, type EndDeveloperSessionsRequest, type EndDeveloperSessionsResponse, type OrgId } from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER, SlackUserIdSchema, agentXError, projectMemberKey, type EndDeveloperSessionsRequest, type EndDeveloperSessionsResponse, type DeveloperSignInMethod, type OrgId } from "@agentx/contracts";
 import { MAX_PER_ORGANIZATION, MAX_PER_PERSON, isWholeLimit, workspaceLimitsKey } from "../developer/limits.js";
 import { emailIndexKey } from "../developer/store.js";
 import { ownerKeyForSubject } from "./lambda.js";
@@ -22,7 +22,7 @@ export interface ResolvedDeveloper {
   developerId: string;
   via: "id" | "slack" | "email";
   slackUserId?: string;
-  profile?: { displayName: string; provider: "slack" | "oidc"; slackUserId?: string; sessionsEndedAt?: string };
+  profile?: { displayName: string; provider: DeveloperSignInMethod; slackUserId?: string; sessionsEndedAt?: string };
 }
 
 const HEX64 = /^[a-f0-9]{64}$/;
@@ -44,7 +44,7 @@ async function signInItem(deps: AdminActionDependencies, key: { pk: string; sk: 
 }
 
 function profileFrom(item: Record<string, unknown> | undefined): ResolvedDeveloper["profile"] {
-  if (item === undefined || typeof item.displayName !== "string" || (item.provider !== "slack" && item.provider !== "oidc")) return undefined;
+  if (item === undefined || typeof item.displayName !== "string" || (item.provider !== "slack" && item.provider !== "oidc" && item.provider !== "cloud")) return undefined;
   return {
     displayName: item.displayName, provider: item.provider,
     ...(typeof item.slackUserId === "string" ? { slackUserId: item.slackUserId } : {}),

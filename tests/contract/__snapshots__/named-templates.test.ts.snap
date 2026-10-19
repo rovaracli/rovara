@@ -3766,6 +3766,8 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   "dynamodb:LeadingKeys": [
                     "ORG#org_????????????????????",
                     "DEVELOPER_ORG#*",
+                    "ORG_EMAIL#*",
+                    "ORG_INVITE#*",
                   ],
                 },
               },

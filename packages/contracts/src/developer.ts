@@ -16,7 +16,7 @@ export const DEVELOPER_CODE_SECONDS = 300;
 export const DEVELOPER_AUTH_REQUEST_SECONDS = 600;
 export const SLACK_OIDC_ISSUER = "https://slack.com";
 
-export const DeveloperSignInMethodSchema = z.enum(["slack", "oidc"]);
+export const DeveloperSignInMethodSchema = z.enum(["slack", "oidc", "cloud"]);
 export type DeveloperSignInMethod = z.infer<typeof DeveloperSignInMethodSchema>;
 
 const LOOPBACK_REDIRECT = /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/callback$/;
@@ -52,6 +52,8 @@ export const AgentXConfigurationSchema = z.object({
   methods: z.object({
     slack: z.boolean(),
     oidc: z.object({ displayName: z.string().min(1).max(40) }).nullable(),
+    /** The hosted Rovara sign-in, which creates an org on first sign-in; absent from an older server. */
+    cloud: z.object({ displayName: z.string().min(1).max(40) }).nullable().optional(),
   }),
 });
 export type AgentXConfiguration = z.infer<typeof AgentXConfigurationSchema>;

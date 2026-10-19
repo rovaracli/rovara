@@ -11,7 +11,7 @@ export const DeveloperRequesterSchema = z
   .object({
     kind: z.literal("developer"),
     developerId: z.string().regex(/^[a-f0-9]{64}$/),
-    provider: z.enum(["slack", "oidc"]),
+    provider: z.enum(["slack", "oidc", "cloud"]),
   })
   .strict();
 export const OperationRequesterSchema = z.union([SlackRequesterSchema, DeveloperRequesterSchema]);

@@ -43,8 +43,7 @@ import {
 } from "@agentx/contracts";
 import { adaptHttpApiEvent, ownerKeyForSubject, type HttpApiV2Event } from "../aws/lambda.js";
 import { SESSION_MAX_AGE_SECONDS } from "../aws/web-session.js";
-import type { OrgStore } from "../org/store.js";
-import { resolveOrgOnSignIn } from "../org/sign-in.js";
+import { resolveOrgOnSignIn, type ResolveOrgOnSignInDependencies } from "../org/sign-in.js";
 import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderResult, type SignInProvider } from "./providers.js";
 import type { SlackDirectory } from "./slack-directory.js";
 import { endedByAdmin, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type SessionRecord } from "./store.js";
@@ -52,7 +51,7 @@ import { issueAccessToken, pkceChallengeMatches, type TokenSigner } from "./toke
 
 /** `since` (epoch seconds, FR-045): when the method was last turned on. A session started before it
  * was ended by the disable in between, so it never comes back when the method is on again. */
-export interface DeveloperIdentityConfig { env: string; issuer: string; slack: { enabled: boolean; teamId?: string; since?: number }; oidc?: { displayName: string; since?: number }; confirmElicitation?: boolean }
+export interface DeveloperIdentityConfig { env: string; issuer: string; slack: { enabled: boolean; teamId?: string; since?: number }; oidc?: { displayName: string; since?: number }; cloud?: { displayName: string }; confirmElicitation?: boolean }
 export interface DeveloperIdentityDependencies {
   config: DeveloperIdentityConfig;
   store: DeveloperSignInStore;
@@ -60,7 +59,7 @@ export interface DeveloperIdentityDependencies {
   providers: Partial<Record<DeveloperSignInMethod, SignInProvider>>;
   directory: SlackDirectory;
   /** The org store: a sign-in puts the developer in an org, and the tokens carry it. */
-  orgs: Pick<OrgStore, "orgForDeveloper" | "ensureOrg" | "addMember">;
+  orgs: ResolveOrgOnSignInDependencies["orgs"];
   /** The install's single org (ruling R3), which a Slack or company sign-in joins as a member. */
   singleOrgId?: OrgId;
   now: () => number;
@@ -94,6 +93,7 @@ export function enabledMethods(deps: Pick<DeveloperIdentityDependencies, "config
   const methods: DeveloperSignInMethod[] = [];
   if (deps.config.slack.enabled && deps.config.slack.teamId !== undefined && deps.providers.slack !== undefined) methods.push("slack");
   if (deps.config.oidc !== undefined && deps.providers.oidc !== undefined) methods.push("oidc");
+  if (deps.config.cloud !== undefined && deps.providers.cloud !== undefined) methods.push("cloud");
   return methods;
 }
 
@@ -136,7 +136,8 @@ const SIGN_IN_ENDED = ["invalid_grant", "your AgentX sign-in has ended; run agen
 export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependencies) {
   const { config, store } = deps;
   const endpoint = (path: string) => `${config.issuer}${path}`;
-  const methodLabel = (method: DeveloperSignInMethod) => (method === "slack" ? "Slack" : config.oidc?.displayName ?? "company sign-in");
+  const methodLabel = (method: DeveloperSignInMethod) =>
+    method === "slack" ? "Slack" : method === "cloud" ? config.cloud?.displayName ?? "cloud sign-in" : config.oidc?.displayName ?? "company sign-in";
   const provider = (method: DeveloperSignInMethod): SignInProvider => {
     const found = deps.providers[method];
     if (found === undefined) throw new ProviderNotConfiguredError(`${methodLabel(method)} sign-in is not set up in this environment`);
@@ -164,8 +165,9 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     const methods = enabledMethods(deps);
     const requestId = query.get("request");
     if (requestId !== null) {
-      const method = query.get("method");
-      if ((method !== "slack" && method !== "oidc") || !methods.includes(method)) return page(400, "Sign-in method not available", ["Run agentx login again."]);
+      const chosen = query.get("method");
+      const method = methods.find((enabled) => enabled === chosen);
+      if (method === undefined) return page(400, "Sign-in method not available", ["Run agentx login again."]);
       const request = await store.chooseMethod(requestId, method);
       if (request === undefined) return expired();
       try {
@@ -340,7 +342,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     // A first sign-in puts the person in an org (ruling R2); the tokens and the browser session carry it from here.
     await resolveOrgOnSignIn(
       { orgs: deps.orgs, ...(deps.singleOrgId === undefined ? {} : { singleOrgId: deps.singleOrgId }), singleOrgName: config.env },
-      { method, developerId, displayName: identity.displayName, ...(identity.email === undefined ? {} : { email: identity.email }), emailVerified: identity.email !== undefined },
+      { method, developerId, displayName: identity.displayName, ...(identity.email === undefined ? {} : { email: identity.email }), emailVerified: identity.emailVerified === true },
     );
     if (request.browserReturnTo !== undefined) {
       // A fixed 30 days from sign-in, with no renewal: the session record ends then, whatever the cookie says.
@@ -387,7 +389,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       await revoke(session.sessionId, "method_disabled");
       return oauthError(400, "invalid_grant", `${methodLabel(session.amr)} sign-in was turned off in this environment; sign in another way with agentx login`);
     }
-    if (startedBeforeMethodOn(session.startedAt, session.amr === "slack" ? config.slack.since : config.oidc?.since)) {
+    if (startedBeforeMethodOn(session.startedAt, session.amr === "slack" ? config.slack.since : session.amr === "oidc" ? config.oidc?.since : undefined)) {
       await revoke(session.sessionId, "method_disabled");
       return oauthError(400, "invalid_grant", `your sign-in ended when ${methodLabel(session.amr)} was turned off; sign in again with agentx login`);
     }
@@ -469,7 +471,11 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       tokenEndpoint: endpoint("/token"),
       revocationEndpoint: endpoint("/revoke"),
       clientId: AGENTX_CLI_CLIENT_ID,
-      methods: { slack: methods.includes("slack"), oidc: methods.includes("oidc") && config.oidc !== undefined ? { displayName: config.oidc.displayName } : null },
+      methods: {
+        slack: methods.includes("slack"),
+        oidc: methods.includes("oidc") && config.oidc !== undefined ? { displayName: config.oidc.displayName } : null,
+        cloud: methods.includes("cloud") && config.cloud !== undefined ? { displayName: config.cloud.displayName } : null,
+      },
       // FR-041, E16: the methods this environment allows; the MCP server adds the client's and the admin's own.
       // Slack needs the team set up, not Slack sign-in (controller ruling R5): each change checks the admin's own link.
       confirm: { elicitation: config.confirmElicitation !== false, slack: config.slack.teamId !== undefined } satisfies AgentXConfigurationConfirm,
@@ -500,6 +506,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
           return callback("slack", url.searchParams, headers);
         case "/v1/auth/callback/oidc":
           return callback("oidc", url.searchParams, headers);
+        case "/v1/auth/callback/cloud":
+          return callback("cloud", url.searchParams, headers);
       }
     }
     if (method === "POST" && pathname === "/v1/auth/token") return token(new URLSearchParams(body ?? ""));

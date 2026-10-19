@@ -74,9 +74,9 @@ import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION, TASK_STATUS, createTaskWeb } from 
 import { TASK_PAGE_API_PREFIX, createTaskWebApi } from "./task-web-api.js";
 
 export interface DeveloperApiConfiguration {
-  issuer: string; env: string; methods: { slack: boolean; oidc: boolean }; slackTeamId?: string;
+  issuer: string; env: string; methods: { slack: boolean; oidc: boolean; cloud?: boolean }; slackTeamId?: string;
   /** Each method's enabled-since cutoff, epoch seconds (FR-045): a session started before it was ended by a disable. */
-  since?: { slack?: number; oidc?: number };
+  since?: { slack?: number; oidc?: number; cloud?: number };
   signInTableName: string;
   channelMembers(request: ChannelMembersRequest): Promise<ChannelMembersResponse>;
   /** C0: optional until the compatible identity function is deployed; callers must fail closed when absent. */
@@ -369,9 +369,9 @@ export function developerClaims(claims: Record<string, unknown> | undefined, con
     throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   }
   const amr = claims.amr;
-  if (amr !== "slack" && amr !== "oidc") throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
-  if (!config.methods[amr]) {
-    throw agentXError("AUTH_REQUIRED", `${amr === "slack" ? "Slack" : "Company"} sign-in is turned off in this environment; sign in another way with agentx login <url>`);
+  if (amr !== "slack" && amr !== "oidc" && amr !== "cloud") throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
+  if (config.methods[amr] !== true) {
+    throw agentXError("AUTH_REQUIRED", `${amr === "slack" ? "Slack" : amr === "cloud" ? "Cloud" : "Company"} sign-in is turned off in this environment; sign in another way with agentx login <url>`);
   }
   // A token with no org (one issued before orgs, or forged) is refused like a token with no session: sign in again.
   const orgId = OrgIdSchema.safeParse(claims.org);
@@ -400,7 +400,7 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
   // The broker may only read the sign-in table (R13), so it refuses; the token endpoint revokes the
   // session at its next refresh.
   if (startedBeforeMethodOn(session.startedAt, deps.developer.since?.[token.amr])) {
-    throw agentXError("AUTH_REQUIRED", `your sign-in ended when ${token.amr === "slack" ? "Slack" : "company sign-in"} was turned off; sign in again with agentx login <url>`);
+    throw agentXError("AUTH_REQUIRED", `your sign-in ended when ${token.amr === "slack" ? "Slack" : token.amr === "cloud" ? "cloud sign-in" : "company sign-in"} was turned off; sign in again with agentx login <url>`);
   }
   const developer = await getSignIn<Pick<DeveloperRecord, "displayName" | "slackUserId" | "email" | "revoked" | "sessionsEndedAt">>(deps, `DEVELOPER#${token.developerId}`);
   if (developer === undefined || developer.revoked) throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
@@ -428,7 +428,7 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
 export async function authenticateDeveloperSessionId(deps: DeveloperRouteDependencies, sessionId: string): Promise<DeveloperCaller> {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   const session = await getSignIn<Pick<SessionRecord, "developerId" | "amr" | "reviewExpiresAt">>(deps, `SESSION#${sessionId}`);
-  if (session === undefined || (session.amr !== "slack" && session.amr !== "oidc")
+  if (session === undefined || (session.amr !== "slack" && session.amr !== "oidc" && session.amr !== "cloud")
     || session.reviewExpiresAt === undefined || session.reviewExpiresAt <= Math.floor(deps.now() / 1000)) {
     throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   }

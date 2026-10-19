@@ -41,7 +41,7 @@ describe("Sign in with Slack (FR-003)", () => {
     const { fake, provider } = slack();
     const authorize = await provider.authorizeUrl({ state: "s1", nonce: "n1", redirectUri: slackCallback });
     const result = await provider.complete({ code: await codeFrom(fake.approve(authorize, maya.userId)), nonce: "n1", redirectUri: slackCallback });
-    expect(result).toEqual({ ok: true, identity: { method: "slack", issuer: "https://slack.com", subject: "U0MAYA001", displayName: "Maya Chen", email: "maya@example.com", slackUserId: "U0MAYA001" } });
+    expect(result).toEqual({ ok: true, identity: { method: "slack", issuer: "https://slack.com", subject: "U0MAYA001", displayName: "Maya Chen", email: "maya@example.com", emailVerified: true, slackUserId: "U0MAYA001" } });
   });
 
   it("refuses another team, naming both teams, including another team of the same Grid (SC-007)", async () => {
@@ -188,7 +188,7 @@ describe("company sign-in (FR-004)", () => {
 
   it("accepts a person in the required group, with their verified email", async () => {
     const { fake, provider } = oidc("groups", ["engineering"]);
-    expect(await signIn(provider, fake, "okta-1")).toEqual({ ok: true, identity: { method: "oidc", issuer: OIDC_ISSUER, subject: "okta-1", displayName: "Ravi", email: "ravi@example.com" } });
+    expect(await signIn(provider, fake, "okta-1")).toEqual({ ok: true, identity: { method: "oidc", issuer: OIDC_ISSUER, subject: "okta-1", displayName: "Ravi", email: "ravi@example.com", emailVerified: true } });
   });
 
   it("refuses a person outside the required group and names the group (US4 scenario 3)", async () => {

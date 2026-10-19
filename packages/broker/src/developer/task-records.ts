@@ -28,6 +28,7 @@ import {
   type Operation,
   type WorkflowSnapshot,
   type WorkflowReviewBase,
+  type DeveloperSignInMethod,
   type OrgId,
 } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
@@ -47,7 +48,7 @@ export interface DeveloperTaskRecord {
   /** The org the task belongs to; every task this release starts carries it, and a caller of another org never sees the task. */
   orgId?: OrgId;
   developerId: string;
-  provider: "slack" | "oidc";
+  provider: DeveloperSignInMethod;
   developerName: string;
   slackUserId?: string;
   client: string;
@@ -343,7 +344,7 @@ export function recentTaskEvents(newestFirst: readonly StoredEvent[], count: num
 export interface TurnParty {
   taskId: string;
   developerId: string;
-  provider: "slack" | "oidc";
+  provider: DeveloperSignInMethod;
   developerName: string;
   slackUserId?: string | undefined;
   client: string;

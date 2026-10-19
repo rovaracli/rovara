@@ -18,12 +18,17 @@ import type { HttpApiV2Event } from "./lambda.js";
 
 const SECRET_CACHE_MS = 5 * 60 * 1000;
 const SLACK_JWKS_URI = "https://slack.com/openid/connect/keys";
+const DEFAULT_CLOUD_DISPLAY_NAME = "Rovara";
 
 export type DeveloperIdentityLambdaConfig = DeveloperIdentityConfig & {
   oidcSettings?: { issuer: string; clientId: string; requiredClaim?: string; requiredValues: string[] };
   /** Set instead of oidcSettings when the company sign-in settings are unusable. Only that method
    * then refuses ("not finished"); Slack sign-in, keys, refresh and the invoke keep working. */
   oidcProblem?: string;
+  /** The hosted Rovara sign-in (DEVELOPER_CLOUD_*); it needs no required claim and creates an org on first sign-in. */
+  cloudSettings?: { issuer: string; clientId: string };
+  /** Set instead of cloudSettings when its settings are unusable; only the cloud method then refuses. */
+  cloudProblem?: string;
 };
 
 /** Reads the given environment (F1: never process.env directly), so it can be tested. */
@@ -50,10 +55,21 @@ function sinceFrom(text: string | undefined): { since: number } | Record<string,
   return since === undefined ? {} : { since };
 }
 
+/** The cloud method's share of the configuration: nothing when DEVELOPER_CLOUD_ISSUER is unset. */
+function cloudConfigFromEnvironment(env: NodeJS.ProcessEnv): Pick<DeveloperIdentityLambdaConfig, "cloud" | "cloudSettings" | "cloudProblem"> {
+  const issuer = env.DEVELOPER_CLOUD_ISSUER ?? "";
+  if (issuer === "") return {};
+  const cloud = { displayName: env.DEVELOPER_CLOUD_DISPLAY_NAME || DEFAULT_CLOUD_DISPLAY_NAME };
+  const clientId = env.DEVELOPER_CLOUD_CLIENT_ID ?? "";
+  if (clientId === "") return { cloud, cloudProblem: "DEVELOPER_CLOUD_CLIENT_ID is not set; ask an admin to check the cloud sign-in settings" };
+  return { cloud, cloudSettings: { issuer, clientId } };
+}
+
 export function developerIdentityConfigFromEnvironment(env: NodeJS.ProcessEnv): DeveloperIdentityLambdaConfig {
   const issuer = env.DEVELOPER_OIDC_ISSUER ?? "";
   const teamId = env.SLACK_TEAM_ID ?? "";
   const config: DeveloperIdentityLambdaConfig = {
+    ...cloudConfigFromEnvironment(env),
     env: required(env, "AGENTX_ENV"),
     issuer: required(env, "DEVELOPER_TOKEN_ISSUER"),
     slack: { enabled: env.DEVELOPER_SIGNIN_SLACK === "enabled", ...(teamId === "" ? {} : { teamId }), ...sinceFrom(env.DEVELOPER_SIGNIN_SLACK_SINCE) },
@@ -108,13 +124,14 @@ export function parseSlackSignInSecret(json: string): { botToken: string; client
   };
 }
 
-export function parseOidcClientSecret(json: string): string {
-  const secret = parseSecretObject(json, "company sign-in secret").clientSecret;
-  if (typeof secret !== "string" || secret === "") {
-    throw new ProviderNotConfiguredError("the company sign-in secret has no clientSecret; ask an admin to run agentx signin enable oidc");
-  }
+function parseClientSecret(json: string, what: string, fix: string): string {
+  const secret = parseSecretObject(json, what).clientSecret;
+  if (typeof secret !== "string" || secret === "") throw new ProviderNotConfiguredError(`the ${what} has no clientSecret; ${fix}`);
   return secret;
 }
+
+export const parseOidcClientSecret = (json: string): string => parseClientSecret(json, "company sign-in secret", "ask an admin to run agentx signin enable oidc");
+export const parseCloudClientSecret = (json: string): string => parseClientSecret(json, "cloud sign-in secret", "ask an admin to check the cloud sign-in settings");
 
 /** One remote key set per URI, so jose's key cache and refetch cooldown apply across sign-ins. */
 export function remoteJwksCache(create: (url: URL) => JWTVerifyGetKey = (url) => createRemoteJWKSet(url)): (uri: string) => JWTVerifyGetKey {
@@ -159,7 +176,16 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     if (oidcSettings === undefined || oidcSecretId === "") return unconfiguredProvider("oidc", "DEVELOPER_OIDC_SECRET_ID is not set; ask an admin to run agentx signin enable oidc");
     return oidcSignInProvider({ ...oidcSettings, clientSecret: cachedSecret(secrets, oidcSecretId, parseOidcClientSecret), fetch, jwksFor, now });
   };
+  const cloudSecretId = env.DEVELOPER_CLOUD_SECRET_ID ?? "";
+  const cloudProvider = (): SignInProvider | undefined => {
+    if (config.cloud === undefined) return undefined;
+    if (config.cloudProblem !== undefined) return unconfiguredProvider("cloud", config.cloudProblem);
+    if (config.cloudSettings === undefined || cloudSecretId === "") return unconfiguredProvider("cloud", "DEVELOPER_CLOUD_SECRET_ID is not set; ask an admin to check the cloud sign-in settings");
+    return oidcSignInProvider({ method: "cloud", ...config.cloudSettings, requiredValues: [], clientSecret: cachedSecret(secrets, cloudSecretId, parseCloudClientSecret), fetch, jwksFor, now });
+  };
   const oidc = oidcProvider();
+  const cloud = cloudProvider();
+  if (config.cloudProblem !== undefined) log({ event: "signin.not_configured", method: "cloud", detail: config.cloudProblem });
   if (config.oidcProblem !== undefined) log({ event: "signin.not_configured", method: "oidc", detail: config.oidcProblem });
   const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient(region), { marshallOptions: { removeUndefinedValues: true } });
   return createDeveloperIdentityHandler({
@@ -176,6 +202,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     providers: {
       slack: slackSignInProvider({ teamId: config.slack.teamId, credentials: slackSecret, fetch, jwks: jwksFor(SLACK_JWKS_URI), now }),
       ...(oidc === undefined ? {} : { oidc }),
+      ...(cloud === undefined ? {} : { cloud }),
     },
     directory: slackDirectory({
       teamId: config.slack.teamId, botToken: async () => (await slackSecret()).botToken, fetch, now,

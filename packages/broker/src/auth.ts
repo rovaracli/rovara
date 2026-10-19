@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   agentXError,
+  type DeveloperSignInMethod,
   type OrgId,
   type SlackChannelBinding,
   type SlackRequester,
@@ -34,7 +35,7 @@ export interface AuthenticatedIdentity {
   /** Spec 025: a developer task's workspace owner (FR-017); never set with `slack`. */
   developer?: {
     developerId: string;
-    provider: "slack" | "oidc";
+    provider: DeveloperSignInMethod;
     name: string;
     client: string;
     taskId: string;

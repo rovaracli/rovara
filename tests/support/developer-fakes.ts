@@ -280,6 +280,8 @@ export function authorizeQuery(overrides: Record<string, string> = {}): string {
 /** The sign-in server with fake Slack, fake OIDC, fake DynamoDB and the fake KMS signer. */
 export function identityHarness(options: {
   slack?: boolean; teamId?: string | undefined; oidc?: { requiredClaim?: string; requiredValues?: string[] };
+  /** The hosted Rovara sign-in, served by the same fake provider as `oidc` (its users are `oidcUsers`). */
+  cloud?: { displayName?: string };
   slackUsers?: FakeSlackUser[]; oidcUsers?: FakeOidcUser[]; channels?: Record<string, string[]>;
   channelInfo?: Record<string, { name: string; isPrivate?: boolean }>;
   slackCredentials?: { clientId?: string; clientSecret?: string };
@@ -299,6 +301,9 @@ export function identityHarness(options: {
   const signer = localSigner();
   const logs: Array<Record<string, unknown>> = [];
   const teamId = "teamId" in options ? options.teamId : TEAM;
+  const cloudProvider = options.cloud === undefined ? undefined : oidcSignInProvider({
+    method: "cloud", issuer: OIDC_ISSUER, clientId: OIDC_CLIENT_ID, clientSecret: async () => OIDC_CLIENT_SECRET, requiredValues: [], fetch, jwksFor: () => oidc.jwks, now,
+  });
   const providers: DeveloperIdentityDependencies["providers"] = {
     slack: slackSignInProvider({ teamId, credentials: async () => options.slackCredentials ?? { clientId: SLACK_CLIENT_ID, clientSecret: SLACK_CLIENT_SECRET }, fetch, jwks: slack.jwks, now }),
     ...(options.oidc === undefined ? {} : {
@@ -308,12 +313,14 @@ export function identityHarness(options: {
         requiredValues: options.oidc.requiredValues ?? [], fetch, jwksFor: () => oidc.jwks, now,
       }),
     }),
+    ...(cloudProvider === undefined ? {} : { cloud: cloudProvider }),
   };
   const deps: DeveloperIdentityDependencies = {
     config: {
       env: "staging", issuer: ISSUER,
       slack: { enabled: options.slack ?? true, ...(teamId === undefined ? {} : { teamId }) },
       ...(options.oidc === undefined ? {} : { oidc: { displayName: "Okta" } }),
+      ...(options.cloud === undefined ? {} : { cloud: { displayName: options.cloud.displayName ?? "Rovara" } }),
     },
     store: new DeveloperSignInStore({ documentClient: db, tableName: "signin", now }),
     orgs,
@@ -331,7 +338,7 @@ export function identityHarness(options: {
     tick: (ms: number) => { clock += ms; },
     now,
     /** GET authorize, follow to the provider, approve as `who`, follow the callback: the CLI's loopback URL. */
-    async signIn(method: "slack" | "oidc", who: string, extra: { teamId?: string; query?: Record<string, string> } = {}): Promise<URL> {
+    async signIn(method: "slack" | "oidc" | "cloud", who: string, extra: { teamId?: string; query?: Record<string, string> } = {}): Promise<URL> {
       let response = await http(httpEvent("GET", authorizeQuery(extra.query)));
       if (response.statusCode === 200) {
         const link = new RegExp(`href="([^"]*method=${method})"`).exec(response.body)?.[1];

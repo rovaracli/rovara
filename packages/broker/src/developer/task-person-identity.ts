@@ -86,7 +86,7 @@ async function currentTask(deps: TaskPersonIdentityDependencies, taskId: string)
   if (!UUID.test(taskId)) return refuse();
   const item = await getItem(deps, taskPk(taskId), "META");
   if (item?.pk !== taskPk(taskId) || item.sk !== "META" || item.entityType !== "DEVELOPER_TASK" || item.taskId !== taskId
-    || typeof item.project !== "string" || !HEX64.test(String(item.developerId)) || (item.provider !== "slack" && item.provider !== "oidc")) return refuse();
+    || typeof item.project !== "string" || !HEX64.test(String(item.developerId)) || (item.provider !== "slack" && item.provider !== "oidc" && item.provider !== "cloud")) return refuse();
   return item as unknown as DeveloperTaskRecord;
 }
 

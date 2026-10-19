@@ -3,7 +3,11 @@
 import { jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
 import { SLACK_OIDC_ISSUER, SlackTeamIdSchema, SlackUserIdSchema, cleanDisplayName, type DeveloperSignInMethod } from "@agentx/contracts";
 
-export interface ProviderIdentity { method: DeveloperSignInMethod; issuer: string; subject: string; displayName: string; email?: string; slackUserId?: string }
+export interface ProviderIdentity {
+  method: DeveloperSignInMethod; issuer: string; subject: string; displayName: string; email?: string; slackUserId?: string;
+  /** The provider vouched for `email` (OIDC `email_verified`); the org a first sign-in lands in may depend on it. */
+  emailVerified?: boolean;
+}
 /** `wrongAccount`: the person signed in fine but is not one AgentX accepts (another Slack workspace,
  * or without the required claim), so signing in as someone else may help. */
 export type ProviderResult = { ok: true; identity: ProviderIdentity } | { ok: false; reason: string; wrongAccount?: true };
@@ -65,8 +69,11 @@ async function verifyIdToken(idToken: string, jwks: JWTVerifyGetKey, options: { 
   return { ok: true, payload };
 }
 
+/** OIDC Core 5.1: `email_verified` is a boolean, but some providers send the string "true". */
+const emailVerifiedClaim = (payload: JWTPayload): boolean => payload.email_verified === true || payload.email_verified === "true";
+
 const verifiedEmail = (payload: JWTPayload): string | undefined =>
-  typeof payload.email === "string" && (payload.email_verified === true || payload.email_verified === "true") ? payload.email : undefined;
+  typeof payload.email === "string" && emailVerifiedClaim(payload) ? payload.email : undefined;
 
 export function slackSignInProvider(input: {
   teamId: string | undefined; credentials: () => Promise<{ clientId?: string; clientSecret?: string }>; fetch: typeof fetch; jwks: JWTVerifyGetKey; now: () => number;
@@ -108,7 +115,7 @@ export function slackSignInProvider(input: {
         identity: {
           method: "slack", issuer: SLACK_OIDC_ISSUER, subject: userId.data,
           displayName: (typeof verified.payload.name === "string" ? cleanDisplayName(verified.payload.name) : undefined) ?? userId.data,
-          ...(email === undefined ? {} : { email }),
+          ...(email === undefined ? {} : { email, emailVerified: true }),
           slackUserId: userId.data,
         },
       };
@@ -119,9 +126,12 @@ export function slackSignInProvider(input: {
 interface Discovery { issuer: string; authorization_endpoint: string; token_endpoint: string; jwks_uri: string }
 
 export function oidcSignInProvider(input: {
+  /** "oidc" is the company's own sign-in; "cloud" is the hosted Rovara one. Default "oidc". */
+  method?: "oidc" | "cloud";
   issuer: string; clientId: string; clientSecret: () => Promise<string>; requiredClaim?: string; requiredValues: readonly string[];
   fetch: typeof fetch; jwksFor: (jwksUri: string) => JWTVerifyGetKey; now: () => number;
 }): SignInProvider {
+  const method = input.method ?? "oidc";
   const issuer = input.issuer.replace(/\/+$/, "");
   let discovery: Promise<Discovery> | undefined;
   const discover = () => {
@@ -145,7 +155,7 @@ export function oidcSignInProvider(input: {
     return discovery;
   };
   return {
-    method: "oidc",
+    method,
     async authorizeUrl({ state, nonce, redirectUri }) {
       const doc = await discover();
       const url = new URL(doc.authorization_endpoint);
@@ -180,9 +190,9 @@ export function oidcSignInProvider(input: {
       return {
         ok: true,
         identity: {
-          method: "oidc", issuer, subject: payload.sub,
+          method, issuer, subject: payload.sub,
           displayName: (name === undefined ? undefined : cleanDisplayName(name)) ?? payload.sub,
-          ...(email === undefined ? {} : { email }),
+          ...(email === undefined ? {} : { email, emailVerified: emailVerifiedClaim(payload) }),
         },
       };
     },

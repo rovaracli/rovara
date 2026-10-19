@@ -30,7 +30,7 @@ export function createDeveloperApiConfiguration(
     ...integrations(issuer, identityFunctionName),
     issuer,
     env,
-    methods: { slack: environment.DEVELOPER_SIGNIN_SLACK === "enabled", oidc: (environment.DEVELOPER_OIDC_ISSUER ?? "") !== "" },
+    methods: { slack: environment.DEVELOPER_SIGNIN_SLACK === "enabled", oidc: (environment.DEVELOPER_OIDC_ISSUER ?? "") !== "", cloud: (environment.DEVELOPER_CLOUD_ISSUER ?? "") !== "" },
     ...(slackTeamId === "" ? {} : { slackTeamId }),
     since: developerSinceFromEnvironment(environment),
     signInTableName,

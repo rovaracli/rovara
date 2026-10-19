@@ -261,7 +261,7 @@ import { PLAN_EVIDENCE_PK, attachEvidence, planCitesCode, planEvidenceDueKey, pl
 import { resolvePlanEvidence } from "../developer/plan-evidence.js";
 import { WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
 import { approvedFeedbackFixes, withFeedbackFixes, withStatusLines } from "../developer/pull-request-feedback-section.js";
-import { installEnvironmentName, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
+import { installEnvironmentName, orgResolverFromEnvironment, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
 import { OrgStore } from "../org/store.js";
 import { requireProject } from "./project-records.js";
 import { admitProjectSetupRuntime, projectSetupBindingDigest, projectSetupRuntimeKey, ProjectSetupRuntimeRecordSchema } from "./project-setup-runtime-catalog.js";
@@ -11831,6 +11831,7 @@ function slackRequestQueue(queueUrl: string): SlackRequestQueue {
   };
 }
 const developer = developerConfiguration();
+const cloudOrgResolver = orgResolverFromEnvironment(process.env, orgStoreOf({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") }));
 
 // Sign in with ChatGPT (#338): set only where the control plane has the connection key.
 const chatGptKeyArn = process.env.CHATGPT_CONNECTION_KEY_ARN;
@@ -11881,6 +11882,8 @@ export const handler = createAwsBrokerHandler({
     : {}),
   ...(developer ? { developer } : {}),
   ...(chatgpt ? { chatgpt } : {}),
+  // Ruling R6: with the cloud sign-in configured, membership decides who has an org; operators of the admin pool have none.
+  ...(cloudOrgResolver === undefined ? {} : { orgResolver: cloudOrgResolver }),
   // Spec 025 A12: set only here, so a test harness without its own `me` never reaches the network.
   adminReads: {
     me: { issuer: requiredEnvironment("OIDC_ISSUER"), fetch, ...(developer?.slackUserByEmail === undefined ? {} : { slackUserByEmail: developer.slackUserByEmail }) },

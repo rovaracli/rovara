@@ -267,9 +267,9 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(stateGrants[0]).toMatchObject({
       Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], Effect: "Allow",
     });
-    // Exactly the bare org partition (20 characters, an org ID's) and the developer's org pointer: no org-scoped, invite, email or Slack team row.
+    // Exactly the bare org partition (20 characters, an org ID's), the developer's org pointer, and the email and invite rows a sign-in reads: no org-scoped or Slack team row.
     expect((stateGrants[0]!.Condition as Record<string, Record<string, unknown>>)["ForAllValues:StringLike"]).toEqual({
-      "dynamodb:LeadingKeys": ["ORG#org_????????????????????", "DEVELOPER_ORG#*"],
+      "dynamodb:LeadingKeys": ["ORG#org_????????????????????", "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*"],
     });
     // FR-045: both functions get each method's enabled-since cutoff straight from its parameter.
     const variables = (prefix: string) => (named.Resources[functionId(named, prefix)]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;

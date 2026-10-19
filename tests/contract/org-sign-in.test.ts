@@ -19,7 +19,7 @@ async function signedIn(h: ReturnType<typeof identityHarness>) {
   return exchanged.body;
 }
 
-describe("resolveOrgOnSignIn (rules 1 and 5)", () => {
+describe("resolveOrgOnSignIn (rules 1 and 5; cloud-sign-in.test.ts has the rest)", () => {
   const input = (developerId: string) => ({ method: "slack" as const, developerId, displayName: "Maya", emailVerified: true });
   const store = () => new OrgStore({ documentClient: new FakeDynamoDb(), tableName: "state", now: () => Date.parse("2026-10-19T00:00:00.000Z") });
 
@@ -45,6 +45,10 @@ describe("resolveOrgOnSignIn (rules 1 and 5)", () => {
     const racing = {
       orgForDeveloper: (async (developerId: string) => (reads++ === 0 ? undefined : real.orgForDeveloper(developerId))) as OrgStore["orgForDeveloper"],
       ensureOrg: real.ensureOrg.bind(real),
+      developerForVerifiedEmail: real.developerForVerifiedEmail.bind(real),
+      createOrgWithOwner: real.createOrgWithOwner.bind(real),
+      acceptInvite: real.acceptInvite.bind(real),
+      peekInvite: real.peekInvite.bind(real),
       addMember: (async () => { throw agentXError("ALREADY_IN_ORG", "this developer already belongs to an organization"); }) as OrgStore["addMember"],
     };
     let reads = 0;

@@ -170,6 +170,13 @@ export class OrgStore {
     return { token };
   }
 
+  /** What an invite grants and whom it was written for, without accepting it; undefined for an unknown token. A sign-in reads this to check an email-targeted invite (ruling R7) before it accepts. */
+  async peekInvite(token: string): Promise<{ orgId: OrgId; role: OrgRole; email?: string } | undefined> {
+    const invite = await this.get(orgInviteKey(sha256Hex(token)));
+    if (invite === undefined) return undefined;
+    return { orgId: invite.orgId as OrgId, role: invite.role as OrgRole, ...(typeof invite.email === "string" ? { email: invite.email } : {}) };
+  }
+
   async acceptInvite(input: { token: string; developerId: string; email?: string }): Promise<{ orgId: OrgId; role: OrgRole }> {
     const tokenHash = sha256Hex(input.token);
     const invite = await this.get(orgInviteKey(tokenHash)) as (Item & OrgInviteRecord) | undefined;

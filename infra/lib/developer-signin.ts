@@ -118,13 +118,14 @@ export class DeveloperSignIn extends Construct {
       actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
       resources: [table.tableArn],
     }));
-    // Orgs and membership (OrgStore): only the bare org partition (the org record and its member rows) and the developer's
-    // org pointer, never an org-scoped row. Its transactions are made of Put and Update items, which IAM authorizes as
+    // Orgs and membership (OrgStore): the bare org partition (the org record and its member rows), the developer's org
+    // pointer, the verified-email pointers that link one person's cloud sign-ins, and the invites a sign-in accepts;
+    // never an org-scoped row. Its transactions are made of Put and Update items, which IAM authorizes as
     // PutItem and UpdateItem. The `?` matches one character each, the 20 of an org ID.
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
       resources: [props.state.tableArn],
-      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ORG#org_????????????????????", "DEVELOPER_ORG#*"] } },
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ORG#org_????????????????????", "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*"] } },
     }));
     tokenKey.grant(fn, "kms:Sign", "kms:GetPublicKey");
     tokenKey.addToResourcePolicy(new iam.PolicyStatement({
