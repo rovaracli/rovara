@@ -1149,17 +1149,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           if (dependencies.swebench === undefined) return json({ batches: [], dropped: [] }, request.requestId);
           return json(await listWatchedBatches(swebenchDependencies(dependencies), async (teamId, channelId) => (await getTeamSlackBinding(dependencies, teamId, channelId))?.projectName), request.requestId);
         }
-        // Task 13: a turn's model key. It needs the thread's team, not a channel binding, so it is answered before the identity.
+        // Task 13: a turn's model key. It needs the thread's team and channel, not the thread's own identity, so it is answered before it.
         if (request.method === "POST" && serviceUrl.pathname === "/v1/model-access") {
           return await handleSlackModelAccess(dependencies, request);
         }
         const identity = await slackServiceIdentity(dependencies, request);
         if (request.method === "POST" && serviceUrl.pathname === "/v1/threads/workspace") {
-          const body = parseBody(request.body);
-          const workspace = await ensureThreadWorkspace(dependencies, identity, body);
-          // Task 13: the org is told only to a service that asks, because older services parse this result strictly.
-          const asksForOrg = body !== null && typeof body === "object" && (body as { includeOrgId?: unknown }).includeOrgId === true;
-          return json(asksForOrg && workspace.outcome === "WORKSPACE" && identity.orgId !== undefined ? { ...workspace, orgId: identity.orgId } : workspace, request.requestId);
+          return json(await ensureThreadWorkspace(dependencies, identity, parseBody(request.body)), request.requestId);
         }
         if (request.method === "POST" && serviceUrl.pathname === "/v1/tasks/thread-notes/answered") {
           return json(await markThreadNoteAnswered(dependencies, identity, parseBody(request.body)), request.requestId);
@@ -4370,22 +4366,23 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
 }
 
 /**
- * Task 13: the key the Slack orchestrator calls models with for one turn. The caller is the orchestrator role, the team
- * comes from the thread header, and the body's org must be the org that team is bound to: the orchestrator cannot name
- * an org the team does not belong to. The key is minted in the Slack user's name only if the org has them as a member,
- * else for the org alone. The proxy's failures all answer MODEL_PROXY_UNAVAILABLE, without detail; the key is never logged.
+ * Task 13 and ruling R32: the key the Slack orchestrator calls models with for one turn. The caller is the orchestrator role;
+ * the team and channel come from the signed thread header and the member from the signed user header, never from the body.
+ * The org is the one the team is bound to, and a body `orgId`, if sent, must equal it. A channel bound to no project in that
+ * org gets no key. The key is minted in the member's name only if the org has them as a member, else for the org alone.
+ * The proxy's failures all answer MODEL_PROXY_UNAVAILABLE, without detail; the key is never logged.
  */
 async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, request: AdaptedHttpRequest) {
   requireSlackServiceRole(dependencies, request);
   const body = SlackModelAccessRequestSchema.safeParse(parseBody(request.body));
-  if (!body.success) throw agentXError("CONFIG_INVALID", "model access needs an orgId, a turnId and optionally a Slack user ID");
-  const context = parseSlackHeaders(request.headers);
-  const teamOrg = await slackTeamOrg(dependencies, context.thread.teamId);
-  if (body.data.orgId !== teamOrg) throw agentXError("FORBIDDEN", "this Slack workspace is not connected to that organization");
+  if (!body.success) throw agentXError("CONFIG_INVALID", "model access needs a turnId and optionally the thread's orgId");
+  const { thread, requester } = parseSlackHeaders(request.headers);
+  const teamOrg = await slackTeamOrg(dependencies, thread.teamId);
+  if (body.data.orgId !== undefined && body.data.orgId !== teamOrg) throw agentXError("FORBIDDEN", "this Slack workspace is not connected to that organization");
+  if (!await getSlackBinding(dependencies, teamOrg, thread.teamId, thread.channelId)) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
   const modelAccess = dependencies.modelAccess;
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
-  const developerId = body.data.slackUserId === undefined ? undefined
-    : await linkedRequester(dependencies, teamOrg, { teamId: context.thread.teamId, userId: body.data.slackUserId });
+  const developerId = await linkedRequester(dependencies, teamOrg, requester);
   try {
     const minted = await modelAccess.access.mintKey({
       orgId: teamOrg, ...(developerId === undefined ? {} : { developerId }), purpose: "turn", refId: body.data.turnId,

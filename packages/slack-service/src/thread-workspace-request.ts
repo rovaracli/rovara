@@ -3,14 +3,12 @@
  * broker withholds from older services, whose strict parse would reject them. `lazyPreparation` opts
  * in to status `UNPREPARED` and the prepare route (spec 014). `includeSharedTask` opts in to `VIEW_ONLY`
  * and `sharedTask` (spec 025). `includeOpenTaskCount` opts in to the member's open AI-tool task count
- * on a LIMIT_REACHED answer (spec 025 C16). `includeOrgId` (sent only where the model proxy is on) opts in to the thread's org
- * on a WORKSPACE answer, which a turn asks the control plane for its model key with (Task 13).
+ * on a LIMIT_REACHED answer (spec 025 C16).
  */
-export function threadWorkspaceRequest(requestId: string, options: { includeOrgId?: boolean } = {}) {
+export function threadWorkspaceRequest(requestId: string) {
   return {
     requestId, includeIntegrations: true, includeSettingsRevision: true, includeConnectors: true,
     includeAllConnectorTypes: true, includeRecoverableOperations: true, lazyPreparation: true, includeActionPolicy: true,
     includeSharedTask: true, includeOpenTaskCount: true,
-    ...(options.includeOrgId === true ? { includeOrgId: true } : {}),
   } as const;
 }

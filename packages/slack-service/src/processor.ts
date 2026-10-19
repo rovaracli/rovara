@@ -125,8 +125,6 @@ export interface TurnInput {
   workspaceId: string;
   conversationId: string;
   orchestratorInstructions: string;
-  /** The org the thread's Slack team is bound to, when the control plane said so (Task 13: a turn's model key is asked for in it). */
-  orgId?: string;
   connectors?: ThreadConnector[];
   repositories?: string[];
   recoverableOperations?: string[];
@@ -738,7 +736,6 @@ export async function processSlackRequest(
         workspaceId: workspace.workspaceId,
         conversationId,
         orchestratorInstructions: workspace.orchestratorInstructions,
-        ...(workspace.orgId === undefined ? {} : { orgId: workspace.orgId }),
         ...(workspace.connectors === undefined ? {} : { connectors: workspace.connectors }),
         ...(workspace.repositories === undefined ? {} : { repositories: workspace.repositories }),
         ...(workspace.recoverableOperations === undefined ? {} : { recoverableOperations: workspace.recoverableOperations }),

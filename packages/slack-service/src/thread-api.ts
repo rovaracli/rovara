@@ -44,7 +44,7 @@ async function serviceRequestWith(signedFetch: typeof fetch, url: string, method
   return parsed;
 }
 
-export function createThreadApi(options: { controlPlaneUrl: string; signedFetch: typeof fetch; pollIntervalMilliseconds?: number; includeOrgId?: boolean }): ThreadServiceApi {
+export function createThreadApi(options: { controlPlaneUrl: string; signedFetch: typeof fetch; pollIntervalMilliseconds?: number }): ThreadServiceApi {
   const { controlPlaneUrl, signedFetch } = options;
   const client = (workspaceId: string) => new ControlPlaneApi(controlPlaneUrl, "slack-service", workspaceId, signedFetch);
 
@@ -58,11 +58,11 @@ export function createThreadApi(options: { controlPlaneUrl: string; signedFetch:
 
   return {
     async ensureWorkspace(requestId) {
-      return SlackThreadWorkspaceResultSchema.parse(await servicePost("/v1/threads/workspace", threadWorkspaceRequest(requestId, { includeOrgId: options.includeOrgId === true }), "thread workspace request failed"));
+      return SlackThreadWorkspaceResultSchema.parse(await servicePost("/v1/threads/workspace", threadWorkspaceRequest(requestId), "thread workspace request failed"));
     },
     async taskAnswerWorkspace(requestId, taskId, commentId) {
       const taskAnswer = commentId === undefined ? { taskId } : { taskId, commentId };
-      return SlackThreadWorkspaceResultSchema.parse(await servicePost("/v1/threads/workspace", { ...threadWorkspaceRequest(requestId, { includeOrgId: options.includeOrgId === true }), taskAnswer }, "task answer workspace request failed"));
+      return SlackThreadWorkspaceResultSchema.parse(await servicePost("/v1/threads/workspace", { ...threadWorkspaceRequest(requestId), taskAnswer }, "task answer workspace request failed"));
     },
     async markCommentAnswered(input) {
       const body = SlackCommentAnsweredRequestSchema.parse(input);

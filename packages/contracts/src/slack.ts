@@ -63,13 +63,12 @@ export type SlackThreadNoteAnsweredRequest = z.infer<typeof SlackThreadNoteAnswe
 export const SlackThreadNoteAnsweredResultSchema = z.object({ outcome: z.literal("ANSWERED") }).strict();
 
 /**
- * The body of POST /v1/service/model-access: the per-turn model key the Slack orchestrator asks for. `orgId` must be
- * the org the thread's Slack team is bound to; `slackUserId` names the requester when known, and the key is minted in
- * that member's name only if the org has them as a member.
+ * The body of POST /v1/service/model-access: the per-turn model key the Slack orchestrator asks for. The org is the one the
+ * thread's Slack team is bound to (ruling R32); `orgId` is optional, and when sent it must equal that org. The member the key
+ * answers to comes from the signed Slack user header, never from the body.
  */
 export const SlackModelAccessRequestSchema = z.object({
-  orgId: OrgIdSchema,
-  slackUserId: SlackUserIdSchema.optional(),
+  orgId: OrgIdSchema.optional(),
   turnId: z.string().min(1).max(200),
 }).strict();
 export type SlackModelAccessRequest = z.infer<typeof SlackModelAccessRequestSchema>;
@@ -104,9 +103,6 @@ export const SlackThreadWorkspaceResultSchema = z.discriminatedUnion("outcome", 
       // read: the broker's untrusted-data text about the task. A service that never asks never sees either field.
       mode: z.literal("task-answer").optional(),
       taskContext: z.string().min(1).max(SLACK_TASK_CONTEXT_MAX_CHARS).optional(),
-      // The org this thread's Slack team is bound to. Sent only to a service that sends includeOrgId: true, which asks
-      // for the org in order to request a per-turn model key (Task 13); older services parse this result strictly.
-      orgId: OrgIdSchema.optional(),
     })
     .strict(),
   z

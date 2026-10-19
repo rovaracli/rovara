@@ -17,8 +17,8 @@ export interface TurnModelAccessInput {
   controlPlaneUrl: string;
   /** Signs the request as the orchestrator role, for the turn's thread (see createSignedServiceFetch). */
   signedFetch: typeof fetch;
-  orgId: string;
-  slackUserId?: string;
+  /** The thread's org when known; the control plane derives it from the signed thread's team (R32) and refuses one that differs. */
+  orgId?: string;
   /** The Slack event's ID: one turn, one reference on the key. */
   turnId: string;
   now?: () => number;
@@ -43,7 +43,8 @@ function parseTurnModelAccess(body: unknown): TurnModelAccess {
 export function turnModelAccessSource(input: TurnModelAccessInput): () => Promise<TurnModelAccess> {
   const now = input.now ?? Date.now;
   const url = `${input.controlPlaneUrl.replace(/\/$/u, "")}/v1/model-access`;
-  const body = JSON.stringify({ orgId: input.orgId, ...(input.slackUserId === undefined ? {} : { slackUserId: input.slackUserId }), turnId: input.turnId });
+  // The member comes from the signed Slack user header, so only the org (when known) and the turn go in the body.
+  const body = JSON.stringify({ ...(input.orgId === undefined ? {} : { orgId: input.orgId }), turnId: input.turnId });
   let current: TurnModelAccess | undefined;
   let pending: Promise<TurnModelAccess> | undefined;
   return async () => {

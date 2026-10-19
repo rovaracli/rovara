@@ -2,9 +2,10 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
-import { agentXError, type SlackRequestMessage, type SlackThreadWorkspaceResult } from "../../packages/contracts/src/index.js";
+import { agentXError, type SlackRequestMessage } from "../../packages/contracts/src/index.js";
 import type { OrgId } from "../../packages/contracts/src/org.js";
 import type { MintKeyInput, MintedKey, ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
+import { slackBindingKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { createModelClassifier } from "../../packages/orchestrator/src/action-classifier.js";
@@ -12,13 +13,14 @@ import { createOrchestratorRuntime } from "../../packages/orchestrator/src/orche
 import { createModelRequestRouter } from "../../packages/orchestrator/src/request-router.js";
 import { createConfiguredModelRuntime } from "../../packages/model-runtime/src/index.js";
 import { TURN_ACCESS_MARGIN_MS, turnModelAccessSource, turnModelProxy } from "../../packages/slack-service/src/model-access.js";
-import { processSlackRequest, type ProcessorDependencies, type TurnInput } from "../../packages/slack-service/src/processor.js";
-import { createThreadApi } from "../../packages/slack-service/src/thread-api.js";
-import { threadWorkspaceRequest } from "../../packages/slack-service/src/thread-workspace-request.js";
+import { createProxiedModels } from "../../packages/slack-service/src/proxied-models.js";
+import { routeSlackRequest } from "../../packages/slack-service/src/request-routing.js";
+import { createHostedClassifier, createHostedRequestRouter } from "../../packages/slack-service/src/runtime.js";
+import { runTaskAnswer } from "../../packages/slack-service/src/task-question.js";
 import { createFixtureDirectory } from "../fixtures/index.js";
 import { seedMembership } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, ensureWorkspace, loadSlackBroker, orchestratorPrincipal, registerSlackProject, type Handler } from "../support/slack-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, loadSlackBroker, orchestratorPrincipal, registerSlackProject, type Handler } from "../support/slack-broker.js";
 
 const PROXY_URL = "http://internal-proxy.example.test:4000";
 const TURN_KEY = "sk-proxy-per-turn-key-0001";
@@ -52,10 +54,10 @@ async function boundInstall(failure?: Error) {
 
 const bodyText = (init: RequestInit | undefined): string => typeof init?.body === "string" ? init.body : "";
 
-const askFor = (handler: Handler, body: unknown, options: { thread?: string; principal?: string } = {}) => call(handler, {
+const askFor = (handler: Handler, body: unknown, options: { thread?: string; principal?: string; user?: string } = {}) => call(handler, {
   method: "POST",
   path: "/v1/service/model-access",
-  service: { principal: options.principal ?? orchestratorPrincipal, thread: options.thread ?? THREAD, slackUser: SLACK_USER },
+  service: { principal: options.principal ?? orchestratorPrincipal, thread: options.thread ?? THREAD, slackUser: options.user ?? SLACK_USER },
   body,
 });
 
@@ -70,25 +72,44 @@ describe("POST /v1/service/model-access", () => {
     expect(h.mintKey.mock.calls[0]![0]).not.toHaveProperty("developerId");
   });
 
-  it("mints in the Slack user's name when the org has them as a member", async () => {
+  it("mints for the team's org when the body names no org (R32), and for the org alone", async () => {
+    const h = await boundInstall();
+    expect((await askFor(h.handler, { turnId: "Ev1" })).status).toBe(200);
+    expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, purpose: "turn", refId: "Ev1", maxBudgetUsd: 2, ttlSeconds: 900 });
+  });
+
+  it("mints in the name of the member the signed Slack user header names, when the org has them as a member", async () => {
     const h = await boundInstall();
     seedMembership(h.db, developerIdForSlackUser(SLACK_USER), { orgId: TEST_ORG, role: "member" });
-    expect((await askFor(h.handler, { orgId: TEST_ORG, slackUserId: SLACK_USER, turnId: "Ev1" })).status).toBe(200);
+    expect((await askFor(h.handler, { turnId: "Ev1" })).status).toBe(200);
     expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, developerId: developerIdForSlackUser(SLACK_USER), purpose: "turn", refId: "Ev1", maxBudgetUsd: 2, ttlSeconds: 900 });
+  });
+
+  it("takes the member from the header alone: another member's key cannot be asked for in the body", async () => {
+    const h = await boundInstall();
+    const other = "U0OTHERUSER1";
+    seedMembership(h.db, developerIdForSlackUser(other), { orgId: TEST_ORG, role: "member" });
+    expect(await askFor(h.handler, { orgId: TEST_ORG, slackUserId: other, turnId: "Ev1" })).toMatchObject({ status: 400, body: { error: { code: "CONFIG_INVALID" } } });
+    expect(h.mintKey).not.toHaveBeenCalled();
+    // The header's own user is no member, so the key answers to the org alone, whoever else the org has.
+    expect((await askFor(h.handler, { turnId: "Ev2" })).status).toBe(200);
+    expect(h.mintKey.mock.calls[0]![0]).not.toHaveProperty("developerId");
+    expect((await askFor(h.handler, { turnId: "Ev3" }, { user: other })).status).toBe(200);
+    expect(h.mintKey.mock.calls[1]![0]).toMatchObject({ developerId: developerIdForSlackUser(other) });
   });
 
   it("mints for the org alone when the Slack user is no member of it, or of any org", async () => {
     const h = await boundInstall();
-    expect((await askFor(h.handler, { orgId: TEST_ORG, slackUserId: SLACK_USER, turnId: "Ev1" })).status).toBe(200);
+    expect((await askFor(h.handler, { orgId: TEST_ORG, turnId: "Ev1" })).status).toBe(200);
     seedMembership(h.db, developerIdForSlackUser(SLACK_USER), { orgId: ORG_B, role: "member" });
-    expect((await askFor(h.handler, { orgId: TEST_ORG, slackUserId: SLACK_USER, turnId: "Ev2" })).status).toBe(200);
+    expect((await askFor(h.handler, { orgId: TEST_ORG, turnId: "Ev2" })).status).toBe(200);
     expect(h.mintKey).toHaveBeenCalledTimes(2);
     for (const [input] of h.mintKey.mock.calls) expect(input).not.toHaveProperty("developerId");
   });
 
   it("refuses a body whose org is not the team's org with FORBIDDEN, and mints nothing", async () => {
     const h = await boundInstall();
-    const refused = await askFor(h.handler, { orgId: ORG_B, slackUserId: SLACK_USER, turnId: "Ev1" });
+    const refused = await askFor(h.handler, { orgId: ORG_B, turnId: "Ev1" });
     expect(refused).toMatchObject({ status: 403, body: { error: { code: "FORBIDDEN" } } });
     expect(h.mintKey).not.toHaveBeenCalled();
     expect(JSON.stringify(refused.body)).not.toContain(TURN_KEY);
@@ -98,20 +119,39 @@ describe("POST /v1/service/model-access", () => {
     const h = await boundInstall();
     const store = new OrgStore({ documentClient: h.db, tableName: "state", now: Date.now });
     await store.bindSlackTeam({ orgId: ORG_A, teamId: "T0TEAMAAAA1" });
+    const channelOfA = { ...slackBindingKey(ORG_A, "T0TEAMAAAA1", SLACK_CHANNEL), teamId: "T0TEAMAAAA1", channelId: SLACK_CHANNEL, projectName: "payments", entityType: "SLACK_BINDING", updatedAt: "2026-09-23T21:00:00.000Z" };
+    h.db.set(channelOfA);
     const otherThread = `T0TEAMAAAA1/${SLACK_CHANNEL}/1695500000.000001`;
     expect((await askFor(h.handler, { orgId: TEST_ORG, turnId: "Ev1" }, { thread: otherThread })).status).toBe(403);
     expect(h.mintKey).not.toHaveBeenCalled();
     expect((await askFor(h.handler, { orgId: ORG_A, turnId: "Ev1" }, { thread: otherThread })).status).toBe(200);
-    expect(h.mintKey).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_A }));
-    // The first team's own org is refused from the second team's thread and answered from its own.
-    expect((await askFor(h.handler, { orgId: ORG_A, turnId: "Ev2" })).status).toBe(403);
-    expect(h.mintKey).toHaveBeenCalledTimes(1);
+    expect(h.mintKey).toHaveBeenLastCalledWith(expect.objectContaining({ orgId: ORG_A }));
+    // With no org in the body, each team's key is for its own org.
+    expect((await askFor(h.handler, { turnId: "Ev3" }, { thread: otherThread })).status).toBe(200);
+    expect(h.mintKey).toHaveBeenLastCalledWith(expect.objectContaining({ orgId: ORG_A }));
+    expect((await askFor(h.handler, { turnId: "Ev4" })).status).toBe(200);
+    expect(h.mintKey).toHaveBeenLastCalledWith(expect.objectContaining({ orgId: TEST_ORG }));
+    // The first team's own org is refused from the second team's thread.
+    expect((await askFor(h.handler, { orgId: TEST_ORG, turnId: "Ev2" }, { thread: otherThread })).status).toBe(403);
+    expect(h.mintKey).toHaveBeenCalledTimes(3);
   });
 
   it("refuses a thread from a team bound to no org, minting nothing", async () => {
     const h = await boundInstall();
     const refused = await askFor(h.handler, { orgId: TEST_ORG, turnId: "Ev1" }, { thread: `T0UNBOUND01/${SLACK_CHANNEL}/1695500000.000001` });
     expect(refused).toMatchObject({ status: 403, body: { error: { code: "SLACK_TEAM_NOT_BOUND" } } });
+    expect(h.mintKey).not.toHaveBeenCalled();
+  });
+
+  it("refuses a channel bound to no project in the team's org, with or without an org in the body, minting nothing", async () => {
+    const h = await boundInstall();
+    const unbound = `${SLACK_TEAM}/C0UNBOUND01/1695500000.000001`;
+    for (const body of [{ turnId: "Ev1" }, { orgId: TEST_ORG, turnId: "Ev1" }]) {
+      expect(await askFor(h.handler, body, { thread: unbound })).toMatchObject({ status: 403, body: { error: { code: "FORBIDDEN", message: "Slack channel is not bound to a project" } } });
+    }
+    // A binding another org holds for that channel name does not make it bound in this team's org.
+    h.db.set({ ...slackBindingKey(ORG_B, SLACK_TEAM, "C0UNBOUND01"), teamId: SLACK_TEAM, channelId: "C0UNBOUND01", projectName: "payments", entityType: "SLACK_BINDING", updatedAt: "2026-09-23T21:00:00.000Z" });
+    expect((await askFor(h.handler, { turnId: "Ev1" }, { thread: unbound })).status).toBe(403);
     expect(h.mintKey).not.toHaveBeenCalled();
   });
 
@@ -126,9 +166,8 @@ describe("POST /v1/service/model-access", () => {
   it.each([
     ["an unknown field", { orgId: TEST_ORG, turnId: "Ev1", maxBudgetUsd: 1000 }],
     ["no turn", { orgId: TEST_ORG }],
-    ["no org", { turnId: "Ev1" }],
     ["a malformed org", { orgId: "not-an-org", turnId: "Ev1" }],
-    ["a malformed Slack user", { orgId: TEST_ORG, slackUserId: "someone", turnId: "Ev1" }],
+    ["a Slack user in the body", { orgId: TEST_ORG, slackUserId: "U0123456789", turnId: "Ev1" }],
   ])("refuses %s with CONFIG_INVALID, minting nothing", async (_name, body) => {
     const h = await boundInstall();
     expect(await askFor(h.handler, body)).toMatchObject({ status: 400, body: { error: { code: "CONFIG_INVALID" } } });
@@ -165,41 +204,15 @@ describe("POST /v1/service/model-access", () => {
   });
 });
 
-describe("POST /v1/service/threads/workspace tells the org only to a service that asks", () => {
-  it("adds orgId to a WORKSPACE answer for includeOrgId: true, and leaves it out otherwise", async () => {
-    const h = await boundInstall();
-    const plain = await ensureWorkspace(h.handler, THREAD, SLACK_USER);
-    expect(plain.body).toMatchObject({ outcome: "WORKSPACE" });
-    expect(plain.body).not.toHaveProperty("orgId");
-    const asked = await call(h.handler, {
-      method: "POST", path: "/v1/service/threads/workspace", service: { principal: orchestratorPrincipal, thread: THREAD, slackUser: SLACK_USER },
-      body: threadWorkspaceRequest(randomUUID(), { includeOrgId: true }),
-    });
-    expect(asked.body).toMatchObject({ outcome: "WORKSPACE", orgId: TEST_ORG });
-  });
-
-  it("is sent by the Slack service's thread API only when it is asked to", async () => {
-    const sent: unknown[] = [];
-    const respond = async (_url: unknown, init?: RequestInit): Promise<Response> => {
-      sent.push(JSON.parse(bodyText(init)));
-      return new Response(JSON.stringify({ outcome: "WORKSPACE", workspaceId: randomUUID(), status: "READY", operationId: null, created: false, orchestratorInstructions: "x", orgId: TEST_ORG }), { status: 200 });
-    };
-    await createThreadApi({ controlPlaneUrl: "https://api.example.test", signedFetch: respond }).ensureWorkspace(randomUUID());
-    await createThreadApi({ controlPlaneUrl: "https://api.example.test", signedFetch: respond, includeOrgId: true }).ensureWorkspace(randomUUID());
-    expect(sent[0]).not.toHaveProperty("includeOrgId");
-    expect(sent[1]).toMatchObject({ includeOrgId: true });
-  });
-});
-
 /** The orchestrator's signed fetch, answered by the broker: the service prefix and the thread headers, as createSignedServiceFetch adds them. */
-function signedFetchTo(handler: Handler, onRequest?: (body: unknown) => void): typeof fetch {
+function signedFetchTo(handler: Handler, onRequest?: (body: unknown) => void, as: { thread: string; user: string } = { thread: THREAD, user: SLACK_USER }): typeof fetch {
   return async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
     onRequest?.(body);
     const response = await call(handler, {
       method: init?.method ?? "GET", path: `/v1/service${url.pathname.slice("/v1".length)}`,
-      service: { principal: orchestratorPrincipal, thread: THREAD, slackUser: SLACK_USER }, ...(body === undefined ? {} : { body }),
+      service: { principal: orchestratorPrincipal, thread: as.thread, slackUser: as.user }, ...(body === undefined ? {} : { body }),
     });
     return new Response(JSON.stringify(response.body), { status: response.status, headers: { "content-type": "application/json" } });
   };
@@ -209,7 +222,7 @@ describe("a turn's model access in the Slack service", () => {
   it("asks once for the turn and builds the runtime with the key the control plane returned", async () => {
     const h = await boundInstall();
     const requests: unknown[] = [];
-    const source = turnModelAccessSource({ controlPlaneUrl: "https://api.example.test/", signedFetch: signedFetchTo(h.handler, (body) => requests.push(body)), orgId: TEST_ORG, slackUserId: SLACK_USER, turnId: "Ev42" });
+    const source = turnModelAccessSource({ controlPlaneUrl: "https://api.example.test/", signedFetch: signedFetchTo(h.handler, (body) => requests.push(body)), turnId: "Ev42" });
     const proxy = await turnModelProxy(source);
     const seen: Array<{ url: string; key: string | null }> = [];
     const transport = vi.fn<typeof fetch>(async (input, init) => {
@@ -222,13 +235,13 @@ describe("a turn's model access in the Slack service", () => {
     expect(seen.length).toBeGreaterThan(0);
     for (const request of seen) expect(request).toMatchObject({ key: TURN_KEY });
     expect(new URL(seen[0]!.url).origin).toBe(PROXY_URL);
-    expect(requests).toEqual([{ orgId: TEST_ORG, slackUserId: SLACK_USER, turnId: "Ev42" }]);
+    expect(requests).toEqual([{ turnId: "Ev42" }]);
     expect(h.mintKey).toHaveBeenCalledTimes(1);
   });
 
   it("builds the orchestrator, the classifier and the router of one turn from the same single mint", async () => {
     const h = await boundInstall();
-    const source = turnModelAccessSource({ controlPlaneUrl: "https://api.example.test", signedFetch: signedFetchTo(h.handler), orgId: TEST_ORG, turnId: "Ev42" });
+    const source = turnModelAccessSource({ controlPlaneUrl: "https://api.example.test", signedFetch: signedFetchTo(h.handler), turnId: "Ev42" });
     const proxy = await turnModelProxy(source);
     const model = { provider: "amazon-bedrock", modelId: BEDROCK_MODEL };
     const runtime = await createOrchestratorRuntime({
@@ -272,9 +285,9 @@ describe("a turn's model access in the Slack service", () => {
 
 describe("turnModelAccessSource", () => {
   const answer = (key: string, expiresAt: number) => new Response(JSON.stringify({ baseUrl: PROXY_URL, apiKey: key, expiresAt }), { status: 200, headers: { "content-type": "application/json" } });
-  const input = (signedFetch: typeof fetch, now: () => number) => ({ controlPlaneUrl: "https://api.example.test/", signedFetch, orgId: TEST_ORG, slackUserId: SLACK_USER, turnId: "Ev1", now });
+  const input = (signedFetch: typeof fetch, now: () => number) => ({ controlPlaneUrl: "https://api.example.test/", signedFetch, orgId: TEST_ORG, turnId: "Ev1", now });
 
-  it("posts the org, user and turn to the model-access route, and caches until a minute before expiry", async () => {
+  it("posts the org and turn to the model-access route, and caches until a minute before expiry", async () => {
     let now = 1_000_000;
     const expiresAt = now + 900_000;
     const signed = vi.fn<typeof fetch>(async () => answer("sk-proxy-a", expiresAt));
@@ -285,7 +298,7 @@ describe("turnModelAccessSource", () => {
     const [url, init] = signed.mock.calls[0]!;
     expect(url).toBe("https://api.example.test/v1/model-access");
     expect(init?.method).toBe("POST");
-    expect(JSON.parse(bodyText(init))).toEqual({ orgId: TEST_ORG, slackUserId: SLACK_USER, turnId: "Ev1" });
+    expect(JSON.parse(bodyText(init))).toEqual({ orgId: TEST_ORG, turnId: "Ev1" });
     now = expiresAt - TURN_ACCESS_MARGIN_MS - 1;
     await source();
     expect(signed).toHaveBeenCalledTimes(1);
@@ -326,34 +339,59 @@ describe("turnModelAccessSource", () => {
   });
 });
 
-describe("the turn the processor hands the Slack service", () => {
-  const workspaceId = "11111111-1111-4111-8111-111111111111";
-  const conversationId = "33333333-3333-4333-8333-333333333333";
+describe("the model access of one Slack message (R32)", () => {
   const message: SlackRequestMessage = {
-    version: 1, eventId: "EvORG000001", receivedAt: "2026-09-24T10:00:00.000Z", userId: SLACK_USER,
-    thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000001" }, text: "list open items",
+    version: 1, eventId: "EvONE0000001", receivedAt: "2026-10-19T10:00:00.000Z", userId: SLACK_USER,
+    thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000001" }, text: "fix the bug",
   };
-  const turnFor = async (workspace: SlackThreadWorkspaceResult) => {
-    const turns: TurnInput[] = [];
-    const dependencies: ProcessorDependencies = {
-      api: () => ({
-        ensureWorkspace: async () => workspace, startClose: async () => ({ outcome: "NOT_FOUND" }), completeClose: vi.fn(), waitForOperation: vi.fn(),
-        createConversation: async () => conversationId,
-      }),
-      threads: { load: async () => ({ workspaceId, conversationId }), saveConversation: vi.fn(), saveSettingsRevision: vi.fn(), close: vi.fn(), finish: vi.fn(async () => undefined) },
-      runTurn: async (input) => { turns.push(input); return "done"; },
-      post: async () => undefined,
-    };
-    await processSlackRequest(message, dependencies, { finalAttempt: false });
-    return turns[0]!;
-  };
-  const answered = { outcome: "WORKSPACE", workspaceId, status: "READY", operationId: null, created: false, orchestratorInstructions: "Delegate coding." } as const;
+  const logs: Array<{ event: string; fields: Readonly<Record<string, string | number | boolean>> }> = [];
 
-  it("carries the org the control plane named, so the key is asked for in it", async () => {
-    expect(await turnFor({ ...answered, orgId: TEST_ORG })).toMatchObject({ orgId: TEST_ORG });
+  async function wired() {
+    const h = await boundInstall();
+    const models = createProxiedModels({
+      controlPlaneUrl: "https://api.example.test",
+      signedFetchFor: (m) => signedFetchTo(h.handler, undefined, { thread: `${m.thread.teamId}/${m.thread.channelId}/${m.thread.threadTs}`, user: m.userId }),
+      classifierModel: { provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5-20251001-v1:0" }, classifierTimeoutMs: 8_000,
+      log: (event, fields) => { logs.push({ event, fields }); },
+      createClassifier: createHostedClassifier,
+      // The real router is built (it asks for its key); the stub only keeps the test off the network when it routes.
+      createRouter: async (options) => { await createHostedRequestRouter(options); return async () => ({ kind: "question", outcome: "ok" }); },
+    });
+    return { ...h, models };
+  }
+
+  it("mints once for a routed request: the router, then the chat turn's runtime and classifier, share one key", async () => {
+    const h = await wired();
+    const turns: string[] = [];
+    await routeSlackRequest(message, {
+      route: h.models.routerFor(message),
+      offer: vi.fn(), notify: vi.fn(), finish: vi.fn(async () => undefined), log: () => undefined,
+      // What processRequest does next: runTurn asks for the turn's models for the same message.
+      answer: async (routed) => { const { proxy } = await h.models.turnModels(routed); turns.push(await proxy.apiKey()); },
+    });
+    expect(turns).toEqual([TURN_KEY]);
+    expect(h.mintKey).toHaveBeenCalledTimes(1);
+    expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, purpose: "turn", refId: message.eventId, maxBudgetUsd: 2, ttlSeconds: 900 });
   });
 
-  it("carries no org when the control plane named none", async () => {
-    expect(await turnFor(answered)).not.toHaveProperty("orgId");
+  it("mints once for a task answer too, and once more for a different message", async () => {
+    const h = await wired();
+    const workspaceId = "11111111-1111-4111-8111-111111111111";
+    const taskId = "22222222-2222-4222-8222-222222222222";
+    const api = { taskAnswerWorkspace: async () => ({ outcome: "WORKSPACE" as const, workspaceId, status: "READY" as const, operationId: null, created: false, orchestratorInstructions: "Answer.", mode: "task-answer" as const, taskContext: "context" }) };
+    const runTurn = async (input: { message: SlackRequestMessage }) => { await h.models.routerFor(input.message)("is it done?"); await h.models.turnModels(input.message); return "yes"; };
+    expect(await runTaskAnswer(message, { taskId } as never, "is it done?", { api: api as never, runTurn })).toBe("yes");
+    expect(h.mintKey).toHaveBeenCalledTimes(1);
+    await h.models.turnModels({ ...message, eventId: "EvTWO0000002" });
+    expect(h.mintKey).toHaveBeenCalledTimes(2);
+  });
+
+  it("makes the router unavailable, never a throw, when no key can be had, and mints nothing for an unbound channel", async () => {
+    const h = await wired();
+    const unbound: SlackRequestMessage = { ...message, thread: { ...message.thread, channelId: "C0UNBOUND01" } };
+    expect(await h.models.routerFor(unbound)("fix it")).toEqual({ kind: "unclear", outcome: "unavailable" });
+    expect(logs).toContainEqual(expect.objectContaining({ event: "route.router_unavailable" }));
+    expect(h.mintKey).not.toHaveBeenCalled();
+    await expect(h.models.turnModels(unbound)).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 });

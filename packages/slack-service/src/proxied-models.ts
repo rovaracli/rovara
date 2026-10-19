@@ -1,0 +1,73 @@
+// Task 13 and ruling R32: the model access of Slack requests when the model proxy is on. One access source is made per incoming
+// message (keyed by its event ID), so the router, the gate's classifier and the orchestrator's runtime of one message share a
+// single key request however many of them it uses, and a redelivery of the message reuses the key until it nears its end.
+import type { SlackRequestMessage } from "@agentx/contracts";
+import type { RequestRouter } from "@agentx/orchestrator/request-router";
+import type { ActionClassifier } from "@agentx/orchestrator/action-gate";
+import { turnModelAccessSource, turnModelProxy, type TurnModelAccess } from "./model-access.js";
+import type { createHostedClassifier, createHostedRequestRouter } from "./runtime.js";
+import type { ServiceLog } from "./processor.js";
+
+/** The most messages whose access source is kept; the oldest is let go first. */
+const REMEMBERED_MESSAGES = 256;
+
+export interface ProxiedModelsOptions {
+  controlPlaneUrl: string;
+  /** Signs a request as the orchestrator role for this message's thread and member. */
+  signedFetchFor: (message: SlackRequestMessage) => typeof fetch;
+  classifierModel: { provider: string; modelId: string };
+  classifierTimeoutMs: number;
+  log: ServiceLog;
+  createClassifier: typeof createHostedClassifier;
+  createRouter: typeof createHostedRequestRouter;
+  now?: () => number;
+}
+
+export interface ProxiedModels {
+  /** The message's proxy; the key is requested once for the message and again only as it nears its end. */
+  proxyFor(message: SlackRequestMessage): Promise<{ baseUrl: string; apiKey: () => Promise<string> }>;
+  /** The proxy and the gate's classifier for the message's turn. */
+  turnModels(message: SlackRequestMessage): Promise<{ proxy: { baseUrl: string; apiKey: () => Promise<string> }; classifier: ActionClassifier }>;
+  /** The router for the message: made on first use, and unavailable (never a throw) when no key can be had. */
+  routerFor(message: SlackRequestMessage): RequestRouter;
+}
+
+export function createProxiedModels(options: ProxiedModelsOptions): ProxiedModels {
+  const sources = new Map<string, () => Promise<TurnModelAccess>>();
+  const sourceFor = (message: SlackRequestMessage) => {
+    let source = sources.get(message.eventId);
+    if (source === undefined) {
+      source = turnModelAccessSource({
+        controlPlaneUrl: options.controlPlaneUrl, signedFetch: options.signedFetchFor(message), turnId: message.eventId,
+        ...(options.now === undefined ? {} : { now: options.now }),
+      });
+      sources.set(message.eventId, source);
+      if (sources.size > REMEMBERED_MESSAGES) sources.delete(sources.keys().next().value as string);
+    }
+    return source;
+  };
+  const proxyFor: ProxiedModels["proxyFor"] = (message) => turnModelProxy(sourceFor(message));
+  return {
+    proxyFor,
+    async turnModels(message) {
+      const proxy = await proxyFor(message);
+      const { classifier } = await options.createClassifier({ model: options.classifierModel, timeoutMs: options.classifierTimeoutMs, log: options.log, proxy });
+      return { proxy, classifier };
+    },
+    routerFor(message) {
+      let made: ReturnType<typeof options.createRouter> | undefined;
+      return async (text, signal) => {
+        try {
+          made ??= proxyFor(message).then((proxy) => options.createRouter({
+            classifierAvailable: true, model: options.classifierModel, timeoutMs: options.classifierTimeoutMs, log: options.log, proxy,
+          }));
+          const router = await made;
+          return router === undefined ? { kind: "unclear", outcome: "unavailable" } : await router(text, signal);
+        } catch (error) {
+          options.log("route.router_unavailable", { eventId: message.eventId, errorName: error instanceof Error ? error.name : "unknown" });
+          return { kind: "unclear", outcome: "unavailable" };
+        }
+      };
+    },
+  };
+}

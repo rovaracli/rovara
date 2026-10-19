@@ -13,7 +13,7 @@ import {
 } from "@aws-sdk/client-sqs";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import {
-  SLACK_CHAT_ATTRIBUTE, SLACK_NOTE_TS_ATTRIBUTE, SLACK_QUEUED_BEHIND_ATTRIBUTE, SLACK_ROUTE_ATTRIBUTE, SLACK_TASK_ID_ATTRIBUTE, agentXError, confirmationBlocks,
+  SLACK_CHAT_ATTRIBUTE, SLACK_NOTE_TS_ATTRIBUTE, SLACK_QUEUED_BEHIND_ATTRIBUTE, SLACK_ROUTE_ATTRIBUTE, SLACK_TASK_ID_ATTRIBUTE, confirmationBlocks,
   isPageCommentRoute, queuedBehindOf, routeOf, sharedNoticeClaim, taskQuestionOf, type SlackRequestMessage,
 } from "@agentx/contracts";
 import { ControlPlaneApi } from "@agentx/orchestrator/control-plane-api";
@@ -22,7 +22,7 @@ import { createDynamoActiveTurnStore } from "./active-turn-store.js";
 import { createDynamoConfirmationStore } from "./confirmation-store.js";
 import { runConsumer, type QueueClient } from "./consumer.js";
 import { processSlackRequest, type ServiceLog, type ThreadServiceApi, type ThreadStore, type TurnInput } from "./processor.js";
-import { turnModelAccessSource, turnModelProxy } from "./model-access.js";
+import { createProxiedModels } from "./proxied-models.js";
 import { createSignedServiceFetch } from "./signing-fetch.js";
 import { createSlackUserNames } from "./user-names.js";
 import { createEvalBatchWatchApi, createThreadApi } from "./thread-api.js";
@@ -60,8 +60,6 @@ const model = {
 // Task 13: with the model proxy's address set, every model call of a turn goes through it with a key the control plane mints
 // for that turn, and the service reads no provider secret. Unset, models are reached as they always were.
 const modelProxyEnabled = (process.env.AGENTX_MODEL_PROXY_URL ?? "") !== "";
-/** The org of each Slack team this service has run a turn for, so the request router (which runs before any workspace is asked for) can ask for its key. */
-const orgByTeam = new Map<string, string>();
 
 const credentials = defaultProvider();
 const sqs = new SQSClient({ region });
@@ -164,38 +162,20 @@ async function deleteFromSlack(channel: string, ts: string): Promise<void> {
 
 function threadApi(message: SlackRequestMessage): ThreadServiceApi {
   const signedFetch = createSignedServiceFetch({ region, credentials, thread: message.thread, userId: message.userId });
-  return createThreadApi({ controlPlaneUrl, signedFetch, ...(modelProxyEnabled ? { includeOrgId: true } : {}) });
+  return createThreadApi({ controlPlaneUrl, signedFetch });
 }
 
-/** This turn's model proxy: one key request for the turn (asked for again only as the key nears its end). */
-async function turnProxy(message: SlackRequestMessage, orgId: string | undefined) {
-  if (orgId === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the control plane did not say which organization this thread belongs to");
-  orgByTeam.set(message.thread.teamId, orgId);
-  const signedFetch = createSignedServiceFetch({ region, credentials, thread: message.thread, userId: message.userId });
-  return turnModelProxy(turnModelAccessSource({ controlPlaneUrl, signedFetch, orgId, slackUserId: message.userId, turnId: message.eventId }));
-}
+// Task 13, R32: one access source per incoming message, shared by its router, its classifier and its orchestrator runtime.
+const proxiedModels = modelProxyEnabled ? createProxiedModels({
+  controlPlaneUrl,
+  signedFetchFor: (message) => createSignedServiceFetch({ region, credentials, thread: message.thread, userId: message.userId }),
+  classifierModel, classifierTimeoutMs: gateClassifierTimeoutMs, log,
+  createClassifier: createHostedClassifier, createRouter: createHostedRequestRouter,
+}) : undefined;
 
 function routeOption(message: SlackRequestMessage): { route?: NonNullable<typeof requestRouter> } {
-  const route = requestRouterFor(message);
+  const route = proxiedModels === undefined ? requestRouter : proxiedModels.routerFor(message);
   return route === undefined ? {} : { route };
-}
-
-/** The router for one request: with the proxy, made on first use with a key for that request, and only for a team whose org is known. */
-function requestRouterFor(message: SlackRequestMessage): typeof requestRouter {
-  if (!modelProxyEnabled) return requestRouter;
-  const orgId = orgByTeam.get(message.thread.teamId);
-  if (orgId === undefined) return undefined;
-  let made: Promise<Awaited<ReturnType<typeof createHostedRequestRouter>>> | undefined;
-  return async (text, signal) => {
-    try {
-      made ??= turnProxy(message, orgId).then((proxy) => createHostedRequestRouter({ classifierAvailable, model: classifierModel, timeoutMs: gateClassifierTimeoutMs, log, proxy }));
-      const router = await made;
-      return router === undefined ? { kind: "unclear", outcome: "unavailable" } : await router(text, signal);
-    } catch (error) {
-      log("route.router_unavailable", { eventId: message.eventId, errorName: error instanceof Error ? error.name : "unknown" });
-      return { kind: "unclear", outcome: "unavailable" };
-    }
-  };
 }
 
 const threads: ThreadStore = {
@@ -313,10 +293,10 @@ async function runTurn(input: TurnInput): Promise<string> {
     if (sessionFile !== undefined && saved !== undefined) await writeFile(sessionFile, saved, { mode: 0o600 });
     const userName = await slackUserName(input.message.userId);
     const signedFetch = createSignedServiceFetch({ region, credentials, thread: input.message.thread, userId: input.message.userId, ...(userName === undefined ? {} : { userName }) });
-    // One proxy and key for the whole turn: the orchestrator's model and the gate's classifier share it.
-    const proxy = modelProxyEnabled ? await turnProxy(input.message, input.orgId) : undefined;
-    const turnClassifier = proxy === undefined ? classifier
-      : (await createHostedClassifier({ model: classifierModel, timeoutMs: gateClassifierTimeoutMs, log, proxy })).classifier;
+    // One proxy and key for the whole message: the orchestrator's model and the gate's classifier share it (and the router's).
+    const turn = await proxiedModels?.turnModels(input.message);
+    const proxy = turn?.proxy;
+    const turnClassifier = turn === undefined ? classifier : turn.classifier;
     const runtime = await createHostedSlackRuntime(input, {
       stateDirectory: directory,
       ...(proxy === undefined ? {} : { proxy }),
