@@ -22,6 +22,8 @@ export interface FakeModelAccess extends ModelAccess {
   setKeySpent(key: string, usd: number): void;
   /** The limits the proxy holds now, as the last upserts left them; members by developer id alone. */
   limits(): { orgs: Map<string, number>; members: Map<string, number> };
+  /** The proxy loses its database: every org and member it was told about is unknown again, as after a restore or a replaced database. */
+  forgetEverything(): void;
   /** From now on every call fails as an unreachable proxy does. */
   goDown(): void;
   /** The keys minted so far, in order. */
@@ -66,9 +68,12 @@ export function fakeModelAccess(options: { key?: string; mintFailure?: Error } =
       guard();
       return [...new Set(keyIds)].reduce((total, id) => total + (keySpends.get(id) ?? 0), 0);
     }),
-    mintKey: vi.fn(async () => {
+    mintKey: vi.fn(async (input) => {
       guard();
       if (options.mintFailure !== undefined) throw options.mintFailure;
+      // LiteLLM mints for a team (and user) that exists.
+      if (!orgs.has(input.orgId)) throw unknown("team");
+      if (input.developerId !== undefined && !members.has(memberKey(input.orgId, input.developerId))) throw unknown("user");
       const key = options.key ?? `sk-fake-key-${String(minted.length + 1).padStart(4, "0")}`;
       minted.push(key);
       return { key, expiresAt: Date.parse("2026-10-19T13:00:00.000Z") };
@@ -78,6 +83,7 @@ export function fakeModelAccess(options: { key?: string; mintFailure?: Error } =
     setMemberSpent: (orgId, developerId, usd) => { members.set(memberKey(orgId, developerId), { limit: members.get(memberKey(orgId, developerId))?.limit ?? 0, spent: usd }); },
     setKeySpent: (key, usd) => { keySpends.set(keyIdOf(key), usd); },
     limits: () => ({ orgs: new Map([...orgs].map(([id, entry]) => [id, entry.limit])), members: new Map([...members].map(([id, entry]) => [id, entry.limit])) }),
+    forgetEverything: () => { orgs.clear(); members.clear(); },
     goDown: () => { down = true; },
     mintedKeys: () => [...minted],
   };

@@ -5,13 +5,13 @@
 // R23), so a remainder is always clamped at 0 and nothing here promises an exact cap. LiteLLM's spend is the
 // authoritative figure (ruling R22).
 import { createHash } from "node:crypto";
-import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
   DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, TASK_BUDGET_EXCEEDED_PREFIX,
   AgentXError, agentXError, budgetSyncedKey, orgSettingsKey, type OrgId, type OrgKey,
 } from "@agentx/contracts";
-import type { ModelAccess, SpendFigures } from "../model-proxy/access.js";
+import type { MintKeyInput, MintedKey, ModelAccess, SpendFigures } from "../model-proxy/access.js";
 import type { OrgStore } from "./store.js";
 import { admitMachineTime, admitTrial } from "./trial.js";
 
@@ -219,9 +219,44 @@ export const budgetExceeded = (spent: number, limit: number) =>
 export const orgBudgetExceeded = () =>
   agentXError("ORG_BUDGET_EXCEEDED", "Your company's monthly AI budget is used up. Ask an admin to raise it.");
 
+/**
+ * Whether the proxy's refusal says it has lost the org or member it was told about (its database was restored or replaced):
+ * a 404, or a 400 saying the team or user does not exist. Any other refusal is its own.
+ */
+function isLostProxyState(error: unknown): boolean {
+  if (!(error instanceof AgentXError)) return false;
+  if (error.code === "NOT_FOUND") return true;
+  return error.code === "CONFIG_INVALID" && /\b(team|user)\b[^.]{0,40}(does not exist|doesn't exist|not found)/iu.test(error.message);
+}
+
+/**
+ * Runs a call that names the org (and member) to the proxy. When the proxy answers that it does not know them, the
+ * BUDGET_SYNCED markers (which say the proxy was told) are cleared, the proxy is told again, and the call is made once more.
+ * A second refusal is the call's own. Lost proxy state therefore heals itself instead of failing every call until a limit changes.
+ */
+async function healingLostProxyState<T>(deps: BudgetDependencies, orgId: OrgId, developerId: string | undefined, call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    if (!isLostProxyState(error)) throw error;
+    await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: budgetSyncedKey(orgId) }));
+    if (developerId !== undefined) await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: budgetSyncedKey(orgId, developerId) }));
+    await ensureSynced(deps, orgId, developerId);
+    return call();
+  }
+}
+
+/** Mints a key for the org (and member) the input names, healing lost proxy state once. */
+export async function mintKeyHealing(deps: BudgetDependencies, input: MintKeyInput): Promise<MintedKey> {
+  return healingLostProxyState(deps, input.orgId, input.developerId, () => deps.access.mintKey(input));
+}
+
 async function figuresFor(deps: BudgetDependencies, orgId: OrgId, developerId: string | undefined): Promise<{ member?: SpendFigures; org: SpendFigures }> {
-  if (developerId === undefined) return { org: await viaProxy(() => deps.access.orgSpend(orgId)) };
-  return viaProxy(() => deps.access.spend(orgId, developerId));
+  // viaProxy is outermost: the proxy's own refusal must reach the healing as it is, and only what is left of it becomes MODEL_PROXY_UNAVAILABLE.
+  return viaProxy(() => healingLostProxyState(deps, orgId, developerId, async () => {
+    if (developerId === undefined) return { org: await deps.access.orgSpend(orgId) };
+    return deps.access.spend(orgId, developerId);
+  }));
 }
 
 /**

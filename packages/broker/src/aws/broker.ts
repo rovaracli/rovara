@@ -291,7 +291,7 @@ import { chatGptConnections, kmsChatGptSealer, type ChatGptConnections } from ".
 import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
-import { admitSpend, changeBudgets, ensureSynced, keyIdOf, mintCap, recordMintedKey, type OrgBudgetSettings } from "../org/budget.js";
+import { admitSpend, changeBudgets, ensureSynced, keyIdOf, mintCap, mintKeyHealing, recordMintedKey, type OrgBudgetSettings } from "../org/budget.js";
 import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, routeDeveloperRequest, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import { ADMISSION_REFUSALS, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
@@ -4429,7 +4429,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       if (scope === undefined) throw new Error("the operation lost its organisation");
       // Ruling R30: the key's cap is what the task has left across all its keys, further limited by the member's and the org's remainder.
       const { maxBudgetUsd } = await mintCap(budgets, { orgId: scope.orgId, developerId: scope.developerId, budgetUsd: scope.budgetUsd, previousKeyIds: scope.previousKeyIds, budgetBaselineUsd: scope.budgetBaselineUsd });
-      const minted = await modelAccess.access.mintKey({
+      const minted = await mintKeyHealing(budgets, {
         orgId: scope.orgId, ...(scope.developerId === undefined ? {} : { developerId: scope.developerId }), purpose: "task", refId: scope.refId,
         maxBudgetUsd, ttlSeconds: MODEL_KEY_TTL_SECONDS,
       });
@@ -4473,10 +4473,11 @@ async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, reque
       { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
       { orgId: teamOrg, developerId, path: "CHAT" },
     );
-    const minted = await modelAccess.access.mintKey({
-      orgId: teamOrg, ...(developerId === undefined ? {} : { developerId }), purpose: "turn", refId: body.data.turnId,
-      maxBudgetUsd: Math.min(PER_TURN_BUDGET_USD, admitted.maxBudgetUsd), ttlSeconds: TURN_KEY_TTL_SECONDS,
-    });
+    const minted = await mintKeyHealing(
+      { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
+      { orgId: teamOrg, ...(developerId === undefined ? {} : { developerId }), purpose: "turn", refId: body.data.turnId,
+        maxBudgetUsd: Math.min(PER_TURN_BUDGET_USD, admitted.maxBudgetUsd), ttlSeconds: TURN_KEY_TTL_SECONDS },
+    );
     return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
   } catch (error) {
     // A spent budget (or a locked trial) is the member's to know about; every other failure is the proxy's, and says nothing of it.

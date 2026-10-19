@@ -3,8 +3,10 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, agentXError, budgetSyncedKey, errorStatus, orgMetaKey, orgSettingsKey, type OrgId } from "../../packages/contracts/src/index.js";
+// The package the broker imports, not its source: the broker tests an error for that package's class.
+import { agentXError as proxyError } from "@agentx/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
-import { MINIMUM_REMAINING_USD, admitSpend, ensureSynced, keyIdOf, mintCap, readBudgets, syncBudgets } from "../../packages/broker/src/org/budget.js";
+import { MINIMUM_REMAINING_USD, admitSpend, ensureSynced, keyIdOf, mintCap, mintKeyHealing, readBudgets, syncBudgets } from "../../packages/broker/src/org/budget.js";
 import { resolveOrgOnSignIn } from "../../packages/broker/src/org/sign-in.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
@@ -214,6 +216,86 @@ describe("mintCap (ruling R30)", () => {
     access.setMemberSpent(TEST_ORG, "dev1", 0);
     access.setOrgSpent(TEST_ORG, 500.2);
     expect((await rejection(mint(25))).code).toBe("ORG_BUDGET_EXCEEDED");
+  });
+});
+
+describe("lost proxy state heals (the proxy's database restored or replaced)", () => {
+  async function synced() {
+    const db = new FakeDynamoDb();
+    const access = fakeModelAccess();
+    const deps = { documentClient: db, tableName: "state", access, cloud: true };
+    await ensureSynced(deps, TEST_ORG, "dev1");
+    access.setMemberSpent(TEST_ORG, "dev1", 3);
+    access.setOrgSpent(TEST_ORG, 40);
+    return { db, access, deps };
+  }
+  const mint = { orgId: TEST_ORG, developerId: "dev1", purpose: "task" as const, refId: "t-1", maxBudgetUsd: 5, ttlSeconds: 3600 };
+
+  it("admission clears the markers, tells the proxy again and asks again, once", async () => {
+    const { db, access, deps } = await synced();
+    access.forgetEverything();
+    expect(await admitSpend(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" })).toEqual({ maxBudgetUsd: 25 });
+    expect(access.upsertOrg).toHaveBeenCalledTimes(2);
+    expect(access.upsertMember).toHaveBeenCalledTimes(2);
+    expect(db.get(budgetSyncedKey(TEST_ORG))).toMatchObject({ limitUsd: 500 });
+    expect(db.get(budgetSyncedKey(TEST_ORG, "dev1"))).toMatchObject({ limitUsd: 29 });
+    // Nothing is left to heal on the next call.
+    await admitSpend(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" });
+    expect(access.upsertOrg).toHaveBeenCalledTimes(2);
+  });
+
+  it("heals the org alone for work no known member started", async () => {
+    const { access, deps } = await synced();
+    access.forgetEverything();
+    expect((await admitSpend(deps, { orgId: TEST_ORG, path: "CHAT" })).maxBudgetUsd).toBeGreaterThan(0);
+    expect(access.upsertOrg).toHaveBeenCalledTimes(2);
+    expect(access.upsertMember).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks again only once: a proxy that still does not know them is the proxy's fault", async () => {
+    const { access, deps } = await synced();
+    access.spend.mockRejectedValue(proxyError("NOT_FOUND", "model proxy refused the request (404): team does not exist"));
+    expect((await rejection(admitSpend(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" }))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+    expect(access.spend).toHaveBeenCalledTimes(2);
+  });
+
+  it("mintKey heals on a 404 and on a 400 that says the team or user does not exist, and on nothing else", async () => {
+    const { access, deps } = await synced();
+    access.forgetEverything();
+    expect((await mintKeyHealing(deps, mint)).key).toMatch(/^sk-fake-key-/);
+    expect(access.upsertOrg).toHaveBeenCalledTimes(2);
+    const real = access.mintKey.getMockImplementation()!;
+    for (const message of ["model proxy refused the request (400): Team doesn't exist", "model proxy refused the request (400): User not found"]) {
+      access.mintKey.mockImplementationOnce(async () => { throw proxyError("CONFIG_INVALID", message); });
+      access.mintKey.mockImplementation(real);
+      const before = access.upsertOrg.mock.calls.length;
+      await mintKeyHealing(deps, mint);
+      expect(access.upsertOrg.mock.calls.length, message).toBe(before + 1);
+    }
+    access.mintKey.mockImplementationOnce(async () => { throw proxyError("CONFIG_INVALID", "model proxy refused the request (400): max_budget must be a number"); });
+    const upserts = access.upsertOrg.mock.calls.length;
+    expect((await rejection(mintKeyHealing(deps, mint))).code).toBe("CONFIG_INVALID");
+    expect(access.upsertOrg.mock.calls.length).toBe(upserts);
+  });
+
+  it("lets a running task mint again after the proxy lost its state", async () => {
+    const access = fakeModelAccess();
+    const h = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+    access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
+    access.setOrgSpent(TEST_ORG, 0);
+    const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "claude-code" });
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    const task = h.db.get(`DEVTASK#${taskId}`, "META") as { workspaceId: string };
+    const operationId = String((h.db.get(`WORKSPACE#${task.workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
+    await h.finish(task.workspaceId, operationId, "SUCCEEDED");
+    const active = String((h.db.get(`WORKSPACE#${task.workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
+    const capability = ((h.db.find((item) => item.entityType === "OUTBOX" && item.operationId === active)[0]!).invocation as { callbackCapability: string }).callbackCapability;
+    const ask = () => call(h.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": capability } });
+    expect((await ask()).status).toBe(200);
+    access.forgetEverything();
+    // The key is a hit-or-miss minted again: the proxy is told again, then the key is made.
+    expect((await ask()).status).toBe(200);
+    expect(access.mintKey.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 });
 
