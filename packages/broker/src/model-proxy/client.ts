@@ -89,10 +89,10 @@ export class ModelProxyClient implements ModelAccess {
     const requestedAt = this.input.now();
     const reply = await this.call("POST", "/key/generate", {
       team_id: input.orgId,
-      user_id: input.developerId,
+      ...(input.developerId === undefined ? {} : { user_id: input.developerId }),
       max_budget: input.maxBudgetUsd,
       duration: `${String(input.ttlSeconds)}s`,
-      metadata: { orgId: input.orgId, developerId: input.developerId, purpose: input.purpose, refId: input.refId },
+      metadata: { orgId: input.orgId, ...(input.developerId === undefined ? {} : { developerId: input.developerId }), purpose: input.purpose, refId: input.refId },
     });
     const key = isRecord(reply.body) ? reply.body.key : undefined;
     if (typeof key !== "string" || key === "") throw unavailable("model proxy answered with no key");

@@ -1,6 +1,6 @@
 // Task 12: a worker calls models through the proxy with a per-task key, never with provider secrets.
 import { randomUUID } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
 import { PER_TASK_BUDGET_USD, agentXError } from "../../packages/contracts/src/index.js";
 import type { MintKeyInput, MintedKey, ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
@@ -8,8 +8,9 @@ import { bedrockClaudeModelIds } from "../../packages/model-runtime/src/catalog.
 import { createConfiguredModelRuntime } from "../../packages/model-runtime/src/index.js";
 import { MODEL_ACCESS_MARGIN_MS, modelAccessSource, modelProxyFromSource } from "../../packages/worker/src/model-access.js";
 import { resolveTaskSessionModel } from "../../packages/worker/src/task-model.js";
-import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
-import { call } from "../support/slack-broker.js";
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
+import { MAYA, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 const PROXY_URL = "http://internal-proxy.example.test:4000";
@@ -274,5 +275,52 @@ describe("GET /v1/internal/model-access", () => {
       expect(response).toMatchObject({ status: 503, body: { error: { code: "MODEL_PROXY_UNAVAILABLE" } } });
       expect(JSON.stringify(response.body)).not.toContain("10.0.0.7");
     } finally { log.mockRestore(); }
+  });
+});
+
+describe("GET /v1/internal/model-access for a Slack thread's task, which has no developer task record", () => {
+  const thread = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000001`;
+  const slackUser = "U0123456789";
+  beforeAll(loadSlackBroker);
+
+  async function slackTask() {
+    const mintKey = vi.fn<(input: MintKeyInput) => Promise<MintedKey>>(async () => ({ key: PROXY_KEY, expiresAt: Date.parse("2026-10-19T13:00:00.000Z") }));
+    const access: ModelAccess = { upsertOrg: vi.fn(), upsertMember: vi.fn(), spend: vi.fn(), mintKey, revokeKey: vi.fn() };
+    const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL } } });
+    await registerSlackProject(handler);
+    const workspace = await ensureWorkspace(handler, thread, slackUser);
+    const workspaceId = workspace.body.workspaceId as string;
+    markReady(db, workspaceId);
+    const conversation = await serviceCall(handler, thread, slackUser, "POST", `/v1/service/workspaces/${workspaceId}/conversations`, {});
+    const conversationId = (conversation.body.conversation as { id: string }).id;
+    const task = await serviceCall(handler, thread, slackUser, "POST", `/v1/service/workspaces/${workspaceId}/tasks`, { requestId: randomUUID(), conversationId, prompt: "test it" });
+    expect(task.status).toBe(202);
+    const operationId = (task.body.operation as { id: string }).id;
+    const capability = ((db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation) as { callbackCapability: string }).callbackCapability;
+    const ask = () => call(handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": capability } });
+    return { db, workspaceId, operationId, mintKey, ask };
+  }
+
+  it("mints an org-only key from the signed operation when the requester is no known member", async () => {
+    const h = await slackTask();
+    expect(await h.ask()).toMatchObject({ status: 200, body: { baseUrl: PROXY_URL, apiKey: PROXY_KEY } });
+    expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, purpose: "task", refId: h.operationId, maxBudgetUsd: PER_TASK_BUDGET_USD, ttlSeconds: 3600 });
+    expect(h.mintKey.mock.calls[0]![0]).not.toHaveProperty("developerId");
+  });
+
+  it("mints for the member the Slack requester is linked to", async () => {
+    const h = await slackTask();
+    seedMembership(h.db, developerIdForSlackUser(slackUser), { orgId: TEST_ORG, role: "member" });
+    expect((await h.ask()).status).toBe(200);
+    expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, developerId: developerIdForSlackUser(slackUser), purpose: "task", refId: h.operationId, maxBudgetUsd: PER_TASK_BUDGET_USD, ttlSeconds: 3600 });
+  });
+
+  it("answers 404 when the operation names no org", async () => {
+    const h = await slackTask();
+    const operation = { ...(h.db.get(`WORKSPACE#${h.workspaceId}`, `OPERATION#${h.operationId}`) as Record<string, unknown>) };
+    delete operation.orgId;
+    h.db.set(operation);
+    expect(await h.ask()).toMatchObject({ status: 404, body: { error: { code: "NOT_FOUND" } } });
+    expect(h.mintKey).not.toHaveBeenCalled();
   });
 });

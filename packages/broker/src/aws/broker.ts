@@ -4342,17 +4342,33 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
   const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
   const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
-  if (task?.orgId === undefined) throw agentXError("NOT_FOUND", "this operation belongs to no task of an organisation");
+  // A developer task names its org, owner and budget. Work with no task record (a Slack thread's) is minted for from the
+  // signed operation: its org, the operation as the reference, and the default per-task budget (Task 15 adds admission).
+  const scope = task !== undefined
+    ? (task.orgId === undefined ? undefined : { orgId: task.orgId, developerId: task.developerId as string | undefined, refId: task.taskId, maxBudgetUsd: task.budgetUsd ?? PER_TASK_BUDGET_USD })
+    : (operation.orgId === undefined ? undefined : { orgId: operation.orgId, developerId: await linkedRequester(dependencies, operation.orgId, operation.requestedBy), refId: operation.id, maxBudgetUsd: PER_TASK_BUDGET_USD });
+  if (scope === undefined) throw agentXError("NOT_FOUND", "this operation belongs to no organisation");
   try {
     const minted = await modelAccess.access.mintKey({
-      orgId: task.orgId, developerId: task.developerId, purpose: "task", refId: task.taskId,
-      maxBudgetUsd: task.budgetUsd ?? PER_TASK_BUDGET_USD, ttlSeconds: MODEL_KEY_TTL_SECONDS,
+      orgId: scope.orgId, ...(scope.developerId === undefined ? {} : { developerId: scope.developerId }), purpose: "task", refId: scope.refId,
+      maxBudgetUsd: scope.maxBudgetUsd, ttlSeconds: MODEL_KEY_TTL_SECONDS,
     });
     return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "model_access.mint_failed", operationId: operation.id, errorName: error instanceof Error ? error.name : "unknown" }));
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   }
+}
+
+/**
+ * The member who asked for an operation, when the org knows them: a developer requester, or the developer a Slack user
+ * signs in as. Anyone the org has no member record for is unknown, so a key is not minted in a name the proxy lacks.
+ */
+async function linkedRequester(dependencies: AwsBrokerDependencies, orgId: OrgId, requester: OperationRequester | undefined): Promise<string | undefined> {
+  if (requester === undefined) return undefined;
+  const developerId = "kind" in requester ? requester.developerId : developerIdForSlackUser(requester.userId);
+  const membership = await orgStoreOf(dependencies).orgForDeveloper(developerId);
+  return membership?.orgId === orgId ? developerId : undefined;
 }
 
 /** How long a task's model key lasts; the worker asks for a new one a minute before it ends. */

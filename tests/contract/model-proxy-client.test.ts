@@ -49,6 +49,12 @@ describe("ModelProxyClient", () => {
     });
   });
 
+  it("mintKey without a developer mints an org-only key: a team, no user", async () => {
+    const { client, seen } = proxy(({ path }) => (path === "/key/generate" ? json({ key: "sk-virtual-2" }) : undefined));
+    await client.mintKey({ orgId: ORG, purpose: "task", refId: "op-1", maxBudgetUsd: 25, ttlSeconds: 3600 });
+    expect(seen[0]!.body).toEqual({ team_id: ORG, max_budget: 25, duration: "3600s", metadata: { orgId: ORG, purpose: "task", refId: "op-1" } });
+  });
+
   it("upsertOrg creates the LiteLLM team with the monthly budget and 1mo reset", async () => {
     const { client, seen } = proxy(({ path }) => (path === "/team/new" ? json({ team_id: ORG }) : undefined));
     await client.upsertOrg(ORG, 100);

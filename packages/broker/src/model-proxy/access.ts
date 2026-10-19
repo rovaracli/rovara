@@ -15,7 +15,8 @@ export interface MemberSpend {
 
 export interface MintKeyInput {
   orgId: OrgId;
-  developerId: string;
+  /** Absent for work no known member started (a Slack requester not linked to a member): the key then answers to the org alone. */
+  developerId?: string | undefined;
   purpose: "task" | "turn";
   refId: string;
   maxBudgetUsd: number;

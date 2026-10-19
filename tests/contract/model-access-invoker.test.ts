@@ -55,6 +55,12 @@ describe("ModelAccessInvoker", () => {
     expect(payloadOf(sent[1]!)).toEqual({ op: "mintKey", args: mint });
   });
 
+  it("sends a key request with no developer as one with no developerId", async () => {
+    const { invoker, sent } = invokerWith(async () => answer({ ok: true, result: { key: "sk-v", expiresAt: 99 } }));
+    await invoker.mintKey({ orgId: ORG, developerId: undefined, purpose: "task", refId: "op-1", maxBudgetUsd: 25, ttlSeconds: 300 });
+    expect(payloadOf(sent[0]!)).toEqual({ op: "mintKey", args: { orgId: ORG, purpose: "task", refId: "op-1", maxBudgetUsd: 25, ttlSeconds: 300 } });
+  });
+
   it("maps ok:false to an AgentXError with the same code and message", async () => {
     const { invoker } = invokerWith(async () => answer({ ok: false, code: "NOT_FOUND", message: "no such team" }));
     const error = await failure(invoker.spend(ORG, DEV));

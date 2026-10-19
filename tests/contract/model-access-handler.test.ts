@@ -47,6 +47,14 @@ describe("ModelAccessFunction handler", () => {
     ]);
   });
 
+  it("runs a key request with no developer", async () => {
+    const access = fakeAccess();
+    const run = createModelAccessHandler({ access, log: quiet });
+    const mint = { orgId: ORG, purpose: "task", refId: "op-1", maxBudgetUsd: 25, ttlSeconds: 600 };
+    expect(await run({ op: "mintKey", args: mint })).toEqual({ ok: true, result: { key: VIRTUAL, expiresAt: 1234 } });
+    expect(access.calls).toEqual([["mintKey", [mint]]]);
+  });
+
   it("refuses unknown operations, extra fields, bad ids and bad numbers as CONFIG_INVALID without calling the proxy", async () => {
     const access = fakeAccess();
     const run = createModelAccessHandler({ access, log: quiet });

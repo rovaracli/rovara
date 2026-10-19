@@ -39,7 +39,7 @@ export class ModelAccessInvoker implements ModelAccess {
 
   async mintKey(input: MintKeyInput): Promise<MintedKey> {
     const { orgId, developerId, purpose, refId, maxBudgetUsd, ttlSeconds } = input;
-    return this.parseResult(await this.invoke({ op: "mintKey", args: { orgId, developerId, purpose, refId, maxBudgetUsd, ttlSeconds } }), MintedKeyResultSchema);
+    return this.parseResult(await this.invoke({ op: "mintKey", args: { orgId, ...(developerId === undefined ? {} : { developerId }), purpose, refId, maxBudgetUsd, ttlSeconds } }), MintedKeyResultSchema);
   }
 
   async revokeKey(key: string): Promise<void> {

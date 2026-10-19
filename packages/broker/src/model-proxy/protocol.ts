@@ -15,7 +15,7 @@ export const ModelAccessRequestSchema = z.discriminatedUnion("op", [
     op: z.literal("mintKey"),
     args: z.object({
       orgId: OrgIdSchema,
-      developerId: DeveloperIdSchema,
+      developerId: DeveloperIdSchema.optional(),
       purpose: z.enum(["task", "turn"]),
       refId: z.string().min(1).max(256),
       maxBudgetUsd: BudgetSchema,
