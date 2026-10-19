@@ -66,6 +66,23 @@ describe("cloud identity infrastructure", () => {
     expect(secret).toContain("clientSecret");
   });
 
+  it("makes Google optional: every parameter has a default and the provider exists only for a non-empty GoogleClientId (R46)", () => {
+    const template = cloud();
+    const json = template.toJSON() as { Parameters: Record<string, { Default?: string }>; Conditions: Record<string, unknown>; Resources: Record<string, { Condition?: string; Type: string }> };
+    expect(json.Parameters.GoogleClientId?.Default).toBe("");
+    expect(json.Parameters.GoogleClientSecretArn?.Default).toBe("");
+    expect(json.Parameters.CloudIdentityDomainPrefix?.Default).toBe("rovara-staging");
+    expect(json.Conditions.GoogleSignInEnabled).toEqual({ "Fn::Not": [{ "Fn::Equals": [{ Ref: "GoogleClientId" }, ""] }] });
+    const [, provider] = resourcesOf(template, "AWS::Cognito::UserPoolIdentityProvider")[0]!;
+    expect((provider as unknown as { Condition?: string }).Condition).toBe("GoogleSignInEnabled");
+    // The secret reference sits in the condition's own branch, so an empty ARN is never resolved.
+    expect(JSON.stringify(provider.Properties.ProviderDetails.client_secret)).toMatch(/^\{"Fn::If":\["GoogleSignInEnabled",/);
+    // The default prefix is what the Cognito domain uses, and the pool, client and domain do not depend on Google being set.
+    for (const type of ["AWS::Cognito::UserPool", "AWS::Cognito::UserPoolDomain", "AWS::Cognito::UserPoolClient"]) {
+      expect(resourcesOf(template, type)[0]![1]).not.toHaveProperty("Condition");
+    }
+  });
+
   it("takes the Google client, its secret, the hosted-domain prefix and the web origin as parameters", () => {
     const parameters = cloud().toJSON().Parameters as Record<string, { Type: string; Default?: string }>;
     expect(parameters.GoogleClientId?.Type).toBe("String");
@@ -84,7 +101,8 @@ describe("cloud identity infrastructure", () => {
       AllowedOAuthFlows: ["code"],
       AllowedOAuthFlowsUserPoolClient: true,
       AllowedOAuthScopes: Match.arrayEquals(["openid", "email", "profile"]),
-      SupportedIdentityProviders: ["COGNITO", "Google"],
+      // Google is listed only when it exists (the GoogleSignInEnabled condition).
+      SupportedIdentityProviders: { "Fn::If": ["GoogleSignInEnabled", ["COGNITO", "Google"], ["COGNITO"]] },
       PreventUserExistenceErrors: "ENABLED",
     });
     // The broker's cloud provider sends `${DEVELOPER_TOKEN_ISSUER}/callback/cloud` as redirect_uri (developer/server.ts).

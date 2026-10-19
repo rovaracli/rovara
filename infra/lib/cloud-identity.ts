@@ -3,7 +3,7 @@
 // legacy deployments are not part of the multi-tenant branch). The DeveloperIdentity function is the
 // confidential client: it runs the authorization code flow against this pool (developer/server.ts) and
 // then issues its own developer tokens, so nothing here replaces the admin pool in identity.ts.
-import { CfnOutput, CfnParameter, Duration, RemovalPolicy, SecretValue, Stack, aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
+import { CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, SecretValue, Stack, aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import { Construct } from "constructs";
 
@@ -35,17 +35,22 @@ export class CloudIdentity extends Construct {
     const stack = Stack.of(this);
 
     // Declared on the stack itself, so the parameter names are exactly these.
+    // Google sign-in is optional (ruling R46): with an empty GoogleClientId there is no Google identity provider
+    // and the email code is the only way in. The domain prefix defaults to rovara-<env>.
     const googleClientId = new CfnParameter(stack, "GoogleClientId", {
-      type: "String", minLength: 1, maxLength: 256,
-      description: "Client ID of the Google OAuth app for Rovara cloud sign-in",
+      type: "String", default: "", maxLength: 256,
+      description: "Client ID of the Google OAuth app for Rovara cloud sign-in; leave empty to offer the emailed code only",
     });
     const googleClientSecretArn = new CfnParameter(stack, "GoogleClientSecretArn", {
-      type: "String", allowedPattern: "^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:\\S+$",
-      description: "ARN of the Secrets Manager secret holding the Google OAuth client secret as JSON, {\"clientSecret\": \"...\"}",
+      type: "String", default: "", allowedPattern: "^(arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:\\S+)?$",
+      description: "ARN of the Secrets Manager secret holding the Google OAuth client secret as JSON, {\"clientSecret\": \"...\"}; needed with GoogleClientId",
     });
     const domainPrefix = new CfnParameter(stack, "CloudIdentityDomainPrefix", {
-      type: "String", allowedPattern: "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+      type: "String", default: `rovara-${props.env}`, allowedPattern: "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
       description: "Prefix of the hosted sign-in domain (<prefix>.auth.<region>.amazoncognito.com); unique per region, and it must not contain aws, amazon or cognito",
+    });
+    const googleEnabled = new CfnCondition(stack, "GoogleSignInEnabled", {
+      expression: Fn.conditionNot(Fn.conditionEquals(googleClientId.valueAsString, "")),
     });
     this.webOrigin = new CfnParameter(stack, "RovaraWebOrigin", {
       type: "String", default: "https://rovara.dev", allowedPattern: "^https://[^/\\s]+$",
@@ -72,14 +77,20 @@ export class CloudIdentity extends Construct {
     });
     (pool.node.defaultChild as cognito.CfnUserPool).adminCreateUserConfig = { allowAdminCreateUserOnly: false };
 
+    const googleClientSecretValue = SecretValue.secretsManager(googleClientSecretArn.valueAsString, { jsonField: "clientSecret" });
     const google = new cognito.UserPoolIdentityProviderGoogle(this, "Google", {
       userPool: pool,
       clientId: googleClientId.valueAsString,
-      clientSecretValue: SecretValue.secretsManager(googleClientSecretArn.valueAsString, { jsonField: "clientSecret" }),
+      clientSecretValue: googleClientSecretValue,
       scopes: ["openid", "email", "profile"],
       // email_verified too: the broker keeps an email only when the ID token says it is verified (providers.ts verifiedEmail).
       attributeMapping: { email: cognito.ProviderAttribute.GOOGLE_EMAIL, emailVerified: cognito.ProviderAttribute.GOOGLE_EMAIL_VERIFIED },
     });
+
+    // Without a client id there is no Google provider, and the secret reference is never evaluated (an empty ARN would not resolve).
+    const cfnGoogle = google.node.defaultChild as cognito.CfnUserPoolIdentityProvider;
+    cfnGoogle.cfnOptions.condition = googleEnabled;
+    cfnGoogle.addPropertyOverride("ProviderDetails.client_secret", Fn.conditionIf(googleEnabled.logicalId, googleClientSecretValue.unsafeUnwrap(), ""));
 
     const client = pool.addClient("SignIn", {
       generateSecret: true,
@@ -97,7 +108,8 @@ export class CloudIdentity extends Construct {
       idTokenValidity: Duration.hours(1),
       refreshTokenValidity: Duration.days(30),
     });
-    // The client lists Google as a supported provider, which must exist first.
+    // The client lists Google as a supported provider only when Google exists, which must then be created first.
+    (client.node.defaultChild as cognito.CfnUserPoolClient).addPropertyOverride("SupportedIdentityProviders", Fn.conditionIf(googleEnabled.logicalId, ["COGNITO", "Google"], ["COGNITO"]));
     client.node.addDependency(google);
 
     // Email codes are offered by managed login only, not the classic hosted UI.
