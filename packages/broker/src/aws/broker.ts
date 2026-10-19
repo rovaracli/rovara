@@ -4368,31 +4368,46 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
   if (TERMINAL.has(operation.status)) throw agentXError("STALE_FENCE", "terminal operations cannot ask for model access");
   const modelAccess = dependencies.modelAccess;
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
-  const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
-  const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
   // A developer task names its org, owner and budget, and the keys already minted for it. Work with no task record (a Slack
   // thread's) is minted for from the signed operation: its org, the operation as the reference and as the record that keeps its
-  // keys, and the default per-task budget (ruling R31; its start was admitted in ensureThreadWorkspace).
-  const scope = task !== undefined
-    ? (task.orgId === undefined ? undefined : {
-      orgId: task.orgId, developerId: task.developerId as string | undefined, refId: task.taskId, budgetUsd: task.budgetUsd ?? PER_TASK_BUDGET_USD,
-      previousKeyIds: task.modelKeyIds ?? [], owner: taskKey(task.taskId),
-    })
-    : (operation.orgId === undefined ? undefined : {
-      orgId: operation.orgId, developerId: await linkedRequester(dependencies, operation.orgId, operation.requestedBy), refId: operation.id,
-      budgetUsd: PER_TASK_BUDGET_USD, previousKeyIds: operation.modelKeyIds ?? [], owner: operationKey(operation.workspaceId, operation.id),
-    });
-  if (scope === undefined) throw agentXError("NOT_FOUND", "this operation belongs to no organisation");
+  // keys, and the default per-task budget (ruling R31; its start was admitted in ensureThreadWorkspace). Read afresh each attempt.
+  const loadScope = async () => {
+    const current = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
+    const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(current.workspaceId));
+    const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+    if (task !== undefined) {
+      return task.orgId === undefined ? undefined : {
+        orgId: task.orgId, developerId: task.developerId as string | undefined, refId: task.taskId, budgetUsd: task.budgetUsd ?? PER_TASK_BUDGET_USD,
+        previousKeyIds: task.modelKeyIds ?? [], owner: taskKey(task.taskId),
+      };
+    }
+    return current.orgId === undefined ? undefined : {
+      orgId: current.orgId, developerId: await linkedRequester(dependencies, current.orgId, current.requestedBy), refId: current.id,
+      budgetUsd: PER_TASK_BUDGET_USD, previousKeyIds: current.modelKeyIds ?? [], owner: operationKey(current.workspaceId, current.id),
+    };
+  };
   const budgets = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access };
+  let scope = await loadScope();
+  if (scope === undefined) throw agentXError("NOT_FOUND", "this operation belongs to no organisation");
   try {
-    // Ruling R30: the key's cap is what the task has left across all its keys, further limited by the member's and the org's remainder.
-    const { maxBudgetUsd } = await mintCap(budgets, { orgId: scope.orgId, developerId: scope.developerId, budgetUsd: scope.budgetUsd, previousKeyIds: scope.previousKeyIds });
-    const minted = await modelAccess.access.mintKey({
-      orgId: scope.orgId, ...(scope.developerId === undefined ? {} : { developerId: scope.developerId }), purpose: "task", refId: scope.refId,
-      maxBudgetUsd, ttlSeconds: MODEL_KEY_TTL_SECONDS,
-    });
-    await recordMintedKey(budgets, scope.owner, keyIdOf(minted.key));
-    return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
+    // Two attempts: a mint that races another for the same task finds the record changed under it, gives its key back and
+    // counts again with the other's key included, so concurrent mints cannot each take the task's whole remainder.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (attempt > 0) scope = await loadScope();
+      if (scope === undefined) throw new Error("the operation lost its organisation");
+      // Ruling R30: the key's cap is what the task has left across all its keys, further limited by the member's and the org's remainder.
+      const { maxBudgetUsd } = await mintCap(budgets, { orgId: scope.orgId, developerId: scope.developerId, budgetUsd: scope.budgetUsd, previousKeyIds: scope.previousKeyIds });
+      const minted = await modelAccess.access.mintKey({
+        orgId: scope.orgId, ...(scope.developerId === undefined ? {} : { developerId: scope.developerId }), purpose: "task", refId: scope.refId,
+        maxBudgetUsd, ttlSeconds: MODEL_KEY_TTL_SECONDS,
+      });
+      if (await recordMintedKey(budgets, scope.owner, keyIdOf(minted.key), scope.previousKeyIds.length)) {
+        return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
+      }
+      // The key never reached the worker and has spent nothing; best effort, it expires on its own otherwise.
+      await modelAccess.access.revokeKey(minted.key).catch(() => undefined);
+    }
+    throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   } catch (error) {
     // A spent budget is the member's to know about (402); every other failure is the proxy's, and says nothing of it.
     if (error instanceof AgentXError && (error.code === "BUDGET_EXCEEDED" || error.code === "ORG_BUDGET_EXCEEDED")) throw error;

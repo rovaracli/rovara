@@ -100,8 +100,9 @@ export class ModelProxyClient implements ModelAccess {
     for (let start = 0; start < unique.length; start += KEY_INFO_AT_ONCE) {
       const replies = await Promise.all(unique.slice(start, start + KEY_INFO_AT_ONCE).map((id) => this.request("GET", `/key/info?key=${encodeURIComponent(id)}`, master, undefined)));
       for (const reply of replies) {
-        // A key the proxy no longer has reports no spend; the others' figures stand.
-        if (reply.status === 404) continue;
+        // Fail closed: a key the proxy cannot find (deleted, or a hashed-token lookup it does not support) has spent an unknown
+        // amount, and counting it as 0 would hand a task its whole budget again. The caller refuses the mint instead.
+        if (reply.status === 404) throw unavailable("model proxy does not know a key of this task");
         if (reply.status !== 200) throw refusal(reply);
         const info = isRecord(reply.body) ? reply.body.info : undefined;
         const spent = isRecord(info) ? (info.spend === null ? 0 : numberOf(info.spend)) : undefined;

@@ -980,6 +980,8 @@ const PutBudgetBodySchema = z.object({
 async function putOrganizationBudget(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<{ budget: OrgBudgetSettings }> {
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can change the organization's budgets");
   const budgets = budgetDependencies(deps);
+  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
+  const orgs = deps.orgs;
   const parsed = PutBudgetBodySchema.safeParse(body);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
@@ -990,6 +992,10 @@ async function putOrganizationBudget(deps: DeveloperRouteDependencies, caller: D
   if (orgMonthlyUsd === undefined && memberDefaultMonthlyUsd === undefined && memberOverrides === undefined) {
     throw agentXError("CONFIG_INVALID", "body: name at least one of orgMonthlyUsd, memberDefaultMonthlyUsd and memberOverrides");
   }
+  // Proxy users are global by id: an override may name only a member of the caller's own org, or one admin could set another org's member's cap.
+  for (const developerId of Object.keys(memberOverrides ?? {})) {
+    if ((await orgs.orgForDeveloper(developerId))?.orgId !== caller.orgId) throw agentXError("CONFIG_INVALID", "memberOverrides: every override must name a member of this organization");
+  }
   const before = await readBudgets(budgets, caller.orgId);
   const after: OrgBudgetSettings = {
     orgMonthlyUsd: orgMonthlyUsd ?? before.orgMonthlyUsd,
@@ -997,7 +1003,7 @@ async function putOrganizationBudget(deps: DeveloperRouteDependencies, caller: D
     memberOverrides: memberOverrides ?? before.memberOverrides,
   };
   await writeBudgets(budgets, caller.orgId, after, caller.developerId, new Date(deps.now()).toISOString());
-  await syncBudgets(budgets, caller.orgId, [...Object.keys(before.memberOverrides), ...Object.keys(after.memberOverrides)]);
+  await syncBudgets({ ...budgets, orgs }, caller.orgId, [...Object.keys(before.memberOverrides), ...Object.keys(after.memberOverrides)]);
   logDeveloperEvent({ event: "developer.org_budget_changed", orgId: caller.orgId, overrides: String(Object.keys(after.memberOverrides).length) });
   return { budget: after };
 }

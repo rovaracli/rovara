@@ -38,7 +38,7 @@ export interface ModelAccess {
   orgSpend(orgId: OrgId): Promise<SpendFigures>;
   /**
    * What the given keys have spent in all, by key id (the SHA-256 of the key, which is LiteLLM's own token id, so the key itself
-   * never leaves the caller). A key the proxy no longer knows has spent nothing it can report and counts 0.
+   * never leaves the caller). A key the proxy does not know is MODEL_PROXY_UNAVAILABLE: its spend is unknown, so it is never counted as 0.
    */
   keySpend(keyIds: readonly string[]): Promise<number>;
   mintKey(input: MintKeyInput): Promise<MintedKey>;

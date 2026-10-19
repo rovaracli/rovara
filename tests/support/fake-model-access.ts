@@ -20,7 +20,7 @@ export interface FakeModelAccess extends ModelAccess {
   setMemberSpent(orgId: OrgId, developerId: string, usd: number): void;
   /** What a minted key has spent, by the key itself. */
   setKeySpent(key: string, usd: number): void;
-  /** The limits the proxy holds now, as the last upserts left them. */
+  /** The limits the proxy holds now, as the last upserts left them; members by developer id alone. */
   limits(): { orgs: Map<string, number>; members: Map<string, number> };
   /** From now on every call fails as an unreachable proxy does. */
   goDown(): void;
@@ -41,7 +41,8 @@ export function fakeModelAccess(options: { key?: string; mintFailure?: Error } =
     if (org === undefined) throw unknown("team");
     return { spentUsd: org.spent, limitUsd: org.limit };
   };
-  const memberKey = (orgId: string, developerId: string) => `${orgId}/${developerId}`;
+  // LiteLLM users are global by user_id: the org a member is spoken of under does not scope them, so one org's upsert can overwrite another's.
+  const memberKey = (_orgId: string, developerId: string) => developerId;
   return {
     upsertOrg: vi.fn(async (orgId, monthlyBudgetUsd) => {
       guard();

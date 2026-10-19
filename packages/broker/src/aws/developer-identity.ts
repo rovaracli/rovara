@@ -194,6 +194,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
   const stateTableName = required(env, "STATE_TABLE_NAME");
   // Budgets reach the model proxy through its access function (ruling R28). Without MODEL_ACCESS_FUNCTION_NAME nothing is told
   // at sign-in, and the broker syncs lazily before the first key instead.
+  const orgs = new OrgStore({ documentClient, tableName: stateTableName, now });
   const modelAccessFunction = env.MODEL_ACCESS_FUNCTION_NAME ?? "";
   const modelAccess = modelAccessFunction === "" ? undefined : new ModelAccessInvoker({ functionName: modelAccessFunction, lambda: new LambdaClient(region) });
   return createDeveloperIdentityHandler({
@@ -204,10 +205,10 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
       now,
     }),
     // Orgs and membership live in the State table, beside the records they scope; the sign-in table holds identities only.
-    orgs: new OrgStore({ documentClient, tableName: stateTableName, now }),
+    orgs,
     singleOrgId: singleOrgIdForEnv(config.env),
     ...(modelAccess === undefined ? {} : {
-      onOrgJoined: ({ orgId, developerId }: { orgId: OrgId; developerId: string }) => syncBudgets({ documentClient, tableName: stateTableName, access: modelAccess }, orgId, [developerId]),
+      onOrgJoined: ({ orgId, developerId }: { orgId: OrgId; developerId: string }) => syncBudgets({ documentClient, tableName: stateTableName, access: modelAccess, orgs }, orgId, [developerId]),
     }),
     signer: kmsTokenSigner({ kms: new KMSClient(region), keyId: required(env, "DEVELOPER_TOKEN_KEY_ARN") }),
     providers: {

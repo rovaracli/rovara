@@ -142,19 +142,24 @@ describe("ModelProxyClient", () => {
     expect((await failure(noBudget.client.orgSpend(ORG))).code).toBe("MODEL_PROXY_UNAVAILABLE");
   });
 
-  it("keySpend sums /key/info spend over the distinct ids, counting a null spend as 0 and a key the proxy no longer has as 0", async () => {
-    const spends: Record<string, number | null | "gone"> = { ["a".repeat(64)]: 1.5, ["b".repeat(64)]: null, ["c".repeat(64)]: "gone", ["d".repeat(64)]: 2.25 };
+  it("keySpend sums /key/info spend over the distinct ids and counts a null spend as 0", async () => {
+    const spends: Record<string, number | null> = { ["a".repeat(64)]: 1.5, ["b".repeat(64)]: null, ["d".repeat(64)]: 2.25 };
     const { client, seen } = proxy(({ path, search }) => {
       if (path !== "/key/info") return undefined;
       const spend = spends[new URLSearchParams(search).get("key") ?? ""];
-      if (spend === "gone" || spend === undefined) return json({ error: { message: "key not found" } }, 404);
+      if (spend === undefined) return json({ error: { message: "key not found" } }, 404);
       return json({ key: "ignored", info: { spend, max_budget: 5 } });
     });
     expect(await client.keySpend([...Object.keys(spends), "a".repeat(64)])).toBe(3.75);
-    expect(seen).toHaveLength(4);
+    expect(seen).toHaveLength(3);
     expect(seen.every((s) => s.method === "GET" && s.headers.get("authorization") === `Bearer ${MASTER}`)).toBe(true);
     expect(await client.keySpend([])).toBe(0);
-    expect(seen).toHaveLength(4);
+    expect(seen).toHaveLength(3);
+  });
+
+  it("keySpend fails closed on a key the proxy cannot find: MODEL_PROXY_UNAVAILABLE, never a spend of 0", async () => {
+    const { client } = proxy(({ path, search }) => (path === "/key/info" && new URLSearchParams(search).get("key") === "a".repeat(64) ? json({ info: { spend: 1 } }) : undefined));
+    expect((await failure(client.keySpend(["a".repeat(64), "c".repeat(64)]))).code).toBe("MODEL_PROXY_UNAVAILABLE");
   });
 
   it("keySpend refuses a malformed answer as MODEL_PROXY_UNAVAILABLE and fails on a 5xx or a 403", async () => {

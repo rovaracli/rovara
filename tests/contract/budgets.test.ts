@@ -38,7 +38,9 @@ describe("the budget error codes", () => {
 describe("budget settings", () => {
   function deps(access: FakeModelAccess = fakeModelAccess()) {
     const db = new FakeDynamoDb();
-    return { db, access, deps: { documentClient: db, tableName: "state", access } };
+    for (const developerId of ["dev1", "dev2"]) seedMembership(db, developerId, { orgId: TEST_ORG, role: "member" });
+    const orgs = new OrgStore({ documentClient: db, tableName: "state", now: () => Date.parse("2026-10-19T12:00:00.000Z") });
+    return { db, access, deps: { documentClient: db, tableName: "state", access, orgs } };
   }
 
   it("default to the placeholder budgets, and read what an org set", async () => {
@@ -58,6 +60,14 @@ describe("budget settings", () => {
     expect(db.get(budgetSyncedKey(TEST_ORG, "dev1"))).toMatchObject({ limitUsd: 2000 });
     await syncBudgets(d, TEST_ORG);
     expect(access.upsertMember).toHaveBeenCalledTimes(2);
+  });
+
+  it("syncBudgets writes no limit for an id that is not a member of this org (proxy users are global by id)", async () => {
+    const { db, access, deps: d } = deps();
+    seedMembership(db, "outsider", { orgId: "org_bbbbbbbbbbbbbbbbbbbb", role: "member" });
+    await syncBudgets(d, TEST_ORG, ["outsider", "nobody", "dev1"]);
+    expect(access.upsertMember.mock.calls).toEqual([[TEST_ORG, "dev1", DEFAULT_MEMBER_MONTHLY_BUDGET_USD]]);
+    expect(db.get(budgetSyncedKey(TEST_ORG, "outsider"))).toBeUndefined();
   });
 
   it("ensureSynced upserts an org and a member once, and again only after their limit changes", async () => {
@@ -184,6 +194,15 @@ describe("mintCap (ruling R30)", () => {
     expect(await mint(25)).toEqual({ maxBudgetUsd: 1 });
   });
 
+  it("treats float dust as nothing left, so no key is capped at a millionth of a dollar", async () => {
+    const { access, mint } = setup();
+    access.setMemberSpent(TEST_ORG, "dev1", 29 - 0.0000004);
+    expect((await rejection(mint(25))).code).toBe("BUDGET_EXCEEDED");
+    access.setMemberSpent(TEST_ORG, "dev1", 0);
+    access.setKeySpent("sk-first", 25 - 0.0000004);
+    expect((await rejection(mint(25, [keyIdOf("sk-first")]))).code).toBe("BUDGET_EXCEEDED");
+  });
+
   it("refuses a task that has spent its budget (a soft cap can leave it over), and a member or org with nothing left", async () => {
     const { access, mint } = setup();
     access.setKeySpent("sk-first", 25.4);
@@ -257,7 +276,7 @@ describe("a developer task start", () => {
     expect(task.budgetUsd).toBe(25);
     await (await worker(h, task))();
     expect(h.access.mintKey).toHaveBeenCalledWith(expect.objectContaining({ maxBudgetUsd: 25 }));
-    expect(h.access.limits().members.get(`${TEST_ORG}/${MAYA.developerId}`)).toBe(2000);
+    expect(h.access.limits().members.get(MAYA.developerId)).toBe(2000);
   });
 
   it("syncs the org and the member to the proxy before the first check, once", async () => {
@@ -391,6 +410,46 @@ describe("a task's keys across re-mints (ruling R30)", () => {
     expect(h.access.mintKey.mock.calls[0]![0].maxBudgetUsd).toBe(2);
   });
 
+  it("fails closed with 503, minting nothing, when the proxy cannot report an earlier key's spend", async () => {
+    const h = await runningTask();
+    expect((await h.ask()).status).toBe(200);
+    h.access.keySpend.mockRejectedValueOnce(agentXError("NOT_FOUND", "key not found"));
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try { expect(await h.ask()).toMatchObject({ status: 503, body: { error: { code: "MODEL_PROXY_UNAVAILABLE" } } }); } finally { log.mockRestore(); }
+    expect(h.access.mintKey).toHaveBeenCalledTimes(1);
+    expect(h.record().modelKeyIds).toHaveLength(1);
+  });
+
+  it("two mints that race for one task cannot both take its remainder: the loser gives its key back and counts again with the winner's", async () => {
+    const h = await runningTask();
+    h.access.setKeySpent("sk-fake-key-0001", 10);
+    const [a, b] = await Promise.all([h.ask(), h.ask()]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    // Three keys were minted: the winner (first), the loser, and the loser's retry.
+    expect(h.access.mintedKeys()).toHaveLength(3);
+    expect(h.access.mintKey.mock.calls.map(([input]) => input.maxBudgetUsd)).toEqual([25, 25, 15]);
+    expect(h.access.revokeKey.mock.calls).toEqual([["sk-fake-key-0002"]]);
+    expect(h.record().modelKeyIds).toEqual([keyIdOf("sk-fake-key-0001"), keyIdOf("sk-fake-key-0003")]);
+    expect(new Set([a.body.apiKey, b.body.apiKey])).toEqual(new Set(["sk-fake-key-0001", "sk-fake-key-0003"]));
+  });
+
+  it("answers 503 after a second conflict, with both losing keys given back and nothing recorded for them", async () => {
+    const h = await runningTask();
+    const task = h.db.get(`DEVTASK#${h.taskId}`, "META")!;
+    let racers = 0;
+    // Every mint is overtaken by another mint of the same task, as the record shows.
+    h.access.mintKey.mockImplementation(async () => {
+      racers += 1;
+      h.db.set({ ...(h.db.get(`DEVTASK#${h.taskId}`, "META") ?? task), modelKeyIds: [...(h.record().modelKeyIds ?? []), `racer-${String(racers)}`] });
+      return { key: `sk-lost-${String(racers)}`, expiresAt: Date.now() + 3_600_000 };
+    });
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try { expect(await h.ask()).toMatchObject({ status: 503, body: { error: { code: "MODEL_PROXY_UNAVAILABLE" } } }); } finally { log.mockRestore(); }
+    expect(h.access.mintKey).toHaveBeenCalledTimes(2);
+    expect(h.access.revokeKey.mock.calls).toEqual([["sk-lost-1"], ["sk-lost-2"]]);
+    expect(h.record().modelKeyIds).toEqual(["racer-1", "racer-2"]);
+  });
+
   it("answers 503 and records no key when the proxy fails while minting", async () => {
     const h = await runningTask();
     h.access.mintKey.mockRejectedValueOnce(new Error("boom"));
@@ -444,6 +503,25 @@ describe("budget routes", () => {
     // It re-syncs even when nothing changed.
     await h.dev(MAYA, "PUT", "/v1/dev/org/budget", { requestId: randomUUID(), memberOverrides: {} });
     expect(h.access.upsertOrg).toHaveBeenCalledTimes(3);
+  });
+
+  it("PUT /v1/dev/org/budget refuses an override for a developer of another org: 400, nothing written, the other org's cap unchanged", async () => {
+    const h = await install();
+    h.asAdmin();
+    const orgB = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
+    const other = "f".repeat(64);
+    seedMembership(h.db, other, { orgId: orgB, role: "member" });
+    await h.access.upsertMember(orgB, other, 50);
+    h.access.upsertMember.mockClear();
+    for (const overrides of [{ [other]: 100000 }, { [other]: 0 }, { [OMAR.developerId]: 40, [other]: 1 }, { nobody: 5 }]) {
+      const response = await h.dev(MAYA, "PUT", "/v1/dev/org/budget", { requestId: randomUUID(), memberOverrides: overrides });
+      expect(response).toMatchObject({ status: 400, body: { error: { code: "CONFIG_INVALID", message: "memberOverrides: every override must name a member of this organization" } } });
+      expect(JSON.stringify(response.body)).not.toContain(other);
+    }
+    expect(h.db.get(orgSettingsKey(TEST_ORG, "BUDGET"))).toBeUndefined();
+    expect(h.access.upsertOrg).not.toHaveBeenCalled();
+    expect(h.access.upsertMember).not.toHaveBeenCalled();
+    expect(h.access.limits().members.get(other)).toBe(50);
   });
 
   it("PUT /v1/dev/org/budget refuses a bad body with 400 and writes nothing", async () => {
@@ -605,8 +683,9 @@ describe("sign-in", () => {
   it("tells the proxy the new org and its owner after a first cloud sign-in creates the org", async () => {
     const db = new FakeDynamoDb();
     const access = fakeModelAccess();
-    const onOrgJoined = vi.fn(({ orgId, developerId }: { orgId: OrgId; developerId: string }) => syncBudgets({ documentClient: db, tableName: "state", access }, orgId, [developerId]));
-    const org = await resolveOrgOnSignIn({ orgs: orgsOf(db), onOrgJoined }, input);
+    const orgs = orgsOf(db);
+    const onOrgJoined = vi.fn(({ orgId, developerId }: { orgId: OrgId; developerId: string }) => syncBudgets({ documentClient: db, tableName: "state", access, orgs }, orgId, [developerId]));
+    const org = await resolveOrgOnSignIn({ orgs, onOrgJoined }, input);
     expect(org.role).toBe("owner");
     expect(onOrgJoined).toHaveBeenCalledWith({ orgId: org.orgId, developerId: input.developerId });
     expect(access.upsertOrg).toHaveBeenCalledWith(org.orgId, DEFAULT_ORG_MONTHLY_BUDGET_USD);

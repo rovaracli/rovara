@@ -11,6 +11,7 @@ import {
   AgentXError, agentXError, budgetSyncedKey, orgSettingsKey, type OrgId, type OrgKey,
 } from "@agentx/contracts";
 import type { ModelAccess, SpendFigures } from "../model-proxy/access.js";
+import type { OrgStore } from "./store.js";
 
 export interface OrgBudgetSettings {
   orgMonthlyUsd: number;
@@ -90,11 +91,17 @@ async function mark(deps: BudgetDependencies, key: OrgKey, limitUsd: number): Pr
  * Tells the proxy the org's limit and each named member's, and marks what it was told so `ensureSynced` skips
  * them until a limit changes. A proxy refusal propagates (MODEL_PROXY_UNAVAILABLE when it cannot be reached).
  */
-export async function syncBudgets(deps: BudgetDependencies, orgId: OrgId, developerIds: readonly string[] = []): Promise<void> {
+export async function syncBudgets(
+  deps: BudgetDependencies & { orgs: Pick<OrgStore, "orgForDeveloper"> },
+  orgId: OrgId,
+  developerIds: readonly string[] = [],
+): Promise<void> {
   const settings = await readBudgets(deps, orgId);
   await deps.access.upsertOrg(orgId, settings.orgMonthlyUsd);
   await mark(deps, budgetSyncedKey(orgId), settings.orgMonthlyUsd);
   for (const developerId of new Set(developerIds)) {
+    // Proxy users are global by id, so a limit is only ever written for a member of this org: an id of another org, or of nobody, is skipped.
+    if ((await deps.orgs.orgForDeveloper(developerId))?.orgId !== orgId) continue;
     const limit = memberLimitOf(settings, developerId);
     await deps.access.upsertMember(orgId, developerId, limit);
     await mark(deps, budgetSyncedKey(orgId, developerId), limit);
@@ -123,10 +130,11 @@ export async function ensureSynced(deps: BudgetDependencies, orgId: OrgId, devel
   return settings;
 }
 
-const remaining = (figures: SpendFigures): number => Math.max(0, figures.limitUsd - figures.spentUsd);
 const dollars = (amount: number): string => amount.toFixed(2);
 /** Subtraction of cents leaves float dust (29 - 28.8); a key's cap is never given more precision than a millionth of a dollar. */
 const clean = (amount: number): number => Number(amount.toFixed(6));
+/** What is left, clamped at 0 (R23) and cleaned, so float dust (a millionth of a dollar) is nothing left rather than a key capped at nearly 0. */
+const remaining = (figures: SpendFigures): number => clean(Math.max(0, figures.limitUsd - figures.spentUsd));
 
 export const budgetExceeded = (spent: number, limit: number) =>
   agentXError("BUDGET_EXCEEDED", `Your monthly AI budget is used up ($${dollars(spent)} of $${dollars(limit)}). Ask an admin to raise it.`);
@@ -167,21 +175,34 @@ export async function mintCap(deps: BudgetDependencies, input: { orgId: OrgId; d
   const { member, org } = figures;
   if (member !== undefined && remaining(member) <= 0) throw budgetExceeded(member.spentUsd, member.limitUsd);
   if (remaining(org) <= 0) throw orgBudgetExceeded();
-  const taskRemaining = Math.max(0, input.budgetUsd - taskSpent);
+  const taskRemaining = clean(Math.max(0, input.budgetUsd - taskSpent));
   if (taskRemaining <= 0) {
     throw agentXError("BUDGET_EXCEEDED", `This task has used its AI budget ($${dollars(taskSpent)} of $${dollars(input.budgetUsd)}). Start a new task to continue.`);
   }
   return { maxBudgetUsd: clean(Math.min(taskRemaining, member === undefined ? Infinity : remaining(member), remaining(org))) };
 }
 
-/** Notes a minted key on the record that owns it (a task, or the operation of Slack work), so the next mint counts its spend. */
-export async function recordMintedKey(deps: BudgetDependencies, key: OrgKey | { pk: string; sk: string }, keyId: string): Promise<void> {
-  await deps.documentClient.send(new UpdateCommand({
-    TableName: deps.tableName,
-    Key: key,
-    UpdateExpression: "SET #ids = list_append(if_not_exists(#ids, :none), :id)",
-    ConditionExpression: "attribute_exists(pk)",
-    ExpressionAttributeNames: { "#ids": "modelKeyIds" },
-    ExpressionAttributeValues: { ":none": [], ":id": [keyId] },
-  }));
+/**
+ * Notes a minted key on the record that owns it (a task, or the operation of Slack work), so the next mint counts its spend.
+ * `knownCount` is how many keys the record held when the caller read it: the write happens only if it still holds that many,
+ * so two mints that raced cannot both be given the task's whole remainder. Answers false when another mint recorded first.
+ *
+ * Never delete or revoke task keys before the task closes: their spend is the task's cumulative count (ruling R30), and a
+ * key the proxy no longer knows makes `keySpend` fail closed.
+ */
+export async function recordMintedKey(deps: BudgetDependencies, key: OrgKey | { pk: string; sk: string }, keyId: string, knownCount: number): Promise<boolean> {
+  try {
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName,
+      Key: key,
+      UpdateExpression: "SET #ids = list_append(if_not_exists(#ids, :none), :id)",
+      ConditionExpression: knownCount === 0 ? "attribute_exists(pk) AND attribute_not_exists(#ids)" : "size(#ids) = :count",
+      ExpressionAttributeNames: { "#ids": "modelKeyIds" },
+      ExpressionAttributeValues: { ":none": [], ":id": [keyId], ...(knownCount === 0 ? {} : { ":count": knownCount }) },
+    }));
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;
+    throw error;
+  }
 }
