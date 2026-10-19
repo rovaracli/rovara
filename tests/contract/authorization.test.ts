@@ -55,6 +55,19 @@ describe("authentication and authorization", () => {
     );
   });
 
+  it("never lets two missing orgs match: a caller with no org uses no workspace, even an owner's own org-less one", async () => {
+    const alice = await signedIdentity("alice");
+    expect(alice.orgId).toBeUndefined();
+    expect(() => authorizeWorkspace(alice, { ownerKey: alice.ownerKey, projectName: "payments" })).toThrow(/NOT_FOUND/);
+    expect(() => authorizeWorkspace(alice, { ownerKey: alice.ownerKey, projectName: "payments", orgId: undefined })).toThrow(/NOT_FOUND/);
+    // With an org on both sides, the owner and the org must both match.
+    const org = "org_aaaaaaaaaaaaaaaaaaaa" as const;
+    const inOrg = { ...alice, orgId: org };
+    expect(() => authorizeWorkspace(inOrg, { ownerKey: alice.ownerKey, projectName: "payments", orgId: org })).not.toThrow();
+    expect(() => authorizeWorkspace(inOrg, { ownerKey: alice.ownerKey, projectName: "payments" })).toThrow(/NOT_FOUND/);
+    expect(() => authorizeWorkspace(inOrg, { ownerKey: alice.ownerKey, projectName: "payments", orgId: "org_bbbbbbbbbbbbbbbbbbbb" })).toThrow(/NOT_FOUND/);
+  });
+
   it("rejects client-controlled identity and retired runtime routing fields at any depth", () => {
     expect(() => assertNoUntrustedRoutingFields({ prompt: "ok", nested: { runtimeSessionId: "x" } })).toThrow(
       /runtimeSessionId/,

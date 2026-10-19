@@ -21,13 +21,14 @@ export function authorizeProject(
 
 /**
  * The owner may use their workspace. A workspace of another org, like one of another owner, reads as not found,
- * never forbidden, so the answer does not confirm that it exists.
+ * never forbidden, so the answer does not confirm that it exists. A caller with no org (a cloud operator, ruling R6) uses
+ * no workspace at all: two missing orgs are not a match.
  */
 export function authorizeWorkspace(
   identity: AuthenticatedIdentity,
   workspace: { ownerKey: string; projectName: string; orgId?: OrgId | undefined },
 ): void {
-  if (workspace.ownerKey !== identity.ownerKey || workspace.orgId !== identity.orgId) throw agentXError("NOT_FOUND", "workspace not found");
+  if (identity.orgId === undefined || workspace.ownerKey !== identity.ownerKey || workspace.orgId !== identity.orgId) throw agentXError("NOT_FOUND", "workspace not found");
 }
 
 const FORBIDDEN_ROUTING_FIELDS = new Set([
