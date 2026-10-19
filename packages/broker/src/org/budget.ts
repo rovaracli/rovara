@@ -12,6 +12,7 @@ import {
 } from "@agentx/contracts";
 import type { ModelAccess, SpendFigures } from "../model-proxy/access.js";
 import type { OrgStore } from "./store.js";
+import { admitMachineTime, admitTrial } from "./trial.js";
 
 export interface OrgBudgetSettings {
   orgMonthlyUsd: number;
@@ -24,6 +25,8 @@ export interface BudgetDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   access: ModelAccess;
+  /** Epoch milliseconds; the month the machine-time allowance is read for. Defaults to the system clock. */
+  now?: () => number;
 }
 
 /** What a kind of work needs left, in US dollars, to be started: a quick task, a full workflow, or a chat turn. */
@@ -147,12 +150,15 @@ async function figuresFor(deps: BudgetDependencies, orgId: OrgId, developerId: s
 }
 
 /**
- * Whether work may start (ruling R23: soft caps, remainders clamped at 0). The member (when there is one: Slack work
+ * Whether work may start. First the org's trial must be unlocked and its month's machine time not used up (both answered
+ * from the org's own records, before the proxy is asked anything), then the budgets (ruling R23: soft caps, remainders clamped at 0). The member (when there is one: Slack work
  * of an unlinked requester answers to the org alone) must have at least the path's minimum left, then the org must.
  * Answers the most a key for this work may spend: what is left to the member and the org, never more than one task's
  * budget. The proxy's own failures propagate, MODEL_PROXY_UNAVAILABLE among them, before anything is charged.
  */
 export async function admitSpend(deps: BudgetDependencies, input: { orgId: OrgId; developerId?: string | undefined; path: SpendPath }): Promise<{ maxBudgetUsd: number }> {
+  await admitTrial(deps, input.orgId);
+  await admitMachineTime(deps, input.orgId);
   await ensureSynced(deps, input.orgId, input.developerId);
   const { member, org } = await figuresFor(deps, input.orgId, input.developerId);
   const needed = MINIMUM_REMAINING_USD[input.path];

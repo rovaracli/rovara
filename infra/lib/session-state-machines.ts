@@ -155,6 +155,8 @@ export function provisionerDefinition(props: SessionStateMachineProps): State {
         Assign: {
           instanceId: "{% $states.result.Instances[0].InstanceId %}",
           privateIp: "{% $states.result.Instances[0].PrivateIpAddress %}",
+          // Named environments only (their machine time is metered): the type the instance launched as.
+          ...(props.env === undefined ? {} : { instanceType: "{% $states.result.Instances[0].InstanceType %}" }),
           waits: 0,
         },
         Retry: RETRY_IDEMPOTENT,
@@ -167,6 +169,7 @@ export function provisionerDefinition(props: SessionStateMachineProps): State {
         generation: "{% $generation %}",
         instanceId: "{% $instanceId %}",
         privateIp: "{% $privateIp %}",
+        ...(props.env === undefined ? {} : { instanceType: "{% $instanceType %}" }),
       }, { Catch: [toCleanup], Next: "WaitForRunning" }),
       WaitForRunning: { Type: "Wait", Seconds: 5, Next: "DescribeInstance" },
       DescribeInstance: {

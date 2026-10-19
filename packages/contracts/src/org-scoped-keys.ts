@@ -77,6 +77,21 @@ export function budgetSyncedKey(orgId: OrgId, developerId?: string): OrgKey {
   return developerId === undefined ? orgSettingsKey(orgId, "BUDGET_SYNCED") : { pk: orgScoped(orgId, "SETTINGS"), sk: `BUDGET_SYNCED#${developerId}` };
 }
 
+/** The partition of an org's machine-time counters (one item per UTC month) and their once-keys. */
+export function machineTimePk(orgId: OrgId): string {
+  return orgScoped(orgId, "MACHINE_TIME");
+}
+
+/** The seconds of EC2 compute an org used in one UTC month (`month` is `YYYY-MM`). */
+export function machineTimeMonthKey(orgId: OrgId, month: string): OrgKey {
+  return { pk: machineTimePk(orgId), sk: month };
+}
+
+/** The marker that makes recording one workspace's one compute stop idempotent. */
+export function machineTimeOnceKey(orgId: OrgId, workspaceId: string, stoppedAt: number): OrgKey {
+  return { pk: machineTimePk(orgId), sk: `ONCE#${workspaceId}#${stoppedAt}` };
+}
+
 /** The org-wide open-workspace counter; it replaces `DEVELOPER_LIMIT#ORGANIZATION`. */
 export function orgLimitKey(orgId: OrgId): OrgKey {
   return { pk: orgScoped(orgId, "DEVELOPER_LIMIT#ORGANIZATION"), sk: "ORGANIZATION" };

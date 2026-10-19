@@ -7,7 +7,8 @@ import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import { MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS, ec2WorkerUserData } from "@agentx/contracts";
 import { requiredEnvironment } from "./lambda.js";
-import { SessionManager } from "./sessions.js";
+import { installOrgIdFromEnvironment } from "../org/resolve.js";
+import { SessionManager, machineTimeRecorder } from "./sessions.js";
 
 /** The worker's health endpoint (#80 leaves it unauthenticated for exactly this probe). */
 const WORKER_PORT = 8080;
@@ -29,7 +30,7 @@ const volumeId = z.string().regex(/^vol-[0-9a-f]{8,17}$/);
 export const SessionStepSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("launchConfiguration"), workspaceId: uuid, generation, volumeId, expectNewVolume: z.boolean() }).strict(),
   z.object({ action: z.literal("recordVolume"), workspaceId: uuid, generation, volumeId }).strict(),
-  z.object({ action: z.literal("recordInstance"), workspaceId: uuid, generation, instanceId: z.string().regex(/^i-[0-9a-f]{8,17}$/), privateIp: z.ipv4() }).strict(),
+  z.object({ action: z.literal("recordInstance"), workspaceId: uuid, generation, instanceId: z.string().regex(/^i-[0-9a-f]{8,17}$/), privateIp: z.ipv4(), instanceType: z.string().regex(/^[a-z][a-z0-9-]*\.[a-z0-9]+$/).optional() }).strict(),
   z.object({ action: z.literal("probePing"), privateIp: z.ipv4() }).strict(),
   z.object({ action: z.literal("markReady"), workspaceId: uuid, generation }).strict(),
   z.object({ action: z.literal("markFailed"), workspaceId: uuid, generation, error: z.string().max(16_384) }).strict(),
@@ -148,7 +149,7 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
         await dependencies.sessions.markVolume(step.workspaceId, step.generation, step.volumeId);
         return {};
       case "recordInstance":
-        await dependencies.sessions.markInstance(step.workspaceId, step.generation, step.instanceId, step.privateIp);
+        await dependencies.sessions.markInstance(step.workspaceId, step.generation, step.instanceId, step.privateIp, step.instanceType);
         return {};
       case "probePing": {
         let ping: WorkerPing | undefined;
@@ -189,11 +190,16 @@ let publicKey: Promise<string> | undefined;
 // the proxy URL parameter: an SSM GetParameters naming a parameter the caller may not read fails as a whole.
 const modelProxyRequired = process.env.MODEL_PROXY_REQUIRED === "true";
 
+const stateClient = DynamoDBDocumentClient.from(new DynamoDBClient(awsClientConfiguration));
+const stateTableName = process.env.STATE_TABLE_NAME ?? "";
+
 export const handler = createSessionStepsHandler({
   modelProxyRequired,
+  // The provisioner's cleanup (a launch that failed) and the deleter's last step end compute here.
   sessions: new SessionManager({
-    documentClient: DynamoDBDocumentClient.from(new DynamoDBClient(awsClientConfiguration)),
-    tableName: process.env.STATE_TABLE_NAME ?? "",
+    documentClient: stateClient,
+    tableName: stateTableName,
+    recordCompute: machineTimeRecorder(stateClient, stateTableName, installOrgIdFromEnvironment()),
   }),
   async workerSettings() {
     const prefix = requiredEnvironment("WORKER_SETTINGS_PREFIX");

@@ -60,6 +60,8 @@ export const WorkspaceSessionSchema = z
     availabilityZone: AvailabilityZoneSchema.optional(),
     subnetId: SubnetIdSchema.optional(),
     instanceId: z.string().regex(/^i-[0-9a-f]{8,17}$/, "invalid instance ID").optional(),
+    /** The type the instance launched as (`m7g.large`); kept, like `launchedAt`, once the instance is gone, for the machine time it used. */
+    instanceType: z.string().regex(/^[a-z][a-z0-9-]*\.[a-z0-9]+$/, "invalid instance type").optional(),
     privateIp: z.ipv4().optional(),
     launchedAt: z.string().datetime().optional(),
     readyAt: z.string().datetime().optional(),

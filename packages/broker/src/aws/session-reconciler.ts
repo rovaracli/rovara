@@ -14,7 +14,7 @@ import type { Ec2RuntimeBinding, WorkspaceSession, WorkspaceSessionState } from 
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import { requiredEnvironment } from "./lambda.js";
 import { failActiveOperation } from "./outbox-failure.js";
-import { SessionManager, workspaceBinding } from "./sessions.js";
+import { SessionManager, machineTimeRecorder, workspaceBinding } from "./sessions.js";
 import { expireIndexDays, indexSweepWanted } from "./index-expiry.js";
 import { sweepStuckSetups } from "./stuck-setup.js";
 import { stuckCancelRetrier, sweepStuckCancels, type StuckCancelCandidate, type StuckCancelCompute, type StuckCancelSweepResult, type StuckCancelWorker } from "./stuck-cancels.js";
@@ -463,6 +463,7 @@ export const handler = createReconcilerHandler({
   sessions: new SessionManager({
     documentClient,
     tableName,
+    recordCompute: machineTimeRecorder(documentClient, tableName, installOrgIdFromEnvironment()),
     executions: {
       provisionerArn: process.env.PROVISIONER_ARN ?? "",
       deleterArn: process.env.DELETER_ARN ?? "",

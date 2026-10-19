@@ -26,6 +26,7 @@ import {
 } from "@agentx/contracts";
 import { createHash } from "node:crypto";
 import { orgOf } from "../org/resolve.js";
+import { recordMachineTime } from "../org/trial.js";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { failOutboxOperation } from "./outbox-failure.js";
 
@@ -59,6 +60,29 @@ export interface SessionExecutions {
   start: (input: { stateMachineArn: string; name: string; input: string }) => Promise<string>;
 }
 
+/** One compute stop: the EC2 instance of a workspace's session ended, having run since `startedAt`. Epoch milliseconds. */
+export interface ComputeStop {
+  workspaceId: string;
+  instanceType: string;
+  startedAt: number;
+  stoppedAt: number;
+}
+
+/**
+ * Counts a compute stop against the org that owns the workspace (its record's org, else the install's single org, as every
+ * background reader resolves it), as machine time (Task 19). Wired into each Lambda that ends compute.
+ */
+export function machineTimeRecorder(
+  documentClient: Pick<DynamoDBDocumentClient, "send">,
+  tableName: string,
+  fallbackOrg: OrgId,
+): (stop: ComputeStop) => Promise<void> {
+  return async (stop) => {
+    const workspace = (await documentClient.send(new GetCommand({ TableName: tableName, Key: { pk: `WORKSPACE#${stop.workspaceId}`, sk: "META" } }))).Item;
+    await recordMachineTime({ documentClient, tableName }, { orgId: orgOf(fallbackOrg, workspace), ...stop });
+  };
+}
+
 export interface SessionManagerDependencies {
   documentClient: Pick<DynamoDBDocumentClient, "send">;
   tableName: string;
@@ -68,6 +92,12 @@ export interface SessionManagerDependencies {
    */
   executions?: SessionExecutions;
   now?: () => Date;
+  /**
+   * Called once when this manager ends a session's compute (stopped idle, lost, failed after launch, or deleted), with how
+   * long the instance ran. Best effort: a failure is logged and the transition stands, since it cannot be repeated.
+   * Absent where compute is never ended (the dispatcher, the broker).
+   */
+  recordCompute?: (stop: ComputeStop) => Promise<void>;
   /** Picks the first availability zone of a workspace; random by default. */
   chooseSubnet?: (subnets: Ec2RuntimeBinding["subnets"]) => Ec2RuntimeBinding["subnets"][number];
 }
@@ -180,9 +210,9 @@ export class SessionManager {
     }));
   }
 
-  async markInstance(workspaceId: string, generation: number, instanceId: string, privateIp: string): Promise<void> {
+  async markInstance(workspaceId: string, generation: number, instanceId: string, privateIp: string, instanceType?: string): Promise<void> {
     await this.dependencies.documentClient.send(new UpdateCommand(this.update(workspaceId, {
-      set: { instanceId, privateIp, launchedAt: this.now() },
+      set: { instanceId, privateIp, launchedAt: this.now(), ...(instanceType === undefined ? {} : { instanceType }) },
       when: { state: "PROVISIONING", generation },
     })));
   }
@@ -231,11 +261,13 @@ export class SessionManager {
    * generations; the next request starts a fresh one.
    */
   async markFailed(workspaceId: string, generation: number, error: string): Promise<{ failed: string[] }> {
+    const before = await this.sessionRunningCompute(workspaceId);
     const moved = await this.conditional(this.update(workspaceId, {
       set: { state: "FAILED" },
       remove: ["instanceId", "privateIp"],
       when: { state: "PROVISIONING", generation },
     }));
+    if (moved) await this.recordCompute(before);
     const session = await this.get(workspaceId);
     if (!moved && !(session?.state === "FAILED" && session.generation === generation)) {
       throw agentXError("STALE_FENCE", `session ${workspaceId} generation ${generation} is no longer provisioning`);
@@ -348,11 +380,13 @@ export class SessionManager {
       remove: ["instanceId", "privateIp", "pingFailures"],
       when: { state: "READY", generation: seen.generation },
     });
-    return this.conditional({
+    const moved = await this.conditional({
       ...lost,
       ConditionExpression: `${lost.ConditionExpression} AND instanceId = :seenInstance`,
       ExpressionAttributeValues: { ...lost.ExpressionAttributeValues, ":seenInstance": seen.instanceId },
     });
+    if (moved) await this.recordCompute(seen);
+    return moved;
   }
 
   /** Counts one more failed health probe of a READY session; returns the new count, or 0 if it moved on. */
@@ -370,11 +404,13 @@ export class SessionManager {
 
   /** STOPPING → STOPPED once the instance is gone and the volume detached. Returns the session after. */
   async markStopped(workspaceId: string, generation: number): Promise<WorkspaceSession> {
+    const before = await this.sessionRunningCompute(workspaceId);
     const moved = await this.conditional(this.update(workspaceId, {
       set: { state: "STOPPED" },
       remove: ["instanceId", "privateIp"],
       when: { state: "STOPPING", generation },
     }));
+    if (moved) await this.recordCompute(before);
     const session = await this.get(workspaceId);
     if (!moved && !(session?.state === "STOPPED" && session.generation === generation)) {
       throw agentXError("STALE_FENCE", `session ${workspaceId} generation ${generation} is no longer stopping`);
@@ -384,6 +420,7 @@ export class SessionManager {
 
   /** DELETING → DELETED once the instance is gone and the volume is deleted. */
   async markDeleted(workspaceId: string): Promise<void> {
+    const before = await this.sessionRunningCompute(workspaceId);
     const moved = await this.conditional({ update: {
       TableName: this.dependencies.tableName,
       Key: workspaceSessionKey(workspaceId),
@@ -392,8 +429,39 @@ export class SessionManager {
       ExpressionAttributeNames: { "#state": "state", "#index": WORKSPACE_SESSION_STATE_INDEX.partitionKey },
       ExpressionAttributeValues: { ":deleted": "DELETED", ":deleting": "DELETING" },
     } });
+    if (moved) await this.recordCompute(before);
     if (!moved && (await this.get(workspaceId))?.state !== "DELETED") {
       throw agentXError("STALE_FENCE", `session ${workspaceId} is not being deleted`);
+    }
+  }
+
+  /**
+   * The session as it is just before a transition that ends its compute, read only when something is listening for the end
+   * of compute: a session with no instance (or no recorded launch) has run nothing.
+   */
+  private async sessionRunningCompute(workspaceId: string): Promise<WorkspaceSession | undefined> {
+    if (this.dependencies.recordCompute === undefined) return undefined;
+    return this.get(workspaceId);
+  }
+
+  /**
+   * Machine time (Task 19): called once, by the caller whose write made the transition, with the session as it was before
+   * it. The run is counted from the instance's launch to now, whole, in the month it stopped. A session that was in no
+   * instance, or whose launch was not recorded, counts nothing. A failure to count is logged, never thrown: the
+   * transition has happened and cannot be run again, and the next workspace's stop is unaffected.
+   */
+  private async recordCompute(before: WorkspaceSession | undefined): Promise<void> {
+    const record = this.dependencies.recordCompute;
+    if (record === undefined || before?.instanceId === undefined || before.launchedAt === undefined) return;
+    try {
+      await record({
+        workspaceId: before.workspaceId,
+        instanceType: before.instanceType ?? "unknown",
+        startedAt: Date.parse(before.launchedAt),
+        stoppedAt: (this.dependencies.now?.() ?? new Date()).getTime(),
+      });
+    } catch (error) {
+      console.log(JSON.stringify({ component: "session-manager", event: "session.machine_time_failed", workspaceId: before.workspaceId, error: error instanceof Error ? error.name : "unknown" }));
     }
   }
 

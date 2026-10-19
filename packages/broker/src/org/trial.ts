@@ -1,0 +1,155 @@
+// A new org starts on a trial that is locked until a GitHub account is connected (one trial per GitHub account), and
+// every org has a monthly allowance of EC2 machine time. Both are checked at admission (`admitSpend` calls
+// `admitTrial` then `admitMachineTime`, before the proxy is asked anything and before anything is charged); machine
+// time is recorded when compute stops (`recordMachineTime`, called by the session manager at every stop).
+import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  agentXError, machineTimeMonthKey, machineTimeOnceKey, orgMetaKey, trialGithubKey,
+  type OrgId,
+} from "@agentx/contracts";
+
+/** Placeholder allowances, in hours of compute per UTC month, until orgs can buy more. */
+export const TRIAL_MACHINE_HOURS_PER_MONTH = 20;
+export const TEAM_MACHINE_HOURS_PER_MONTH = 400;
+
+const SECONDS_PER_HOUR = 3600;
+
+export interface TrialDependencies {
+  documentClient: { send(command: unknown): Promise<unknown> };
+  tableName: string;
+  /** Epoch milliseconds; the clock the month of an admission is read from. Defaults to the system clock. */
+  now?: () => number;
+}
+
+type Item = Record<string, unknown>;
+
+export const trialLocked = () => agentXError("TRIAL_LOCKED", "Connect GitHub to start your free trial.");
+export const trialGithubUsed = () => agentXError("TRIAL_GITHUB_USED", "That GitHub account has already started a free trial for another organization.");
+export const machineTimeExceeded = () => agentXError("MACHINE_TIME_EXCEEDED", "Your free machine time for this month is used up.");
+
+/** The UTC month (`YYYY-MM`) a moment falls in. */
+export const monthOf = (epochMs: number): string => new Date(epochMs).toISOString().slice(0, 7);
+
+async function get(deps: TrialDependencies, key: { pk: string; sk: string }): Promise<Item | undefined> {
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: Item };
+  return response.Item;
+}
+
+/** The org's record, or undefined for an org with none (a single-org install's org is only created lazily). */
+const orgOf = async (deps: TrialDependencies, orgId: OrgId): Promise<Item | undefined> => get(deps, orgMetaKey(orgId));
+
+const errorName = (error: unknown) => (error instanceof Error ? error.name : undefined);
+
+function cancelledConditions(error: unknown): Set<number> | undefined {
+  if (errorName(error) !== "TransactionCanceledException") return undefined;
+  const reasons = (error as { CancellationReasons?: unknown }).CancellationReasons;
+  if (!Array.isArray(reasons)) return undefined;
+  const failed = new Set<number>();
+  reasons.forEach((reason: { Code?: string } | undefined, index) => {
+    if (reason?.Code === "ConditionalCheckFailed") failed.add(index);
+  });
+  return failed;
+}
+
+/**
+ * Unlocks an org's trial because `githubUserId` connected GitHub to it, and claims that GitHub account for this org in
+ * the same transaction. A GitHub account that already unlocked another org is refused with TRIAL_GITHUB_USED, and the
+ * org stays locked. An org that is already unlocked is left as it is (a replay changes nothing and claims nothing more).
+ */
+export async function unlockTrial(deps: TrialDependencies, input: { orgId: OrgId; githubUserId: string }): Promise<void> {
+  if (input.githubUserId.trim() === "") throw agentXError("CONFIG_INVALID", "a GitHub user id is required to unlock a trial");
+  const org = await orgOf(deps, input.orgId);
+  if (org === undefined) throw agentXError("NOT_FOUND", "organization not found");
+  if (org.trialUnlockedAt !== undefined) return;
+  const now = (deps.now ?? Date.now)();
+  try {
+    await deps.documentClient.send(new TransactWriteCommand({
+      TransactItems: [
+        { Put: {
+          TableName: deps.tableName,
+          Item: { ...trialGithubKey(input.githubUserId), entityType: "TRIAL_GITHUB", orgId: input.orgId, claimedAt: now },
+          // The same org claiming the same account again (a retried callback) is not a second claim.
+          ConditionExpression: "attribute_not_exists(pk) OR orgId = :orgId",
+          ExpressionAttributeValues: { ":orgId": input.orgId },
+        } },
+        { Update: {
+          TableName: deps.tableName,
+          Key: orgMetaKey(input.orgId),
+          UpdateExpression: "SET trialUnlockedAt = :now, trialGithubUserId = :github",
+          ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(trialUnlockedAt)",
+          ExpressionAttributeValues: { ":now": now, ":github": input.githubUserId },
+        } },
+      ],
+    }));
+  } catch (error) {
+    const failed = cancelledConditions(error);
+    if (failed?.has(0)) throw trialGithubUsed();
+    // Another callback unlocked the org first: the transaction rolled back, and the org is open, which is what was asked.
+    if (failed?.has(1)) return;
+    throw error;
+  }
+}
+
+/** A trial org with no GitHub connected may not start work (403 TRIAL_LOCKED). Any other plan, and an org with no record, passes. */
+export async function admitTrial(deps: TrialDependencies, orgId: OrgId): Promise<void> {
+  const org = await orgOf(deps, orgId);
+  if (org?.plan === "trial" && org.trialUnlockedAt === undefined) throw trialLocked();
+}
+
+/** The hours of machine time a plan allows per month; undefined for an org with no plan on record, which is not limited. */
+function allowanceHours(plan: unknown): number | undefined {
+  if (plan === "trial") return TRIAL_MACHINE_HOURS_PER_MONTH;
+  if (plan === "team") return TEAM_MACHINE_HOURS_PER_MONTH;
+  return undefined;
+}
+
+/**
+ * Adds one compute stop's seconds to its org's month. The month is the UTC month of `stoppedAt`: a run that spans a
+ * month boundary is counted whole in the month it stopped. A workspace's stop is counted once however often it is
+ * recorded (a once-key per workspace and stop time), and the seconds are added atomically in the same transaction.
+ * The per-instance-type attribute lets a later plan weight types differently without re-deriving the total.
+ */
+export async function recordMachineTime(
+  deps: TrialDependencies,
+  input: { orgId: OrgId; workspaceId: string; instanceType: string; startedAt: number; stoppedAt: number },
+): Promise<void> {
+  const seconds = Math.max(0, Math.round((input.stoppedAt - input.startedAt) / 1000));
+  if (seconds === 0) return;
+  const typed = `seconds_${input.instanceType.replace(/[^A-Za-z0-9]/g, "_")}`;
+  try {
+    await deps.documentClient.send(new TransactWriteCommand({
+      TransactItems: [
+        { Put: {
+          TableName: deps.tableName,
+          Item: { ...machineTimeOnceKey(input.orgId, input.workspaceId, input.stoppedAt), entityType: "MACHINE_TIME_ONCE", instanceType: input.instanceType, seconds },
+          ConditionExpression: "attribute_not_exists(pk)",
+        } },
+        { Update: {
+          TableName: deps.tableName,
+          Key: machineTimeMonthKey(input.orgId, monthOf(input.stoppedAt)),
+          UpdateExpression: "SET entityType = if_not_exists(entityType, :type) ADD #seconds :seconds, #typed :seconds",
+          ExpressionAttributeNames: { "#seconds": "seconds", "#typed": typed },
+          ExpressionAttributeValues: { ":type": "MACHINE_TIME", ":seconds": seconds },
+        } },
+      ],
+    }));
+  } catch (error) {
+    // The once-key held: this stop was recorded already.
+    if (cancelledConditions(error)?.has(0)) return;
+    throw error;
+  }
+}
+
+/** Seconds of machine time an org has used in the UTC month `month` (`YYYY-MM`). */
+export async function machineSecondsUsed(deps: TrialDependencies, orgId: OrgId, month: string): Promise<number> {
+  const item = await get(deps, machineTimeMonthKey(orgId, month));
+  return typeof item?.seconds === "number" ? item.seconds : 0;
+}
+
+/** An org at or over its month's allowance may not start work (402 MACHINE_TIME_EXCEEDED). Compute already running is not stopped. */
+export async function admitMachineTime(deps: TrialDependencies, orgId: OrgId): Promise<void> {
+  const limit = allowanceHours((await orgOf(deps, orgId))?.plan);
+  if (limit === undefined) return;
+  const used = await machineSecondsUsed(deps, orgId, monthOf((deps.now ?? Date.now)()));
+  if (used >= limit * SECONDS_PER_HOUR) throw machineTimeExceeded();
+}

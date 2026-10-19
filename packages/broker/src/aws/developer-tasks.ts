@@ -1381,6 +1381,9 @@ async function shareFor(
   return decision;
 }
 
+/** What admission refuses a start with (the trial, the month's machine time, a budget): each is a recorded refusal, not a failure. */
+const ADMISSION_REFUSALS: ReadonlySet<string> = new Set(["TRIAL_LOCKED", "MACHINE_TIME_EXCEEDED", "BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED"]);
+
 const NOT_A_MEMBER = PRIVATE_CHANNEL_NOT_A_MEMBER;
 const PRIVACY_UNKNOWN = "Slack could not be reached to check whether that channel is private; try again shortly";
 const PRIVACY_NOT_SET_UP = CHANNEL_PRIVACY_NOT_SET_UP;
@@ -1466,11 +1469,11 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
   let admitted: { maxBudgetUsd: number } | undefined;
   if (deps.modelAccess !== undefined) {
     try {
-      admitted = await admitSpend({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, {
+      admitted = await admitSpend({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, now: () => deps.now() }, {
         orgId: deps.orgId, developerId: caller.developerId, path: request.workflow === true && request.workflowPath === "FULL" ? "FULL" : "QUICK",
       });
     } catch (error) {
-      if (error instanceof AgentXError && (error.code === "BUDGET_EXCEEDED" || error.code === "ORG_BUDGET_EXCEEDED")) return refused(error);
+      if (error instanceof AgentXError && ADMISSION_REFUSALS.has(error.code)) return refused(error);
       throw error;
     }
   }

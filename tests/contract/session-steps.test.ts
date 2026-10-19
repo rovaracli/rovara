@@ -113,9 +113,16 @@ describe("session steps", () => {
     await handler({ action: "markFailed", workspaceId, generation: 1, error: "boom" });
     await handler({ action: "markDeleted", workspaceId });
     expect(sessions.markVolume).toHaveBeenCalledWith(workspaceId, 1, "vol-0123456789abcdef0");
-    expect(sessions.markInstance).toHaveBeenCalledWith(workspaceId, 1, "i-0123456789abcdef0", "10.42.128.10");
+    expect(sessions.markInstance).toHaveBeenCalledWith(workspaceId, 1, "i-0123456789abcdef0", "10.42.128.10", undefined);
     expect(sessions.markFailed).toHaveBeenCalledWith(workspaceId, 1, "boom");
     expect(sessions.markDeleted).toHaveBeenCalledWith(workspaceId);
+  });
+
+  it("records the instance type a named environment's provisioner reports, and refuses one that is not an instance type", async () => {
+    const { handler, sessions } = setup();
+    await handler({ action: "recordInstance", workspaceId, generation: 1, instanceId: "i-0123456789abcdef0", privateIp: "10.42.128.10", instanceType: "m7g.large" });
+    expect(sessions.markInstance).toHaveBeenCalledWith(workspaceId, 1, "i-0123456789abcdef0", "10.42.128.10", "m7g.large");
+    await expect(handler({ action: "recordInstance", workspaceId, generation: 1, instanceId: "i-0123456789abcdef0", privateIp: "10.42.128.10", instanceType: "not a type" })).rejects.toThrow();
   });
 
   const pingCases: ReadonlyArray<[string, SessionStepsDependencies["ping"], { healthy: boolean; status: string }]> = [

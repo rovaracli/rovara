@@ -84,6 +84,8 @@ export class SessionLifecycle extends Construct {
       WORKER_LOG_GROUP_NAME: naming.ec2.workerLogGroupName,
       ...(naming.env === undefined ? {} : { MODEL_PROXY_REQUIRED: "true" }),
     }, Duration.seconds(30), [[resolve(process.cwd(), "packages/worker/ec2/boot.sh"), "boot.sh"]]);
+    // The org of a workspace whose record names none: the machine time its compute used is counted against it.
+    if (naming.env !== undefined) this.steps.addEnvironment("AGENTX_ENV", naming.env);
     // In the private subnets with the session manager's group: the only way to reach a worker's /ping.
     const inVpc = (fn: lambda.Function) => {
       (fn.node.defaultChild as lambda.CfnFunction).vpcConfig = {

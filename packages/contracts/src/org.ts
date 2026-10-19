@@ -16,6 +16,10 @@ export interface OrgRecord {
   /** developerId of the creator. */
   createdBy: string;
   plan: "trial" | "team";
+  /** When connecting GitHub unlocked this trial org (epoch milliseconds); absent while it is locked. Only a `trial` org is ever locked. */
+  trialUnlockedAt?: number;
+  /** The GitHub account whose connection unlocked the trial; it can unlock no other org. */
+  trialGithubUserId?: string;
 }
 
 export interface OrgMembershipRecord {
@@ -103,6 +107,11 @@ export function orgInviteRequestKey(orgId: OrgId, requestId: string): OrgKey {
 
 export function slackTeamOrgKey(teamId: string): OrgKey {
   return { pk: `SLACK_TEAM#${teamId}`, sk: "ORG" };
+}
+
+/** The claim a GitHub account holds on the one trial it unlocked. Global, not org-scoped: a second org must find it. */
+export function trialGithubKey(githubUserId: string): OrgKey {
+  return { pk: `TRIAL_GITHUB#${githubUserId}`, sk: "ORG" };
 }
 
 export function orgEmailKey(email: string): OrgKey {
