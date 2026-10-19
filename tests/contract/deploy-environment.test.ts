@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { environmentStackName, type ReleaseManifest } from "@agentx/contracts";
 import { deployEnvironment, keptOperatorParameters, type DeployAnswers, type DeployEnvironmentInput } from "../../packages/cli/src/deploy/deploy-environment.js";
+import { CDK_CONSTRUCT_IDS, cdkAppArguments, cdkDeployer, type CommandRunner } from "../../packages/cli/src/deploy/cdk-engine.js";
 import { PROTECTED_PARTS, type DeployRequest, type StackDeployer, type StackOutputs } from "../../packages/cli/src/deploy/deployer.js";
 import { OPERATOR_PARAMETERS, type DeployPart } from "../../packages/cli/src/deploy/parameters.js";
 import type { LoadedRelease } from "../../packages/cli/src/deploy/release.js";
 import type { SecretValueStore } from "../../packages/cli/src/deploy/signing-key.js";
 import { lockParameterName } from "../../packages/cli/src/environments/lock.js";
 import type { ParameterStore } from "../../packages/cli/src/environments/parameter-store.js";
+import type { StackDescription } from "../../packages/cli/src/environments/adopt.js";
+import { upgradeAnswers } from "../../packages/cli/src/upgrade/answers.js";
 import { readEnvironmentSettings, settingsParameterName, writeEnvironmentSettings } from "../../packages/cli/src/environments/settings.js";
 import { SIGN_IN_PARAMETER_NAMES } from "../../packages/cli/src/signin/settings.js";
 import { MemoryParameterStore } from "../support/memory-parameter-store.js";
@@ -936,5 +939,103 @@ describe("keptOperatorParameters", () => {
       controlPlane.pop();
     }
     expect(OPERATOR_PARAMETERS["control-plane"]).not.toContain("CallbackSigningKey");
+  });
+});
+
+describe("the hosted Rovara cloud switch is stored and survives every deploy (R45)", () => {
+  const SIGN_IN = { googleClientId: "google-id.apps.example", googleClientSecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/google-AbCdEf", domainPrefix: "rovara-acme" };
+
+  /** A cdk runner that records every command and writes the scripted outputs of the stack it was asked to deploy. */
+  function cdkRunner(): CommandRunner & { calls: string[][] } {
+    const scripted = scriptedOutputs();
+    const byConstruct = new Map(Object.entries(CDK_CONSTRUCT_IDS).map(([part, id]) => [id, environmentStackName(ENV, part as DeployPart)]));
+    const calls: string[][] = [];
+    return {
+      calls,
+      async run(_command, args) {
+        calls.push(args);
+        const file = args[args.indexOf("--outputs-file") + 1];
+        const stack = byConstruct.get(args[3] ?? "");
+        if (file !== undefined && stack !== undefined) await (await import("node:fs/promises")).writeFile(file, JSON.stringify({ [stack]: scripted[stack] ?? {} }));
+        return { stdout: "" };
+      },
+    };
+  }
+  const cdk = (runner: CommandRunner, cloud: boolean): StackDeployer => cdkDeployer({
+    runner, source: "/src", env: ENV, region: "us-east-1", identityMode: "cognito", ...(cloud ? { cloud: true } : {}), outputsDir: process.env.TMPDIR ?? "/tmp", outputs: async (name) => scriptedOutputs()[name],
+  });
+  const cloudAnswers = (): DeployAnswers => ({ ...baseAnswers(), cloud: true, cloudSignIn: SIGN_IN });
+  const deployedControlPlane = (settings: NonNullable<Awaited<ReturnType<typeof readEnvironmentSettings>>>) => ({
+    async describe(name: string): Promise<StackDescription | undefined> {
+      const parameters = name === settings.stacks["control-plane"]
+        ? { GitHubAppId: "123", GitHubAppPrivateKeySecretArn: baseAnswers().github.privateKeySecretArn, AdminClaim: "cognito:groups", AdminValues: "[\"agentx-admin\"]" }
+        : { OperatorPrincipalArn: "" };
+      return { status: "UPDATE_COMPLETE", outputs: {}, parameters };
+    },
+  });
+
+  it("passes -c agentxCloud=true only for a cloud environment", () => {
+    expect(cdkAppArguments({ env: ENV, region: "us-east-1", identityMode: "cognito", cloud: true })).toEqual(expect.arrayContaining(["-c", "agentxCloud=true"]));
+    expect(cdkAppArguments({ env: ENV, region: "us-east-1", identityMode: "cognito" }).join(" ")).not.toContain("agentxCloud");
+  });
+
+  it("stores cloud: true and the sign-in settings on install, and passes the sign-in parameters to the control plane", async () => {
+    const store = new MemoryParameterStore();
+    const runner = cdkRunner();
+    await deployEnvironment({ mode: "install", engine: "cdk", answers: cloudAnswers(), release: fakeRelease(), deployer: cdk(runner, true), store, secrets: memorySecrets(), holder: HOLDER, declaredParameters: () => new Set() });
+    const settings = await readEnvironmentSettings(store, ENV);
+    expect(settings).toMatchObject({ cloud: true, cloudSignIn: SIGN_IN });
+    const controlPlane = runner.calls.find((args) => args[3] === "AgentXControlPlane")!;
+    expect(controlPlane).toContain(`${stackName("control-plane")}:GoogleClientId=google-id.apps.example`);
+    expect(controlPlane).toContain(`${stackName("control-plane")}:GoogleClientSecretArn=${SIGN_IN.googleClientSecretArn}`);
+    expect(controlPlane).toContain(`${stackName("control-plane")}:CloudIdentityDomainPrefix=rovara-acme`);
+    expect(runner.calls.every((args) => args.includes("agentxCloud=true"))).toBe(true);
+  });
+
+  it("passes no Google parameters when no client id is set, and a non-cloud install stores no cloud setting", async () => {
+    const store = new MemoryParameterStore();
+    const runner = cdkRunner();
+    await deployEnvironment({ mode: "install", engine: "cdk", answers: { ...baseAnswers(), cloud: true }, release: fakeRelease(), deployer: cdk(runner, true), store, secrets: memorySecrets(), holder: HOLDER, declaredParameters: () => new Set() });
+    expect(runner.calls.find((args) => args[3] === "AgentXControlPlane")!.join(" ")).not.toMatch(/Google|CloudIdentityDomainPrefix/);
+    const plain = new MemoryParameterStore();
+    await deployEnvironment({ mode: "install", engine: "cdk", answers: baseAnswers(), release: fakeRelease(), deployer: cdk(cdkRunner(), false), store: plain, secrets: memorySecrets(), holder: HOLDER, declaredParameters: () => new Set() });
+    expect(await readEnvironmentSettings(plain, ENV)).not.toHaveProperty("cloud");
+  });
+
+  it("an upgrade built from the stored settings keeps agentxCloud=true and the sign-in parameters", async () => {
+    const store = new MemoryParameterStore();
+    await deployEnvironment({ mode: "install", engine: "cdk", answers: cloudAnswers(), release: fakeRelease(), deployer: cdk(cdkRunner(), true), store, secrets: memorySecrets(), holder: HOLDER, declaredParameters: () => new Set() });
+    const settings = (await readEnvironmentSettings(store, ENV))!;
+
+    const answers = await upgradeAnswers({ settings, stacks: deployedControlPlane(settings) });
+    expect(answers).toMatchObject({ cloud: true, cloudSignIn: SIGN_IN });
+    const runner = cdkRunner();
+    await deployEnvironment({
+      mode: "upgrade", engine: settings.engine, answers, release: fakeRelease(), deployer: cdk(runner, settings.cloud === true), store, secrets: memorySecrets({ [`agentx/${ENV}/callback-signing-key`]: "k".repeat(40) }), holder: HOLDER,
+      deployedParameters: nothingDeployed, declaredParameters: () => new Set(),
+    });
+    expect(runner.calls.length).toBeGreaterThan(0);
+    expect(runner.calls.every((args) => args.includes("agentxCloud=true"))).toBe(true);
+    expect((await readEnvironmentSettings(store, ENV))).toMatchObject({ cloud: true, cloudSignIn: SIGN_IN });
+  });
+
+  it("refuses a deploy whose cloud flag differs from the stored one, in both directions", async () => {
+    const cloudStore = new MemoryParameterStore();
+    await writeEnvironmentSettings(cloudStore, { ...stagingSettings, engine: "cdk", cloud: true });
+    await expect(deployEnvironment({ mode: "upgrade", engine: "cdk", answers: baseAnswers(), release: fakeRelease(), deployer: fakeDeployer(scriptedOutputs()).deployer, store: cloudStore, secrets: memorySecrets(), holder: HOLDER, deployedParameters: nothingDeployed }))
+      .rejects.toThrow(/installed as the hosted Rovara cloud/);
+    const plainStore = new MemoryParameterStore();
+    await writeEnvironmentSettings(plainStore, { ...stagingSettings, engine: "cdk" });
+    await expect(deployEnvironment({ mode: "upgrade", engine: "cdk", answers: cloudAnswers(), release: fakeRelease(), deployer: fakeDeployer(scriptedOutputs()).deployer, store: plainStore, secrets: memorySecrets(), holder: HOLDER, deployedParameters: nothingDeployed }))
+      .rejects.toThrow(/installed without the hosted Rovara cloud/);
+  });
+
+  it("refuses the prebuilt-templates engine for a cloud environment, on install and on upgrade", async () => {
+    await expect(deployEnvironment({ mode: "install", engine: "templates", answers: cloudAnswers(), release: fakeRelease(), deployer: fakeDeployer(scriptedOutputs()).deployer, store: new MemoryParameterStore(), secrets: memorySecrets(), holder: HOLDER }))
+      .rejects.toThrow(/must be synthesized from source/);
+    const store = new MemoryParameterStore();
+    await writeEnvironmentSettings(store, { ...stagingSettings, engine: "templates", cloud: true });
+    await expect(deployEnvironment({ mode: "upgrade", engine: "templates", answers: cloudAnswers(), release: fakeRelease(), deployer: fakeDeployer(scriptedOutputs()).deployer, store, secrets: memorySecrets(), holder: HOLDER, deployedParameters: nothingDeployed }))
+      .rejects.toThrow(/must be synthesized from source/);
   });
 });

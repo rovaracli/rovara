@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ModelsAnswersSchema } from "../deploy/answer-schemas.js";
+import { CloudSignInAnswersSchema, ModelsAnswersSchema } from "../deploy/answer-schemas.js";
 import { agentXError, EnvironmentNameSchema, environmentSettingsPrefix } from "@agentx/contracts";
 import { ParameterExistsError, type ParameterStore } from "./parameter-store.js";
 
@@ -22,6 +22,10 @@ export const EnvironmentSettingsSchema = z.object({
     clientId: z.string().min(1).max(256),
   }).strict(),
   models: ModelsAnswersSchema,
+  /** The environment is the hosted Rovara cloud (R45): every deploy and upgrade synthesizes with -c agentxCloud=true. */
+  cloud: z.literal(true).optional(),
+  /** The cloud sign-in settings the control-plane stack takes (R46). */
+  cloudSignIn: CloudSignInAnswersSchema.optional(),
   alertAddress: z.string().min(1).optional(),
   access: z
     .object({

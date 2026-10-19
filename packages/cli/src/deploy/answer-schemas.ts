@@ -32,6 +32,18 @@ export const IdentityAnswersSchema = z.discriminatedUnion("mode", [
     .strict(),
 ]);
 
+/** The hosted Rovara cloud's sign-in settings (ruling R46): Google is optional (email code only without it);
+ * the hosted-domain prefix defaults to rovara-<env> in the template. Stored beside `cloud: true`. */
+export const CloudSignInAnswersSchema = z.object({
+  googleClientId: z.string().min(1).max(256).optional(),
+  googleClientSecretArn: z.string().max(SECRET_ARN_MAX_LENGTH).regex(SECRET_ARN_PATTERN).optional(),
+  domainPrefix: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/).optional(),
+}).strict();
+export type CloudSignInAnswers = z.infer<typeof CloudSignInAnswersSchema>;
+
+/** Said wherever the prebuilt-templates engine would be used for a cloud environment (R45): the release's templates are synthesized without the cloud switch. */
+export const CLOUD_NEEDS_CDK_MESSAGE = "the hosted Rovara cloud (cloud: true) must be synthesized from source; use --engine cdk --source <checkout of the release tag>, not the prebuilt templates";
+
 const ModelProviderSchema = z.enum(MODEL_PROVIDERS);
 /** A direct provider's key: only the ARN of the secret holding it (spec 054). */
 const DirectKeySchema = z.object({ secretArn: z.string().max(SECRET_ARN_MAX_LENGTH).regex(SECRET_ARN_PATTERN) }).strict();

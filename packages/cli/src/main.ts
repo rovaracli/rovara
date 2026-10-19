@@ -1118,6 +1118,10 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--alert-webhook-file <path>", "file holding a PagerDuty or Opsgenie integration address (kept secret)")
     .option("--alert-webhook-env <NAME>", "environment variable holding a PagerDuty or Opsgenie integration address (kept secret)")
     .option("--no-alerts", "send alerts nowhere for now")
+    .option("--rovara-cloud", "install the hosted Rovara cloud (self-serve sign-in, multi-tenant orgs); needs the cdk engine")
+    .option("--google-client-id <id>", "with --rovara-cloud: the Google OAuth client id for sign-in (omit for email-code sign-in only)")
+    .option("--google-client-secret-arn <arn>", "with --rovara-cloud: the Secrets Manager secret holding the Google client secret as {\"clientSecret\": ...}")
+    .option("--cloud-domain-prefix <prefix>", "with --rovara-cloud: the hosted sign-in domain prefix (default rovara-<env>)")
     .option("--budget <usd>", "monthly AWS budget in whole US dollars; 0 for none (default 100)")
     .addOption(new Option("--budget-scope <scope>", "tag: costs tagged agentx:env; account: the whole account").choices(["tag", "account"]))
     .option("--github-account <login>", "GitHub organization or user that will own the AgentX GitHub App")
@@ -1409,6 +1413,7 @@ interface InitCommandOptions extends SignInCommandOptions {
   slackAppName?: string; slackAppPostedMessages?: "accept" | "ignore"; slackInstall?: "installed" | "approval";
   slackBotTokenFile?: string; slackBotTokenEnv?: string; slackSigningSecretFile?: string; slackSigningSecretEnv?: string;
   workerImage?: string; slackImage?: string;
+  rovaraCloud?: boolean; googleClientId?: string; googleClientSecretArn?: string; cloudDomainPrefix?: string;
   /** --signin: which developer sign-in methods agentx init's developer-signin step enables. */
   signin?: "slack" | "oidc" | "both";
   adminEmail?: string; repository?: string; projectName?: string; setupCommand?: string; testCommand?: string; channel?: string; connectors?: string;
@@ -1460,6 +1465,7 @@ function initOptions(globals: GlobalOptions, options: InitCommandOptions, comman
     githubAccount: options.githubAccount, githubAccountType: options.githubAccountType, githubAppName: options.githubAppName,
     slackAppName: options.slackAppName, slackAppPostedMessages: options.slackAppPostedMessages,
     workerImage: options.workerImage, slackImage: options.slackImage,
+    rovaraCloud: options.rovaraCloud, googleClientId: options.googleClientId, googleClientSecretArn: options.googleClientSecretArn, cloudDomainPrefix: options.cloudDomainPrefix,
   });
   const keySource = secretSource(options.githubPrivateKeyFile, options.githubPrivateKeyEnv);
   const { githubAppId: appId, githubInstallationId: installationId } = options;

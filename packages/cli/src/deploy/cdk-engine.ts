@@ -152,14 +152,16 @@ function redactSecrets(text: string, parameters: Record<string, string>): string
 
 /** The app and context every cdk command runs with (deploy, diff, and cdk-source.ts's synth), so
  * the synth that reads the declared parameters synthesizes exactly what the deploy deploys. */
-export function cdkAppArguments(input: { env: string; region: string; identityMode: "cognito" | "oidc" }): string[] {
+export function cdkAppArguments(input: { env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean }): string[] {
   const args = ["--app", "node infra/dist/bin/agentx.js", "-c", `agentxEnv=${input.env}`, "-c", `agentxRegion=${input.region}`];
   if (input.identityMode === "oidc") args.push("-c", "agentxIdentity=oidc");
+  // R45: the hosted-cloud switch is synth-time only, so it comes from the stored settings on every command.
+  if (input.cloud === true) args.push("-c", "agentxCloud=true");
   return args;
 }
 
 /** The cdk command's arguments for one stack (deploy or diff); a deploy passes each parameter by physical stack name. */
-function cdkArguments(input: { env: string; region: string; identityMode: "cognito" | "oidc" }, request: DeployRequest, command: "deploy" | "diff"): string[] {
+function cdkArguments(input: { env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean }, request: DeployRequest, command: "deploy" | "diff"): string[] {
   // --no-install: only the CDK CLI `npm ci` installed from the release's own lockfile, never one npx
   // would otherwise download on the fly.
   const args = ["--no-install", "cdk", command, CDK_CONSTRUCT_IDS[request.part], "--exclusively", ...cdkAppArguments(input)];
@@ -177,7 +179,7 @@ function cdkArguments(input: { env: string; region: string; identityMode: "cogni
  * through a Ref or GetAtt, nor a Conditions or Mappings change that adds or removes a conditional
  * resource; the live check (Task 20) looks at this. cdk prints the diff on stderr; the
  * text returned has every secret redacted. */
-export async function cdkDiff(input: { runner: CommandRunner; source: string; env: string; region: string; identityMode: "cognito" | "oidc"; request: DeployRequest }): Promise<string> {
+export async function cdkDiff(input: { runner: CommandRunner; source: string; env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; request: DeployRequest }): Promise<string> {
   // --no-notices: a notice naming a guarded resource type would otherwise read as an unclear line.
   const args = [...cdkArguments(input, input.request, "diff"), "--method=template", "--no-notices"];
   const redact = (text: string) => redactSecrets(text, input.request.parameters);
@@ -192,6 +194,7 @@ export function cdkDeployer(input: {
   env: string;
   region: string;
   identityMode: "cognito" | "oidc";
+  cloud?: boolean;
   outputsDir: string;
   outputs: (stackName: string) => Promise<StackOutputs | undefined>;
 }): StackDeployer {

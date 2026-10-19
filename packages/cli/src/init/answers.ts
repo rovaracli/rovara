@@ -3,7 +3,7 @@ import { DEFAULT_BEDROCK_MODELS, DEFAULT_DIRECT_MODELS, PROVIDER_KEY_MIN_LENGTH,
 // commander default never silently skips a question. An alert webhook carries its integration
 // key, so it is a secret: it is never a flag value and never stored in the answers.
 import { agentXError, ImageDigest, KEYED_MODEL_PROVIDERS, MODEL_PROVIDERS, keyedProviderSecretName, type KeyedModelProvider, type ModelProvider } from "@agentx/contracts";
-import { DIRECT_PROVIDERS, GITHUB_LOGIN_PATTERN, ModelsAnswersSchema, providerSecretArn, type DirectProvider } from "../deploy/answer-schemas.js";
+import { CLOUD_NEEDS_CDK_MESSAGE, CloudSignInAnswersSchema, DIRECT_PROVIDERS, GITHUB_LOGIN_PATTERN, ModelsAnswersSchema, providerSecretArn, type DirectProvider } from "../deploy/answer-schemas.js";
 import type { BundleAnswers } from "../deploy/export-bundle.js";
 import { SecretAlreadyExistsError } from "../deploy/signing-key.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
@@ -72,6 +72,9 @@ export interface InitFlags {
   githubAccount?: string; githubAccountType?: "organization" | "user"; githubAppName?: string;
   slackAppName?: string; slackAppPostedMessages?: "accept" | "ignore";
   workerImage?: string; slackImage?: string;
+  /** --rovara-cloud: install the hosted Rovara cloud (R45); it needs the cdk engine. The next three are its sign-in settings (R46). */
+  rovaraCloud?: boolean;
+  googleClientId?: string; googleClientSecretArn?: string; cloudDomainPrefix?: string;
 }
 
 export interface CollectedAnswers {
@@ -187,6 +190,7 @@ export async function collectInitAnswers(input: {
       ...(operatorPrincipalArn === undefined ? {} : { operatorPrincipalArn }),
     };
   }
+  const cloudSignIn = collectCloudSignIn(flags);
   if (platform.models.orchestrator === GLM) notes.push(GLM_NOTE);
   if (platform.models.classifier === HAIKU) notes.push(HAIKU_NOTE);
 
@@ -259,6 +263,8 @@ export async function collectInitAnswers(input: {
       : { images: { ...(workerImage === undefined ? {} : { worker: workerImage }), ...(slackImage === undefined ? {} : { slack: slackImage }) } }),
     alert,
     ...(budget === undefined ? {} : { budget }),
+    ...(flags.rovaraCloud === true ? { cloud: true as const } : {}),
+    ...(cloudSignIn === undefined ? {} : { cloudSignIn }),
     github: { account: githubAccount, accountType, appName },
     slack: { appName: slackAppName, appPostedMessages },
     ...(email === undefined ? {} : { adminEmail: email }),
@@ -273,6 +279,20 @@ export async function collectInitAnswers(input: {
   };
 }
 
+/** The cloud sign-in flags as answers: Google is optional, but its id and secret go together; none without --rovara-cloud. */
+function collectCloudSignIn(flags: InitFlags): InitAnswers["cloudSignIn"] {
+  const given = { googleClientId: flags.googleClientId, googleClientSecretArn: flags.googleClientSecretArn, domainPrefix: flags.cloudDomainPrefix };
+  const present = Object.values(given).some((value) => value !== undefined);
+  if (!present) return undefined;
+  if (flags.rovaraCloud !== true) throw agentXError("CONFIG_INVALID", "--google-client-id, --google-client-secret-arn and --cloud-domain-prefix need --rovara-cloud");
+  if ((given.googleClientId === undefined) !== (given.googleClientSecretArn === undefined)) {
+    throw agentXError("CONFIG_INVALID", "--google-client-id and --google-client-secret-arn go together (omit both for email-code sign-in only)");
+  }
+  const parsed = CloudSignInAnswersSchema.safeParse(Object.fromEntries(Object.entries(given).filter(([, value]) => value !== undefined)));
+  if (!parsed.success) throw agentXError("CONFIG_INVALID", `the cloud sign-in flags are invalid: ${parsed.error.issues[0]?.path.join(".") ?? ""} ${parsed.error.issues[0]?.message ?? ""}`.trim());
+  return parsed.data;
+}
+
 /** The settings an export bundle answers instead (engine, identity, models, boundary, operator),
  * from the form's values: a typed flag first, then the field, then its recommended value. */
 async function platformFromSettings(
@@ -280,7 +300,9 @@ async function platformFromSettings(
   values: SettingsValues,
 ): Promise<{ platform: PlatformAnswers; openRouterKey?: string; openRouterProviders?: string[]; directKeys?: Partial<Record<DirectProvider, string>> }> {
   const { flags, prompter } = input;
-  const engine = flags.engine ?? (values[SETTINGS_FIELD.engine] === "cdk" ? "cdk" : "templates");
+  // R45: the hosted cloud is synthesized from source, so it defaults to (and requires) the cdk engine.
+  const engine = flags.engine ?? (flags.rovaraCloud === true || values[SETTINGS_FIELD.engine] === "cdk" ? "cdk" : "templates");
+  if (flags.rovaraCloud === true && engine === "templates") throw agentXError("CONFIG_INVALID", `--rovara-cloud: ${CLOUD_NEEDS_CDK_MESSAGE}`);
 
   const identityMode = flags.identity ?? (values[SETTINGS_FIELD.identity] === "oidc" ? "oidc" : "cognito");
   let identity: InitAnswers["identity"] = { mode: "cognito" };
@@ -461,6 +483,9 @@ const RESUME_CHECKS: Array<{ flag: string; key: keyof InitFlags; kind?: ResumeCh
   { flag: "--slack-app-posted-messages", key: "slackAppPostedMessages", stored: (a) => a.slack.appPostedMessages },
   { flag: "--worker-image", key: "workerImage", stored: (a) => a.images?.worker },
   { flag: "--slack-image", key: "slackImage", stored: (a) => a.images?.slack },
+  { flag: "--google-client-id", key: "googleClientId", stored: (a) => a.cloudSignIn?.googleClientId },
+  { flag: "--google-client-secret-arn", key: "googleClientSecretArn", stored: (a) => a.cloudSignIn?.googleClientSecretArn },
+  { flag: "--cloud-domain-prefix", key: "cloudDomainPrefix", stored: (a) => a.cloudSignIn?.domainPrefix },
 ];
 
 /** Trims, then applies the one further normalization `kind` calls for: a URL (the OIDC issuer)
@@ -524,6 +549,7 @@ export function assertResumeFlagsMatch(stored: InitAnswers, flags: InitFlags): v
       resumeMismatch(`--admin-values ${flags.adminValues}`, was === undefined ? undefined : was.join(", "));
     }
   }
+  if (flags.rovaraCloud === true && stored.cloud !== true) resumeMismatch("--rovara-cloud", "not set");
   if (flags.alerts === false && stored.alert.kind !== "none") {
     resumeMismatch("--no-alerts", alertKindWord(stored.alert));
   }

@@ -252,6 +252,29 @@ function recordingSecrets(prompter: ReturnType<typeof scriptedPrompter>) {
   };
 }
 
+describe("the hosted Rovara cloud (R45, R46)", () => {
+  const cdkFlags: InitFlags = { ...everyFlag, engine: "cdk" };
+  const SECRET = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/google-AbCdEf";
+
+  it("--rovara-cloud stores cloud: true with the cdk engine, and the sign-in flags beside it", async () => {
+    const { answers } = await collectWithFlags({ ...base, flags: { ...cdkFlags, rovaraCloud: true, googleClientId: "gid", googleClientSecretArn: SECRET, cloudDomainPrefix: "rovara-acme" } });
+    expect(answers).toMatchObject({ engine: "cdk", cloud: true, cloudSignIn: { googleClientId: "gid", googleClientSecretArn: SECRET, domainPrefix: "rovara-acme" } });
+    expect((await collectWithFlags({ ...base, flags: { ...cdkFlags, rovaraCloud: true } })).answers).not.toHaveProperty("cloudSignIn");
+    expect((await collectWithFlags({ ...base, flags: cdkFlags })).answers).not.toHaveProperty("cloud");
+  });
+
+  it("refuses the prebuilt-templates engine, a lone Google flag, and sign-in flags without --rovara-cloud", async () => {
+    await expect(collectWithFlags({ ...base, flags: { ...everyFlag, rovaraCloud: true } })).rejects.toThrow(/must be synthesized from source/);
+    await expect(collectWithFlags({ ...base, flags: { ...cdkFlags, rovaraCloud: true, googleClientId: "gid" } })).rejects.toThrow(/go together/);
+    await expect(collectWithFlags({ ...base, flags: { ...cdkFlags, cloudDomainPrefix: "rovara-acme" } })).rejects.toThrow(/need --rovara-cloud/);
+  });
+
+  it("refuses a resume that adds --rovara-cloud to an install that started without it", async () => {
+    const { answers } = await collectWithFlags({ ...base, flags: cdkFlags });
+    expect(() => assertResumeFlagsMatch(answers, { rovaraCloud: true })).toThrow(/--rovara-cloud differs/);
+  });
+});
+
 describe("OpenRouter from init", () => {
   // The settings with OpenRouter as the provider, then the three OpenRouter model ids, the key, and the owner's type.
   const OPENROUTER_RUN = [

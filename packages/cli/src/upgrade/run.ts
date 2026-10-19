@@ -4,6 +4,7 @@
 import { GetTemplateCommand } from "@aws-sdk/client-cloudformation";
 import { agentXError, environmentStackName } from "@agentx/contracts";
 import { CONFIG_KEYS } from "../config/keys.js";
+import { CLOUD_NEEDS_CDK_MESSAGE } from "../deploy/answer-schemas.js";
 import { progressLine, type Ask, type PreparedDeployment } from "../deploy/commands.js";
 import { deployEnvironment, keptOperatorParameters, templateParameterNames } from "../deploy/deploy-environment.js";
 import type { DeployRequest } from "../deploy/deployer.js";
@@ -109,6 +110,8 @@ export async function droppedConfigKeys(input: { declared: (part: DeployPart) =>
 async function exportUpgrade(input: { options: UpgradeOptions; deps: UpgradeDependencies; settings: EnvironmentSettings; release: LoadedRelease; dir: string }): Promise<UpgradeResult> {
   const { options, deps, settings, release } = input;
   const { env } = settings;
+  // R45: the bundle carries the release's prebuilt templates, which are synthesized without the cloud switch.
+  if (settings.cloud === true) throw agentXError("CONFIG_INVALID", CLOUD_NEEDS_CDK_MESSAGE);
   const target = release.manifest.version;
   deps.write(`Writing the upgrade of ${env} from ${settings.version} to ${target} (${settings.engine} engine) to a bundle`);
   deps.write(notesText(await deps.notes(target), target));

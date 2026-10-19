@@ -6,7 +6,7 @@ import { CONTROL_PLANE_FOUNDATION_PARAMETERS, ImageDigest, MODEL_PROXY_FOUNDATIO
 import type { ReleaseManifest, StackPart } from "@agentx/contracts";
 import { signInStackParameters, type StoredDeveloperSignIn } from "../signin/settings.js";
 
-import { providerSecretArn, type ModelsAnswers } from "./answer-schemas.js";
+import { providerSecretArn, type CloudSignInAnswers, type ModelsAnswers } from "./answer-schemas.js";
 
 export type StackOutputs = Record<string, string>;
 
@@ -51,6 +51,10 @@ export interface InstallAnswers {
   /** The install in the cloud: the setup page's address, for the identity stack's sign-in callback
    * and invitation email. Absent everywhere else (the template's default, empty). */
   setupPageUrl?: string;
+  /** The hosted Rovara cloud (R45): the stored `cloud` setting; the cdk app is synthesized with agentxCloud=true. */
+  cloud?: true;
+  /** The cloud sign-in settings (R46); only the ones set are passed, the template defaults the rest. */
+  cloudSignIn?: CloudSignInAnswers;
 }
 
 /** The shortest callback signing key the control plane accepts. */
@@ -221,6 +225,15 @@ function adminParameters(identity: InstallAnswers["identity"]): Record<string, s
   return { AdminClaim: adminClaim, AdminValues: JSON.stringify(adminValues) };
 }
 
+/** The cloud control plane's sign-in parameters (R46): Google only when a client id is set, the domain prefix only when named. */
+function cloudSignInParameters(signIn: CloudSignInAnswers | undefined): Record<string, string> {
+  return {
+    ...(signIn?.googleClientId === undefined ? {} : { GoogleClientId: signIn.googleClientId }),
+    ...(signIn?.googleClientSecretArn === undefined ? {} : { GoogleClientSecretArn: signIn.googleClientSecretArn }),
+    ...(signIn?.domainPrefix === undefined ? {} : { CloudIdentityDomainPrefix: signIn.domainPrefix }),
+  };
+}
+
 /** Parameters for one stack. Throws a clear error naming the missing input or output. The release's
  * package parameters belong to its published templates only: a cdk deploy synthesizes from source and
  * uploads its own assets, and CloudFormation refuses a parameter its template does not declare, so
@@ -273,6 +286,7 @@ export function stackParameters(part: DeployPart, answers: InstallAnswers, outpu
         // The EC2 session lifecycle (#83) runs in the foundation's network with its key and role.
         ...Object.fromEntries([...CONTROL_PLANE_FOUNDATION_PARAMETERS, ...MODEL_PROXY_FOUNDATION_PARAMETERS].map((name) => [name, required(outputs, "foundation", name, answers.env)])),
         ...(answers.slackAppPostedMessages === undefined ? {} : { SlackAppPostedMessages: answers.slackAppPostedMessages }),
+        ...(answers.cloud === true ? cloudSignInParameters(answers.cloudSignIn) : {}),
         ...(answers.budget === undefined ? {} : { BudgetMonthlyUsd: String(answers.budget.monthlyUsd), BudgetScope: answers.budget.scope }),
         // F24: only when a stored sign-in choice is actually given; the template's own defaults
         // (sign-in off) are otherwise left untouched, and only the seven keys the control-plane

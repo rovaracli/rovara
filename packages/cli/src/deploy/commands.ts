@@ -19,7 +19,7 @@ import type { CallerIdentity } from "../environments/adopt.js";
 import { cloudFormationStackReader, stsCallerIdentity } from "../environments/adopt.js";
 import { ssmParameterStore, type ParameterStore } from "../environments/parameter-store.js";
 import { settingsParameterName } from "../environments/settings.js";
-import { ACCOUNT_PATTERN, BudgetAnswersSchema, IdentityAnswersSchema, ImagesAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "./answer-schemas.js";
+import { ACCOUNT_PATTERN, BudgetAnswersSchema, CLOUD_NEEDS_CDK_MESSAGE, CloudSignInAnswersSchema, IdentityAnswersSchema, ImagesAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "./answer-schemas.js";
 import { assertCdkBootstrapped, assertSourceAtRelease, buildSource, cdkDeployer, type CommandRunner } from "./cdk-engine.js";
 import { synthDeclaredParameters } from "./cdk-source.js";
 import type { ChangeSetChange, DeployEvent, StackDeployer, StackOutputs } from "./deployer.js";
@@ -109,9 +109,18 @@ export const DeployAnswersSchema = z
     images: ImagesAnswersSchema.optional(),
     slackAppPostedMessages: z.enum(["accept", "ignore"]).optional(),
     budget: BudgetAnswersSchema.optional(),
+    cloud: z.literal(true).optional(),
+    cloudSignIn: CloudSignInAnswersSchema.optional(),
   })
   .strict()
-  .superRefine(requireOidcAdminAndClient);
+  .superRefine(requireOidcAdminAndClient)
+  .superRefine((answers, context) => {
+    if (answers.cloudSignIn !== undefined && answers.cloud !== true) context.addIssue({ code: "custom", path: ["cloudSignIn"], message: "needs cloud: true" });
+    const signIn = answers.cloudSignIn;
+    if (signIn !== undefined && (signIn.googleClientId === undefined) !== (signIn.googleClientSecretArn === undefined)) {
+      context.addIssue({ code: "custom", path: ["cloudSignIn"], message: "googleClientId and googleClientSecretArn go together" });
+    }
+  });
 
 /** The first zod issue's path and message, so a schema failure always names the field. */
 function firstIssueMessage(prefix: string, error: z.ZodError): string {
@@ -168,6 +177,8 @@ function toDeployAnswers(parsed: z.infer<typeof DeployAnswersSchema>): DeployAns
     ...(images === undefined ? {} : { images }),
     ...(parsed.slackAppPostedMessages === undefined ? {} : { slackAppPostedMessages: parsed.slackAppPostedMessages }),
     ...(parsed.budget === undefined ? {} : { budget: parsed.budget }),
+    ...(parsed.cloud === true ? { cloud: true as const } : {}),
+    ...(parsed.cloudSignIn === undefined ? {} : { cloudSignIn: parsed.cloudSignIn }),
   };
 }
 
@@ -580,6 +591,7 @@ async function deployCommand(options: DeployCommandOptions, deps: DeployCliDepen
     account: answers.account,
     ...(answers.partition === undefined ? {} : { partition: answers.partition }),
     identityMode: answers.identity.mode,
+    ...(answers.cloud === true ? { cloud: true } : {}),
     release,
     ...(options.source === undefined ? {} : { source: options.source }),
     deps,
@@ -649,12 +661,15 @@ export async function prepareDeployment(input: {
   account: string;
   partition?: string;
   identityMode: "cognito" | "oidc";
+  /** The hosted Rovara cloud (R45): the cdk app is synthesized with agentxCloud=true; the templates engine cannot deploy it. */
+  cloud?: boolean;
   release: LoadedRelease;
   source?: string;
   deps: DeployCliDependencies;
   stderr: Writer;
 }): Promise<PreparedDeployment> {
   const { deps, release, region } = input;
+  if (input.engine === "templates" && input.cloud === true) throw agentXError("CONFIG_INVALID", CLOUD_NEEDS_CDK_MESSAGE);
   if (input.engine === "templates") assertReleaseCoversRegion(release, region);
 
   const identity = deps.identity ?? stsCallerIdentity(new STSClient({ region }));
@@ -693,7 +708,8 @@ export async function prepareDeployment(input: {
     await buildSource({ runner, source });
     // Issue 152: one synth of the built source, with the deploy's own app and context, says which
     // parameters each stack declares; the release's templates may not exist (a source-built agentx).
-    declaredParameters = await synthDeclaredParameters({ runner, source, env: input.env, region, identityMode: input.identityMode });
+    const cloud = input.cloud === true ? { cloud: true } : {};
+    declaredParameters = await synthDeclaredParameters({ runner, source, env: input.env, region, identityMode: input.identityMode, ...cloud });
     cdkOutputsDir = await mkdtemp(join(tmpdir(), "agentx-cdk-outputs-"));
     deployer = cdkDeployer({
       runner,
@@ -701,6 +717,7 @@ export async function prepareDeployment(input: {
       env: input.env,
       region,
       identityMode: input.identityMode,
+      ...cloud,
       outputsDir: cdkOutputsDir,
       outputs: deps.stackOutputs ?? cloudFormationOutputsReader(new CloudFormationClient({ region })),
     });

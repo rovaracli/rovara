@@ -7,6 +7,7 @@ import { PROTECTED_PARTS, type DeployEvent, type DeployRequest, type StackDeploy
 import { currentLockHolder, withEnvironmentLock } from "../environments/lock.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 import { readEnvironmentSettings, writeEnvironmentSettings, type EnvironmentSettings } from "../environments/settings.js";
+import { CLOUD_NEEDS_CDK_MESSAGE } from "./answer-schemas.js";
 import { installOrder, OPERATOR_PARAMETERS, SECRET_PARAMETERS, stackParameters, upgradeOrder, type DeployPart, type InstallAnswers, type StackOutputs } from "./parameters.js";
 import type { LoadedRelease } from "./release.js";
 import { callbackSigningKey, type SecretValueStore } from "./signing-key.js";
@@ -169,7 +170,13 @@ function requiredOutput(outputs: Partial<Record<DeployPart, StackOutputs>>, part
  * failure that never takes the lock or creates the signing key) and again just after acquiring it
  * (settings read a second time, since the first read happened outside the lock and could be stale).
  */
-function assertDeployAllowed(existing: EnvironmentSettings | undefined, mode: "install" | "upgrade", engine: "templates" | "cdk", parts: DeployPart[] | undefined, env: string): void {
+function assertDeployAllowed(existing: EnvironmentSettings | undefined, mode: "install" | "upgrade", engine: "templates" | "cdk", parts: DeployPart[] | undefined, env: string, cloud: boolean): void {
+  // R45: the cloud switch is synth-time only, so a deploy must agree with what the environment was installed as,
+  // and the prebuilt templates (synthesized without it) can never deploy a cloud environment.
+  if (existing !== undefined && (existing.cloud === true) !== cloud) {
+    throw agentXError("CONFIG_INVALID", `environment ${env} was installed ${existing.cloud === true ? "as the hosted Rovara cloud" : "without the hosted Rovara cloud"}; this deploy ${cloud ? "asks for" : "does not ask for"} it, and switching is not supported`);
+  }
+  if (engine === "templates" && (cloud || existing?.cloud === true)) throw agentXError("CONFIG_INVALID", CLOUD_NEEDS_CDK_MESSAGE);
   if (existing !== undefined && existing.naming === "legacy") {
     throw agentXError("CONFIG_INVALID", `environment ${env} uses the legacy stack names; upgrading it with agentx deploy is not supported yet`);
   }
@@ -200,7 +207,7 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
   const declaredFor = (part: DeployPart): ReadonlySet<string> | undefined => (declaredBy === undefined ? templateParameterNames(release, part, env) : declaredBy(part));
   const now = input.now ?? Date.now;
 
-  assertDeployAllowed(await readEnvironmentSettings(store, env), mode, engine, input.parts, env);
+  assertDeployAllowed(await readEnvironmentSettings(store, env), mode, engine, input.parts, env, answers.cloud === true);
   if (answers.identity.mode === "oidc" && answers.identity.clientId === undefined) {
     throw agentXError("CONFIG_INVALID", "bringing your own OIDC provider requires clientId to write environment settings (needed for agentx login)");
   }
@@ -219,7 +226,7 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
     // lockHeld, in whatever window the caller's own held lock does not cover); the lock now held (or
     // already held by the caller), this is the authoritative read the rest of the deploy is based on.
     const existing = await readEnvironmentSettings(store, env);
-    assertDeployAllowed(existing, mode, engine, input.parts, env);
+    assertDeployAllowed(existing, mode, engine, input.parts, env, answers.cloud === true);
 
     const key = await callbackSigningKey(secrets, env);
 
@@ -346,6 +353,8 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
       controlPlaneUrl: requiredOutput(outputs, "control-plane", "ApiEndpoint", env),
       identity: identitySettings,
       models: answers.models,
+      ...(answers.cloud === true ? { cloud: true as const } : {}),
+      ...(answers.cloud === true && answers.cloudSignIn !== undefined ? { cloudSignIn: answers.cloudSignIn } : {}),
       // F16: set after install (agentx setup alerts, agentx config set alerts.address); no deploy's answers carry it.
       ...(existing?.alertAddress === undefined ? {} : { alertAddress: existing.alertAddress }),
       ...(outputs.access === undefined

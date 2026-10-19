@@ -9,7 +9,7 @@ import type * as ChildProcessModule from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import { CALLBACK_SIGNING_KEY_BYTES } from "../../packages/cli/src/deploy/signing-key.js";
 import type { AgentXError } from "@agentx/contracts";
-import { cliErrorFor, interactiveConfirm, realCommandRunner } from "../../packages/cli/src/deploy/commands.js";
+import { cliErrorFor, DeployAnswersSchema, interactiveConfirm, prepareDeployment, realCommandRunner } from "../../packages/cli/src/deploy/commands.js";
 
 // Wraps the real `spawn` in a mock that calls through by default, so every other test here still
 // spawns a real process; only the one test below that needs a fully scripted child ever overrides
@@ -251,5 +251,27 @@ describe("cliErrorFor", () => {
     expect(auth.cause).toBe(expired);
     expect(forbidden.code).toBe("FORBIDDEN");
     expect(forbidden.cause).toBe(denied);
+  });
+});
+
+describe("the hosted Rovara cloud (R45)", () => {
+  it("prepareDeployment refuses the prebuilt-templates engine for a cloud environment before touching AWS", async () => {
+    await expect(prepareDeployment({
+      engine: "templates", env: "staging", region: "us-east-1", account: "123456789012", identityMode: "cognito", cloud: true,
+      release: undefined as never, deps: {}, stderr: capture(),
+    })).rejects.toThrow(/must be synthesized from source/);
+  });
+
+  it("the answers file takes cloud: true with sign-in settings, and refuses sign-in settings without it or a lone Google id", () => {
+    const answers = {
+      env: "staging", region: "us-east-1", account: "123456789012",
+      models: { orchestrator: "a", classifier: "b", worker: "c" }, identity: { mode: "cognito" },
+      github: { appId: "1", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:x-AbCdEf" },
+    };
+    const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:google-AbCdEf";
+    expect(DeployAnswersSchema.safeParse({ ...answers, cloud: true, cloudSignIn: { googleClientId: "g", googleClientSecretArn: secretArn } }).success).toBe(true);
+    expect(DeployAnswersSchema.safeParse({ ...answers, cloudSignIn: { domainPrefix: "rovara-x" } }).success).toBe(false);
+    expect(DeployAnswersSchema.safeParse({ ...answers, cloud: true, cloudSignIn: { googleClientId: "g" } }).success).toBe(false);
+    expect(DeployAnswersSchema.safeParse({ ...answers, cloud: false }).success).toBe(false);
   });
 });

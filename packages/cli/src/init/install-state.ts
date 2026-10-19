@@ -4,7 +4,7 @@
 // resume before that, from any machine with access to the account.
 import { z } from "zod";
 import { agentXError, AGENTX_NAME_PATTERN, EnvironmentNameSchema, environmentSettingsPrefix, ImageDigest } from "@agentx/contracts";
-import { AlertEmailSchema, ACCOUNT_PATTERN, BudgetAnswersSchema, GITHUB_LOGIN_PATTERN, IdentityAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "../deploy/answer-schemas.js";
+import { AlertEmailSchema, ACCOUNT_PATTERN, BudgetAnswersSchema, CloudSignInAnswersSchema, GITHUB_LOGIN_PATTERN, IdentityAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "../deploy/answer-schemas.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 
 export const INIT_STEP_IDS = [
@@ -61,6 +61,9 @@ export const InitAnswersSchema = z.object({
   images: z.object({ worker: ImageDigest.optional(), slack: ImageDigest.optional() }).strict().optional(),
   alert: AlertAnswersSchema,
   budget: BudgetAnswersSchema.optional(),
+  /** The hosted Rovara cloud (R45) and its sign-in settings (R46). */
+  cloud: z.literal(true).optional(),
+  cloudSignIn: CloudSignInAnswersSchema.optional(),
   github: z.object({ account: z.string().regex(GITHUB_LOGIN_PATTERN), accountType: z.enum(["organization", "user"]), appName: z.string().min(1).max(34) }).strict(),
   slack: z.object({ appName: z.string().min(1).max(35), appPostedMessages: z.enum(["accept", "ignore"]) }).strict(),
   /** Spec 048 FR-020 and FR-055: your email from the settings, for the admin user and the default alert address. */

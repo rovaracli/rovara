@@ -61,10 +61,10 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         notes: overrides.notes ?? ((version) => releaseNotes({ fetch: context.fetch, version })),
         prepare: overrides.prepare ?? ((input) => prepareDeployment({
           engine: input.settings.engine, env: input.settings.env, region: input.settings.region, account: input.settings.account,
-          identityMode: input.settings.identity.mode, release: input.release, ...(input.source === undefined ? {} : { source: input.source }),
+          identityMode: input.settings.identity.mode, ...(input.settings.cloud === true ? { cloud: true } : {}), release: input.release, ...(input.source === undefined ? {} : { source: input.source }),
           deps: context.deploy ?? {}, stderr: context.stderr,
         })),
-        cdkDiff: overrides.cdkDiff ?? ((request, settings, source) => cdkDiff({ runner, source, env: settings.env, region: settings.region, identityMode: settings.identity.mode, request })),
+        cdkDiff: overrides.cdkDiff ?? ((request, settings, source) => cdkDiff({ runner, source, env: settings.env, region: settings.region, identityMode: settings.identity.mode, ...(settings.cloud === true ? { cloud: true } : {}), request })),
         ask: overrides.ask ?? readlineAsk(),
         isInteractive: overrides.isInteractive ?? (() => process.stdin.isTTY === true),
         githubWebhook: overrides.githubWebhook ?? ((settings) => ({ secrets: secretsManagerInitSecrets(new SecretsManagerClient({ region: settings.region })), github: githubRestApi(context.fetch) })),

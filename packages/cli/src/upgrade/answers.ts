@@ -59,5 +59,8 @@ export async function upgradeAnswers(input: { settings: EnvironmentSettings; sta
     ...(settings.access?.permissionsBoundaryArn === undefined ? {} : { permissionsBoundaryArn: settings.access.permissionsBoundaryArn }),
     ...(operatorPrincipalArn === undefined || operatorPrincipalArn === "" ? {} : { operatorPrincipalArn }),
     ...(images === undefined ? {} : { images }),
+    // R45: the stored cloud switch, so an upgrade synthesizes and deploys the cloud exactly as the install did.
+    ...(settings.cloud === true ? { cloud: true as const } : {}),
+    ...(settings.cloudSignIn === undefined ? {} : { cloudSignIn: settings.cloudSignIn }),
   };
 }
