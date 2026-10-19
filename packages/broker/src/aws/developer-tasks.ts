@@ -1384,7 +1384,7 @@ async function shareFor(
 }
 
 /** What admission refuses a start with (the trial, the month's machine time, a budget): each is a recorded refusal, not a failure. */
-const ADMISSION_REFUSALS: ReadonlySet<string> = new Set(["TRIAL_LOCKED", "MACHINE_TIME_EXCEEDED", "BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED"]);
+export const ADMISSION_REFUSALS: ReadonlySet<string> = new Set(["TRIAL_LOCKED", "MACHINE_TIME_EXCEEDED", "BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED"]);
 
 const NOT_A_MEMBER = PRIVATE_CHANNEL_NOT_A_MEMBER;
 const PRIVACY_UNKNOWN = "Slack could not be reached to check whether that channel is private; try again shortly";

@@ -681,8 +681,11 @@ describe("a Slack turn's key", () => {
     await registerSlackProject(handler);
     seedMembership(db, developerIdForSlackUser(SLACK_USER), { orgId: TEST_ORG, role: "member" });
     const order: string[] = [];
-    access.upsertOrg.mockImplementation(async () => { order.push("upsertOrg"); });
-    access.upsertMember.mockImplementation(async () => { order.push("upsertMember"); });
+    // The fake proxy keeps what it is told, which admission then reads; the order is noted on the way.
+    const upsertOrg = access.upsertOrg.getMockImplementation()!;
+    const upsertMember = access.upsertMember.getMockImplementation()!;
+    access.upsertOrg.mockImplementation(async (...args) => { order.push("upsertOrg"); await upsertOrg(...args); });
+    access.upsertMember.mockImplementation(async (...args) => { order.push("upsertMember"); await upsertMember(...args); });
     access.mintKey.mockImplementation(async () => { order.push("mintKey"); return { key: "sk-turn", expiresAt: Date.now() + 900_000 }; });
     const mint = (turnId: string) => serviceCall(handler, THREAD, SLACK_USER, "POST", "/v1/service/model-access", { turnId });
     expect((await mint("Ev1")).status).toBe(200);

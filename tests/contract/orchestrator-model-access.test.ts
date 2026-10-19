@@ -4,7 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { Context } from "@earendil-works/pi-ai";
 import { agentXError, type SlackRequestMessage } from "../../packages/contracts/src/index.js";
 import type { OrgId } from "../../packages/contracts/src/org.js";
-import type { MintKeyInput, MintedKey, ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
+import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
 import { slackBindingKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
@@ -35,21 +35,27 @@ beforeAll(async () => { await loadSlackBroker(); });
 beforeEach(() => { vi.spyOn(console, "log").mockImplementation(() => undefined); });
 afterEach(() => vi.restoreAllMocks());
 
-function fakeModelAccess(failure?: Error) {
+/** What the proxy says has been spent so far this month, against the placeholder limits of $29 a member and $500 an org (a cloud install's). */
+interface Spent { member?: number; org?: number }
+
+function fakeModelAccess(failure?: Error, spent: Spent = {}) {
   const mintKey = vi.fn<(input: MintKeyInput) => Promise<MintedKey>>(async () => {
     if (failure !== undefined) throw failure;
     return { key: TURN_KEY, expiresAt: Date.now() + 900_000 };
   });
-  const access: ModelAccess = { upsertOrg: vi.fn(), upsertMember: vi.fn(), spend: vi.fn(), orgSpend: vi.fn(), keySpend: vi.fn(), mintKey, revokeKey: vi.fn() };
-  return { access, mintKey };
+  const orgFigures = () => ({ spentUsd: spent.org ?? 0, limitUsd: 500 });
+  const spend = vi.fn(async (): Promise<MemberSpend> => ({ member: { spentUsd: spent.member ?? 0, limitUsd: 29 }, org: orgFigures() }));
+  const orgSpend = vi.fn(async () => orgFigures());
+  const access: ModelAccess = { upsertOrg: vi.fn(), upsertMember: vi.fn(), spend, orgSpend, keySpend: vi.fn(), mintKey, revokeKey: vi.fn() };
+  return { access, mintKey, spend, orgSpend };
 }
 
-/** A single-org install whose channel is bound, so the thread's team is bound to the install's org. */
-async function boundInstall(failure?: Error) {
-  const { access, mintKey } = fakeModelAccess(failure);
-  const harness = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL } } });
+/** A cloud install whose channel is bound, so the thread's team is bound to the install's org. */
+async function boundInstall(failure?: Error, spent: Spent = {}) {
+  const { access, mintKey, spend, orgSpend } = fakeModelAccess(failure, spent);
+  const harness = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
   await registerSlackProject(harness.handler);
-  return { ...harness, mintKey };
+  return { ...harness, mintKey, spend, orgSpend };
 }
 
 const bodyText = (init: RequestInit | undefined): string => typeof init?.body === "string" ? init.body : "";
@@ -83,6 +89,38 @@ describe("POST /v1/service/model-access", () => {
     seedMembership(h.db, developerIdForSlackUser(SLACK_USER), { orgId: TEST_ORG, role: "member" });
     expect((await askFor(h.handler, { turnId: "Ev1" })).status).toBe(200);
     expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, developerId: developerIdForSlackUser(SLACK_USER), purpose: "turn", refId: "Ev1", maxBudgetUsd: 2, ttlSeconds: 900 });
+  });
+
+  it("clamps the key to what the linked member has left when that is under a turn's $2 (R50), and admits the turn as chat work", async () => {
+    const h = await boundInstall(undefined, { member: 28 });
+    seedMembership(h.db, developerIdForSlackUser(SLACK_USER), { orgId: TEST_ORG, role: "member" });
+    expect((await askFor(h.handler, { turnId: "Ev1" })).status).toBe(200);
+    expect(h.mintKey).toHaveBeenCalledWith(expect.objectContaining({ developerId: developerIdForSlackUser(SLACK_USER), maxBudgetUsd: 1 }));
+    // Plenty left: the turn's own allowance.
+    const rich = await boundInstall(undefined, { member: 5 });
+    seedMembership(rich.db, developerIdForSlackUser(SLACK_USER), { orgId: TEST_ORG, role: "member" });
+    expect((await askFor(rich.handler, { turnId: "Ev1" })).status).toBe(200);
+    expect(rich.mintKey).toHaveBeenCalledWith(expect.objectContaining({ maxBudgetUsd: 2 }));
+  });
+
+  it("clamps an unlinked requester's key to what the org has left, asking the proxy about the org alone", async () => {
+    const h = await boundInstall(undefined, { org: 499.25, member: 29 });
+    expect((await askFor(h.handler, { turnId: "Ev1" })).status).toBe(200);
+    expect(h.mintKey).toHaveBeenCalledWith(expect.objectContaining({ maxBudgetUsd: 0.75 }));
+    expect(h.mintKey.mock.calls[0]![0]).not.toHaveProperty("developerId");
+    expect(h.spend).not.toHaveBeenCalled();
+    expect(h.orgSpend).toHaveBeenCalled();
+  });
+
+  it("answers 402 and mints nothing when the member or the org has nothing left, or less than a chat turn's minimum", async () => {
+    const member = await boundInstall(undefined, { member: 29 });
+    seedMembership(member.db, developerIdForSlackUser(SLACK_USER), { orgId: TEST_ORG, role: "member" });
+    expect(await askFor(member.handler, { turnId: "Ev1" })).toMatchObject({ status: 402, body: { error: { code: "BUDGET_EXCEEDED" } } });
+    const org = await boundInstall(undefined, { org: 500 });
+    expect(await askFor(org.handler, { turnId: "Ev1" })).toMatchObject({ status: 402, body: { error: { code: "ORG_BUDGET_EXCEEDED" } } });
+    const nearly = await boundInstall(undefined, { org: 499.97 });
+    expect((await askFor(nearly.handler, { turnId: "Ev1" })).status).toBe(402);
+    for (const h of [member, org, nearly]) expect(h.mintKey).not.toHaveBeenCalled();
   });
 
   it("takes the member from the header alone: another member's key cannot be asked for in the body", async () => {

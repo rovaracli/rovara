@@ -294,7 +294,7 @@ import type { ModelAccess } from "../model-proxy/access.js";
 import { admitSpend, changeBudgets, ensureSynced, keyIdOf, mintCap, recordMintedKey, type OrgBudgetSettings } from "../org/budget.js";
 import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, routeDeveloperRequest, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
-import { FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
+import { ADMISSION_REFUSALS, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
@@ -4467,14 +4467,20 @@ async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, reque
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
   const developerId = await linkedRequester(dependencies, teamOrg, requester);
   try {
-    // The proxy must know the org and member before a key names them (the lazy half of syncBudgets).
-    await ensureSynced({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true }, teamOrg, developerId);
+    // Ruling R50: a turn is admitted like any chat work (which also syncs the proxy, the lazy half of syncBudgets), and its key is
+    // capped at what the member and the org have left, never above one turn's allowance. Nothing left is a 402, before any key.
+    const admitted = await admitSpend(
+      { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
+      { orgId: teamOrg, developerId, path: "CHAT" },
+    );
     const minted = await modelAccess.access.mintKey({
       orgId: teamOrg, ...(developerId === undefined ? {} : { developerId }), purpose: "turn", refId: body.data.turnId,
-      maxBudgetUsd: PER_TURN_BUDGET_USD, ttlSeconds: TURN_KEY_TTL_SECONDS,
+      maxBudgetUsd: Math.min(PER_TURN_BUDGET_USD, admitted.maxBudgetUsd), ttlSeconds: TURN_KEY_TTL_SECONDS,
     });
     return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
   } catch (error) {
+    // A spent budget (or a locked trial) is the member's to know about; every other failure is the proxy's, and says nothing of it.
+    if (error instanceof AgentXError && ADMISSION_REFUSALS.has(error.code)) throw error;
     console.log(JSON.stringify({ component: "broker", event: "model_access.turn_mint_failed", errorName: error instanceof Error ? error.name : "unknown" }));
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   }
