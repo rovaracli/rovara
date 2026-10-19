@@ -44,9 +44,12 @@ describe("the Slack orchestrator stack with a model proxy (environment naming)",
     expect(group.SecurityGroupEgress).toEqual([expect.objectContaining({ FromPort: 443, CidrIp: "0.0.0.0/0" })]);
   });
 
-  it("keeps the orchestrator's provider-key variables until Task 14 takes them away", () => {
+  it("passes the orchestrator no provider-key variables (Task 14)", () => {
     const [[, task]] = resources(named, "AWS::ECS::TaskDefinition") as [[string, { Properties: { ContainerDefinitions: Array<{ Environment: Array<{ Name: string }> }> } }]];
-    expect(task.Properties.ContainerDefinitions[0]!.Environment.map((entry) => entry.Name)).toContain("AGENTX_ANTHROPIC_SECRET_ARN");
+    const names = task.Properties.ContainerDefinitions[0]!.Environment.map((entry) => entry.Name);
+    expect(names).not.toContain("AGENTX_ANTHROPIC_SECRET_ARN");
+    expect(names).not.toContain("AGENTX_OPENROUTER_SECRET_ARN");
+    expect(names).not.toContain("AGENTX_OPENAI_SECRET_ARN");
   });
 
   it("is told the proxy load balancer's group by an output of the control plane", () => {

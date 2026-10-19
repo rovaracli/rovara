@@ -5,7 +5,7 @@ import { GetPublicKeyCommand, KMSClient } from "@aws-sdk/client-kms";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { WORKER_SETTING_PARAMETERS, ec2WorkerUserData } from "@agentx/contracts";
+import { MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS, ec2WorkerUserData } from "@agentx/contracts";
 import { requiredEnvironment } from "./lambda.js";
 import { SessionManager } from "./sessions.js";
 
@@ -48,11 +48,18 @@ export interface WorkerSettings {
   openRouterProviders?: string;
   anthropicSecretArn?: string;
   openaiSecretArn?: string;
+  /** A named environment's model proxy; its workers call models through it (Task 14). */
+  modelProxyUrl?: string;
 }
 
 export interface SessionStepsDependencies {
   sessions: Pick<SessionManager, "markVolume" | "markInstance" | "markReady" | "markFailed" | "markDeleted">;
   workerSettings: () => Promise<WorkerSettings>;
+  /**
+   * True in a named environment, where workers have no provider keys and no Bedrock access: a launch without a model
+   * proxy URL fails here with a clear error rather than boot a worker that could not call a model.
+   */
+  modelProxyRequired?: boolean;
   /** The invoke signing key's public key as base64 DER, as KMS GetPublicKey returns it. */
   invokePublicKey: () => Promise<string>;
   bootScript: () => string;
@@ -113,6 +120,9 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
     switch (step.action) {
       case "launchConfiguration": {
         const [settings, invokePublicKey] = await Promise.all([dependencies.workerSettings(), dependencies.invokePublicKey()]);
+        if (dependencies.modelProxyRequired && !settings.modelProxyUrl) {
+          throw new Error(`The model proxy URL is missing: this environment's workers have no provider keys or Bedrock access, and the SSM parameter ${MODEL_PROXY_URL_PARAMETER} is not set. Deploy the control plane's model proxy first.`);
+        }
         const userData = ec2WorkerUserData({
           workspaceId: step.workspaceId,
           generation: step.generation,
@@ -128,6 +138,7 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
           ...(settings.openRouterProviders ? { openRouterProviders: settings.openRouterProviders } : {}),
           ...(settings.anthropicSecretArn ? { anthropicSecretArn: settings.anthropicSecretArn } : {}),
           ...(settings.openaiSecretArn ? { openaiSecretArn: settings.openaiSecretArn } : {}),
+          ...(settings.modelProxyUrl ? { modelProxyUrl: settings.modelProxyUrl } : {}),
           logGroupName: dependencies.logGroupName,
         }, dependencies.bootScript());
         // Already base64 gzip, the form RunInstances takes (#229).
@@ -174,14 +185,19 @@ const ssm = new SSMClient(awsClientConfiguration);
 const kms = new KMSClient(awsClientConfiguration);
 let publicKey: Promise<string> | undefined;
 
+// Set on named environments' functions only (infra/lib/session-lifecycle.ts), which are also the only ones allowed to read
+// the proxy URL parameter: an SSM GetParameters naming a parameter the caller may not read fails as a whole.
+const modelProxyRequired = process.env.MODEL_PROXY_REQUIRED === "true";
+
 export const handler = createSessionStepsHandler({
+  modelProxyRequired,
   sessions: new SessionManager({
     documentClient: DynamoDBDocumentClient.from(new DynamoDBClient(awsClientConfiguration)),
     tableName: process.env.STATE_TABLE_NAME ?? "",
   }),
   async workerSettings() {
     const prefix = requiredEnvironment("WORKER_SETTINGS_PREFIX");
-    const names = Object.fromEntries(Object.entries(WORKER_SETTING_PARAMETERS).map(([key, name]) => [key, `${prefix}${name}`]));
+    const names = Object.fromEntries(Object.entries({ ...WORKER_SETTING_PARAMETERS, ...(modelProxyRequired ? { modelProxyUrl: MODEL_PROXY_URL_PARAMETER } : {}) }).map(([key, name]) => [key, `${prefix}${name}`])) as Record<keyof typeof WORKER_SETTING_PARAMETERS | "modelProxyUrl", string>;
     const response = await ssm.send(new GetParametersCommand({ Names: Object.values(names) }));
     const values = new Map((response.Parameters ?? []).map((parameter) => [parameter.Name, parameter.Value]));
     const setting = (key: keyof typeof WORKER_SETTING_PARAMETERS) => {
@@ -192,11 +208,11 @@ export const handler = createSessionStepsHandler({
     const promptCacheRetention = setting("promptCacheRetention");
     if (promptCacheRetention !== "short" && promptCacheRetention !== "long") throw new Error("worker prompt cache retention must be short or long");
     // Absent from SSM (a release before the setting existed) or "none" both mean not configured.
-    const optional = (key: "openRouterSecretArn" | "openRouterProviders" | "anthropicSecretArn" | "openaiSecretArn") => {
+    const optional = (key: "openRouterSecretArn" | "openRouterProviders" | "anthropicSecretArn" | "openaiSecretArn" | "modelProxyUrl") => {
       const value = values.get(names[key]);
       return value && value !== "none" ? { [key]: value } : {};
     };
-    return { ...optional("openRouterSecretArn"), ...optional("openRouterProviders"), ...optional("anthropicSecretArn"), ...optional("openaiSecretArn"), workerImage: setting("workerImage"), modelProvider: setting("modelProvider"), modelId: setting("modelId"), promptCacheRetention };
+    return { ...optional("openRouterSecretArn"), ...optional("openRouterProviders"), ...optional("anthropicSecretArn"), ...optional("openaiSecretArn"), ...optional("modelProxyUrl"), workerImage: setting("workerImage"), modelProvider: setting("modelProvider"), modelId: setting("modelId"), promptCacheRetention };
   },
   invokePublicKey() {
     // The key never changes, so one read per container.

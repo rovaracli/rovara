@@ -1,9 +1,11 @@
-import { Stack, type App } from "aws-cdk-lib";
+import { App, Stack } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { WORKSPACE_SESSION_STATE_INDEX } from "../../packages/contracts/src/session.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { EC2_WORKER_AMI_PARAMETER, EC2_WORKER_PORT } from "../../infra/lib/ec2-workers.js";
+import { environmentNaming } from "../../infra/lib/naming.js";
+import { SlackOrchestratorStack } from "../../infra/lib/slack-orchestrator.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -52,9 +54,11 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
       { Ref: expect.stringMatching(/^SlackOrchestratorTaskRole/) as unknown },
       { "Fn::Select": [1, { "Fn::Split": ["/", { Ref: "Ec2WorkerInstanceRoleArn" }] }] },
     ]);
+    // Task 14: a named environment publishes no provider secret ARN for workers; the legacy runtime still does.
     const serialized = JSON.stringify(runtime.toJSON());
-    expect(serialized).toContain(`worker-${provider}-secret-arn`);
+    expect(serialized).not.toContain(`worker-${provider}-secret-arn`);
     expect(serialized).not.toMatch(/OPENROUTER_API_KEY|ANTHROPIC_API_KEY|OPENAI_API_KEY/);
+    expect(JSON.stringify(legacy.map((template) => template.toJSON()))).toContain(`worker-${provider}-secret-arn`);
   });
 
   it("tags launched instances and root volumes for named environments only", () => {
@@ -137,7 +141,7 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
     expect(ofType(foundation, "AWS::EC2::SecurityGroup").map(([, r]) => r.Properties.GroupName)).not.toContain("agentx-staging-workers");
   });
 
-  it("gives instances ECR pull, Bedrock and their own log group, and nothing of retired runtime, KMS or SSM", () => {
+  it("gives instances ECR pull and their own log group, and nothing of Bedrock, retired runtime, KMS or SSM", () => {
     const [[, profile]] = ofType(foundation, "AWS::IAM::InstanceProfile") as [[string, Resource]];
     expect(profile.Properties.Path).toBe("/agentx/staging/");
     const roleId = (profile.Properties.Roles as Array<{ Ref: string }>)[0]!.Ref;
@@ -147,7 +151,7 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
     const actions = actionsOf(policies.flatMap(([, p]) => (p.Properties.PolicyDocument as { Statement: Array<{ Action: string | string[] }> }).Statement));
     expect(new Set(actions)).toEqual(new Set([
       "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:GetAuthorizationToken", "ecr:BatchImportUpstreamImage", "ecr:CreateRepository",
-      "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "logs:CreateLogStream", "logs:PutLogEvents",
+      "logs:CreateLogStream", "logs:PutLogEvents",
     ]));
     foundation.hasResourceProperties("AWS::Logs::LogGroup", { LogGroupName: "/agentx/staging/worker", RetentionInDays: 30 });
   });
@@ -205,5 +209,107 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
       Type: "String",
       Value: { Ref: "WorkerImageUri" },
     });
+  });
+});
+
+// Task 14: the model proxy alone holds provider keys and Bedrock access. Workers and the orchestrator reach models
+// through it, so neither principal keeps a provider-key read, a Bedrock grant or a provider secret ARN. Legacy is unchanged.
+describe("workers and the orchestrator hold no provider keys or Bedrock access (Task 14)", () => {
+  type Statement = { Action: string | string[]; Resource?: unknown };
+  const statementsFor = (template: Template, roleMatches: (roles: string) => boolean) =>
+    ofType(template, "AWS::IAM::Policy")
+      .filter(([, policy]) => roleMatches(JSON.stringify(policy.Properties.Roles)))
+      .flatMap(([, policy]) => (policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement);
+  const providerKeyReads = (statements: Statement[]) =>
+    statements.filter((statement) => actionsOf([statement]).includes("secretsmanager:GetSecretValue") && /(OpenRouter|Anthropic|OpenAI)SecretArn/.test(JSON.stringify(statement.Resource)));
+  const bedrockActions = (statements: Statement[]) => actionsOf(statements).filter((action) => action.startsWith("bedrock:") || action === "*");
+  const stacks = (agentxEnv?: string) => stacksOf(buildAgentXApp(agentxEnv === undefined ? {} : { agentxEnv })).map((stack) => [stack.stackName, Template.fromStack(stack)] as const);
+  let staging: ReadonlyArray<readonly [string, Template]>;
+  let production: ReadonlyArray<readonly [string, Template]>;
+  const stagingStack = (suffix: string) => staging.find(([name]) => name === `agentx-staging-${suffix}`)![1];
+
+  beforeAll(() => {
+    staging = stacks("staging");
+    production = stacks();
+  }, 240_000);
+
+  it("gives the named worker instance role no Bedrock action and no provider-key read, in any stack", () => {
+    const foundation = stagingStack("foundation");
+    const [[, profile]] = ofType(foundation, "AWS::IAM::InstanceProfile") as [[string, Resource]];
+    const roleId = (profile.Properties.Roles as Array<{ Ref: string }>)[0]!.Ref;
+    expect(JSON.stringify(resourcesOf(foundation)[roleId]!.Properties)).not.toContain("bedrock");
+    for (const [, template] of staging) {
+      const statements = statementsFor(template, (roles) => roles.includes(roleId) || roles.includes("Ec2WorkerInstanceRoleArn"));
+      expect(bedrockActions(statements)).toEqual([]);
+      expect(providerKeyReads(statements)).toEqual([]);
+    }
+  });
+
+  it("gives the named orchestrator task role no Bedrock action and no provider-key read", () => {
+    const statements = statementsFor(stagingStack("control-plane"), (roles) => /SlackOrchestratorTaskRole/.test(roles));
+    // The role keeps its Slack, queue, table and bucket access, so the filter is known to find it.
+    expect(actionsOf(statements)).toContain("sqs:ReceiveMessage");
+    expect(bedrockActions(statements)).toEqual([]);
+    expect(providerKeyReads(statements)).toEqual([]);
+  });
+
+  it("leaves the model proxy as the only reader of the provider keys and the only caller of Bedrock for members", () => {
+    const controlPlane = stagingStack("control-plane");
+    const readers = ofType(controlPlane, "AWS::IAM::Policy").filter(([, policy]) => providerKeyReads((policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement).length > 0);
+    expect(readers).toHaveLength(3);
+    for (const [, policy] of readers) expect(policy.Properties.Roles).toEqual([{ Ref: expect.stringMatching(/^ModelProxyTaskRole/) as unknown }]);
+    const bedrockCallers = ofType(controlPlane, "AWS::IAM::Policy").filter(([, policy]) => bedrockActions((policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement).length > 0);
+    expect(bedrockCallers.map(([, policy]) => JSON.stringify(policy.Properties.Roles))).toEqual([expect.stringMatching(/ModelProxyTaskRole/)]);
+  });
+
+  it("keeps Bedrock and the provider-key reads on the legacy worker and orchestrator roles", () => {
+    const foundation = production.find(([name]) => name === "AgentXProductionFoundation")![1];
+    expect(JSON.stringify(foundation.toJSON())).toContain("BedrockModelInvocation");
+    const controlPlane = production.find(([name]) => name === "AgentXControlPlane")![1];
+    expect(bedrockActions(statementsFor(controlPlane, (roles) => /SlackOrchestratorTaskRole/.test(roles)))).not.toEqual([]);
+  });
+
+  it("lets the worker group reach the proxy load balancer on port 4000, and only that", () => {
+    const controlPlane = stagingStack("control-plane");
+    const loadBalancerGroup = ofType(controlPlane, "AWS::EC2::SecurityGroup").find(([, group]) => String(group.Properties.GroupDescription).includes("load balancer"))!;
+    const egress = ofType(controlPlane, "AWS::EC2::SecurityGroupEgress").map(([, rule]) => rule.Properties)
+      .filter((rule) => JSON.stringify(rule.GroupId) === JSON.stringify({ Ref: "Ec2WorkerSecurityGroupId" }));
+    expect(egress).toEqual([expect.objectContaining({
+      IpProtocol: "tcp", FromPort: 4000, ToPort: 4000, DestinationSecurityGroupId: { "Fn::GetAtt": [loadBalancerGroup[0], "GroupId"] },
+    })]);
+    // The worker group's own inline rule is unchanged: HTTPS out, no ingress.
+    const [[, worker]] = ofType(stagingStack("foundation"), "AWS::EC2::SecurityGroup").filter(([, group]) => group.Properties.GroupName === "agentx-staging-ec2-workers") as [[string, Resource]];
+    expect(worker.Properties.SecurityGroupEgress).toEqual([expect.objectContaining({ FromPort: 443, ToPort: 443 })]);
+  });
+
+  it("makes the named session step Lambda read the proxy URL and refuse a launch without it, and leaves the legacy one alone", () => {
+    const stepsOf = (template: Template) => ofType(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("SessionsSteps"))!;
+    const variables = (template: Template) => (stepsOf(template)[1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    const readableParameters = (template: Template) => {
+      const roleId = ((stepsOf(template)[1].Properties.Role as { "Fn::GetAtt": [string] })["Fn::GetAtt"])[0];
+      return JSON.stringify(statementsFor(template, (roles) => roles.includes(roleId)).filter((statement) => actionsOf([statement]).includes("ssm:GetParameters")));
+    };
+    const control = stagingStack("control-plane");
+    const legacyControl = production.find(([name]) => name === "AgentXControlPlane")![1];
+    expect(variables(control)).toMatchObject({ MODEL_PROXY_REQUIRED: "true", WORKER_SETTINGS_PREFIX: "/agentx/staging/" });
+    expect(readableParameters(control)).toContain("/agentx/staging/model-proxy-url");
+    expect(variables(legacyControl)).not.toHaveProperty("MODEL_PROXY_REQUIRED");
+    expect(readableParameters(legacyControl)).not.toContain("model-proxy-url");
+  });
+
+  it("has no model proxy in any legacy template", () => {
+    expect(JSON.stringify(production.map(([, template]) => template.toJSON()))).not.toMatch(/ModelProxy|model-proxy-url|MODEL_PROXY/);
+  });
+
+  it("gives the named orchestrator container no provider secret ARN variable, and the legacy one still has them", () => {
+    const named = Template.fromStack(new SlackOrchestratorStack(new App(), "NoKeysSlack", { naming: environmentNaming("staging") }));
+    const legacyOrchestrator = Template.fromStack(new SlackOrchestratorStack(new App(), "KeysSlack"));
+    const names = (template: Template) => {
+      const [[, task]] = Object.entries(template.findResources("AWS::ECS::TaskDefinition")) as [[string, { Properties: { ContainerDefinitions: Array<{ Environment: Array<{ Name: string }> }> } }]];
+      return task.Properties.ContainerDefinitions[0]!.Environment.map((entry) => entry.Name);
+    };
+    expect(names(named).filter((name) => name.endsWith("_SECRET_ARN") && name !== "SLACK_SECRET_ARN")).toEqual([]);
+    expect(names(named)).toContain("AGENTX_MODEL_PROXY_URL");
+    expect(names(legacyOrchestrator)).toEqual(expect.arrayContaining(["AGENTX_OPENROUTER_SECRET_ARN", "AGENTX_ANTHROPIC_SECRET_ARN", "AGENTX_OPENAI_SECRET_ARN"]));
   });
 });

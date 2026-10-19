@@ -1,3 +1,4 @@
+import { MODEL_PROXY_URL_PARAMETER } from "@agentx/contracts";
 import { litellmConfig } from "@agentx/model-proxy";
 import {
   Duration,
@@ -31,7 +32,7 @@ export interface ModelProxyProps {
   vpcId: string;
   /** The foundation's private subnets, which have NAT egress. */
   subnetIds: string[];
-  /** Security groups whose members may call the proxy: the worker group today; the Slack orchestrator and broker join in task 14. */
+  /** Security groups whose members may call the proxy, in both directions: the worker group. (The Slack orchestrator's group has its own rules in its stack.) */
   clientSecurityGroupIds: string[];
   /** Bedrock model ids as Pi's catalog names them; the proxy serves exactly these (ruling R21). */
   models: ReadonlyArray<{ id: string }>;
@@ -84,6 +85,14 @@ export class ModelProxy extends Construct {
         ipProtocol: "tcp", fromPort: port, toPort: port,
         sourceSecurityGroupId: clientGroup,
         description: `Model proxy port ${port} from a registered client`,
+      });
+      // The client's own group must also allow the port out (the worker group allows HTTPS only). A separate rule in
+      // this stack rather than an inline one in the client's stack, so the client's stack needs no reference to this one.
+      new ec2.CfnSecurityGroupEgress(this, `ClientEgress${index}`, {
+        groupId: clientGroup,
+        ipProtocol: "tcp", fromPort: port, toPort: port,
+        destinationSecurityGroupId: this.loadBalancerSecurityGroup.attrGroupId,
+        description: `Model proxy port ${port} on the proxy load balancer`,
       });
     });
     new ec2.CfnSecurityGroupEgress(this, "LoadBalancerToService", {
@@ -300,7 +309,7 @@ export class ModelProxy extends Construct {
 
     this.url = `http://${loadBalancer.attrDnsName}:${port}`;
     new ssm.StringParameter(this, "UrlParameter", {
-      parameterName: `${naming.ec2.workerSettingsPrefix}model-proxy-url`,
+      parameterName: `${naming.ec2.workerSettingsPrefix}${MODEL_PROXY_URL_PARAMETER}`,
       description: "Internal URL of the AgentX model proxy",
       stringValue: this.url,
     });

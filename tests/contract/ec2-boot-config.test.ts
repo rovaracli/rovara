@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
@@ -34,7 +36,7 @@ describe("EC2 worker user data", () => {
     const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/openrouter-AbCdEf";
     const rendered = ec2WorkerBootScript({ ...config, openRouterSecretArn: secretArn, openRouterProviders: "anthropic,openai" }, bootScript);
     expect(rendered).toContain(`export AGENTX_OPENROUTER_SECRET_ARN='${secretArn}'`);
-    expect(rendered).toContain("AGENTX_OPENROUTER_SECRET_ARN=${AGENTX_OPENROUTER_SECRET_ARN:-}");
+    expect(rendered).toContain("for name in AGENTX_OPENROUTER_SECRET_ARN AGENTX_ANTHROPIC_SECRET_ARN AGENTX_OPENAI_SECRET_ARN; do");
     expect(rendered).not.toContain("OPENROUTER_API_KEY");
     expect(() => ec2WorkerBootScript({ ...config, openRouterSecretArn: "sk-key" }, bootScript)).toThrow();
     expect(() => ec2WorkerBootScript({ ...config, openRouterProviders: "anthropic';touch /tmp/bad" }, bootScript)).toThrow();
@@ -44,12 +46,52 @@ describe("EC2 worker user data", () => {
       const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/direct-AbCdEf";
       const rendered = ec2WorkerBootScript({ ...config, [field]: secretArn }, bootScript);
       expect(rendered).toContain(`export ${variable}='${secretArn}'`);
-      expect(rendered).toContain(`${variable}=\${${variable}:-}`);
+      expect(rendered).toContain(variable);
       expect(rendered).not.toContain(keyVariable);
       expect(ec2WorkerBootScript(config, bootScript)).not.toContain(`export ${variable}=`);
       expect(() => ec2WorkerBootScript({ ...config, [field]: "sk-ant-api03-key" }, bootScript)).toThrow();
       expect(() => ec2WorkerBootScript({ ...config, [field]: `${secretArn}';touch /tmp/bad` }, bootScript)).toThrow();
     });
+  // Task 14: with a model proxy the worker holds no provider secret reference; it is told where the proxy is.
+  describe("with a model proxy", () => {
+    const proxyUrl = "http://internal-agentx-staging-proxy-123456.us-east-1.elb.amazonaws.com:4000";
+    const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/direct-AbCdEf";
+    const writeEnvironment = (environment: Record<string, string>) => {
+      const directory = mkdtempSync(join(tmpdir(), "boot-env-"));
+      const file = join(directory, "etc", "worker.env");
+      const fn = /^write_worker_environment\(\) \{[\s\S]*?^\}$/m.exec(bootScript)?.[0] ?? "";
+      expect(fn).not.toBe("");
+      const run = spawnSync("bash", ["-c", `readonly WORKER_ENV_FILE=${file} MOUNT_PATH=/mnt/workspace\n${fn}\nwrite_worker_environment us-east-1`], {
+        encoding: "utf8",
+        env: { PATH: process.env.PATH ?? "", AGENTX_CONTROL_PLANE_URL: "https://c.test", AGENTX_MODEL_PROVIDER: "amazon-bedrock", AGENTX_MODEL_ID: "m", PI_CACHE_RETENTION: "short",
+          AGENTX_INVOKE_PUBLIC_KEY: "k", AGENTX_WORKSPACE_ID: "w", AGENTX_SESSION_GENERATION: "1", ...environment },
+      });
+      expect(run.status, run.stderr).toBe(0);
+      return readFileSync(file, "utf8");
+    };
+
+    it("exports the proxy URL and refuses one that could break out of its quotes", () => {
+      expect(ec2WorkerBootScript({ ...config, modelProxyUrl: proxyUrl }, bootScript)).toContain(`export AGENTX_MODEL_PROXY_URL='${proxyUrl}'`);
+      expect(ec2WorkerBootScript(config, bootScript)).not.toContain("export AGENTX_MODEL_PROXY_URL=");
+      expect(() => ec2WorkerBootScript({ ...config, modelProxyUrl: `${proxyUrl}';touch /tmp/bad` }, bootScript)).toThrow();
+      expect(() => ec2WorkerBootScript({ ...config, modelProxyUrl: "not a url" }, bootScript)).toThrow();
+    });
+
+    it("writes AGENTX_MODEL_PROXY_URL and no provider secret ARN line to the worker environment", () => {
+      const written = writeEnvironment({ AGENTX_MODEL_PROXY_URL: proxyUrl, AGENTX_ANTHROPIC_SECRET_ARN: secretArn, AGENTX_OPENAI_SECRET_ARN: secretArn, AGENTX_OPENROUTER_SECRET_ARN: secretArn });
+      expect(written).toContain(`AGENTX_MODEL_PROXY_URL=${proxyUrl}\n`);
+      expect(written).not.toMatch(/_SECRET_ARN=/);
+    });
+
+    it("still writes the secret ARN lines when there is no proxy (legacy)", () => {
+      const written = writeEnvironment({ AGENTX_ANTHROPIC_SECRET_ARN: secretArn });
+      expect(written).toContain(`AGENTX_ANTHROPIC_SECRET_ARN=${secretArn}\n`);
+      expect(written).toContain("AGENTX_OPENAI_SECRET_ARN=\n");
+      expect(written).toContain("AGENTX_OPENROUTER_SECRET_ARN=\n");
+      expect(written).not.toContain("AGENTX_MODEL_PROXY_URL");
+    });
+  });
+
   it("prepends every boot value to the script as a quoted export", () => {
     const userData = ec2WorkerBootScript(config, bootScript);
     expect(userData.startsWith("#!/bin/bash\n")).toBe(true);

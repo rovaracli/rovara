@@ -389,7 +389,8 @@ export class SlackOrchestratorStack extends Stack {
           { name: "SLACK_SECRET_ARN", value: secretArn.valueAsString },
           { name: "AGENTX_ORCHESTRATOR_PROVIDER", value: modelProvider.valueAsString },
           { name: "AGENTX_ORCHESTRATOR_MODEL", value: modelId.valueAsString },
-          ...KEYED_PROVIDER_IDS.map((provider) => ({ name: KEYED_MODEL_PROVIDERS[provider].secretArnVariable, value: providerKeys[provider].valueAsString })),
+          // A named environment's orchestrator holds no provider secret: the model proxy does (Task 14).
+          ...(naming.env === undefined ? KEYED_PROVIDER_IDS.map((provider) => ({ name: KEYED_MODEL_PROVIDERS[provider].secretArnVariable, value: providerKeys[provider].valueAsString })) : []),
           { name: "AGENTX_OPENROUTER_PROVIDERS", value: openRouterProviders.valueAsString },
           { name: "AGENTX_GATE_CLASSIFIER_PROVIDER", value: classifierProvider.valueAsString },
           { name: "AGENTX_GATE_CLASSIFIER_MODEL", value: gateClassifierModelId.valueAsString },

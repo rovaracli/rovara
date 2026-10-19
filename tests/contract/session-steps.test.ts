@@ -10,7 +10,7 @@ import { ec2WorkerBootScript } from "../../packages/contracts/src/session.js";
 const bootScript = readFileSync(new URL("../../packages/worker/ec2/boot.sh", import.meta.url), "utf8");
 const workspaceId = randomUUID();
 
-function setup(ping: SessionStepsDependencies["ping"] = async () => ({ status: "Healthy" })) {
+function setup(ping: SessionStepsDependencies["ping"] = async () => ({ status: "Healthy" }), overrides: Partial<SessionStepsDependencies> = {}, settings: (base: Awaited<ReturnType<SessionStepsDependencies["workerSettings"]>>) => Awaited<ReturnType<SessionStepsDependencies["workerSettings"]>> = (base) => base) {
   const sessions = {
     markVolume: vi.fn(async () => undefined),
     markInstance: vi.fn(async () => undefined),
@@ -21,7 +21,7 @@ function setup(ping: SessionStepsDependencies["ping"] = async () => ({ status: "
   const pingSpy = vi.fn(ping);
   const handler = createSessionStepsHandler({
     sessions,
-    workerSettings: async () => ({
+    workerSettings: async () => settings({
       workerImage: `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-worker-production@sha256:${"a".repeat(64)}`,
       modelProvider: "amazon-bedrock",
       modelId: "us.anthropic.claude-sonnet-4-6",
@@ -37,6 +37,7 @@ function setup(ping: SessionStepsDependencies["ping"] = async () => ({ status: "
     controlPlaneUrl: "https://abc.execute-api.us-east-1.amazonaws.com",
     logGroupName: "/agentx/production/worker",
     ping: pingSpy,
+    ...overrides,
   });
   return { handler, sessions, ping: pingSpy };
 }
@@ -76,6 +77,32 @@ describe("session steps", () => {
     }, bootScript));
     expect(userData).toContain("export AGENTX_ANTHROPIC_SECRET_ARN='arn:aws:secretsmanager:us-east-1:111122223333:secret:agentx/production/anthropic-AbCdEf'");
     expect(userData).toContain("export AGENTX_OPENAI_SECRET_ARN='arn:aws:secretsmanager:us-east-1:111122223333:secret:agentx/production/openai-AbCdEf'");
+  });
+
+  // Task 14: a named environment's workers call models through the proxy and hold no provider secret reference.
+  describe("with a model proxy", () => {
+    const proxyUrl = "http://internal-agentx-staging-proxy-123456.us-east-1.elb.amazonaws.com:4000";
+    const launch = (handler: ReturnType<typeof setup>["handler"]) => handler({ action: "launchConfiguration", workspaceId, generation: 1, volumeId: "vol-0123456789abcdef0", expectNewVolume: true }) as Promise<{ userData: string }>;
+    // What a named environment's SSM holds: no provider secret ARNs, and the proxy's URL when it is published.
+    const named = (modelProxyUrl?: string) => ({ workerImage, modelProvider, modelId, promptCacheRetention }: Parameters<Parameters<typeof setup>[2] & {}>[0]) =>
+      ({ workerImage, modelProvider, modelId, promptCacheRetention, ...(modelProxyUrl === undefined ? {} : { modelProxyUrl }) });
+
+    it("puts AGENTX_MODEL_PROXY_URL in the user data and no secret ARN", async () => {
+      const { handler } = setup(undefined, { modelProxyRequired: true }, named(proxyUrl));
+      const userData = gunzipSync(Buffer.from((await launch(handler)).userData, "base64")).toString("utf8");
+      expect(userData).toContain(`export AGENTX_MODEL_PROXY_URL='${proxyUrl}'`);
+      expect(userData).not.toMatch(/^export \w*_SECRET_ARN=/m);
+    });
+
+    it("refuses to launch a worker without the proxy URL when the environment requires one, naming the missing setting", async () => {
+      const { handler } = setup(undefined, { modelProxyRequired: true }, named());
+      await expect(launch(handler)).rejects.toThrow(/model proxy URL.*missing/i);
+    });
+
+    it("launches without a proxy when none is required (legacy)", async () => {
+      const { handler } = setup();
+      expect(gunzipSync(Buffer.from((await launch(handler)).userData, "base64")).toString("utf8")).not.toContain("export AGENTX_MODEL_PROXY_URL=");
+    });
   });
 
   it("records the volume and instance, and marks the session ready, failed or deleted", async () => {

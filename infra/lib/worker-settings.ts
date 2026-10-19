@@ -46,16 +46,25 @@ export class WorkerSettingsStack extends Stack {
       stringValue: imageUri.valueAsString,
       description: "AgentX worker image URI pinned by digest, for EC2 workers",
     });
+    // The secret ARN parameters stay declared in every environment, because the deployment passes them to this stack.
     const keys = providerKeyParameters(this);
     const providers = openRouterRoutingParameter(this);
-    const hasSecret = new CfnCondition(this, "HasOpenRouterSecret", { expression: Fn.conditionNot(Fn.conditionEquals(keys.openrouter.valueAsString, "")) });
-    const hasAnthropicSecret = new CfnCondition(this, "HasAnthropicSecret", { expression: Fn.conditionNot(Fn.conditionEquals(keys.anthropic.valueAsString, "")) });
-    const hasOpenAISecret = new CfnCondition(this, "HasOpenAISecret", { expression: Fn.conditionNot(Fn.conditionEquals(keys.openai.valueAsString, "")) });
     const hasProviders = new CfnCondition(this, "HasOpenRouterProviders", { expression: Fn.conditionNot(Fn.conditionEquals(providers.valueAsString, "")) });
+    // A named environment's workers call models through the model proxy and hold no provider secret reference (Task 14),
+    // so it publishes none; the legacy deployment's workers still read their provider keys themselves.
+    const secretSettings: Array<[string, keyof typeof WORKER_SETTING_PARAMETERS, string]> = [];
+    if (naming.env === undefined) {
+      const hasSecret = new CfnCondition(this, "HasOpenRouterSecret", { expression: Fn.conditionNot(Fn.conditionEquals(keys.openrouter.valueAsString, "")) });
+      const hasAnthropicSecret = new CfnCondition(this, "HasAnthropicSecret", { expression: Fn.conditionNot(Fn.conditionEquals(keys.anthropic.valueAsString, "")) });
+      const hasOpenAISecret = new CfnCondition(this, "HasOpenAISecret", { expression: Fn.conditionNot(Fn.conditionEquals(keys.openai.valueAsString, "")) });
+      secretSettings.push(
+        ["WorkerOpenRouterSecretParameter", "openRouterSecretArn", Fn.conditionIf(hasSecret.logicalId, keys.openrouter.valueAsString, "none").toString()],
+        ["WorkerAnthropicSecretParameter", "anthropicSecretArn", Fn.conditionIf(hasAnthropicSecret.logicalId, keys.anthropic.valueAsString, "none").toString()],
+        ["WorkerOpenAISecretParameter", "openaiSecretArn", Fn.conditionIf(hasOpenAISecret.logicalId, keys.openai.valueAsString, "none").toString()],
+      );
+    }
     const workerSettings: Array<[string, keyof typeof WORKER_SETTING_PARAMETERS, string]> = [
-      ["WorkerOpenRouterSecretParameter", "openRouterSecretArn", Fn.conditionIf(hasSecret.logicalId, keys.openrouter.valueAsString, "none").toString()],
-      ["WorkerAnthropicSecretParameter", "anthropicSecretArn", Fn.conditionIf(hasAnthropicSecret.logicalId, keys.anthropic.valueAsString, "none").toString()],
-      ["WorkerOpenAISecretParameter", "openaiSecretArn", Fn.conditionIf(hasOpenAISecret.logicalId, keys.openai.valueAsString, "none").toString()],
+      ...secretSettings,
       ["WorkerOpenRouterProvidersParameter", "openRouterProviders", Fn.conditionIf(hasProviders.logicalId, providers.valueAsString, "none").toString()],
       ["WorkerModelProviderParameter", "modelProvider", modelProvider.valueAsString],
       ["WorkerModelIdParameter", "modelId", modelId.valueAsString],

@@ -241,6 +241,12 @@ export const WORKER_SETTING_PARAMETERS = {
 } as const;
 
 /**
+ * The setting, under the same SSM prefix, where a named environment publishes its model proxy's URL (Task 10). A
+ * worker in such an environment calls models through the proxy and holds no provider secret reference or Bedrock access.
+ */
+export const MODEL_PROXY_URL_PARAMETER = "model-proxy-url";
+
+/**
  * Foundation outputs the control plane takes as stack parameters of the same name, for the EC2
  * session lifecycle. Parameters rather than cross-stack exports, so the manually deployed foundation
  * never has to change for them. The release and `agentx deploy` both pass them.
@@ -346,6 +352,8 @@ export const Ec2WorkerBootConfigSchema = z
     openRouterProviders: z.string().max(512).regex(/^[a-z0-9][a-z0-9_/-]{0,79}(?:,[a-z0-9][a-z0-9_/-]{0,79})*$/).optional(),
     anthropicSecretArn: z.string().max(SECRET_ARN_MAX_LENGTH).regex(SECRET_ARN_PATTERN).optional(),
     openaiSecretArn: z.string().max(SECRET_ARN_MAX_LENGTH).regex(SECRET_ARN_PATTERN).optional(),
+    /** AGENTX_MODEL_PROXY_URL: the internal model proxy a named environment's workers call models through. */
+    modelProxyUrl: z.string().url().max(512).regex(/^https?:\/\//).regex(SHELL_SAFE, "model proxy URL has unsafe characters").optional(),
     /** PI_CACHE_RETENTION */
     promptCacheRetention: z.enum(["short", "long"]),
     /** AGENTX_LOG_GROUP: the CloudWatch Logs group the worker container writes to. */
@@ -376,6 +384,7 @@ export function ec2WorkerBootScript(config: Ec2WorkerBootConfig, bootScript: str
   if (parsed.openRouterProviders) variables.push(["AGENTX_OPENROUTER_PROVIDERS", parsed.openRouterProviders]);
   if (parsed.anthropicSecretArn) variables.push([KEYED_MODEL_PROVIDERS.anthropic.secretArnVariable, parsed.anthropicSecretArn]);
   if (parsed.openaiSecretArn) variables.push([KEYED_MODEL_PROVIDERS.openai.secretArnVariable, parsed.openaiSecretArn]);
+  if (parsed.modelProxyUrl) variables.push(["AGENTX_MODEL_PROXY_URL", parsed.modelProxyUrl]);
   const body = bootScript.replace(/^#!.*\n/, "");
   return [
     "#!/bin/bash",

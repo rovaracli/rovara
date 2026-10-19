@@ -9205,6 +9205,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 "Arn",
               ],
             },
+            "MODEL_PROXY_REQUIRED": "true",
             "STATE_TABLE_NAME": {
               "Ref": "State1C20CC9A",
             },
@@ -9581,6 +9582,26 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                         "Ref": "AWS::AccountId",
                       },
                       ":parameter/agentx/staging/worker-openai-secret-arn",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":ssm:",
+                      {
+                        "Ref": "AWS::Region",
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":parameter/agentx/staging/model-proxy-url",
                     ],
                   ],
                 },
@@ -10476,47 +10497,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Resource": {
                 "Ref": "SlackSecretEA96F13F",
               },
-            },
-            {
-              "Action": [
-                "bedrock:InvokeModel",
-                "bedrock:InvokeModelWithResponseStream",
-              ],
-              "Effect": "Allow",
-              "Resource": [
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition",
-                      },
-                      ":bedrock:*::foundation-model/*",
-                    ],
-                  ],
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition",
-                      },
-                      ":bedrock:",
-                      {
-                        "Ref": "AWS::Region",
-                      },
-                      ":",
-                      {
-                        "Ref": "AWS::AccountId",
-                      },
-                      ":inference-profile/*",
-                    ],
-                  ],
-                },
-              ],
             },
             {
               "Action": "dynamodb:PutItem",
@@ -11572,48 +11552,6 @@ exports[`named environment templates > agentx-staging-foundation is unchanged 1`
                 ],
               },
               "Sid": "EcrPullThroughCache",
-            },
-            {
-              "Action": [
-                "bedrock:InvokeModel",
-                "bedrock:InvokeModelWithResponseStream",
-              ],
-              "Effect": "Allow",
-              "Resource": [
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition",
-                      },
-                      ":bedrock:*::foundation-model/*",
-                    ],
-                  ],
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition",
-                      },
-                      ":bedrock:",
-                      {
-                        "Ref": "AWS::Region",
-                      },
-                      ":",
-                      {
-                        "Ref": "AWS::AccountId",
-                      },
-                      ":*",
-                    ],
-                  ],
-                },
-              ],
-              "Sid": "BedrockModelInvocation",
             },
             {
               "Action": [
@@ -12967,48 +12905,12 @@ exports[`named environment templates > agentx-staging-identity is unchanged 1`] 
 exports[`named environment templates > agentx-staging-runtime is unchanged 1`] = `
 {
   "Conditions": {
-    "HasAnthropicSecret": {
-      "Fn::Not": [
-        {
-          "Fn::Equals": [
-            {
-              "Ref": "AnthropicSecretArn",
-            },
-            "",
-          ],
-        },
-      ],
-    },
-    "HasOpenAISecret": {
-      "Fn::Not": [
-        {
-          "Fn::Equals": [
-            {
-              "Ref": "OpenAISecretArn",
-            },
-            "",
-          ],
-        },
-      ],
-    },
     "HasOpenRouterProviders": {
       "Fn::Not": [
         {
           "Fn::Equals": [
             {
               "Ref": "OpenRouterProviders",
-            },
-            "",
-          ],
-        },
-      ],
-    },
-    "HasOpenRouterSecret": {
-      "Fn::Not": [
-        {
-          "Fn::Equals": [
-            {
-              "Ref": "OpenRouterSecretArn",
             },
             "",
           ],
@@ -13090,26 +12992,6 @@ exports[`named environment templates > agentx-staging-runtime is unchanged 1`] =
     },
   },
   "Resources": {
-    "WorkerAnthropicSecretParameterFA40843B": {
-      "Properties": {
-        "Description": "AgentX worker anthropicSecretArn for EC2 workers",
-        "Name": "/agentx/staging/worker-anthropic-secret-arn",
-        "Tags": {
-          "agentx:env": "staging",
-        },
-        "Type": "String",
-        "Value": {
-          "Fn::If": [
-            "HasAnthropicSecret",
-            {
-              "Ref": "AnthropicSecretArn",
-            },
-            "none",
-          ],
-        },
-      },
-      "Type": "AWS::SSM::Parameter",
-    },
     "WorkerImageParameter7CA9ADBB": {
       "Properties": {
         "Description": "AgentX worker image URI pinned by digest, for EC2 workers",
@@ -13152,26 +13034,6 @@ exports[`named environment templates > agentx-staging-runtime is unchanged 1`] =
       },
       "Type": "AWS::SSM::Parameter",
     },
-    "WorkerOpenAISecretParameter5EF1F8B6": {
-      "Properties": {
-        "Description": "AgentX worker openaiSecretArn for EC2 workers",
-        "Name": "/agentx/staging/worker-openai-secret-arn",
-        "Tags": {
-          "agentx:env": "staging",
-        },
-        "Type": "String",
-        "Value": {
-          "Fn::If": [
-            "HasOpenAISecret",
-            {
-              "Ref": "OpenAISecretArn",
-            },
-            "none",
-          ],
-        },
-      },
-      "Type": "AWS::SSM::Parameter",
-    },
     "WorkerOpenRouterProvidersParameterE8BF348C": {
       "Properties": {
         "Description": "AgentX worker openRouterProviders for EC2 workers",
@@ -13185,26 +13047,6 @@ exports[`named environment templates > agentx-staging-runtime is unchanged 1`] =
             "HasOpenRouterProviders",
             {
               "Ref": "OpenRouterProviders",
-            },
-            "none",
-          ],
-        },
-      },
-      "Type": "AWS::SSM::Parameter",
-    },
-    "WorkerOpenRouterSecretParameter0BDA3772": {
-      "Properties": {
-        "Description": "AgentX worker openRouterSecretArn for EC2 workers",
-        "Name": "/agentx/staging/worker-openrouter-secret-arn",
-        "Tags": {
-          "agentx:env": "staging",
-        },
-        "Type": "String",
-        "Value": {
-          "Fn::If": [
-            "HasOpenRouterSecret",
-            {
-              "Ref": "OpenRouterSecretArn",
             },
             "none",
           ],
@@ -14668,24 +14510,6 @@ exports[`named environment templates > agentx-staging-slack is unchanged 1`] = `
                 "Name": "AGENTX_ORCHESTRATOR_MODEL",
                 "Value": {
                   "Ref": "ModelId",
-                },
-              },
-              {
-                "Name": "AGENTX_OPENROUTER_SECRET_ARN",
-                "Value": {
-                  "Ref": "OpenRouterSecretArn",
-                },
-              },
-              {
-                "Name": "AGENTX_ANTHROPIC_SECRET_ARN",
-                "Value": {
-                  "Ref": "AnthropicSecretArn",
-                },
-              },
-              {
-                "Name": "AGENTX_OPENAI_SECRET_ARN",
-                "Value": {
-                  "Ref": "OpenAISecretArn",
                 },
               },
               {

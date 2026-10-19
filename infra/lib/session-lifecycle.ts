@@ -20,7 +20,7 @@ import {
   aws_stepfunctions as sfn,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { WORKER_SETTING_PARAMETERS } from "@agentx/contracts";
+import { MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS } from "@agentx/contracts";
 import { packagedFunction } from "./control-plane.js";
 import { EC2_WORKER_AMI_PARAMETER } from "./ec2-workers.js";
 import type { AgentXNaming } from "./naming.js";
@@ -72,13 +72,17 @@ export class SessionLifecycle extends Construct {
     this.instanceRoleName = Fn.select(naming.env === undefined ? 1 : 3, Fn.split("/", instanceRoleArn.valueAsString));
     const launchTemplateId = parameter("Ec2WorkerLaunchTemplateId", "The EC2 workers' launch template");
 
-    const settingParameterArns = Object.values(WORKER_SETTING_PARAMETERS).map((name) =>
+    // Named environments (Task 14): workers hold no provider keys or Bedrock access and call models through the
+    // proxy, whose URL is one more setting. Launching a worker without it fails; the legacy function is unchanged.
+    const settingNames: string[] = [...Object.values(WORKER_SETTING_PARAMETERS), ...(naming.env === undefined ? [] : [MODEL_PROXY_URL_PARAMETER])];
+    const settingParameterArns = settingNames.map((name) =>
       `arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${naming.ec2.workerSettingsPrefix}${name}`);
     this.steps = packagedFunction(this, "Steps", "packages/broker/src/aws/session-steps.ts", {
       STATE_TABLE_NAME: props.state.tableName,
       WORKER_SETTINGS_PREFIX: naming.ec2.workerSettingsPrefix,
       INVOKE_SIGNING_KEY_ARN: props.invokeSigningKey.keyArn,
       WORKER_LOG_GROUP_NAME: naming.ec2.workerLogGroupName,
+      ...(naming.env === undefined ? {} : { MODEL_PROXY_REQUIRED: "true" }),
     }, Duration.seconds(30), [[resolve(process.cwd(), "packages/worker/ec2/boot.sh"), "boot.sh"]]);
     // In the private subnets with the session manager's group: the only way to reach a worker's /ping.
     const inVpc = (fn: lambda.Function) => {

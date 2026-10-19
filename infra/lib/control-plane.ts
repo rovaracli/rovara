@@ -430,13 +430,16 @@ export class ControlPlaneStack extends Stack {
     slackThreads.grantReadWriteData(slackOrchestratorRole);
     threadSessions.grantReadWrite(slackOrchestratorRole);
     slackSecret.grantRead(slackOrchestratorRole);
-    slackOrchestratorRole.addToPolicy(new iam.PolicyStatement({
-      actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
-      resources: [
-        `arn:${this.partition}:bedrock:*::foundation-model/*`,
-        `arn:${this.partition}:bedrock:${this.region}:${this.account}:inference-profile/*`,
-      ],
-    }));
+    // A named environment's orchestrator calls models through the model proxy, which alone has Bedrock access (Task 14).
+    if (naming.env === undefined) {
+      slackOrchestratorRole.addToPolicy(new iam.PolicyStatement({
+        actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+        resources: [
+          `arn:${this.partition}:bedrock:*::foundation-model/*`,
+          `arn:${this.partition}:bedrock:${this.region}:${this.account}:inference-profile/*`,
+        ],
+      }));
+    }
     // One record per Slack event, kept 30 days for diagnosis and evaluation cases (feature 013 FR-025).
     // The broker reads it for the admin export. The ingress Lambda reads one record's non-text fields
     // for the Details view (spec 014), granted below. Nothing else can read it.

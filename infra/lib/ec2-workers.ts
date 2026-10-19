@@ -74,8 +74,8 @@ export class Ec2WorkerFoundation extends Construct {
       removalPolicy: RemovalPolicy.DESTROY,
     });
 
-    // The worker execution role can pull the worker image, call
-    // Bedrock models, write container logs.
+    // The worker execution role can pull the worker image and write container logs; in the legacy
+    // deployment it can also call Bedrock models.
     this.instanceRole = new iam.Role(this, "InstanceRole", {
       assumedBy: new iam.ServicePrincipal("ec2.amazonaws.com", {
         conditions: { StringEquals: { "aws:SourceAccount": Aws.ACCOUNT_ID } },
@@ -101,14 +101,18 @@ export class Ec2WorkerFoundation extends Construct {
         resources: [`arn:${Aws.PARTITION}:ecr:${Aws.REGION}:${Aws.ACCOUNT_ID}:repository/${naming.pullThroughPrefix}/*`],
       }));
     }
-    this.instanceRole.addToPolicy(new iam.PolicyStatement({
-      sid: "BedrockModelInvocation",
-      actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
-      resources: [
-        `arn:${Aws.PARTITION}:bedrock:*::foundation-model/*`,
-        `arn:${Aws.PARTITION}:bedrock:${Aws.REGION}:${Aws.ACCOUNT_ID}:*`,
-      ],
-    }));
+    // A named environment's workers call models through the model proxy, the only principal with Bedrock access
+    // (Task 14); the legacy deployment's workers still call Bedrock themselves.
+    if (naming.env === undefined) {
+      this.instanceRole.addToPolicy(new iam.PolicyStatement({
+        sid: "BedrockModelInvocation",
+        actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+        resources: [
+          `arn:${Aws.PARTITION}:bedrock:*::foundation-model/*`,
+          `arn:${Aws.PARTITION}:bedrock:${Aws.REGION}:${Aws.ACCOUNT_ID}:*`,
+        ],
+      }));
+    }
     this.instanceRole.addToPolicy(new iam.PolicyStatement({
       sid: "WorkerLogs",
       actions: ["logs:CreateLogStream", "logs:PutLogEvents"],
