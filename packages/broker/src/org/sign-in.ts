@@ -3,7 +3,8 @@
 // org keeps it. Otherwise, in order: a cloud sign-in whose verified email is already linked to another
 // developer joins that developer's org (one person, two sign-in routes), an invite token joins the
 // org that invited them, a cloud sign-in creates an org of its own, and a Slack or company sign-in
-// joins the install's single org (ruling R2) as a member.
+// joins the install's single org (ruling R2) as a member. A GitHub sign-in (Task 22) is a cloud sign-in
+// route for all of this: it links by verified email, accepts invites and creates an org like `cloud`.
 import { agentXError, type DeveloperSignInMethod, type OrgId, type OrgRole } from "@agentx/contracts";
 import type { OrgStore } from "./store.js";
 
@@ -60,7 +61,8 @@ export async function resolveOrgOnSignIn(deps: ResolveOrgOnSignInDependencies, i
 
 async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOrgOnSignInInput): Promise<SignInOrg> {
   const { orgs } = deps;
-  const cloud = input.method === "cloud";
+  // The methods that make accounts on a cloud install: "cloud" (Cognito) and "github" behave identically here.
+  const cloud = input.method === "cloud" || input.method === "github";
   const verifiedEmail = input.emailVerified ? input.email : undefined;
   const withInviteError = (org: { orgId: OrgId; role: OrgRole }, inviteError: SignInOrg["inviteError"]): SignInOrg =>
     inviteError === undefined ? org : { ...org, inviteError };

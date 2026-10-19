@@ -120,6 +120,9 @@ export const DeployAnswersSchema = z
     if (signIn !== undefined && (signIn.googleClientId === undefined) !== (signIn.googleClientSecretArn === undefined)) {
       context.addIssue({ code: "custom", path: ["cloudSignIn"], message: "googleClientId and googleClientSecretArn go together" });
     }
+    if (signIn !== undefined && (signIn.githubClientId === undefined) !== (signIn.githubClientSecretArn === undefined)) {
+      context.addIssue({ code: "custom", path: ["cloudSignIn"], message: "githubClientId and githubClientSecretArn go together" });
+    }
   });
 
 /** The first zod issue's path and message, so a schema failure always names the field. */

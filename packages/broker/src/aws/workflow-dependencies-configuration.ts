@@ -31,7 +31,9 @@ export function createDeveloperApiConfiguration(
     ...integrations(issuer, identityFunctionName),
     issuer,
     env,
-    methods: { slack: environment.DEVELOPER_SIGNIN_SLACK === "enabled", oidc: (environment.DEVELOPER_OIDC_ISSUER ?? "") !== "", cloud: (environment.DEVELOPER_CLOUD_ISSUER ?? "") !== "" },
+    methods: { slack: environment.DEVELOPER_SIGNIN_SLACK === "enabled", oidc: (environment.DEVELOPER_OIDC_ISSUER ?? "") !== "", cloud: (environment.DEVELOPER_CLOUD_ISSUER ?? "") !== "",
+      // GitHub sign-in needs a cloud install and a configured GitHub OAuth app (the client id is not a secret; the sign-in function holds the secret).
+      github: (environment.DEVELOPER_CLOUD_ISSUER ?? "") !== "" && (environment.DEVELOPER_GITHUB_CLIENT_ID ?? "") !== "" },
     ...(slackTeamId === "" ? {} : { slackTeamId }),
     since: developerSinceFromEnvironment(environment),
     signInTableName,

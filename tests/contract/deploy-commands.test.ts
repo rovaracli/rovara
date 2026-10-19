@@ -273,5 +273,10 @@ describe("the hosted Rovara cloud (R45)", () => {
     expect(DeployAnswersSchema.safeParse({ ...answers, cloudSignIn: { domainPrefix: "rovara-x" } }).success).toBe(false);
     expect(DeployAnswersSchema.safeParse({ ...answers, cloud: true, cloudSignIn: { googleClientId: "g" } }).success).toBe(false);
     expect(DeployAnswersSchema.safeParse({ ...answers, cloud: false }).success).toBe(false);
+    // GitHub sign-in (Task 22): the client id and its secret go together.
+    const githubSecretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:github-AbCdEf";
+    expect(DeployAnswersSchema.safeParse({ ...answers, cloud: true, cloudSignIn: { githubClientId: "Iv1.x", githubClientSecretArn: githubSecretArn } }).success).toBe(true);
+    expect(DeployAnswersSchema.safeParse({ ...answers, cloud: true, cloudSignIn: { githubClientId: "Iv1.x" } }).success).toBe(false);
+    expect(DeployAnswersSchema.safeParse({ ...answers, cloud: true, cloudSignIn: { githubClientSecretArn: githubSecretArn } }).success).toBe(false);
   });
 });

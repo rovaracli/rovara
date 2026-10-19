@@ -25,7 +25,7 @@ async function readConfiguration(options: DeveloperLoginOptions, base: URL, url:
   }
   const version = apiVersionCompatible(configuration.apiVersion, DEVELOPER_API_VERSION);
   if (!version.compatible) throw agentXError("CONFIG_INVALID", `this AgentX (API ${configuration.apiVersion}) needs a newer CLI; upgrade: npx ${CLI_PACKAGE_NAME}@latest login ${url}`);
-  if (!configuration.methods.slack && configuration.methods.oidc === null) {
+  if (!configuration.methods.slack && configuration.methods.oidc === null && configuration.methods.cloud == null && configuration.methods.github == null) {
     throw agentXError("CONFIG_INVALID", "no developer sign-in method is enabled in this AgentX; ask an admin to run agentx signin enable slack");
   }
   return configuration;

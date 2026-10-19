@@ -1,4 +1,4 @@
-// Spec 025 FR-002 to FR-004: the Slack and company OIDC providers. The code exchange runs here,
+// Spec 025 FR-002 to FR-004: the Slack and company OIDC providers, and the GitHub OAuth provider of cloud installs (Task 22). The code exchange runs here,
 // server side, with the client secret; the laptop never sees it.
 import { jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
 import { SLACK_OIDC_ISSUER, SlackTeamIdSchema, SlackUserIdSchema, cleanDisplayName, type DeveloperSignInMethod } from "@agentx/contracts";
@@ -7,6 +7,8 @@ export interface ProviderIdentity {
   method: DeveloperSignInMethod; issuer: string; subject: string; displayName: string; email?: string; slackUserId?: string;
   /** The provider vouched for `email` (OIDC `email_verified`); the org a first sign-in lands in may depend on it. */
   emailVerified?: boolean;
+  /** GitHub's numeric account id (the `github` method only); the one free trial per GitHub account is keyed on it. */
+  githubUserId?: string;
 }
 /** `wrongAccount`: the person signed in fine but is not one AgentX accepts (another Slack workspace,
  * or without the required claim), so signing in as someone else may help. */
@@ -193,6 +195,64 @@ export function oidcSignInProvider(input: {
           method, issuer, subject: payload.sub,
           displayName: (name === undefined ? undefined : cleanDisplayName(name)) ?? payload.sub,
           ...(email === undefined ? {} : { email, emailVerified: emailVerifiedClaim(payload) }),
+        },
+      };
+    },
+  };
+}
+
+const GITHUB_ISSUER = "https://github.com";
+const GITHUB_SCOPES = "read:user user:email";
+const GITHUB_API_HEADERS = { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "rovara-sign-in" } as const;
+
+/**
+ * Sign up and sign in with GitHub (Task 22). GitHub is OAuth 2.0 but not OIDC (no ID token, no nonce, no discovery), and Cognito cannot
+ * federate it, so the broker runs the web flow itself: the state is the sign-in server's own auth-request id (single use, consumed at the
+ * callback), and the identity comes from GitHub's REST API. The access token lives only inside `complete()`: it is never stored, logged
+ * or returned. The subject is the numeric account id, which survives a changed login; a verified email is the primary one GitHub vouches for.
+ */
+export function githubSignInProvider(input: {
+  clientId: string; clientSecret: () => Promise<string>; fetch: typeof fetch; now: () => number;
+}): SignInProvider {
+  return {
+    method: "github",
+    async authorizeUrl({ state, redirectUri }) {
+      const url = new URL("https://github.com/login/oauth/authorize");
+      for (const [key, value] of Object.entries({ client_id: input.clientId, redirect_uri: redirectUri, scope: GITHUB_SCOPES, state })) url.searchParams.set(key, value);
+      return url.toString();
+    },
+    async complete({ code, redirectUri }) {
+      const secret = await input.clientSecret();
+      // GitHub answers a bad client or code with HTTP 200 and an error body, so only an outage (network, 429, 5xx) is "unavailable".
+      const exchanged = await call(input.fetch, "https://github.com/login/oauth/access_token", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+        body: new URLSearchParams({ client_id: input.clientId, client_secret: secret, code, redirect_uri: redirectUri }).toString(),
+      }, "GitHub") as { access_token?: unknown; error?: unknown } | null;
+      const accessToken = exchanged?.access_token;
+      if (typeof accessToken !== "string" || accessToken === "") {
+        return { ok: false, reason: `GitHub refused the sign-in (${errorCode(exchanged?.error)}); run agentx login again` };
+      }
+      const headers = { ...GITHUB_API_HEADERS, authorization: `Bearer ${accessToken}` };
+      const user = await call(input.fetch, "https://api.github.com/user", { headers }, "GitHub") as { id?: unknown; login?: unknown; name?: unknown } | null;
+      if (typeof user?.id !== "number" || !Number.isSafeInteger(user.id) || user.id <= 0) {
+        return { ok: false, reason: "GitHub's answer names no account; run agentx login again" };
+      }
+      const githubUserId = String(user.id);
+      const emails = await call(input.fetch, "https://api.github.com/user/emails?per_page=100", { headers }, "GitHub");
+      const primary = Array.isArray(emails)
+        ? emails.find((entry): entry is { email: string } => typeof entry === "object" && entry !== null
+          && (entry as { primary?: unknown }).primary === true && (entry as { verified?: unknown }).verified === true
+          && typeof (entry as { email?: unknown }).email === "string" && (entry as { email: string }).email !== "")
+        : undefined;
+      const name = [user.name, user.login].find((value): value is string => typeof value === "string" && cleanDisplayName(value) !== undefined);
+      return {
+        ok: true,
+        identity: {
+          method: "github", issuer: GITHUB_ISSUER, subject: githubUserId,
+          displayName: (name === undefined ? undefined : cleanDisplayName(name)) ?? githubUserId,
+          ...(primary === undefined ? {} : { email: primary.email, emailVerified: true }),
+          githubUserId,
         },
       };
     },

@@ -263,6 +263,14 @@ describe("the hosted Rovara cloud (R45, R46)", () => {
     expect((await collectWithFlags({ ...base, flags: cdkFlags })).answers).not.toHaveProperty("cloud");
   });
 
+  it("the GitHub sign-in flags are stored beside the Google ones, go together, and need --rovara-cloud", async () => {
+    const githubSecret = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-AbCdEf";
+    const { answers } = await collectWithFlags({ ...base, flags: { ...cdkFlags, rovaraCloud: true, githubSignInClientId: "Iv1.app", githubSignInClientSecretArn: githubSecret } });
+    expect(answers).toMatchObject({ cloud: true, cloudSignIn: { githubClientId: "Iv1.app", githubClientSecretArn: githubSecret } });
+    await expect(collectWithFlags({ ...base, flags: { ...cdkFlags, rovaraCloud: true, githubSignInClientId: "Iv1.app" } })).rejects.toThrow(/--github-sign-in-client-id and --github-sign-in-client-secret-arn go together/);
+    await expect(collectWithFlags({ ...base, flags: { ...cdkFlags, githubSignInClientId: "Iv1.app", githubSignInClientSecretArn: githubSecret } })).rejects.toThrow(/need --rovara-cloud/);
+  });
+
   it("refuses the prebuilt-templates engine, a lone Google flag, and sign-in flags without --rovara-cloud", async () => {
     await expect(collectWithFlags({ ...base, flags: { ...everyFlag, rovaraCloud: true } })).rejects.toThrow(/must be synthesized from source/);
     await expect(collectWithFlags({ ...base, flags: { ...cdkFlags, rovaraCloud: true, googleClientId: "gid" } })).rejects.toThrow(/go together/);

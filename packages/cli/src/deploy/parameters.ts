@@ -231,6 +231,9 @@ function cloudSignInParameters(signIn: CloudSignInAnswers | undefined): Record<s
     ...(signIn?.googleClientId === undefined ? {} : { GoogleClientId: signIn.googleClientId }),
     ...(signIn?.googleClientSecretArn === undefined ? {} : { GoogleClientSecretArn: signIn.googleClientSecretArn }),
     ...(signIn?.domainPrefix === undefined ? {} : { CloudIdentityDomainPrefix: signIn.domainPrefix }),
+    // GitHub sign-in (Task 22): the template turns it on only when both are non-empty.
+    ...(signIn?.githubClientId === undefined ? {} : { GitHubClientId: signIn.githubClientId }),
+    ...(signIn?.githubClientSecretArn === undefined ? {} : { GitHubClientSecretArn: signIn.githubClientSecretArn }),
   };
 }
 

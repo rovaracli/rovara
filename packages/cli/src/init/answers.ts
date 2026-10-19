@@ -75,6 +75,8 @@ export interface InitFlags {
   /** --rovara-cloud: install the hosted Rovara cloud (R45); it needs the cdk engine. The next three are its sign-in settings (R46). */
   rovaraCloud?: boolean;
   googleClientId?: string; googleClientSecretArn?: string; cloudDomainPrefix?: string;
+  /** Sign up and sign in with GitHub on the cloud install: the GitHub OAuth app's client id and its client secret's secret ARN (Task 22). */
+  githubSignInClientId?: string; githubSignInClientSecretArn?: string;
 }
 
 export interface CollectedAnswers {
@@ -281,12 +283,18 @@ export async function collectInitAnswers(input: {
 
 /** The cloud sign-in flags as answers: Google is optional, but its id and secret go together; none without --rovara-cloud. */
 function collectCloudSignIn(flags: InitFlags): InitAnswers["cloudSignIn"] {
-  const given = { googleClientId: flags.googleClientId, googleClientSecretArn: flags.googleClientSecretArn, domainPrefix: flags.cloudDomainPrefix };
+  const given = {
+    googleClientId: flags.googleClientId, googleClientSecretArn: flags.googleClientSecretArn, domainPrefix: flags.cloudDomainPrefix,
+    githubClientId: flags.githubSignInClientId, githubClientSecretArn: flags.githubSignInClientSecretArn,
+  };
   const present = Object.values(given).some((value) => value !== undefined);
   if (!present) return undefined;
-  if (flags.rovaraCloud !== true) throw agentXError("CONFIG_INVALID", "--google-client-id, --google-client-secret-arn and --cloud-domain-prefix need --rovara-cloud");
+  if (flags.rovaraCloud !== true) throw agentXError("CONFIG_INVALID", "--google-client-id, --google-client-secret-arn, --github-sign-in-client-id, --github-sign-in-client-secret-arn and --cloud-domain-prefix need --rovara-cloud");
   if ((given.googleClientId === undefined) !== (given.googleClientSecretArn === undefined)) {
     throw agentXError("CONFIG_INVALID", "--google-client-id and --google-client-secret-arn go together (omit both for email-code sign-in only)");
+  }
+  if ((given.githubClientId === undefined) !== (given.githubClientSecretArn === undefined)) {
+    throw agentXError("CONFIG_INVALID", "--github-sign-in-client-id and --github-sign-in-client-secret-arn go together (omit both to not offer sign in with GitHub)");
   }
   const parsed = CloudSignInAnswersSchema.safeParse(Object.fromEntries(Object.entries(given).filter(([, value]) => value !== undefined)));
   if (!parsed.success) throw agentXError("CONFIG_INVALID", `the cloud sign-in flags are invalid: ${parsed.error.issues[0]?.path.join(".") ?? ""} ${parsed.error.issues[0]?.message ?? ""}`.trim());
@@ -486,6 +494,8 @@ const RESUME_CHECKS: Array<{ flag: string; key: keyof InitFlags; kind?: ResumeCh
   { flag: "--google-client-id", key: "googleClientId", stored: (a) => a.cloudSignIn?.googleClientId },
   { flag: "--google-client-secret-arn", key: "googleClientSecretArn", stored: (a) => a.cloudSignIn?.googleClientSecretArn },
   { flag: "--cloud-domain-prefix", key: "cloudDomainPrefix", stored: (a) => a.cloudSignIn?.domainPrefix },
+  { flag: "--github-sign-in-client-id", key: "githubSignInClientId", stored: (a) => a.cloudSignIn?.githubClientId },
+  { flag: "--github-sign-in-client-secret-arn", key: "githubSignInClientSecretArn", stored: (a) => a.cloudSignIn?.githubClientSecretArn },
 ];
 
 /** Trims, then applies the one further normalization `kind` calls for: a URL (the OIDC issuer)

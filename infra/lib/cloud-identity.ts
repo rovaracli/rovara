@@ -9,6 +9,8 @@ import { Construct } from "constructs";
 
 /** Where the sign-in server finishes a cloud sign-in: `${DEVELOPER_TOKEN_ISSUER}/callback/cloud` (developer/server.ts). */
 export const CLOUD_CALLBACK_PATH = "/callback/cloud";
+/** Where the sign-in server finishes a GitHub sign-in: `${DEVELOPER_TOKEN_ISSUER}/callback/github` (developer/server.ts). */
+export const GITHUB_CALLBACK_PATH = "/callback/github";
 /** The name shown on the sign-in button, and the broker's own default (developer-identity.ts). */
 export const CLOUD_DISPLAY_NAME = "Rovara";
 
@@ -29,6 +31,11 @@ export class CloudIdentity extends Construct {
   readonly displayName = CLOUD_DISPLAY_NAME;
   /** Where the hosted Rovara web app lives; invite links point at it (ROVARA_WEB_ORIGIN). */
   readonly webOrigin: CfnParameter;
+  /** Sign up and sign in with GitHub (Task 22): the OAuth app's client id, and the secret holding its client secret as {"clientSecret": ...}. Both empty turns it off. */
+  readonly githubClientId: CfnParameter;
+  readonly githubClientSecretArn: CfnParameter;
+  /** True only when both GitHub parameters are set. The sign-in function's grant on the secret exists only under it. */
+  readonly githubEnabled: CfnCondition;
 
   constructor(scope: Construct, id: string, props: CloudIdentityProps) {
     super(scope, id);
@@ -48,6 +55,22 @@ export class CloudIdentity extends Construct {
     const domainPrefix = new CfnParameter(stack, "CloudIdentityDomainPrefix", {
       type: "String", default: `rovara-${props.env}`, allowedPattern: "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
       description: "Prefix of the hosted sign-in domain (<prefix>.auth.<region>.amazoncognito.com); unique per region, and it must not contain aws, amazon or cognito",
+    });
+    // GitHub is not federated through Cognito (GitHub is not OIDC): the sign-in function runs its OAuth flow itself, so these
+    // parameters feed that function and nothing in the pool.
+    this.githubClientId = new CfnParameter(stack, "GitHubClientId", {
+      type: "String", default: "", maxLength: 256,
+      description: "Client ID of the GitHub OAuth app for Rovara sign up and sign in with GitHub; leave empty to not offer it",
+    });
+    this.githubClientSecretArn = new CfnParameter(stack, "GitHubClientSecretArn", {
+      type: "String", default: "", allowedPattern: "^(arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:\\S+)?$",
+      description: "ARN of the Secrets Manager secret holding the GitHub OAuth client secret as JSON, {\"clientSecret\": \"...\"}; needed with GitHubClientId",
+    });
+    this.githubEnabled = new CfnCondition(stack, "GitHubSignInEnabled", {
+      expression: Fn.conditionAnd(
+        Fn.conditionNot(Fn.conditionEquals(this.githubClientId.valueAsString, "")),
+        Fn.conditionNot(Fn.conditionEquals(this.githubClientSecretArn.valueAsString, "")),
+      ),
     });
     const googleEnabled = new CfnCondition(stack, "GoogleSignInEnabled", {
       expression: Fn.conditionNot(Fn.conditionEquals(googleClientId.valueAsString, "")),
@@ -139,6 +162,8 @@ export class CloudIdentity extends Construct {
 
     new CfnOutput(stack, "CloudIdentityIssuer", { value: this.issuer });
     new CfnOutput(stack, "CloudIdentityClientId", { value: this.clientId });
+    // Register this as the GitHub OAuth app's authorization callback URL (the sign-in server finishes the flow here).
+    new CfnOutput(stack, "CloudIdentityGitHubCallbackUrl", { value: `${props.signInIssuer}${GITHUB_CALLBACK_PATH}`, description: "Authorization callback URL to register with the GitHub OAuth app" });
     // Register this with the Google OAuth app as an authorized redirect URI.
     new CfnOutput(stack, "CloudIdentityGoogleRedirectUri", { value: `${domain.baseUrl()}/oauth2/idpresponse`, description: "Authorized redirect URI to register with the Google OAuth app" });
   }

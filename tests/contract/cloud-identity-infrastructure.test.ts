@@ -172,6 +172,66 @@ describe("cloud identity infrastructure", () => {
     expect(readers[0]![0]).toMatch(/^DeveloperSignInFunctionServiceRoleDefaultPolicy/);
   });
 
+  describe("sign up and sign in with GitHub (Task 22)", () => {
+    const json = () => cloud().toJSON() as { Parameters: Record<string, { Type: string; Default?: string }>; Conditions: Record<string, unknown>; Outputs: Record<string, { Value: unknown }> };
+    const githubReaders = (template: Template) => resourcesOf(template, "AWS::IAM::Policy").filter(([, policy]) =>
+      policy.Properties.PolicyDocument.Statement.some((statement) => JSON.stringify(statement.Resource) === JSON.stringify({ Ref: "GitHubClientSecretArn" }) && [statement.Action].flat().includes("secretsmanager:GetSecretValue")));
+
+    it("takes the OAuth app's client id and secret ARN as optional parameters, behind the GitHubSignInEnabled condition", () => {
+      const { Parameters, Conditions } = json();
+      expect(Parameters.GitHubClientId).toMatchObject({ Type: "String", Default: "" });
+      expect(Parameters.GitHubClientSecretArn).toMatchObject({ Type: "String", Default: "" });
+      expect(Conditions.GitHubSignInEnabled).toEqual({ "Fn::And": [
+        { "Fn::Not": [{ "Fn::Equals": [{ Ref: "GitHubClientId" }, ""] }] },
+        { "Fn::Not": [{ "Fn::Equals": [{ Ref: "GitHubClientSecretArn" }, ""] }] },
+      ] });
+    });
+
+    it("hands the sign-in function the client id and secret id, and the broker only the client id (it needs to know the method is on)", () => {
+      const template = cloud();
+      const identity = identityEnvironment(template);
+      expect(identity.DEVELOPER_GITHUB_CLIENT_ID).toEqual({ Ref: "GitHubClientId" });
+      expect(identity.DEVELOPER_GITHUB_SECRET_ID).toEqual({ Ref: "GitHubClientSecretArn" });
+      const broker = brokerEnvironment(template);
+      expect(broker.DEVELOPER_GITHUB_CLIENT_ID).toEqual({ Ref: "GitHubClientId" });
+      expect(broker.DEVELOPER_GITHUB_SECRET_ID).toBeUndefined();
+    });
+
+    it("lets exactly one function read the GitHub client secret: the sign-in function, under the condition", () => {
+      const template = cloud();
+      const readers = githubReaders(template);
+      expect(readers).toHaveLength(1);
+      const [id, policy] = readers[0]!;
+      expect(id).toMatch(/^DeveloperSignInGitHubSecretRead/);
+      expect((policy as unknown as { Condition?: string }).Condition).toBe("GitHubSignInEnabled");
+      const roles = (policy.Properties as unknown as { Roles: Array<{ Ref: string }> }).Roles;
+      expect(roles).toHaveLength(1);
+      expect(roles[0]!.Ref).toBe((functionNamed(template, "DeveloperSignInFunction").Properties as unknown as { Role: { "Fn::GetAtt": string[] } }).Role["Fn::GetAtt"][0]);
+    });
+
+    it("lets the sign-in function reach the GitHub trial claim, and only it", () => {
+      const template = cloud();
+      const policies = resourcesOf(template, "AWS::IAM::Policy").filter(([, policy]) => JSON.stringify(policy.Properties.PolicyDocument).includes("TRIAL_GITHUB#*"));
+      expect(policies).toHaveLength(1);
+      expect(policies[0]![0]).toMatch(/^DeveloperSignInFunctionServiceRoleDefaultPolicy/);
+    });
+
+    it("prints the callback URL to register with the GitHub OAuth app", () => {
+      expect(JSON.stringify(json().Outputs.CloudIdentityGitHubCallbackUrl?.Value)).toContain("/v1/auth/callback/github");
+    });
+
+    it("adds nothing without agentxCloud: no parameter, no environment variable, no policy", () => {
+      for (const template of [controlPlane({ agentxEnv: "staging" }), controlPlane({ agentxEnv: "staging", agentxCloud: false })]) {
+        const text = JSON.stringify(template.toJSON());
+        expect(text).not.toContain("GitHubClientId");
+        expect(text).not.toContain("GitHubClientSecretArn");
+        expect(text).not.toContain("GitHubSignInEnabled");
+        expect(text).not.toContain("DEVELOPER_GITHUB_");
+        expect(text).not.toContain("TRIAL_GITHUB");
+      }
+    });
+  });
+
   it("exposes what an operator needs to finish the Google setup", () => {
     const outputs = cloud().toJSON().Outputs as Record<string, unknown>;
     for (const name of ["CloudIdentityIssuer", "CloudIdentityClientId", "CloudIdentityGoogleRedirectUri"]) expect(outputs[name], name).toBeDefined();

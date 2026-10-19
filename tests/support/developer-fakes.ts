@@ -3,13 +3,15 @@
 import { createHash, generateKeyPairSync, sign as cryptoSign, type KeyObject } from "node:crypto";
 import { GetPublicKeyCommand, SignCommand } from "@aws-sdk/client-kms";
 import { SignJWT, UnsecuredJWT, createLocalJWKSet, type JWTHeaderParameters, type JWTVerifyGetKey } from "jose";
+import type { OrgId } from "@agentx/contracts";
 import type { HttpApiV2Event } from "../../packages/broker/src/aws/lambda.js";
-import { oidcSignInProvider, slackSignInProvider } from "../../packages/broker/src/developer/providers.js";
+import { githubSignInProvider, oidcSignInProvider, slackSignInProvider } from "../../packages/broker/src/developer/providers.js";
 import type { DeveloperIdentityDependencies, HttpResult } from "../../packages/broker/src/developer/server.js";
 import { createDeveloperIdentityHandler } from "../../packages/broker/src/developer/server.js";
 import { slackDirectory } from "../../packages/broker/src/developer/slack-directory.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
+import { unlockTrial } from "../../packages/broker/src/org/trial.js";
 import type { PublicSigningJwk, TokenSigner } from "../../packages/broker/src/developer/tokens.js";
 import { kmsTokenSigner } from "../../packages/broker/src/developer/tokens.js";
 import { FakeDynamoDb } from "./fake-dynamodb.js";
@@ -58,6 +60,8 @@ export const BOT_TOKEN = "xoxb-1111-2222-plantedbottoken";
 export const OIDC_ISSUER = "https://idp.example.test";
 export const OIDC_CLIENT_ID = "agentx-developers";
 export const OIDC_CLIENT_SECRET = "planted-oidc-client-secret-value";
+export const GITHUB_CLIENT_ID = "Iv1.0123456789abcdef";
+export const GITHUB_CLIENT_SECRET = "planted-github-client-secret-value";
 
 type Handler = (url: URL, init: RequestInit | undefined) => Promise<Response | undefined>;
 
@@ -255,6 +259,62 @@ export function fakeOidc(options: { users: FakeOidcUser[]; clientSecret?: string
   };
 }
 
+export interface FakeGithubEmail { email: string; primary: boolean; verified: boolean }
+export interface FakeGithubUser { id: number; login: string; name?: string | null; emails?: FakeGithubEmail[] }
+
+/** GitHub's OAuth web flow and the two REST reads the sign-in makes (user, user/emails). */
+export function fakeGithub(options: { users: FakeGithubUser[] }) {
+  const codes = new Map<string, { user: FakeGithubUser; redirectUri: string }>();
+  const tokens = new Map<string, FakeGithubUser>();
+  const state = { down: false, tokenStatus: undefined as number | undefined, tokenError: undefined as string | undefined, secretSeen: [] as string[], issuedTokens: [] as string[], apiHeaders: [] as Headers[], emailsStatus: undefined as number | undefined };
+  const handler: Handler = async (url, init) => {
+    if (url.origin === "https://github.com" && url.pathname === "/login/oauth/access_token") {
+      if (state.down) throw new TypeError("fetch failed");
+      if (state.tokenStatus !== undefined) return new Response("bad gateway", { status: state.tokenStatus });
+      const body = form(init);
+      state.secretSeen.push(body.get("client_secret") ?? "");
+      if (new Headers(init?.headers).get("accept") !== "application/json") return new Response("access_token=not-json", { status: 200 });
+      // GitHub answers HTTP 200 with an error body for a bad client or code.
+      if (state.tokenError !== undefined) return Response.json({ error: state.tokenError });
+      if (body.get("client_id") !== GITHUB_CLIENT_ID || body.get("client_secret") !== GITHUB_CLIENT_SECRET) return Response.json({ error: "incorrect_client_credentials" });
+      const grant = codes.get(body.get("code") ?? "");
+      if (grant === undefined || grant.redirectUri !== body.get("redirect_uri")) return Response.json({ error: "bad_verification_code" });
+      codes.delete(body.get("code") ?? "");
+      const token = `gho_${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+      tokens.set(token, grant.user);
+      state.issuedTokens.push(token);
+      return Response.json({ access_token: token, token_type: "bearer", scope: "read:user,user:email" });
+    }
+    if (url.origin === "https://api.github.com") {
+      state.apiHeaders.push(new Headers(init?.headers));
+      const user = tokens.get((new Headers(init?.headers).get("authorization") ?? "").replace(/^Bearer /, ""));
+      if (user === undefined) return Response.json({ message: "Bad credentials" }, { status: 401 });
+      if (url.pathname === "/user") return Response.json({ id: user.id, login: user.login, name: user.name ?? null });
+      if (url.pathname === "/user/emails") {
+        if (state.emailsStatus !== undefined) return Response.json({ message: "nope" }, { status: state.emailsStatus });
+        return Response.json(user.emails ?? []);
+      }
+    }
+    return undefined;
+  };
+  return {
+    state,
+    handler,
+    /** What the browser does at GitHub: `id` approves the authorize URL; returns the callback URL. */
+    approve(authorizeUrl: string, id: number | string): string {
+      const url = new URL(authorizeUrl);
+      if (url.origin + url.pathname !== "https://github.com/login/oauth/authorize") throw new Error(`test setup: not the GitHub authorize URL: ${authorizeUrl}`);
+      if (url.searchParams.get("client_id") !== GITHUB_CLIENT_ID) throw new Error("test setup: wrong client_id");
+      const found = options.users.find((candidate) => String(candidate.id) === String(id));
+      if (found === undefined) throw new Error(`test setup: no GitHub user ${id}`);
+      const code = `github-code-${Math.random().toString(36).slice(2)}`;
+      const redirectUri = url.searchParams.get("redirect_uri") ?? "";
+      codes.set(code, { user: found, redirectUri });
+      return `${redirectUri}?code=${code}&state=${url.searchParams.get("state") ?? ""}`;
+    },
+  };
+}
+
 export function httpEvent(method: "GET" | "POST", pathAndQuery: string, body?: Record<string, string>): HttpApiV2Event {
   const url = new URL(pathAndQuery, API);
   return {
@@ -282,6 +342,8 @@ export function identityHarness(options: {
   slack?: boolean; teamId?: string | undefined; oidc?: { requiredClaim?: string; requiredValues?: string[] };
   /** The hosted Rovara sign-in, served by the same fake provider as `oidc` (its users are `oidcUsers`). */
   cloud?: { displayName?: string };
+  /** GitHub sign-in (cloud installs only): the fake GitHub's users; unlocking the trial is wired as the Lambda wires it. */
+  github?: { users: FakeGithubUser[] };
   slackUsers?: FakeSlackUser[]; oidcUsers?: FakeOidcUser[]; channels?: Record<string, string[]>;
   channelInfo?: Record<string, { name: string; isPrivate?: boolean }>;
   slackCredentials?: { clientId?: string; clientSecret?: string };
@@ -297,13 +359,15 @@ export function identityHarness(options: {
   const orgs = new OrgStore({ documentClient: state, tableName: "state", now });
   const slack = fakeSlack({ users: options.slackUsers ?? [], now, ...(options.channels ? { channels: options.channels } : {}), ...(options.channelInfo ? { channelInfo: options.channelInfo } : {}) });
   const oidc = fakeOidc({ users: options.oidcUsers ?? [], now });
-  const fetch = routeFetch(slack.handler, oidc.handler);
+  const github = fakeGithub({ users: options.github?.users ?? [] });
+  const fetch = routeFetch(slack.handler, oidc.handler, github.handler);
   const signer = localSigner();
   const logs: Array<Record<string, unknown>> = [];
   const teamId = "teamId" in options ? options.teamId : TEAM;
   const cloudProvider = options.cloud === undefined ? undefined : oidcSignInProvider({
     method: "cloud", issuer: OIDC_ISSUER, clientId: OIDC_CLIENT_ID, clientSecret: async () => OIDC_CLIENT_SECRET, requiredValues: [], fetch, jwksFor: () => oidc.jwks, now,
   });
+  const githubProvider = options.github === undefined ? undefined : githubSignInProvider({ clientId: GITHUB_CLIENT_ID, clientSecret: async () => GITHUB_CLIENT_SECRET, fetch, now });
   const providers: DeveloperIdentityDependencies["providers"] = {
     slack: slackSignInProvider({ teamId, credentials: async () => options.slackCredentials ?? { clientId: SLACK_CLIENT_ID, clientSecret: SLACK_CLIENT_SECRET }, fetch, jwks: slack.jwks, now }),
     ...(options.oidc === undefined ? {} : {
@@ -314,6 +378,7 @@ export function identityHarness(options: {
       }),
     }),
     ...(cloudProvider === undefined ? {} : { cloud: cloudProvider }),
+    ...(githubProvider === undefined ? {} : { github: githubProvider }),
   };
   const deps: DeveloperIdentityDependencies = {
     config: {
@@ -321,10 +386,12 @@ export function identityHarness(options: {
       slack: { enabled: options.slack ?? true, ...(teamId === undefined ? {} : { teamId }) },
       ...(options.oidc === undefined ? {} : { oidc: { displayName: "Okta" } }),
       ...(options.cloud === undefined ? {} : { cloud: { displayName: options.cloud.displayName ?? "Rovara" } }),
+      ...(options.github === undefined ? {} : { github: { displayName: "GitHub" } }),
     },
     store: new DeveloperSignInStore({ documentClient: db, tableName: "signin", now }),
     orgs,
     ...(options.singleOrg === false ? {} : { singleOrgId: TEST_ORG }),
+    ...(options.github === undefined ? {} : { onGithubSignIn: (input: { orgId: OrgId; githubUserId: string }) => unlockTrial({ documentClient: state, tableName: "state", now }, input) }),
     signer,
     providers,
     directory: slackDirectory({ teamId, botToken: async () => BOT_TOKEN, fetch, now }),
@@ -334,11 +401,11 @@ export function identityHarness(options: {
   const handler = createDeveloperIdentityHandler(deps);
   const http = async (event: HttpApiV2Event) => handler(event) as Promise<HttpResult>;
   return {
-    db, state, orgs, slack, oidc, fetch, signer, logs, deps, handler, http,
+    db, state, orgs, slack, oidc, github, fetch, signer, logs, deps, handler, http,
     tick: (ms: number) => { clock += ms; },
     now,
     /** GET authorize, follow to the provider, approve as `who`, follow the callback: the CLI's loopback URL. */
-    async signIn(method: "slack" | "oidc" | "cloud", who: string, extra: { teamId?: string; query?: Record<string, string> } = {}): Promise<URL> {
+    async signIn(method: "slack" | "oidc" | "cloud" | "github", who: string, extra: { teamId?: string; query?: Record<string, string> } = {}): Promise<URL> {
       let response = await http(httpEvent("GET", authorizeQuery(extra.query)));
       if (response.statusCode === 200) {
         const link = new RegExp(`href="([^"]*method=${method})"`).exec(response.body)?.[1];
@@ -348,7 +415,8 @@ export function identityHarness(options: {
       if (response.statusCode !== 302) return new URL(`${API}/unexpected-${response.statusCode}`);
       const providerUrl = response.headers.location!;
       if (providerUrl.startsWith(CLI_REDIRECT)) return new URL(providerUrl);
-      const callback = method === "slack" ? slack.approve(providerUrl, who, extra.teamId === undefined ? {} : { teamId: extra.teamId }) : oidc.approve(providerUrl, who);
+      const callback = method === "slack" ? slack.approve(providerUrl, who, extra.teamId === undefined ? {} : { teamId: extra.teamId })
+        : method === "github" ? github.approve(providerUrl, who) : oidc.approve(providerUrl, who);
       const back = await http(httpEvent("GET", callback));
       return new URL(back.headers.location ?? `${API}/no-redirect-${back.statusCode}`);
     },

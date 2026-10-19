@@ -38,6 +38,9 @@ export const CloudSignInAnswersSchema = z.object({
   googleClientId: z.string().min(1).max(256).optional(),
   googleClientSecretArn: z.string().max(SECRET_ARN_MAX_LENGTH).regex(SECRET_ARN_PATTERN).optional(),
   domainPrefix: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/).optional(),
+  /** Sign up and sign in with GitHub (Task 22): the GitHub OAuth app's client id and the secret holding its client secret. Optional, and together. */
+  githubClientId: z.string().min(1).max(256).optional(),
+  githubClientSecretArn: z.string().max(SECRET_ARN_MAX_LENGTH).regex(SECRET_ARN_PATTERN).optional(),
 }).strict();
 export type CloudSignInAnswers = z.infer<typeof CloudSignInAnswersSchema>;
 

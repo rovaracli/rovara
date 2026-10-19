@@ -9,7 +9,7 @@ import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-sec
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { createRemoteJWKSet, type JWTVerifyGetKey } from "jose";
 import { singleOrgIdForEnv, type OrgId, type ChannelByNameRequest, type ChannelInfoRequest, type ChannelMembersRequest, type DeveloperSignInMethod, type EndDeveloperSessionsRequest, type SlackAuthCheckRequest, type SlackUserByEmailRequest, type TaskChannelPeopleRequest, type TaskPersonProofRequest } from "@agentx/contracts";
-import { ProviderNotConfiguredError, oidcSignInProvider, slackSignInProvider, type SignInProvider } from "../developer/providers.js";
+import { ProviderNotConfiguredError, githubSignInProvider, oidcSignInProvider, slackSignInProvider, type SignInProvider } from "../developer/providers.js";
 import { createDeveloperIdentityHandler, type DeveloperIdentityConfig } from "../developer/server.js";
 import { slackDirectory } from "../developer/slack-directory.js";
 import { DeveloperSignInStore, methodSince } from "../developer/store.js";
@@ -17,11 +17,13 @@ import { kmsTokenSigner } from "../developer/tokens.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import { syncBudgets } from "../org/budget.js";
 import { OrgStore } from "../org/store.js";
+import { unlockTrial } from "../org/trial.js";
 import type { HttpApiV2Event } from "./lambda.js";
 
 const SECRET_CACHE_MS = 5 * 60 * 1000;
 const SLACK_JWKS_URI = "https://slack.com/openid/connect/keys";
 const DEFAULT_CLOUD_DISPLAY_NAME = "Rovara";
+const GITHUB_DISPLAY_NAME = "GitHub";
 
 export type DeveloperIdentityLambdaConfig = DeveloperIdentityConfig & {
   oidcSettings?: { issuer: string; clientId: string; requiredClaim?: string; requiredValues: string[] };
@@ -32,6 +34,8 @@ export type DeveloperIdentityLambdaConfig = DeveloperIdentityConfig & {
   cloudSettings?: { issuer: string; clientId: string };
   /** Set instead of cloudSettings when its settings are unusable; only the cloud method then refuses. */
   cloudProblem?: string;
+  /** Sign up and sign in with GitHub (DEVELOPER_GITHUB_*): set only with the cloud method, a client id and a secret id. */
+  githubSettings?: { clientId: string };
 };
 
 /** Reads the given environment (F1: never process.env directly), so it can be tested. */
@@ -68,11 +72,23 @@ function cloudConfigFromEnvironment(env: NodeJS.ProcessEnv): Pick<DeveloperIdent
   return { cloud, cloudSettings: { issuer, clientId } };
 }
 
+/**
+ * The GitHub method's share of the configuration (Task 22): it exists only on a cloud install (DEVELOPER_CLOUD_ISSUER) with both a
+ * client id and the id of the secret holding the client secret. Anything less leaves it absent, so it is not offered and is refused.
+ */
+function githubConfigFromEnvironment(env: NodeJS.ProcessEnv): Pick<DeveloperIdentityLambdaConfig, "github" | "githubSettings"> {
+  if ((env.DEVELOPER_CLOUD_ISSUER ?? "") === "") return {};
+  const clientId = env.DEVELOPER_GITHUB_CLIENT_ID ?? "";
+  if (clientId === "" || (env.DEVELOPER_GITHUB_SECRET_ID ?? "") === "") return {};
+  return { github: { displayName: GITHUB_DISPLAY_NAME }, githubSettings: { clientId } };
+}
+
 export function developerIdentityConfigFromEnvironment(env: NodeJS.ProcessEnv): DeveloperIdentityLambdaConfig {
   const issuer = env.DEVELOPER_OIDC_ISSUER ?? "";
   const teamId = env.SLACK_TEAM_ID ?? "";
   const config: DeveloperIdentityLambdaConfig = {
     ...cloudConfigFromEnvironment(env),
+    ...githubConfigFromEnvironment(env),
     env: required(env, "AGENTX_ENV"),
     issuer: required(env, "DEVELOPER_TOKEN_ISSUER"),
     slack: { enabled: env.DEVELOPER_SIGNIN_SLACK === "enabled", ...(teamId === "" ? {} : { teamId }), ...sinceFrom(env.DEVELOPER_SIGNIN_SLACK_SINCE) },
@@ -134,6 +150,7 @@ function parseClientSecret(json: string, what: string, fix: string): string {
 }
 
 export const parseOidcClientSecret = (json: string): string => parseClientSecret(json, "company sign-in secret", "ask an admin to run agentx signin enable oidc");
+export const parseGithubClientSecret = (json: string): string => parseClientSecret(json, "GitHub sign-in secret", "ask an admin to check the GitHub sign-in settings");
 export const parseCloudClientSecret = (json: string): string => parseClientSecret(json, "cloud sign-in secret", "ask an admin to check the cloud sign-in settings");
 
 /** One remote key set per URI, so jose's key cache and refetch cooldown apply across sign-ins. */
@@ -194,8 +211,15 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     if (config.cloudSettings === undefined || cloudSecretId === "") return unconfiguredProvider("cloud", "DEVELOPER_CLOUD_SECRET_ID is not set; ask an admin to check the cloud sign-in settings");
     return oidcSignInProvider({ method: "cloud", ...config.cloudSettings, requiredValues: [], clientSecret: cachedSecret(secrets, cloudSecretId, parseCloudClientSecret), fetch, jwksFor, now });
   };
+  const githubSecretId = env.DEVELOPER_GITHUB_SECRET_ID ?? "";
+  const githubProvider = (): SignInProvider | undefined => {
+    if (config.githubSettings === undefined) return undefined;
+    return githubSignInProvider({ ...config.githubSettings, clientSecret: cachedSecret(secrets, githubSecretId, parseGithubClientSecret), fetch, now });
+  };
   const oidc = oidcProvider();
   const cloud = cloudProvider();
+  const github = githubProvider();
+  if ((env.DEVELOPER_GITHUB_CLIENT_ID ?? "") !== "" && github === undefined) log({ event: "signin.not_configured", method: "github", detail: "GitHub sign-in needs the cloud sign-in and DEVELOPER_GITHUB_SECRET_ID; it is off" });
   if (config.cloudProblem !== undefined) log({ event: "signin.not_configured", method: "cloud", detail: config.cloudProblem });
   if (config.oidcProblem !== undefined) log({ event: "signin.not_configured", method: "oidc", detail: config.oidcProblem });
   const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient(region), { marshallOptions: { removeUndefinedValues: true } });
@@ -216,6 +240,8 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     // Orgs and membership live in the State table, beside the records they scope; the sign-in table holds identities only.
     orgs,
     ...(singleOrg === undefined ? {} : { singleOrgId: singleOrg }),
+    // Signing in with GitHub opens a trial org (unlockTrial): it claims the GitHub account for the org in the State table.
+    ...(github === undefined ? {} : { onGithubSignIn: (input: { orgId: OrgId; githubUserId: string }) => unlockTrial({ documentClient, tableName: stateTableName, now }, input) }),
     ...(modelAccess === undefined ? {} : {
       onOrgJoined: ({ orgId, developerId }: { orgId: OrgId; developerId: string }) => syncBudgets({ documentClient, tableName: stateTableName, access: modelAccess, orgs, cloud: config.cloud !== undefined }, orgId, [developerId]),
     }),
@@ -224,6 +250,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
       slack: slackSignInProvider({ teamId: config.slack.teamId, credentials: slackSecret, fetch, jwks: jwksFor(SLACK_JWKS_URI), now }),
       ...(oidc === undefined ? {} : { oidc }),
       ...(cloud === undefined ? {} : { cloud }),
+      ...(github === undefined ? {} : { github }),
     },
     directory: slackDirectory({
       teamId: config.slack.teamId, botToken: async () => (await slackSecret()).botToken, fetch, now,

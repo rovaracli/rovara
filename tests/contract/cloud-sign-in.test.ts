@@ -49,7 +49,7 @@ describe("a cloud sign-in creates an org on first sign-in", () => {
   it("lists the method in the configuration document", async () => {
     const h = identityHarness({ cloud: {}, oidcUsers: [maya] });
     const document = JSON.parse((await h.http(httpEvent("GET", "/v1/auth/.well-known/agentx-configuration"))).body) as { methods: Record<string, unknown> };
-    expect(document.methods).toEqual({ slack: true, oidc: null, cloud: { displayName: "Rovara" } });
+    expect(document.methods).toEqual({ slack: true, oidc: null, cloud: { displayName: "Rovara" }, github: null });
     const without = identityHarness({});
     expect((JSON.parse((await without.http(httpEvent("GET", "/v1/auth/.well-known/agentx-configuration"))).body) as { methods: Record<string, unknown> }).methods)
       .toMatchObject({ cloud: null });

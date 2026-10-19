@@ -125,6 +125,9 @@ export class DeveloperSignIn extends Construct {
         DEVELOPER_CLOUD_CLIENT_ID: cloud.clientId,
         DEVELOPER_CLOUD_SECRET_ID: cloud.secretName,
         DEVELOPER_CLOUD_DISPLAY_NAME: cloud.displayName,
+        // Empty unless the GitHub OAuth app is configured (GitHubClientId); the function then reads its secret by id.
+        DEVELOPER_GITHUB_CLIENT_ID: cloud.githubClientId.valueAsString,
+        DEVELOPER_GITHUB_SECRET_ID: cloud.githubClientSecretArn.valueAsString,
       }),
     }, Duration.seconds(15));
     // Exactly what DeveloperSignInStore sends: GetItem, PutItem, UpdateItem, and TransactWriteItems
@@ -134,13 +137,14 @@ export class DeveloperSignIn extends Construct {
       resources: [table.tableArn],
     }));
     // Orgs and membership (OrgStore): the bare org partition (the org record and its member rows), the developer's org
-    // pointer, the verified-email pointers that link one person's cloud sign-ins, and the invites a sign-in accepts;
-    // never an org-scoped row. Its transactions are made of Put and Update items, which IAM authorizes as
+    // pointer, the verified-email pointers that link one person's cloud sign-ins, the invites a sign-in accepts, and the
+    // claim a GitHub account holds on its one free trial (unlockTrial, run when someone signs in with GitHub; cloud installs
+    // only); never an org-scoped row. Its transactions are made of Put and Update items, which IAM authorizes as
     // PutItem and UpdateItem. The `?` matches one character each, the 20 of an org ID.
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
       resources: [props.state.tableArn],
-      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ORG#org_????????????????????", "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*"] } },
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ORG#org_????????????????????", "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*", ...(cloud === undefined ? [] : ["TRIAL_GITHUB#*"])] } },
     }));
     tokenKey.grant(fn, "kms:Sign", "kms:GetPublicKey");
     tokenKey.addToResourcePolicy(new iam.PolicyStatement({
@@ -161,6 +165,13 @@ export class DeveloperSignIn extends Construct {
     // Only this function exchanges the cloud pool's authorization code, so only it may read the client secret.
     if (cloud !== undefined) {
       fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["secretsmanager:GetSecretValue"], resources: [cloud.secret.secretArn] }));
+      // Likewise the GitHub client secret, and only when GitHub sign-in is configured (an empty ARN is not a valid resource, so the policy
+      // itself is conditional). It is a separate policy on this function's role: no other function is granted it.
+      const githubSecretRead = new iam.Policy(this, "GitHubSecretRead", {
+        statements: [new iam.PolicyStatement({ actions: ["secretsmanager:GetSecretValue"], resources: [cloud.githubClientSecretArn.valueAsString] })],
+      });
+      githubSecretRead.attachToRole(fn.role!);
+      (githubSecretRead.node.defaultChild as iam.CfnPolicy).cfnOptions.condition = cloud.githubEnabled;
     }
 
     const integration = new apigwv2.CfnIntegration(this, "Integration", {
@@ -209,6 +220,8 @@ export class DeveloperSignIn extends Construct {
     if (cloud !== undefined) {
       broker.addEnvironment("DEVELOPER_CLOUD_ISSUER", cloud.issuer);
       broker.addEnvironment("ROVARA_WEB_ORIGIN", cloud.webOrigin.valueAsString);
+      // Whether GitHub tokens are accepted (developerClaims checks the method is on); the client id is not a secret, the secret stays with the sign-in function.
+      broker.addEnvironment("DEVELOPER_GITHUB_CLIENT_ID", cloud.githubClientId.valueAsString);
     }
     fn.grantInvoke(broker);
     // Spec 025 25e: EMAIL# is the email index resolveDeveloper reads to name a developer by email.

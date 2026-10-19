@@ -966,7 +966,7 @@ describe("keptOperatorParameters", () => {
 });
 
 describe("the hosted Rovara cloud switch is stored and survives every deploy (R45)", () => {
-  const SIGN_IN = { googleClientId: "google-id.apps.example", googleClientSecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/google-AbCdEf", domainPrefix: "rovara-acme" };
+  const SIGN_IN = { googleClientId: "google-id.apps.example", googleClientSecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/google-AbCdEf", domainPrefix: "rovara-acme", githubClientId: "Iv1.githubapp", githubClientSecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-AbCdEf" };
 
   /** A cdk runner that records every command and writes the scripted outputs of the stack it was asked to deploy. */
   function cdkRunner(): CommandRunner & { calls: string[][] } {
@@ -1012,6 +1012,8 @@ describe("the hosted Rovara cloud switch is stored and survives every deploy (R4
     expect(controlPlane).toContain(`${stackName("control-plane")}:GoogleClientId=google-id.apps.example`);
     expect(controlPlane).toContain(`${stackName("control-plane")}:GoogleClientSecretArn=${SIGN_IN.googleClientSecretArn}`);
     expect(controlPlane).toContain(`${stackName("control-plane")}:CloudIdentityDomainPrefix=rovara-acme`);
+    expect(controlPlane).toContain(`${stackName("control-plane")}:GitHubClientId=Iv1.githubapp`);
+    expect(controlPlane).toContain(`${stackName("control-plane")}:GitHubClientSecretArn=${SIGN_IN.githubClientSecretArn}`);
     expect(runner.calls.every((args) => args.includes("agentxCloud=true"))).toBe(true);
   });
 
@@ -1019,7 +1021,7 @@ describe("the hosted Rovara cloud switch is stored and survives every deploy (R4
     const store = new MemoryParameterStore();
     const runner = cdkRunner();
     await deployEnvironment({ mode: "install", engine: "cdk", answers: { ...baseAnswers(), cloud: true }, release: fakeRelease(), deployer: cdk(runner, true), store, secrets: memorySecrets(), holder: HOLDER, declaredParameters: () => new Set() });
-    expect(runner.calls.find((args) => args[3] === "AgentXControlPlane")!.join(" ")).not.toMatch(/Google|CloudIdentityDomainPrefix/);
+    expect(runner.calls.find((args) => args[3] === "AgentXControlPlane")!.join(" ")).not.toMatch(/Google|GitHubClient|CloudIdentityDomainPrefix/);
     const plain = new MemoryParameterStore();
     await deployEnvironment({ mode: "install", engine: "cdk", answers: baseAnswers(), release: fakeRelease(), deployer: cdk(cdkRunner(), false), store: plain, secrets: memorySecrets(), holder: HOLDER, declaredParameters: () => new Set() });
     expect(await readEnvironmentSettings(plain, ENV)).not.toHaveProperty("cloud");

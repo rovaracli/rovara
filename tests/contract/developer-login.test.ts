@@ -160,6 +160,16 @@ describe("agentx login <url> (FR-011)", () => {
   });
 
   it.each([
+    ["only the cloud method", { slack: false, oidc: null, cloud: { displayName: "Rovara" }, github: null }],
+    ["only the GitHub method", { slack: false, oidc: null, cloud: null, github: { displayName: "GitHub" } }],
+  ])("accepts an environment that offers %s", async (_name, methods) => {
+    await expect(developerLogin({
+      url: URL_, allowLoopback: false, browser: true, home: await home(), tokenStore: new InMemoryTokenStore(), write: () => undefined,
+      fetch: server({ configuration: configuration({ methods }) }), openBrowser: browser({ code: "agxc_code" }),
+    })).resolves.toMatchObject({ env: "staging" });
+  });
+
+  it.each([
     ["an endpoint on another origin", configuration({ tokenEndpoint: "https://evil.example.test/token" }), /must be on https:\/\/abc123/],
     ["a newer major API version", configuration({ apiVersion: "2.0" }), /upgrade: npx @preplabsai\/rovara-code@latest login/],
     ["no enabled method", configuration({ methods: { slack: false, oidc: null } }), /no developer sign-in method is enabled.*agentx signin enable/],

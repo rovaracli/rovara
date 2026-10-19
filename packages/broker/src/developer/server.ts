@@ -52,7 +52,9 @@ import { issueAccessToken, pkceChallengeMatches, type TokenSigner } from "./toke
 
 /** `since` (epoch seconds, FR-045): when the method was last turned on. A session started before it
  * was ended by the disable in between, so it never comes back when the method is on again. */
-export interface DeveloperIdentityConfig { env: string; issuer: string; slack: { enabled: boolean; teamId?: string; since?: number }; oidc?: { displayName: string; since?: number }; cloud?: { displayName: string }; confirmElicitation?: boolean }
+export interface DeveloperIdentityConfig { env: string; issuer: string; slack: { enabled: boolean; teamId?: string; since?: number }; oidc?: { displayName: string; since?: number }; cloud?: { displayName: string };
+  /** Sign up and sign in with GitHub; set only on a cloud install with a GitHub OAuth app (DEVELOPER_GITHUB_*). */
+  github?: { displayName: string }; confirmElicitation?: boolean }
 export interface DeveloperIdentityDependencies {
   config: DeveloperIdentityConfig;
   store: DeveloperSignInStore;
@@ -65,6 +67,11 @@ export interface DeveloperIdentityDependencies {
   singleOrgId?: OrgId;
   /** Told when a sign-in created or joined an org, so the model proxy can be told its budgets (see ResolveOrgOnSignInDependencies.onOrgJoined). */
   onOrgJoined?: ResolveOrgOnSignInDependencies["onOrgJoined"];
+  /**
+   * Called after a GitHub sign-in resolved the org, with the GitHub account that signed in, so a trial org's trial unlocks (unlockTrial).
+   * Best effort: TRIAL_GITHUB_USED (that account already unlocked another org) and any other failure are logged and never fail the sign-in.
+   */
+  onGithubSignIn?: (input: { orgId: OrgId; githubUserId: string }) => Promise<void>;
   now: () => number;
   log: (entry: Record<string, unknown>) => void;
 }
@@ -97,6 +104,8 @@ export function enabledMethods(deps: Pick<DeveloperIdentityDependencies, "config
   if (deps.config.slack.enabled && deps.config.slack.teamId !== undefined && deps.providers.slack !== undefined) methods.push("slack");
   if (deps.config.oidc !== undefined && deps.providers.oidc !== undefined) methods.push("oidc");
   if (deps.config.cloud !== undefined && deps.providers.cloud !== undefined) methods.push("cloud");
+  // GitHub makes accounts the way the cloud method does, so it exists only where cloud does.
+  if (deps.config.cloud !== undefined && deps.config.github !== undefined && deps.providers.github !== undefined) methods.push("github");
   return methods;
 }
 
@@ -140,7 +149,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   const { config, store } = deps;
   const endpoint = (path: string) => `${config.issuer}${path}`;
   const methodLabel = (method: DeveloperSignInMethod) =>
-    method === "slack" ? "Slack" : method === "cloud" ? config.cloud?.displayName ?? "cloud sign-in" : config.oidc?.displayName ?? "company sign-in";
+    method === "slack" ? "Slack" : method === "cloud" ? config.cloud?.displayName ?? "cloud sign-in" : method === "github" ? config.github?.displayName ?? "GitHub" : config.oidc?.displayName ?? "company sign-in";
   const provider = (method: DeveloperSignInMethod): SignInProvider => {
     const found = deps.providers[method];
     if (found === undefined) throw new ProviderNotConfiguredError(`${methodLabel(method)} sign-in is not set up in this environment`);
@@ -352,6 +361,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       { method, developerId, displayName: identity.displayName, ...(identity.email === undefined ? {} : { email: identity.email }), emailVerified: identity.emailVerified === true,
         ...(request.inviteToken === undefined ? {} : { inviteToken: request.inviteToken }) },
     );
+    if (method === "github" && identity.githubUserId !== undefined && deps.onGithubSignIn !== undefined) await unlockTrialBestEffort(org.orgId, identity.githubUserId);
     if (request.browserReturnTo !== undefined) {
       // A fixed 30 days from sign-in, with no renewal: the session record ends then, whatever the cookie says.
       const endsAt = Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS;
@@ -366,6 +376,18 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     deps.log({ event: "signin.succeeded", method, developerId, linkedToSlack: slackUserId !== undefined });
     // An invite that was not used (the person is already in an org, or it is unknown, used, expired or for another email) is reported, not hidden.
     return client({ code: agentxCode, ...(org.inviteError === undefined ? {} : { inviteError: org.inviteError }) });
+  }
+
+  /** A trial org opens when a GitHub account connects (unlockTrial is a no-op for any other plan or an already open org); a failure never fails the sign-in. */
+  async function unlockTrialBestEffort(orgId: OrgId, githubUserId: string): Promise<void> {
+    try {
+      await deps.onGithubSignIn!({ orgId, githubUserId });
+    } catch (error) {
+      const code = (error as { code?: unknown } | null)?.code;
+      // Only the error's code or name is logged, never its message.
+      if (code === "TRIAL_GITHUB_USED") deps.log({ event: "signin.trial_unlock_skipped", reason: code, orgId });
+      else deps.log({ event: "signin.trial_unlock_failed", orgId, error: errorName(error) });
+    }
   }
 
   async function authorizationCodeGrant(form: URLSearchParams, methods: DeveloperSignInMethod[]): Promise<HttpResult> {
@@ -484,6 +506,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
         slack: methods.includes("slack"),
         oidc: methods.includes("oidc") && config.oidc !== undefined ? { displayName: config.oidc.displayName } : null,
         cloud: methods.includes("cloud") && config.cloud !== undefined ? { displayName: config.cloud.displayName } : null,
+        github: methods.includes("github") && config.github !== undefined ? { displayName: config.github.displayName } : null,
       },
       // FR-041, E16: the methods this environment allows; the MCP server adds the client's and the admin's own.
       // Slack needs the team set up, not Slack sign-in (controller ruling R5): each change checks the admin's own link.
@@ -517,6 +540,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
           return callback("oidc", url.searchParams, headers);
         case "/v1/auth/callback/cloud":
           return callback("cloud", url.searchParams, headers);
+        case "/v1/auth/callback/github":
+          return callback("github", url.searchParams, headers);
       }
     }
     if (method === "POST" && pathname === "/v1/auth/token") return token(new URLSearchParams(body ?? ""));
