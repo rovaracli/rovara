@@ -7,6 +7,8 @@ import { developerTokenVerifier } from "../../packages/broker/src/developer/veri
 import { createAdminBroker, type AdminHandler } from "../support/admin-broker.js";
 import { localSigner } from "../support/developer-fakes.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const ISSUER = "https://abc123.execute-api.us-east-1.amazonaws.com/v1/auth";
 const developerId = "d".repeat(64);
@@ -76,10 +78,10 @@ beforeEach(async () => {
   db.set({ pk: "SESSION#s-1", sk: "META", sessionId: "s-1", developerId, amr: "slack", slackUserId: "U0MAYA001", startedAt: new Date(T0).toISOString(), endsAt: T0 / 1000 + 604_800 });
   db.set({ pk: `DEVELOPER#${developerId}`, sk: "META", developerId, provider: "slack", issuer: "https://slack.com", subject: "U0MAYA001", displayName: "Maya Chen", slackUserId: "U0MAYA001", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
   db.set({ pk: "SLACK_BINDING#T0TEAM1", sk: "CHANNEL#C0PAY0001", teamId: "T0TEAM1", channelId: "C0PAY0001", projectName: "payments-api", updatedAt: "2026-09-27T00:00:00.000Z" });
-  db.set({ pk: "PROJECT#payments-api", sk: "REV#000000000007", entityType: "PROJECT", definition: { name: "payments-api", revision: 7 } });
-  db.set({ pk: "PROJECT#solo", sk: "REV#000000000001", entityType: "PROJECT", definition: { name: "solo", revision: 1 } });
-  db.set({ pk: "PROJECT#ledger", sk: "REV#000000000002", entityType: "PROJECT", definition: { name: "ledger", revision: 2 } });
-  db.set({ pk: `MEMBER#${developerId}`, sk: "PROJECT#solo", entityType: "MEMBERSHIP", ownerKey: developerId, projectName: "solo", role: "developer" });
+  db.set({ ...projectRevisionKey(TEST_ORG, "payments-api", 7), entityType: "PROJECT", definition: { name: "payments-api", revision: 7 } });
+  db.set({ ...projectRevisionKey(TEST_ORG, "solo", 1), entityType: "PROJECT", definition: { name: "solo", revision: 1 } });
+  db.set({ ...projectRevisionKey(TEST_ORG, "ledger", 2), entityType: "PROJECT", definition: { name: "ledger", revision: 2 } });
+  db.set({ ...projectMemberKey(TEST_ORG, developerId, "solo"), entityType: "MEMBERSHIP", ownerKey: developerId, projectName: "solo", role: "developer" });
 });
 
 describe("GET /v1/dev/workspaces (spec 041 FR-001, FR-002)", () => {
@@ -147,7 +149,7 @@ describe("GET /v1/dev/workspaces (spec 041 FR-001, FR-002)", () => {
   // Spec 025 FR-013/FR-014: this route resolves projects through listProjects, so a project's
   // developerTasks policy gates channel access here exactly as on /v1/dev/projects.
   it("does not list a project through channel membership when its policy turns channel access off", async () => {
-    db.set({ pk: "PROJECT#payments-api", sk: "REV#000000000008", entityType: "PROJECT", definition: { name: "payments-api", revision: 8, developerTasks: { channelMembersMayUse: false } } });
+    db.set({ ...projectRevisionKey(TEST_ORG, "payments-api", 8), entityType: "PROJECT", definition: { name: "payments-api", revision: 8, developerTasks: { channelMembersMayUse: false } } });
     db.set(workspace({ id: uuid("08"), project: "payments-api", created: "2026-09-26T09:00:00.000Z", revision: 8 }));
     db.set(workspace({ id: uuid("09"), project: "solo", created: "2026-09-25T09:00:00.000Z", revision: 1 }));
     const body = JSON.parse((await call("/v1/dev/workspaces", claims())).body) as WorkspacesBody;
@@ -156,7 +158,7 @@ describe("GET /v1/dev/workspaces (spec 041 FR-001, FR-002)", () => {
   });
 
   it("fails closed on a damaged policy: no channel access, so no workspaces through the channel", async () => {
-    db.set({ pk: "PROJECT#payments-api", sk: "REV#000000000008", entityType: "PROJECT", definition: { name: "payments-api", revision: 8, developerTasks: null } });
+    db.set({ ...projectRevisionKey(TEST_ORG, "payments-api", 8), entityType: "PROJECT", definition: { name: "payments-api", revision: 8, developerTasks: null } });
     db.set(workspace({ id: uuid("10"), project: "payments-api", created: "2026-09-26T09:00:00.000Z", revision: 8 }));
     const body = JSON.parse((await call("/v1/dev/workspaces", claims())).body) as WorkspacesBody;
     expect(body.projects.map((project) => project.name)).toEqual(["solo"]);
@@ -164,7 +166,7 @@ describe("GET /v1/dev/workspaces (spec 041 FR-001, FR-002)", () => {
   });
 
   it("still lists a granted project whose policy turns channel access off", async () => {
-    db.set({ pk: "PROJECT#solo", sk: "REV#000000000002", entityType: "PROJECT", definition: { name: "solo", revision: 2, developerTasks: { channelMembersMayUse: false } } });
+    db.set({ ...projectRevisionKey(TEST_ORG, "solo", 2), entityType: "PROJECT", definition: { name: "solo", revision: 2, developerTasks: { channelMembersMayUse: false } } });
     db.set(workspace({ id: uuid("11"), project: "solo", created: "2026-09-26T09:00:00.000Z", revision: 2 }));
     const body = JSON.parse((await call("/v1/dev/workspaces", claims())).body) as WorkspacesBody;
     expect(body.projects.map((project) => project.name)).toEqual(["payments-api", "solo"]);

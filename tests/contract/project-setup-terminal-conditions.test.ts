@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { projectSetupTerminalAuthorityChecks } from "../../packages/broker/src/aws/project-setup-terminal-conditions.js";
 import { assertDynamoExpressionAttributes } from "../support/validating-document-client.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 describe("project setup terminal authority transaction checks", () => {
   it("binds terminal writes to the admitted creator and exact current qualified runtime row", () => {
-    const checks = projectSetupTerminalAuthorityChecks("state", {
+    const checks = projectSetupTerminalAuthorityChecks("state", TEST_ORG, {
       setupExecutionId: "00000000-0000-4000-8000-000000000002",
       ownerKey: "OWNER#1", projectName: "orders", projectRevision: 3, runtimeCatalogId: "catalog-1", runtimeCatalogRevision: 4,
       bindingDigest: "a".repeat(64), runtimeGeneration: 9, transportCorrelationId: "00000000-0000-4000-8000-000000000001",
@@ -27,11 +29,11 @@ describe("project setup terminal authority transaction checks", () => {
     const value = (index: number, name: string): unknown =>
       (checks[index]?.ConditionCheck.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[name];
     const membership = checks[0]?.ConditionCheck;
-    expect(membership?.Key).toEqual({ pk: "MEMBER#OWNER#1", sk: "PROJECT#orders" });
+    expect(membership?.Key).toEqual(projectMemberKey(TEST_ORG, "OWNER#1", "orders"));
     expect(membership?.ConditionExpression).toContain("#role = :administrator");
     expect(value(0, ":ownerKey")).toBe("OWNER#1");
     const project = checks[1]?.ConditionCheck;
-    expect(project?.Key).toEqual({ pk: "PROJECT#orders", sk: "REV#000000000003" });
+    expect(project?.Key).toEqual({ ...projectRevisionKey(TEST_ORG, "orders", 3) });
     expect(project?.ConditionExpression).toContain("setupApproval.proposalSha256 = :proposalSha");
     expect(value(1, ":registeredBy")).toBe("OWNER#1");
     expect(project?.ConditionExpression).toContain("#runtimeBinding = :binding");

@@ -13,6 +13,7 @@ import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { pagePlan } from "../support/page-tasks.js";
 import { SLACK_CHANNEL } from "../support/slack-broker.js";
 import { validatingDocumentClient } from "../support/validating-document-client.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
@@ -20,7 +21,7 @@ const REQUIRED_CHECK = { id: "required-1", label: "npm test", command: { cwd: "r
 const SAM_ID = "5".repeat(64);
 const PLAN: PlanDocument = pagePlan();
 delete PLAN.checks;
-const maya: DeveloperCaller = { developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack", name: MAYA.name, slackUserId: MAYA.slackUserId! };
+const maya: DeveloperCaller = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack", name: MAYA.name, slackUserId: MAYA.slackUserId! };
 
 const operations = (harness: Harness, workspaceId: string) => harness.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION");
 const workflowOf = (harness: Harness, taskId: string) => (harness.db.get(`DEVTASK#${taskId}`, "META") as { workflow: WorkflowSnapshot }).workflow;
@@ -30,7 +31,7 @@ const agentxReplies = (harness: Harness, taskId: string) => comments(harness, ta
 function routeDeps(harness: Harness): DeveloperTaskRouteDependencies {
   return {
     documentClient: validatingDocumentClient(harness.db), tableName: "state", actions: harness.actions,
-    checkAccess: async () => ({ revision: 1, policy: {} as never, access: "channel", channelIds: [SLACK_CHANNEL] }),
+    orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "channel", channelIds: [SLACK_CHANNEL] }),
     projectChannelIds: async () => [SLACK_CHANNEL], now: () => Date.now(), log: () => undefined,
   };
 }

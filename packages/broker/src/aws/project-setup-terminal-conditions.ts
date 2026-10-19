@@ -1,5 +1,5 @@
 import type { ProjectSetupExecution } from "@agentx/contracts";
-import { projectSetupSessionKey, type ProjectSetupSession } from "@agentx/contracts";
+import { projectMemberKey, projectRevisionKey, projectSetupSessionKey, type OrgId, type ProjectSetupSession } from "@agentx/contracts";
 import { projectSetupRuntimeKey, type ProjectSetupRuntimeRecord } from "./project-setup-runtime-catalog.js";
 
 type TerminalExecutionAuthority = Pick<ProjectSetupExecution,
@@ -11,6 +11,7 @@ type TerminalSessionIdentity = Pick<ProjectSetupSession, "setupExecutionId" | "s
 /** DynamoDB conditions that fence terminal writes against the authority checked before evidence verification. */
 export function projectSetupTerminalAuthorityChecks(
   tableName: string,
+  orgId: OrgId,
   execution: TerminalExecutionAuthority,
   runtime: TerminalRuntimeIdentity,
   session: TerminalSessionIdentity,
@@ -18,14 +19,14 @@ export function projectSetupTerminalAuthorityChecks(
   return [
     { ConditionCheck: {
       TableName: tableName,
-      Key: { pk: `MEMBER#${execution.ownerKey}`, sk: `PROJECT#${execution.projectName}` },
+      Key: projectMemberKey(orgId, execution.ownerKey, execution.projectName),
       ConditionExpression: "entityType = :membership AND ownerKey = :ownerKey AND projectName = :projectName AND #role = :administrator",
       ExpressionAttributeNames: { "#role": "role" },
       ExpressionAttributeValues: { ":membership": "MEMBERSHIP", ":ownerKey": execution.ownerKey, ":projectName": execution.projectName, ":administrator": "administrator" },
     } },
     { ConditionCheck: {
       TableName: tableName,
-      Key: { pk: `PROJECT#${execution.projectName}`, sk: `REV#${String(execution.projectRevision).padStart(12, "0")}` },
+      Key: projectRevisionKey(orgId, execution.projectName, execution.projectRevision),
       ConditionExpression: "entityType = :project AND registeredBy = :registeredBy AND #definition.#revision = :projectRevision AND #runtimeBinding = :binding AND #setupApproval.proposalRef = :proposalRef AND #setupApproval.proposalSha256 = :proposalSha AND #setupApproval.candidateDigest = :candidateDigest AND #setupApproval.decision = :approve",
       ExpressionAttributeNames: { "#definition": "definition", "#revision": "revision", "#runtimeBinding": "runtimeBinding", "#setupApproval": "setupApproval" },
       ExpressionAttributeValues: { ":project": "PROJECT", ":registeredBy": execution.ownerKey, ":projectRevision": execution.projectRevision,

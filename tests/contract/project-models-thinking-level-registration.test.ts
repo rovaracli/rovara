@@ -4,6 +4,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAdminChangeBroker } from "../support/admin-change-broker.js";
 import { adminCall, createAdminBroker, type AdminHandler } from "../support/admin-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 beforeEach(() => { vi.spyOn(console, "log").mockImplementation(() => undefined); });
 afterEach(() => vi.restoreAllMocks());
@@ -41,7 +43,7 @@ describe("registering a project's models", () => {
       code: "CONFIG_INVALID",
       message: 'GLM 5.3 (z-ai/glm-5.3) does not support thinking level "medium"; supported: low, high',
     });
-    expect(db.get("PROJECT#payments", "REV#000000000001")).toBeUndefined();
+    expect(db.get(projectRevisionKey(TEST_ORG, "payments", 1))).toBeUndefined();
   });
 
   it("refuses off on a model that always reasons", async () => {
@@ -55,7 +57,7 @@ describe("registering a project's models", () => {
     const unknown = { provider: "openrouter", modelId: "example/not-in-catalog", thinkingLevel: "medium" };
     const accepted = await register(handler, { default: sonnet, approved: [sonnet, glm("high"), unknown, { provider: "openrouter", modelId: "moonshotai/kimi-k2.6" }] });
     expect(accepted.status).toBe(201);
-    expect(db.get("PROJECT#payments", "REV#000000000001")).toBeDefined();
+    expect(db.get(projectRevisionKey(TEST_ORG, "payments", 1))).toBeDefined();
   });
 });
 

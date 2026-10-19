@@ -2,10 +2,11 @@
 // Spec 025 A13: health from injected probes; a probe that is missing or fails never fails the route.
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { failureIndexKey } from "../../packages/contracts/src/index.js";
 import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-app.js";
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace } from "../support/slack-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { orgFailureIndexKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const TEST_PRIVATE_KEY = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
 
@@ -21,7 +22,7 @@ describe("GET /v1/admin/health (FR-030, A13)", () => {
   it("answers every section from the probes and the state table", async () => {
     const { db, admin } = await createAdminReadBroker({ brokerExtra: { adminReads: { health: probes } } });
     const at = new Date(Date.now() - 3_600_000).toISOString();
-    db.set({ ...failureIndexKey(at, "11111111-1111-4111-8111-111111111111"), operationId: "11111111-1111-4111-8111-111111111111", workspaceId: "22222222-2222-4222-8222-222222222222",
+    db.set({ ...orgFailureIndexKey(TEST_ORG, at, "11111111-1111-4111-8111-111111111111"), operationId: "11111111-1111-4111-8111-111111111111", workspaceId: "22222222-2222-4222-8222-222222222222",
       project: "payments", origin: "slack", requester: { kind: "none" }, kind: "task", status: "FAILED", category: "worker_unavailable", error: "RUNTIME_UNAVAILABLE: no capacity", endedAt: at });
     const answer = await admin("GET", "/v1/admin/health");
     expect(answer.body).toEqual({

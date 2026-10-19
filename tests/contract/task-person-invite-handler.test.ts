@@ -6,6 +6,8 @@ import { createTaskPersonInviteHandler, type TaskPersonInviteHandlerPorts } from
 import { taskPersonInviteStateConditions, type TaskPersonProjectAuthorityWitness } from "../../packages/broker/src/aws/task-person-invite-authority-fence.js";
 import { taskPersonInviteClaimDigest } from "../../packages/broker/src/developer/task-people-effects.js";
 import type { TaskPersonCheck } from "../../packages/broker/src/developer/task-people.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const taskId = "11111111-1111-4111-8111-111111111111";
 const requestId = "22222222-2222-4222-8222-222222222222";
@@ -55,10 +57,10 @@ function fixture(overrides: Partial<TaskPersonInviteHandlerPorts> = {}) {
   let clock = now;
   const receipts = new Map<string, TaskPersonInviteExecutionReceipt>();
   const send = vi.fn(async () => ({ kind: "accepted" as const }));
-  const projectRevision = { pk: "PROJECT#project-alpha", sk: "REV#000000000007", revision: 7, developerTasksPresent: false };
+  const projectRevision = { ...projectRevisionKey(TEST_ORG, "project-alpha", 7), revision: 7, developerTasksPresent: false };
   const actorAuthority: TaskPersonProjectAuthorityWitness = {
     taskId, developerId: actorId, project: "project-alpha", access: "granted", projectRevision,
-    membership: { pk: `MEMBER#${actorId}`, sk: "PROJECT#project-alpha", projectName: "project-alpha", role: "developer" },
+    membership: { ...projectMemberKey(TEST_ORG, actorId, "project-alpha"), projectName: "project-alpha", role: "developer" },
   };
   const targetAuthority: TaskPersonProjectAuthorityWitness = {
     taskId, developerId: targetId, project: "project-alpha", access: "channel", projectRevision,
@@ -66,8 +68,8 @@ function fixture(overrides: Partial<TaskPersonInviteHandlerPorts> = {}) {
   };
   const authorityConditions = taskPersonInviteStateConditions({ taskId, project: "project-alpha", teamId, actor: actorAuthority, target: targetAuthority })!;
   const authorityRows = new Map<string, Record<string, unknown>>([
-    ["PROJECT#project-alpha/REV#000000000007", { pk: "PROJECT#project-alpha", sk: "REV#000000000007", definition: { revision: 7 } }],
-    [`MEMBER#${actorId}/PROJECT#project-alpha`, { pk: `MEMBER#${actorId}`, sk: "PROJECT#project-alpha", projectName: "project-alpha", role: "developer" }],
+    [`${projectRevisionKey(TEST_ORG, "project-alpha", 7).pk}/${projectRevisionKey(TEST_ORG, "project-alpha", 7).sk}`, { ...projectRevisionKey(TEST_ORG, "project-alpha", 7), definition: { revision: 7 } }],
+    [`${projectMemberKey(TEST_ORG, actorId, "project-alpha").pk}/${projectMemberKey(TEST_ORG, actorId, "project-alpha").sk}`, { ...projectMemberKey(TEST_ORG, actorId, "project-alpha"), projectName: "project-alpha", role: "developer" }],
     [`SLACK_BINDING#${teamId}/CHANNEL#C0OTHER001`, targetAuthority.binding!],
   ]);
   const conditionMatches = (condition: typeof authorityConditions[number]): boolean => {
@@ -163,8 +165,8 @@ describe("Task Person invite handler", () => {
       actorAuthority: { developerId: actorId, access: "granted", membership: { role: "developer" } },
       targetAuthority: { developerId: targetId, access: "channel", binding: { channelId: "C0OTHER001" } },
       authorityConditions: [
-        { kind: "project-revision", pk: "PROJECT#project-alpha", sk: "REV#000000000007", developerTasksPresent: false },
-        { kind: "developer-grant", pk: `MEMBER#${actorId}`, sk: "PROJECT#project-alpha" },
+        { kind: "project-revision", ...projectRevisionKey(TEST_ORG, "project-alpha", 7), developerTasksPresent: false },
+        { kind: "developer-grant", ...projectMemberKey(TEST_ORG, actorId, "project-alpha") },
         { kind: "channel-binding", pk: `SLACK_BINDING#${teamId}`, sk: "CHANNEL#C0OTHER001" },
       ],
     });
@@ -195,7 +197,7 @@ describe("Task Person invite handler", () => {
     const handler = createTaskPersonInviteHandler(f.ports);
     const first = await handler(f.request);
     expect(first.status).toBe("accepted");
-    f.authorityRows.delete(`MEMBER#${actorId}/PROJECT#project-alpha`);
+    f.authorityRows.delete(`${projectMemberKey(TEST_ORG, actorId, "project-alpha").pk}/${projectMemberKey(TEST_ORG, actorId, "project-alpha").sk}`);
     const second = await handler({ ...f.request, admission: { ...f.request.admission, id: randomUUID() } });
     expect(second.status).not.toBe("accepted");
     expect(f.send).toHaveBeenCalledTimes(1);

@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AWS_TEMPORARY_MESSAGE, UNEXPECTED_REQUEST_MESSAGE } from "../../packages/broker/src/aws/broker-shared.js";
 import { adminCall, adminIssuer, createAdminBroker, type AdminHandler } from "../support/admin-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const AWS_TEXT = "Rate exceeded for table agentx-state-secret-name";
 
@@ -76,7 +78,7 @@ describe("the OIDC route catch-all (#48)", () => {
     ]);
     expect(answer.status).toBe(503);
     expect(answer.body.error).toEqual({ code: "RUNTIME_UNAVAILABLE", message: AWS_TEMPORARY_MESSAGE });
-    expect(db.get("PROJECT#payments", "REV#000000000001")).toBeUndefined();
+    expect(db.get(projectRevisionKey(TEST_ORG, "payments", 1))).toBeUndefined();
   });
 
   it("never echoes a non-temporary error's own words, and logs only its name", async () => {

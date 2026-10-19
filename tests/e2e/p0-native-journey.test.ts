@@ -33,6 +33,8 @@ import { selectE2EExecutionPlan } from "../../packages/broker/src/e2e/execution-
 import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependencies.js";
 import { persistOriginalEvidencePrimary, persistOriginalMapPrimary } from "../support/p0-evidence-capture.js";
 import { observeInstalledRuntimeManifestForHost } from "@agentx/verifier";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 let installedRuntimeManifestDigest: string;
 beforeAll(async () => {
@@ -299,7 +301,7 @@ describe("P0 normal project onboarding journey", () => {
     }, retrySleep: async () => undefined }, { publicKey: workerKeys.publicKey, workspaceId, generation: 1 });
     const workerPing = await handleWorkerRequest(new Request("http://worker/ping"), workerState);
     expect(((await workerPing.json()) as { invocationFeatures: string[] }).invocationFeatures).toContain("project.setupSmoke");
-    const setupGuard = createProjectSetupDispatchGuard({ documentClient: broker.db as never, tableName: "state", runtimeCatalogId });
+    const setupGuard = createProjectSetupDispatchGuard({ orgId: TEST_ORG, documentClient: broker.db as never, tableName: "state", runtimeCatalogId });
     const guardObservations: string[] = [];
     const projectGuard = async (record: Parameters<typeof setupGuard>[0]) => {
       const result = await setupGuard(record);
@@ -312,7 +314,7 @@ describe("P0 normal project onboarding journey", () => {
       sessions: { ensureSession: async () => { throw new Error("setup delivery must not access WORKSPACE sessions"); } },
       binding: async () => { throw new Error("setup delivery must not read WORKSPACE runtime binding"); },
       projectSetupSessions,
-      projectSetupBinding: createProjectSetupBindingReader({ documentClient: broker.db as never, tableName: "state" }),
+      projectSetupBinding: createProjectSetupBindingReader({ orgId: TEST_ORG, documentClient: broker.db as never, tableName: "state" }),
       sign: async (message) => cryptoSign("sha256", message, workerKeys.privateKey),
       post: async (url, init) => {
         const response = await handleWorkerRequest(new Request(url, { method: "POST", headers: { authorization: init.authorization }, body: init.body }), workerState);
@@ -430,7 +432,7 @@ describe("P0 normal project onboarding journey", () => {
     // Continue the same registered project through its ordinary developer task route. The local
     // transport below supplies only an untrusted planner artifact; the broker still parses,
     // canonicalizes, stores, and binds the bytes before the Owner decision.
-    broker.db.set({ pk: `MEMBER#${ownerDeveloperId}`, sk: "PROJECT#ordinary-orders", entityType: "MEMBERSHIP", ownerKey: ownerDeveloperId,
+    broker.db.set({ ...projectMemberKey(TEST_ORG, ownerDeveloperId, "ordinary-orders"), entityType: "MEMBERSHIP", ownerKey: ownerDeveloperId,
       projectName: "ordinary-orders", role: "developer", grantedBy: { issuer, subject: "owner" }, grantedAt: new Date().toISOString() });
     const featureStart = await call(broker.handler, { method: "POST", path: "/v1/dev/tasks", headers: { authorization: "Bearer synthetic-owner-session" },
       body: { requestId: randomUUID(), project: "ordinary-orders", instructions: "Add an orders list using the approved source context", client: "native-p0-journey", workflow: true, workflowPath: "QUICK" } });

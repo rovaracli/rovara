@@ -3,6 +3,7 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
   SlackTeamIdSchema,
   agentXError,
+  type OrgId,
   type TaskPersonProofRequest,
   type TaskPersonProofResponse,
 } from "@agentx/contracts";
@@ -96,6 +97,7 @@ function identityDocumentClient(input: {
 }
 
 function identityDependencies(input: {
+  orgId: OrgId;
   task: DeveloperTaskRecord;
   developerId: string;
     stateTableName: string;
@@ -145,6 +147,7 @@ function identityDependencies(input: {
     projectChannelIds: readBindings,
     targetProjectAccess: async (subject: ProjectAccessSubject, project: string, freshMemberOf: readonly string[]) => {
       const result = await readProjectAuthority(ports.projectAuthorityReader, {
+        orgId: input.orgId,
         project,
         developerId: subject.developerId,
         teamId: slackTeamId,
@@ -176,6 +179,8 @@ export interface TaskPersonRuntime {
 
 /** Creates a guard-local checker. Its injected ports expose only the bounded People read set. */
 export function createTaskPersonRuntime(input: {
+  /** The org the task's project and grants are read in: the install's single org until tasks record theirs (Task 5). */
+  orgId: OrgId;
   admission: TaskAuthorityAdmission;
   ports: TaskPersonRuntimePorts;
   stateTableName: string;
@@ -191,7 +196,7 @@ export function createTaskPersonRuntime(input: {
   const currentWitness = async (task: DeveloperTaskRecord, developerId: string, witness: TaskPersonStateAuthorityWitness | undefined): Promise<TaskPersonStateAuthorityWitness | undefined> => {
     if (witness === undefined || witness.taskId !== task.taskId || witness.developerId !== developerId || witness.project !== task.project) return undefined;
     input.admission.assertOpen();
-    const latest = await input.ports.projectAuthorityReader.latestRevision(task.project, input.admission, input.admission.admitStateRead());
+    const latest = await input.ports.projectAuthorityReader.latestRevision(input.orgId, task.project, input.admission, input.admission.admitStateRead());
     input.admission.assertOpen();
     const revision = latest.revision;
     const validRevision = revision !== undefined && Number.isSafeInteger(revision.revision) && revision.revision >= 0
@@ -211,7 +216,7 @@ export function createTaskPersonRuntime(input: {
       if (!UUID.test(task.taskId) || !SlackTeamIdSchema.safeParse(input.slackTeamId).success) throw refused();
       let projectWitness: ProjectAuthorityWitness | undefined;
       const dependencies = identityDependencies({
-        task, developerId, stateTableName: input.stateTableName, slackTeamId: input.slackTeamId,
+        orgId: input.orgId, task, developerId, stateTableName: input.stateTableName, slackTeamId: input.slackTeamId,
         now: () => input.now(), uuid: () => input.uuid(),
         ...(input.trustedCaller === undefined ? {} : { trustedCaller: input.trustedCaller }),
         admission: input.admission,

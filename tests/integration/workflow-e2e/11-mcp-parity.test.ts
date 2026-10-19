@@ -25,6 +25,8 @@ import { visibleSlackText } from "../../support/strict-slack.js";
 import { SLACK_MAYA, createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
 import { EDITS, MERGED, PLAN, PUSHED_FIX, actionIds, atPlanReview, editsOrFix, journeySuite, openDraftPr, runs, said } from "../../support/workflow-e2e-journeys.js";
 import { PAGE_ORIGIN } from "../../support/page-browser.js";
+import { memberGrantsPk, projectPk } from "../../../packages/contracts/src/org-scoped-keys.js";
+import { TEST_ORG } from "../../support/orgs.js";
 
 const WAITING_FOR_MERGE = "Waiting for the pull request to be merged. Review and merge it on GitHub; the task finishes when it's merged.";
 const FEEDBACK_READY = (revision: number) => `PR feedback is ready for your decision. Read it with agentx_get_pr_feedback, then approve, request changes or dismiss it with agentx_decide_pr_feedback and expected_revision ${revision}. Nothing changes in the code until you approve.`;
@@ -90,8 +92,8 @@ function actualInviteComposition(e2e: WorkflowE2E, directory: ReturnType<typeof 
   const posts: Array<{ teamId: string; channelId: string; slackUserId: string }> = [];
   const readRows = (prefix: string) => e2e.db.find((row) => typeof row.pk === "string" && row.pk.startsWith(prefix));
   const projectAuthorityReader: ProjectAuthorityReader = {
-    async latestRevision(project) {
-      const latest = readRows(`PROJECT#${project}`).filter((row) => String(row.sk).startsWith("REV#"))
+    async latestRevision(orgId, project) {
+      const latest = readRows(projectPk(orgId, project)).filter((row) => String(row.sk).startsWith("REV#"))
         .sort((left, right) => String(right.sk).localeCompare(String(left.sk)))[0];
       if (latest === undefined) return { complete: true };
       const definition = latest.definition as Record<string, unknown> | undefined;
@@ -100,8 +102,8 @@ function actualInviteComposition(e2e: WorkflowE2E, directory: ReturnType<typeof 
         revision: Number(definition.revision), definition: Object.hasOwn(definition, "developerTasks")
           ? { developerTasks: definition.developerTasks } : {} } };
     },
-    async memberships(developerId) {
-      return { complete: true, items: readRows(`MEMBER#${developerId}`).map((row) => ({ pk: String(row.pk), sk: String(row.sk),
+    async memberships(orgId, developerId) {
+      return { complete: true, items: readRows(memberGrantsPk(orgId, developerId)).map((row) => ({ pk: String(row.pk), sk: String(row.sk),
         projectName: String(row.projectName), ...(typeof row.role === "string" ? { role: row.role } : {}) })) };
     },
     async bindings(teamId) {
@@ -154,7 +156,7 @@ function actualInviteComposition(e2e: WorkflowE2E, directory: ReturnType<typeof 
     now: () => Date.now(), remainingTimeMs: () => 30_000, expectedTeamId: "T0BSHLLUGBD", stateTableName: "state",
     async readState({ taskId, sortKey }) { return e2e.db.get(`DEVTASK#${taskId}`, sortKey); },
     createPersonChecker(admission: TaskAuthorityAdmission) {
-      return createTaskPersonRuntime({ admission, ports: runtimePorts, stateTableName: "state", slackTeamId: "T0BSHLLUGBD",
+      return createTaskPersonRuntime({ orgId: TEST_ORG, admission, ports: runtimePorts, stateTableName: "state", slackTeamId: "T0BSHLLUGBD",
         now: () => Date.now(), uuid: randomUUID });
     },
     async readChannelInfo({ teamId, channelId, slackCallsLimit }) {

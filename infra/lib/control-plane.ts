@@ -220,6 +220,8 @@ export class ControlPlaneStack extends Stack {
         GITHUB_APP_CREDENTIAL_REF: githubAppCredentialRef.valueAsString,
         GITHUB_APP_ID: githubAppId.valueAsString,
         GITHUB_APP_PRIVATE_KEY_SECRET_ARN: githubAppPrivateKeySecretArn.valueAsString,
+        // The install's single org (ruling R3) derives from the environment name.
+        AGENTX_ENV: naming.env,
       }, Duration.seconds(150), [], 1024);
       // The State table, one action at a time, each on the partitions it needs (the sort key cannot be narrowed here):
       // reads of the task record, its evidence pointer, the job rows and the project revision the task started from; the
@@ -229,7 +231,7 @@ export class ControlPlaneStack extends Stack {
         sid: "ReadTaskJobAndProject",
         actions: ["dynamodb:GetItem"],
         resources: [state.tableArn],
-        conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVTASK#*", "PLAN_EVIDENCE", "PROJECT#*"] } },
+        conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVTASK#*", "PLAN_EVIDENCE", "ORG#*#PROJECT#*"] } },
       }));
       planEvidence.addToRolePolicy(new iam.PolicyStatement({
         sid: "PutEvidencePointer",
@@ -261,6 +263,8 @@ export class ControlPlaneStack extends Stack {
         DISPATCH_QUEUE_URL: dispatchQueue.queueUrl,
       },
     );
+    // The install's single org (ruling R3) derives from the environment name; the legacy deployment's is "default".
+    if (naming.env !== undefined) outboxPublisher.addEnvironment("AGENTX_ENV", naming.env);
     state.grantStreamRead(outboxPublisher);
     state.grantReadWriteData(outboxPublisher);
     dispatchQueue.grantSendMessages(outboxPublisher);
@@ -288,6 +292,7 @@ export class ControlPlaneStack extends Stack {
       },
       Duration.seconds(60),
     );
+    if (naming.env !== undefined) dispatcher.addEnvironment("AGENTX_ENV", naming.env);
     dispatchQueue.grantConsumeMessages(dispatcher);
     state.grantReadWriteData(dispatcher);
     // EC2 workers (#76): the idle reaper and reconciler find sessions by state through this sparse index.

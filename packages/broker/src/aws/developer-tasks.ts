@@ -30,7 +30,8 @@ import {
   CandidateManifestSchema,
   createCandidateManifest,
   WorkflowDependencyResultSchema,
-  projectCatalogKey,
+  orgProjectCatalogKey,
+  type OrgId,
   type ProjectDefinition,
   PullRequestResultSchema,
   ShareDeveloperTaskRequestSchema,
@@ -211,6 +212,8 @@ import type { TaskPeopleDisplayAdmission } from "../developer/task-people-displa
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
+  /** The caller's org: every project, grant, limit and catalog key a route reads or writes is scoped to it. */
+  orgId: OrgId;
   slackTeamId?: string;
   /** C: absent is write-disabled; an existing PEOPLE sidecar remains authoritative either way. */
   taskPeopleConfiguration?: { peopleChangesEnabled: boolean };
@@ -277,7 +280,7 @@ async function e2ePublicationContext(deps: DeveloperTaskRouteDependencies, calle
     || subject.projectName !== task.project || subject.projectRevision !== task.startingRevision) return unknown("current_task_scope_unavailable");
   const candidate = CandidateManifestSchema.safeParse(task.workflow.candidate);
   if (!candidate.success) return unknown("current_candidate_unavailable");
-  const project = await deps.actions.projectRevision(task.project, task.startingRevision);
+  const project = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
   if (project === undefined || project.definition.revision !== subject.projectRevision) return unknown("registered_project_revision_unavailable");
   const candidateRepositories = candidate.data.repositories.filter((item) => item.commitSha === subject.commitSha && item.treeSha === subject.treeSha);
   if (candidateRepositories.length !== 1) return unknown("candidate_commit_tree_or_base_mismatch");
@@ -1028,7 +1031,7 @@ export async function submitWorkflowFeedbackDecision(
     const workspace = await actionableWorkspace(deps, latest);
     const readiness = running.checkPolicy === undefined ? undefined : workflowSelectedChecks(running.checkPolicy).map(check => check.command);
     try {
-      await deps.actions.acceptTask(developerTaskIdentity(latest), workspace.id, {
+      await deps.actions.acceptTask(developerTaskIdentity(latest, deps.orgId), workspace.id, {
         requestId: input.requestId, conversationId: latest.conversationId, prompt,
       }, (operation) => [{ Update: {
         TableName: deps.tableName, Key: taskKey(taskId),
@@ -1074,7 +1077,7 @@ function approvedFix(proposal: { summary: string; fileChanges: Array<{ repositor
 
 /** The task's repository folders, from the project revision it started from: where a corrected check may run. */
 async function taskRepositoryPaths(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): Promise<string[]> {
-  const project = await deps.actions.projectRevision(task.project, task.startingRevision);
+  const project = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
   if (project === undefined) throw agentXError("CONFIG_INVALID", "this task's project revision is no longer registered; ask an admin");
   return project.definition.repositories.map(repository => repository.path);
 }
@@ -1445,7 +1448,7 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
         && deps.initialSlackThread.channelId === decision.channelId ? { threadTs: deps.initialSlackThread.threadTs } : {}),
     };
   }
-  const project = await deps.actions.latestProject(request.project);
+  const project = await deps.actions.latestProject(deps.orgId, request.project);
   if (project === undefined) return refused(agentXError("PROJECT_NOT_FOUND", `project \`${request.project}\` doesn't exist in this AgentX`));
   // The policy checked must be the policy started: a revision registered between the two reads
   // could have turned tasks off or required sharing. Nothing was decided, so nothing is recorded.
@@ -1453,14 +1456,14 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
     log(deps, { event: "developer.task_start_revision_changed", checked: access.revision, latest: project.definition.revision });
     throw agentXError("WORKSPACE_BUSY", "the project changed while starting; try again with the same request_id");
   }
-  const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.actions.limitDefaults);
-  const charge = developerCharge({ teamId: deps.slackTeamId, slackUserId: caller.slackUserId, developerId: caller.developerId });
+  const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.orgId, deps.actions.limitDefaults);
+  const charge = developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: caller.slackUserId, developerId: caller.developerId });
   let full = await limitReached(deps.documentClient, deps.tableName, charge, limits);
   // Slots finished tasks kept (merged before releases ran on merge) are given back, then the limit is read once more.
   if (full !== undefined && await releaseFinishedTasksOf(deps, charge.member) > 0) full = await limitReached(deps.documentClient, deps.tableName, charge, limits);
   if (full !== undefined) return refused(await limitError(deps, caller, full, limits));
 
-  const identity = developerTaskIdentity({ taskId, developerId: caller.developerId, provider: caller.amr, developerName: caller.name, client });
+  const identity = developerTaskIdentity({ taskId, developerId: caller.developerId, provider: caller.amr, developerName: caller.name, client }, deps.orgId);
   const preparation = await deps.actions.preparation(identity, project, request.requestId);
   const workspaceId = preparation.workspace.id;
   const conversationId = randomUUID();
@@ -1728,7 +1731,7 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   try {
     // acceptTask answers a repeated requestId with its first operation and writes nothing, and
     // refuses a second running turn (TASK_BUSY) before anything is written.
-    await deps.actions.acceptTask(developerTaskIdentity(task), task.workspaceId, { requestId: request.requestId, conversationId: task.conversationId, prompt: request.instructions }, (operation) => [
+    await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId: request.requestId, conversationId: task.conversationId, prompt: request.instructions }, (operation) => [
       // R12: the accepted record commits with the operation or not at all.
       putNew(turns, aiToolTurn({
         party: partyOfTaskActor(task, caller), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
@@ -1858,7 +1861,7 @@ export async function decideTaskWorkflow(
   let workBreakdownDigest: string | undefined;
   if (planGraph !== undefined && request.decision === "APPROVE") {
     if (prior === undefined && deps.workflowDependenciesEnabled !== true) throw agentXError("CONFIG_INVALID", "ordered work plans are saved but this broker is not enabled to start them");
-    const pinnedProject = await deps.actions.projectRevision(task.project, task.startingRevision);
+    const pinnedProject = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
     if (pinnedProject === undefined || pinnedProject.definition.repositories.length !== 1) {
       throw agentXError("CONFIG_INVALID", "ordered work is available only when this task is pinned to one registered repository");
     }
@@ -1911,7 +1914,7 @@ export async function decideTaskWorkflow(
     ? boundDecisionRequest : { ...boundDecisionRequest, includedCommentIds: included.map((comment) => comment.commentId) };
   let next = transition(decisionRequest, decisions, workBreakdownDigest);
   if (request.decision === "APPROVE" && documentType === "plan" && !(loaded?.format === "structured" && loaded.plan.e2e !== undefined)) {
-    const pinnedProject = await deps.actions.projectRevision(task.project, task.startingRevision);
+    const pinnedProject = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
     if (pinnedProject === undefined) throw agentXError("CONFIG_INVALID", "the pinned project revision is unavailable; refresh the plan before approving it");
     if (pinnedProject.definition.e2e !== undefined && E2EPolicySchema.parse(pinnedProject.definition.e2e).baselineScenarioIds.length > 0) {
       throw agentXError("CONFIG_INVALID", "the approved plan must include the canonical E2E intent required by the pinned project baseline");
@@ -1921,7 +1924,7 @@ export async function decideTaskWorkflow(
   // The digests below identify the approved intent and its policy/bundle; candidate-specific execution-plan identity is
   // bound later by the server-created CHECKS admission and round.
   if (request.decision === "APPROVE" && documentType === "plan" && loaded?.format === "structured" && loaded.plan.e2e !== undefined) {
-    const pinnedProject = await deps.actions.projectRevision(task.project, task.startingRevision);
+    const pinnedProject = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
     if (pinnedProject?.definition.e2e === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the approved feature E2E intent has no pinned project policy");
     const intent = loaded.plan.e2e;
     const policy = E2EPolicySchema.parse(pinnedProject.definition.e2e);
@@ -2006,7 +2009,7 @@ export async function decideTaskWorkflow(
     // Gap 2: replies posted in the task's thread and not yet given to a step go with this one, once.
     await withCurrentThreadNotes(deps, task, request.requestId, (current, notes) => {
       const fed = fedThroughUpdate(notes);
-      return deps.actions.acceptTask(developerTaskIdentity(current), current.workspaceId, { requestId: request.requestId, conversationId: current.conversationId, prompt: basePrompt + notes.suffix }, (operation) => {
+      return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: request.requestId, conversationId: current.conversationId, prompt: basePrompt + notes.suffix }, (operation) => {
         const workflowToStore = workflowWithCurrentGraphOperation(next, workflowDependencies === undefined ? undefined : operation.id, workflowDependencies);
         const correctedPlan = correction !== undefined && request.decision === "APPROVE" && documentType === "plan"
           && currentPlan.sha256 !== correction.artifactSha256 && workflow.candidate?.digest === correction.candidateDigest
@@ -2269,7 +2272,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
       return { task: view };
     }
     try {
-      await deps.actions.acceptTask(developerTaskIdentity(task), task.workspaceId, {
+      await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
         requestId: request.requestId, conversationId: task.conversationId,
         prompt: `Owner-authorized verification retry. Run only the selected project checks against the current code, without editing files. Owner note: ${request.instructions}`,
       }, (operation) => [
@@ -2322,7 +2325,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
   try {
     await withCurrentThreadNotes(deps, task, request.requestId, (current, notes) => {
       const fed = fedThroughUpdate(notes);
-      return deps.actions.acceptTask(developerTaskIdentity(current), current.workspaceId, { requestId: request.requestId, conversationId: current.conversationId, prompt: retryInstructions + notes.suffix }, (operation) => [
+      return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: request.requestId, conversationId: current.conversationId, prompt: retryInstructions + notes.suffix }, (operation) => [
         { Update: {
           TableName: deps.tableName, Key: taskKey(taskId),
           UpdateExpression: `SET workflow = :workflow, updatedAt = :now${fed.clause}`,
@@ -2522,7 +2525,7 @@ async function queueWorkflowCoding(
   try {
     await withCurrentThreadNotes(deps, task, input.requestId, (current, notes) => {
       const fed = fedThroughUpdate(notes);
-      return deps.actions.acceptTask(developerTaskIdentity(current), current.workspaceId, { requestId: input.requestId, conversationId: current.conversationId, prompt: input.prompt(notes.suffix) }, (operation) => [
+      return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: input.requestId, conversationId: current.conversationId, prompt: input.prompt(notes.suffix) }, (operation) => [
         { Update: {
           TableName: deps.tableName, Key: taskKey(task.taskId),
           UpdateExpression: `SET workflow = :workflow, updatedAt = :now${fed.clause}`,
@@ -2927,7 +2930,7 @@ async function queueWorkflowReview(
   const prompt = `Perform the required read-only critic and security reviews for the task. The current verified candidate digest is ${candidateDigest}. Do not edit files. Reviewer findings must be concise and refer to code evidence. The owner retry note is carried separately as untrusted reviewer context.`;
   const reviewPlan = await workflowReviewPlanOption(deps, workflow);
   const reviewFeedback = await workflowReviewFeedbackOption(deps, task, workflow);
-  return deps.actions.acceptTask(developerTaskIdentity(task), task.workspaceId, { requestId, conversationId: task.conversationId, prompt }, (operation) => [
+  return deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt }, (operation) => [
     { Update: {
       TableName: deps.tableName, Key: taskKey(task.taskId),
       UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
@@ -3006,7 +3009,7 @@ export async function startTaskWorkflowE2EChecksFromSystem(
     updatedAt: receivedAt,
   });
   const requestId = workflowRequestId("agentx-auto-e2e-checks", taskId, expected.workflowRevision, expected.candidateDigest);
-  const accepted = await deps.actions.acceptTask(developerTaskIdentity(task), task.workspaceId, {
+  const accepted = await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
     requestId, conversationId: task.conversationId,
     prompt: "Run the broker-admitted E2E verification groups for this exact candidate. Do not edit files or expand the admitted scenarios.",
   }, (operation) => [
@@ -3837,7 +3840,7 @@ function workflowPublicationMaterialDigest(pinned: LoadedPublicationProject, lat
 }
 
 async function workflowPublicationAuthority(
-  deps: Pick<DeveloperTaskRouteDependencies, "actions" | "tableName">,
+  deps: Pick<DeveloperTaskRouteDependencies, "actions" | "tableName" | "orgId">,
   task: DeveloperTaskRecord,
   workflow: WorkflowSnapshot,
   approvedPlan: LoadedDocument | undefined,
@@ -3849,8 +3852,8 @@ async function workflowPublicationAuthority(
   if (ownerDecision === undefined || ownerDecision.artifactDigest === undefined) return undefined;
   if (task.startingRevision === undefined) return undefined;
   const [pinned, latest] = await Promise.all([
-    deps.actions.projectRevision(task.project, task.startingRevision),
-    deps.actions.latestProject(task.project),
+    deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision),
+    deps.actions.latestProject(deps.orgId, task.project),
   ]);
   if (pinned === undefined || latest === undefined || pinned.definition.name !== task.project || latest.definition.name !== task.project
     || pinned.definition.revision !== task.startingRevision || latest.definition.revision < pinned.definition.revision) return undefined;
@@ -3874,7 +3877,7 @@ async function workflowPublicationAuthority(
     ownerApproval,
     workflowAuthorityDigest,
   };
-  const conditions: TransactItems = [{ ConditionCheck: { TableName: deps.tableName, Key: projectCatalogKey(task.project),
+  const conditions: TransactItems = [{ ConditionCheck: { TableName: deps.tableName, Key: orgProjectCatalogKey(deps.orgId, task.project),
     ConditionExpression: "latestRevision = :revision", ExpressionAttributeValues: { ":revision": latest.definition.revision } } }];
   // The required-E2E current-authority checks already include the stronger catalog condition
   // for this same key. DynamoDB transactions cannot contain two operations on one item.
@@ -3899,7 +3902,7 @@ async function workflowPublicationAuthority(
 
 /** Recollects current task/project material and policy before a worker receives workflow push credentials. */
 export async function currentWorkflowPublicationAuthorityForTask(
-  deps: Pick<DeveloperTaskRouteDependencies, "actions" | "tableName" | "workflowE2EPresentation" | "workflowE2EPublicationChecks">,
+  deps: Pick<DeveloperTaskRouteDependencies, "actions" | "tableName" | "orgId" | "workflowE2EPresentation" | "workflowE2EPublicationChecks">,
   task: DeveloperTaskRecord,
 ): Promise<WorkflowPublicationAuthority | undefined> {
   const workflow = task.workflow;
@@ -3919,7 +3922,7 @@ export async function currentWorkflowPublicationAuthorityForTask(
 
 /** Compatibility projection for callers that only need the selected protocol. */
 export async function currentWorkflowPublicationModeForTask(
-  deps: Pick<DeveloperTaskRouteDependencies, "actions" | "tableName" | "workflowE2EPresentation" | "workflowE2EPublicationChecks">,
+  deps: Pick<DeveloperTaskRouteDependencies, "actions" | "tableName" | "orgId" | "workflowE2EPresentation" | "workflowE2EPublicationChecks">,
   task: DeveloperTaskRecord,
 ): Promise<"COMMITTED_HEAD" | "CHECKED_TREE" | undefined> {
   return (await currentWorkflowPublicationAuthorityForTask(deps, task))?.mode;
@@ -4000,7 +4003,7 @@ export async function startTaskWorkflowPublicationFromSystem(
   const baseCommitSha = (workflow.reviewBase ?? task.preparedBase)?.find((entry) => entry.repositoryId === repository.repositoryId)?.baseCommitSha;
   let accepted: Awaited<ReturnType<DeveloperTaskActions["acceptPullRequest"]>>;
   try {
-    accepted = await deps.actions.acceptPullRequest(developerTaskIdentity(task), task.workspaceId, {
+    accepted = await deps.actions.acceptPullRequest(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
       requestId, repository: repository.repositoryId, title, body, draft: true,
     }, (operation) => [
       taskItem,
@@ -4087,7 +4090,7 @@ async function startTaskWorkflowPullRequestUpdate(
   const receivedAt = iso(deps);
   let accepted: Awaited<ReturnType<DeveloperTaskActions["acceptPullRequestUpdate"]>>;
   try {
-    accepted = await deps.actions.acceptPullRequestUpdate(developerTaskIdentity(task), task.workspaceId, {
+    accepted = await deps.actions.acceptPullRequestUpdate(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
       requestId, repository: repository.repositoryId, pullRequestNumber: pullRequest.number, action: "append",
     }, (operation) => [
       { Update: { TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now", ...unchanged,
@@ -4243,7 +4246,7 @@ async function acceptFeedbackReview(
   const binding = { taskId, workflowRevision: next.revision, candidateDigest: collecting.candidate.digest };
   const requestId = randomUUID();
   try {
-    await deps.actions.acceptTask(developerTaskIdentity(task), task.workspaceId, {
+    await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
       requestId, conversationId: task.conversationId,
       prompt: "Review the current linked pull request feedback against the exact candidate. Produce a read-only, evidence-backed proposal. Do not edit code or send replies.",
     }, operation => [
@@ -4270,7 +4273,7 @@ async function acceptFeedbackReview(
 
 /** The task's own workspace, idle: the only one a feedback review can start on. */
 function feedbackReviewWorkspaceReady(task: DeveloperTaskRecord, workspace: WorkspaceInstance): boolean {
-  return workspace.ownerKey === developerTaskIdentity(task).ownerKey && ["READY", "STOPPED"].includes(workspace.status);
+  return workspace.ownerKey === taskOwnerKey(task.developerId, task.taskId) && ["READY", "STOPPED"].includes(workspace.status);
 }
 
 /** Said to the owner when Retry review no longer matches the task. */
@@ -4839,7 +4842,7 @@ async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: Develope
     if (workspace.status === "CLOSED") throw agentXError("CONFIG_INVALID", CLOSED_TASK);
     let outcome: "CANCEL_REQUESTED" | "NOTHING_RUNNING";
     try {
-      outcome = (await deps.actions.cancelRunning(developerTaskIdentity(task), workspace, (operation) => [
+      outcome = (await deps.actions.cancelRunning(developerTaskIdentity(task, deps.orgId), workspace, (operation) => [
         record("Asked the worker to stop.", operation.id),
         marker,
         accessFence(deps, access),
@@ -4887,7 +4890,7 @@ async function openPullRequest(deps: DeveloperTaskRouteDependencies, caller: Dev
   if (repository === undefined) {
     // The revision the workspace was prepared from, which the publication pushes from: a
     // repository a newer revision added is not in this workspace.
-    const pinned = await deps.actions.projectRevision(workspace.projectName, workspace.projectRevision);
+    const pinned = await deps.actions.projectRevision(deps.orgId, workspace.projectName, workspace.projectRevision);
     if (pinned === undefined) throw agentXError("CONFIG_INVALID", "this task's project revision is no longer registered; ask an admin");
     const repositories = pinned.definition.repositories.map((entry) => entry.name);
     if (repositories.length > 1) throw agentXError("CONFIG_INVALID", `this project has several repositories; name one of: ${repositories.join(", ")}`);
@@ -4898,7 +4901,7 @@ async function openPullRequest(deps: DeveloperTaskRouteDependencies, caller: Dev
   let accepted: Awaited<ReturnType<DeveloperTaskActions["acceptPullRequest"]>>;
   try {
     // R22: answers at once. A repeated requestId returns the same operation and writes nothing.
-    accepted = await deps.actions.acceptPullRequest(developerTaskIdentity(task), task.workspaceId, {
+    accepted = await deps.actions.acceptPullRequest(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
       requestId: request.requestId, repository, title: request.title, draft: request.draft,
       ...(request.body === undefined ? {} : { body: request.body }),
     }, (operation) => [
@@ -5399,7 +5402,7 @@ async function closeTask(deps: DeveloperTaskRouteDependencies, caller: Developer
       try {
         // startClose answers a close in flight, and a repeated requestId, with the existing close
         // operation and writes nothing; otherwise the record commits with the preflight (R12).
-        started = await deps.actions.startClose(developerTaskIdentity(task), workspace, request.requestId, (operation) => [
+        started = await deps.actions.startClose(developerTaskIdentity(task, deps.orgId), workspace, request.requestId, (operation) => [
           record("Checking the workspace for unpublished work before closing.", operation.id),
           accessFence(deps, access),
         ], request.discard_unpublished === true);
@@ -5449,7 +5452,7 @@ async function nextShare(
   request: { shareMode?: "view" | "continue" | undefined; channel?: string | undefined },
   now: string,
 ): Promise<TaskShare | "unchanged"> {
-  const project = await deps.actions.latestProject(task.project);
+  const project = await deps.actions.latestProject(deps.orgId, task.project);
   if (project === undefined) throw agentXError("CONFIG_INVALID", "this task's project is no longer registered; ask an admin");
   const policy = developerTaskPolicy(project.definition);
   if (task.share === undefined) {
@@ -5484,7 +5487,7 @@ function withMode(current: TaskShare, mode: { mode: "view" | "continue"; modeRea
 
 /** An AgentX admin who changed a task's share mode (C25), named on the audit record. */
 export interface ShareAdmin { issuer: string; subject: string; displayName?: string }
-export type ShareModeDependencies = Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "actions" | "now" | "log">;
+export type ShareModeDependencies = Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "actions" | "orgId" | "now" | "log">;
 
 /**
  * C1, C5, C25: one share change's items: the task's whole share map under shareVersion, the index
@@ -5610,7 +5613,7 @@ export async function adminShareMode(deps: ShareModeDependencies, admin: ShareAd
   for (let attempt = 0; attempt < SHARE_ATTEMPTS; attempt += 1) {
     if (current.closedAt !== undefined) throw agentXError("CONFIG_INVALID", "this task is closed, so its share mode can no longer change");
     if (current.share === undefined) throw agentXError("CONFIG_INVALID", "this task is private; only its developer can share it");
-    const project = await deps.actions.latestProject(current.project);
+    const project = await deps.actions.latestProject(deps.orgId, current.project);
     if (project === undefined) throw agentXError("CONFIG_INVALID", "this task's project is no longer registered; register it again first");
     const share = withMode(current.share, decideMode(developerTaskPolicy(project.definition), request.shareMode));
     if (share === "unchanged") return answer();

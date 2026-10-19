@@ -4,17 +4,18 @@
 // the existing handler. Every value it shows passes through redaction first.
 import {
   ADMIN_CHANGE_EFFECT_MAX, AgentXNameSchema, CredentialRegistrationSchema, SlackChannelIdSchema, WorkspaceInstanceSchema, agentXError, developerTaskPolicy,
-  redactSecrets, redactText, workspaceRecordFields,
+  orgLimitKey, redactSecrets, redactText, workspaceRecordFields,
   type AdminChangeInput, type AdminChangeKind, type ChannelByNameRequest, type ConfirmationMethod, type ChannelByNameResponse, type ProjectDefinition,
 } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
 import { chatGptSettingsOf, readChatGptSettingsRecord, writeChatGptSettings } from "../chatgpt/settings.js";
-import { MAX_PER_ORGANIZATION, MAX_PER_PERSON, isWholeLimit, readWorkspaceLimits, WORKSPACE_LIMITS_KEY } from "../developer/limits.js";
+import { MAX_PER_ORGANIZATION, MAX_PER_PERSON, isWholeLimit, readWorkspaceLimits, workspaceLimitsKey } from "../developer/limits.js";
 import {
   endSessions, grantProjectAccess, projectGrant, resolveDeveloper, revokeProjectAccess, setWorkspaceLimits,
   type AdminActionDependencies, type ResolvedDeveloper,
 } from "./admin-actions.js";
 import { adminProjects, channelLabels, getStateItem, latestProjectRecord, privateChannelsFor, queryAllItems, workspaceOwner, type AdminReadDependencies } from "./admin-reads.js";
+import { requireOrgId } from "../org/resolve.js";
 import { hashJson } from "./broker-shared.js";
 import type { CredentialRegistry } from "./credentials.js";
 
@@ -183,7 +184,7 @@ const planBind: Planner = async (deps, identity, input, options) => {
   const current = await bindingOf(deps, teamId, channelId);
   if (current?.projectName === input.project) throw agentXError("CONFIG_INVALID", `channel ${label} is already bound to ${input.project}; there is nothing to change`);
   if (current !== undefined) await deps.handlers.requireAdministrator(identity, current.projectName);
-  const latest = await latestProjectRecord(deps.reads, input.project);
+  const latest = await latestProjectRecord(deps.reads, requireOrgId(identity.orgId), input.project);
   if (latest === undefined) throw agentXError("NOT_FOUND", `project ${input.project} is not registered; register it with agentx admin project register`);
   const now = current === undefined ? "It is bound to nothing today." : `It is bound to ${current.projectName} today; its existing threads keep their workspaces.`;
   return {
@@ -218,7 +219,7 @@ const planRevision: Planner = async (deps, identity, input, options) => {
   if (input.kind !== "register_project_revision") throw new Error("wrong planner");
   const name = input.definition.name;
   if (typeof name !== "string" || !AgentXNameSchema.safeParse(name).success) throw agentXError("CONFIG_INVALID", "the definition needs the project's name, such as \"payments\"");
-  const latest = await latestProjectRecord(deps.reads, name);
+  const latest = await latestProjectRecord(deps.reads, requireOrgId(identity.orgId), name);
   // Q5: a new revision keeps its project's runtime binding; a first revision needs the CLI's flags.
   if (latest === undefined) throw agentXError("NOT_FOUND", `project ${name} has no revision yet; register its first revision with agentx admin project register`);
   await deps.handlers.requireAdministrator(identity, name);
@@ -315,7 +316,7 @@ async function projectMustExist(deps: PlanDependencies, identity: AuthenticatedI
   // The claim first, so a caller without it learns nothing about which projects exist.
   requireAdminClaim(identity);
   if (!AgentXNameSchema.safeParse(project).success) throw agentXError("CONFIG_INVALID", "project must be a project name such as payments");
-  const latest = await latestProjectRecord(deps.reads, project);
+  const latest = await latestProjectRecord(deps.reads, requireOrgId(identity.orgId), project);
   if (latest === undefined) throw agentXError("NOT_FOUND", `project ${project} is not registered; check the project's name, or register it with agentx admin project register`);
   return latest;
 }
@@ -350,7 +351,8 @@ const planGrant: Planner = async (deps, identity, input) => {
   await projectMustExist(deps, identity, input.project);
   await deps.handlers.requireAdministrator(identity, input.project);
   const resolved = await resolveDeveloper(deps.actions, input.developer);
-  const current = await projectGrant(deps.actions, input.project, resolved.developerId);
+  const orgId = requireOrgId(identity.orgId);
+  const current = await projectGrant(deps.actions, orgId, input.project, resolved.developerId);
   if (current?.role === "developer") throw agentXError("CONFIG_INVALID", `${describeDeveloper(resolved)} already has a grant for ${input.project}; there is nothing to change`);
   if (current?.role === "administrator") throw agentXError("CONFIG_INVALID", `${describeDeveloper(resolved)} already administers ${input.project}; there is nothing to change`);
   const project = input.project;
@@ -362,7 +364,7 @@ const planGrant: Planner = async (deps, identity, input) => {
     apply: async (applier) => {
       // E6, FR-015: the applier must still administer the project.
       await deps.handlers.requireAdministrator(applier, project);
-      return grantProjectAccess(deps.actions, { issuer: applier.issuer, subject: applier.subject }, project, resolved.developerId);
+      return grantProjectAccess(deps.actions, orgId, { issuer: applier.issuer, subject: applier.subject }, project, resolved.developerId);
     },
   };
 };
@@ -372,7 +374,8 @@ const planRevoke: Planner = async (deps, identity, input) => {
   const latest = await projectMustExist(deps, identity, input.project);
   await deps.handlers.requireAdministrator(identity, input.project);
   const resolved = await resolveDeveloper(deps.actions, input.developer);
-  const current = await projectGrant(deps.actions, input.project, resolved.developerId);
+  const orgId = requireOrgId(identity.orgId);
+  const current = await projectGrant(deps.actions, orgId, input.project, resolved.developerId);
   // An administrator row is never a grant: revoking never removes an administrator.
   if (current?.role !== "developer") throw agentXError("NOT_FOUND", `${describeDeveloper(resolved)} has no grant for ${input.project}, so there is nothing to revoke`);
   const project = input.project;
@@ -384,7 +387,7 @@ const planRevoke: Planner = async (deps, identity, input) => {
     snapshot: { grant: current, channelMembersMayUse, profile: resolved.profile === undefined ? null : { displayName: resolved.profile.displayName, provider: resolved.profile.provider } },
     apply: async (applier) => {
       await deps.handlers.requireAdministrator(applier, project);
-      return revokeProjectAccess(deps.actions, project, resolved.developerId);
+      return revokeProjectAccess(deps.actions, orgId, project, resolved.developerId);
     },
   };
 };
@@ -467,8 +470,9 @@ const planLimits: Planner = async (deps, identity, input) => {
   if (input.perPerson === undefined && input.perOrganization === undefined) throw agentXError("CONFIG_INVALID", "give per_person, per_organization or both");
   if (input.perPerson !== undefined && !isWholeLimit(input.perPerson, MAX_PER_PERSON)) throw agentXError("CONFIG_INVALID", `the per-person limit must be a whole number from 1 to ${MAX_PER_PERSON}`);
   if (input.perOrganization !== undefined && !isWholeLimit(input.perOrganization, MAX_PER_ORGANIZATION)) throw agentXError("CONFIG_INVALID", `the organization limit must be a whole number from 1 to ${MAX_PER_ORGANIZATION}`);
-  const setting = await getStateItem(deps.reads, WORKSPACE_LIMITS_KEY);
-  const current = await readWorkspaceLimits(deps.reads.documentClient, deps.reads.tableName, deps.reads.limitDefaults, (entry) => deps.reads.log(entry));
+  const orgId = requireOrgId(identity.orgId);
+  const setting = await getStateItem(deps.reads, workspaceLimitsKey(orgId));
+  const current = await readWorkspaceLimits(deps.reads.documentClient, deps.reads.tableName, orgId, deps.reads.limitDefaults, (entry) => deps.reads.log(entry));
   const next = { perPerson: input.perPerson ?? current.member, perOrganization: input.perOrganization ?? current.organization };
   if (next.perPerson > next.perOrganization) throw agentXError("CONFIG_INVALID", `the per-person limit (${next.perPerson}) cannot be more than the organization limit (${next.perOrganization}); give both, or a smaller per-person limit`);
   const team = deps.reads.slackTeamId;
@@ -478,7 +482,7 @@ const planLimits: Planner = async (deps, identity, input) => {
   const over = members
     .filter((item) => counterCount(item) >= next.perPerson)
     .map((item) => `Slack member ${String(item.sk).slice("MEMBER#".length)} (${counterCount(item)} open)`);
-  const aiToolOnlyCount = counterCount(await getStateItem(deps.reads, { pk: "DEVELOPER_LIMIT#ORGANIZATION", sk: "ORGANIZATION" }));
+  const aiToolOnlyCount = counterCount(await getStateItem(deps.reads, orgLimitKey(orgId)));
   const organizationCount = (team === undefined ? 0 : counterCount(await getStateItem(deps.reads, { pk: `SLACK_LIMIT#${team}`, sk: "ORGANIZATION" }))) + aiToolOnlyCount;
   const change = (value: number, was: number) => (value === was ? "(unchanged)" : `(now ${was})`);
   const named = over.slice(0, EFFECT_PEOPLE_MAX).join(", ");
@@ -493,7 +497,7 @@ const planLimits: Planner = async (deps, identity, input) => {
     details: { current: { perPerson: current.member, perOrganization: current.organization, source: current.source }, next, organizationCount, over: over.length },
     // The counts are informational and change often, so they are deliberately outside the hash.
     snapshot: { setting: setting === undefined ? null : { perPerson: setting.perPerson ?? null, perOrganization: setting.perOrganization ?? null, updatedAt: setting.updatedAt ?? null }, defaults: deps.reads.limitDefaults },
-    apply: async (applier, how) => setWorkspaceLimits(deps.actions, { issuer: applier.issuer, subject: applier.subject }, next, how?.method),
+    apply: async (applier, how) => setWorkspaceLimits(deps.actions, orgId, { issuer: applier.issuer, subject: applier.subject }, next, how?.method),
     changedSince: (planned) => limitsChangedSince(planned, { perPerson: current.member, perOrganization: current.organization }, current.source, setting, identity, input),
   };
 };

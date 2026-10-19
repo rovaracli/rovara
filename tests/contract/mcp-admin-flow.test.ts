@@ -4,11 +4,12 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { indexActivity } from "../../packages/broker/src/aws/activity-index.js";
-import { failureIndexKey, usageIndexKey } from "../../packages/contracts/src/index.js";
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
 import { MAYA, bearerFor, recordStream } from "../support/developer-task-broker.js";
 import { ADMIN_TOKEN, NON_ADMIN_TOKEN, REFRESH_TOKEN, adminSignedInClient } from "../support/mcp-broker-client.js";
 import { call } from "../support/slack-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { orgFailureIndexKey, orgUsageIndexKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const PLANTED = [`ghp_${"Q".repeat(36)}`, `xoxb-${"2".repeat(12)}-planted`, `agxr_${"z".repeat(43)}`];
 const ADMIN_TOOLS = ["agentx_admin_health", "agentx_admin_failed_tasks", "agentx_admin_turns", "agentx_admin_usage", "agentx_admin_list_projects", "agentx_admin_list_channels", "agentx_admin_list_credentials", "agentx_admin_list_workspaces"];
@@ -27,7 +28,7 @@ async function failedTask(options: Parameters<typeof createAdminReadBroker>[0] =
   await beforeFailure(harness, { taskId, workspaceId: task.workspaceId, prepareId });
   await harness.finish(task.workspaceId, prepareId, "FAILED", { error: `npm ci exited 1 (token ${PLANTED[0]})` });
   // What the outbox publisher does with the same stream records (A4).
-  await indexActivity(stream.take(), { get: async (key) => harness.db.get(key.pk, key.sk), put: async (item) => harness.db.set(item) }, () => undefined);
+  await indexActivity(stream.take(), { get: async (key) => harness.db.get(key.pk, key.sk), put: async (item) => harness.db.set(item) }, () => undefined, undefined, TEST_ORG);
   return { harness, taskId };
 }
 
@@ -126,9 +127,9 @@ describe("an admin looks at AgentX from an AI tool (US5)", () => {
     const operationId = "44444444-4444-4444-8444-444444444444";
     const workspaceId = "55555555-5555-4555-8555-555555555555";
     const developer = { kind: "developer", developerId: MAYA.developerId, provider: "slack", name: `Maya ${PLANTED[0]}` };
-    harness.db.set({ ...failureIndexKey(at, operationId), entityType: "FAILURE_INDEX", operationId, workspaceId, project: "payments", origin: "ai_tool", requester: developer,
+    harness.db.set({ ...orgFailureIndexKey(TEST_ORG, at, operationId), entityType: "FAILURE_INDEX", operationId, workspaceId, project: "payments", origin: "ai_tool", requester: developer,
       kind: "task", status: "FAILED", category: "worker_unavailable", error: `RUNTIME_UNAVAILABLE: no capacity (token ${PLANTED[1]} ${PLANTED[2]})`, endedAt: at });
-    harness.db.set({ ...usageIndexKey(at, operationId), entityType: "USAGE_INDEX", operationId, workspaceId, project: "payments", origin: "ai_tool", requester: developer,
+    harness.db.set({ ...orgUsageIndexKey(TEST_ORG, at, operationId), entityType: "USAGE_INDEX", operationId, workspaceId, project: "payments", origin: "ai_tool", requester: developer,
       at, durationMs: 1_000, inputTokens: 1, outputTokens: 1, costUsd: 0 });
     // A connector credential whose secret name carries a planted value (the secret's value is never read).
     harness.db.set({ pk: "CREDENTIALS", sk: "REF#tracker-key", ref: "tracker-key", type: "static-secret", secretName: `agentx/connectors/${PLANTED[0]}`, registeredBy: `${ADMIN_TOKEN} ${PLANTED[1]}`, registeredAt: at });

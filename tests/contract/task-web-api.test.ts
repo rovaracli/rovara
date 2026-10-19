@@ -10,12 +10,13 @@ import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, type Developer } fro
 import { pagePlan } from "../support/page-tasks.js";
 import { planAnswer } from "../support/plan-documents.js";
 import { SLACK_CHANNEL } from "../support/slack-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const ORIGIN = new URL(DEV_ISSUER).origin;
 const taskId = "11111111-1111-4111-8111-111111111111";
 const CSRF = "c".repeat(43);
 const SESSION_ID = "22222222-2222-4222-8222-222222222222";
-const caller: DeveloperCaller = { developerId: "d".repeat(64), sessionId: SESSION_ID, amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001" };
+const caller: DeveloperCaller = { orgId: TEST_ORG, developerId: "d".repeat(64), sessionId: SESSION_ID, amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001" };
 const cookies = (csrf: string | null = CSRF) => `__Host-agentx_review_session=${SESSION_ID}${csrf === null ? "" : `; __Host-agentx_review_csrf=${csrf}`}`;
 
 function fakeDeps(overrides: Partial<TaskWebApiDependencies> = {}): TaskWebApiDependencies & { calls: Array<{ name: string; caller: DeveloperCaller; input?: unknown }> } {

@@ -6,6 +6,8 @@ import {
   GITHUB_LIST_ISSUES, SLACK_CHANNEL, SLACK_TEAM, createBroker, ensureWorkspace, fakeGitHubMcp, finishOperation, lazyEnsureWorkspace,
   account, call, loadSlackBroker, markReady, orchestratorPrincipal, prepareThread, registerSlackProject, serviceCall,
 } from "../support/slack-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const threadOne = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000001`;
 const threadTwo = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000002`;
@@ -424,7 +426,7 @@ describe("the revision a thread's first preparation uses (#12, first slice)", ()
     const workspaceId = (await lazyEnsureWorkspace(handler, threadOne, pratik)).body.workspaceId as string;
     await registerSlackProject(handler, { revision: 2, bind: false });
     // A stored revision whose runtime no longer matches the workspace's.
-    const latest = db.get("PROJECT#payments", `REV#${"2".padStart(12, "0")}`)!;
+    const latest = db.get(projectRevisionKey(TEST_ORG, "payments", 2))!;
     latest.runtimeBinding = { ...(latest.runtimeBinding as Record<string, unknown>), deploymentMode: "demo-microvm" };
 
     const refused = await prepareThread(handler, threadOne, pratik);

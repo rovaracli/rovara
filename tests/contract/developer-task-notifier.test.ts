@@ -14,6 +14,7 @@ import { finishPlanningWithMarkdown, planAnswer, planDocument } from "../support
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { StrictSlackWeb, visibleSlackText } from "../support/strict-slack.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const SECRET = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
 const BOT_TOKEN = "xoxb-1111-2222-plantedbottoken";
@@ -435,7 +436,7 @@ describe("the shared thread (FR-032, US3 scenario 1)", () => {
     await setWorkflow({ revision: 8, stage: "PULL_REQUEST", state: "READY" });
     await h.pump();
     const task = h.db.get(`DEVTASK#${h.taskId}`, "META") as Parameters<typeof developerTaskIdentity>[0];
-    const accepted = await h.actions.acceptPullRequest(developerTaskIdentity(task), h.workspaceId, { requestId: randomUUID(), repository: "demo", title: "AgentX: fix", draft: true },
+    const accepted = await h.actions.acceptPullRequest(developerTaskIdentity(task, TEST_ORG), h.workspaceId, { requestId: randomUUID(), repository: "demo", title: "AgentX: fix", draft: true },
       () => [], { workflowCandidate: checkedWorkflowCandidate(h, candidateDigest) });
     await h.finish(h.workspaceId, accepted.operation.id, "FAILED", { error: "GitHub refused the push" });
     await h.pump();
@@ -446,7 +447,7 @@ describe("the shared thread (FR-032, US3 scenario 1)", () => {
       value: JSON.stringify({ taskId: h.taskId, revision: 8 }),
     }), expect.objectContaining({ action_id: "agentx_workflow_close" })] }));
     // The workspace no longer holds the checked code: said in plain words, with no retry that would fail the same way.
-    const changed = await h.actions.acceptPullRequest(developerTaskIdentity(task), h.workspaceId, { requestId: randomUUID(), repository: "demo", title: "AgentX: fix", draft: true },
+    const changed = await h.actions.acceptPullRequest(developerTaskIdentity(task, TEST_ORG), h.workspaceId, { requestId: randomUUID(), repository: "demo", title: "AgentX: fix", draft: true },
       () => [], { workflowCandidate: checkedWorkflowCandidate(h, candidateDigest) });
     await h.finish(h.workspaceId, changed.operation.id, "FAILED", { error: "CONFIG_INVALID: the code changed after its checks and reviews; AgentX did not publish it" });
     await h.pump();
@@ -491,7 +492,7 @@ describe("the shared thread (FR-032, US3 scenario 1)", () => {
     await setWorkflow({ revision: 8, stage: "PULL_REQUEST", state: "READY" });
     await h.pump();
     const task = h.db.get(`DEVTASK#${h.taskId}`, "META") as Parameters<typeof developerTaskIdentity>[0];
-    const accepted = await h.actions.acceptPullRequest(developerTaskIdentity(task), h.workspaceId, { requestId: randomUUID(), repository: "demo", title: "AgentX: fix", draft: true },
+    const accepted = await h.actions.acceptPullRequest(developerTaskIdentity(task, TEST_ORG), h.workspaceId, { requestId: randomUUID(), repository: "demo", title: "AgentX: fix", draft: true },
       () => [], { workflowCandidate: checkedWorkflowCandidate(h, candidateDigest) });
     await setWorkflow({ revision: 9, stage: "PULL_REQUEST", state: "BLOCKED", blockReason: WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE });
     await h.finish(h.workspaceId, accepted.operation.id, "FAILED", { error: "the pull request is not the checked code" });
@@ -524,7 +525,7 @@ describe("the shared thread (FR-032, US3 scenario 1)", () => {
     await setWorkflow({ revision: 8, stage: "PULL_REQUEST", state: "READY" });
     await h.pump();
     const task = h.db.get(`DEVTASK#${h.taskId}`, "META") as Parameters<typeof developerTaskIdentity>[0];
-    const accepted = await h.actions.acceptPullRequest(developerTaskIdentity(task), h.workspaceId, { requestId: randomUUID(), repository: "demo", title: "AgentX: fix", draft: true },
+    const accepted = await h.actions.acceptPullRequest(developerTaskIdentity(task, TEST_ORG), h.workspaceId, { requestId: randomUUID(), repository: "demo", title: "AgentX: fix", draft: true },
       () => [], { workflowCandidate: checkedWorkflowCandidate(h, candidateDigest) });
     const before = h.posts.length;
     // The broker refused the publication's callback and blocked the task; then the worker's own failure arrived.

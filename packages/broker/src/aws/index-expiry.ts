@@ -3,7 +3,7 @@
 // TTL (its template does not change), so there the reconciler deletes old days.
 // It looks 15 days back past the retention, so a run that failed or was skipped is caught up.
 import { DeleteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { ADMIN_INDEX_RETENTION_DAYS } from "@agentx/contracts";
+import { ADMIN_INDEX_RETENTION_DAYS, orgFailureDayPk, orgUsageDayPk, type OrgId } from "@agentx/contracts";
 
 type Client = { send(command: unknown): Promise<unknown> };
 export const INDEX_EXPIRY_DELETES_PER_RUN = 500;
@@ -14,20 +14,22 @@ const DAY_MS = 86_400_000;
 export function indexSweepWanted(env: NodeJS.ProcessEnv): boolean {
   return env.INDEX_EXPIRY !== "ttl";
 }
-const PREFIXES = ["FAILURE#", "USAGE#"] as const;
+/** The day partitions the sweep clears: the org's failure and usage items for one UTC day. */
+const DAY_PARTITIONS = [orgFailureDayPk, orgUsageDayPk] as const;
 
-export async function expireIndexDays(client: Client, tableName: string, now: Date, log: (entry: Record<string, unknown>) => void = () => undefined): Promise<{ deleted: number }> {
+/** `orgId`: the org whose index days are swept; the legacy deployment has one org, the install's single org (ruling R3). */
+export async function expireIndexDays(client: Client, tableName: string, orgId: OrgId, now: Date, log: (entry: Record<string, unknown>) => void = () => undefined): Promise<{ deleted: number }> {
   let deleted = 0;
   // Oldest day first: under a backlog, the days about to leave the look-back window are cleared first.
   // The loops stop as soon as the run's budget is spent.
   for (let back = ADMIN_INDEX_RETENTION_DAYS + INDEX_EXPIRY_LOOKBACK_DAYS; back > ADMIN_INDEX_RETENTION_DAYS && deleted < INDEX_EXPIRY_DELETES_PER_RUN; back -= 1) {
     const day = new Date(now.getTime() - back * DAY_MS).toISOString().slice(0, 10);
-    for (const prefix of PREFIXES) {
+    for (const partition of DAY_PARTITIONS) {
       if (deleted >= INDEX_EXPIRY_DELETES_PER_RUN) break;
       const response = await client.send(new QueryCommand({
         TableName: tableName,
         KeyConditionExpression: "pk = :pk AND begins_with(sk, :day)",
-        ExpressionAttributeValues: { ":pk": `${prefix}${day}`, ":day": day },
+        ExpressionAttributeValues: { ":pk": partition(orgId, day), ":day": day },
         Limit: INDEX_EXPIRY_DELETES_PER_RUN - deleted,
       })) as { Items?: Array<{ pk: string; sk: string }> };
       for (const entry of response.Items ?? []) {

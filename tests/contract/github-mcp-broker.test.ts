@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { RepositoryGrantService } from "../../packages/broker/src/repository-access.js";
 import { GitHubMcpCatalogSchema } from "../../packages/contracts/src/github-mcp.js";
+import { TEST_ENV, TEST_ORG } from "../support/orgs.js";
+import { projectMemberKey, projectPk } from "../../packages/contracts/src/org-scoped-keys.js";
 
 describe("thread-authenticated GitHub MCP routes", () => {
   it("enforces owner, membership, revision policy and repository before discovery, and durably deduplicates writes", async () => {
@@ -39,7 +41,7 @@ describe("thread-authenticated GitHub MCP routes", () => {
       createdAt: now,
       updatedAt: now,
     });
-    const membershipKey = key(`MEMBER#${ownerKey}`, "PROJECT#demo");
+    const membershipKey = key(projectMemberKey(TEST_ORG, ownerKey, "demo").pk, "PROJECT#demo");
     records.set(membershipKey, { ownerKey, projectName: "demo", role: "developer" });
     records.set(key(`SLACK_BINDING#${teamId}`, `CHANNEL#${channelId}`), {
       teamId, channelId, projectName: "demo", projectRevision: 2, updatedAt: now,
@@ -47,7 +49,7 @@ describe("thread-authenticated GitHub MCP routes", () => {
     const repository = { name: "demo", url: "https://github.com/example/demo.git", credentialRef: "github-app" };
     const policy = { tools: [{ name: "issue_write", access: "write" }] };
     const definition = { revision: 2, repositories: [repository], integrations: { githubMcp: policy } };
-    records.set(key("PROJECT#demo", "REV#000000000002"), { definition });
+    records.set(key(projectPk(TEST_ORG, "demo"), "REV#000000000002"), { definition });
     const documentClient = { send: vi.fn(async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
       if (command.constructor.name === "GetCommand") {
         const itemKey = command.input.Key as { pk: string; sk: string };
@@ -84,6 +86,7 @@ describe("thread-authenticated GitHub MCP routes", () => {
       }, required: ["owner", "repo", "method"] } }], call, close: vi.fn(async () => undefined),
     }));
     const handler = createAwsBrokerHandler({
+      environmentName: TEST_ENV,
       documentClient: documentClient as never, s3: {} as never, tableName: "state", artifactBucketName: "artifacts",
       issuer, adminClaim: "groups", adminValues: ["admins"], callbackSigningKey: "c".repeat(64),
       repositoryGrants: new RepositoryGrantService(Buffer.alloc(32, 0x5a), resolveCredential),
@@ -111,9 +114,9 @@ describe("thread-authenticated GitHub MCP routes", () => {
     records.delete(membershipKey);
     expect((await request("GET")).statusCode).toBe(404);
     records.set(membershipKey, membership);
-    records.set(key("PROJECT#demo", "REV#000000000002"), { definition: { revision: 2, repositories: [repository] } });
+    records.set(key(projectPk(TEST_ORG, "demo"), "REV#000000000002"), { definition: { revision: 2, repositories: [repository] } });
     expect((await request("GET")).statusCode).toBe(403);
-    records.set(key("PROJECT#demo", "REV#000000000002"), { definition });
+    records.set(key(projectPk(TEST_ORG, "demo"), "REV#000000000002"), { definition });
     expect(credentials).not.toHaveBeenCalled();
     expect(connect).not.toHaveBeenCalled();
 
@@ -139,7 +142,7 @@ describe("thread-authenticated GitHub MCP routes", () => {
 
     // A newer revision that withdraws the tool rejects the next call, including one whose schema
     // was discovered while the tool was still approved.
-    records.set(key("PROJECT#demo", "REV#000000000003"), {
+    records.set(key(projectPk(TEST_ORG, "demo"), "REV#000000000003"), {
       definition: { revision: 3, repositories: [repository], integrations: { githubMcp: { tools: [{ name: "list_issues", access: "read" }] } } },
     });
     const withdrawn = await request("POST", thread, { ...input, requestId: randomUUID() });

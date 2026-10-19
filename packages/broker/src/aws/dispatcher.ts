@@ -4,7 +4,8 @@ import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { GetCommand, QueryCommand, DynamoDBDocumentClient, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
-import { Ec2RuntimeBindingSchema, ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, SlackTeamIdSchema, WORKER_PING_FEATURES_FIELD, WorkerInvocationSchema, agentXError, projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey, workspaceSessionKey, type SlackChannelBinding, type WorkerInvocation } from "@agentx/contracts";
+import { Ec2RuntimeBindingSchema, ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, SlackTeamIdSchema, WORKER_PING_FEATURES_FIELD, WorkerInvocationSchema, agentXError, projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey, workspaceSessionKey, MEMBER_GRANT_SK_PREFIX, PROJECT_REVISION_SK_PREFIX, memberGrantsPk, projectMemberKey, projectPk, projectRevisionKey, type OrgId, type SlackChannelBinding, type WorkerInvocation } from "@agentx/contracts";
+import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import { requiredEnvironment, type DurableOutboxRecord, type Ec2OutboxRecord } from "./lambda.js";
 import type { Ec2Delivery } from "./ec2-delivery.js";
 import { failOutboxOperation } from "./outbox-failure.js";
@@ -148,7 +149,8 @@ export function createProjectSetupDispatchLifecycle(input: { documentClient: Dyn
 }
 
 /** Loads only the binding pinned by the stored setup execution and its registered project revision. */
-export function createProjectSetupBindingReader(input: { documentClient: DynamoDBDocumentClient; tableName?: string }) {
+/** `orgId`: the org the setup execution's project is registered in (the install's single org until records name theirs, Task 5). */
+export function createProjectSetupBindingReader(input: { documentClient: DynamoDBDocumentClient; tableName?: string; orgId: OrgId }) {
   return async ({ setupExecutionId, subjectId }: { setupExecutionId: string; subjectId: string }) => {
     const table = input.tableName ?? requiredEnvironment("STATE_TABLE_NAME");
     const item = await input.documentClient.send(new GetCommand({ TableName: table,
@@ -156,7 +158,7 @@ export function createProjectSetupBindingReader(input: { documentClient: DynamoD
     const row = ProjectSetupExecutionSchema.safeParse(setupDomainRow(item.Item, projectSetupExecutionKey(setupExecutionId), "PROJECT_SETUP_EXECUTION"));
     if (!row.success || row.data.subjectId !== subjectId) return undefined;
     const project = (await input.documentClient.send(new GetCommand({ TableName: table,
-      Key: { pk: `PROJECT#${row.data.projectName}`, sk: `REV#${String(row.data.projectRevision).padStart(12, "0")}` }, ConsistentRead: true }))).Item as { runtimeBinding?: unknown } | undefined;
+      Key: projectRevisionKey(input.orgId, row.data.projectName, row.data.projectRevision), ConsistentRead: true }))).Item as { runtimeBinding?: unknown } | undefined;
     const binding = Ec2RuntimeBindingSchema.safeParse(project?.runtimeBinding);
     return binding.success && binding.data.deploymentMode === "ec2-ebs" ? binding.data : undefined;
   };
@@ -370,11 +372,11 @@ function taskPersonRuntimePorts(input: {
       return (response as unknown as { Item?: TaskPersonDeveloperRecordProjection }).Item;
     },
     projectAuthorityReader: {
-      async latestRevision(project, admission, abortSignal) {
+      async latestRevision(orgId, project, admission, abortSignal) {
         const response = await taskAuthorityDocumentClient.send(new QueryCommand({
           TableName: input.stateTableName,
           KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
-          ExpressionAttributeValues: { ":pk": `PROJECT#${project}`, ":prefix": "REV#" },
+          ExpressionAttributeValues: { ":pk": projectPk(orgId, project), ":prefix": PROJECT_REVISION_SK_PREFIX },
           ProjectionExpression: "#pk, #sk, #definition.#revision, #definition.#developerTasks",
           ExpressionAttributeNames: { "#pk": "pk", "#sk": "sk", "#definition": "definition", "#revision": "revision", "#developerTasks": "developerTasks" },
           ConsistentRead: true,
@@ -387,9 +389,9 @@ function taskPersonRuntimePorts(input: {
         return { revision: { ...(item.pk === undefined ? {} : { pk: item.pk }), ...(item.sk === undefined ? {} : { sk: item.sk }), revision: item.definition.revision as number,
           definition: Object.hasOwn(item.definition, "developerTasks") ? { developerTasks: item.definition.developerTasks } : {} }, complete: true };
       },
-      async memberships(developerId, admission, abortSignal) {
+      async memberships(orgId, developerId, admission, abortSignal) {
         const result = await queryPages<{ pk: string; sk: string; projectName: string; role?: string }>({
-          pk: `MEMBER#${developerId}`, prefix: "PROJECT#", projection: ["pk", "sk", "projectName", "role"], abortSignal,
+          pk: memberGrantsPk(orgId, developerId), prefix: MEMBER_GRANT_SK_PREFIX, projection: ["pk", "sk", "projectName", "role"], abortSignal,
         });
         admission.assertOpen();
         return result;
@@ -420,6 +422,7 @@ const taskDispatchGuard = (record: DurableOutboxRecord, context?: { remainingTim
   const proofArn = process.env.TASK_PERSON_PROOF_FUNCTION_ARN;
   const slackTeamId = process.env.SLACK_TEAM_ID ?? "";
   const personRuntime = proofArn === undefined || proofArn.trim() === "" || !SlackTeamIdSchema.safeParse(slackTeamId).success ? undefined : createTaskPersonRuntime({
+    orgId: installOrgIdFromEnvironment(),
     admission,
     ports: taskPersonRuntimePorts({
       admission,
@@ -437,6 +440,7 @@ const taskDispatchGuard = (record: DurableOutboxRecord, context?: { remainingTim
   return guardTaskDispatch({
     documentClient: taskAuthorityDocumentClient,
     tableName: stateTableName,
+    orgId: installOrgIdFromEnvironment(),
     admission,
     ...(context === undefined ? {} : { remainingTimeMs: context.remainingTimeMs }),
     ...(checkTaskPerson === undefined ? {} : { checkTaskPerson }),
@@ -456,7 +460,7 @@ const setupRuntimeDomainRow = (item: Record<string, unknown> | undefined, key: {
   return domain === undefined ? undefined : { ...domain, entityType: "PROJECT_SETUP_RUNTIME" };
 };
 
-export function createProjectSetupDispatchGuard(input: { documentClient: DynamoDBDocumentClient; tableName: string; runtimeCatalogId: string; now?: () => number }) {
+export function createProjectSetupDispatchGuard(input: { documentClient: DynamoDBDocumentClient; tableName: string; orgId: OrgId; runtimeCatalogId: string; now?: () => number }) {
   return async (record: DurableOutboxRecord): Promise<"ALLOWED" | "PARKED"> => {
   const invocation = record.invocation;
   const catalogId = input.runtimeCatalogId;
@@ -482,13 +486,13 @@ export function createProjectSetupDispatchGuard(input: { documentClient: DynamoD
     || operation.data.transportCorrelationId !== row.transportCorrelationId || operation.data.fence !== row.fence) return "PARKED";
   const stateTable = input.tableName;
   const projectItem = (await input.documentClient.send(new GetCommand({ TableName: stateTable,
-    Key: { pk: `PROJECT#${row.projectName}`, sk: `REV#${String(row.projectRevision).padStart(12, "0")}` }, ConsistentRead: true }))).Item as Record<string, unknown> | undefined;
+    Key: projectRevisionKey(input.orgId, row.projectName, row.projectRevision), ConsistentRead: true }))).Item as Record<string, unknown> | undefined;
   const project = projectItem as { registeredBy?: unknown; definition?: { revision?: unknown }; runtimeBinding?: unknown; setupApproval?: { proposalSha256?: unknown; proposalRef?: unknown; decision?: unknown } } | undefined;
   if (!project || project.registeredBy !== row.ownerKey || project.definition?.revision !== row.projectRevision
     || project.setupApproval?.decision !== "approve" || project.setupApproval.proposalSha256 !== row.proposalSha256
     || project.setupApproval.proposalRef !== row.proposalRef) return "PARKED";
   const membership = (await input.documentClient.send(new GetCommand({ TableName: stateTable,
-    Key: { pk: `MEMBER#${row.ownerKey}`, sk: `PROJECT#${row.projectName}` }, ConsistentRead: true }))).Item as { role?: unknown } | undefined;
+    Key: projectMemberKey(input.orgId, row.ownerKey, row.projectName), ConsistentRead: true }))).Item as { role?: unknown } | undefined;
   if (membership?.role !== "administrator") return "PARKED";
   const approved = (await input.documentClient.send(new GetCommand({ TableName: stateTable,
     Key: { pk: `PROJECT_SETUP#${row.projectName}`, sk: `PROPOSAL#${row.proposalSha256}` }, ConsistentRead: true }))).Item as Record<string, unknown> | undefined;
@@ -516,7 +520,7 @@ async function guardProjectSetupDispatch(record: DurableOutboxRecord): Promise<"
   const catalogId = process.env.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID;
   const stateTable = tableName ?? (process.env.STATE_TABLE_NAME ?? "");
   if (!catalogId || !stateTable) return "PARKED";
-  return createProjectSetupDispatchGuard({ documentClient, tableName: stateTable, runtimeCatalogId: catalogId })(record);
+  return createProjectSetupDispatchGuard({ documentClient, tableName: stateTable, orgId: installOrgIdFromEnvironment(), runtimeCatalogId: catalogId })(record);
 }
 /** A worker answers /invocations as soon as it has journaled the operation. */
 const WORKER_POST_TIMEOUT_MS = 10_000;
@@ -549,8 +553,8 @@ const deliverEc2 = createEc2Delivery({
     },
   }),
   projectSetupSessions: new ProjectSetupSessionManager({ documentClient, tableName: tableName ?? "" }),
-  projectSetupBinding: createProjectSetupBindingReader({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),
-  binding: (workspaceId) => workspaceBinding(documentClient, tableName ?? requiredEnvironment("STATE_TABLE_NAME"), workspaceId),
+  projectSetupBinding: createProjectSetupBindingReader({ documentClient, orgId: installOrgIdFromEnvironment(), ...(tableName === undefined ? {} : { tableName }) }),
+  binding: (workspaceId) => workspaceBinding(documentClient, tableName ?? requiredEnvironment("STATE_TABLE_NAME"), installOrgIdFromEnvironment(), workspaceId),
   async sign(message) {
     const response = await kms.send(new SignCommand({
       KeyId: requiredEnvironment("INVOKE_SIGNING_KEY_ARN"),

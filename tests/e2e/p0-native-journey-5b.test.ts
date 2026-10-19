@@ -67,6 +67,8 @@ import { persistOriginalEvidencePrimary, persistOriginalMapPrimary } from "../su
 import { FAUX_MODEL, fauxModelRuntime } from "../support/faux-model.js";
 import { observeInstalledRuntimeManifestForHost } from "@agentx/verifier";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 let installedRuntimeManifestDigest: string;
 beforeAll(async () => {
@@ -505,7 +507,7 @@ describe("P0 normal project onboarding journey", () => {
     }, retrySleep: async () => undefined }, { publicKey: workerKeys.publicKey, workspaceId, generation: 1 });
     const workerPing = await handleWorkerRequest(new Request("http://worker/ping"), workerState);
     expect(((await workerPing.json()) as { invocationFeatures: string[] }).invocationFeatures).toContain("project.setupSmoke");
-    const setupGuard = createProjectSetupDispatchGuard({ documentClient: broker.db as never, tableName: "state", runtimeCatalogId });
+    const setupGuard = createProjectSetupDispatchGuard({ orgId: TEST_ORG, documentClient: broker.db as never, tableName: "state", runtimeCatalogId });
     const guardObservations: string[] = [];
     const projectGuard = async (record: Parameters<typeof setupGuard>[0]) => {
       const result = await setupGuard(record);
@@ -518,7 +520,7 @@ describe("P0 normal project onboarding journey", () => {
       sessions: { ensureSession: async () => { throw new Error("setup delivery must not access WORKSPACE sessions"); } },
       binding: async () => { throw new Error("setup delivery must not read WORKSPACE runtime binding"); },
       projectSetupSessions,
-      projectSetupBinding: createProjectSetupBindingReader({ documentClient: broker.db as never, tableName: "state" }),
+      projectSetupBinding: createProjectSetupBindingReader({ orgId: TEST_ORG, documentClient: broker.db as never, tableName: "state" }),
       sign: async (message) => cryptoSign("sha256", message, workerKeys.privateKey),
       post: async (url, init) => {
         const response = await handleWorkerRequest(new Request(url, { method: "POST", headers: { authorization: init.authorization }, body: init.body }), workerState);
@@ -620,7 +622,7 @@ describe("P0 normal project onboarding journey", () => {
     const channelBinding = await call(broker.handler, { method: "PUT", path: "/v1/admin/slack/bindings/T0P0NATIVE/C0P0NATIVE",
       user: { subject: "owner", admin: true }, body: { projectName: "ordinary-orders" } });
     expect(channelBinding.status, JSON.stringify(channelBinding.body)).toBe(200);
-    broker.db.set({ pk: `MEMBER#${ownerDeveloperId}`, sk: "PROJECT#ordinary-orders", entityType: "MEMBERSHIP", ownerKey: ownerDeveloperId,
+    broker.db.set({ ...projectMemberKey(TEST_ORG, ownerDeveloperId, "ordinary-orders"), entityType: "MEMBERSHIP", ownerKey: ownerDeveloperId,
       projectName: "ordinary-orders", role: "developer", grantId: randomUUID(), grantedBy: { issuer, subject: "owner" }, grantedAt: new Date().toISOString() });
     const featureStartRequest = { requestId: randomUUID(), project: "ordinary-orders", instructions: "Add an orders list using the approved source context",
       client: "native-p0-journey", workflow: true, workflowPath: "QUICK" };
@@ -2129,7 +2131,7 @@ describe("P0 normal project onboarding journey", () => {
       approvalRevision: setupPayload.approvalRevision, fence: implementInvocation.fence,
       expiresAt: Math.floor(Date.now() / 1_000) + 60, actions: ["read-execution", "write-evidence", "result"],
     });
-    const registeredFeatureProject = broker.db.get(`PROJECT#ordinary-orders`, `REV#${String(featureTask.startingRevision).padStart(12, "0")}`) as {
+    const registeredFeatureProject = broker.db.get(projectRevisionKey(TEST_ORG, "ordinary-orders", featureTask.startingRevision)) as {
       definition: { repositories: Array<{ name: string; credentialRef: string; url: string }> };
     } | undefined;
     const implementationRepository = registeredFeatureProject?.definition.repositories.find((repository) => repository.name === "ordinary-orders");
@@ -2214,7 +2216,7 @@ describe("P0 normal project onboarding journey", () => {
       executorCalls: collisionExecutor.mock.calls.map(([invocation]) => ({ kind: invocation.kind, operationId: invocation.operationId })),
       effectBoundary: "The genuine WORKSPACE task was accepted. Setup-purpose invocation could not reuse its current operation; setup-purpose tokens were rejected by actual task-result/publication callback and repository-credential routes before credential resolution, and could not be relabeled to task/model or publish/credential execution." }, null, 2)}\n`,
       { mode: 0o600, flag: "wx" });
-    const creatorMembershipKey = { pk: `MEMBER#${ownerDeveloperId}`, sk: "PROJECT#ordinary-orders" };
+    const creatorMembershipKey = { ...projectMemberKey(TEST_ORG, ownerDeveloperId, "ordinary-orders") };
     const admittedCreatorMembership = broker.db.get(creatorMembershipKey.pk, creatorMembershipKey.sk);
     expect(admittedCreatorMembership?.grantId).toMatch(/^[0-9a-f-]{36}$/iu);
     const creatorAuthorityOutboxCount = broker.db.find((item) => item.entityType === "OUTBOX" && item.workspaceId === featureWorkspaceId).length;
@@ -2521,7 +2523,7 @@ describe("P0 normal project onboarding journey", () => {
     const retryDispatchRow = broker.db.find((item) => item.entityType === "WORKFLOW_DISPATCH" && item.taskId === browserTaskId
       && item.workflowRevision === queuedRetryWorkflow?.revision && item.kind === "CHECKS")[0];
     expect(retryDispatchRow, "required-E2E retry must queue the native VERIFY dispatcher, not an ordinary CHECKS task").toBeDefined();
-    const browserCreatorKey = { pk: `MEMBER#${ownerDeveloperId}`, sk: "PROJECT#ordinary-orders" };
+    const browserCreatorKey = { ...projectMemberKey(TEST_ORG, ownerDeveloperId, "ordinary-orders") };
     const browserCreatorGrant = broker.db.get(browserCreatorKey.pk, browserCreatorKey.sk);
     expect(browserCreatorGrant?.grantId).toMatch(/^[0-9a-f-]{36}$/iu);
     const checkOutboxesBeforeAccessPause = broker.db.find((item) => item.entityType === "OUTBOX" && item.workspaceId === browserWorkspaceId

@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { ChannelMembersRequest, ChannelMembersResponse } from "@agentx/contracts";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, call } from "../support/slack-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectPk, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const said = (text: string) => ({ type: "progress", payload: { type: "message_end", message: { role: "assistant", content: [{ type: "text", text }] } } });
 
@@ -349,7 +351,7 @@ describe("pull requests (US1 scenario 4, FR-023)", () => {
 
   it("says so when the task's own project revision is no longer registered", async () => {
     const { db, post } = await finished();
-    for (const [key, item] of db.items) if (item.pk === "PROJECT#payments" && item.sk === `REV#${String(1).padStart(12, "0")}`) db.items.delete(key);
+    for (const [key, item] of db.items) if (item.pk === projectPk(TEST_ORG, "payments") && item.sk === projectRevisionKey(TEST_ORG, "payments", 1).sk) db.items.delete(key);
     expect((await post("pull-requests", { requestId: randomUUID(), title: "x" })).body.error).toEqual({ code: "CONFIG_INVALID", message: "this task's project revision is no longer registered; ask an admin" });
   });
 

@@ -28,6 +28,7 @@ import {
   type Operation,
   type WorkflowSnapshot,
   type WorkflowReviewBase,
+  type OrgId,
 } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
 import type { ShareDecision } from "./share.js";
@@ -485,11 +486,12 @@ export function developerFooter(name: string, client: string): string {
 }
 
 /** The identity every workspace handler sees for a developer task: its own owner key (FR-021). */
-export function developerTaskIdentity(task: Pick<DeveloperTaskRecord, "taskId" | "developerId" | "provider" | "developerName" | "client">): AuthenticatedIdentity {
+export function developerTaskIdentity(task: Pick<DeveloperTaskRecord, "taskId" | "developerId" | "provider" | "developerName" | "client">, orgId: OrgId): AuthenticatedIdentity {
   return {
     issuer: DEVELOPER_TASK_OWNER_ISSUER,
     subject: taskOwnerSubject(task.developerId, task.taskId),
     ownerKey: taskOwnerKey(task.developerId, task.taskId),
+    orgId,
     isAdministrator: false,
     claims: {},
     developer: { developerId: task.developerId, provider: task.provider, name: task.developerName, client: task.client, taskId: task.taskId },

@@ -2,7 +2,7 @@
 // broker builds it (createDeveloperTaskActions) over the existing handlers, so the routes never
 // reach into broker.ts internals.
 import type { TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import type { ChannelTurn, E2EWorkflowAdmissionRef, Operation, OperationRequest, ProjectCommand, PullRequestLifecycleRequest, PullRequestRequest, WorkflowDependencyInvocation, WorkflowFeedbackApprovalBinding, WorkflowReviewBase, WorkflowReviewChecks, WorkflowReviewFeedback, WorkflowReviewNote, WorkflowReviewPlan, WorkspaceInstance } from "@agentx/contracts";
+import type { OrgId, ChannelTurn, E2EWorkflowAdmissionRef, Operation, OperationRequest, ProjectCommand, PullRequestLifecycleRequest, PullRequestRequest, WorkflowDependencyInvocation, WorkflowFeedbackApprovalBinding, WorkflowReviewBase, WorkflowReviewChecks, WorkflowReviewFeedback, WorkflowReviewNote, WorkflowReviewPlan, WorkspaceInstance } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
 import type { StoredEvent } from "../developer/task-records.js";
 import type { RegisteredProjectRecord } from "./broker.js";
@@ -26,9 +26,9 @@ export interface DeveloperTaskActions {
   turnRecordsTableName?: string;
   /** The stack parameters: the limits when no admin setting exists (R7). */
   limitDefaults: { member: number; organization: number };
-  latestProject(projectName: string): Promise<RegisteredProjectRecord | undefined>;
+  latestProject(orgId: OrgId, projectName: string): Promise<RegisteredProjectRecord | undefined>;
   /** One registered revision of a project, or undefined when it does not exist. Unchecked: callers must load the owned task and check project access first. */
-  projectRevision(projectName: string, revision: number): Promise<RegisteredProjectRecord | undefined>;
+  projectRevision(orgId: OrgId, projectName: string, revision: number): Promise<RegisteredProjectRecord | undefined>;
   preparation(identity: AuthenticatedIdentity, project: RegisteredProjectRecord, requestId: string): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems }>;
   /** Unchecked: callers must load the owned task and check project access first. */
   workspace(workspaceId: string): Promise<WorkspaceInstance>;

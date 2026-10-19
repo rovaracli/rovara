@@ -1,5 +1,5 @@
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { agentXError } from "@agentx/contracts";
+import { agentXError, orgOfProjectPk, projectMemberKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { taskOpen } from "../developer/task-access.js";
 import { resolveTaskDispatchPeople, type CheckTaskPerson } from "../developer/task-people.js";
@@ -13,6 +13,8 @@ export interface TaskDispatchAccessDependencies {
   documentClient: { send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<unknown> };
   tableName: string;
   checkTaskPerson?: CheckTaskPerson;
+  /** The org the task's project is registered in; when given, a State authority witness naming another org is refused. */
+  orgId?: OrgId;
   /** One admission shared by every read, owner, and optimistic retry for this guard. */
   admission?: TaskAuthorityAdmission;
   /** Lambda context time remaining; pause writes must retain their independent reserve. */
@@ -143,9 +145,12 @@ async function allowedStillCurrent(
   ];
   if (authorityWitness !== undefined) {
     const witness = authorityWitness;
-    const expectedRevisionSk = `REV#${String(witness.projectRevision.revision).padStart(12, "0")}`;
-    if (witness.taskId !== task.taskId || witness.project !== task.project || witness.projectRevision.pk !== `PROJECT#${task.project}`
-      || witness.projectRevision.sk !== expectedRevisionSk || !Number.isSafeInteger(witness.projectRevision.revision)
+    // The witness's org is the one its revision key names; every other key it carries must name the same one.
+    const witnessOrg = orgOfProjectPk(witness.projectRevision.pk);
+    if (witnessOrg === undefined || (deps.orgId !== undefined && deps.orgId !== witnessOrg)) return false;
+    const expectedRevision = projectRevisionKey(witnessOrg, task.project, witness.projectRevision.revision);
+    if (witness.taskId !== task.taskId || witness.project !== task.project || witness.projectRevision.pk !== expectedRevision.pk
+      || witness.projectRevision.sk !== expectedRevision.sk || !Number.isSafeInteger(witness.projectRevision.revision)
       || witness.projectRevision.revision < 0 || (witness.access !== "granted" && witness.access !== "channel")) return false;
     const definitionNames = { "#definition": "definition", "#revision": "revision", "#developerTasks": "developerTasks" };
     const definitionValues = { ":revision": witness.projectRevision.revision } as Record<string, unknown>;
@@ -157,7 +162,8 @@ async function allowedStillCurrent(
       ConditionExpression: definitionPolicy, ExpressionAttributeNames: definitionNames, ExpressionAttributeValues: definitionValues } });
     if (witness.access === "granted") {
       const membership = witness.membership;
-      if (membership === undefined || membership.pk !== `MEMBER#${witness.developerId}` || membership.sk !== `PROJECT#${task.project}`
+      const expectedMembership = projectMemberKey(witnessOrg, witness.developerId, task.project);
+      if (membership === undefined || membership.pk !== expectedMembership.pk || membership.sk !== expectedMembership.sk
         || membership.projectName !== task.project || membership.role !== "developer") return false;
       checks.push({ ConditionCheck: { TableName: deps.tableName, Key: { pk: membership.pk, sk: membership.sk },
         ConditionExpression: "projectName = :project AND #role = :developer", ExpressionAttributeNames: { "#role": "role" },

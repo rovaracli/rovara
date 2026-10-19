@@ -9,6 +9,8 @@ import { getTaskPeople, getTaskPeopleCapabilities } from "../../packages/broker/
 import { adminIssuer, createAdminBroker, type AdminHandler } from "../support/admin-broker.js";
 import { identityHarness, localSigner } from "../support/developer-fakes.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const ISSUER = "https://abc123.execute-api.us-east-1.amazonaws.com/v1/auth";
 const developerId = "d".repeat(64);
@@ -70,10 +72,10 @@ beforeEach(async () => {
   db.set({ pk: `DEVELOPER#${developerId}`, sk: "META", developerId, provider: "slack", issuer: "https://slack.com", subject: "U0MAYA001", displayName: "Maya Chen", slackUserId: "U0MAYA001", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
   db.set({ pk: "SLACK_BINDING#T0TEAM1", sk: "CHANNEL#C0PAY0001", teamId: "T0TEAM1", channelId: "C0PAY0001", projectName: "payments-api", updatedAt: "2026-09-27T00:00:00.000Z" });
   db.set({ pk: "SLACK_BINDING#T0TEAM1", sk: "CHANNEL#C0LEDGER1", teamId: "T0TEAM1", channelId: "C0LEDGER1", projectName: "ledger", updatedAt: "2026-09-27T00:00:00.000Z" });
-  db.set({ pk: "PROJECT#payments-api", sk: "REV#000000000007", entityType: "PROJECT", definition: { name: "payments-api", revision: 7 } });
-  db.set({ pk: "PROJECT#ledger", sk: "REV#000000000002", entityType: "PROJECT", definition: { name: "ledger", revision: 2 } });
-  db.set({ pk: "PROJECT#solo", sk: "REV#000000000001", entityType: "PROJECT", definition: { name: "solo", revision: 1 } });
-  db.set({ pk: `MEMBER#${developerId}`, sk: "PROJECT#solo", entityType: "MEMBERSHIP", ownerKey: developerId, projectName: "solo", role: "developer" });
+  db.set({ ...projectRevisionKey(TEST_ORG, "payments-api", 7), entityType: "PROJECT", definition: { name: "payments-api", revision: 7 } });
+  db.set({ ...projectRevisionKey(TEST_ORG, "ledger", 2), entityType: "PROJECT", definition: { name: "ledger", revision: 2 } });
+  db.set({ ...projectRevisionKey(TEST_ORG, "solo", 1), entityType: "PROJECT", definition: { name: "solo", revision: 1 } });
+  db.set({ ...projectMemberKey(TEST_ORG, developerId, "solo"), entityType: "MEMBERSHIP", ownerKey: developerId, projectName: "solo", role: "developer" });
 });
 
 describe("GET /v1/dev/projects (FR-016, FR-013)", () => {
@@ -100,7 +102,7 @@ describe("GET /v1/dev/projects (FR-016, FR-013)", () => {
   });
 
   it("does not count an administrator membership as a developer grant (FR-013)", async () => {
-    db.set({ pk: `MEMBER#${developerId}`, sk: "PROJECT#ledger", entityType: "MEMBERSHIP", ownerKey: developerId, projectName: "ledger", role: "administrator" });
+    db.set({ ...projectMemberKey(TEST_ORG, developerId, "ledger"), entityType: "MEMBERSHIP", ownerKey: developerId, projectName: "ledger", role: "administrator" });
     channelMembers.mockResolvedValueOnce({ ok: true, memberOf: [] });
     const body = JSON.parse((await call("/v1/dev/projects", claims())).body) as { projects: Array<{ name: string }> };
     expect(body.projects.map((project) => project.name)).toEqual(["solo"]);
@@ -119,9 +121,9 @@ describe("GET /v1/dev/projects (FR-016, FR-013)", () => {
   });
 
   it("reads every page of grants and bindings", async () => {
-    db.set({ pk: `MEMBER#${developerId}`, sk: "PROJECT#ledger", entityType: "MEMBERSHIP", ownerKey: developerId, projectName: "ledger", role: "developer" });
+    db.set({ ...projectMemberKey(TEST_ORG, developerId, "ledger"), entityType: "MEMBERSHIP", ownerKey: developerId, projectName: "ledger", role: "developer" });
     db.set({ pk: "SLACK_BINDING#T0TEAM1", sk: "CHANNEL#C0DOCS001", teamId: "T0TEAM1", channelId: "C0DOCS001", projectName: "docs", updatedAt: "2026-09-27T00:00:00.000Z" });
-    db.set({ pk: "PROJECT#docs", sk: "REV#000000000003", entityType: "PROJECT", definition: { name: "docs", revision: 3 } });
+    db.set({ ...projectRevisionKey(TEST_ORG, "docs", 3), entityType: "PROJECT", definition: { name: "docs", revision: 3 } });
     channelMembers.mockResolvedValueOnce({ ok: true, memberOf: ["C0DOCS001", "C0PAY0001"] });
     const original = db.send;
     const pagedStarts: unknown[] = [];
@@ -129,7 +131,7 @@ describe("GET /v1/dev/projects (FR-016, FR-013)", () => {
     vi.spyOn(db, "send").mockImplementation(async (command) => {
       const { constructor, input } = command;
       const pk = (input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"];
-      if (constructor.name !== "QueryCommand" || typeof pk !== "string" || !(pk.startsWith("MEMBER#") || pk.startsWith("SLACK_BINDING#"))) return original(command);
+      if (constructor.name !== "QueryCommand" || typeof pk !== "string" || !(pk.includes("#MEMBER#") || pk.startsWith("SLACK_BINDING#"))) return original(command);
       const all = ((await original(command)) as { Items: Array<Record<string, unknown>> }).Items;
       const start = input.ExclusiveStartKey as { sk: string } | undefined;
       if (start !== undefined) pagedStarts.push(start);
@@ -166,7 +168,7 @@ describe("GET /v1/dev/projects (FR-016, FR-013)", () => {
   });
 
   it("skips a binding whose project has no registered revision", async () => {
-    db.items.delete("PROJECT#payments-api\u0000REV#000000000007");
+    db.delete(projectRevisionKey(TEST_ORG, "payments-api", 7));
     const body = JSON.parse((await call("/v1/dev/projects", claims())).body) as { projects: Array<{ name: string }> };
     expect(body.projects.map((project) => project.name)).toEqual(["solo"]);
   });
@@ -404,7 +406,7 @@ describe("the metered Task People display read through DeveloperIdentity", () =>
 
 describe("GET /v1/dev/projects with the task policy (FR-014, FR-016)", () => {
   it("adds each project's policy from its latest revision", async () => {
-    db.set({ pk: "PROJECT#payments-api", sk: "REV#000000000008", entityType: "PROJECT", definition: { name: "payments-api", revision: 8, developerTasks: { enabled: true, share: "required", shareMode: { default: "view", allowContinue: false }, channelMembersMayUse: true } } });
+    db.set({ ...projectRevisionKey(TEST_ORG, "payments-api", 8), entityType: "PROJECT", definition: { name: "payments-api", revision: 8, developerTasks: { enabled: true, share: "required", shareMode: { default: "view", allowContinue: false }, channelMembersMayUse: true } } });
     const body = JSON.parse((await call("/v1/dev/projects", claims())).body) as { projects: Array<{ name: string; latestRevision: number; tasks: unknown }> };
     expect(body.projects.find((project) => project.name === "payments-api")).toMatchObject({
       latestRevision: 8, tasks: { share: "required", shareMode: { allowContinue: false } },
@@ -413,8 +415,8 @@ describe("GET /v1/dev/projects with the task policy (FR-014, FR-016)", () => {
   });
 
   it("does not give channel access to a project whose channelMembersMayUse is false, and does not ask Slack for it", async () => {
-    db.set({ pk: "PROJECT#payments-api", sk: "REV#000000000008", entityType: "PROJECT", definition: { name: "payments-api", revision: 8, developerTasks: { channelMembersMayUse: false } } });
-    db.set({ pk: "PROJECT#ledger", sk: "REV#000000000003", entityType: "PROJECT", definition: { name: "ledger", revision: 3, developerTasks: { channelMembersMayUse: false } } });
+    db.set({ ...projectRevisionKey(TEST_ORG, "payments-api", 8), entityType: "PROJECT", definition: { name: "payments-api", revision: 8, developerTasks: { channelMembersMayUse: false } } });
+    db.set({ ...projectRevisionKey(TEST_ORG, "ledger", 3), entityType: "PROJECT", definition: { name: "ledger", revision: 3, developerTasks: { channelMembersMayUse: false } } });
     const body = JSON.parse((await call("/v1/dev/projects", claims())).body) as { projects: Array<{ name: string }> };
     expect(body.projects.map((project) => project.name)).toEqual(["solo"]);
     expect(channelMembers).not.toHaveBeenCalled();
@@ -450,8 +452,8 @@ describe("GET /v1/dev/projects with the task policy (FR-014, FR-016)", () => {
   });
 
   it("fails closed for channel access when a revision's policy is damaged, and keeps a grant", async () => {
-    db.set({ pk: "PROJECT#payments-api", sk: "REV#000000000008", entityType: "PROJECT", definition: { name: "payments-api", revision: 8, developerTasks: { channelMembersMayUse: "yes" } } });
-    db.set({ pk: "PROJECT#solo", sk: "REV#000000000002", entityType: "PROJECT", definition: { name: "solo", revision: 2, developerTasks: { enabled: "sure" } } });
+    db.set({ ...projectRevisionKey(TEST_ORG, "payments-api", 8), entityType: "PROJECT", definition: { name: "payments-api", revision: 8, developerTasks: { channelMembersMayUse: "yes" } } });
+    db.set({ ...projectRevisionKey(TEST_ORG, "solo", 2), entityType: "PROJECT", definition: { name: "solo", revision: 2, developerTasks: { enabled: "sure" } } });
     const body = JSON.parse((await call("/v1/dev/projects", claims())).body) as { projects: Array<{ name: string; tasks: { enabled: boolean; channelMembersMayUse: boolean } }> };
     expect(body.projects.map((project) => project.name)).toEqual(["solo"]);
     expect(body.projects[0]?.tasks).toMatchObject({ enabled: false, channelMembersMayUse: false });
@@ -460,7 +462,7 @@ describe("GET /v1/dev/projects with the task policy (FR-014, FR-016)", () => {
 });
 
 describe("checkProjectAccess, FR-018's first three checks (FR-013, FR-014, FR-049, R10)", () => {
-  const maya: DeveloperCaller = { developerId, sessionId: "s-1", amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001" };
+  const maya: DeveloperCaller = { orgId: TEST_ORG, developerId, sessionId: "s-1", amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001" };
   const deps = () => ({ documentClient: db, tableName: "state", developer: config, now: () => T0 });
   const refusal = async (project: string, caller: DeveloperCaller = maya) => {
     try {
@@ -482,7 +484,7 @@ describe("checkProjectAccess, FR-018's first three checks (FR-013, FR-014, FR-04
   });
 
   it("uses supplied fresh proof for a target subject without a session or cached Slack lookup", async () => {
-    const subject = { developerId, slackUserId: "U0MAYA001" };
+    const subject = { orgId: TEST_ORG, developerId, slackUserId: "U0MAYA001" };
     channelMembers.mockRejectedValue(new Error("cached path must not run"));
 
     await expect(checkProjectAccess(deps(), subject, "payments-api", { freshMemberOf: ["C0PAY0001"] }))
@@ -518,7 +520,7 @@ describe("checkProjectAccess, FR-018's first three checks (FR-013, FR-014, FR-04
   });
 
   it("does not use or name channels when the project turns channel access off, and does not ask Slack", async () => {
-    db.set({ pk: "PROJECT#payments-api", sk: "REV#000000000008", entityType: "PROJECT", definition: { name: "payments-api", revision: 8, developerTasks: { channelMembersMayUse: false } } });
+    db.set({ ...projectRevisionKey(TEST_ORG, "payments-api", 8), entityType: "PROJECT", definition: { name: "payments-api", revision: 8, developerTasks: { channelMembersMayUse: false } } });
     const channelInfo = names({ C0PAY0001: { name: "payments-dev", isPrivate: false } });
     config.channelInfo = channelInfo;
     expect(await refusal("payments-api")).toEqual({ code: "PROJECT_ACCESS_DENIED", message: "you don't have access to `payments-api`: ask an admin" });
@@ -527,15 +529,15 @@ describe("checkProjectAccess, FR-018's first three checks (FR-013, FR-014, FR-04
   });
 
   it("fails closed when the policy is damaged: no channel access, and tasks off even with a grant", async () => {
-    db.set({ pk: "PROJECT#payments-api", sk: "REV#000000000008", entityType: "PROJECT", definition: { name: "payments-api", revision: 8, developerTasks: { share: "sometimes" } } });
+    db.set({ ...projectRevisionKey(TEST_ORG, "payments-api", 8), entityType: "PROJECT", definition: { name: "payments-api", revision: 8, developerTasks: { share: "sometimes" } } });
     expect((await refusal("payments-api")).code).toBe("PROJECT_ACCESS_DENIED");
     expect(channelMembers).not.toHaveBeenCalled();
-    db.set({ pk: "PROJECT#solo", sk: "REV#000000000002", entityType: "PROJECT", definition: { name: "solo", revision: 2, developerTasks: { unknownField: true } } });
+    db.set({ ...projectRevisionKey(TEST_ORG, "solo", 2), entityType: "PROJECT", definition: { name: "solo", revision: 2, developerTasks: { unknownField: true } } });
     expect((await refusal("solo")).code).toBe("PROJECT_TASKS_DISABLED");
   });
 
   it("does not name channels to a caller with no Slack link, and never asks Slack for them", async () => {
-    const company: DeveloperCaller = { developerId, sessionId: "s-1", amr: "oidc", name: "Maya Chen", email: "maya@example.test" };
+    const company: DeveloperCaller = { orgId: TEST_ORG, developerId, sessionId: "s-1", amr: "oidc", name: "Maya Chen", email: "maya@example.test" };
     const channelInfo = names({ C0LEDGER1: { name: "ledger-dev", isPrivate: false } });
     config.channelInfo = channelInfo;
     expect(await refusal("ledger", company)).toEqual({ code: "PROJECT_ACCESS_DENIED", message: "you don't have access to `ledger`: ask an admin" });
@@ -552,19 +554,19 @@ describe("checkProjectAccess, FR-018's first three checks (FR-013, FR-014, FR-04
   });
 
   it("answers PROJECT_TASKS_DISABLED to a caller with access when tasks are off", async () => {
-    db.set({ pk: "PROJECT#solo", sk: "REV#000000000002", entityType: "PROJECT", definition: { name: "solo", revision: 2, developerTasks: { enabled: false } } });
+    db.set({ ...projectRevisionKey(TEST_ORG, "solo", 2), entityType: "PROJECT", definition: { name: "solo", revision: 2, developerTasks: { enabled: false } } });
     expect(await refusal("solo")).toEqual({ code: "PROJECT_TASKS_DISABLED", message: "tasks from AI tools are turned off for `solo`; use the project's Slack channel, or ask an admin" });
   });
 
   it("answers PROJECT_ACCESS_DENIED, not PROJECT_TASKS_DISABLED, to a caller without access to a project with tasks off", async () => {
-    db.set({ pk: "PROJECT#ledger", sk: "REV#000000000003", entityType: "PROJECT", definition: { name: "ledger", revision: 3, developerTasks: { enabled: false } } });
+    db.set({ ...projectRevisionKey(TEST_ORG, "ledger", 3), entityType: "PROJECT", definition: { name: "ledger", revision: 3, developerTasks: { enabled: false } } });
     channelMembers.mockResolvedValueOnce({ ok: true, memberOf: [] });
     expect((await refusal("ledger")).code).toBe("PROJECT_ACCESS_DENIED");
   });
 });
 
 describe("D2 task-person route dependencies", () => {
-  const maya: DeveloperCaller = { developerId, sessionId: "s-1", amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001" };
+  const maya: DeveloperCaller = { orgId: TEST_ORG, developerId, sessionId: "s-1", amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001" };
   const taskId = "11111111-1111-4111-8111-111111111111";
   const nativeDeveloperId = developerIdForSlackUser("U0MAYA001");
   const task = {
@@ -590,12 +592,12 @@ describe("D2 task-person route dependencies", () => {
     db.set({ pk: "SLACK_BINDING#T0TEAM1", sk: "CHANNEL#C0PAY0001", teamId: "T0TEAM1", channelId: "C0PAY0001",
       projectName: "payments-api", updatedAt: "2026-09-27T00:00:00.000Z" });
     if (mode === "tasks-disabled") {
-      db.set({ pk: `MEMBER#${ownerId}`, sk: "PROJECT#payments-api", entityType: "MEMBERSHIP", ownerKey: ownerId,
+      db.set({ ...projectMemberKey(TEST_ORG, ownerId, "payments-api"), entityType: "MEMBERSHIP", ownerKey: ownerId,
         projectName: "payments-api", role: "developer" });
-      db.set({ pk: "PROJECT#payments-api", sk: "REV#000000000008", entityType: "PROJECT",
+      db.set({ ...projectRevisionKey(TEST_ORG, "payments-api", 8), entityType: "PROJECT",
         definition: { name: "payments-api", revision: 8, developerTasks: { enabled: false } } });
     } else {
-      db.delete("PROJECT#payments-api", "REV#000000000007");
+      db.delete(projectRevisionKey(TEST_ORG, "payments-api", 7));
     }
     config.taskPeopleConfiguration = { peopleChangesEnabled: false };
     config.taskPersonProof = async () => ({ ok: true, user: { id: "U0MAYA001", teamId: "T0TEAM1", name: "Maya Chen" }, memberOf: ["C0PAY0001"] });
@@ -614,9 +616,9 @@ describe("D2 task-person route dependencies", () => {
       people: [{ developerId: ownerId, slackUserId: "U0MAYA001", name: "Maya Chen", role: "owner" }] };
     db.set(storedTask);
     db.set(originalPeople);
-    db.set({ pk: "PROJECT#payments-api", sk: "REV#000000000008", entityType: "PROJECT",
+    db.set({ ...projectRevisionKey(TEST_ORG, "payments-api", 8), entityType: "PROJECT",
       definition: { name: "payments-api", revision: 8, developerTasks: { enabled: true, channelMembersMayUse: false } } });
-    db.delete(`MEMBER#${ownerId}`, "PROJECT#payments-api");
+    db.delete(projectMemberKey(TEST_ORG, ownerId, "payments-api"));
     config.taskPeopleConfiguration = { peopleChangesEnabled: false };
     config.taskPersonProof = async () => ({ ok: true, user: { id: "U0MAYA001", teamId: "T0TEAM1", name: "Maya Chen" }, memberOf: ["C0PAY0001"] });
     const route = developerTaskRouteDependencies({ documentClient: db, tableName: "state", developer: config, now: () => T0 }, nativeCaller);
@@ -824,7 +826,7 @@ describe("the projects list's cost and consistency (Task 7 fix round 1)", () => 
     config.methods.oidc = true;
     db.set({ pk: "SESSION#s-1", sk: "META", sessionId: "s-1", developerId, amr: "oidc", startedAt: new Date(T0).toISOString(), endsAt: T0 / 1000 + 604_800 });
     db.set({ pk: `DEVELOPER#${developerId}`, sk: "META", developerId, provider: "oidc", issuer: "https://login.example.test", subject: "maya", displayName: "Maya Chen", email: "maya@example.test", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
-    db.set({ pk: `MEMBER#${developerId}`, sk: "PROJECT#ledger", entityType: "MEMBERSHIP", ownerKey: developerId, projectName: "ledger", role: "developer" });
+    db.set({ ...projectMemberKey(TEST_ORG, developerId, "ledger"), entityType: "MEMBERSHIP", ownerKey: developerId, projectName: "ledger", role: "developer" });
     const channelInfo = vi.fn(async (request: ChannelInfoRequest) => ({ ok: true as const, channels: request.channelIds.map((channelId) => ({ channelId, name: "ledger-dev", isPrivate: false })) }));
     config.channelInfo = channelInfo;
     const body = JSON.parse((await call("/v1/dev/projects", claims({ amr: "oidc" }))).body) as { projects: Array<{ name: string; channels: unknown }> };
@@ -836,7 +838,7 @@ describe("the projects list's cost and consistency (Task 7 fix round 1)", () => 
     for (let index = 0; index < 20; index += 1) {
       const name = `proj-${index}`;
       db.set({ pk: "SLACK_BINDING#T0TEAM1", sk: `CHANNEL#C0PRJ${String(index).padStart(4, "0")}`, teamId: "T0TEAM1", channelId: `C0PRJ${String(index).padStart(4, "0")}`, projectName: name, updatedAt: "2026-09-27T00:00:00.000Z" });
-      db.set({ pk: `PROJECT#${name}`, sk: "REV#000000000001", entityType: "PROJECT", definition: { name, revision: 1 } });
+      db.set({ ...projectRevisionKey(TEST_ORG, name, 1), entityType: "PROJECT", definition: { name, revision: 1 } });
     }
     const original = db.send;
     const projectQueries: Array<Record<string, unknown>> = [];
@@ -844,7 +846,7 @@ describe("the projects list's cost and consistency (Task 7 fix round 1)", () => 
     let most = 0;
     vi.spyOn(db, "send").mockImplementation(async (command) => {
       const pk = (command.input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"];
-      if (command.constructor.name !== "QueryCommand" || typeof pk !== "string" || !pk.startsWith("PROJECT#")) return original(command);
+      if (command.constructor.name !== "QueryCommand" || typeof pk !== "string" || !pk.includes("#PROJECT#")) return original(command);
       projectQueries.push(command.input);
       inFlight += 1;
       most = Math.max(most, inFlight);
@@ -869,7 +871,7 @@ describe("the projects list's cost and consistency (Task 7 fix round 1)", () => 
 
 describe("PROJECT_NOT_FOUND for a name that is not a project name (Task 7 fix round 1)", () => {
   it("does not echo the raw input", async () => {
-    const maya: DeveloperCaller = { developerId, sessionId: "s-1", amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001" };
+    const maya: DeveloperCaller = { orgId: TEST_ORG, developerId, sessionId: "s-1", amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001" };
     const raw = `${"x".repeat(200)}\`\nplanted-injection`;
     const error = await checkProjectAccess({ documentClient: db, tableName: "state", developer: config, now: () => T0 }, maya, raw).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(AgentXError);

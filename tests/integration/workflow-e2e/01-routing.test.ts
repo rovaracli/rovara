@@ -6,6 +6,8 @@ import { MAYA } from "../../support/developer-task-broker.js";
 import { createWorkflowE2E } from "../../support/workflow-e2e.js";
 import { EDITS, PLAN, TEAMMATE, actionIds, atPlanReview, expectNoJargon, journeySuite, runs, said } from "../../support/workflow-e2e-journeys.js";
 import { workflowStartedNotice } from "../../../packages/broker/src/aws/slack-workflow-choice.js";
+import { TEST_ORG } from "../../support/orgs.js";
+import { orgSettingsKey } from "../../../packages/contracts/src/org-scoped-keys.js";
 
 const OWNER = MAYA.slackUserId!;
 const APPROVED = `Coding plan approved by <@${OWNER}>. Writing the code now; then I'll run 1 check.`;
@@ -178,7 +180,7 @@ describe("Suite 1: routing and start", () => {
   it("1.15 says, word for word, that the owner reached their open-task limit, and starts no second task", async () => {
     const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS } });
     // The admin's workspace limits: one open task per person.
-    e2e.db.set({ pk: "SETTINGS", sk: "WORKSPACE_LIMITS", entityType: "SETTING", perPerson: 1, perOrganization: 20, updatedBy: "admin", updatedAt: new Date().toISOString() });
+    e2e.db.set({ ...orgSettingsKey(TEST_ORG, "WORKSPACE_LIMITS"), entityType: "SETTING", perPerson: 1, perOrganization: 20, updatedBy: "admin", updatedAt: new Date().toISOString() });
     await atPlanReview(e2e);
     expect(await e2e.mention("quick: Add a farewell(name) function", { ts: "1695500700.000001", threadTs: "1695500700.000001" })).toBe(200);
     await e2e.settle();

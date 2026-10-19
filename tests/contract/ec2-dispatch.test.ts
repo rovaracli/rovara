@@ -10,6 +10,8 @@ import { appendOperationEvent } from "../../packages/broker/src/aws/operation-ev
 import { SessionManager, workspaceBinding } from "../../packages/broker/src/aws/sessions.js";
 import { verifyInvokeAuthorization, invocationMatchesClaims } from "../../packages/worker/src/invoke-auth.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const NOW = Date.parse("2026-09-27T12:00:00.000Z");
 const keys = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
@@ -65,7 +67,7 @@ function readinessFixture() {
   db.set({ pk: `WORKSPACE#${record.workspaceId}`, sk: "META", entityType: "WORKSPACE", id: record.workspaceId, status: "BUSY",
     deploymentMode: "ec2-ebs", projectName: "readiness-test", projectRevision: record.invocation.projectRevision,
     activeOperationId: record.operationId, fence: record.invocation.fence });
-  db.set({ pk: "PROJECT#readiness-test", sk: `REV#${String(record.invocation.projectRevision).padStart(12, "0")}`, entityType: "PROJECT", runtimeBinding: binding });
+  db.set({ ...projectRevisionKey(TEST_ORG, "readiness-test", record.invocation.projectRevision), entityType: "PROJECT", runtimeBinding: binding });
   db.set({ pk: `DEVTASK#${taskId}`, sk: "META", taskId, workspaceId: record.workspaceId, workflow: { revision: marker.workflowRevision, stage: "VERIFY", state: "WAITING",
     candidate: { digest: marker.candidateDigest }, e2e: { required: true } } });
   db.set({ pk: "WORKFLOW_DISPATCH", sk: marker.dispatchSk, taskId, workflowRevision: marker.workflowRevision,
@@ -944,13 +946,13 @@ describe("ec2-ebs delivery through the real session manager", () => {
     });
     const record = recordFor();
     db.set({ pk: `WORKSPACE#${record.workspaceId}`, sk: "META", entityType: "WORKSPACE", deploymentMode: "ec2-ebs" as const, projectName: "ec2-test", projectRevision: 1, activeOperationId: record.operationId, fence: 2 });
-    db.set({ pk: "PROJECT#ec2-test", sk: "REV#000000000001", entityType: "PROJECT", runtimeBinding: binding });
+    db.set({ ...projectRevisionKey(TEST_ORG, "ec2-test", 1), entityType: "PROJECT", runtimeBinding: binding });
     db.set({ pk: `WORKSPACE#${record.workspaceId}`, sk: `OPERATION#${record.operationId}`, status: "DISPATCHING", fence: 2, eventSequence: 0 });
     db.set({ pk: `OUTBOX#${record.id}`, sk: "OUTBOX", ...record });
     const post = vi.fn<Ec2DeliveryDependencies["post"]>(async () => ({ status: 200, body: "{}" }));
     const deliver = createEc2Delivery({
       sessions,
-      binding: (workspaceId) => workspaceBinding(db, "state", workspaceId),
+      binding: (workspaceId) => workspaceBinding(db, "state", TEST_ORG, workspaceId),
       sign: kmsSign,
       post,
       progress: (parked, message) => appendOperationEvent(db, "state", {
@@ -991,7 +993,7 @@ describe("ec2-ebs delivery through the real session manager", () => {
     const markDelivered = vi.fn(async () => undefined);
     const deliver = createEc2Delivery({
       sessions,
-      binding: (workspaceId) => workspaceBinding(fixture.db, "state", workspaceId),
+      binding: (workspaceId) => workspaceBinding(fixture.db, "state", TEST_ORG, workspaceId),
       sign: kmsSign,
       post,
       progress: (record, message) => appendOperationEvent(fixture.db, "state", {
@@ -1035,8 +1037,8 @@ describe("the runtime binding a session is started with", () => {
       return { Item: { runtimeBinding: binding } };
     });
     const workspaceId = randomUUID();
-    await expect(workspaceBinding({ send } as never, "state", workspaceId)).resolves.toEqual(binding);
+    await expect(workspaceBinding({ send } as never, "state", TEST_ORG, workspaceId)).resolves.toEqual(binding);
     expect(send.mock.calls[0]?.[0].input).toMatchObject({ Key: { pk: `WORKSPACE#${workspaceId}`, sk: "META" }, ConsistentRead: true });
-    expect(send.mock.calls[1]?.[0].input).toMatchObject({ Key: { pk: "PROJECT#payments", sk: `REV#${"2".padStart(12, "0")}` } });
+    expect(send.mock.calls[1]?.[0].input).toMatchObject({ Key: projectRevisionKey(TEST_ORG, "payments", 2) });
   });
 });

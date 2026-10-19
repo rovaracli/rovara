@@ -10,6 +10,7 @@ import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject, registerRevision, type Developer } from "../support/developer-task-broker.js";
 import { planDocument } from "../support/plan-documents.js";
 import { SLACK_CHANNEL } from "../support/slack-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const taskId = "11111111-1111-4111-8111-111111111111";
 const markdownDoc = (kind: TaskDocumentKind, version: number, markdown: string, extra: { approved?: boolean; current?: boolean } = {}): TaskDocumentEntry =>
@@ -22,7 +23,7 @@ const view: TaskDocumentView = { taskId, title: "Add greet <img src=x>", status:
   checks: [{ label: "npm test", passed: true }], findings: [{ role: "code", text: "Drops <b>last</b> line", origin: "INTRODUCED", file: "src/a.ts", line: 3 }],
   pullRequests: [], history: [] };
 const request = (path: string, cookie?: string): AdaptedHttpRequest => ({ method: "GET", path, headers: cookie === undefined ? {} : { cookie }, requestId: "r" });
-const caller = { developerId: "d".repeat(64), sessionId: "s", amr: "slack", name: "Maya" } as const;
+const caller = { orgId: TEST_ORG, developerId: "d".repeat(64), sessionId: "s", amr: "slack", name: "Maya" } as const;
 const SESSION = "__Host-agentx_review_session=11111111-1111-4111-8111-111111111111";
 const pageUrl = new URL(`https://agentx.example.test/review/${taskId}/task`);
 const renderAt = (search: string, overrides: Partial<TaskDocumentView>) =>

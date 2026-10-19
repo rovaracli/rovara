@@ -5,10 +5,12 @@ import { randomUUID } from "node:crypto";
 import { vi } from "vitest";
 import type { GitHubMcpDependencies } from "../../packages/broker/src/github-mcp.js";
 import type { DeveloperApiConfiguration } from "../../packages/broker/src/aws/developer-routes.js";
+import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import type { ConnectorCredentialsConfiguration, CredentialRegistry } from "../../packages/broker/src/aws/credentials.js";
 import type { TurnRecordExport } from "../../packages/broker/src/aws/turns.js";
 import { RepositoryGrantService } from "../../packages/broker/src/repository-access.js";
 import { FakeDynamoDb, type FakeDynamoDbOptions } from "./fake-dynamodb.js";
+import { TEST_ENV } from "./orgs.js";
 
 export const adminIssuer = "https://identity.example.test";
 const account = "111122223333";
@@ -53,6 +55,8 @@ export async function createAdminBroker(options: {
   turnRecords?: TurnRecordExport;
   checkRepositoryAccess?: (repository: { credentialRef: string; url: string }) => Promise<void>;
   developer?: DeveloperApiConfiguration;
+  /** Which org each caller belongs to; the single-org default when absent (ruling R1). A test with two orgs injects one. */
+  orgResolver?: OrgResolver;
   /** Sign in with ChatGPT (#338): built over the same fake table when given. */
   chatgpt?: (db: FakeDynamoDb) => ChatGptConnections;
   /** The fake table's realism (all on by default); see FakeDynamoDbOptions. An opt-out needs a comment saying why. */
@@ -83,17 +87,19 @@ export async function createAdminBroker(options: {
     ...(registry ? { credentialRegistry: registry } : {}),
     ...(options.turnRecords ? { turnRecords: options.turnRecords } : {}),
     ...(options.developer ? { developer: options.developer } : {}),
+    environmentName: TEST_ENV,
+    ...(options.orgResolver ? { orgResolver: options.orgResolver } : {}),
     ...(options.chatgpt ? { chatgpt: options.chatgpt(db) } : {}),
   } as never);
   return { db, handler, registry };
 }
 
-/** Calls the OIDC entry point as "admin-subject", an administrator unless `admin` is false. */
+/** Calls the OIDC entry point as `subject` ("admin-subject" by default), an administrator unless `admin` is false. */
 export async function adminCall(
   handler: AdminHandler,
-  options: { method: string; path: string; body?: unknown; admin?: boolean },
+  options: { method: string; path: string; body?: unknown; admin?: boolean; subject?: string },
 ): Promise<{ status: number; body: Record<string, unknown> }> {
-  const claims = { iss: adminIssuer, sub: "admin-subject", groups: options.admin === false ? [] : ["admins"] };
+  const claims = { iss: adminIssuer, sub: options.subject ?? "admin-subject", groups: options.admin === false ? [] : ["admins"] };
   const response = await handler({
     version: "2.0",
     rawPath: options.path.split("?")[0],

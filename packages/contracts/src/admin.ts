@@ -22,7 +22,6 @@ export const ADMIN_ERROR_TEXT_MAX = 1_000;
 export const ADMIN_USAGE_READ_MAX = 5_000;
 /** A8: the most index pages one filtered turn read takes. */
 export const ADMIN_TURN_FILTER_PAGES = 10;
-export const PROJECT_CATALOG_PK = "PROJECT_CATALOG";
 
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
 const Uuid = z.string().uuid();
@@ -33,7 +32,7 @@ const Hex64 = z.string().regex(/^[a-f0-9]{64}$/);
  * precision the caller used. Refuses a time that only looks like ISO, such as month 13 or 30
  * February (Date would roll it over, so the date and time must round-trip unchanged).
  */
-function canonicalInstant(at: string): string {
+export function canonicalInstant(at: string): string {
   const refuse = (): never => {
     throw new Error("an index key needs an ISO time such as 2026-09-30T08:15:00.000Z");
   };
@@ -49,14 +48,6 @@ function canonicalInstant(at: string): string {
 export function indexDay(at: string): string {
   return canonicalInstant(at).slice(0, 10);
 }
-export function failureIndexKey(endedAt: string, operationId: string): { pk: string; sk: string } {
-  const at = canonicalInstant(endedAt);
-  return { pk: `FAILURE#${indexDay(at)}`, sk: `${at}#${operationId}` };
-}
-export function usageIndexKey(at: string, operationId: string): { pk: string; sk: string } {
-  const time = canonicalInstant(at);
-  return { pk: `USAGE#${indexDay(time)}`, sk: `${time}#${operationId}` };
-}
 /**
  * A6 (Q5, owner answer 2026-09-30): the TTL attribute of every failure and usage item. Named
  * environments' State table expires items on it; the legacy deployment's reconciler deletes them.
@@ -64,10 +55,6 @@ export function usageIndexKey(at: string, operationId: string): { pk: string; sk
 export const INDEX_EXPIRY_ATTRIBUTE = "indexExpiresAt";
 export function indexExpiresAt(at: string): number {
   return Math.floor(Date.parse(canonicalInstant(at)) / 1000) + ADMIN_INDEX_RETENTION_DAYS * 86_400;
-}
-/** A3: one row per registered project, written with each registration from 25d on. */
-export function projectCatalogKey(name: string): { pk: string; sk: string } {
-  return { pk: PROJECT_CATALOG_PK, sk: `PROJECT#${name}` };
 }
 
 export const AdminOriginSchema = z.enum(["slack", "ai_tool"]);

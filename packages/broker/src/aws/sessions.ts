@@ -17,7 +17,9 @@ import {
   sessionProvisioningName,
   workspaceSessionKey,
   projectSetupSessionKey,
+  projectRevisionKey,
   type Ec2RuntimeBinding,
+  type OrgId,
   type WorkspaceSession,
   type WorkspaceSessionState,
   type ProjectSetupSession,
@@ -590,6 +592,7 @@ export class ProjectSetupSessionManager {
 export async function workspaceBinding(
   documentClient: Pick<DynamoDBDocumentClient, "send">,
   tableName: string,
+  orgId: OrgId,
   workspaceId: string,
 ): Promise<Ec2RuntimeBinding | undefined> {
   // Strongly consistent: a lazy Slack thread's first preparation moves the record to the latest
@@ -600,7 +603,7 @@ export async function workspaceBinding(
   if (workspace?.deploymentMode !== "ec2-ebs" || typeof workspace.projectName !== "string" || typeof workspace.projectRevision !== "number") return undefined;
   const project = (await documentClient.send(new GetCommand({
     TableName: tableName,
-    Key: { pk: `PROJECT#${workspace.projectName}`, sk: `REV#${String(workspace.projectRevision).padStart(12, "0")}` },
+    Key: projectRevisionKey(orgId, workspace.projectName, workspace.projectRevision),
   }))).Item as { runtimeBinding?: unknown } | undefined;
   const parsed = Ec2RuntimeBindingSchema.safeParse(project?.runtimeBinding);
   return parsed.success ? parsed.data : undefined;

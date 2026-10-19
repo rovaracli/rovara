@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { orgOfProjectPk, projectMemberKey, projectRevisionKey } from "@agentx/contracts";
 import type { ProjectAuthorityWitness } from "../developer/task-project-access.js";
 
 export type TaskPersonProjectAuthorityWitness = ProjectAuthorityWitness & {
@@ -21,9 +22,12 @@ export type TaskPersonInviteStateCondition =
 
 function projectRevisionCondition(witness: TaskPersonProjectAuthorityWitness, project: string): TaskPersonInviteStateCondition | undefined {
   const revision = witness.projectRevision;
-  if (!Number.isSafeInteger(revision.revision) || revision.revision < 0
-    || revision.pk !== `PROJECT#${project}` || revision.sk !== `REV#${String(revision.revision).padStart(12, "0")}`
-    || typeof revision.developerTasksPresent !== "boolean") return undefined;
+  if (!Number.isSafeInteger(revision.revision) || revision.revision < 0) return undefined;
+  // The witness's org is the one its revision key names; the grant key must name the same one.
+  const orgId = orgOfProjectPk(revision.pk);
+  if (orgId === undefined) return undefined;
+  const expected = projectRevisionKey(orgId, project, revision.revision);
+  if (revision.pk !== expected.pk || revision.sk !== expected.sk || typeof revision.developerTasksPresent !== "boolean") return undefined;
   const hasValue = Object.hasOwn(revision, "developerTasks");
   if (revision.developerTasksPresent !== hasValue) return undefined;
   return {
@@ -40,8 +44,10 @@ function positiveRowCondition(
 ): TaskPersonInviteStateCondition | undefined {
   if (witness.access === "granted") {
     const membership = witness.membership;
-    if (membership === undefined || witness.binding !== undefined
-      || membership.pk !== `MEMBER#${witness.developerId}` || membership.sk !== `PROJECT#${project}`
+    const orgId = orgOfProjectPk(witness.projectRevision.pk);
+    const expected = orgId === undefined ? undefined : projectMemberKey(orgId, witness.developerId, project);
+    if (membership === undefined || witness.binding !== undefined || expected === undefined
+      || membership.pk !== expected.pk || membership.sk !== expected.sk
       || membership.projectName !== project || membership.role !== "developer") return undefined;
     return { kind: "developer-grant", pk: membership.pk, sk: membership.sk, projectName: membership.projectName, role: membership.role };
   }

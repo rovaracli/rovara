@@ -16,6 +16,8 @@ import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 // packages/gateway/src) keeps this the same module copy the broker's connect fake must throw
 // through, so `instanceof McpUnauthorized` holds inside the engine.
 import { McpUnauthorized, requestFingerprint } from "@agentx/gateway";
+import { TEST_ORG } from "../support/orgs.js";
+import { orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const team = "T0BSHLLUGBD";
 const channel = "C0123456789";
@@ -518,8 +520,8 @@ describe("hosted Slack GitHub MCP", () => {
     expect((await call(handler, { method: "GET", path: `${path}/tools?repository=unknown`, service })).status).toBe(404);
     expect((await call(handler, { method: "GET", path: `${path}/tools?repository=demo`, service: { ...service, thread: `${team}/C0999999999/1695500000.000001` } })).status).toBe(403);
     const owner = db.get(`WORKSPACE#${workspaceId}`, "META")!.ownerKey as string;
-    const membership = db.get(`MEMBER#${owner}`, "PROJECT#payments")!;
-    db.items.delete(`MEMBER#${owner}\u0000PROJECT#payments`);
+    const membership = db.get(projectMemberKey(TEST_ORG, owner, "payments"))!;
+    db.delete(projectMemberKey(TEST_ORG, owner, "payments"));
     expect((await call(handler, { method: "GET", path: `${path}/tools?repository=demo`, service })).status).toBe(404);
     db.set(membership);
     const binding = db.get(`SLACK_BINDING#${team}`, `CHANNEL#${channel}`)!;
@@ -985,10 +987,10 @@ describe("project registration", () => {
     });
     expect(refused.status).toBe(400);
     expect(JSON.stringify(refused.body)).toContain("controlPlaneUrl, environment");
-    expect(db.get("PROJECT#payments", "REV#000000000002")).toBeUndefined();
+    expect(db.get(projectRevisionKey(TEST_ORG, "payments", 2))).toBeUndefined();
 
     // A revision stored before the removal keeps working for an existing thread.
-    const stored = db.get("PROJECT#payments", "REV#000000000001");
+    const stored = db.get(projectRevisionKey(TEST_ORG, "payments", 1));
     if (!stored) throw new Error("registered revision is missing");
     const definition = stored.definition as Record<string, unknown>;
     definition.schemaVersion = 2;
@@ -1039,7 +1041,7 @@ describe("Slack thread workspaces", () => {
     // Revision keys are zero-padded, so revision 10 sorts after revision 2.
     await registerRevision(handler, 10);
     await registerRevision(handler, 2);
-    expect(db.get("PROJECT_CATALOG", "PROJECT#payments")).toMatchObject({ latestRevision: 10 });
+    expect(db.get(orgProjectCatalogKey(TEST_ORG, "payments"))).toMatchObject({ latestRevision: 10 });
     const second = await ensureWorkspace(handler, threadTwo, pratik);
     expect(second.body).toMatchObject({ created: true, orchestratorInstructions: "Delegate work (revision 10)." });
     expect(db.get(`WORKSPACE#${String(second.body.workspaceId)}`, "META")).toMatchObject({ projectRevision: 10 });
@@ -1065,15 +1067,15 @@ describe("Slack thread workspaces", () => {
 
     const legacy = createBroker();
     await registerRevision(legacy.handler, 10);
-    const legacyCatalog = legacy.db.get("PROJECT_CATALOG", "PROJECT#payments");
+    const legacyCatalog = legacy.db.get(orgProjectCatalogKey(TEST_ORG, "payments"));
     if (legacyCatalog === undefined) throw new Error("legacy project catalog is missing");
     delete legacyCatalog.latestRevision;
     legacy.db.set(legacyCatalog);
     // An exact immutable duplicate repairs only the catalog pointer from stored history.
     await registerRevision(legacy.handler, 10);
-    expect(legacy.db.get("PROJECT_CATALOG", "PROJECT#payments")).toMatchObject({ latestRevision: 10 });
+    expect(legacy.db.get(orgProjectCatalogKey(TEST_ORG, "payments"))).toMatchObject({ latestRevision: 10 });
     await registerRevision(legacy.handler, 2);
-    expect(legacy.db.get("PROJECT_CATALOG", "PROJECT#payments")).toMatchObject({ latestRevision: 10 });
+    expect(legacy.db.get(orgProjectCatalogKey(TEST_ORG, "payments"))).toMatchObject({ latestRevision: 10 });
   });
 
   it("declines new threads beyond the member and organization limits without blocking follow-ups", async () => {

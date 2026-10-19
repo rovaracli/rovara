@@ -132,8 +132,11 @@ export class FakeDynamoDb {
   }
 
   /** Removes one item without a stream record, as seeding does. */
-  delete(pk: string, sk: string): void {
-    this.items.delete(itemKey(pk, sk));
+  delete(key: { pk: string; sk: string }): void;
+  delete(pk: string, sk: string): void;
+  delete(pkOrKey: string | { pk: string; sk: string }, sk?: string): void {
+    if (typeof pkOrKey === "string") this.items.delete(itemKey(pkOrKey, sk as string));
+    else this.items.delete(itemKey(pkOrKey.pk, pkOrKey.sk));
   }
 
   /** Each committed write's item before and after, as a DynamoDB stream record carries them. `set` (seeding) is not reported. */
@@ -142,8 +145,10 @@ export class FakeDynamoDb {
     return () => this.listeners.delete(listener);
   }
 
-  get(pk: string, sk: string): Item | undefined {
-    return this.items.get(itemKey(pk, sk));
+  get(key: { pk: string; sk: string }): Item | undefined;
+  get(pk: string, sk: string): Item | undefined;
+  get(pkOrKey: string | { pk: string; sk: string }, sk?: string): Item | undefined {
+    return typeof pkOrKey === "string" ? this.items.get(itemKey(pkOrKey, sk as string)) : this.items.get(itemKey(pkOrKey.pk, pkOrKey.sk));
   }
 
   set(item: Item): void {

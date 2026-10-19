@@ -9,9 +9,11 @@ import { CredentialRegistry } from "../../packages/broker/src/aws/credentials.js
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
 import { bindChannel, registerRevision } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const PLANTED = `ghp_${"D".repeat(36)}`;
-const admin = { issuer: "https://identity.example.test", subject: "admin-subject", ownerKey: "", isAdministrator: true, claims: {} };
+const admin = { issuer: "https://identity.example.test", subject: "admin-subject", ownerKey: "", orgId: TEST_ORG, isAdministrator: true, claims: {} };
 const MEMBER_ADMIN = "U0ADMIN001";
 const githubApp = { ref: "github-app", secretName: "arn:aws:secretsmanager:us-east-1:111122223333:secret:github-key" };
 const repository = { name: "demo", url: "https://github.com/example/demo.git", path: "repo/demo", defaultBranch: "main", credentialRef: "github-app" };
@@ -101,7 +103,7 @@ describe("binding and unbinding (E7, E12)", () => {
     const { deps, identity, db } = await harness();
     const bind = await planChange(deps, identity, { kind: "bind_channel", channel: "C0LEDGER01", project: "payments" });
     const unbind = await planChange(deps, identity, { kind: "unbind_channel", channel: SLACK_CHANNEL });
-    db.delete(`MEMBER#${identity.ownerKey}`, "PROJECT#payments");
+    db.delete(projectMemberKey(TEST_ORG, identity.ownerKey, "payments"));
     await expect(bind.apply(identity)).rejects.toMatchObject({ code: expect.stringMatching(/^(FORBIDDEN|NOT_FOUND)$/) as unknown });
     await expect(unbind.apply(identity)).rejects.toMatchObject({ code: expect.stringMatching(/^(FORBIDDEN|NOT_FOUND)$/) as unknown });
     expect(db.get(`SLACK_BINDING#${SLACK_TEAM}`, "CHANNEL#C0LEDGER01")).toBeUndefined();
@@ -136,16 +138,16 @@ describe("a project revision (E7, E11)", () => {
     const plan = await planChange(deps, identity, { kind: "register_project_revision", definition: { name: "payments", revision: 2, repositories: [repository], setup: [], readiness: [], orchestratorInstructions: "Delegate." } });
     const result = await plan.apply(identity);
     expect(result).not.toHaveProperty("preflight");
-    expect(db.get("PROJECT#payments", `REV#${"2".padStart(12, "0")}`)).toMatchObject({ entityType: "PROJECT" });
+    expect(db.get(projectRevisionKey(TEST_ORG, "payments", 2))).toMatchObject({ entityType: "PROJECT" });
   });
 
   it("rechecks project administration at apply: a revision by an admin who lost it is refused and writes nothing (E6, FR-015)", async () => {
     const { deps, identity, db } = await harness();
     const plan = await planChange(deps, identity, { kind: "register_project_revision", definition: { name: "payments", revision: 2, repositories: [repository], setup: [], readiness: [], orchestratorInstructions: "Delegate." } });
-    db.delete(`MEMBER#${identity.ownerKey}`, "PROJECT#payments");
+    db.delete(projectMemberKey(TEST_ORG, identity.ownerKey, "payments"));
     await expect(plan.apply(identity)).rejects.toMatchObject({ code: expect.stringMatching(/^(FORBIDDEN|NOT_FOUND)$/) as unknown });
-    expect(db.get("PROJECT#payments", `REV#${"2".padStart(12, "0")}`)).toBeUndefined();
-    expect(db.get(`MEMBER#${identity.ownerKey}`, "PROJECT#payments")).toBeUndefined();
+    expect(db.get(projectRevisionKey(TEST_ORG, "payments", 2))).toBeUndefined();
+    expect(db.get(projectMemberKey(TEST_ORG, identity.ownerKey, "payments"))).toBeUndefined();
   });
 
   it("redacts a planted secret in a revision's diff, and refuses a secret-looking credential input", async () => {

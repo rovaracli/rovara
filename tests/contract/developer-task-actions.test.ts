@@ -5,14 +5,16 @@ import type { DeveloperTaskActions } from "../../packages/broker/src/aws/develop
 import { developerTaskIdentity, taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { markReady } from "../support/slack-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const taskId = "44444444-4444-4444-8444-444444444444";
 const task = { taskId, developerId: MAYA.developerId, provider: "slack" as const, developerName: "Maya Chen", client: "Claude Code" };
 
 async function readyWorkspace() {
   const harness = await createDeveloperTaskBroker();
-  const identity = developerTaskIdentity(task);
-  const project = await harness.actions.latestProject("payments");
+  const identity = developerTaskIdentity(task, TEST_ORG);
+  const project = await harness.actions.latestProject(TEST_ORG, "payments");
   if (!project) throw new Error("project missing");
   const preparation = await harness.actions.preparation(identity, project, randomUUID());
   await harness.actions.transact(preparation.items);
@@ -46,7 +48,7 @@ describe("the developer identity (FR-017, FR-021)", () => {
     const { db, workspaceId } = await readyWorkspace();
     const ownerKey = taskOwnerKey(MAYA.developerId, taskId);
     expect(db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ ownerKey, projectName: "payments" });
-    expect(db.get(`MEMBER#${ownerKey}`, "PROJECT#payments")).toMatchObject({ role: "developer" });
+    expect(db.get(projectMemberKey(TEST_ORG, ownerKey, "payments"))).toMatchObject({ role: "developer" });
   });
 });
 
@@ -108,7 +110,7 @@ describe("acceptPullRequest with a developer identity (FR-023, R14)", () => {
 describe("the pull request footer says where a task started and who asked (FR-023)", () => {
   const footerOf = async (named: Partial<typeof task>) => {
     const { db, actions, workspaceId } = await readyWorkspace();
-    const identity = developerTaskIdentity({ ...task, ...named });
+    const identity = developerTaskIdentity({ ...task, ...named }, TEST_ORG);
     const accepted = await actions.acceptPullRequest(identity, workspaceId, { requestId: randomUUID(), repository: "demo", title: "Fix", body: "Fixes #12." }, () => []);
     const record = db.get(`WORKSPACE#${workspaceId}`, `OPERATION#${accepted.operation.id}`) as { publication: { body: string } };
     return record.publication.body;
@@ -138,7 +140,7 @@ describe("the pull request footer says where a task started and who asked (FR-02
 describe("acceptPullRequest attribution and draft (FR-023, R14)", () => {
   it("keeps a display name with a backtick and a mention inert in the footer", async () => {
     const { db, actions, workspaceId } = await readyWorkspace();
-    const identity = developerTaskIdentity({ ...task, developerName: "Ma`ya @octocat" });
+    const identity = developerTaskIdentity({ ...task, developerName: "Ma`ya @octocat" }, TEST_ORG);
     const accepted = await actions.acceptPullRequest(identity, workspaceId, { requestId: randomUUID(), repository: "demo", title: "Fix", body: "Fixes #12." }, () => []);
     const record = db.get(`WORKSPACE#${workspaceId}`, `OPERATION#${accepted.operation.id}`) as { publication: { body: string } };
     expect(record.publication.body).toBe("Fixes #12.\n\n---\nRequested by ``Ma`ya @octocat`` via AgentX, started from Claude Code");
@@ -159,7 +161,7 @@ describe("acceptPullRequest attribution and draft (FR-023, R14)", () => {
 });
 
 describe("ownership of the workspace an action is given", () => {
-  const stranger = developerTaskIdentity({ ...task, taskId: "55555555-5555-4555-8555-555555555555" });
+  const stranger = developerTaskIdentity({ ...task, taskId: "55555555-5555-4555-8555-555555555555" }, TEST_ORG);
 
   it("refuses to cancel another owner's task as NOT_FOUND and writes nothing", async () => {
     const { db, actions, identity, workspaceId, conversationId } = await readyWorkspace();

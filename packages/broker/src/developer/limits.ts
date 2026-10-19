@@ -1,12 +1,14 @@
 // Spec 025 FR-020 and FR-053: one set of workspace limits for Slack threads and developer tasks.
 // The numbers are the admin's setting when there is one, else the stack parameters (R7).
 import { GetCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
+import { orgLimitKey, orgSettingsKey, type OrgId } from "@agentx/contracts";
 import type { CounterKey, WorkspaceCharge } from "./task-records.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
 type TransactItems = NonNullable<TransactWriteCommandInput["TransactItems"]>;
 
-export const WORKSPACE_LIMITS_KEY = { pk: "SETTINGS", sk: "WORKSPACE_LIMITS" } as const;
+/** One org's workspace limits setting. */
+export const workspaceLimitsKey = (orgId: OrgId) => orgSettingsKey(orgId, "WORKSPACE_LIMITS");
 export interface WorkspaceLimits { member: number; organization: number; source: "setting" | "parameters" }
 
 const defaultLog = (entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry }));
@@ -18,10 +20,11 @@ export const isWholeLimit = (value: unknown, max: number): value is number => Nu
 export async function readWorkspaceLimits(
   client: Client,
   tableName: string,
+  orgId: OrgId,
   fallback: { member: number; organization: number },
   log: (entry: Record<string, unknown>) => void = defaultLog,
 ): Promise<WorkspaceLimits> {
-  const response = await client.send(new GetCommand({ TableName: tableName, Key: WORKSPACE_LIMITS_KEY, ConsistentRead: true })) as { Item?: Record<string, unknown> };
+  const response = await client.send(new GetCommand({ TableName: tableName, Key: workspaceLimitsKey(orgId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
   const item = response.Item;
   if (item === undefined) return { ...fallback, source: "parameters" };
   const member = item.perPerson;
@@ -35,14 +38,14 @@ export async function readWorkspaceLimits(
 }
 
 /** R6: a linked developer shares their Slack member's counter; everyone shares the organization's. */
-export function developerCharge(input: { teamId?: string | undefined; slackUserId?: string | undefined; developerId: string }): WorkspaceCharge {
+export function developerCharge(input: { orgId: OrgId; teamId?: string | undefined; slackUserId?: string | undefined; developerId: string }): WorkspaceCharge {
   return {
     member: input.teamId !== undefined && input.slackUserId !== undefined
       ? { pk: `SLACK_LIMIT#${input.teamId}`, sk: `MEMBER#${input.slackUserId}` }
       : { pk: `DEVELOPER_LIMIT#${input.developerId}`, sk: "MEMBER" },
     organization: input.teamId !== undefined
       ? { pk: `SLACK_LIMIT#${input.teamId}`, sk: "ORGANIZATION" }
-      : { pk: "DEVELOPER_LIMIT#ORGANIZATION", sk: "ORGANIZATION" },
+      : orgLimitKey(input.orgId),
   };
 }
 

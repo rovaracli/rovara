@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { LIVE_CHECKLIST, pageChecks, stateChecks, taskPageLink } from "../../scripts/plan-review-live-check.js";
 import { createTaskWeb, type TaskDocumentView } from "../../packages/broker/src/aws/task-web.js";
 import { planDocument } from "../support/plan-documents.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const taskId = "11111111-1111-4111-8111-111111111111";
 
@@ -15,7 +16,7 @@ async function ownerPage(): Promise<string> {
     revision: 3, commentSeq: 0, access: { role: "owner", canComment: true, canSuggest: false, canDecide: true, canAsk: true }, pageComments: [], pageSuggestions: [],
     waiting: { kind: "coding plan", version: 1, artifactDigest: "f".repeat(64) }, optionalChecks: [],
   };
-  const web = createTaskWeb({ authenticateSession: async () => ({ developerId: "d".repeat(64), sessionId: "s", amr: "slack", name: "Maya" }), getTaskDocumentView: async () => view });
+  const web = createTaskWeb({ authenticateSession: async () => ({ orgId: TEST_ORG, developerId: "d".repeat(64), sessionId: "s", amr: "slack", name: "Maya" }), getTaskDocumentView: async () => view });
   const answer = await web({ method: "GET", path: `/review/${taskId}/task`, headers: { cookie: `__Host-agentx_review_session=${taskId}` }, requestId: "r" }, new URL(`https://agentx.example.test/review/${taskId}/task`));
   return answer.body;
 }

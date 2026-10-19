@@ -3,6 +3,7 @@
 // counts, names, codes and error classes only.
 import { ADMIN_API_VERSION, DEVELOPER_API_VERSION, MISSING_ALARM_STATE, type AdminHealthCheck, type AdminHealthResponse, type SlackAuthCheckResponse } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
+import { requireOrgId } from "../org/resolve.js";
 import { adminProjects, projectWorkspaceRows, readFailures, type AdminReadDependencies } from "./admin-reads.js";
 
 /** Function-valued fields, not methods, so a probe can be called on its own (no `this`). */
@@ -116,7 +117,7 @@ export async function adminHealth(deps: AdminReadDependencies, identity: Authent
     const workspacesTruncated = reads.some((read) => read.truncated);
     for (const { rows } of reads) for (const row of rows) if (row.status !== "CLOSED") workspaces[row.status] = (workspaces[row.status] ?? 0) + 1;
     const window = { since: new Date(now - 86_400_000).toISOString(), until: new Date(now).toISOString() };
-    const [latest] = (await readFailures(deps, window, { limit: 1, category: "worker_unavailable" })).failures;
+    const [latest] = (await readFailures(deps, requireOrgId(identity.orgId), window, { limit: 1, category: "worker_unavailable" })).failures;
     // FR-024: ec2-ebs is the only worker mode; it is configured when a project's latest revision binds it.
     return {
       workerModes: [{ mode: "ec2-ebs", configured: modes.has("ec2-ebs"), ...(latest === undefined ? {} : { latestDispatchFailure: { at: latest.endedAt, operationId: latest.operationId, error: latest.error } }) }],

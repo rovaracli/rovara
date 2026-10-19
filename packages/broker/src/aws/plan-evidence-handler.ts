@@ -18,7 +18,8 @@ import {
   type PlanEvidenceEvent, type PlanEvidenceJob,
 } from "../developer/plan-evidence-jobs.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
-import type { PlanDocument } from "@agentx/contracts";
+import type { OrgId, PlanDocument } from "@agentx/contracts";
+import { installOrgIdFromEnvironment } from "../org/resolve.js";
 
 /** All cited code must be read inside this; the Lambda's own timeout (150 s) leaves room to attach and clean up. */
 const RESOLVE_DEADLINE_MS = 120_000;
@@ -35,6 +36,8 @@ export interface PlanEvidenceRunDependencies {
   s3: { send(command: never): Promise<unknown> };
   tableName: string;
   bucketName: string;
+  /** The org the task's project is registered in: the install's single org until tasks record theirs (Task 5). */
+  orgId: OrgId;
   github: { getFileAtCommit: (url: string, path: string, commit: string, options: { untilLine?: number; timeoutMs?: number }) => Promise<string | undefined> };
   now: () => number;
   /** Operational log line (no model text); defaults to one JSON line on the console. */
@@ -129,7 +132,7 @@ export async function runPlanEvidenceJob(deps: PlanEvidenceRunDependencies, even
   let plan: PlanDocument | undefined;
   try {
     plan = await loadPlan();
-    const project = await requireProject(deps, task.project, task.startingRevision);
+    const project = await requireProject(deps, deps.orgId, task.project, task.startingRevision);
     const deadline = deps.now() + RESOLVE_DEADLINE_MS;
     const bundle = await resolvePlanEvidence(plan, {
       ...planEvidenceSources(project, task),
@@ -168,6 +171,7 @@ function productionDependencies(): PlanEvidenceRunDependencies {
     s3: new S3Client(awsClientConfiguration),
     tableName: requiredEnvironment("STATE_TABLE_NAME"),
     bucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"),
+    orgId: installOrgIdFromEnvironment(),
     github: createGitHubAppCredentials(new SecretsManagerClient(awsClientConfiguration)).provider,
     now: Date.now,
   };

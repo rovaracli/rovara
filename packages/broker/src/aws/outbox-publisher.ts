@@ -2,6 +2,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
+import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import type { StreamRecord } from "../developer/notifications.js";
 import { INDEX_DEFAULT_BUDGET_MS, byDeadline, indexActivity } from "./activity-index.js";
 import { requiredEnvironment, type DurableOutboxRecord } from "./lambda.js";
@@ -91,7 +92,7 @@ export const handler = createOutboxPublisherHandler({
         if (!(error instanceof Error) || error.name !== "ConditionalCheckFailedException") throw error;
       }
     },
-  }, (entry) => console.log(JSON.stringify({ component: "outbox-publisher", ...entry })), options?.deadline ?? Date.now() + INDEX_DEFAULT_BUDGET_MS),
+  }, (entry) => console.log(JSON.stringify({ component: "outbox-publisher", ...entry })), options?.deadline ?? Date.now() + INDEX_DEFAULT_BUDGET_MS, installOrgIdFromEnvironment()),
 });
 
 /** The SDK's per-request options: the index's abort signal, when it gave one. */

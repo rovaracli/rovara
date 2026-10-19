@@ -10,14 +10,17 @@ import {
   INDEX_EXPIRY_ATTRIBUTE,
   TaskUsageTelemetrySchema,
   UsageIndexRecordSchema,
-  failureIndexKey,
+  OrgIdSchema,
   indexExpiresAt,
+  orgFailureIndexKey,
+  orgUsageIndexKey,
   redactAndCap,
-  usageIndexKey,
   type AdminRequester,
   type FailureIndexRecord,
+  type OrgId,
   type UsageIndexRecord,
 } from "@agentx/contracts";
+import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import { failureCategory, taskKey, taskPointerKey } from "../developer/task-records.js";
 import type { StreamRecord } from "../developer/notifications.js";
 
@@ -72,24 +75,26 @@ const text = (value: unknown): string | undefined => (typeof value === "string" 
 const record = (value: unknown): Record<string, unknown> | undefined => (value && typeof value === "object" ? (value as Record<string, unknown>) : undefined);
 const errorName = (error: unknown) => (error instanceof Error ? error.name : "unknown");
 
-interface Context { project: string; origin: "slack" | "ai_tool"; taskId?: string; thread?: string; developerName?: string }
+interface Context { project: string; origin: "slack" | "ai_tool"; orgId?: OrgId; taskId?: string; thread?: string; developerName?: string }
 
 /** A5: the project, the origin and the turn record link, from the workspace's own records. */
 async function contextOf(store: IndexStore, workspaceId: string): Promise<Context> {
   const workspace = await store.get({ pk: `WORKSPACE#${workspaceId}`, sk: "META" });
   const project = text(workspace?.projectName)?.slice(0, PROJECT_MAX) ?? "unknown";
+  const stored = OrgIdSchema.safeParse(workspace?.orgId);
+  const orgId = stored.success ? { orgId: stored.data } : {};
   const pointer = await store.get(taskPointerKey(workspaceId));
   const taskId = text(pointer?.taskId);
   if (taskId !== undefined) {
     const task = await store.get(taskKey(taskId));
     const developerName = text(task?.developerName);
-    return { project, origin: "ai_tool", taskId, ...(developerName === undefined ? {} : { developerName }) };
+    return { project, origin: "ai_tool", ...orgId, taskId, ...(developerName === undefined ? {} : { developerName }) };
   }
   const ownerKey = text(workspace?.ownerKey);
-  const stored = ownerKey === undefined ? undefined : text((await store.get({ pk: `SLACK_THREAD#${ownerKey}`, sk: "META" }))?.thread);
+  const storedThread = ownerKey === undefined ? undefined : text((await store.get({ pk: `SLACK_THREAD#${ownerKey}`, sk: "META" }))?.thread);
   // A thread subject too long to parse is left out: the failure is still listed, without its link.
-  const thread = stored !== undefined && stored.length <= THREAD_MAX ? stored : undefined;
-  return { project, origin: "slack", ...(thread === undefined ? {} : { thread }) };
+  const thread = storedThread !== undefined && storedThread.length <= THREAD_MAX ? storedThread : undefined;
+  return { project, origin: "slack", ...orgId, ...(thread === undefined ? {} : { thread }) };
 }
 
 /** The operation's requestedBy as the strict requester schema accepts it; anything else is none. */
@@ -108,7 +113,16 @@ function requesterOf(value: unknown, developerName: string | undefined): AdminRe
 
 const link = (context: Context) => ({ ...(context.taskId === undefined ? {} : { taskId: context.taskId }), ...(context.thread === undefined ? {} : { thread: context.thread }) });
 
-async function failureItem(store: IndexStore, next: Record<string, unknown>): Promise<Record<string, unknown> | "invalid"> {
+/** The org an index row belongs to: the first record that names one (Task 5 adds it), else the install's single org. */
+function orgOf(fallback: OrgId, ...records: ReadonlyArray<Record<string, unknown> | undefined>): OrgId {
+  for (const candidate of records) {
+    const parsed = OrgIdSchema.safeParse(candidate?.orgId);
+    if (parsed.success) return parsed.data;
+  }
+  return fallback;
+}
+
+async function failureItem(store: IndexStore, fallbackOrg: OrgId, next: Record<string, unknown>): Promise<Record<string, unknown> | "invalid"> {
   const workspaceId = String(next.workspaceId);
   const context = await contextOf(store, workspaceId);
   const kind = text(next.kind) ?? "unknown";
@@ -124,10 +138,10 @@ async function failureItem(store: IndexStore, next: Record<string, unknown>): Pr
   };
   // The admin failures route parses items with this schema; one it would skip is not written.
   if (!FailureIndexRecordSchema.safeParse(indexed).success) return "invalid";
-  return { ...failureIndexKey(endedAt, indexed.operationId), entityType: "FAILURE_INDEX", [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(endedAt), ...indexed };
+  return { ...orgFailureIndexKey(orgOf(fallbackOrg, next, { orgId: context.orgId }), endedAt, indexed.operationId), entityType: "FAILURE_INDEX", [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(endedAt), ...indexed };
 }
 
-async function usageItem(store: IndexStore, event: Record<string, unknown>): Promise<Record<string, unknown> | "unreadable" | "invalid"> {
+async function usageItem(store: IndexStore, fallbackOrg: OrgId, event: Record<string, unknown>): Promise<Record<string, unknown> | "unreadable" | "invalid"> {
   const telemetry = TaskUsageTelemetrySchema.safeParse(event.payload);
   if (!telemetry.success) return "unreadable";
   const workspaceId = String(event.workspaceId);
@@ -143,7 +157,7 @@ async function usageItem(store: IndexStore, event: Record<string, unknown>): Pro
     outputTokens: telemetry.data.tokens.output, costUsd: telemetry.data.costUsd,
   };
   if (!UsageIndexRecordSchema.safeParse(indexed).success) return "invalid";
-  return { ...usageIndexKey(at, operationId), entityType: "USAGE_INDEX", [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(at), ...indexed };
+  return { ...orgUsageIndexKey(orgOf(fallbackOrg, event, operation, { orgId: context.orgId }), at, operationId), entityType: "USAGE_INDEX", [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(at), ...indexed };
 }
 
 /**
@@ -156,6 +170,8 @@ export async function indexActivity(
   unbounded: IndexStore,
   log: (entry: Record<string, unknown>) => void,
   deadline: number = Date.now() + INDEX_DEFAULT_BUDGET_MS,
+  /** The org of rows whose records name none yet: the install's single org (ruling R3). */
+  fallbackOrg: OrgId = installOrgIdFromEnvironment(),
 ): Promise<{ failures: number; usage: number; failed: number }> {
   const deadlineSignal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
   const store = bounded(unbounded, deadlineSignal);
@@ -183,7 +199,7 @@ export async function indexActivity(
     }
     const operationId = String(failure ? next.id : next.operationId);
     try {
-      const item = failure ? await failureItem(store, next) : await usageItem(store, next);
+      const item = failure ? await failureItem(store, fallbackOrg, next) : await usageItem(store, fallbackOrg, next);
       if (item === "unreadable" || item === "invalid") {
         log({ event: item === "unreadable" ? "activity_index.usage_unreadable" : "activity_index.record_invalid", operationId });
         result.failed += 1;

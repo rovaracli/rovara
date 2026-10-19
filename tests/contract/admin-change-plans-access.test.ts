@@ -7,8 +7,11 @@ import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-act
 import { emailIndexKey } from "../../packages/broker/src/developer/store.js";
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
 import { MAYA } from "../support/developer-task-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { orgSettingsKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgLimitKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
-const admin = { issuer: "https://identity.example.test", subject: "admin-subject", ownerKey: "", isAdministrator: true, claims: {} };
+const admin = { issuer: "https://identity.example.test", subject: "admin-subject", ownerKey: "", orgId: TEST_ORG, isAdministrator: true, claims: {} };
 async function harness() {
   const endDeveloperSessions = vi.fn(async () => ({ ok: true as const }));
   const broker = await createAdminReadBroker({ developerExtra: { endDeveloperSessions } });
@@ -65,46 +68,46 @@ describe("project access (E7, E8, FR-013.1)", () => {
     const { deps, identity, db, membership } = await harness();
     const developerId = developerIdForSlackUser("U0NEW00001");
     const plan = await planChange(deps, identity, { kind: "grant_project_access", project: "payments", developer: "U0NEW00001" });
-    expect(db.get(`MEMBER#${developerId}`, "PROJECT#payments")).toBeUndefined();
+    expect(db.get(projectMemberKey(TEST_ORG, developerId, "payments"))).toBeUndefined();
     db.set({ pk: `DEVELOPER#${developerId}`, sk: "META", developerId, provider: "slack", displayName: "Nia Park", slackUserId: "U0NEW00001" });
     const signedIn = await planChange(deps, identity, { kind: "grant_project_access", project: "payments", developer: "U0NEW00001" });
     expect(signedIn.effect).toBe("Grant Nia Park (signs in with Slack) access to project payments. They have no grant today. They can then hand tasks to payments from their AI tool.");
     expect(stateHash(signedIn.snapshot)).not.toBe(stateHash(plan.snapshot));
     await signedIn.apply(identity);
-    expect(db.get(`MEMBER#${developerId}`, "PROJECT#payments")).toMatchObject({ role: "developer", ownerKey: developerId, projectName: "payments", grantedBy: { issuer: admin.issuer, subject: admin.subject } });
+    expect(db.get(projectMemberKey(TEST_ORG, developerId, "payments"))).toMatchObject({ role: "developer", ownerKey: developerId, projectName: "payments", grantedBy: { issuer: admin.issuer, subject: admin.subject } });
     await expect(planChange(deps, identity, { kind: "grant_project_access", project: "payments", developer: "U0NEW00001" })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: "CONFIG_INVALID: Nia Park (signs in with Slack) already has a grant for payments; there is nothing to change" });
     // An applier who no longer administers the project changes nothing.
     const other = await planChange(deps, identity, { kind: "grant_project_access", project: "payments", developer: MAYA.developerId });
     db.delete(String(membership.pk), String(membership.sk));
     await expect(other.apply(identity)).rejects.toMatchObject({ code: "NOT_FOUND" });
-    expect(db.get(`MEMBER#${MAYA.developerId}`, "PROJECT#payments")).toBeUndefined();
+    expect(db.get(projectMemberKey(TEST_ORG, MAYA.developerId, "payments"))).toBeUndefined();
   });
 
   it("names a signed-in developer, and revokes only a grant, saying channel access may remain", async () => {
     const { deps, identity, db } = await harness();
-    db.set({ pk: `MEMBER#${MAYA.developerId}`, sk: "PROJECT#payments", entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "payments", role: "developer" });
+    db.set({ ...projectMemberKey(TEST_ORG, MAYA.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "payments", role: "developer" });
     const plan = await planChange(deps, identity, { kind: "revoke_project_access", project: "payments", developer: MAYA.developerId });
     expect(plan.effect).toBe("Revoke the granted access of Maya Chen (signs in with Slack) to project payments. Their running tasks keep running. If they are a member of one of payments's Slack channels, they keep access through it.");
     const before = stateHash(plan.snapshot);
-    db.delete(`MEMBER#${MAYA.developerId}`, "PROJECT#payments");
+    db.delete(projectMemberKey(TEST_ORG, MAYA.developerId, "payments"));
     await expect(planChange(deps, identity, { kind: "revoke_project_access", project: "payments", developer: MAYA.developerId })).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(before).toMatch(/^[a-f0-9]{64}$/);
     // The same developer granted again (a new grant) is a different state.
-    db.set({ pk: `MEMBER#${MAYA.developerId}`, sk: "PROJECT#payments", entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "payments", role: "developer", grantedAt: "2026-10-02T09:00:00.000Z" });
+    db.set({ ...projectMemberKey(TEST_ORG, MAYA.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "payments", role: "developer", grantedAt: "2026-10-02T09:00:00.000Z" });
     const again = await planChange(deps, identity, { kind: "revoke_project_access", project: "payments", developer: MAYA.developerId });
     expect(stateHash(again.snapshot)).not.toBe(before);
     await again.apply(identity);
-    expect(db.get(`MEMBER#${MAYA.developerId}`, "PROJECT#payments")).toBeUndefined();
+    expect(db.get(projectMemberKey(TEST_ORG, MAYA.developerId, "payments"))).toBeUndefined();
   });
 
   it("never revokes an administrator, and rechecks administration at apply", async () => {
     const { deps, identity, db, membership } = await harness();
     await expect(planChange(deps, identity, { kind: "revoke_project_access", project: "payments", developer: identity.ownerKey })).rejects.toMatchObject({ code: "NOT_FOUND" });
-    db.set({ pk: `MEMBER#${MAYA.developerId}`, sk: "PROJECT#payments", entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "payments", role: "developer" });
+    db.set({ ...projectMemberKey(TEST_ORG, MAYA.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "payments", role: "developer" });
     const plan = await planChange(deps, identity, { kind: "revoke_project_access", project: "payments", developer: MAYA.developerId });
     db.delete(String(membership.pk), String(membership.sk));
     await expect(plan.apply(identity)).rejects.toMatchObject({ code: "NOT_FOUND" });
-    expect(db.get(`MEMBER#${MAYA.developerId}`, "PROJECT#payments")).toMatchObject({ role: "developer" });
+    expect(db.get(projectMemberKey(TEST_ORG, MAYA.developerId, "payments"))).toMatchObject({ role: "developer" });
   });
 
   it("refuses a grant on a project the admin does not administer (FR-015)", async () => {
@@ -190,7 +193,7 @@ describe("the workspace limits (E19, FR-053)", () => {
   it("hashes the setting, so a change by someone else makes the plan stale", async () => {
     const { deps, identity, db } = await harness();
     const before = stateHash((await planChange(deps, identity, { kind: "set_workspace_limits", perPerson: 5 })).snapshot);
-    db.set({ pk: "SETTINGS", sk: "WORKSPACE_LIMITS", perPerson: 4, perOrganization: 20, updatedAt: "2026-10-02T09:00:00.000Z" });
+    db.set({ ...orgSettingsKey(TEST_ORG, "WORKSPACE_LIMITS"), perPerson: 4, perOrganization: 20, updatedAt: "2026-10-02T09:00:00.000Z" });
     expect(stateHash((await planChange(deps, identity, { kind: "set_workspace_limits", perPerson: 5 })).snapshot)).not.toBe(before);
   });
 
@@ -201,9 +204,9 @@ describe("the workspace limits (E19, FR-053)", () => {
     await expect(planChange(deps, identity, { kind: "set_workspace_limits", perOrganization: 1_001 })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     const plan = await planChange(deps, identity, { kind: "set_workspace_limits", perOrganization: 40 });
     expect(plan.effect).toContain("Set the workspace limits to 3 per person (unchanged) and 40 for the organization (now 20).");
-    expect(db.get("SETTINGS", "WORKSPACE_LIMITS")).toBeUndefined();
+    expect(db.get(orgSettingsKey(TEST_ORG, "WORKSPACE_LIMITS"))).toBeUndefined();
     await plan.apply(identity);
-    expect(db.get("SETTINGS", "WORKSPACE_LIMITS")).toMatchObject({ perPerson: 3, perOrganization: 40 });
+    expect(db.get(orgSettingsKey(TEST_ORG, "WORKSPACE_LIMITS"))).toMatchObject({ perPerson: 3, perOrganization: 40 });
   });
 
   it("says that people who use only an AI tool count in the total but are not named, when there are some (final review T6)", async () => {
@@ -211,7 +214,7 @@ describe("the workspace limits (E19, FR-053)", () => {
     db.set({ pk: "SLACK_LIMIT#T0BSHLLUGBD", sk: "ORGANIZATION", count: 2 });
     const without = await planChange(deps, identity, { kind: "set_workspace_limits", perPerson: 5 });
     expect(without.effect).not.toContain("only an AI tool");
-    db.set({ pk: "DEVELOPER_LIMIT#ORGANIZATION", sk: "ORGANIZATION", count: 3 });
+    db.set({ ...orgLimitKey(TEST_ORG), count: 3 });
     const plan = await planChange(deps, identity, { kind: "set_workspace_limits", perPerson: 5 });
     expect(plan.effect).toContain("Open workspaces: 5 of 20. People who use only an AI tool count in the total but are not named. Existing workspaces keep running;");
   });

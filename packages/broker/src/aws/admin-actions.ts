@@ -3,8 +3,8 @@
 // is called only by a confirmed change (Task 7) or by the CLI's own change path (Tasks 14, 15).
 import { randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { SLACK_OIDC_ISSUER, SlackUserIdSchema, agentXError, type EndDeveloperSessionsRequest, type EndDeveloperSessionsResponse } from "@agentx/contracts";
-import { MAX_PER_ORGANIZATION, MAX_PER_PERSON, WORKSPACE_LIMITS_KEY, isWholeLimit } from "../developer/limits.js";
+import { SLACK_OIDC_ISSUER, SlackUserIdSchema, agentXError, projectMemberKey, type EndDeveloperSessionsRequest, type EndDeveloperSessionsResponse, type OrgId } from "@agentx/contracts";
+import { MAX_PER_ORGANIZATION, MAX_PER_PERSON, isWholeLimit, workspaceLimitsKey } from "../developer/limits.js";
 import { emailIndexKey } from "../developer/store.js";
 import { ownerKeyForSubject } from "./lambda.js";
 
@@ -80,40 +80,40 @@ export async function resolveDeveloper(deps: AdminActionDependencies, reference:
 }
 
 /** The membership row's role, and when it was granted (null for a row without that, such as an administrator's). */
-export async function projectGrant(deps: AdminActionDependencies, project: string, developerId: string): Promise<{ role: "developer" | "administrator"; grantedAt: string | null } | undefined> {
-  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: `MEMBER#${developerId}`, sk: `PROJECT#${project}` }, ConsistentRead: true })) as { Item?: { role?: unknown; grantedAt?: unknown } };
+export async function projectGrant(deps: AdminActionDependencies, orgId: OrgId, project: string, developerId: string): Promise<{ role: "developer" | "administrator"; grantedAt: string | null } | undefined> {
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: projectMemberKey(orgId, developerId, project), ConsistentRead: true })) as { Item?: { role?: unknown; grantedAt?: unknown } };
   const role = response.Item?.role;
   if (role !== "developer" && role !== "administrator") return undefined;
   return { role, grantedAt: typeof response.Item?.grantedAt === "string" ? response.Item.grantedAt : null };
 }
 
 /** FR-013.1: a `developer` ProjectMembership row. An administrator row for the same key is kept as it is. */
-export async function grantProjectAccess(deps: AdminActionDependencies, admin: { issuer: string; subject: string }, project: string, developerId: string): Promise<{ granted: true; already: boolean }> {
-  const current = await projectGrant(deps, project, developerId);
+export async function grantProjectAccess(deps: AdminActionDependencies, orgId: OrgId, admin: { issuer: string; subject: string }, project: string, developerId: string): Promise<{ granted: true; already: boolean }> {
+  const current = await projectGrant(deps, orgId, project, developerId);
   if (current?.role === "administrator") throw agentXError("CONFIG_INVALID", `that developer already administers ${project}, so there is nothing to grant`);
   if (current?.role === "developer") return { granted: true, already: true };
   try {
     await deps.documentClient.send(new PutCommand({
       TableName: deps.tableName,
-      Item: { pk: `MEMBER#${developerId}`, sk: `PROJECT#${project}`, entityType: "MEMBERSHIP", ownerKey: developerId, projectName: project, role: "developer",
+      Item: { ...projectMemberKey(orgId, developerId, project), entityType: "MEMBERSHIP", ownerKey: developerId, projectName: project, role: "developer",
         grantId: randomUUID(), grantedBy: admin, grantedAt: new Date(deps.now()).toISOString() },
       ConditionExpression: "attribute_not_exists(pk)",
     }));
   } catch (error) {
     if (!conditional(error)) throw error;
     // A row appeared between the read and the write: say what it is rather than assume.
-    const raced = await projectGrant(deps, project, developerId);
+    const raced = await projectGrant(deps, orgId, project, developerId);
     if (raced?.role === "administrator") throw agentXError("CONFIG_INVALID", `that developer already administers ${project}, so there is nothing to grant`);
     return { granted: true, already: true };
   }
   return { granted: true, already: false };
 }
 
-export async function revokeProjectAccess(deps: AdminActionDependencies, project: string, developerId: string): Promise<{ revoked: boolean }> {
+export async function revokeProjectAccess(deps: AdminActionDependencies, orgId: OrgId, project: string, developerId: string): Promise<{ revoked: boolean }> {
   try {
     await deps.documentClient.send(new DeleteCommand({
       TableName: deps.tableName,
-      Key: { pk: `MEMBER#${developerId}`, sk: `PROJECT#${project}` },
+      Key: projectMemberKey(orgId, developerId, project),
       // Only a grant: an administrator row is never removed by revoking a developer's access.
       ConditionExpression: "#role = :developer",
       ExpressionAttributeNames: { "#role": "role" },
@@ -128,7 +128,7 @@ export async function revokeProjectAccess(deps: AdminActionDependencies, project
 
 /** E19, FR-053: the setting the broker reads at each workspace creation. */
 /** `via` (#216): how the change was confirmed, kept so a change planned before it can say how the limits changed. */
-export async function setWorkspaceLimits(deps: AdminActionDependencies, admin: { issuer: string; subject: string }, limits: { perPerson: number; perOrganization: number }, via?: string): Promise<{ perPerson: number; perOrganization: number; updatedAt: string }> {
+export async function setWorkspaceLimits(deps: AdminActionDependencies, orgId: OrgId, admin: { issuer: string; subject: string }, limits: { perPerson: number; perOrganization: number }, via?: string): Promise<{ perPerson: number; perOrganization: number; updatedAt: string }> {
   // The bounds readWorkspaceLimits accepts, so a written setting is never one the broker ignores.
   if (!isWholeLimit(limits.perPerson, MAX_PER_PERSON)) throw agentXError("CONFIG_INVALID", `the per-person limit must be a whole number from 1 to ${MAX_PER_PERSON}`);
   if (!isWholeLimit(limits.perOrganization, MAX_PER_ORGANIZATION)) throw agentXError("CONFIG_INVALID", `the organization limit must be a whole number from 1 to ${MAX_PER_ORGANIZATION}`);
@@ -136,7 +136,7 @@ export async function setWorkspaceLimits(deps: AdminActionDependencies, admin: {
   const updatedAt = new Date(deps.now()).toISOString();
   await deps.documentClient.send(new PutCommand({
     TableName: deps.tableName,
-    Item: { ...WORKSPACE_LIMITS_KEY, entityType: "SETTING", perPerson: limits.perPerson, perOrganization: limits.perOrganization, updatedBy: admin, ...(via === undefined ? {} : { via }), updatedAt },
+    Item: { ...workspaceLimitsKey(orgId), entityType: "SETTING", perPerson: limits.perPerson, perOrganization: limits.perOrganization, updatedBy: admin, ...(via === undefined ? {} : { via }), updatedAt },
   }));
   return { perPerson: limits.perPerson, perOrganization: limits.perOrganization, updatedAt };
 }

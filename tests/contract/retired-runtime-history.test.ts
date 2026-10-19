@@ -8,6 +8,8 @@ import {
   SLACK_CHANNEL, SLACK_TEAM, call, createBroker, ensureWorkspace, loadSlackBroker,
   registerSlackProject, serviceCall,
 } from "../support/slack-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 // Representative wire values from the retired architecture, kept with its design history.
 const routing = JSON.parse(readFileSync(new URL("../../specs/036-ec2-only-runtime/historical-routing.json", import.meta.url), "utf8")) as {
@@ -35,7 +37,7 @@ describe.each(["instances-ebs", "demo-microvm"] as const)("retired %s history", 
     const operationId = prepared.body.operationId as string;
     const now = new Date().toISOString();
     const workspace = db.get(`WORKSPACE#${workspaceId}`, "META")!;
-    const project = db.get("PROJECT#payments", "REV#000000000001")!;
+    const project = db.get(projectRevisionKey(TEST_ORG, "payments", 1))!;
     db.set({ ...project, runtimeBinding: historicalBinding(mode) });
     db.set({ ...workspace, ...historicalBinding(mode), runtimeSessionId: routing.runtimeSessionId,
       status: "CLOSED", closedAt: now, closeOperationId: operationId, activeOperationId: null });
@@ -60,7 +62,7 @@ describe.each(["instances-ebs", "demo-microvm"] as const)("retired %s history", 
   it("rejects a new registration and refuses workspace creation from an old revision", async () => {
     const { db, handler } = createBroker();
     await registerSlackProject(handler);
-    const project = db.get("PROJECT#payments", "REV#000000000001")!;
+    const project = db.get(projectRevisionKey(TEST_ORG, "payments", 1))!;
     const binding = historicalBinding(mode);
     expect(() => parseRuntimeBinding(binding)).toThrow(/CONFIG_INVALID/);
     const registration = await call(handler, { method: "POST", path: "/v1/admin/projects",

@@ -2,7 +2,10 @@ import {
   AgentXNameSchema,
   SlackChannelBindingSchema,
   developerTaskPolicy,
+  projectMemberKey,
+  projectRevisionKey,
   type DeveloperTaskPolicy,
+  type OrgId,
   type SlackChannelBinding,
 } from "@agentx/contracts";
 import type { TaskAuthorityAdmission } from "../aws/task-authority-admission.js";
@@ -34,13 +37,15 @@ export type BoundedProjectReadAdmission = Pick<TaskAuthorityAdmission, "assertOp
 
 export interface ProjectAuthorityReader {
   /** Use the supplied signal for page one; count each later Query page before issue. */
-  latestRevision(project: string, admission: BoundedProjectReadAdmission, abortSignal: AbortSignal): Promise<{ revision?: ProjectAuthorityRevision; complete: boolean }>;
-  memberships(developerId: string, admission: BoundedProjectReadAdmission, abortSignal: AbortSignal): Promise<{ items: readonly ProjectDeveloperMembership[]; complete: boolean }>;
+  latestRevision(orgId: OrgId, project: string, admission: BoundedProjectReadAdmission, abortSignal: AbortSignal): Promise<{ revision?: ProjectAuthorityRevision; complete: boolean }>;
+  memberships(orgId: OrgId, developerId: string, admission: BoundedProjectReadAdmission, abortSignal: AbortSignal): Promise<{ items: readonly ProjectDeveloperMembership[]; complete: boolean }>;
   bindings(teamId: string, admission: BoundedProjectReadAdmission, abortSignal: AbortSignal): Promise<{ items: readonly ProjectChannelBinding[]; complete: boolean }>;
 }
 
 /** Pure policy evaluation. It performs no I/O, logging, name lookup, or human error decoration. */
 export function evaluateProjectAuthority(input: {
+  /** The org the project and grants are read in; a witnessed (developer and team) evaluation refuses rows keyed in any other. */
+  orgId?: OrgId;
   project: string;
   developerId?: string;
   teamId?: string;
@@ -51,11 +56,18 @@ export function evaluateProjectAuthority(input: {
   slackUserId?: string;
 }): ProjectAuthorityResult {
   if (!AgentXNameSchema.safeParse(input.project).success || input.revision === undefined) return { kind: "not-found" };
-  const revisionKey = `REV#${String(input.revision.revision).padStart(12, "0")}`;
   if (!Number.isSafeInteger(input.revision.revision) || input.revision.revision < 0) return { kind: "unavailable" };
-  if (input.developerId !== undefined && input.teamId !== undefined && (input.revision.pk !== `PROJECT#${input.project}` || input.revision.sk !== revisionKey)) return { kind: "unavailable" };
-  if (input.developerId !== undefined && input.memberships.some((row) => row.projectName === input.project
-    && (row.pk !== `MEMBER#${input.developerId}` || row.sk !== `PROJECT#${input.project}`))) return { kind: "unavailable" };
+  if (input.developerId !== undefined && input.teamId !== undefined) {
+    if (input.orgId === undefined) return { kind: "unavailable" };
+    const expected = projectRevisionKey(input.orgId, input.project, input.revision.revision);
+    if (input.revision.pk !== expected.pk || input.revision.sk !== expected.sk) return { kind: "unavailable" };
+  }
+  if (input.developerId !== undefined && input.memberships.some((row) => {
+    if (row.projectName !== input.project) return false;
+    if (input.orgId === undefined) return true;
+    const expected = projectMemberKey(input.orgId, input.developerId!, input.project);
+    return row.pk !== expected.pk || row.sk !== expected.sk;
+  })) return { kind: "unavailable" };
   if (input.teamId !== undefined && input.bindings.some((binding) => binding.projectName === input.project
     && (binding.pk !== `SLACK_BINDING#${input.teamId}` || binding.sk !== `CHANNEL#${binding.channelId}` || binding.teamId !== input.teamId))) return { kind: "unavailable" };
 
@@ -101,6 +113,7 @@ export function evaluateProjectAuthority(input: {
 export async function readProjectAuthority(
   reader: ProjectAuthorityReader,
   input: {
+    orgId: OrgId;
     project: string;
     developerId: string;
     teamId: string;
@@ -112,12 +125,12 @@ export async function readProjectAuthority(
   if (!AgentXNameSchema.safeParse(input.project).success) return { kind: "not-found" };
   try {
     input.admission.assertOpen();
-    const latest = await reader.latestRevision(input.project, input.admission, input.admission.admitStateRead());
+    const latest = await reader.latestRevision(input.orgId, input.project, input.admission, input.admission.admitStateRead());
     input.admission.assertOpen();
     if (!latest.complete) return { kind: "unavailable" };
     if (latest.revision === undefined) return { kind: "not-found" };
 
-    const memberships = await reader.memberships(input.developerId, input.admission, input.admission.admitStateRead());
+    const memberships = await reader.memberships(input.orgId, input.developerId, input.admission, input.admission.admitStateRead());
     input.admission.assertOpen();
     if (!memberships.complete) return { kind: "unavailable" };
 
@@ -126,6 +139,7 @@ export async function readProjectAuthority(
     if (!bindings.complete) return { kind: "unavailable" };
 
     return evaluateProjectAuthority({
+      orgId: input.orgId,
       project: input.project,
       developerId: input.developerId,
       teamId: input.teamId,

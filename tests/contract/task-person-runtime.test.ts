@@ -7,6 +7,8 @@ import { createTaskAuthorityAdmission } from "../../packages/broker/src/aws/task
 import { createTaskPersonRuntime, TASK_PERSON_DEVELOPER_RECORD_ATTRIBUTES, type TaskPersonRuntimePorts } from "../../packages/broker/src/aws/task-person-runtime.js";
 import { checkTaskPersonIdentity } from "../../packages/broker/src/developer/task-person-identity.js";
 import { taskOwnerKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const taskId = "11111111-1111-4111-8111-111111111111";
 const slackUserId = "U0123456789";
@@ -33,7 +35,7 @@ function ports(input: { task?: DeveloperTaskRecord; memberOf?: string[]; develop
   });
   const projectAuthorityReader = {
     latestRevision: vi.fn(async (_project: string, _admission: unknown, signal: AbortSignal) => ({
-      revision: { pk: "PROJECT#payments-api", sk: "REV#000000000007", revision: 7, definition: {} }, complete: !signal.aborted,
+      revision: { ...projectRevisionKey(TEST_ORG, "payments-api", 7), revision: 7, definition: {} }, complete: !signal.aborted,
     })),
     memberships: vi.fn(async (_developerId: string, _admission: unknown, signal: AbortSignal) => ({ items: [], complete: !signal.aborted })),
     bindings: vi.fn(async (_teamId: string, _admission: unknown, signal: AbortSignal) => ({
@@ -56,7 +58,7 @@ function ports(input: { task?: DeveloperTaskRecord; memberOf?: string[]; develop
   };
 }
 
-const runtime = (admission: ReturnType<typeof createTaskAuthorityAdmission>, testPorts: TaskPersonRuntimePorts) => createTaskPersonRuntime({
+const runtime = (admission: ReturnType<typeof createTaskAuthorityAdmission>, testPorts: TaskPersonRuntimePorts) => createTaskPersonRuntime({ orgId: TEST_ORG,
   admission, ports: testPorts, stateTableName: "state", slackTeamId, now: () => 1_000,
   uuid: () => "22222222-2222-4222-8222-222222222222",
 });
@@ -101,19 +103,19 @@ describe("task person runtime factory", () => {
 
     await expect(checker.stateAuthorityWitnessForOwnerActor(nativeTask(), taskOwnerKey(nativeDeveloperId, taskId))).resolves.toMatchObject({
       taskId, developerId: nativeDeveloperId, project: "payments-api", access: "channel",
-      projectRevision: { pk: "PROJECT#payments-api", sk: "REV#000000000007", revision: 7, developerTasksPresent: false },
+      projectRevision: { ...projectRevisionKey(TEST_ORG, "payments-api", 7), revision: 7, developerTasksPresent: false },
       binding: { pk: `SLACK_BINDING#${slackTeamId}`, sk: `CHANNEL#${channelId}`, teamId: slackTeamId, channelId, projectName: "payments-api" },
     });
     expect(injected.projectAuthorityReader.latestRevision.mock.calls).toHaveLength(2);
 
     injected.projectAuthorityReader.latestRevision.mockImplementationOnce(async () => ({
-      revision: { pk: "PROJECT#payments-api", sk: "REV#000000000008", revision: 8, definition: {} }, complete: true,
+      revision: { ...projectRevisionKey(TEST_ORG, "payments-api", 8), revision: 8, definition: {} }, complete: true,
     }));
     await expect(checker.stateAuthorityWitnessForOwnerActor(nativeTask(), taskOwnerKey(nativeDeveloperId, taskId))).resolves.toBeUndefined();
 
     await checker.checkTaskPerson(nativeTask(), nativeDeveloperId);
     injected.projectAuthorityReader.latestRevision.mockImplementationOnce(async () => ({
-      revision: { pk: "PROJECT#payments-api", sk: "REV#000000000007", revision: 7, definition: { developerTasks: { enabled: false } } }, complete: true,
+      revision: { ...projectRevisionKey(TEST_ORG, "payments-api", 7), revision: 7, definition: { developerTasks: { enabled: false } } }, complete: true,
     }));
     await expect(checker.stateAuthorityWitnessForOwnerActor(nativeTask(), taskOwnerKey(nativeDeveloperId, taskId))).resolves.toBeUndefined();
   });
@@ -130,7 +132,7 @@ describe("task person runtime factory", () => {
     const admission = createTaskAuthorityAdmission({ now: () => 1_000, lambdaRemainingMs: 20_000 });
     const injected = ports({ memberOf: [] });
     injected.projectAuthorityReader.memberships.mockResolvedValue({
-      items: [{ pk: `MEMBER#${nativeDeveloperId}`, sk: "PROJECT#payments-api", projectName: "payments-api", role: "developer" }] as never,
+      items: [{ ...projectMemberKey(TEST_ORG, nativeDeveloperId, "payments-api"), projectName: "payments-api", role: "developer" }] as never,
       complete: true,
     });
     const checker = runtime(admission, injected);
@@ -140,8 +142,8 @@ describe("task person runtime factory", () => {
 
     await expect(checker.stateAuthorityWitnessForEligiblePerson(nativeTask(), nativeDeveloperId)).resolves.toMatchObject({
       taskId, developerId: nativeDeveloperId, project: "payments-api", access: "granted",
-      membership: { pk: `MEMBER#${nativeDeveloperId}`, sk: "PROJECT#payments-api", projectName: "payments-api", role: "developer" },
-      projectRevision: { pk: "PROJECT#payments-api", sk: "REV#000000000007", revision: 7, developerTasksPresent: false },
+      membership: { ...projectMemberKey(TEST_ORG, nativeDeveloperId, "payments-api"), projectName: "payments-api", role: "developer" },
+      projectRevision: { ...projectRevisionKey(TEST_ORG, "payments-api", 7), revision: 7, developerTasksPresent: false },
     });
   });
 
@@ -171,7 +173,7 @@ describe("task person runtime factory", () => {
       injected.projectAuthorityReader.latestRevision.mockResolvedValue({ revision: undefined, complete: true } as never);
     } else {
       injected.projectAuthorityReader.latestRevision.mockResolvedValue({
-        revision: { pk: "PROJECT#payments-api", sk: "REV#000000000007", revision: 7, definition: { developerTasks: { enabled: false, channelMembersMayUse: true } } }, complete: true,
+        revision: { ...projectRevisionKey(TEST_ORG, "payments-api", 7), revision: 7, definition: { developerTasks: { enabled: false, channelMembersMayUse: true } } }, complete: true,
       });
     }
 
@@ -237,7 +239,7 @@ describe("task person runtime factory", () => {
       expect(projected).not.toHaveProperty("email");
       return checkTaskPersonIdentity(dependencies, checkedTask, checkedDeveloperId);
     });
-    const checker = createTaskPersonRuntime({
+    const checker = createTaskPersonRuntime({ orgId: TEST_ORG,
       admission, ports: injected, stateTableName: "state", slackTeamId, now: () => 1_000,
       uuid: () => "22222222-2222-4222-8222-222222222222", checkIdentity,
     });
@@ -260,7 +262,7 @@ describe("task person runtime factory", () => {
   it("refuses arbitrary row commands and Scan before any State read", async () => {
     const admission = createTaskAuthorityAdmission({ now: () => 1_000, lambdaRemainingMs: 20_000 });
     const injected = ports();
-    const checker = createTaskPersonRuntime({
+    const checker = createTaskPersonRuntime({ orgId: TEST_ORG,
       admission, ports: injected, stateTableName: "state", slackTeamId, now: () => 1_000,
       uuid: () => "22222222-2222-4222-8222-222222222222",
       checkIdentity: async (dependencies) => {
@@ -276,7 +278,7 @@ describe("task person runtime factory", () => {
   it("refuses an unlinked PERSON row before issuing a State read", async () => {
     const admission = createTaskAuthorityAdmission({ now: () => 1_000, lambdaRemainingMs: 20_000 });
     const injected = ports();
-    const checker = createTaskPersonRuntime({
+    const checker = createTaskPersonRuntime({ orgId: TEST_ORG,
       admission, ports: injected, stateTableName: "state", slackTeamId, now: () => 1_000,
       uuid: () => "22222222-2222-4222-8222-222222222222",
       checkIdentity: async (dependencies) => {

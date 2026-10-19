@@ -13,6 +13,7 @@ import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/ta
 import type { DeveloperRecord } from "../../packages/broker/src/developer/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { T0, TEAM } from "../support/developer-fakes.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const TASK_ID = "11111111-1111-4111-8111-111111111111";
 const PERSON_1 = "22222222-2222-4222-8222-222222222222";
@@ -218,7 +219,7 @@ describe("task person identity registry", () => {
     const h = harness({ proof: async (request) => ({
       ok: true, user: { id: request.slackUserId, teamId: TEAM, name: "Current Actor" }, memberOf: ["C0PAY0001"],
     }) });
-    Reflect.set(h.deps, "trustedCaller", { developerId: actorDeveloperId, sessionId: "s-current", amr: "slack", name: "Current Actor", slackUserId: actorSlack });
+    Reflect.set(h.deps, "trustedCaller", { orgId: TEST_ORG, developerId: actorDeveloperId, sessionId: "s-current", amr: "slack", name: "Current Actor", slackUserId: actorSlack });
 
     await expect(checkTaskPersonIdentity(h.deps, task, actorDeveloperId)).resolves.toMatchObject({
       subject: { developerId: actorDeveloperId, slackUserId: actorSlack },

@@ -89,6 +89,7 @@ import type { SlackRequestQueue } from "../../packages/broker/src/developer/page
 import { StrictSlackWeb } from "./strict-slack.js";
 import { FakeGitHub, type FakeGitHubOptions } from "./workflow-e2e-github.js";
 import { trackJourney, type JourneyLedgerEntry } from "./workflow-e2e-invariants.js";
+import { TEST_ORG } from "./orgs.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -262,6 +263,8 @@ export const E2E_BRIEF_LIMIT = 1_200;
 export const WORKER_CALLBACK_ROUTE = /^\/v1\/internal\/workspaces\/[^/]+\/operations\/[^/]+\//;
 
 export async function createWorkflowE2E(options: {
+  /** The install's environment name, which its single org derives from; TEST_ENV when absent. A test that drives the production dispatcher (which reads AGENTX_ENV) names it the same. */
+  environmentName?: string;
   model?: Parameters<typeof workflowModel>[0];
   /** Files placed under repo/demo before the fixture's base commit. */
   initialRepositoryFiles?: readonly { path: string; content: string }[];
@@ -382,6 +385,7 @@ export async function createWorkflowE2E(options: {
     } }),
     ...(options.consistency === undefined ? {} : { consistency: options.consistency }),
     brokerExtra: {
+      ...(options.environmentName === undefined ? {} : { environmentName: options.environmentName }),
       githubPullRequests,
       startPlanEvidenceJob: async (event: PlanEvidenceEvent) => { planEvidenceJobs.push(event); },
       githubWebhookSecret,
@@ -1201,7 +1205,7 @@ export async function createWorkflowE2E(options: {
     async runPlanEvidenceJobs(): Promise<PlanEvidenceRunOutcome[]> {
       const outcomes: PlanEvidenceRunOutcome[] = [];
       for (const event of planEvidenceJobs.splice(0)) {
-        outcomes.push(await runPlanEvidenceJob({ documentClient: db as never, s3, tableName: "state", bucketName: "artifacts", github: github.gateway, now: Date.now, log: () => undefined }, event));
+        outcomes.push(await runPlanEvidenceJob({ orgId: TEST_ORG, documentClient: db as never, s3, tableName: "state", bucketName: "artifacts", github: github.gateway, now: Date.now, log: () => undefined }, event));
       }
       return outcomes;
     },

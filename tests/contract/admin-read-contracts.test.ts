@@ -22,12 +22,12 @@ import {
   SlackUserByEmailRequestSchema,
   UsageIndexRecordSchema,
   WorkspaceStatusSchema,
-  failureIndexKey,
   indexDay,
   indexExpiresAt,
-  projectCatalogKey,
-  usageIndexKey,
 } from "../../packages/contracts/src/index.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { orgFailureIndexKey, orgProjectCatalogKey, orgUsageIndexKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgScoped } from "../../packages/contracts/src/org.js";
 
 const OPERATION = "11111111-1111-4111-8111-111111111111";
 const WORKSPACE = "22222222-2222-4222-8222-222222222222";
@@ -35,14 +35,14 @@ const ENDED = "2026-09-30T08:15:00.000Z";
 
 describe("the index keys (FR-038, A5)", () => {
   it("keys a failure by its day and end time, as FR-038 names it", () => {
-    expect(failureIndexKey(ENDED, OPERATION)).toEqual({ pk: "FAILURE#2026-09-30", sk: `${ENDED}#${OPERATION}` });
-    expect(usageIndexKey(ENDED, OPERATION)).toEqual({ pk: "USAGE#2026-09-30", sk: `${ENDED}#${OPERATION}` });
+    expect(orgFailureIndexKey(TEST_ORG, ENDED, OPERATION)).toEqual({ pk: orgScoped(TEST_ORG, "FAILURE#2026-09-30"), sk: `${ENDED}#${OPERATION}` });
+    expect(orgUsageIndexKey(TEST_ORG, ENDED, OPERATION)).toEqual({ pk: orgScoped(TEST_ORG, "USAGE#2026-09-30"), sk: `${ENDED}#${OPERATION}` });
     expect(indexDay("2026-09-30T23:59:59.999Z")).toBe("2026-09-30");
-    expect(projectCatalogKey("payments")).toEqual({ pk: "PROJECT_CATALOG", sk: "PROJECT#payments" });
+    expect(orgProjectCatalogKey(TEST_ORG, "payments")).toEqual({ pk: orgScoped(TEST_ORG, "PROJECT_CATALOG"), sk: "PROJECT#payments" });
   });
 
   it("refuses an index key for a time that is not an ISO instant", () => {
-    expect(() => failureIndexKey("yesterday", OPERATION)).toThrow("an ISO time");
+    expect(() => orgFailureIndexKey(TEST_ORG, "yesterday", OPERATION)).toThrow("an ISO time");
   });
 
   it("gives each index item its TTL attribute, 30 days on (A6, Q5)", () => {
@@ -198,18 +198,18 @@ describe("the wire answers read fields a newer control plane adds at any depth (
 
 describe("the index keys take only real instants, written one way (Minors 1 and 2)", () => {
   it("writes each time at millisecond precision so keys sort by time", () => {
-    expect(failureIndexKey("2026-09-30T08:15:00Z", OPERATION).sk).toBe(`2026-09-30T08:15:00.000Z#${OPERATION}`);
-    expect(usageIndexKey("2026-09-30T08:15:00.5Z", OPERATION).sk).toBe(`2026-09-30T08:15:00.500Z#${OPERATION}`);
-    const earlier = failureIndexKey("2026-09-30T08:15:00Z", OPERATION).sk;
-    const later = failureIndexKey("2026-09-30T08:15:00.500Z", OPERATION).sk;
+    expect(orgFailureIndexKey(TEST_ORG, "2026-09-30T08:15:00Z", OPERATION).sk).toBe(`2026-09-30T08:15:00.000Z#${OPERATION}`);
+    expect(orgUsageIndexKey(TEST_ORG, "2026-09-30T08:15:00.5Z", OPERATION).sk).toBe(`2026-09-30T08:15:00.500Z#${OPERATION}`);
+    const earlier = orgFailureIndexKey(TEST_ORG, "2026-09-30T08:15:00Z", OPERATION).sk;
+    const later = orgFailureIndexKey(TEST_ORG, "2026-09-30T08:15:00.500Z", OPERATION).sk;
     expect(earlier < later).toBe(true);
   });
 
   it("refuses a time that looks like ISO but is no real instant", () => {
     for (const at of ["2026-13-45T99:00:00Z", "2026-02-30T08:15:00Z"]) {
       expect(() => indexDay(at)).toThrow("an index key needs an ISO time");
-      expect(() => failureIndexKey(at, OPERATION)).toThrow("an index key needs an ISO time");
-      expect(() => usageIndexKey(at, OPERATION)).toThrow("an index key needs an ISO time");
+      expect(() => orgFailureIndexKey(TEST_ORG, at, OPERATION)).toThrow("an index key needs an ISO time");
+      expect(() => orgUsageIndexKey(TEST_ORG, at, OPERATION)).toThrow("an index key needs an ISO time");
       expect(() => indexExpiresAt(at)).toThrow("an index key needs an ISO time");
     }
   });

@@ -11,6 +11,7 @@ import { DescribeExecutionCommand, SFNClient, StartExecutionCommand } from "@aws
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { Ec2RuntimeBinding, WorkspaceSession, WorkspaceSessionState } from "@agentx/contracts";
+import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import { requiredEnvironment } from "./lambda.js";
 import { failActiveOperation } from "./outbox-failure.js";
 import { SessionManager, workspaceBinding } from "./sessions.js";
@@ -540,11 +541,11 @@ export const handler = createReconcilerHandler({
     const item = (await documentClient.send(new GetCommand({ TableName: tableName, Key: { pk: `WORKSPACE#${workspaceId}`, sk: "META" } }))).Item as { status?: string; closedAt?: string } | undefined;
     return item?.status === "CLOSED" ? item.closedAt : undefined;
   },
-  binding: (workspaceId) => workspaceBinding(documentClient, tableName, workspaceId),
+  binding: (workspaceId) => workspaceBinding(documentClient, tableName, installOrgIdFromEnvironment(), workspaceId),
   sweepStuckCancels: stuckCancelSweep(),
   sweepStuckSetups: (now) => sweepStuckSetups(documentClient, tableName, now, (entry) => console.log(JSON.stringify({ component: "session-reconciler", ...entry }))),
   ...(backstop.state === "on" ? { sweepUnwaitedTasks: unwaitedTaskSweep() } : {}),
-  ...(indexSweepWanted(process.env) ? { expireIndexDays: (now: Date) => expireIndexDays(documentClient, tableName, now, (entry) => console.log(JSON.stringify({ component: "session-reconciler", ...entry }))) } : {}),
+  ...(indexSweepWanted(process.env) ? { expireIndexDays: (now: Date) => expireIndexDays(documentClient, tableName, installOrgIdFromEnvironment(), now, (entry) => console.log(JSON.stringify({ component: "session-reconciler", ...entry }))) } : {}),
   emit(metrics) {
     console.log(JSON.stringify({
       _aws: {

@@ -25,6 +25,12 @@ import { EDITS, MERGED, OPENED_PR, PLAN, PUSHED_FIX, actionIds, atPlanReview, ed
 import { loadRollback0212Parser } from "../../support/rollback-0212-parser.js";
 import { handler as productionDispatcher, taskPersonProofLambdaClient } from "../../../packages/broker/src/aws/dispatcher.js";
 import { handler as taskPersonProofRuntime } from "../../../packages/broker/src/aws/task-person-proof-runtime.js";
+import { singleOrgIdForEnv } from "../../../packages/contracts/src/org.js";
+
+// The production dispatcher reads AGENTX_ENV (stubbed below), so the install these tests build is that named environment.
+const LIVE_ENV = "agentxlivetest123";
+const TEST_ORG = singleOrgIdForEnv(LIVE_ENV);
+import { projectMemberKey, projectRevisionKey } from "../../../packages/contracts/src/org-scoped-keys.js";
 
 /** Feature list exported by the source commit pinned in rollback-0.2.12/provenance.json. */
 const ROLLBACK_0212_WORKER_FEATURES = ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks",
@@ -37,7 +43,7 @@ const STILL_WATCHING = "I'm still watching the pull request and will finish this
 
 async function waiting(options: Parameters<typeof createWorkflowE2E>[0] = {}) {
   const counts = { feedback: 0 };
-  const e2e = await createWorkflowE2E({ ...options, model: { plan: PLAN, edits: editsOrFix,
+  const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, ...options, model: { plan: PLAN, edits: editsOrFix,
     feedback: (prompt) => { counts.feedback += 1; return JSON.stringify({ findings: feedbackFindings(prompt) }); }, ...options.model } });
   const pullRequest = await openDraftPr(e2e);
   return { e2e, counts, pullRequest };
@@ -80,7 +86,7 @@ function installProductionDispatcher(e2e: WorkflowE2E, options: {
   vi.stubEnv("DEVELOPER_SIGNIN_TABLE_NAME", "signin");
   vi.stubEnv("TASK_PERSON_PROOF_FUNCTION_ARN", "arn:aws:lambda:us-east-1:123456789012:function:proof");
   vi.stubEnv("SLACK_TEAM_ID", "T0BSHLLUGBD");
-  vi.stubEnv("AGENTX_ENV", "agentxlivetest123");
+  vi.stubEnv("AGENTX_ENV", LIVE_ENV);
   vi.stubEnv("SLACK_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:944937319445:secret:agentx/agentxlivetest123/slack-z7WaUV");
   vi.stubEnv("INVOKE_SIGNING_KEY_ARN", "arn:aws:kms:us-east-1:123456789012:key/e2e");
   let bindingFenceCount = 0;
@@ -327,7 +333,7 @@ describe("Suite 9: resilience", () => {
   }, 120_000);
 
   it("9.6 two Approve presses on the plan at the same moment record one decision and start one coding run", async () => {
-    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS } });
+    const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: PLAN, edits: EDITS } });
     await atPlanReview(e2e);
     await e2e.concurrently(() => e2e.click("agentx_workflow_approve"), () => e2e.click("agentx_workflow_approve"));
     await e2e.settle();
@@ -337,7 +343,7 @@ describe("Suite 9: resilience", () => {
   }, 120_000);
 
   it("9.7 a coding run whose compute is lost is said with Retry coding once the reconciler notices, and the retry finishes", async () => {
-    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS } });
+    const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: PLAN, edits: EDITS } });
     await atPlanReview(e2e);
     e2e.worker.crashNext("task:IMPLEMENT");
     await e2e.click("agentx_workflow_approve");
@@ -385,9 +391,9 @@ describe("Suite 9: resilience", () => {
 
   it("9.9 [R3] stream records delivered twice post each notice once, and a Canvas's record is written once", async () => {
     const MARKDOWN = "# Plan\n\n1. Add greet to greeting.ts.\n2. Run node --version.\n";
-    const once = await createWorkflowE2E({ legacyPlanMarkdown: MARKDOWN, model: { plan: PLAN, edits: EDITS } });
+    const once = await createWorkflowE2E({ environmentName: LIVE_ENV, legacyPlanMarkdown: MARKDOWN, model: { plan: PLAN, edits: EDITS } });
     await atPlanReview(once);
-    const twice = await createWorkflowE2E({ legacyPlanMarkdown: MARKDOWN, model: { plan: PLAN, edits: EDITS } });
+    const twice = await createWorkflowE2E({ environmentName: LIVE_ENV, legacyPlanMarkdown: MARKDOWN, model: { plan: PLAN, edits: EDITS } });
     expect(await twice.mention("quick: Add a greet(name) function")).toBe(200);
     for (let step = 0; step < 6; step += 1) {
       twice.stream.duplicateNext();
@@ -401,7 +407,7 @@ describe("Suite 9: resilience", () => {
   }, 120_000);
 
   it("9.10 a planning run that fails says so with Retry planning; a coding run that fails says so with Retry coding", async () => {
-    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS } });
+    const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: PLAN, edits: EDITS } });
     e2e.worker.failNext("task:PLAN", "timeout:1800000");
     expect(await e2e.mention("quick: Add a greet(name) function")).toBe(200);
     await e2e.settle();
@@ -473,7 +479,7 @@ describe("Suite 9: resilience", () => {
   it("9.12 a plan of the most claims a plan may have is cut in its card, within the brief limit", async () => {
     const long = planAnswer(planDocument({ title: "Many steps", claims: Array.from({ length: PLAN_CLAIMS_MAX }, (_, index) => ({ id: String(index + 1),
       text: `Step ${index + 1}: change line ${index + 1} of greeting.ts so that the greeting reads better for every user.` })), decisions: [] }));
-    const e2e = await createWorkflowE2E({ model: { plan: long, edits: EDITS } });
+    const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: long, edits: EDITS } });
     await atPlanReview(e2e);
     const card = e2e.slack.lastPostWithAction("agentx_workflow_approve");
     expect(visibleSlackText(card.text)).toMatch(/And \d+ more claims\./);
@@ -500,7 +506,7 @@ describe("Suite 9: resilience", () => {
   }, 120_000);
 
   it("9.15 [LIVE-BUG B12] the task page fetched right after Approve shows the new step, even where reads lag a write", async () => {
-    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS }, consistency: "eventual" });
+    const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: PLAN, edits: EDITS }, consistency: "eventual" });
     await atPlanReview(e2e);
     await e2e.click("agentx_workflow_approve");
     const page = await e2e.taskPage();
@@ -512,7 +518,7 @@ describe("Suite 9: resilience", () => {
   }, 120_000);
 
   it("9.16 deploy skew, new worker and old broker: reviews run without the fields the broker didn't send, to the draft PR", async () => {
-    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS } });
+    const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: PLAN, edits: EDITS } });
     e2e.worker.stripInvocationFields(["workflowReviewFeedback", "workflowReviewPlan", "workflowApprovedPlan"]);
     await atPlanReview(e2e);
     await e2e.click("agentx_workflow_approve");
@@ -687,7 +693,7 @@ describe("Suite 9: resilience", () => {
       notChanging: Array.from({ length: 10 }, (_, index) => long(200, index)), risks: Array.from({ length: 10 }, (_, index) => long(200, index)) }));
     expect(Buffer.byteLength(big, "utf8")).toBeGreaterThan(WORKFLOW_PLAN_MAX_BYTES * 0.75);
     expect(Buffer.byteLength(big, "utf8")).toBeLessThan(WORKFLOW_PLAN_MAX_BYTES);
-    const e2e = await createWorkflowE2E({ model: { plan: big, edits: EDITS } });
+    const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: big, edits: EDITS } });
     await atPlanReview(e2e);
     for (let reply = 0; reply < 40; reply += 1) expect(await e2e.mention(`Note ${reply}: ${"please keep the greeting friendly. ".repeat(12)}`, { type: "message" })).toBe(200);
     await e2e.click("agentx_workflow_approve");
@@ -714,7 +720,7 @@ describe("Suite 9: resilience", () => {
 
   it("9.20 an accepted coding run with retained People but unavailable proof stays parked through redelivery and recovery", async () => {
     const unavailableProof: CheckTaskPerson = async () => { throw new Error("fresh identity proof is unavailable"); };
-    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS }, taskPeople: { changesEnabled: false, checkTaskPerson: unavailableProof } });
+    const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: PLAN, edits: EDITS }, taskPeople: { changesEnabled: false, checkTaskPerson: unavailableProof } });
     await atPlanReview(e2e);
     const runsBeforeApproval = e2e.invocations.length;
     const charge = structuredClone(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")!.charge);
@@ -759,7 +765,7 @@ describe("Suite 9: resilience", () => {
   }, 120_000);
 
   it("9.21 a freshly authorized retained owner passes both dispatch guards and reaches the worker", async () => {
-    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS }, taskPeople: { changesEnabled: false, checkTaskPerson: freshOwner() } });
+    const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: PLAN, edits: EDITS }, taskPeople: { changesEnabled: false, checkTaskPerson: freshOwner() } });
     await atPlanReview(e2e);
     await e2e.click("agentx_workflow_approve");
     retainOwner(e2e);
@@ -777,7 +783,7 @@ describe("Suite 9: resilience", () => {
   }, 120_000);
 
   it("9.25 an accepted outbox can be driven through the exported production dispatcher boundary", async () => {
-    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS }, taskPeople: { changesEnabled: false, boundChannels: [SLACK_CHANNEL] } });
+    const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: PLAN, edits: EDITS }, taskPeople: { changesEnabled: false, boundChannels: [SLACK_CHANNEL] } });
     await atPlanReview(e2e);
     const production = installProductionDispatcher(e2e);
     e2e.worker.useProductionHandler((record, receiveCount) => production.deliver(record, receiveCount));
@@ -800,7 +806,7 @@ describe("Suite 9: resilience", () => {
   }, 120_000);
 
   it("9.31 the exported dispatcher composes through the dedicated fresh proof Lambda runtime", async () => {
-    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS }, taskPeople: { changesEnabled: false, boundChannels: [SLACK_CHANNEL] } });
+    const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: PLAN, edits: EDITS }, taskPeople: { changesEnabled: false, boundChannels: [SLACK_CHANNEL] } });
     await atPlanReview(e2e);
     const production = installProductionDispatcher(e2e, { actualProofRuntime: true });
     e2e.worker.useProductionHandler((record, receiveCount) => production.deliver(record, receiveCount));
@@ -832,7 +838,7 @@ describe("Suite 9: resilience", () => {
 
   for (const fence of [1, 2, 3] as const) {
     it(`9.26 production guard requalifies a deleted project binding at State fence ${fence} before any worker POST`, async () => {
-      const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS },
+      const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: PLAN, edits: EDITS },
         taskPeople: { changesEnabled: false, boundChannels: [SLACK_CHANNEL] } });
       await atPlanReview(e2e);
       const production = installProductionDispatcher(e2e, { removeBindingAtFence: fence });
@@ -864,7 +870,7 @@ describe("Suite 9: resilience", () => {
   }
 
   it("9.27 an unavailable proof with no pause reserve is returned for retry, then the same outbox completes", async () => {
-    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS },
+    const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: PLAN, edits: EDITS },
       taskPeople: { changesEnabled: false, boundChannels: [SLACK_CHANNEL] } });
     await atPlanReview(e2e);
     const production = installProductionDispatcher(e2e, { functionErrorOnProofCalls: [1] });
@@ -898,7 +904,7 @@ describe("Suite 9: resilience", () => {
 
   it("9.27a a durable proof pause waits for an authenticated Owner retry and resumes the original outbox", async () => {
     const directoryProofCalls: TaskPersonProofRequest[] = [];
-    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS },
+    const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: PLAN, edits: EDITS },
       taskPeople: { changesEnabled: false, boundChannels: [SLACK_CHANNEL], checkTaskPerson: freshOwner(),
         taskPersonProof: async (request) => {
           directoryProofCalls.push(request);
@@ -906,9 +912,9 @@ describe("Suite 9: resilience", () => {
             user: { id: request.slackUserId, teamId: "T0BSHLLUGBD", name: "Maya Chen" },
             memberOf: request.channelIds.includes(SLACK_CHANNEL) ? [SLACK_CHANNEL] : [] });
         } } });
-    const projectRevision = e2e.db.get("PROJECT#payments", "REV#000000000001") as { definition: Record<string, unknown> };
+    const projectRevision = e2e.db.get(projectRevisionKey(TEST_ORG, "payments", 1)) as { definition: Record<string, unknown> };
     e2e.db.set({ ...projectRevision, definition: { ...projectRevision.definition, developerTasks: { enabled: true, channelMembersMayUse: true } } });
-    e2e.db.set({ pk: `MEMBER#${SLACK_MAYA.developerId}`, sk: "PROJECT#payments", entityType: "MEMBERSHIP",
+    e2e.db.set({ ...projectMemberKey(TEST_ORG, SLACK_MAYA.developerId, "payments"), entityType: "MEMBERSHIP",
       ownerKey: SLACK_MAYA.developerId, projectName: "payments", role: "developer" });
     await atPlanReview(e2e);
     const production = installProductionDispatcher(e2e, { functionErrorOnProofCalls: [1], functionErrorRemainingTimeMs: 60_000 });
@@ -988,7 +994,7 @@ describe("Suite 9: resilience", () => {
   }, 120_000);
 
   it("9.28 exhausted pause reserve remains a retryable SQS failure at terminal receive count", async () => {
-    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS },
+    const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: PLAN, edits: EDITS },
       taskPeople: { changesEnabled: false, boundChannels: [SLACK_CHANNEL] } });
     await atPlanReview(e2e);
     const production = installProductionDispatcher(e2e, { functionErrorOnProofCalls: [1, 2] });
@@ -1022,7 +1028,7 @@ describe("Suite 9: resilience", () => {
 
   for (const proofCall of [2, 3] as const) {
     it(`9.28a proof failure at terminal receive count after guard ${proofCall === 2 ? "ready" : "ping"} does not sign, post, pause, or terminally fail`, async () => {
-      const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS },
+      const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: PLAN, edits: EDITS },
         taskPeople: { changesEnabled: false, boundChannels: [SLACK_CHANNEL] } });
       await atPlanReview(e2e);
       const production = installProductionDispatcher(e2e, { functionErrorOnProofCalls: [proofCall] });
@@ -1063,7 +1069,7 @@ describe("Suite 9: resilience", () => {
   for (const phase of ["initial", "post-ready", "post-ping"] as const) {
     it(`9.29 a failed durable pause at terminal count remains retryable at the ${phase} guard`, async () => {
       const proofCall = phase === "initial" ? 1 : phase === "post-ready" ? 2 : 3;
-      const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS },
+      const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: PLAN, edits: EDITS },
         taskPeople: { changesEnabled: false, boundChannels: [SLACK_CHANNEL] } });
       await atPlanReview(e2e);
       const production = installProductionDispatcher(e2e, {
@@ -1110,7 +1116,7 @@ describe("Suite 9: resilience", () => {
 
   it("9.22 owner loss during the asynchronous feature probe is caught by the final guard before POST", async () => {
     let eligible = true;
-    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS }, taskPeople: {
+    const e2e = await createWorkflowE2E({ environmentName: LIVE_ENV, model: { plan: PLAN, edits: EDITS }, taskPeople: {
       checkTaskPerson: async (task, developerId) => freshOwner(eligible)(task, developerId),
     } });
     await atPlanReview(e2e);

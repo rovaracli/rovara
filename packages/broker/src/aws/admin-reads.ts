@@ -13,7 +13,6 @@ import {
   CHANNEL_MEMBERS_MAX_CHANNELS,
   FailureIndexRecordSchema,
   INDEX_EXPIRY_ATTRIBUTE,
-  PROJECT_CATALOG_PK,
   SlackTeamIdSchema,
   SlackUserIdSchema,
   TaskUsageTelemetrySchema,
@@ -23,7 +22,15 @@ import {
   WorkspaceStatusSchema,
   agentXError,
   developerTaskPolicy,
+  memberGrantsPk,
+  MEMBER_GRANT_SK_PREFIX,
+  orgFailureDayPk,
+  orgLimitKey,
+  orgProjectCatalogPk,
+  orgUsageDayPk,
   parseSlackThreadSubject,
+  projectPk,
+  PROJECT_REVISION_SK_PREFIX,
   redactAndCap,
   slackThreadUrl,
   workspaceRecordFields,
@@ -37,6 +44,7 @@ import {
   type ChannelInfoResponse,
   type ChannelMembersRequest,
   type ChannelMembersResponse,
+  type OrgId,
   type ProjectDefinition,
   type WorkspaceInstance,
 } from "@agentx/contracts";
@@ -44,6 +52,7 @@ import type { AuthenticatedIdentity } from "../auth.js";
 import { adminHealth, type AdminHealthProbes } from "./admin-health.js";
 import { adminIdentityReader, type AdminMeDependencies } from "./admin-me.js";
 import { readWorkspaceLimits } from "../developer/limits.js";
+import { requireOrgId } from "../org/resolve.js";
 import { taskKey, taskPointerKey } from "../developer/task-records.js";
 import { listLimitParam, validTime, workspaceProjectReader, type TurnRecordSource } from "./turns.js";
 
@@ -95,8 +104,8 @@ export async function getStateItem(deps: AdminReadDependencies, key: { pk: strin
 }
 
 /** The latest revision's record, or undefined when the project has none. */
-export async function latestProjectRecord(deps: AdminReadDependencies, name: string): Promise<LatestProjectRecord | undefined> {
-  const [item] = await queryAllItems(deps, `PROJECT#${name}`, "REV#", { limit: 1, newestFirst: true });
+export async function latestProjectRecord(deps: AdminReadDependencies, orgId: OrgId, name: string): Promise<LatestProjectRecord | undefined> {
+  const [item] = await queryAllItems(deps, projectPk(orgId, name), PROJECT_REVISION_SK_PREFIX, { limit: 1, newestFirst: true });
   if (item === undefined) return undefined;
   return item as unknown as LatestProjectRecord;
 }
@@ -113,17 +122,18 @@ export async function adminProjectNames(deps: AdminReadDependencies, identity: A
 
 /** A3's names with each one's latest revision, read once: the read that proves a name also serves the list and the health route. */
 export async function adminProjects(deps: AdminReadDependencies, identity: AuthenticatedIdentity): Promise<Array<{ name: string; latest: LatestProjectRecord }>> {
+  const orgId = requireOrgId(identity.orgId);
   const [catalog, bindings, memberships] = await Promise.all([
-    queryAllItems(deps, PROJECT_CATALOG_PK, "PROJECT#"),
+    queryAllItems(deps, orgProjectCatalogPk(orgId), "PROJECT#"),
     deps.slackTeamId === undefined ? Promise.resolve([]) : queryAllItems(deps, `SLACK_BINDING#${deps.slackTeamId}`, "CHANNEL#"),
-    queryAllItems(deps, `MEMBER#${identity.ownerKey}`, "PROJECT#"),
+    queryAllItems(deps, memberGrantsPk(orgId, identity.ownerKey), MEMBER_GRANT_SK_PREFIX),
   ]);
   const names = new Set<string>();
   for (const item of catalog) if (typeof item.name === "string") names.add(item.name);
   for (const item of bindings) if (typeof item.projectName === "string") names.add(item.projectName);
   for (const item of memberships) if (typeof item.projectName === "string") names.add(item.projectName);
   const sorted = [...names].sort();
-  const latest = await Promise.all(sorted.map((name) => latestProjectRecord(deps, name)));
+  const latest = await Promise.all(sorted.map((name) => latestProjectRecord(deps, orgId, name)));
   return sorted.flatMap((name, index) => {
     const record = latest[index];
     return record === undefined ? [] : [{ name, latest: record }];
@@ -309,11 +319,11 @@ function projectParam(url: URL): string | undefined {
 }
 
 /** A7: day partition by day, newest first, until `limit`; an unreadable item is counted, not shown. */
-export async function readFailures(deps: AdminReadDependencies, window: { since: string; until: string }, options: { limit: number; project?: string; category?: string }): Promise<{ failures: FailureIndexRecord[]; skipped: number }> {
+export async function readFailures(deps: AdminReadDependencies, orgId: OrgId, window: { since: string; until: string }, options: { limit: number; project?: string; category?: string }): Promise<{ failures: FailureIndexRecord[]; skipped: number }> {
   const failures: FailureIndexRecord[] = [];
   let skipped = 0;
   for (let day = Date.parse(window.until.slice(0, 10)); day >= Date.parse(window.since.slice(0, 10)) && failures.length < options.limit; day -= DAY_MS) {
-    const pk = `FAILURE#${new Date(day).toISOString().slice(0, 10)}`;
+    const pk = orgFailureDayPk(orgId, new Date(day).toISOString().slice(0, 10));
     let start: Record<string, unknown> | undefined;
     do {
       const filters = [...(options.project === undefined ? [] : ["#project = :project"]), ...(options.category === undefined ? [] : ["#category = :category"])];
@@ -353,10 +363,10 @@ export async function readFailures(deps: AdminReadDependencies, window: { since:
   return { failures, skipped };
 }
 
-async function listFailures(deps: AdminReadDependencies, url: URL): Promise<AdminFailuresResponse> {
+async function listFailures(deps: AdminReadDependencies, orgId: OrgId, url: URL): Promise<AdminFailuresResponse> {
   const window = timeWindow(url, deps.now(), ADMIN_FAILURES_DEFAULT_HOURS);
   const project = projectParam(url);
-  const { failures, skipped } = await readFailures(deps, window, { limit: listLimit(url, ADMIN_FAILURES_DEFAULT_LIMIT), ...(project === undefined ? {} : { project }) });
+  const { failures, skipped } = await readFailures(deps, orgId, window, { limit: listLimit(url, ADMIN_FAILURES_DEFAULT_LIMIT), ...(project === undefined ? {} : { project }) });
   return { failures, ...window, ...(skipped > 0 ? { skipped } : {}) };
 }
 
@@ -391,7 +401,7 @@ const USAGE_TURN_PAGES_MAX = 2 * (ADMIN_USAGE_READ_MAX / ADMIN_LIST_MAX);
  * each source, and at most USAGE_TURN_PAGES_MAX turn record pages. An item or a turn's usage that no longer parses is counted and logged, never dropped
  * silently; a turn with no usage at all is a known zero (R14).
  */
-async function usageEntries(deps: AdminReadDependencies, window: { since: string; until: string }): Promise<{ entries: UsageEntry[]; truncated: boolean; skipped: number }> {
+async function usageEntries(deps: AdminReadDependencies, orgId: OrgId, window: { since: string; until: string }): Promise<{ entries: UsageEntry[]; truncated: boolean; skipped: number }> {
   const entries: UsageEntry[] = [];
   let truncated = false;
   let read = 0;
@@ -403,7 +413,7 @@ async function usageEntries(deps: AdminReadDependencies, window: { since: string
       const page = await deps.documentClient.send(new QueryCommand({
         TableName: deps.tableName,
         KeyConditionExpression: "pk = :pk AND sk BETWEEN :low AND :high",
-        ExpressionAttributeValues: { ":pk": `USAGE#${new Date(day).toISOString().slice(0, 10)}`, ":low": window.since, ":high": `${window.until}\uffff` },
+        ExpressionAttributeValues: { ":pk": orgUsageDayPk(orgId, new Date(day).toISOString().slice(0, 10)), ":low": window.since, ":high": `${window.until}\uffff` },
         // Never past the cap: the last page asks only for what remains.
         Limit: Math.min(ADMIN_LIST_MAX, ADMIN_USAGE_READ_MAX - read),
         ConsistentRead: true,
@@ -470,11 +480,11 @@ async function usageEntries(deps: AdminReadDependencies, window: { since: string
   return { entries, truncated, skipped };
 }
 
-async function usageSummary(deps: AdminReadDependencies, url: URL): Promise<AdminUsageResponse> {
+async function usageSummary(deps: AdminReadDependencies, orgId: OrgId, url: URL): Promise<AdminUsageResponse> {
   const groupBy = AdminUsageGroupBySchema.safeParse(url.searchParams.get("group_by"));
   if (!groupBy.success) throw agentXError("CONFIG_INVALID", "group_by must be project, requester, origin or day");
   const window = timeWindow(url, deps.now(), 24 * 7);
-  const { entries, truncated, skipped } = await usageEntries(deps, window);
+  const { entries, truncated, skipped } = await usageEntries(deps, orgId, window);
   const groups = new Map<string, AdminUsageResponse["groups"][number]>();
   for (const entry of entries) {
     const key = entry[groupBy.data];
@@ -577,9 +587,10 @@ async function listWorkspaces(deps: AdminReadDependencies, identity: Authenticat
     const { origin, owner } = await workspaceOwner(deps, workspace);
     workspaces.push({ id: workspace.id, project: workspace.projectName, origin, owner, status: workspace.status, busy: workspace.activeOperationId !== null, lastActivityAt: workspace.updatedAt });
   }
-  const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.limitDefaults, (entry) => deps.log(entry));
+  const orgId = requireOrgId(identity.orgId);
+  const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, orgId, deps.limitDefaults, (entry) => deps.log(entry));
   const organization = deps.slackTeamId === undefined ? 0 : await counterCount(deps, { pk: `SLACK_LIMIT#${deps.slackTeamId}`, sk: "ORGANIZATION" });
-  const developerOrganization = await counterCount(deps, { pk: "DEVELOPER_LIMIT#ORGANIZATION", sk: "ORGANIZATION" });
+  const developerOrganization = await counterCount(deps, orgLimitKey(orgId));
   return {
     workspaces,
     limits: { perPerson: limits.member, perOrganization: limits.organization, source: limits.source },
@@ -608,8 +619,8 @@ type AdminRead = (deps: AdminReadDependencies, identity: AuthenticatedIdentity, 
 const ADMIN_READS: Record<string, AdminRead> = {
   "/v1/admin/projects": (deps, identity) => listProjects(deps, identity),
   "/v1/admin/slack/bindings": (deps, identity, url, request) => listBindings(deps, identity, url, request.headers.authorization),
-  "/v1/admin/failures": (deps, _identity, url) => listFailures(deps, url),
-  "/v1/admin/usage": (deps, _identity, url) => usageSummary(deps, url),
+  "/v1/admin/failures": (deps, identity, url) => listFailures(deps, requireOrgId(identity.orgId), url),
+  "/v1/admin/usage": (deps, identity, url) => usageSummary(deps, requireOrgId(identity.orgId), url),
   "/v1/admin/workspaces": (deps, identity, url) => listWorkspaces(deps, identity, url),
   "/v1/admin/me": async (deps, identity, _url, request) => {
     const reader = adminReader(deps);

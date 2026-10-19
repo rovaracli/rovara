@@ -8,6 +8,8 @@ import type { FeedbackReviewMeasure } from "../../packages/broker/src/developer/
 import { call, createBroker, loadSlackBroker } from "../support/slack-broker.js";
 import { validatingDocumentClient } from "../support/validating-document-client.js";
 import { reorderMaps } from "../support/fake-dynamodb.js";
+import { projectPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { TEST_ENV, TEST_ORG } from "../support/orgs.js";
 
 function commandInput(command: unknown): { constructor: { name: string }; input: Record<string, unknown> } {
   return command as { constructor: { name: string }; input: Record<string, unknown> };
@@ -317,6 +319,7 @@ describe("GitHub webhook signature verification", () => {
     let transaction: Record<string, unknown> | undefined;
     const dependencies = {
       tableName: "state",
+      environmentName: TEST_ENV,
       documentClient: { async send(command: unknown) {
         const value = commandInput(command);
         if (value.constructor.name === "TransactWriteCommand") { transaction = value.input; return {}; }
@@ -325,7 +328,7 @@ describe("GitHub webhook signature verification", () => {
         if (key.pk === "GITHUB_PR#acme/payments") return { Item: { entityType: "GITHUB_WORKFLOW_PR", repositoryFullName: "acme/payments",
           repositoryId: "payments", number: 9, url, taskId, workspaceId, candidateDigest: candidate.digest } };
         if (key.pk === `DEVTASK#${taskId}`) return { Item: task };
-        if (key.pk === "PROJECT#test") return { Item: { definition: { repositories: [
+        if (key.pk === projectPk(TEST_ORG, "test")) return { Item: { definition: { repositories: [
           { name: "payments", url: "https://github.com/acme/payments.git" },
         ] } } };
         return {};
@@ -527,7 +530,7 @@ describe("task-wide current PR feedback reconciliation", () => {
     expect(broker.processGithubWorkflowEvent).toBeTypeOf("function");
     const stored = new Map<string, string>();
     const dependencies = {
-      tableName: "state", artifactBucketName: "artifacts",
+      tableName: "state", artifactBucketName: "artifacts", environmentName: TEST_ENV,
       documentClient: { send: async (rawCommand: unknown) => {
         const command = commandInput(rawCommand);
         if (command.constructor.name === "UpdateCommand") {
@@ -537,7 +540,7 @@ describe("task-wide current PR feedback reconciliation", () => {
         }
         const key = objectInput(command.input.Key);
         if (typeof key.pk === "string" && key.pk.startsWith("DEVTASK#")) return { Item: { ...(await f.input.loadTask("task")), ownerKey: "owner", workspaceId: "workspace" } };
-        if (typeof key.pk === "string" && key.pk.startsWith("PROJECT#")) return { Item: { definition: { repositories: ["api", "ui"].map(name => ({ name, url: `https://github.com/acme/${name}.git` })) } } };
+        if (typeof key.pk === "string" && key.pk.includes("#PROJECT#")) return { Item: { definition: { repositories: ["api", "ui"].map(name => ({ name, url: `https://github.com/acme/${name}.git` })) } } };
         return f.input.documentClient.send(command);
       } },
       s3: { send: async (rawCommand: unknown) => {

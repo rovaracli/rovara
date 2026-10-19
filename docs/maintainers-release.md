@@ -82,7 +82,7 @@ aws dynamodb scan --table-name "$STATE_TABLE_NAME" --consistent-read \
 ```
 
 This is read-only. Each item the scan returns is one offending revision: `pk` is
-`PROJECT#<project-name>` and `sk` is `REV#<revision, zero-padded>`. If the response carries a
+`ORG#<org-id>#PROJECT#<project-name>` and `sk` is `REV#<revision, zero-padded>`. If the response carries a
 `LastEvaluatedKey`, repeat the scan with `--exclusive-start-key` set to it before treating an empty
 page as clean. `actionPolicy` cannot be removed from a stored revision: project revisions are
 immutable. Registering a new revision without the field only changes what a new thread, and an

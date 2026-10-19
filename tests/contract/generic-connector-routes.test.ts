@@ -6,6 +6,8 @@ import { SlackThreadWorkspaceResultSchema } from "../../packages/contracts/src/s
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { call, createBroker, ensureWorkspace, loadSlackBroker, markReady, orchestratorPrincipal, type Handler } from "../support/slack-broker.js";
 import { TRACKER_ENDPOINT, trackerConnectorType } from "../support/tracker-connector.js";
+import { projectPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const team = "T0BSHLLUGBD";
 const channel = "C0123456789";
@@ -91,7 +93,7 @@ async function registerAndBind(handler: Handler): Promise<void> {
 
 /** No production type accepts `tracker` yet, so the stored revision is edited directly; routes do not re-parse it. */
 function seedTracker(db: FakeDynamoDb, config: Record<string, unknown>): void {
-  const [revision] = db.find((item) => item.pk === "PROJECT#payments" && String(item.sk).startsWith("REV#"));
+  const [revision] = db.find((item) => item.pk === projectPk(TEST_ORG, "payments") && String(item.sk).startsWith("REV#"));
   if (!revision) throw new Error("project revision is missing");
   const definition = revision.definition as { integrations: { connectors: unknown[] } };
   definition.integrations.connectors.push(config);
@@ -124,7 +126,7 @@ describe("legacy GitHub route", () => {
     await registerAndBind(handler);
     const workspaceId = (await ensureWorkspace(handler, thread, pratik)).body.workspaceId as string;
     markReady(db, workspaceId);
-    const [revision] = db.find((item) => item.pk === "PROJECT#payments" && String(item.sk).startsWith("REV#"));
+    const [revision] = db.find((item) => item.pk === projectPk(TEST_ORG, "payments") && String(item.sk).startsWith("REV#"));
     if (!revision) throw new Error("project revision is missing");
     const definition = revision.definition as { integrations: { connectors: Array<Record<string, unknown>> } };
     definition.integrations.connectors[0]!.extraField = "not part of the schema";
@@ -332,7 +334,7 @@ describe("thread setup lists every connector, to services that can parse it", ()
       connectorTypes: { github: githubConnectorType, broken },
     });
     await registerAndBind(handler);
-    const [revision] = db.find((item) => item.pk === "PROJECT#payments" && String(item.sk).startsWith("REV#"));
+    const [revision] = db.find((item) => item.pk === projectPk(TEST_ORG, "payments") && String(item.sk).startsWith("REV#"));
     if (!revision) throw new Error("project revision is missing");
     const definition = revision.definition as { integrations: { connectors: unknown[] } };
     definition.integrations.connectors.push({ name: "broken", type: "broken", scopes: ["payments"], tools: [] });

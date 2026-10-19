@@ -16,6 +16,7 @@ import { planAnswer } from "../support/plan-documents.js";
 import { pagePlan } from "../support/page-tasks.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { validatingDocumentClient } from "../support/validating-document-client.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
@@ -26,7 +27,7 @@ const TASK_REQUEST = { includeIntegrations: true, includeSettingsRevision: true,
 interface Sent { body: string; groupId: string; deduplicationId: string; attributes: Record<string, unknown> }
 
 /** A teammate in the task's channel. */
-const SAM: DeveloperCaller = { developerId: "5".repeat(64), sessionId: "s-sam", amr: "slack", name: "Sam Lee", slackUserId: "U0SAMLEE01" };
+const SAM: DeveloperCaller = { orgId: TEST_ORG, developerId: "5".repeat(64), sessionId: "s-sam", amr: "slack", name: "Sam Lee", slackUserId: "U0SAMLEE01" };
 const NO_DECIDING = "You cannot approve, choose answers or make decisions; if asked to, say only the owner decides on the page.";
 
 const operations = (harness: Harness, workspaceId: string) => harness.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION");
@@ -52,14 +53,14 @@ async function waitingTask(options: { fromTool?: boolean; queue?: false | ((sent
   await harness.artifact(workspaceId, String(planning.id), "plan.md", planAnswer(PLAN));
   await harness.finish(workspaceId, String(planning.id), "SUCCEEDED", { result: { workflowMode: "PLAN" } });
   const sent: Sent[] = [];
-  const deps: DeveloperTaskRouteDependencies = {
+  const deps: DeveloperTaskRouteDependencies = { orgId: TEST_ORG,
     documentClient: validatingDocumentClient(harness.db), tableName: "state", actions: harness.actions,
     checkAccess: async () => ({ revision: 1, policy: {} as never, access: "channel", channelIds: [SLACK_CHANNEL] }),
     projectChannelIds: async () => [SLACK_CHANNEL], now: () => Date.now(), log: () => undefined, channelMember: async () => true,
     ...(options.wrap === undefined ? {} : { documentClient: options.wrap(validatingDocumentClient(harness.db)) }),
     ...(options.queue === false ? {} : { slackRequestQueue: { send: async (message: Sent) => { if (typeof options.queue === "function") await options.queue(message); sent.push(message); } } }),
   };
-  const owner: DeveloperCaller = { developerId: record.developerId, sessionId: MAYA.sessionId, amr: "slack", name: MAYA.name, slackUserId: MAYA.slackUserId! };
+  const owner: DeveloperCaller = { orgId: TEST_ORG, developerId: record.developerId, sessionId: MAYA.sessionId, amr: "slack", name: MAYA.name, slackUserId: MAYA.slackUserId! };
   const comment = (extra: { text?: string; ask?: boolean; parentId?: string; requestId?: string; as?: DeveloperCaller } = {}) => createPageComment(deps, extra.as ?? owner, taskId, {
     requestId: extra.requestId ?? randomUUID(), document: "plan", version: 1, target: { kind: "claim", id: "2.1" }, text: extra.text ?? "Why below the button?", ask: extra.ask ?? true,
     ...(extra.parentId === undefined ? {} : { parentId: extra.parentId }),

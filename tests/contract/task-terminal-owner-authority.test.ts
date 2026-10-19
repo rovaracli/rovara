@@ -6,6 +6,7 @@ import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-ro
 import { routeDeveloperTaskRequest } from "../../packages/broker/src/aws/developer-tasks.js";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 async function terminalPeopleTask() {
   const creator = "U0EREVIEW1";
@@ -71,7 +72,7 @@ describe("terminal task Slack authorization", () => {
     ] as const;
 
     for (const slackUserId of [creator, coOwner]) {
-      const caller: DeveloperCaller = { developerId: developerIdForSlackUser(slackUserId), slackUserId, name: slackUserId, sessionId: `session-${slackUserId}`, amr: "slack" };
+      const caller: DeveloperCaller = { orgId: TEST_ORG, developerId: developerIdForSlackUser(slackUserId), slackUserId, name: slackUserId, sessionId: `session-${slackUserId}`, amr: "slack" };
       const deps = developerTaskRouteDependencies({ documentClient: h.db, tableName: "state", developer: h.brokerInput.developer, now: Date.now, tasks: h.actions } as never, caller);
       for (const [route, body] of requests) {
         let refusal: unknown;

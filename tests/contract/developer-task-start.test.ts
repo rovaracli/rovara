@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import { NEXT_STEPS } from "../../packages/mcp/src/index.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject, registerRevision, unbindChannel } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace } from "../support/slack-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { orgLimitKey, projectMemberKey, projectPk } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const start = (overrides: Record<string, unknown> = {}) => ({ requestId: randomUUID(), project: "payments", instructions: "Fix the flaky retry test", client: "claude-code", ...overrides });
 const workspaces = (db: { find(predicate: (item: Record<string, unknown>) => boolean): unknown[] }) => db.find((item) => item.entityType === "WORKSPACE");
@@ -136,7 +138,7 @@ describe("the start's refusals, in FR-018's order, before anything starts", () =
 describe("developers without a Slack link (FR-020, R6)", () => {
   it("can use a granted project, on their own member counter", async () => {
     const { db, dev } = await createDeveloperTaskBroker();
-    db.set({ pk: `MEMBER#${OMAR.developerId}`, sk: "PROJECT#payments", entityType: "MEMBERSHIP", ownerKey: OMAR.developerId, projectName: "payments", role: "developer" });
+    db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: OMAR.developerId, projectName: "payments", role: "developer" });
     const response = await dev(OMAR, "POST", "/v1/dev/tasks", start());
     expect(response.status).toBe(200);
     expect(db.get(`DEVELOPER_LIMIT#${OMAR.developerId}`, "MEMBER")).toMatchObject({ count: 1 });
@@ -145,9 +147,9 @@ describe("developers without a Slack link (FR-020, R6)", () => {
 
   it("counts on the developer organization counter when the environment has no Slack team ID", async () => {
     const { db, dev } = await createDeveloperTaskBroker({ slackTeamId: null });
-    db.set({ pk: `MEMBER#${OMAR.developerId}`, sk: "PROJECT#payments", entityType: "MEMBERSHIP", ownerKey: OMAR.developerId, projectName: "payments", role: "developer" });
+    db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: OMAR.developerId, projectName: "payments", role: "developer" });
     expect((await dev(OMAR, "POST", "/v1/dev/tasks", start())).status).toBe(200);
-    expect(db.get("DEVELOPER_LIMIT#ORGANIZATION", "ORGANIZATION")).toMatchObject({ count: 1 });
+    expect(db.get(orgLimitKey(TEST_ORG))).toMatchObject({ count: 1 });
   });
 });
 
@@ -354,7 +356,7 @@ describe("the start's transaction and the workspace limit (FR-020, R6)", () => {
     intercept(db, async (command, original) => {
       const values = command.input.ExpressionAttributeValues as Record<string, unknown> | undefined;
       // latestProject's read (the access check's read projects only the policy).
-      if (!raced && command.constructor.name === "QueryCommand" && values?.[":pk"] === "PROJECT#payments" && command.input.ProjectionExpression === undefined) {
+      if (!raced && command.constructor.name === "QueryCommand" && values?.[":pk"] === projectPk(TEST_ORG, "payments") && command.input.ProjectionExpression === undefined) {
         raced = true;
         await registerRevision(handler, 2, { enabled: false });
       }

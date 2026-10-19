@@ -1,13 +1,15 @@
 // Spec 025 A9: usage per project, requester, origin or day, from worker usage items and Slack turn records.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EMPTY_TURN_OBSERVATION, usageIndexKey } from "../../packages/contracts/src/index.js";
+import { EMPTY_TURN_OBSERVATION } from "../../packages/contracts/src/index.js";
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { orgUsageIndexKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const WORKSPACE = "22222222-2222-4222-8222-222222222222";
 const usage = (at: string, n: number, extra: Record<string, unknown> = {}) => {
   const operationId = `1111111${n}-1111-4111-8111-111111111111`;
   return {
-    ...usageIndexKey(at, operationId), entityType: "USAGE_INDEX", operationId, workspaceId: WORKSPACE, project: "payments", origin: "slack",
+    ...orgUsageIndexKey(TEST_ORG, at, operationId), entityType: "USAGE_INDEX", operationId, workspaceId: WORKSPACE, project: "payments", origin: "slack",
     requester: { kind: "slack", teamId: "T0BSHLLUGBD", userId: "U0PRIYA001" }, at, durationMs: 60_000, inputTokens: 1_000, outputTokens: 100, costUsd: 0.5, ...extra,
   };
 };
@@ -77,7 +79,7 @@ describe("GET /v1/admin/usage (FR-030, A9)", () => {
     for (let n = 0; n < 5_000; n += 1) {
       const item = usage(at(26, n), 0, { costUsd: 0 });
       const operationId = `${n.toString(16).padStart(8, "0")}-1111-4111-8111-111111111111`;
-      db.set({ ...item, ...usageIndexKey(String(item.at), operationId), operationId });
+      db.set({ ...item, ...orgUsageIndexKey(TEST_ORG, String(item.at), operationId), operationId });
     }
     db.set(usage(at(1, 0), 9));
     const answer = await admin("GET", `/v1/admin/usage?group_by=project&since=${encodeURIComponent(at(30, 0))}`);
@@ -150,7 +152,7 @@ describe("GET /v1/admin/usage (FR-030, A9)", () => {
       // The 50 oldest no longer parse; the read goes oldest first, so they count toward the cap.
       const item = usage(hoursAgo(1, n), 0, n >= 5_000 ? { durationMs: -1 } : {});
       const operationId = `${n.toString(16).padStart(8, "0")}-1111-4111-8111-111111111111`;
-      db.set({ ...item, ...usageIndexKey(String(item.at), operationId), operationId });
+      db.set({ ...item, ...orgUsageIndexKey(TEST_ORG, String(item.at), operationId), operationId });
     }
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     const answer = await admin("GET", `/v1/admin/usage?group_by=project&since=${encodeURIComponent(hoursAgo(26))}`);

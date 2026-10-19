@@ -9,6 +9,8 @@ import type { GitHubMcpDependencies } from "../../packages/broker/src/github-mcp
 import { adminCall, adminIssuer, createAdminBroker, type AdminHandler } from "../support/admin-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { trackerConnectorType } from "../support/tracker-connector.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 
 describe("registration preflight", () => {
@@ -45,7 +47,7 @@ describe("registration preflight", () => {
     expect(registered.body.preflight).toMatchObject({ connectors: [{ name: "github", status: "not_connected", offered: [], skipped: [] }] });
     expect((registered.body.warnings as string[])[0]).toMatch(/^connector github: GitHub is not connected: GitHub rejected the credential twice/);
     expect(JSON.stringify(registered.body)).not.toContain("installation-secret");
-    expect(db.get("PROJECT#payments", "REV#000000000001")).toBeDefined();
+    expect(db.get(projectRevisionKey(TEST_ORG, "payments", 1))).toBeDefined();
   });
 
   it("reports an unreachable vendor as unavailable without failing registration", async () => {
@@ -68,7 +70,7 @@ describe("registration preflight", () => {
     expect(refused.body).toMatchObject({ error: { code: "CONFIG_INVALID" } });
     expect((refused.body as { error: { message: string } }).error.message).toContain("cannot access example/docs");
     expect(checked).toHaveLength(2);
-    expect(db.get("PROJECT#payments", "REV#000000000001")).toBeUndefined();
+    expect(db.get(projectRevisionKey(TEST_ORG, "payments", 1))).toBeUndefined();
   });
 
   it("accepts a devcontainer on ec2-ebs", async () => {
@@ -93,7 +95,7 @@ describe("registration preflight", () => {
     const refused = await register(handler, githubConnector(["list_issues"]), { preflight: true, repositories: ["demo", "docs"] });
     expect(refused.status).toBe(400);
     expect(refused.body).toMatchObject({ error: { code: "CONFIG_INVALID", message: "connector github tool list_issues already has a target argument and the connector has several scopes; remove its approval" } });
-    expect(db.get("PROJECT#payments", "REV#000000000001")).toBeUndefined();
+    expect(db.get(projectRevisionKey(TEST_ORG, "payments", 1))).toBeUndefined();
   });
 
   it("refuses a new revision with a presented name over 64 characters, but re-accepts an identical registered revision", async () => {
@@ -103,7 +105,7 @@ describe("registration preflight", () => {
     // Seed a revision registered before this check existed; re-submitting it stays idempotent.
     seedRegisteredRevision(db, githubConnector([long]));
     expect((await register(handler, githubConnector([long]))).body).toMatchObject({ duplicate: true });
-    expect(db.get("PROJECT_CATALOG", "PROJECT#payments")).toMatchObject({ latestRevision: 1 });
+    expect(db.get(orgProjectCatalogKey(TEST_ORG, "payments"))).toMatchObject({ latestRevision: 1 });
   });
 
   it("re-accepts an identical revision whose stored maps DynamoDB reads back in another key order", async () => {
@@ -138,7 +140,7 @@ describe("registration preflight", () => {
     expect(raced).toBe(true);
     expect(registered.status).toBe(201);
     expect(registered.body).toMatchObject({ duplicate: true, preflight: { connectors: [{ name: "github", status: "connected", offered: ["github__list_issues"], skipped: [] }] } });
-    expect(db.get("PROJECT_CATALOG", "PROJECT#payments")).toMatchObject({ latestRevision: 1 });
+    expect(db.get(orgProjectCatalogKey(TEST_ORG, "payments"))).toMatchObject({ latestRevision: 1 });
     expect(githubMcp.connect).toHaveBeenCalledTimes(1);
   });
 
@@ -156,7 +158,7 @@ describe("registration preflight", () => {
     expect(registered.status).toBe(201);
     expect(registered.body.preflight).toEqual({ connectors: [{ name: "github", status: "connected", offered: [], skipped: [{ tool: "list_issues", reason: TARGET_CONFLICT_REASON }] }] });
     expect(registered.body.warnings).toEqual([`connector github: tool list_issues skipped: ${TARGET_CONFLICT_REASON}`]);
-    expect(db.get("PROJECT#payments", "REV#000000000001")).toBeDefined();
+    expect(db.get(projectRevisionKey(TEST_ORG, "payments", 1))).toBeDefined();
   });
 
   it("warns when the model could see more than 20 tools", async () => {
@@ -290,7 +292,7 @@ describe("registering a project with a jira connector", () => {
     const refused = await register(handler, withJira());
     expect(refused.status).toBe(400);
     expect(refused.body).toMatchObject({ error: { code: "CONFIG_INVALID", message: "connector jira: credential jira-sa is not registered; run agentx admin credential register first" } });
-    expect(db.get("PROJECT#payments", "REV#000000000001")).toBeUndefined();
+    expect(db.get(projectRevisionKey(TEST_ORG, "payments", 1))).toBeUndefined();
   });
 
   it("refuses a credential of a type a Jira connector cannot use", async () => {
@@ -400,9 +402,9 @@ function register(handler: AdminHandler, overrides: Overrides, options: { prefli
 function seedRegisteredRevision(db: FakeDynamoDb, overrides: Overrides): void {
   const ownerKey = createHash("sha256").update(adminIssuer).update("\0").update("admin-subject").digest("hex");
   db.set({
-    pk: "PROJECT#payments", sk: "REV#000000000001", entityType: "PROJECT",
+    ...projectRevisionKey(TEST_ORG, "payments", 1), entityType: "PROJECT",
     definition: ProjectDefinitionSchema.parse(definition(overrides)), runtimeBinding,
     registeredBy: ownerKey, registeredAt: "2026-01-01T00:00:00.000Z",
   });
-  db.set({ pk: `MEMBER#${ownerKey}`, sk: "PROJECT#payments", entityType: "MEMBERSHIP", ownerKey, projectName: "payments", role: "administrator" });
+  db.set({ ...projectMemberKey(TEST_ORG, ownerKey, "payments"), entityType: "MEMBERSHIP", ownerKey, projectName: "payments", role: "administrator" });
 }

@@ -10,6 +10,7 @@ import { workflowMessage } from "../../packages/broker/src/developer/workflow-me
 import { resolveWorkflowE2ECanonicalApproval, workflowE2ECurrentAuthorityMatches } from "../../packages/broker/src/aws/workflow-e2e-current-authority.js";
 import { createDeveloperTaskBroker, MAYA, OMAR } from "../support/developer-task-broker.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const authority = () => ({
   admission: { candidateDigest: "a".repeat(64), intent: { scenario: "approved" }, policy: { revision: 4 },
@@ -284,7 +285,7 @@ describe("current workflow E2E authority", () => {
     expect((droppedE2EApproval.body as { error?: { message?: string } }).error?.message).toContain("must retain the required feature E2E intent");
 
     harness.db.set(recoveredTask);
-    const planPage = await getTaskDocumentView({ documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
+    const planPage = await getTaskDocumentView({ orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
       checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }),
       projectChannelIds: async () => [], now: () => Date.now() }, { developerId: MAYA.developerId } as never, taskId);
     expect(planPage).toMatchObject({ status: "The E2E plan needs correction", nextStep: expect.stringContaining("Request changes") as unknown });

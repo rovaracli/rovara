@@ -7,6 +7,8 @@ import { runPlanEvidenceJob, type PlanEvidenceRunDependencies } from "../../pack
 import { PLAN_EVIDENCE_EVENT_SOURCE, planEvidenceDueKey } from "../../packages/broker/src/developer/plan-evidence-jobs.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 const FILE = ["one", "two", "three", "four", "five"].join("\n") + "\n";
@@ -42,7 +44,7 @@ async function plannedTask(harness: Harness, paths = ["repo/demo/src/charge.ts"]
 const clock = (start = Date.now()) => { const state = { t: start }; return { state, now: () => state.t }; };
 
 function jobDeps(harness: Harness, getFileAtCommit: GetFile, now: () => number = Date.now, extra: Partial<PlanEvidenceRunDependencies> = {}): PlanEvidenceRunDependencies {
-  return { documentClient: harness.db as never, s3: harness.s3, tableName: "state", bucketName: "artifacts", github: { getFileAtCommit }, now, log: () => undefined, ...extra };
+  return { documentClient: harness.db as never, s3: harness.s3, tableName: "state", bucketName: "artifacts", orgId: TEST_ORG, github: { getFileAtCommit }, now, log: () => undefined, ...extra };
 }
 const pointerOf = (harness: Harness, taskId: string, artifactId: string) => harness.db.get(`DEVTASK#${taskId}`, `PLAN_EVIDENCE#${artifactId}`) as { objectKey: string; sha256: string } | undefined;
 const bundleOf = (harness: Harness, taskId: string, artifactId: string) => JSON.parse(String(harness.s3.objects.get(pointerOf(harness, taskId, artifactId)!.objectKey))) as { excerpts: Array<Record<string, unknown>> };
@@ -64,7 +66,7 @@ describe("the PlanEvidence job", () => {
     expect(taskRecord(harness, taskId).workflow.artifacts.at(-1)).toEqual(artifact);
     // The page shows the code.
     const view = await getTaskDocumentView(
-      { documentClient: harness.db, tableName: "state", actions: harness.actions, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
+      { orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
       { developerId: taskRecord(harness, taskId).developerId } as never, taskId);
     expect(view.documents[0]).toMatchObject({ evidence: { excerpts: [{ status: "ok", lines: ["two", "three"] }] } });
   });
@@ -117,7 +119,7 @@ describe("the PlanEvidence job", () => {
     const { taskId, artifact } = await plannedTask(harness);
     const getFile = vi.fn<GetFile>(async () => FILE);
     harness.db.set({ ...rows(harness)[0]!, attempts: 4 });
-    harness.db.delete("PROJECT#payments", "REV#000000000001");
+    harness.db.delete(projectRevisionKey(TEST_ORG, "payments", 1));
     expect(await runPlanEvidenceJob(jobDeps(harness, getFile), { taskId, artifactId: artifact.id })).toBe("attached");
     allUnavailable(harness, taskId, artifact.id);
     expect(rows(harness)).toEqual([]);
@@ -272,7 +274,7 @@ describe("a deployment with no PlanEvidence function", () => {
     expect(bundleOf(harness, taskId, artifact.id).excerpts).toEqual([expect.objectContaining({ claimId: "1", status: "ok", lines: ["two", "three"] })]);
     // The page reads it as it reads a job's bundle.
     const view = await getTaskDocumentView(
-      { documentClient: harness.db, tableName: "state", actions: harness.actions, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
+      { orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
       { developerId: taskRecord(harness, taskId).developerId } as never, taskId);
     expect(view.documents[0]).toMatchObject({ evidence: { excerpts: [{ status: "ok", lines: ["two", "three"] }] } });
   });

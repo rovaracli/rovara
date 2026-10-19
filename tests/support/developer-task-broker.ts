@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { vi, type Mock } from "vitest";
 import { sharedTaskKey, type ChannelInfoRequest, type ChannelInfoResponse, type ChannelMembersRequest, type ChannelMembersResponse } from "@agentx/contracts";
+import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import type { DeveloperApiConfiguration } from "../../packages/broker/src/aws/developer-routes.js";
 import type { DeveloperTaskActions } from "../../packages/broker/src/aws/developer-task-actions.js";
 import type { StreamRecord } from "../../packages/broker/src/developer/notifications.js";
@@ -12,6 +13,8 @@ import { developerTokenVerifier } from "../../packages/broker/src/developer/veri
 import { localSigner } from "./developer-fakes.js";
 import type { FakeDynamoDb, FakeDynamoDbOptions } from "./fake-dynamodb.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, loadSlackBroker, orchestratorPrincipal, registerSlackProject, type Handler } from "./slack-broker.js";
+import { TEST_ORG } from "./orgs.js";
+import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 export const DEV_ISSUER = "https://abc123.execute-api.us-east-1.amazonaws.com/v1/auth";
 export interface Developer { developerId: string; name: string; provider: "slack" | "oidc"; sessionId: string; slackUserId?: string }
@@ -86,6 +89,8 @@ export async function createDeveloperTaskBroker(options: {
   developerExtra?: Partial<DeveloperApiConfiguration>;
   /** Passed to createBroker as its `extra` broker input. */
   brokerExtra?: Record<string, unknown>;
+  /** Which org each caller belongs to; the single-org default when absent (ruling R1). A test with two orgs injects one. */
+  orgResolver?: OrgResolver;
   /** The fake table's realism (all on by default); see FakeDynamoDbOptions. An opt-out needs a comment saying why. */
   realism?: FakeDynamoDbOptions["realism"];
   /** "eventual": a read without ConsistentRead may see an item's previous version once after a write. */
@@ -109,7 +114,7 @@ export async function createDeveloperTaskBroker(options: {
     developer, turnRecordsTableName: "turns", slackThreadsTableName: "threads",
     ...(options.realism === undefined ? {} : { realism: options.realism }),
     ...(options.consistency === undefined ? {} : { consistency: options.consistency }),
-    ...(options.brokerExtra === undefined ? {} : { extra: options.brokerExtra }),
+    ...(options.brokerExtra === undefined && options.orgResolver === undefined ? {} : { extra: { ...options.brokerExtra, ...(options.orgResolver === undefined ? {} : { orgResolver: options.orgResolver }) } }),
   });
   const actions = module.createDeveloperTaskActions(brokerInput as never);
   for (const who of [MAYA, OMAR]) {
@@ -186,7 +191,7 @@ export async function registerRevision(handler: Handler, revision: number, devel
 
 /** An admin grant (FR-013), so access does not depend on a bound channel. */
 export function grantProject(db: FakeDynamoDb, who: Developer, projectName = "payments"): void {
-  db.set({ pk: `MEMBER#${who.developerId}`, sk: `PROJECT#${projectName}`, entityType: "MEMBERSHIP", ownerKey: who.developerId, projectName, role: "developer" });
+  db.set({ ...projectMemberKey(TEST_ORG, who.developerId, projectName), entityType: "MEMBERSHIP", ownerKey: who.developerId, projectName, role: "developer" });
 }
 
 /** What the notifier's start message leaves behind (Task 7): the thread on the task, and its record. */

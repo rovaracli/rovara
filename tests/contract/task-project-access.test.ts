@@ -2,19 +2,22 @@ import { describe, expect, it, vi } from "vitest";
 import { createTaskAuthorityAdmission } from "../../packages/broker/src/aws/task-authority-admission.js";
 import { evaluateProjectAuthority, readProjectAuthority, type ProjectAuthorityReader } from "../../packages/broker/src/developer/task-project-access.js";
 import { DEFAULT_DEVELOPER_TASK_POLICY, developerTaskPolicy, type SlackChannelBinding } from "@agentx/contracts";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const binding = (channelId: string, projectName = "payments-api"): SlackChannelBinding & { pk: string; sk: string } => ({
   pk: "SLACK_BINDING#T0BSHLLUGBD", sk: `CHANNEL#${channelId}`,
   teamId: "T0BSHLLUGBD", channelId, projectName, updatedAt: "2026-01-01T00:00:00.000Z",
 });
 const revision = (definition: { developerTasks?: unknown }) => ({
-  pk: "PROJECT#payments-api", sk: "REV#000000000007", revision: 7, definition,
+  ...projectRevisionKey(TEST_ORG, "payments-api", 7), revision: 7, definition,
 });
-const developerGrant = { pk: `MEMBER#${"a".repeat(64)}`, sk: "PROJECT#payments-api", projectName: "payments-api", role: "developer" };
+const developerGrant = { ...projectMemberKey(TEST_ORG, "a".repeat(64), "payments-api"), projectName: "payments-api", role: "developer" };
 
 describe("task project authority core", () => {
   it("counts only developer memberships as project grants", () => {
     const result = evaluateProjectAuthority({
+      orgId: TEST_ORG,
       project: "payments-api",
       developerId: "a".repeat(64), teamId: "T0BSHLLUGBD",
       revision: revision({ developerTasks: { enabled: true, channelMembersMayUse: false } }),
@@ -29,6 +32,7 @@ describe("task project authority core", () => {
 
   it("allows a developer grant even without a Slack identity", () => {
     const result = evaluateProjectAuthority({
+      orgId: TEST_ORG,
       project: "payments-api",
       developerId: "a".repeat(64), teamId: "T0BSHLLUGBD",
       revision: revision({}),
@@ -41,6 +45,7 @@ describe("task project authority core", () => {
 
   it("keeps task-policy denial after access has been established", () => {
     const result = evaluateProjectAuthority({
+      orgId: TEST_ORG,
       project: "payments-api",
       revision: revision({ developerTasks: { enabled: false } }),
       developerId: "a".repeat(64), teamId: "T0BSHLLUGBD",
@@ -59,7 +64,7 @@ describe("task project authority core", () => {
       bindings: vi.fn().mockResolvedValue({ items: [], complete: true }),
     };
 
-    await expect(readProjectAuthority(reader, {
+    await expect(readProjectAuthority(reader, { orgId: TEST_ORG,
       project: "payments-api", developerId: "a".repeat(64), teamId: "T0BSHLLUGBD",
       admission,
     })).resolves.toEqual({ kind: "unavailable" });
@@ -68,6 +73,7 @@ describe("task project authority core", () => {
 
   it("uses fresh membership and leaves channel-name decoration outside the evaluator", () => {
     const result = evaluateProjectAuthority({
+      orgId: TEST_ORG,
       project: "payments-api",
       developerId: "a".repeat(64), teamId: "T0BSHLLUGBD",
       revision: revision({ developerTasks: { enabled: true, channelMembersMayUse: true } }),

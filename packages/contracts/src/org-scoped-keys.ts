@@ -1,0 +1,83 @@
+// Multi-tenancy: the DynamoDB keys whose names two orgs can share (a project called "web", a member
+// grant on it, the workspace limits) or that list across tenants (the usage and failure indexes).
+// Each one is prefixed with `orgScoped(orgId, ...)`, and nothing else builds these keys.
+import { canonicalInstant, indexDay } from "./admin.js";
+import { OrgIdSchema, orgScoped, type OrgId, type OrgKey } from "./org.js";
+
+const REVISION_WIDTH = 12;
+
+/** The partition holding every revision of one project (and its selection row) in one org. */
+export function projectPk(orgId: OrgId, name: string): string {
+  return orgScoped(orgId, `PROJECT#${name}`);
+}
+
+const PROJECT_PK = /^ORG#(org_[0-9a-z]{20})#PROJECT#/;
+
+/** The org a `projectPk` is scoped to, or undefined for a partition key that is not one. */
+export function orgOfProjectPk(pk: string): OrgId | undefined {
+  const parsed = OrgIdSchema.safeParse(PROJECT_PK.exec(pk)?.[1]);
+  return parsed.success ? parsed.data : undefined;
+}
+
+export function projectRevisionKey(orgId: OrgId, name: string, revision: number): OrgKey {
+  return { pk: projectPk(orgId, name), sk: `REV#${String(revision).padStart(REVISION_WIDTH, "0")}` };
+}
+
+/** The sort-key prefix of a project's revisions, for a query on `projectPk`. */
+export const PROJECT_REVISION_SK_PREFIX = "REV#";
+
+export function projectSelectionKey(orgId: OrgId, name: string): OrgKey {
+  return { pk: projectPk(orgId, name), sk: "SELECTION" };
+}
+
+/** The partition holding one person's project grants in one org. */
+export function memberGrantsPk(orgId: OrgId, ownerKey: string): string {
+  return orgScoped(orgId, `MEMBER#${ownerKey}`);
+}
+
+/** The sort-key prefix of a member's grants, for a query on `memberGrantsPk`. */
+export const MEMBER_GRANT_SK_PREFIX = "PROJECT#";
+
+export function projectMemberKey(orgId: OrgId, ownerKey: string, project: string): OrgKey {
+  return { pk: memberGrantsPk(orgId, ownerKey), sk: `PROJECT#${project}` };
+}
+
+export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET";
+
+export function orgSettingsKey(orgId: OrgId, name: OrgSettingName): OrgKey {
+  return { pk: orgScoped(orgId, "SETTINGS"), sk: name };
+}
+
+/** The org-wide open-workspace counter; it replaces `DEVELOPER_LIMIT#ORGANIZATION`. */
+export function orgLimitKey(orgId: OrgId): OrgKey {
+  return { pk: orgScoped(orgId, "DEVELOPER_LIMIT#ORGANIZATION"), sk: "ORGANIZATION" };
+}
+
+/** One org's usage items for a UTC day (`day` is `YYYY-MM-DD`). */
+export function orgUsageDayPk(orgId: OrgId, day: string): string {
+  return orgScoped(orgId, `USAGE#${day}`);
+}
+
+export function orgUsageIndexKey(orgId: OrgId, at: string, opId: string): OrgKey {
+  const time = canonicalInstant(at);
+  return { pk: orgUsageDayPk(orgId, indexDay(time)), sk: `${time}#${opId}` };
+}
+
+/** One org's failure items for a UTC day (`day` is `YYYY-MM-DD`). */
+export function orgFailureDayPk(orgId: OrgId, day: string): string {
+  return orgScoped(orgId, `FAILURE#${day}`);
+}
+
+export function orgFailureIndexKey(orgId: OrgId, endedAt: string, opId: string): OrgKey {
+  const time = canonicalInstant(endedAt);
+  return { pk: orgFailureDayPk(orgId, indexDay(time)), sk: `${time}#${opId}` };
+}
+
+/** A3: the partition of an org's project catalog, one row per registered project. */
+export function orgProjectCatalogPk(orgId: OrgId): string {
+  return orgScoped(orgId, "PROJECT_CATALOG");
+}
+
+export function orgProjectCatalogKey(orgId: OrgId, name: string): OrgKey {
+  return { pk: orgProjectCatalogPk(orgId), sk: `PROJECT#${name}` };
+}

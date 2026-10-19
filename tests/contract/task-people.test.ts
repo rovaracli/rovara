@@ -25,6 +25,7 @@ import { slackDirectory } from "../../packages/broker/src/developer/slack-direct
 import { checkTaskPersonIdentity } from "../../packages/broker/src/developer/task-person-identity.js";
 import type { TaskPeopleDisplayAdmission } from "../../packages/broker/src/developer/task-people-display-budget.js";
 import type { TaskPeopleDisplayReadRequest, TaskPersonInviteClaimRequest, TaskPersonInviteOutcome } from "../../packages/contracts/src/developer.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const TASK_ID = "11111111-1111-4111-8111-111111111111";
 const TEAM = "T0PEOPLE1";
@@ -41,7 +42,7 @@ const inviteOutcome = (request: TaskPersonInviteClaimRequest, status: "accepted"
   status, ...(status === "accepted" ? { executionReceiptId: randomUUID() } : { reason: status === "failed" ? "effect_rejected" : "transport_unknown" }),
 });
 
-const actor = (developerId: string, slackUserId: string, name: string): DeveloperCaller => ({
+const actor = (developerId: string, slackUserId: string, name: string): DeveloperCaller => ({ orgId: TEST_ORG,
   developerId, slackUserId, name, sessionId: `session-${name}`, amr: "slack",
 });
 

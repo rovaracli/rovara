@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   agentXError,
+  type OrgId,
   type SlackChannelBinding,
   type SlackRequester,
   type SlackThread,
@@ -16,6 +17,12 @@ export interface AuthenticatedIdentity {
   issuer: string;
   subject: string;
   ownerKey: string;
+  /**
+   * The org the caller belongs to (ruling R1), from the injected org resolver. Absent for a caller
+   * with no org, such as a cloud operator (ruling R6): an org-scoped route then refuses it, with
+   * `requireOrgId`.
+   */
+  orgId?: OrgId;
   isAdministrator: boolean;
   claims: JWTPayload;
   slack?: {

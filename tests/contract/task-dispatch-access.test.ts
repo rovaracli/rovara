@@ -9,6 +9,8 @@ import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/ta
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import type { ProjectAuthorityWitness } from "../../packages/broker/src/developer/task-project-access.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const TASK_ID = "11111111-1111-4111-8111-111111111111";
 const WORKSPACE_ID = "22222222-2222-4222-8222-222222222222";
@@ -70,10 +72,10 @@ describe("task dispatch access", () => {
   it.each(["deleted", "downgraded"] as const)("requalifies after the sole developer grant is %s before the final State fence", async (change) => {
     const h = harness();
     const revision = {
-      pk: "PROJECT#payments", sk: "REV#000000000007",
+      ...projectRevisionKey(TEST_ORG, "payments", 7),
       definition: { revision: 7, developerTasks: { enabled: true, channelMembersMayUse: false } },
     };
-    const membership = { pk: `MEMBER#${OWNER}`, sk: "PROJECT#payments", projectName: "payments", role: "developer" };
+    const membership = { ...projectMemberKey(TEST_ORG, OWNER, "payments"), projectName: "payments", role: "developer" };
     h.db.set(revision);
     h.db.set(membership);
     h.checkTaskPerson.mockImplementationOnce(async () => ({
@@ -117,7 +119,7 @@ describe("task dispatch access", () => {
   it.each(["binding", "policy"] as const)("requalifies after the qualifying channel %s changes before the final State fence", async (changedWitness) => {
     const h = harness();
     const revision = {
-      pk: "PROJECT#payments", sk: "REV#000000000007",
+      ...projectRevisionKey(TEST_ORG, "payments", 7),
       definition: { revision: 7, developerTasks: { enabled: true, channelMembersMayUse: true } },
     };
     const binding = { pk: "SLACK_BINDING#T0PEOPLE1", sk: "CHANNEL#C0PEOPLE1", teamId: "T0PEOPLE1", channelId: "C0PEOPLE1", projectName: "payments", updatedAt: "2026-10-11T10:00:00.000Z" };
@@ -178,10 +180,10 @@ describe("task dispatch access", () => {
   it("requalifies through current channel policy after a direct developer grant is removed", async () => {
     const h = harness();
     const revision = {
-      pk: "PROJECT#payments", sk: "REV#000000000007",
+      ...projectRevisionKey(TEST_ORG, "payments", 7),
       definition: { revision: 7, developerTasks: { enabled: true, channelMembersMayUse: true } },
     };
-    const membership = { pk: `MEMBER#${OWNER}`, sk: "PROJECT#payments", projectName: "payments", role: "developer" };
+    const membership = { ...projectMemberKey(TEST_ORG, OWNER, "payments"), projectName: "payments", role: "developer" };
     const binding = { pk: "SLACK_BINDING#T0PEOPLE1", sk: "CHANNEL#C0PEOPLE1", teamId: "T0PEOPLE1", channelId: "C0PEOPLE1", projectName: "payments", updatedAt: "2026-10-11T10:00:00.000Z" };
     h.db.set(revision);
     h.db.set(membership);

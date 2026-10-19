@@ -9,6 +9,7 @@ import { createTaskWeb, type TaskDocumentView } from "../../packages/broker/src/
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { DEV_ISSUER, createDeveloperTaskBroker, type Developer } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const taskId = "11111111-1111-4111-8111-111111111111";
 const requestId = "22222222-2222-4222-8222-222222222222";
@@ -16,7 +17,7 @@ const personId = "33333333-3333-4333-8333-333333333333";
 const sessionId = "44444444-4444-4444-8444-444444444444";
 const csrf = "c".repeat(43);
 const origin = "https://agentx.example.test";
-const caller: DeveloperCaller = { developerId: "d".repeat(64), sessionId, amr: "slack", name: "Maya" };
+const caller: DeveloperCaller = { orgId: TEST_ORG, developerId: "d".repeat(64), sessionId, amr: "slack", name: "Maya" };
 const people: TaskPeopleView = {
   revision: 7, orphaned: false,
   people: [{ personId, name: "Lee <script>", role: "commenter", you: false, effectiveRole: "commenter" }],

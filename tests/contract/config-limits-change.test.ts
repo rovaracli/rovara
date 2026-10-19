@@ -16,6 +16,8 @@ import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace } from "../support/slack-bro
 import { configServicesFor } from "../support/config-services.js";
 import { MemoryParameterStore } from "../support/memory-parameter-store.js";
 import { STAGING_SETTINGS } from "../support/setup-fakes.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { orgSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 /** The CLI's fetch, into the broker in process, with the admin sign-in's claims (API Gateway's JWT authorizer). */
 function brokerFetch(harness: Awaited<ReturnType<typeof createAdminChangeBroker>>): typeof fetch {
@@ -41,7 +43,7 @@ describe("agentx config set limits.* (FR-053, owner requirement)", () => {
     });
     expect(await runConfigSet(services, "staging", { key: "limits.workspacesPerMember", value: "2", yes: false })).toEqual({ changed: true });
     expect(asked[0]).toContain("At or over 2 per person: Slack member U0PRIYA001 (3 open).");
-    expect(harness.db.get("SETTINGS", "WORKSPACE_LIMITS")).toMatchObject({ perPerson: 2, perOrganization: 20 });
+    expect(harness.db.get(orgSettingsKey(TEST_ORG, "WORKSPACE_LIMITS"))).toMatchObject({ perPerson: 2, perOrganization: 20 });
     const audit = harness.db.find((item) => item.entityType === "ADMIN_CHANGE_AUDIT")[0];
     expect(audit).toMatchObject({ kind: "set_workspace_limits", methodUsed: "cli", outcome: "confirmed" });
     // Existing workspaces keep running; the next one for this member is refused, another member's is not.
@@ -57,7 +59,7 @@ describe("agentx config set limits.* (FR-053, owner requirement)", () => {
       prompter: { confirm: async () => false } as never,
     });
     expect(await runConfigSet(services, "staging", { key: "limits.workspacesPerOrg", value: "40", yes: false })).toEqual({ changed: false });
-    expect(harness.db.get("SETTINGS", "WORKSPACE_LIMITS")).toBeUndefined();
+    expect(harness.db.get(orgSettingsKey(TEST_ORG, "WORKSPACE_LIMITS"))).toBeUndefined();
     expect(harness.db.find((item) => item.entityType === "ADMIN_CHANGE_AUDIT")[0]).toMatchObject({ outcome: "declined", methodUsed: "cli" });
   });
 
@@ -71,7 +73,7 @@ describe("agentx config set limits.* (FR-053, owner requirement)", () => {
     });
     expect(await runConfigSet(services, "staging", { key: "limits.workspacesPerOrg", value: "40", yes: true })).toEqual({ changed: true });
     expect(asked).toEqual([]);
-    expect(harness.db.get("SETTINGS", "WORKSPACE_LIMITS")).toMatchObject({ perPerson: 3, perOrganization: 40 });
+    expect(harness.db.get(orgSettingsKey(TEST_ORG, "WORKSPACE_LIMITS"))).toMatchObject({ perPerson: 3, perOrganization: 40 });
     expect(services.lines.filter((line) => line.includes("40"))).toHaveLength(1);
     expect(services.lines.at(-1)).toBe("Applied.");
     expect(services.lines.join("\n")).not.toContain(SESSION.accessToken);
@@ -98,7 +100,7 @@ describe("agentx config set limits.* (FR-053, owner requirement)", () => {
     const services = await configServicesFor({ adminSession: async () => SESSION, fetch: brokerFetch(harness) });
     await expect(runConfigSet(services, "staging", { key: "limits.workspacesPerMember", value: "51", yes: true })).rejects.toThrow("from 1 to 50");
     expect(harness.db.find((item) => item.entityType === "ADMIN_CHANGE_AUDIT")).toEqual([]);
-    expect(harness.db.get("SETTINGS", "WORKSPACE_LIMITS")).toBeUndefined();
+    expect(harness.db.get(orgSettingsKey(TEST_ORG, "WORKSPACE_LIMITS"))).toBeUndefined();
   });
 
   it("refuses in the legacy deployment, which has no admin change path (D14), and says what to do instead", async () => {
@@ -171,7 +173,7 @@ describe("agentx config set limits.* (FR-053, owner requirement)", () => {
       expect(await session.run(["limits.workspacesPerOrg", "40", "--yes"])).toBe(0);
       expect(session.stdout()).toBe("limits.workspacesPerOrg changed.\n");
       expect(session.stderr()).toContain("Applied.");
-      expect(session.harness.db.get("SETTINGS", "WORKSPACE_LIMITS")).toMatchObject({ perOrganization: 40 });
+      expect(session.harness.db.get(orgSettingsKey(TEST_ORG, "WORKSPACE_LIMITS"))).toMatchObject({ perOrganization: 40 });
       expect(session.harness.db.find((item) => item.entityType === "ADMIN_CHANGE_AUDIT")[0]).toMatchObject({ kind: "set_workspace_limits", methodUsed: "cli", outcome: "confirmed" });
       expect(`${session.stdout()}${session.stderr()}`).not.toContain(TOKEN);
     });
@@ -198,7 +200,7 @@ describe("agentx config set limits.* (FR-053, owner requirement)", () => {
       expect(await session.run(["limits.workspacesPerOrg", "40"])).toBe(0);
       expect(session.stderr()).toContain("Apply this change? [y/N]");
       expect(session.stdout()).toBe("Nothing changed.\n");
-      expect(session.harness.db.get("SETTINGS", "WORKSPACE_LIMITS")).toBeUndefined();
+      expect(session.harness.db.get(orgSettingsKey(TEST_ORG, "WORKSPACE_LIMITS"))).toBeUndefined();
       expect(session.harness.db.find((item) => item.entityType === "ADMIN_CHANGE_AUDIT")[0]).toMatchObject({ outcome: "declined", methodUsed: "cli" });
     });
 

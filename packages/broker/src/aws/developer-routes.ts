@@ -16,7 +16,11 @@ import {
   TaskChannelPeopleResponseSchema,
   TaskPeopleDisplayReadResponseSchema,
   agentXError,
+  MEMBER_GRANT_SK_PREFIX,
+  PROJECT_REVISION_SK_PREFIX,
   developerTaskPolicy,
+  memberGrantsPk,
+  projectPk,
   workspaceRecordFields,
   type ChannelByNameRequest,
   type ChannelByNameResponse,
@@ -31,6 +35,7 @@ import {
   type DeveloperWorkspacesResponse,
   type EndDeveloperSessionsRequest,
   type EndDeveloperSessionsResponse,
+  type OrgId,
   type SlackAuthCheckRequest,
   type SlackAuthCheckResponse,
   type SlackChannelBinding,
@@ -45,6 +50,7 @@ import {
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
+import { requireOrgId, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
 import { checkTaskPersonIdentity, registerTaskChannelPeople, resolveTaskPickerPersonWithId, type ProjectAccessSubject, type TaskPersonIdentityDependencies } from "../developer/task-person-identity.js";
 import { taskPeopleDisplayAdmission, type TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
 import { META, endedByAdmin, methodSince, startedBeforeMethodOn, type DeveloperRecord, type SessionRecord } from "../developer/store.js";
@@ -110,8 +116,12 @@ export interface DeveloperRouteDependencies {
   registeredRepositoryIdentity?: DeveloperTaskRouteDependencies["registeredRepositoryIdentity"];
   /** Sign in with ChatGPT (#338): each developer's connection; without it /v1/dev/chatgpt/* answers NOT_FOUND. */
   chatgpt?: ChatGptConnections;
+  /** Which org a developer belongs to (ruling R1); absent means the install's single org (ruling R3). */
+  orgResolver?: OrgResolver;
 }
-export interface DeveloperCaller { developerId: string; sessionId: string; amr: DeveloperSignInMethod; name: string; slackUserId?: string; email?: string }
+/** Who is asking about a project, and in which org: grants and revisions are read in that org only. */
+export type ProjectAccessCaller = ProjectAccessSubject & { orgId: OrgId };
+export interface DeveloperCaller { developerId: string; sessionId: string; amr: DeveloperSignInMethod; name: string; slackUserId?: string; email?: string; orgId: OrgId }
 
 /** What the broker needs from a Lambda invoke; `@aws-sdk/client-lambda`'s InvokeCommand output fits. */
 export interface ChannelMembersInvokeResult { FunctionError?: string | undefined; Payload?: Uint8Array | undefined }
@@ -384,8 +394,10 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
     // E9: D16's per-request check ends the session at once; the token endpoint revokes it at its next refresh.
     throw agentXError("AUTH_REQUIRED", "an AgentX admin ended your sign-in; run agentx login <url> again");
   }
+  const orgId = requireOrgId(await (deps.orgResolver ?? singleOrgResolver(deps.developer.env))({ developerId: token.developerId }));
   return {
     ...token,
+    orgId,
     name: developer.displayName,
     ...(developer.slackUserId === undefined ? {} : { slackUserId: developer.slackUserId }),
     ...(developer.email === undefined ? {} : { email: developer.email }),
@@ -441,11 +453,11 @@ async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) 
 }
 
 /** The latest revision's number and task policy: the only fields read, so only they are fetched. */
-async function latestDefinition(deps: DeveloperRouteDependencies, project: string): Promise<{ revision: number; developerTasks?: unknown } | undefined> {
+async function latestDefinition(deps: DeveloperRouteDependencies, orgId: OrgId, project: string): Promise<{ revision: number; developerTasks?: unknown } | undefined> {
   const response = await deps.documentClient.send(new QueryCommand({
     TableName: deps.tableName,
     KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
-    ExpressionAttributeValues: { ":pk": `PROJECT#${project}`, ":prefix": "REV#" },
+    ExpressionAttributeValues: { ":pk": projectPk(orgId, project), ":prefix": PROJECT_REVISION_SK_PREFIX },
     ProjectionExpression: "#definition.#revision, #definition.#developerTasks",
     ExpressionAttributeNames: { "#definition": "definition", "#revision": "revision", "#developerTasks": "developerTasks" },
     ScanIndexForward: false,
@@ -456,9 +468,9 @@ async function latestDefinition(deps: DeveloperRouteDependencies, project: strin
 }
 
 /** Each named project's latest revision and task policy; projects with no revision are left out. */
-export async function projectsWithPolicy(deps: DeveloperRouteDependencies, names: readonly string[]): Promise<Map<string, { revision: number; policy: DeveloperTaskPolicy }>> {
+export async function projectsWithPolicy(deps: DeveloperRouteDependencies, orgId: OrgId, names: readonly string[]): Promise<Map<string, { revision: number; policy: DeveloperTaskPolicy }>> {
   const unique = [...new Set(names)].sort();
-  const definitions = await mapLimit(unique, REVISION_READS_AT_ONCE, (name) => latestDefinition(deps, name));
+  const definitions = await mapLimit(unique, REVISION_READS_AT_ONCE, (name) => latestDefinition(deps, orgId, name));
   const found = new Map<string, { revision: number; policy: DeveloperTaskPolicy }>();
   unique.forEach((name, index) => {
     const definition = definitions[index];
@@ -526,8 +538,8 @@ const describeChannel = (channelId: string, names: Map<string, { name: string; i
  * FR-013: only `developer` rows are grants. A developer ID is built like an admin owner key, so an
  * admin's `administrator` rows can sit under the same key when both sign in through one IdP.
  */
-async function grantsOf(deps: DeveloperRouteDependencies, caller: ProjectAccessSubject): Promise<string[]> {
-  return (await queryAll<{ projectName: string; role?: string }>(deps, `MEMBER#${caller.developerId}`, "PROJECT#"))
+async function grantsOf(deps: DeveloperRouteDependencies, caller: ProjectAccessCaller): Promise<string[]> {
+  return (await queryAll<{ projectName: string; role?: string }>(deps, memberGrantsPk(caller.orgId, caller.developerId), MEMBER_GRANT_SK_PREFIX))
     .filter((membership) => membership.role === "developer")
     .map((membership) => membership.projectName);
 }
@@ -539,7 +551,7 @@ async function bindingsOf(deps: DeveloperRouteDependencies): Promise<SlackChanne
 async function listProjects(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<DeveloperProjectsResponse> {
   const grants = await grantsOf(deps, caller);
   const bindings = await bindingsOf(deps);
-  const policies = await projectsWithPolicy(deps, [...grants, ...bindings.map((binding) => binding.projectName)]);
+  const policies = await projectsWithPolicy(deps, caller.orgId, [...grants, ...bindings.map((binding) => binding.projectName)]);
   const access = await resolveDeveloperAccess({
     grants,
     bindings,
@@ -576,13 +588,13 @@ async function listProjects(deps: DeveloperRouteDependencies, caller: DeveloperC
  */
 export async function checkProjectAccess(
   deps: DeveloperRouteDependencies,
-  caller: ProjectAccessSubject,
+  caller: ProjectAccessCaller,
   project: string,
   membership?: { freshMemberOf: readonly string[] },
 ): Promise<{ revision: number; policy: DeveloperTaskPolicy; access: "granted" | "channel"; channelIds: string[] }> {
   // A name that is not a project name is never echoed back: it could be long or carry markup.
   if (!AgentXNameSchema.safeParse(project).success) throw agentXError("PROJECT_NOT_FOUND", "that is not a valid AgentX project name");
-  const known = (await projectsWithPolicy(deps, [project])).get(project);
+  const known = (await projectsWithPolicy(deps, caller.orgId, [project])).get(project);
   if (known === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${project}\` doesn't exist in this AgentX`);
   const grants = (await grantsOf(deps, caller)).filter((name) => name === project);
   const bindings = (await bindingsOf(deps)).filter((binding) => binding.projectName === project);
@@ -704,10 +716,10 @@ export function developerTaskRouteDependencies(
       },
       projectChannelIds,
       targetProjectAccess: async (subject, project, freshMemberOf) => {
-        const revision = await latestDefinition(deps, project);
+        const revision = await latestDefinition(deps, caller.orgId, project);
         if (revision === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${project}\` doesn't exist in this AgentX`);
         const [memberships, allBindings] = await Promise.all([
-          queryAll<{ projectName: string; role?: string }>(deps, `MEMBER#${subject.developerId}`, "PROJECT#"),
+          queryAll<{ projectName: string; role?: string }>(deps, memberGrantsPk(caller.orgId, subject.developerId), MEMBER_GRANT_SK_PREFIX),
           bindingsOf(deps),
         ]);
         const result = evaluateProjectAuthority({
@@ -735,6 +747,7 @@ export function developerTaskRouteDependencies(
   return {
     documentClient: deps.documentClient,
     tableName: deps.tableName,
+    orgId: caller.orgId,
     ...(deps.developer.slackTeamId === undefined ? {} : { slackTeamId: deps.developer.slackTeamId }),
     issuer: deps.developer.issuer,
     actions: deps.tasks!,

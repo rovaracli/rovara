@@ -11,6 +11,8 @@ import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatche
 import type { Ec2Delivery } from "../../packages/broker/src/aws/ec2-delivery.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { RepositoryGrantService } from "../../packages/broker/src/repository-access.js";
+import { TEST_ENV, TEST_ORG } from "../support/orgs.js";
+import { projectMemberKey, projectPk } from "../../packages/contracts/src/org-scoped-keys.js";
 
 describe("AWS control-plane handlers", () => {
   it("reads browser cookies from the HTTP API's cookies field, where payload 2.0 puts them", () => {
@@ -264,9 +266,8 @@ describe("AWS control-plane handlers", () => {
       createdAt: now,
       updatedAt: now,
     });
-    records.set(key(`MEMBER#${ownerKey}`, "PROJECT#demo"), {
-      pk: `MEMBER#${ownerKey}`,
-      sk: "PROJECT#demo",
+    records.set(key(projectMemberKey(TEST_ORG, ownerKey, "demo").pk, "PROJECT#demo"), {
+      ...projectMemberKey(TEST_ORG, ownerKey, "demo"),
       entityType: "MEMBERSHIP",
       ownerKey,
       projectName: "demo",
@@ -282,8 +283,8 @@ describe("AWS control-plane handlers", () => {
       projectRevision: 1,
       updatedAt: now,
     });
-    records.set(key("PROJECT#demo", "REV#000000000001"), {
-      pk: "PROJECT#demo",
+    records.set(key(projectPk(TEST_ORG, "demo"), "REV#000000000001"), {
+      pk: projectPk(TEST_ORG, "demo"),
       sk: "REV#000000000001",
       entityType: "PROJECT",
       definition: {
@@ -314,9 +315,9 @@ describe("AWS control-plane handlers", () => {
       registeredBy: ownerKey,
       registeredAt: now,
     });
-    const pinnedDefinition = (records.get(key("PROJECT#demo", "REV#000000000001")) as { definition: Record<string, unknown> }).definition;
-    records.set(key("PROJECT#demo", "REV#000000000002"), {
-      pk: "PROJECT#demo",
+    const pinnedDefinition = (records.get(key(projectPk(TEST_ORG, "demo"), "REV#000000000001")) as { definition: Record<string, unknown> }).definition;
+    records.set(key(projectPk(TEST_ORG, "demo"), "REV#000000000002"), {
+      pk: projectPk(TEST_ORG, "demo"),
       sk: "REV#000000000002",
       entityType: "PROJECT",
       definition: {
@@ -469,6 +470,7 @@ describe("AWS control-plane handlers", () => {
       resolvedSourceVersion: input.commit,
     }));
     const handler = createAwsBrokerHandler({
+      environmentName: TEST_ENV,
       documentClient: documentClient as never,
       s3: { send: vi.fn() } as never,
       tableName: "state",

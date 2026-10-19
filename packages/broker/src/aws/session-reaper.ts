@@ -3,6 +3,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { Ec2RuntimeBinding, WorkspaceSession } from "@agentx/contracts";
+import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import { requiredEnvironment } from "./lambda.js";
 import { SessionManager, workspaceBinding } from "./sessions.js";
 
@@ -165,7 +166,7 @@ export const handler = createReaperHandler({
       volumeAvailable: volume?.State === "available",
     };
   },
-  binding: (workspaceId) => workspaceBinding(documentClient, tableName, workspaceId),
+  binding: (workspaceId) => workspaceBinding(documentClient, tableName, installOrgIdFromEnvironment(), workspaceId),
   emit(metrics) {
     // CloudWatch embedded metric format: Lambda turns this stdout line into metrics.
     console.log(JSON.stringify({

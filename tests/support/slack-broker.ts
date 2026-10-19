@@ -8,6 +8,7 @@ import type { ConnectorCredentialsConfiguration, CredentialRegistry } from "../.
 import type { GitHubMcpDependencies } from "../../packages/broker/src/github-mcp.js";
 import { RepositoryGrantService } from "../../packages/broker/src/repository-access.js";
 import { FakeDynamoDb, type FakeDynamoDbOptions } from "./fake-dynamodb.js";
+import { TEST_ENV } from "./orgs.js";
 
 export const issuer = "https://identity.example.test";
 export const account = "111122223333";
@@ -107,6 +108,7 @@ export function createBroker(options: {
     ...(deleteEc2Session ? { deleteEc2Session } : {}),
     tableName: "state",
     artifactBucketName: "artifacts",
+    environmentName: TEST_ENV,
     issuer,
     adminClaim: "groups",
     adminValues: ["admins"],

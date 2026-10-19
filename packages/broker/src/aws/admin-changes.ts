@@ -194,7 +194,7 @@ const refusedReason = (change: PendingChange): RefusedAttemptReason => (change.s
  * identity provider within the 10 minutes is not re-checked; project administrator membership is,
  * inside the handler at apply.
  */
-const storedIdentity = (change: PendingChange): AuthenticatedIdentity => ({ issuer: change.admin.issuer, subject: change.admin.subject, ownerKey: change.admin.ownerKey, isAdministrator: true, claims: {} });
+const storedIdentity = (change: PendingChange): AuthenticatedIdentity => ({ issuer: change.admin.issuer, subject: change.admin.subject, ownerKey: change.admin.ownerKey, ...(change.admin.orgId === undefined ? {} : { orgId: change.admin.orgId }), isAdministrator: true, claims: {} });
 
 async function requireOwn(deps: AdminChangeDependencies, identity: AuthenticatedIdentity, changeId: string): Promise<PendingChange> {
   const change = await getPending(deps, changeId);
@@ -339,7 +339,7 @@ async function propose(deps: AdminChangeDependencies, identity: AuthenticatedIde
   const stored = AdminChangePendingRecordSchema.safeParse({
     ...adminChangeKey(changeId), entityType: "ADMIN_CHANGE", changeId, kind, input: request.change, effect,
     ...(confirmationEffect === undefined || confirmationEffect === effect ? {} : { confirmationEffect }),
-    details: plan.details, stateHash: stateHash(plan.snapshot), admin: { ...admin, ownerKey: identity.ownerKey },
+    details: plan.details, stateHash: stateHash(plan.snapshot), admin: { ...admin, ownerKey: identity.ownerKey, ...(identity.orgId === undefined ? {} : { orgId: identity.orgId }) },
     ...(who.slackUserId === undefined ? {} : { slackUserId: who.slackUserId }),
     methodsOffered: offered, status: "pending", createdAt: proposedAt, proposedAt, expiresAt: iso(now + ADMIN_CHANGE_TTL_MS), traceId,
     [INDEX_EXPIRY_ATTRIBUTE]: adminChangeItemExpiresAt(proposedAt),

@@ -34,6 +34,8 @@ import { selectE2EExecutionPlan } from "../../packages/broker/src/e2e/execution-
 import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependencies.js";
 import { persistOriginalEvidencePrimary, persistOriginalMapPrimary } from "../support/p0-evidence-capture.js";
 import { observeInstalledRuntimeManifestForHost } from "@agentx/verifier";
+import { TEST_ORG } from "../support/orgs.js";
+import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 let installedRuntimeManifestDigest: string;
 beforeAll(async () => {
@@ -308,7 +310,7 @@ describe("P0 normal project onboarding journey", () => {
       if (invocation.kind !== "project-setup-smoke") throw new Error("setup callback must retain its invocation domain");
       if (!terminalMutationApplied && authorityMutation === "admin-revocation") {
         terminalMutationApplied = true;
-        const currentMember = broker.db.get(`MEMBER#${String(executionRow.ownerKey)}`, "PROJECT#ordinary-orders");
+        const currentMember = broker.db.get(projectMemberKey(TEST_ORG, String(executionRow.ownerKey), "ordinary-orders"));
         expect(currentMember?.role).toBe("administrator");
         broker.db.set({ ...currentMember!, role: "viewer" });
         await writeFile(join(root, "revocation-before-terminal.json"), JSON.stringify({ ownerKey: executionRow.ownerKey, previousRole: currentMember?.role, currentRole: "viewer" }), { flag: "wx" });
@@ -376,7 +378,7 @@ describe("P0 normal project onboarding journey", () => {
     }, retrySleep: async () => undefined }, { publicKey: workerKeys.publicKey, workspaceId, generation: 1 });
     const workerPing = await handleWorkerRequest(new Request("http://worker/ping"), workerState);
     expect(((await workerPing.json()) as { invocationFeatures: string[] }).invocationFeatures).toContain("project.setupSmoke");
-    const setupGuard = createProjectSetupDispatchGuard({ documentClient: broker.db as never, tableName: "state", runtimeCatalogId });
+    const setupGuard = createProjectSetupDispatchGuard({ orgId: TEST_ORG, documentClient: broker.db as never, tableName: "state", runtimeCatalogId });
     const guardObservations: string[] = [];
     const projectGuard = async (record: Parameters<typeof setupGuard>[0]) => {
       const result = await setupGuard(record);
@@ -389,7 +391,7 @@ describe("P0 normal project onboarding journey", () => {
       sessions: { ensureSession: async () => { throw new Error("setup delivery must not access WORKSPACE sessions"); } },
       binding: async () => { throw new Error("setup delivery must not read WORKSPACE runtime binding"); },
       projectSetupSessions,
-      projectSetupBinding: createProjectSetupBindingReader({ documentClient: broker.db as never, tableName: "state" }),
+      projectSetupBinding: createProjectSetupBindingReader({ orgId: TEST_ORG, documentClient: broker.db as never, tableName: "state" }),
       sign: async (message) => cryptoSign("sha256", message, workerKeys.privateKey),
       post: async (url, init) => {
         const response = await handleWorkerRequest(new Request(url, { method: "POST", headers: { authorization: init.authorization }, body: init.body }), workerState);
@@ -515,7 +517,7 @@ describe("P0 normal project onboarding journey", () => {
       foreignTerminalStatuses.push(forged.status);
       expect([403, 409], "a valid token cannot park another operation").toContain(forged.status);
       if (authorityMutation === "admin-revocation") {
-        broker.db.set({ pk: `MEMBER#${String(executionRow.ownerKey)}`, sk: "PROJECT#ordinary-orders", entityType: "MEMBERSHIP", ownerKey: executionRow.ownerKey,
+        broker.db.set({ ...projectMemberKey(TEST_ORG, String(executionRow.ownerKey), "ordinary-orders"), entityType: "MEMBERSHIP", ownerKey: executionRow.ownerKey,
           projectName: "ordinary-orders", role: "administrator", grantedBy: { issuer, subject: "owner" }, grantedAt: new Date().toISOString() });
       } else broker.db.set(rawRuntime);
       const oldEvidenceRef = brokerRouteObservations.filter(({ path }) => path.endsWith(`/operations/${actualInvocation.operationId}/evidence/finalize`)).at(-1)?.body.evidenceRef as { key: string; sha256: string } | undefined;
@@ -612,7 +614,7 @@ describe("P0 normal project onboarding journey", () => {
       expect(duplicateRetry.status).toBe(202);
       expect(duplicateRetry.body).toMatchObject({ duplicate: true, setupExecutionId: retriedExecutionId, operationId: retriedOperationId });
       expect(broker.db.find((item) => item.entityType === "OUTBOX" && (item.invocation as { kind?: string } | undefined)?.kind === "project-setup-smoke")).toHaveLength(2);
-      broker.db.delete(`MEMBER#${String(executionRow.ownerKey)}`, "PROJECT#ordinary-orders");
+      broker.db.delete(projectMemberKey(TEST_ORG, String(executionRow.ownerKey), "ordinary-orders"));
       const revokedDuplicate = await call(broker.handler, { method: "POST", path: retryPath, user: { subject: "owner", admin: true }, body: { requestId: retryRequestId } });
       expect(revokedDuplicate.status, "idempotent retry lookup still rechecks current project authority").toBe(404);
       expect(broker.db.find((item) => item.entityType === "OUTBOX" && (item.invocation as { kind?: string } | undefined)?.kind === "project-setup-smoke")).toHaveLength(2);
@@ -693,7 +695,7 @@ describe("P0 normal project onboarding journey", () => {
     // Continue the same registered project through its ordinary developer task route. The local
     // transport below supplies only an untrusted planner artifact; the broker still parses,
     // canonicalizes, stores, and binds the bytes before the Owner decision.
-    broker.db.set({ pk: `MEMBER#${ownerDeveloperId}`, sk: "PROJECT#ordinary-orders", entityType: "MEMBERSHIP", ownerKey: ownerDeveloperId,
+    broker.db.set({ ...projectMemberKey(TEST_ORG, ownerDeveloperId, "ordinary-orders"), entityType: "MEMBERSHIP", ownerKey: ownerDeveloperId,
       projectName: "ordinary-orders", role: "developer", grantedBy: { issuer, subject: "owner" }, grantedAt: new Date().toISOString() });
     const featureStart = await call(broker.handler, { method: "POST", path: "/v1/dev/tasks", headers: { authorization: "Bearer synthetic-owner-session" },
       body: { requestId: randomUUID(), project: "ordinary-orders", instructions: "Add an orders list using the approved source context", client: "native-p0-journey", workflow: true, workflowPath: "QUICK" } });
@@ -978,7 +980,7 @@ describe("P0 setup proposal broker authority", () => {
     };
     const connectorRegistration = await call(broker.handler, { method: "POST", path: "/v1/admin/projects", user: { subject: "owner", admin: true }, body: { definition: connectorRevision, runtimeBinding, setupApproval } });
     expect(connectorRegistration.status, JSON.stringify(connectorRegistration.body)).toBe(201);
-    const registeredConnectorRevision = broker.db.get("PROJECT#ordinary-orders", "REV#000000000002") as { definition: unknown; setupApproval: typeof setupApproval } | undefined;
+    const registeredConnectorRevision = broker.db.get(projectRevisionKey(TEST_ORG, "ordinary-orders", 2)) as { definition: unknown; setupApproval: typeof setupApproval } | undefined;
     expect(registeredConnectorRevision?.definition).toEqual(connectorRevision);
     expect(registeredConnectorRevision?.setupApproval).toEqual({ ...setupApproval, candidateDigest: candidate.digest });
 

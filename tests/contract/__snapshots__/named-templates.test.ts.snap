@@ -4704,6 +4704,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         },
         "Environment": {
           "Variables": {
+            "AGENTX_ENV": "staging",
             "AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID": "agentx-staging-project-setup-runtime-v1",
             "DELETER_ARN": {
               "Ref": "SessionsDeleterB48741EA",
@@ -6244,6 +6245,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         },
         "Environment": {
           "Variables": {
+            "AGENTX_ENV": "staging",
             "DISPATCH_QUEUE_URL": {
               "Ref": "DispatchQueue898EB017",
             },
@@ -6516,6 +6518,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         },
         "Environment": {
           "Variables": {
+            "AGENTX_ENV": "staging",
             "ARTIFACT_BUCKET_NAME": {
               "Ref": "Artifacts82DD59A1",
             },
@@ -6655,7 +6658,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   "dynamodb:LeadingKeys": [
                     "DEVTASK#*",
                     "PLAN_EVIDENCE",
-                    "PROJECT#*",
+                    "ORG#*#PROJECT#*",
                   ],
                 },
               },
@@ -8263,6 +8266,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         },
         "Environment": {
           "Variables": {
+            "AGENTX_ENV": "staging",
             "AGENTX_METRICS_NAMESPACE": "AgentX/staging",
             "DELETER_ARN": {
               "Ref": "SessionsDeleterB48741EA",
@@ -8620,6 +8624,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         },
         "Environment": {
           "Variables": {
+            "AGENTX_ENV": "staging",
             "AGENTX_METRICS_NAMESPACE": "AgentX/staging",
             "DELETER_ARN": {
               "Ref": "SessionsDeleterB48741EA",

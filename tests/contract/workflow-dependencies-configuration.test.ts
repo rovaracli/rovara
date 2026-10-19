@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { planDocumentInstructions } from "../../packages/broker/src/aws/broker-shared.js";
 import { createDeveloperApiConfiguration, workflowDependenciesConfigurationFromEnvironment } from "../../packages/broker/src/aws/workflow-dependencies-configuration.js";
 import { developerTaskRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 describe("workflow dependency runtime configuration", () => {
   it("is disabled unless the exact runtime value is true", () => {
@@ -30,7 +31,7 @@ describe("workflow dependency runtime configuration", () => {
     }));
     const routesFor = (developer: NonNullable<ReturnType<typeof build>>) => developerTaskRouteDependencies({
       documentClient: { send: async () => ({}) }, tableName: "state", developer, now: Date.now,
-    }, { developerId: "dev", sessionId: "session", amr: "slack", name: "Dev" });
+    }, { orgId: TEST_ORG, developerId: "dev", sessionId: "session", amr: "slack", name: "Dev" });
 
     const enabled = build("true");
     expect(enabled).toBeDefined();

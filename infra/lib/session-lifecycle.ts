@@ -173,6 +173,7 @@ export class SessionLifecycle extends Construct {
       DELETER_ARN: this.deleter.stateMachineArn,
       AGENTX_METRICS_NAMESPACE: naming.metricsNamespace,
     }, Duration.seconds(50));
+    if (naming.env !== undefined) this.reaper.addEnvironment("AGENTX_ENV", naming.env);
     inVpc(this.reaper);
     // No reserved concurrency: an account whose concurrency limit is Lambda's minimum unreserved pool
     // (10) cannot reserve any. Overlapping runs are safe, because every transition is conditional, and
@@ -211,6 +212,7 @@ export class SessionLifecycle extends Construct {
       ENVIRONMENT_TAG: naming.environmentTagValue,
       AGENTX_METRICS_NAMESPACE: naming.metricsNamespace,
     }, Duration.minutes(4));
+    if (naming.env !== undefined) this.reconciler.addEnvironment("AGENTX_ENV", naming.env);
     inVpc(this.reconciler);
     props.state.grantReadWriteData(this.reconciler);
     this.provisioner.grantStartExecution(this.reconciler);

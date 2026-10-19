@@ -33,7 +33,7 @@ describe("the PlanEvidence function's infrastructure", () => {
     expect(planEvidence).toBeDefined();
     expect(planEvidence[1].Properties).toMatchObject({ Timeout: 150, MemorySize: 1024, Runtime: "nodejs22.x" });
     expect(Object.keys(planEvidence[1].Properties.Environment?.Variables ?? {}).sort()).toEqual(
-      ["ARTIFACT_BUCKET_NAME", "GITHUB_APP_CREDENTIAL_REF", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY_SECRET_ARN", "STATE_TABLE_NAME"]);
+      ["AGENTX_ENV", "ARTIFACT_BUCKET_NAME", "GITHUB_APP_CREDENTIAL_REF", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY_SECRET_ARN", "STATE_TABLE_NAME"]);
   });
 
   it("reads the task, its evidence pointer, the job rows and the project revision; puts only DEVTASK# items; claims and closes only job rows", () => {
@@ -41,7 +41,7 @@ describe("the PlanEvidence function's infrastructure", () => {
     const bySid: Record<string, Statement> = Object.fromEntries(dynamo.map((statement) => [statement.Sid ?? "", statement]));
     expect(Object.keys(bySid).sort()).toEqual(["ClaimAndCloseJobRow", "PutEvidencePointer", "ReadTaskJobAndProject"]);
     expect(actionsOf(bySid.ReadTaskJobAndProject!)).toEqual(["dynamodb:GetItem"]);
-    expect(leadingKeys(bySid.ReadTaskJobAndProject!)).toEqual(["DEVTASK#*", "PLAN_EVIDENCE", "PROJECT#*"]);
+    expect(leadingKeys(bySid.ReadTaskJobAndProject!)).toEqual(["DEVTASK#*", "PLAN_EVIDENCE", "ORG#*#PROJECT#*"]);
     expect(actionsOf(bySid.PutEvidencePointer!)).toEqual(["dynamodb:PutItem"]);
     expect(leadingKeys(bySid.PutEvidencePointer!)).toEqual(["DEVTASK#*"]);
     expect(actionsOf(bySid.ClaimAndCloseJobRow!)).toEqual(["dynamodb:UpdateItem", "dynamodb:DeleteItem"]);

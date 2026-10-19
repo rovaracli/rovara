@@ -6,6 +6,8 @@ import { developerIdForSlackUser, endSessions, grantProjectAccess, projectGrant,
 import { MAX_PER_ORGANIZATION, MAX_PER_PERSON, isWholeLimit, readWorkspaceLimits } from "../../packages/broker/src/developer/limits.js";
 import { emailIndexKey } from "../../packages/broker/src/developer/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { orgSettingsKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const ADMIN = { issuer: "https://identity.example.test", subject: "admin-subject" };
 type AdminActionFixtureOverrides = Omit<Partial<AdminActionDependencies>, "signInTableName"> & { signInTableName?: string | undefined };
@@ -72,24 +74,24 @@ describe("grants (FR-013.1)", () => {
   it("grants developer access once, keeps an administrator row as it is, and revokes only a developer row", async () => {
     const d = deps();
     const id = developerIdForSlackUser("U0ADA00001");
-    expect(await grantProjectAccess(d, ADMIN, "payments", id)).toEqual({ granted: true, already: false });
-    const firstGrant = d.db.get(`MEMBER#${id}`, "PROJECT#payments") as { grantId: string };
+    expect(await grantProjectAccess(d, TEST_ORG, ADMIN, "payments", id)).toEqual({ granted: true, already: false });
+    const firstGrant = d.db.get(projectMemberKey(TEST_ORG, id, "payments")) as { grantId: string };
     expect(firstGrant).toMatchObject({ entityType: "MEMBERSHIP", ownerKey: id, projectName: "payments", role: "developer",
       grantedBy: ADMIN, grantedAt: "2026-10-02T09:00:00.000Z" });
     expect(firstGrant.grantId).toMatch(/^[0-9a-f-]{36}$/u);
-    expect(await grantProjectAccess(d, ADMIN, "payments", id)).toEqual({ granted: true, already: true });
-    expect(await projectGrant(d, "payments", id)).toEqual({ role: "developer", grantedAt: "2026-10-02T09:00:00.000Z" });
-    expect(await revokeProjectAccess(d, "payments", id)).toEqual({ revoked: true });
-    expect(await revokeProjectAccess(d, "payments", id)).toEqual({ revoked: false });
-    expect(await projectGrant(d, "payments", id)).toBeUndefined();
-    expect(await grantProjectAccess(d, ADMIN, "payments", id)).toEqual({ granted: true, already: false });
-    const restoredGrant = d.db.get(`MEMBER#${id}`, "PROJECT#payments") as { grantId: string };
+    expect(await grantProjectAccess(d, TEST_ORG, ADMIN, "payments", id)).toEqual({ granted: true, already: true });
+    expect(await projectGrant(d, TEST_ORG, "payments", id)).toEqual({ role: "developer", grantedAt: "2026-10-02T09:00:00.000Z" });
+    expect(await revokeProjectAccess(d, TEST_ORG, "payments", id)).toEqual({ revoked: true });
+    expect(await revokeProjectAccess(d, TEST_ORG, "payments", id)).toEqual({ revoked: false });
+    expect(await projectGrant(d, TEST_ORG, "payments", id)).toBeUndefined();
+    expect(await grantProjectAccess(d, TEST_ORG, ADMIN, "payments", id)).toEqual({ granted: true, already: false });
+    const restoredGrant = d.db.get(projectMemberKey(TEST_ORG, id, "payments")) as { grantId: string };
     expect(restoredGrant.grantId).not.toBe(firstGrant.grantId);
-    d.db.set({ pk: `MEMBER#${id}`, sk: "PROJECT#ledger", entityType: "MEMBERSHIP", ownerKey: id, projectName: "ledger", role: "administrator" });
-    expect(await projectGrant(d, "ledger", id)).toEqual({ role: "administrator", grantedAt: null });
-    await expect(grantProjectAccess(d, ADMIN, "ledger", id)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    expect(await revokeProjectAccess(d, "ledger", id)).toEqual({ revoked: false });
-    expect(d.db.get(`MEMBER#${id}`, "PROJECT#ledger")).toMatchObject({ role: "administrator" });
+    d.db.set({ ...projectMemberKey(TEST_ORG, id, "ledger"), entityType: "MEMBERSHIP", ownerKey: id, projectName: "ledger", role: "administrator" });
+    expect(await projectGrant(d, TEST_ORG, "ledger", id)).toEqual({ role: "administrator", grantedAt: null });
+    await expect(grantProjectAccess(d, TEST_ORG, ADMIN, "ledger", id)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await revokeProjectAccess(d, TEST_ORG, "ledger", id)).toEqual({ revoked: false });
+    expect(d.db.get(projectMemberKey(TEST_ORG, id, "ledger"))).toMatchObject({ role: "administrator" });
   });
 });
 
@@ -100,7 +102,7 @@ describe("a grant that races another write (FR-013.1)", () => {
     const send = d.documentClient.send.bind(d.documentClient);
     // Another writer adds the row between the grant's read and its conditional put.
     d.documentClient = { send: vi.fn<AdminActionDependencies["documentClient"]["send"]>(async (command) => {
-      if (command instanceof PutCommand) d.db.set({ pk: `MEMBER#${id}`, sk: "PROJECT#payments", entityType: "MEMBERSHIP", ownerKey: id, projectName: "payments", role });
+      if (command instanceof PutCommand) d.db.set({ ...projectMemberKey(TEST_ORG, id, "payments"), entityType: "MEMBERSHIP", ownerKey: id, projectName: "payments", role });
       return send(command);
     }) };
     return { d, id };
@@ -108,14 +110,14 @@ describe("a grant that races another write (FR-013.1)", () => {
 
   it("refuses when an administrator row won the race, and keeps it as it is", async () => {
     const { d, id } = racing("administrator");
-    await expect(grantProjectAccess(d, ADMIN, "payments", id)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    expect(d.db.get(`MEMBER#${id}`, "PROJECT#payments")).toMatchObject({ role: "administrator" });
-    expect(d.db.get(`MEMBER#${id}`, "PROJECT#payments")).not.toHaveProperty("grantedBy");
+    await expect(grantProjectAccess(d, TEST_ORG, ADMIN, "payments", id)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect(d.db.get(projectMemberKey(TEST_ORG, id, "payments"))).toMatchObject({ role: "administrator" });
+    expect(d.db.get(projectMemberKey(TEST_ORG, id, "payments"))).not.toHaveProperty("grantedBy");
   });
 
   it("says already granted when a developer row won the race", async () => {
     const { d, id } = racing("developer");
-    expect(await grantProjectAccess(d, ADMIN, "payments", id)).toEqual({ granted: true, already: true });
+    expect(await grantProjectAccess(d, TEST_ORG, ADMIN, "payments", id)).toEqual({ granted: true, already: true });
   });
 });
 
@@ -127,19 +129,19 @@ describe("the workspace limits setting (E19, FR-053)", () => {
 
   it("writes the setting the broker already reads, with who and when", async () => {
     const d = deps();
-    expect(await setWorkspaceLimits(d, ADMIN, { perPerson: 5, perOrganization: 40 })).toEqual({ perPerson: 5, perOrganization: 40, updatedAt: "2026-10-02T09:00:00.000Z" });
-    expect(d.db.get("SETTINGS", "WORKSPACE_LIMITS")).toMatchObject({ perPerson: 5, perOrganization: 40, updatedBy: ADMIN, updatedAt: "2026-10-02T09:00:00.000Z" });
-    expect(await readWorkspaceLimits(d.db, "state", d.limitDefaults)).toEqual({ member: 5, organization: 40, source: "setting" });
-    await expect(setWorkspaceLimits(d, ADMIN, { perPerson: 30, perOrganization: 20 })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: "CONFIG_INVALID: the per-person limit (30) cannot be more than the organization limit (20)" });
+    expect(await setWorkspaceLimits(d, TEST_ORG, ADMIN, { perPerson: 5, perOrganization: 40 })).toEqual({ perPerson: 5, perOrganization: 40, updatedAt: "2026-10-02T09:00:00.000Z" });
+    expect(d.db.get(orgSettingsKey(TEST_ORG, "WORKSPACE_LIMITS"))).toMatchObject({ perPerson: 5, perOrganization: 40, updatedBy: ADMIN, updatedAt: "2026-10-02T09:00:00.000Z" });
+    expect(await readWorkspaceLimits(d.db, "state", TEST_ORG, d.limitDefaults)).toEqual({ member: 5, organization: 40, source: "setting" });
+    await expect(setWorkspaceLimits(d, TEST_ORG, ADMIN, { perPerson: 30, perOrganization: 20 })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: "CONFIG_INVALID: the per-person limit (30) cannot be more than the organization limit (20)" });
   });
 
   it("refuses numbers the broker would ignore, and leaves the setting as it was", async () => {
     const d = deps();
-    await setWorkspaceLimits(d, ADMIN, { perPerson: 5, perOrganization: 40 });
+    await setWorkspaceLimits(d, TEST_ORG, ADMIN, { perPerson: 5, perOrganization: 40 });
     for (const limits of [{ perPerson: 0, perOrganization: 20 }, { perPerson: 51, perOrganization: 100 }, { perPerson: 2.5, perOrganization: 20 }, { perPerson: 3, perOrganization: 1_001 }, { perPerson: 3, perOrganization: 0 }]) {
-      await expect(setWorkspaceLimits(d, ADMIN, limits)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      await expect(setWorkspaceLimits(d, TEST_ORG, ADMIN, limits)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     }
-    expect(await readWorkspaceLimits(d.db, "state", d.limitDefaults)).toEqual({ member: 5, organization: 40, source: "setting" });
+    expect(await readWorkspaceLimits(d.db, "state", TEST_ORG, d.limitDefaults)).toEqual({ member: 5, organization: 40, source: "setting" });
   });
 });
 

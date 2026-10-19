@@ -6,6 +6,11 @@ import { describe, expect, it, vi } from "vitest";
 import { FailureIndexRecordSchema, UsageIndexRecordSchema } from "../../packages/contracts/src/index.js";
 import { indexActivity, type IndexStore } from "../../packages/broker/src/aws/activity-index.js";
 import type { StreamRecord } from "../../packages/broker/src/developer/notifications.js";
+import { orgFailureDayPk, orgUsageDayPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { singleOrgIdForEnv } from "../../packages/contracts/src/org.js";
+
+// No AGENTX_ENV in a test: the install is the legacy, unnamed one, whose single org derives from "default".
+const TEST_ORG = singleOrgIdForEnv("default");
 
 const WORKSPACE = "22222222-2222-4222-8222-222222222222";
 const OPERATION = "11111111-1111-4111-8111-111111111111";
@@ -47,7 +52,7 @@ describe("the failure index (FR-038, A5)", () => {
     }))], index, vi.fn());
     expect(result).toEqual({ failures: 1, usage: 0, failed: 0 });
     expect(index.puts).toEqual([{
-      pk: "FAILURE#2026-09-30", sk: `2026-09-30T08:15:00.000Z#${OPERATION}`, entityType: "FAILURE_INDEX",
+      pk: orgFailureDayPk(TEST_ORG, "2026-09-30"), sk: `2026-09-30T08:15:00.000Z#${OPERATION}`, entityType: "FAILURE_INDEX",
       indexExpiresAt: Math.floor(Date.parse("2026-09-30T08:15:00.000Z") / 1000) + 30 * 86_400,
       operationId: OPERATION, workspaceId: WORKSPACE, project: "payments", origin: "slack",
       requester: { kind: "slack", teamId: "T0BSHLLUGBD", userId: "U0PRIYA001" },
@@ -105,12 +110,23 @@ describe("the usage index (A5, A9)", () => {
     tokens: { input: 1_000, output: 200, cacheRead: 50, cacheWrite: 0, total: 1_250 }, cacheReadRatio: 0.05, costUsd: 0.42,
   };
 
+  it("keys a usage row by the org its workspace record names, and otherwise by the fallback org it is given", async () => {
+    const named = "org_bbbbbbbbbbbbbbbbbbbb";
+    const fallback = "org_cccccccccccccccccccc";
+    const withOrg = store([{ ...slackWorkspace[0]!, orgId: named }, slackWorkspace[1]!, operation({})]);
+    await indexActivity([usageEvent(telemetry)], withOrg, vi.fn(), undefined, fallback);
+    expect(withOrg.puts[0]).toMatchObject({ pk: orgUsageDayPk(named, "2026-09-30") });
+    const without = store([...slackWorkspace, operation({})]);
+    await indexActivity([usageEvent(telemetry)], without, vi.fn(), undefined, fallback);
+    expect(without.puts[0]).toMatchObject({ pk: orgUsageDayPk(fallback, "2026-09-30") });
+  });
+
   it("indexes a worker's usage event with the task's duration, tokens and cost", async () => {
     const index = store([...slackWorkspace, operation({ requestedBy: { teamId: "T0BSHLLUGBD", userId: "U0PRIYA001" } })]);
     const result = await indexActivity([usageEvent(telemetry)], index, vi.fn());
     expect(result.usage).toBe(1);
     expect(index.puts[0]).toEqual({
-      pk: "USAGE#2026-09-30", sk: `2026-09-30T08:10:00.000Z#${OPERATION}`, entityType: "USAGE_INDEX",
+      pk: orgUsageDayPk(TEST_ORG, "2026-09-30"), sk: `2026-09-30T08:10:00.000Z#${OPERATION}`, entityType: "USAGE_INDEX",
       indexExpiresAt: Math.floor(Date.parse("2026-09-30T08:10:00.000Z") / 1000) + 30 * 86_400,
       operationId: OPERATION, workspaceId: WORKSPACE, project: "payments", origin: "slack",
       requester: { kind: "slack", teamId: "T0BSHLLUGBD", userId: "U0PRIYA001" }, thread: "T0BSHLLUGBD/C0123456789/1695500000.000100",

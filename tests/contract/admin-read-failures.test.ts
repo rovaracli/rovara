@@ -2,14 +2,15 @@
 // Spec 025 A7, US5 scenario 3: failures in a window, newest first, from the failure index.
 import { describe, expect, it } from "vitest";
 import { readFailures, timeWindow, type AdminReadDependencies } from "../../packages/broker/src/aws/admin-reads.js";
-import { failureIndexKey } from "../../packages/contracts/src/index.js";
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { orgFailureIndexKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const failure = (endedAt: string, n: number, extra: Record<string, unknown> = {}) => {
   const operationId = `1111111${n}-1111-4111-8111-111111111111`;
   return {
-    ...failureIndexKey(endedAt, operationId), entityType: "FAILURE_INDEX", operationId, workspaceId: "22222222-2222-4222-8222-222222222222",
+    ...orgFailureIndexKey(TEST_ORG, endedAt, operationId), entityType: "FAILURE_INDEX", operationId, workspaceId: "22222222-2222-4222-8222-222222222222",
     project: "payments", origin: "slack", requester: { kind: "slack", teamId: "T0BSHLLUGBD", userId: "U0PRIYA001" }, kind: "task",
     status: "FAILED", category: "task_failed", error: "npm test exited 1", endedAt, thread: "T0BSHLLUGBD/C0123456789/1695500000.000100", ...extra,
   };
@@ -77,7 +78,7 @@ describe("GET /v1/admin/failures (FR-038, A7)", () => {
     db.set(failure(at(1), 1));
     db.set(failure(at(2), 2, { category: "worker_unavailable" }));
     const deps = { documentClient: db, tableName: "state", limitDefaults: { member: 1, organization: 1 }, now: () => Date.now(), log: () => undefined } as unknown as AdminReadDependencies;
-    const answer = await readFailures(deps, { since: at(24), until: at(0) }, { limit: 10, category: "worker_unavailable" });
+    const answer = await readFailures(deps, TEST_ORG, { since: at(24), until: at(0) }, { limit: 10, category: "worker_unavailable" });
     expect(answer.failures.map((entry) => entry.operationId)).toEqual(["11111112-1111-4111-8111-111111111111"]);
     expect(answer.skipped).toBe(0);
   });
