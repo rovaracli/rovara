@@ -4,7 +4,7 @@
 // time is recorded when compute stops (`recordMachineTime`, called by the session manager at every stop).
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  agentXError, machineTimeMonthKey, machineTimeOnceKey, openComputeKey, openComputePk, orgMetaKey, trialGithubKey,
+  SESSION_MAX_LIFETIME_MS, agentXError, machineTimeMonthKey, machineTimeOnceKey, openComputeKey, openComputePk, orgMetaKey, trialGithubKey, workspaceSessionKey,
   type OrgId,
 } from "@agentx/contracts";
 
@@ -168,7 +168,21 @@ async function closeOpenCompute(deps: TrialDependencies, orgId: OrgId, workspace
   await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: openComputeKey(orgId, workspaceId) }));
 }
 
-/** Seconds the org's workspaces have been running, from their launch to `now`: compute that no stop has recorded yet. */
+/**
+ * Whether a running marker still describes a live instance: its workspace's session (a consistent read) holds an instance
+ * that launched exactly when the marker says. Anything else (the session is gone, stopped, failed, or on a later launch)
+ * means the stop that should have removed the marker did not.
+ */
+async function markerIsLive(deps: TrialDependencies, workspaceId: string, startedAt: number): Promise<boolean> {
+  const session = await get(deps, workspaceSessionKey(workspaceId));
+  return typeof session?.instanceId === "string" && typeof session.launchedAt === "string" && Date.parse(session.launchedAt) === startedAt;
+}
+
+/**
+ * Seconds the org's workspaces have been running, from their launch to `now`: compute that no stop has recorded yet.
+ * A marker counts only while its session still holds that launch (a stale one counts nothing and is removed, best effort,
+ * so a stop that failed to record cannot lock the org out), and counts for at most a session's lifetime, the backstop.
+ */
 async function runningSeconds(deps: TrialDependencies, orgId: OrgId, now: number): Promise<number> {
   let total = 0;
   let exclusiveStartKey: Record<string, unknown> | undefined;
@@ -180,7 +194,14 @@ async function runningSeconds(deps: TrialDependencies, orgId: OrgId, now: number
       ConsistentRead: true,
       ...(exclusiveStartKey === undefined ? {} : { ExclusiveStartKey: exclusiveStartKey }),
     })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
-    for (const item of page.Items ?? []) if (typeof item.startedAt === "number") total += Math.max(0, now - item.startedAt) / 1000;
+    for (const item of page.Items ?? []) {
+      if (typeof item.startedAt !== "number" || typeof item.workspaceId !== "string") continue;
+      if (!await markerIsLive(deps, item.workspaceId, item.startedAt)) {
+        await closeOpenCompute(deps, orgId, item.workspaceId).catch(() => undefined);
+        continue;
+      }
+      total += Math.min(Math.max(0, now - item.startedAt), SESSION_MAX_LIFETIME_MS) / 1000;
+    }
     exclusiveStartKey = page.LastEvaluatedKey;
   } while (exclusiveStartKey !== undefined);
   return total;

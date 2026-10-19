@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agentXError, errorStatus, machineTimeMonthKey, machineTimeOnceKey, openComputeKey, orgMetaKey, singleOrgIdForEnv, trialGithubKey, type OrgId,
+  agentXError, errorStatus, SESSION_MAX_LIFETIME_MS, machineTimeMonthKey, machineTimeOnceKey, openComputeKey, orgMetaKey, singleOrgIdForEnv, trialGithubKey, workspaceSessionKey, type OrgId,
 } from "../../packages/contracts/src/index.js";
 import { createReaperHandler } from "../../packages/broker/src/aws/session-reaper.js";
 import { SessionManager, computeMeteringFromEnvironment, machineTimeRecorder, openComputeMarker, type ComputeStop } from "../../packages/broker/src/aws/sessions.js";
@@ -41,9 +41,15 @@ function seedSeconds(db: FakeDynamoDb, orgId: OrgId, at: number, seconds: number
   db.set({ ...machineTimeMonthKey(orgId, monthOf(at)), entityType: "MACHINE_TIME", seconds });
 }
 
-/** An instance of the org's that has been running since `startedAt`, with no stop recorded for it yet. */
-function seedRunning(db: FakeDynamoDb, orgId: OrgId, workspaceId: string, startedAt: number) {
+/** An instance of the org's that has been running since `startedAt`, with no stop recorded for it yet: its marker, and its session still holding that launch. */
+function seedRunning(db: FakeDynamoDb, orgId: OrgId, workspaceId: string, startedAt: number, session: Record<string, unknown> | null = {}) {
   db.set({ ...openComputeKey(orgId, workspaceId), entityType: "OPEN_COMPUTE", workspaceId, startedAt });
+  if (session !== null) {
+    db.set({
+      ...workspaceSessionKey(workspaceId), entityType: "SESSION", workspaceId, state: "READY", generation: 1, instanceId: "i-0123456789abcdef0",
+      launchedAt: new Date(startedAt).toISOString(), ...session,
+    });
+  }
 }
 
 const NOW = Date.parse("2026-10-19T12:00:00.000Z");
@@ -268,6 +274,41 @@ describe("admitMachineTime", () => {
     expect((await rejection(admitMachineTime(lastMonthLaunch.d, TEST_ORG))).code).toBe("MACHINE_TIME_EXCEEDED");
   });
 
+  it("counts a marker for nothing, and removes it, when its session is gone or no longer holds an instance", async () => {
+    const { db, d } = setup();
+    seedRunning(db, TEST_ORG, "ws-gone", NOW - 100 * HOUR * 1000, null);
+    seedRunning(db, TEST_ORG, "ws-stopped", NOW - 100 * HOUR * 1000, { state: "STOPPED", instanceId: undefined });
+    delete db.get(workspaceSessionKey("ws-stopped"))!.instanceId;
+    await expect(admitMachineTime(d, TEST_ORG)).resolves.toBeUndefined();
+    expect(db.get(openComputeKey(TEST_ORG, "ws-gone"))).toBeUndefined();
+    expect(db.get(openComputeKey(TEST_ORG, "ws-stopped"))).toBeUndefined();
+  });
+
+  it("counts a marker for nothing when its session is on a later launch, and removes it", async () => {
+    const { db, d } = setup();
+    seedRunning(db, TEST_ORG, "ws-relaunched", NOW - 100 * HOUR * 1000, { launchedAt: new Date(NOW - HOUR * 1000).toISOString() });
+    await expect(admitMachineTime(d, TEST_ORG)).resolves.toBeUndefined();
+    expect(db.get(openComputeKey(TEST_ORG, "ws-relaunched"))).toBeUndefined();
+    // The later launch's own marker, if it has one, is the one that counts.
+    seedRunning(db, TEST_ORG, "ws-relaunched", NOW - 21 * HOUR * 1000);
+    expect((await rejection(admitMachineTime(d, TEST_ORG))).code).toBe("MACHINE_TIME_EXCEEDED");
+  });
+
+  it("keeps the marker of a live instance, and caps what it counts at a session's lifetime", async () => {
+    const { db, d } = setup("team");
+    seedRunning(db, TEST_ORG, "ws-live", NOW - 100 * HOUR * 1000);
+    await expect(admitMachineTime(d, TEST_ORG)).resolves.toBeUndefined();
+    expect(db.get(openComputeKey(TEST_ORG, "ws-live"))).toBeDefined();
+    // A live marker 1000 hours old (the reaper replaces instances at 14 days) counts 14 days, 336 hours: under a team's 400 hours, which 1000 uncapped would not be.
+    expect(SESSION_MAX_LIFETIME_MS).toBe(14 * 24 * HOUR * 1000);
+    seedRunning(db, TEST_ORG, "ws-ancient", NOW - 1000 * HOUR * 1000);
+    db.delete(openComputeKey(TEST_ORG, "ws-live"));
+    await expect(admitMachineTime(d, TEST_ORG)).resolves.toBeUndefined();
+    // 336 h capped plus 64 h recorded reaches the 400.
+    seedSeconds(db, TEST_ORG, NOW, 64 * HOUR);
+    expect((await rejection(admitMachineTime(d, TEST_ORG))).code).toBe("MACHINE_TIME_EXCEEDED");
+  });
+
   it("does not count another org's running compute", async () => {
     const { db, d } = setup();
     seedRunning(db, ORG_B, "ws-other", NOW - 100 * HOUR * 1000);
@@ -345,7 +386,8 @@ describe("admitSpend", () => {
     seedSeconds(used.db, TEST_ORG, NOW, 400 * HOUR);
     expect((await rejection(used.run())).code).toBe("MACHINE_TIME_EXCEEDED");
     const running = setup("team");
-    seedRunning(running.db, TEST_ORG, "ws-1", NOW - 401 * HOUR * 1000);
+    seedRunning(running.db, TEST_ORG, "ws-1", NOW - 250 * HOUR * 1000);
+    seedRunning(running.db, TEST_ORG, "ws-2", NOW - 150 * HOUR * 1000);
     expect((await rejection(running.run())).code).toBe("MACHINE_TIME_EXCEEDED");
   });
 

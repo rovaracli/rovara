@@ -2,14 +2,14 @@ import { DescribeInstancesCommand, DescribeVolumesCommand, EC2Client, TerminateI
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
-import type { Ec2RuntimeBinding, WorkspaceSession } from "@agentx/contracts";
+import { SESSION_MAX_LIFETIME_MS, type Ec2RuntimeBinding, type WorkspaceSession } from "@agentx/contracts";
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import { requiredEnvironment } from "./lambda.js";
 import { SessionManager, computeMeteringFromEnvironment, workspaceBinding } from "./sessions.js";
 
 /** Idle stop and maximum compute lifetime (design in #76). */
 export const IDLE_STOP_MS = 5 * 60_000;
-export const MAX_LIFETIME_MS = 14 * 24 * 60 * 60_000;
+export const MAX_LIFETIME_MS = SESSION_MAX_LIFETIME_MS;
 const WORKER_PORT = 8080;
 const PING_TIMEOUT_MS = 2_000;
 

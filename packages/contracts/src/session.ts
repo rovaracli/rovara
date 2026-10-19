@@ -214,6 +214,9 @@ export const WORKSPACE_SESSION_STATE_INDEX = {
   sortKey: "workspaceId",
 } as const;
 
+/** The longest an instance runs before the idle reaper replaces it (14 days); also the most a running instance is ever counted for. */
+export const SESSION_MAX_LIFETIME_MS = 14 * 24 * 60 * 60_000;
+
 export function workspaceSessionKey(workspaceId: string): { pk: string; sk: "SESSION" } {
   return { pk: `WORKSPACE#${workspaceId}`, sk: "SESSION" };
 }
