@@ -2,7 +2,7 @@
 // The broker never talks to LiteLLM (ruling R28), so every proxy call here goes through a fake ModelAccess.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, agentXError, budgetSyncedKey, errorStatus, orgSettingsKey, type OrgId } from "../../packages/contracts/src/index.js";
+import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, agentXError, budgetSyncedKey, errorStatus, orgMetaKey, orgSettingsKey, type OrgId } from "../../packages/contracts/src/index.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { MINIMUM_REMAINING_USD, admitSpend, ensureSynced, keyIdOf, mintCap, readBudgets, syncBudgets } from "../../packages/broker/src/org/budget.js";
 import { resolveOrgOnSignIn } from "../../packages/broker/src/org/sign-in.js";
@@ -503,6 +503,23 @@ describe("budget routes", () => {
     // It re-syncs even when nothing changed.
     await h.dev(MAYA, "PUT", "/v1/dev/org/budget", { requestId: randomUUID(), memberOverrides: {} });
     expect(h.access.upsertOrg).toHaveBeenCalledTimes(3);
+  });
+
+  it("PUT /v1/dev/org/budget keeps a trial org within the placeholder limits (R49), and lets a team plan go higher", async () => {
+    const h = await install();
+    h.asAdmin();
+    const meta = h.db.get(orgMetaKey(TEST_ORG).pk, orgMetaKey(TEST_ORG).sk) as Record<string, unknown>;
+    h.db.set({ ...meta, plan: "trial" });
+    const put = (body: Record<string, unknown>) => h.dev(MAYA, "PUT", "/v1/dev/org/budget", { requestId: randomUUID(), ...body });
+    for (const body of [{ orgMonthlyUsd: DEFAULT_ORG_MONTHLY_BUDGET_USD + 1 }, { memberDefaultMonthlyUsd: DEFAULT_MEMBER_MONTHLY_BUDGET_USD + 1 }, { memberOverrides: { [OMAR.developerId]: 30 } }]) {
+      expect(await put(body)).toMatchObject({ status: 400, body: { error: { code: "CONFIG_INVALID" } } });
+    }
+    expect(h.db.get(orgSettingsKey(TEST_ORG, "BUDGET"))).toBeUndefined();
+    expect(h.access.upsertOrg).not.toHaveBeenCalled();
+    // At or below the placeholders is fine, and lowering needs no plan.
+    expect((await put({ orgMonthlyUsd: DEFAULT_ORG_MONTHLY_BUDGET_USD, memberDefaultMonthlyUsd: DEFAULT_MEMBER_MONTHLY_BUDGET_USD, memberOverrides: { [OMAR.developerId]: 10 } })).status).toBe(200);
+    h.db.set({ ...meta, plan: "team" });
+    expect(await put({ orgMonthlyUsd: 5000, memberDefaultMonthlyUsd: 300 })).toMatchObject({ status: 200, body: { budget: { orgMonthlyUsd: 5000, memberDefaultMonthlyUsd: 300 } } });
   });
 
   it("PUT /v1/dev/org/budget refuses an override for a developer of another org: 400, nothing written, the other org's cap unchanged", async () => {

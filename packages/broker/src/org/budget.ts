@@ -150,7 +150,7 @@ export const PutBudgetBodySchema = z.object({
  * proxy cannot be reached the settings stand and the call fails with MODEL_PROXY_UNAVAILABLE. The caller has decided who may ask.
  */
 export async function changeBudgets(
-  deps: BudgetDependencies & { orgs: Pick<OrgStore, "orgForDeveloper"> },
+  deps: BudgetDependencies & { orgs: Pick<OrgStore, "orgForDeveloper" | "getOrg"> },
   input: { orgId: OrgId; body: unknown; updatedBy: string; at: string },
 ): Promise<OrgBudgetSettings> {
   const parsed = PutBudgetBodySchema.safeParse(input.body);
@@ -162,6 +162,14 @@ export async function changeBudgets(
   const { orgMonthlyUsd, memberDefaultMonthlyUsd, memberOverrides } = parsed.data;
   if (orgMonthlyUsd === undefined && memberDefaultMonthlyUsd === undefined && memberOverrides === undefined) {
     throw agentXError("CONFIG_INVALID", "body: name at least one of orgMonthlyUsd, memberDefaultMonthlyUsd and memberOverrides");
+  }
+  // Ruling R49: a trial org stays within the placeholder limits until billing exists; a team plan may go up to MAX_BUDGET_USD.
+  if ((await deps.orgs.getOrg(input.orgId))?.plan === "trial") {
+    const tooHigh = (orgMonthlyUsd ?? 0) > DEFAULT_ORG_MONTHLY_BUDGET_USD
+      || [memberDefaultMonthlyUsd ?? 0, ...Object.values(memberOverrides ?? {})].some((limit) => limit > DEFAULT_MEMBER_MONTHLY_BUDGET_USD);
+    if (tooHigh) {
+      throw agentXError("CONFIG_INVALID", `a trial organization's limits are at most $${String(DEFAULT_ORG_MONTHLY_BUDGET_USD)} a month for the organization and $${String(DEFAULT_MEMBER_MONTHLY_BUDGET_USD)} for a member; upgrade the plan to raise them`);
+    }
   }
   // Proxy users are global by id: an override may name only a member of the org itself, or one admin could set another org's member's cap.
   for (const developerId of Object.keys(memberOverrides ?? {})) {
