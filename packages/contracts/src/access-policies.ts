@@ -41,6 +41,11 @@ export const SERVICE_ROLE_SERVICES: readonly string[] = [
   "lambda",
   "logs",
   "rds",
+  // Route 53 Resolver: the cloud install's DNS firewall (domain lists, rule group, VPC association)
+  // and its query logging config. The query log destination is a CloudWatch Logs group, so
+  // CloudFormation also calls the logs delivery actions (CreateLogDelivery, PutResourcePolicy and
+  // the rest), which "logs" already covers.
+  "route53resolver",
   "s3",
   "scheduler",
   "secretsmanager",

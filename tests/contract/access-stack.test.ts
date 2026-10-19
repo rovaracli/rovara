@@ -3,7 +3,7 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { ENVIRONMENT_PLACEHOLDER } from "@agentx/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { SERVICE_ROLE_SERVICES, defaultBoundaryStatements } from "../../infra/lib/access-policies.js";
+import { BOUNDARY_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryStatements, serviceRoleStatements } from "../../infra/lib/access-policies.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -26,7 +26,12 @@ describe("access stack", () => {
   const access = stacksOf(app).find((s) => s.stackName === "agentx-staging-access")!;
   const template = Template.fromStack(access);
 
-  const environmentResources = () => stacksOf(app).map((stack) => ({ stack, resources: resourcesOf(stack) }));
+  // The hosted-cloud app adds resource types the plain one lacks (Route 53 Resolver DNS firewall and
+  // query logging, Cognito identity provider and managed login branding), so every "what the service
+  // role and boundary must cover" check reads both apps: a cloud-only resource type without
+  // permissions fails the deploy of `agentxCloud=true` and must fail here first.
+  const cloudApp = buildAgentXApp({ agentxEnv: "staging", agentxCloud: true });
+  const environmentResources = () => [app, cloudApp].flatMap((a) => stacksOf(a).map((stack) => ({ stack, resources: resourcesOf(stack) })));
   /** The AWS service each resource type in the non-access templates is created through. */
   const resourceTypeServices = () => {
     const serviceOf = (type: string) => type.split("::")[1]!.toLowerCase().replace("apigatewayv2", "apigateway").replace("cognito", "cognito-idp").replace("applicationautoscaling", "application-autoscaling").replace("elasticloadbalancingv2", "elasticloadbalancing").replace("stepfunctions", "states");
@@ -122,7 +127,7 @@ describe("access stack", () => {
       AWSLambdaBasicExecutionRole: ["logs"],
       AWSLambdaVPCAccessExecutionRole: ["ec2", "logs"],
     };
-    const all = stacksOf(app).map(resourcesOf);
+    const all = environmentResources().map(({ resources }) => resources);
     const actions = usedActions();
     const managed = new Set(all.flatMap((resources) => Object.values(resources).filter((r) => r.Type === "AWS::IAM::Role")
       .flatMap((r) => (r.Properties.ManagedPolicyArns ?? []) as unknown[]).map((arn) => JSON.stringify(arn).match(/policy\/(?:service-role\/)?([A-Za-z0-9]+)/)![1]!)));
@@ -200,4 +205,30 @@ describe("access stack", () => {
     const used = new Set([...needed, ...[...usedActions()].map((a) => a.split(":")[0]!)]);
     expect(SERVICE_ROLE_SERVICES.filter((service) => !used.has(service))).toEqual([]);
   }, 240_000);
+
+  it("covers the resource types only the hosted cloud creates, in the service role and the boundary", () => {
+    const plainTypes = new Set(environmentResources().slice(0, stacksOf(app).length).flatMap(({ resources }) => Object.values(resources).map((r) => r.Type)));
+    const cloudOnly = environmentResources().slice(stacksOf(app).length).flatMap(({ resources }) => Object.values(resources).map((r) => r.Type)).filter((type) => !plainTypes.has(type));
+    // Guards the premise: the cloud app really adds DNS firewall, query logging and Cognito types.
+    expect(cloudOnly).toEqual(expect.arrayContaining([
+      "AWS::Route53Resolver::FirewallDomainList", "AWS::Route53Resolver::FirewallRuleGroup", "AWS::Route53Resolver::FirewallRuleGroupAssociation",
+      "AWS::Route53Resolver::ResolverQueryLoggingConfig", "AWS::Route53Resolver::ResolverQueryLoggingConfigAssociation",
+      "AWS::Cognito::UserPoolIdentityProvider", "AWS::Cognito::ManagedLoginBranding",
+    ]));
+  });
+
+  it("allows the Route 53 Resolver actions CloudFormation calls for the DNS firewall and query logging", () => {
+    const scope = { env: "staging", partition: "aws", region: "us-east-1", account: "123456789012", artifactBucketArn: "arn:aws:s3:::b", pullThroughPrefix: "agentx-staging", cloudFormationRoleName: "agentx-staging-cloudformation" };
+    const serviceAllowed = serviceRoleStatements(scope).filter((st) => st.Effect === "Allow").flatMap((st) => st.Action);
+    const boundaryAllowed = defaultBoundaryStatements(scope).filter((st) => st.Effect === "Allow").flatMap((st) => st.Action);
+    expect(SERVICE_ROLE_SERVICES).toContain("route53resolver");
+    expect(BOUNDARY_SERVICES).toContain("route53resolver");
+    for (const allowed of [serviceAllowed, boundaryAllowed]) {
+      // route53resolver:* covers CreateFirewallDomainList, UpdateFirewallDomains, CreateFirewallRuleGroup,
+      // CreateFirewallRule, AssociateFirewallRuleGroup, CreateResolverQueryLogConfig,
+      // AssociateResolverQueryLogConfig and the Tag, Get, List and Delete calls; the query log
+      // destination is a CloudWatch Logs group, which needs the log delivery actions, covered by logs:*.
+      expect(allowed).toEqual(expect.arrayContaining(["route53resolver:*", "logs:*", "cognito-idp:*"]));
+    }
+  });
 });
