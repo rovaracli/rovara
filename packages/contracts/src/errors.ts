@@ -32,6 +32,7 @@ export const AgentXErrorCodeSchema = z.enum([
   "INVITE_INVALID",
   "SLACK_TEAM_TAKEN",
   "SLACK_TEAM_NOT_BOUND",
+  "MODEL_PROXY_UNAVAILABLE",
 ]);
 
 export type AgentXErrorCode = z.infer<typeof AgentXErrorCodeSchema>;
@@ -52,7 +53,7 @@ export function errorStatus(code: AgentXErrorCode): number {
   if (code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED") return 403;
   if (code === "NOT_FOUND" || code === "PROJECT_NOT_FOUND" || code === "TASK_NOT_FOUND") return 404;
   if (code === "CONFIG_INVALID") return 400;
-  if (code === "RUNTIME_UNAVAILABLE" || code === "SLACK_UNAVAILABLE") return 503;
+  if (code === "RUNTIME_UNAVAILABLE" || code === "SLACK_UNAVAILABLE" || code === "MODEL_PROXY_UNAVAILABLE") return 503;
   return 409;
 }
 

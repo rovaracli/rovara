@@ -1,6 +1,10 @@
 import { expect } from "vitest";
 
-type Resource = { Type: string; Properties: { PolicyName?: string; Roles?: unknown[]; [key: string]: unknown } };
+type Statement = { Action: unknown; Resource: unknown };
+type Resource = {
+  Type: string;
+  Properties: { PolicyName?: string; Roles?: unknown[]; PolicyDocument?: { Statement: Statement[] }; Environment?: { Variables: Record<string, unknown> }; [key: string]: unknown };
+};
 
 /** Whether the template has the proxy, which a named control plane has and a legacy one does not. */
 export const hasModelProxy = (template: unknown): boolean => Object.keys((template as { Resources?: object }).Resources ?? {}).some((id) => id.startsWith("ModelProxy"));
@@ -14,6 +18,7 @@ export const hasModelProxy = (template: unknown): boolean => Object.keys((templa
  */
 export function withoutModelProxy(template: unknown): unknown {
   const synthesized = template as { Parameters: Record<string, unknown>; Resources: Record<string, Resource>; Outputs: Record<string, unknown> };
+  withoutModelAccess(synthesized);
   for (const name of ["VpcId", "Ec2WorkerSecurityGroupId"]) {
     expect(synthesized.Parameters[name]).toMatchObject({ Type: "String" });
     delete synthesized.Parameters[name];
@@ -36,4 +41,26 @@ export function withoutModelProxy(template: unknown): unknown {
     read.Properties.Roles = [{ Ref: orchestratorRoleId }, { "Fn::Select": [3, { "Fn::Split": ["/", { Ref: "Ec2WorkerInstanceRoleArn" }] }] }];
   }
   return template;
+}
+
+/**
+ * Ruling R28: the VPC-attached ModelAccessFunction (ModelAccess* resources) and what it adds to the broker, which
+ * is the environment variable MODEL_ACCESS_FUNCTION_NAME and one lambda:InvokeFunction statement on that function.
+ * model-access-infrastructure.test.ts checks them; here they are asserted present and taken out.
+ */
+function withoutModelAccess(synthesized: { Resources: Record<string, Resource> }): void {
+  const resources = synthesized.Resources;
+  const functionId = Object.keys(resources).find((id) => id.startsWith("ModelAccessFunction") && resources[id]!.Type === "AWS::Lambda::Function");
+  expect(functionId).toBeDefined();
+  const brokers = Object.entries(resources).filter(([id, resource]) => id.startsWith("Broker") && resource.Type === "AWS::Lambda::Function");
+  expect(brokers).toHaveLength(1);
+  const variables = brokers[0]![1].Properties.Environment!.Variables;
+  expect(variables.MODEL_ACCESS_FUNCTION_NAME).toStrictEqual({ Ref: functionId });
+  delete variables.MODEL_ACCESS_FUNCTION_NAME;
+  const grants = Object.values(resources).flatMap((resource) => (resource.Type === "AWS::IAM::Policy" ? [resource.Properties.PolicyDocument!] : []))
+    .filter((document) => document.Statement.some((statement) => JSON.stringify(statement.Resource).includes(`"${functionId!}"`)
+      && JSON.stringify(statement.Action).includes("lambda:InvokeFunction")));
+  expect(grants).toHaveLength(1);
+  grants[0]!.Statement = grants[0]!.Statement.filter((statement) => !JSON.stringify(statement.Resource).includes(`"${functionId!}"`));
+  for (const id of Object.keys(resources).filter((name) => name.startsWith("ModelAccess"))) delete resources[id];
 }

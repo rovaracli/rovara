@@ -1,4 +1,5 @@
 import { grantProviderKeySecrets } from "./model-keys.js";
+import { ModelAccess } from "./model-access.js";
 import { ModelProxy } from "./model-proxy.js";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
 import { resolve } from "node:path";
@@ -976,14 +977,27 @@ export class ControlPlaneStack extends Stack {
     if (naming.env === undefined) {
       grantProviderKeySecrets(this, [slackOrchestratorRole.roleName, sessions.instanceRoleName]);
     } else {
+      const vpcId = new CfnParameter(this, "VpcId", { type: "String", description: "The foundation's VPC" }).valueAsString;
       modelProxy = new ModelProxy(this, "ModelProxy", {
         naming,
-        vpcId: new CfnParameter(this, "VpcId", { type: "String", description: "The foundation's VPC" }).valueAsString,
+        vpcId,
         subnetIds: Fn.split(",", sessions.privateSubnetIds.valueAsString),
         clientSecurityGroupIds: [new CfnParameter(this, "Ec2WorkerSecurityGroupId", { type: "String", description: "The foundation's EC2 worker security group" }).valueAsString],
         models: bedrockClaudeModelIds("us").map((id) => ({ id })),
       });
       grantProviderKeySecrets(this, [modelProxy.taskRole.roleName]);
+      // Ruling R28: the broker is outside the VPC, so it mints member keys and reads spend through this
+      // VPC-attached function, the only reader of the master key besides the proxy. The broker may invoke it, and nothing else.
+      const modelAccessFunction = packagedFunction(this, "ModelAccessFunction", "packages/broker/src/model-proxy/handler.ts", {});
+      new ModelAccess(this, "ModelAccess", {
+        naming,
+        vpcId,
+        subnetIds: Fn.split(",", sessions.privateSubnetIds.valueAsString),
+        proxy: modelProxy,
+        handler: modelAccessFunction,
+      });
+      modelAccessFunction.grantInvoke(broker);
+      broker.addEnvironment("MODEL_ACCESS_FUNCTION_NAME", modelAccessFunction.functionName);
     }
     sessions.steps.addEnvironment("CONTROL_PLANE_URL", api.attrApiEndpoint);
     sessions.connectDispatcher(dispatcher);

@@ -1,0 +1,158 @@
+import { AgentXError } from "@agentx/contracts";
+import { describe, expect, it } from "vitest";
+import { ModelProxyClient } from "../../packages/broker/src/model-proxy/client.js";
+import { routeFetch } from "../support/developer-fakes.js";
+
+const BASE = "http://proxy.internal:4000";
+const MASTER = "sk-master-planted-value";
+const ORG = "org_abcdefghij0123456789";
+const DEV = "a".repeat(64);
+const NOW = 1_800_000_000_000;
+
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const bodyOf = (init: RequestInit | undefined) => JSON.parse(init?.body as string) as Record<string, unknown>;
+
+interface Seen { method: string; path: string; search: string; headers: Headers; body: Record<string, unknown> | undefined }
+
+/** A fake LiteLLM that records each request and answers from `answer`; 404 for anything unanswered. */
+function proxy(answer: (seen: Seen) => Response | undefined) {
+  const seen: Seen[] = [];
+  const fetch = routeFetch(async (url, init) => {
+    const entry: Seen = {
+      method: init?.method ?? "GET", path: url.pathname, search: url.search, headers: new Headers(init?.headers),
+      body: typeof init?.body === "string" ? bodyOf(init) : undefined,
+    };
+    seen.push(entry);
+    return answer(entry) ?? json({ error: { message: "not found" } }, 404);
+  });
+  const client = new ModelProxyClient({ baseUrl: BASE, masterKey: async () => MASTER, fetch, now: () => NOW });
+  return { client, seen, fetch };
+}
+
+const failure = async (action: Promise<unknown>) => {
+  try { await action; } catch (error) { return error as AgentXError; }
+  throw new Error("expected a rejection");
+};
+
+describe("ModelProxyClient", () => {
+  it("mintKey posts to /key/generate with the master key as bearer and the key's scope, budget, lifetime and metadata", async () => {
+    const { client, seen } = proxy(({ path }) => (path === "/key/generate" ? json({ key: "sk-virtual-1", expires: "2027-01-01T00:00:00Z" }) : undefined));
+    const minted = await client.mintKey({ orgId: ORG, developerId: DEV, purpose: "task", refId: "task-1", maxBudgetUsd: 2.5, ttlSeconds: 3600 });
+    expect(minted).toEqual({ key: "sk-virtual-1", expiresAt: NOW + 3_600_000 });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.method).toBe("POST");
+    expect(seen[0]!.headers.get("authorization")).toBe(`Bearer ${MASTER}`);
+    expect(seen[0]!.headers.get("content-type")).toBe("application/json");
+    expect(seen[0]!.body).toEqual({
+      team_id: ORG, user_id: DEV, max_budget: 2.5, duration: "3600s",
+      metadata: { orgId: ORG, developerId: DEV, purpose: "task", refId: "task-1" },
+    });
+  });
+
+  it("upsertOrg creates the LiteLLM team with the monthly budget and 1mo reset", async () => {
+    const { client, seen } = proxy(({ path }) => (path === "/team/new" ? json({ team_id: ORG }) : undefined));
+    await client.upsertOrg(ORG, 100);
+    expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual(["POST /team/new"]);
+    expect(seen[0]!.headers.get("authorization")).toBe(`Bearer ${MASTER}`);
+    expect(seen[0]!.body).toEqual({ team_id: ORG, max_budget: 100, budget_duration: "1mo" });
+  });
+
+  it("upsertOrg updates the team when it already exists", async () => {
+    const { client, seen } = proxy(({ path }) => {
+      if (path === "/team/new") return json({ error: { message: `Team id = ${ORG} already exists. Please use a different team id.` } }, 400);
+      if (path === "/team/update") return json({ team_id: ORG });
+      return undefined;
+    });
+    await client.upsertOrg(ORG, 150);
+    expect(seen.map((s) => s.path)).toEqual(["/team/new", "/team/update"]);
+    expect(seen[1]!.body).toEqual({ team_id: ORG, max_budget: 150, budget_duration: "1mo" });
+  });
+
+  it("upsertMember creates the LiteLLM user inside the team with no stray key, then updates it when it exists", async () => {
+    const created = proxy(({ path }) => (path === "/user/new" ? json({ user_id: DEV }) : undefined));
+    await created.client.upsertMember(ORG, DEV, 20);
+    expect(created.seen.map((s) => s.path)).toEqual(["/user/new"]);
+    expect(created.seen[0]!.body).toEqual({ user_id: DEV, max_budget: 20, budget_duration: "1mo", metadata: { orgId: ORG }, auto_create_key: false });
+
+    const existing = proxy(({ path }) => {
+      if (path === "/user/new") return json({ error: { message: `User with id ${DEV} already exists in the db` } }, 400);
+      if (path === "/user/update") return json({ user_id: DEV });
+      return undefined;
+    });
+    await existing.client.upsertMember(ORG, DEV, 30);
+    expect(existing.seen.map((s) => s.path)).toEqual(["/user/new", "/user/update"]);
+    expect(existing.seen[1]!.body).toEqual({ user_id: DEV, max_budget: 30, budget_duration: "1mo", metadata: { orgId: ORG } });
+  });
+
+  it("spend maps /team/info and /user/info to the member and org figures LiteLLM reports", async () => {
+    const { client, seen } = proxy(({ path, search }) => {
+      if (path === "/team/info" && search === `?team_id=${ORG}`) return json({ team_id: ORG, team_info: { spend: 12.5, max_budget: 100 }, keys: [] });
+      if (path === "/user/info" && search === `?user_id=${DEV}`) return json({ user_id: DEV, user_info: { spend: 3.25, max_budget: 20 }, keys: [] });
+      return undefined;
+    });
+    expect(await client.spend(ORG, DEV)).toEqual({ member: { spentUsd: 3.25, limitUsd: 20 }, org: { spentUsd: 12.5, limitUsd: 100 } });
+    expect(seen.every((s) => s.method === "GET" && s.headers.get("authorization") === `Bearer ${MASTER}`)).toBe(true);
+  });
+
+  it("spend reports overspend as LiteLLM returns it (caps are soft) and treats a null spend as 0", async () => {
+    const { client } = proxy(({ path }) => {
+      if (path === "/team/info") return json({ team_info: { spend: null, max_budget: 100 } });
+      if (path === "/user/info") return json({ user_info: { spend: 0.0617, max_budget: 0.05 } });
+      return undefined;
+    });
+    expect(await client.spend(ORG, DEV)).toEqual({ member: { spentUsd: 0.0617, limitUsd: 0.05 }, org: { spentUsd: 0, limitUsd: 100 } });
+  });
+
+  it("spend refuses an answer without a budget or with the wrong shape as MODEL_PROXY_UNAVAILABLE", async () => {
+    const noBudget = proxy(({ path }) => (path === "/team/info" ? json({ team_info: { spend: 1, max_budget: null } }) : json({ user_info: { spend: 1, max_budget: 5 } })));
+    expect((await failure(noBudget.client.spend(ORG, DEV))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+    const html = proxy(() => new Response("<html></html>", { status: 200 }));
+    expect((await failure(html.client.spend(ORG, DEV))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+  });
+
+  it("revokeKey deletes the key and treats an already-missing key as revoked", async () => {
+    const ok = proxy(({ path }) => (path === "/key/delete" ? json({ deleted_keys: ["sk-virtual-1"] }) : undefined));
+    await ok.client.revokeKey("sk-virtual-1");
+    expect(ok.seen[0]!.body).toEqual({ keys: ["sk-virtual-1"] });
+    const gone = proxy(() => json({ error: { message: "key not found" } }, 404));
+    await expect(gone.client.revokeKey("sk-virtual-1")).resolves.toBeUndefined();
+  });
+
+  it("a fetch rejection and a 5xx answer throw MODEL_PROXY_UNAVAILABLE", async () => {
+    const down = new ModelProxyClient({ baseUrl: BASE, masterKey: async () => MASTER, fetch: async () => { throw new TypeError("fetch failed"); }, now: () => NOW });
+    const refused = await failure(down.upsertOrg(ORG, 1));
+    expect(refused).toBeInstanceOf(AgentXError);
+    expect(refused.code).toBe("MODEL_PROXY_UNAVAILABLE");
+    expect(refused.statusCode).toBe(503);
+    const busy = proxy(() => json({ error: { message: "upstream unhealthy" } }, 503));
+    expect((await failure(busy.client.mintKey({ orgId: ORG, developerId: DEV, purpose: "turn", refId: "r", maxBudgetUsd: 1, ttlSeconds: 60 }))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+    expect((await failure(busy.client.spend(ORG, DEV))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+  });
+
+  it("a master key that cannot be read is MODEL_PROXY_UNAVAILABLE and nothing is sent", async () => {
+    const fetch = routeFetch();
+    const client = new ModelProxyClient({ baseUrl: BASE, masterKey: async () => { throw new Error("denied"); }, fetch, now: () => NOW });
+    expect((await failure(client.revokeKey("sk-x"))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+    expect(fetch.calls).toEqual([]);
+  });
+
+  it("a 4xx answer throws with the proxy's message and never echoes a key", async () => {
+    const { client } = proxy(() => json({ error: { message: "Invalid team budget for sk-leaked-virtual-key-12345" } }, 400));
+    const error = await failure(client.upsertOrg(ORG, -1));
+    expect(error.code).toBe("CONFIG_INVALID");
+    expect(error.message).toContain("Invalid team budget");
+    expect(error.message).not.toContain("sk-leaked-virtual-key-12345");
+    const missing = proxy(() => json({ error: { message: "Team not found" } }, 404));
+    expect((await failure(missing.client.spend(ORG, DEV))).code).toBe("NOT_FOUND");
+  });
+
+  it("reads the master key once per call and never puts it in an error", async () => {
+    let reads = 0;
+    const fetch = routeFetch(async () => json({ error: { message: "boom" } }, 500));
+    const client = new ModelProxyClient({ baseUrl: `${BASE}/`, masterKey: async () => { reads += 1; return MASTER; }, fetch, now: () => NOW });
+    const error = await failure(client.upsertOrg(ORG, 1));
+    expect(error.message).not.toContain(MASTER);
+    expect(reads).toBe(1);
+    expect(fetch.calls).toEqual(["POST http://proxy.internal:4000/team/new"]);
+  });
+});
