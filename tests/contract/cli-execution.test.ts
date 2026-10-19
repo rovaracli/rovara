@@ -57,6 +57,37 @@ describe("AgentX administration workflow", () => {
     });
   });
 
+  it("admin budget set sends the caps to the administrator route and prints what is set (R47)", async () => {
+    const context = await administratorContext("agentx-cli-budget-");
+    const bodies: unknown[] = [];
+    const fetchImplementation = vi.fn<typeof fetch>(async (input, init) => {
+      expect(new URL(requestUrl(input)).pathname).toBe("/v1/admin/org/budget");
+      expect(init?.method).toBe("PUT");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer access-secret");
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({ budget: { orgMonthlyUsd: 2000, memberDefaultMonthlyUsd: 150, memberOverrides: {} } });
+    });
+    let output = "";
+    const exitCode = await executeCli([...context.globals, "admin", "budget", "set", "--org-monthly", "2000", "--member-default", "$150"], {
+      fetchImplementation, tokenStore: context.tokens, stdout: { write(text) { output += text; } }, stderr: { write(text) { throw new Error(text); } },
+    });
+    expect(exitCode).toBe(0);
+    expect(bodies).toEqual([{ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/), orgMonthlyUsd: 2000, memberDefaultMonthlyUsd: 150 }]);
+    expect(output).toBe("Monthly AI budget: organization $2000.00, each member $150.00.\n");
+  });
+
+  it("admin budget set refuses a missing or malformed amount before calling the control plane", async () => {
+    const context = await administratorContext("agentx-cli-budget-");
+    const fetchImplementation = vi.fn<typeof fetch>(async () => Response.json({}));
+    for (const args of [["admin", "budget", "set"], ["admin", "budget", "set", "--org-monthly", "lots"], ["admin", "budget", "set", "--member-default", "-5"], ["admin", "budget", "set", "--org-monthly", "2000000"]]) {
+      let errors = "";
+      const exitCode = await executeCli([...context.globals, ...args], { fetchImplementation, tokenStore: context.tokens, stdout: { write() {} }, stderr: { write(text) { errors += text; } } });
+      expect(exitCode).not.toBe(0);
+      expect(errors).toContain("CONFIG_INVALID");
+    }
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
   it("admin workspace cancel keeps WORKSPACE_BUSY and its try-again message when the cancel raced its task (final review I2)", async () => {
     const context = await administratorContext("agentx-cli-cancel-");
     const workspaceId = randomUUID();

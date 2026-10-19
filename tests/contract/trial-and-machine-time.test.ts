@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agentXError, errorStatus, SESSION_MAX_LIFETIME_MS, machineTimeMonthKey, machineTimeOnceKey, openComputeKey, orgMetaKey, singleOrgIdForEnv, trialGithubKey, workspaceSessionKey, type OrgId,
+  agentXError, errorStatus, SESSION_MAX_LIFETIME_MS, machineTimeMonthKey, machineTimeOnceKey, openComputeKey, orgMetaKey, orgSettingsKey, singleOrgIdForEnv, trialGithubKey, workspaceSessionKey, type OrgId,
 } from "../../packages/contracts/src/index.js";
 import { createReaperHandler } from "../../packages/broker/src/aws/session-reaper.js";
 import { SessionManager, computeMeteringFromEnvironment, machineTimeRecorder, openComputeMarker, type ComputeStop } from "../../packages/broker/src/aws/sessions.js";
@@ -395,8 +395,9 @@ describe("admitSpend", () => {
     const locked = setup("trial", {}, false);
     seedSeconds(locked.db, TEST_ORG, NOW, 500 * HOUR);
     expect(await locked.run()).toEqual({ maxBudgetUsd: 25 });
-    // The budgets still apply.
+    // The budgets still apply, once they are set (a private install has none until then, ruling R47).
     const broke = setup("team", {}, false);
+    broke.db.set({ ...orgSettingsKey(TEST_ORG, "BUDGET"), orgMonthlyUsd: 500, memberDefaultMonthlyUsd: 29, memberOverrides: {} });
     broke.access.setMemberSpent(TEST_ORG, "dev1", 29);
     expect((await rejection(broke.run())).code).toBe("BUDGET_EXCEEDED");
   });

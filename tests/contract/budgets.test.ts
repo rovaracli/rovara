@@ -40,7 +40,7 @@ describe("budget settings", () => {
     const db = new FakeDynamoDb();
     for (const developerId of ["dev1", "dev2"]) seedMembership(db, developerId, { orgId: TEST_ORG, role: "member" });
     const orgs = new OrgStore({ documentClient: db, tableName: "state", now: () => Date.parse("2026-10-19T12:00:00.000Z") });
-    return { db, access, deps: { documentClient: db, tableName: "state", access, orgs } };
+    return { db, access, deps: { documentClient: db, tableName: "state", access, orgs, cloud: true } };
   }
 
   it("default to the placeholder budgets, and read what an org set", async () => {
@@ -102,7 +102,7 @@ describe("admitSpend", () => {
     access.setMemberSpent(TEST_ORG, "dev1", spent.member ?? 0);
     access.setOrgSpent(TEST_ORG, spent.org ?? 0);
     const developerId = "developerId" in input ? input.developerId : "dev1";
-    return { db, access, run: () => admitSpend({ documentClient: db, tableName: "state", access, cloud: false }, { orgId: TEST_ORG, ...(developerId === undefined ? {} : { developerId }), path: input.path ?? "QUICK" }) };
+    return { db, access, run: () => admitSpend({ documentClient: db, tableName: "state", access, cloud: true }, { orgId: TEST_ORG, ...(developerId === undefined ? {} : { developerId }), path: input.path ?? "QUICK" }) };
   }
 
   it("answers what is left to the member, never more than one task's budget", async () => {
@@ -169,7 +169,7 @@ describe("mintCap (ruling R30)", () => {
     const access = fakeModelAccess();
     access.setMemberSpent(TEST_ORG, "dev1", 0);
     access.setOrgSpent(TEST_ORG, 0);
-    const mint = (budgetUsd: number, previousKeyIds: string[] = []) => mintCap({ documentClient: db, tableName: "state", access }, { orgId: TEST_ORG, developerId: "dev1", budgetUsd, previousKeyIds });
+    const mint = (budgetUsd: number, previousKeyIds: string[] = []) => mintCap({ documentClient: db, tableName: "state", access, cloud: true }, { orgId: TEST_ORG, developerId: "dev1", budgetUsd, previousKeyIds });
     return { db, access, mint };
   }
 
@@ -220,7 +220,7 @@ describe("mintCap (ruling R30)", () => {
 describe("a developer task start", () => {
   async function install(options: { memberSpent?: number; orgSpent?: number } = {}) {
     const access = fakeModelAccess();
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL } } });
+    const harness = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
     access.setMemberSpent(TEST_ORG, MAYA.developerId, options.memberSpent ?? 0);
     access.setOrgSpent(TEST_ORG, options.orgSpent ?? 0);
     const start = (extra: Record<string, unknown> = {}) => harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "claude-code", ...extra });
@@ -321,7 +321,7 @@ describe("a developer task start", () => {
 
   it("checks the budget before the workspace limit, so a member over both hears about the budget", async () => {
     const access = fakeModelAccess();
-    const h = await createDeveloperTaskBroker({ memberLimit: 1, brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL } } });
+    const h = await createDeveloperTaskBroker({ memberLimit: 1, brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
     access.setOrgSpent(TEST_ORG, 0);
     const start = () => h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "claude-code" });
     expect((await start()).status).toBe(200);
@@ -350,7 +350,7 @@ describe("a developer task start", () => {
 describe("a task's keys across re-mints (ruling R30)", () => {
   async function runningTask(options: { memberSpent?: number } = {}) {
     const access = fakeModelAccess();
-    const h = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL } } });
+    const h = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
     access.setMemberSpent(TEST_ORG, MAYA.developerId, options.memberSpent ?? 0);
     access.setOrgSpent(TEST_ORG, 0);
     const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "claude-code" });
@@ -462,7 +462,7 @@ describe("a task's keys across re-mints (ruling R30)", () => {
 describe("budget routes", () => {
   async function install() {
     const access = fakeModelAccess();
-    const h = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL } } });
+    const h = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 12.5);
     access.setOrgSpent(TEST_ORG, 80);
     return { ...h, access, asAdmin: () => seedMembership(h.db, MAYA.developerId, { orgId: TEST_ORG, role: "admin" }) };
@@ -554,7 +554,7 @@ describe("Slack-started work (ruling R31)", () => {
 
   function install() {
     const access = fakeModelAccess();
-    const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL } } });
+    const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
     let mark = 0;
     return { handler, db, access, ready: async () => { await registerSlackProject(handler); mark = db.commandNames().length; }, sent: () => sentSince(db, mark) };
   }
@@ -660,7 +660,7 @@ describe("a Slack turn's key", () => {
 
   it("syncs the org and the linked member to the proxy before a key names them, once", async () => {
     const access = fakeModelAccess();
-    const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL } } });
+    const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
     await registerSlackProject(handler);
     seedMembership(db, developerIdForSlackUser(SLACK_USER), { orgId: TEST_ORG, role: "member" });
     const order: string[] = [];
@@ -684,7 +684,7 @@ describe("sign-in", () => {
     const db = new FakeDynamoDb();
     const access = fakeModelAccess();
     const orgs = orgsOf(db);
-    const onOrgJoined = vi.fn(({ orgId, developerId }: { orgId: OrgId; developerId: string }) => syncBudgets({ documentClient: db, tableName: "state", access, orgs }, orgId, [developerId]));
+    const onOrgJoined = vi.fn(({ orgId, developerId }: { orgId: OrgId; developerId: string }) => syncBudgets({ documentClient: db, tableName: "state", access, orgs, cloud: true }, orgId, [developerId]));
     const org = await resolveOrgOnSignIn({ orgs, onOrgJoined }, input);
     expect(org.role).toBe("owner");
     expect(onOrgJoined).toHaveBeenCalledWith({ orgId: org.orgId, developerId: input.developerId });

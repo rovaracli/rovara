@@ -6,6 +6,7 @@
 // authoritative figure (ruling R22).
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { z } from "zod";
 import {
   DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, TASK_BUDGET_EXCEEDED_PREFIX,
   AgentXError, agentXError, budgetSyncedKey, orgSettingsKey, type OrgId, type OrgKey,
@@ -15,8 +16,10 @@ import type { OrgStore } from "./store.js";
 import { admitMachineTime, admitTrial } from "./trial.js";
 
 export interface OrgBudgetSettings {
-  orgMonthlyUsd: number;
-  memberDefaultMonthlyUsd: number;
+  /** Absent: the org has no monthly limit (a private or single-org install until an operator sets one, ruling R47). */
+  orgMonthlyUsd?: number;
+  /** Absent: members have no monthly limit of their own beyond their overrides (same ruling). */
+  memberDefaultMonthlyUsd?: number;
   /** developerId to that member's own monthly limit, in place of the default. */
   memberOverrides: Record<string, number>;
 }
@@ -27,6 +30,8 @@ export interface BudgetDependencies {
   access: ModelAccess;
   /** Epoch milliseconds; the month the machine-time allowance is read for. Defaults to the system clock. */
   now?: () => number;
+  /** Ruling R47: true on a cloud install, whose orgs start with the placeholder monthly limits; any other install's orgs start with none. */
+  cloud?: boolean;
 }
 
 export interface AdmissionDependencies extends BudgetDependencies {
@@ -42,11 +47,15 @@ export const MINIMUM_REMAINING_USD: Record<SpendPath, number> = { QUICK: 0.5, FU
 export const MAX_BUDGET_USD = 1_000_000;
 export const MAX_BUDGET_OVERRIDES = 500;
 
-const defaults = (): OrgBudgetSettings => ({
-  orgMonthlyUsd: DEFAULT_ORG_MONTHLY_BUDGET_USD,
-  memberDefaultMonthlyUsd: DEFAULT_MEMBER_MONTHLY_BUDGET_USD,
-  memberOverrides: {},
-});
+const defaults = (cloud: boolean | undefined): OrgBudgetSettings => cloud === true
+  ? { orgMonthlyUsd: DEFAULT_ORG_MONTHLY_BUDGET_USD, memberDefaultMonthlyUsd: DEFAULT_MEMBER_MONTHLY_BUDGET_USD, memberOverrides: {} }
+  : { memberOverrides: {} };
+
+/**
+ * What the proxy is told for a limit that is not set: the largest amount it accepts, which no member or org reaches. The broker's own
+ * admission and key caps do not read the proxy's figure for such a limit (ruling R47); they treat it as unlimited.
+ */
+const proxyLimit = (limit: number | undefined): number => limit ?? MAX_BUDGET_USD;
 
 export const isBudgetAmount = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= MAX_BUDGET_USD;
 
@@ -59,19 +68,28 @@ async function get(deps: BudgetDependencies, key: OrgKey): Promise<Record<string
 
 /** The org's budget settings; an org that never set any, or a record that does not read, has the defaults. */
 export async function readBudgets(deps: BudgetDependencies, orgId: OrgId): Promise<OrgBudgetSettings> {
+  const base = defaults(deps.cloud);
   const item = await get(deps, orgSettingsKey(orgId, "BUDGET"));
-  if (item === undefined) return defaults();
-  const base = defaults();
+  if (item === undefined) return base;
   const overrides: Record<string, number> = {};
   if (isRecord(item.memberOverrides)) for (const [developerId, limit] of Object.entries(item.memberOverrides)) if (isBudgetAmount(limit)) overrides[developerId] = limit;
-  return {
+  return withLimits({
     orgMonthlyUsd: isBudgetAmount(item.orgMonthlyUsd) ? item.orgMonthlyUsd : base.orgMonthlyUsd,
     memberDefaultMonthlyUsd: isBudgetAmount(item.memberDefaultMonthlyUsd) ? item.memberDefaultMonthlyUsd : base.memberDefaultMonthlyUsd,
-    memberOverrides: overrides,
+  }, overrides);
+}
+
+/** Settings from limits that may be unset: an unset limit is left out of the record, never written as undefined. */
+export function withLimits(limits: { orgMonthlyUsd: number | undefined; memberDefaultMonthlyUsd: number | undefined }, memberOverrides: Record<string, number>): OrgBudgetSettings {
+  return {
+    ...(limits.orgMonthlyUsd === undefined ? {} : { orgMonthlyUsd: limits.orgMonthlyUsd }),
+    ...(limits.memberDefaultMonthlyUsd === undefined ? {} : { memberDefaultMonthlyUsd: limits.memberDefaultMonthlyUsd }),
+    memberOverrides,
   };
 }
 
-export const memberLimitOf = (settings: OrgBudgetSettings, developerId: string): number => settings.memberOverrides[developerId] ?? settings.memberDefaultMonthlyUsd;
+/** The member's monthly limit, or undefined when they have none (ruling R47). */
+export const memberLimitOf = (settings: OrgBudgetSettings, developerId: string): number | undefined => settings.memberOverrides[developerId] ?? settings.memberDefaultMonthlyUsd;
 
 /** Writes the settings whole. The caller has validated them; `syncBudgets` then tells the proxy. */
 export async function writeBudgets(deps: BudgetDependencies, orgId: OrgId, settings: OrgBudgetSettings, updatedBy: string, at: string): Promise<void> {
@@ -105,15 +123,58 @@ export async function syncBudgets(
   developerIds: readonly string[] = [],
 ): Promise<void> {
   const settings = await readBudgets(deps, orgId);
-  await deps.access.upsertOrg(orgId, settings.orgMonthlyUsd);
-  await mark(deps, budgetSyncedKey(orgId), settings.orgMonthlyUsd);
+  await deps.access.upsertOrg(orgId, proxyLimit(settings.orgMonthlyUsd));
+  await mark(deps, budgetSyncedKey(orgId), proxyLimit(settings.orgMonthlyUsd));
   for (const developerId of new Set(developerIds)) {
     // Proxy users are global by id, so a limit is only ever written for a member of this org: an id of another org, or of nobody, is skipped.
     if ((await deps.orgs.orgForDeveloper(developerId))?.orgId !== orgId) continue;
-    const limit = memberLimitOf(settings, developerId);
+    const limit = proxyLimit(memberLimitOf(settings, developerId));
     await deps.access.upsertMember(orgId, developerId, limit);
     await mark(deps, budgetSyncedKey(orgId, developerId), limit);
   }
+}
+
+const BudgetAmountSchema = z.number().refine(isBudgetAmount, "must be a number from 0 to 1000000");
+/** The body of a budget change, from an org owner or admin (`PUT /v1/dev/org/budget`) or an operator (`PUT /v1/admin/org/budget`). */
+export const PutBudgetBodySchema = z.object({
+  requestId: z.string().uuid(),
+  orgMonthlyUsd: BudgetAmountSchema.optional(),
+  memberDefaultMonthlyUsd: BudgetAmountSchema.optional(),
+  memberOverrides: z.record(z.string().min(1).max(256), BudgetAmountSchema).refine((overrides) => Object.keys(overrides).length <= MAX_BUDGET_OVERRIDES, `at most ${String(MAX_BUDGET_OVERRIDES)} overrides`).optional(),
+}).strict();
+
+/**
+ * Sets the org's monthly limit, the members' default, and per-member overrides; what is not named stays as it was, and
+ * `memberOverrides`, when named, replaces the whole map. The settings are written, then the proxy is told (the org and every
+ * member whose limit this named or removed), always. Members under the default are told lazily, at their next start. If the
+ * proxy cannot be reached the settings stand and the call fails with MODEL_PROXY_UNAVAILABLE. The caller has decided who may ask.
+ */
+export async function changeBudgets(
+  deps: BudgetDependencies & { orgs: Pick<OrgStore, "orgForDeveloper"> },
+  input: { orgId: OrgId; body: unknown; updatedBy: string; at: string },
+): Promise<OrgBudgetSettings> {
+  const parsed = PutBudgetBodySchema.safeParse(input.body);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    // Field names only: the values are the caller's.
+    throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
+  }
+  const { orgMonthlyUsd, memberDefaultMonthlyUsd, memberOverrides } = parsed.data;
+  if (orgMonthlyUsd === undefined && memberDefaultMonthlyUsd === undefined && memberOverrides === undefined) {
+    throw agentXError("CONFIG_INVALID", "body: name at least one of orgMonthlyUsd, memberDefaultMonthlyUsd and memberOverrides");
+  }
+  // Proxy users are global by id: an override may name only a member of the org itself, or one admin could set another org's member's cap.
+  for (const developerId of Object.keys(memberOverrides ?? {})) {
+    if ((await deps.orgs.orgForDeveloper(developerId))?.orgId !== input.orgId) throw agentXError("CONFIG_INVALID", "memberOverrides: every override must name a member of this organization");
+  }
+  const before = await readBudgets(deps, input.orgId);
+  const after = withLimits({
+    orgMonthlyUsd: orgMonthlyUsd ?? before.orgMonthlyUsd,
+    memberDefaultMonthlyUsd: memberDefaultMonthlyUsd ?? before.memberDefaultMonthlyUsd,
+  }, memberOverrides ?? before.memberOverrides);
+  await writeBudgets(deps, input.orgId, after, input.updatedBy, input.at);
+  await syncBudgets(deps, input.orgId, [...Object.keys(before.memberOverrides), ...Object.keys(after.memberOverrides)]);
+  return after;
 }
 
 /**
@@ -124,12 +185,13 @@ export async function syncBudgets(
 export async function ensureSynced(deps: BudgetDependencies, orgId: OrgId, developerId?: string): Promise<OrgBudgetSettings> {
   const settings = await readBudgets(deps, orgId);
   const synced = async (key: OrgKey, limit: number) => (await get(deps, key))?.limitUsd === limit;
-  if (!await synced(budgetSyncedKey(orgId), settings.orgMonthlyUsd)) {
-    await viaProxy(() => deps.access.upsertOrg(orgId, settings.orgMonthlyUsd));
-    await mark(deps, budgetSyncedKey(orgId), settings.orgMonthlyUsd);
+  const orgLimit = proxyLimit(settings.orgMonthlyUsd);
+  if (!await synced(budgetSyncedKey(orgId), orgLimit)) {
+    await viaProxy(() => deps.access.upsertOrg(orgId, orgLimit));
+    await mark(deps, budgetSyncedKey(orgId), orgLimit);
   }
   if (developerId !== undefined) {
-    const limit = memberLimitOf(settings, developerId);
+    const limit = proxyLimit(memberLimitOf(settings, developerId));
     if (!await synced(budgetSyncedKey(orgId, developerId), limit)) {
       await viaProxy(() => deps.access.upsertMember(orgId, developerId, limit));
       await mark(deps, budgetSyncedKey(orgId, developerId), limit);
@@ -166,12 +228,15 @@ export async function admitSpend(deps: AdmissionDependencies, input: { orgId: Or
     await admitTrial(deps, input.orgId);
     await admitMachineTime(deps, input.orgId);
   }
-  await ensureSynced(deps, input.orgId, input.developerId);
+  const settings = await ensureSynced(deps, input.orgId, input.developerId);
   const { member, org } = await figuresFor(deps, input.orgId, input.developerId);
   const needed = MINIMUM_REMAINING_USD[input.path];
-  if (member !== undefined && remaining(member) < needed) throw budgetExceeded(member.spentUsd, member.limitUsd);
-  if (remaining(org) < needed) throw orgBudgetExceeded();
-  return { maxBudgetUsd: clean(Math.min(member === undefined ? Infinity : remaining(member), remaining(org), PER_TASK_BUDGET_USD)) };
+  // Ruling R47: a limit that is not set is not checked, and does not narrow the key; the per-task cap still does.
+  const memberLeft = member === undefined || input.developerId === undefined || memberLimitOf(settings, input.developerId) === undefined ? undefined : remaining(member);
+  const orgLeft = settings.orgMonthlyUsd === undefined ? undefined : remaining(org);
+  if (member !== undefined && memberLeft !== undefined && memberLeft < needed) throw budgetExceeded(member.spentUsd, member.limitUsd);
+  if (orgLeft !== undefined && orgLeft < needed) throw orgBudgetExceeded();
+  return { maxBudgetUsd: clean(Math.min(memberLeft ?? Infinity, orgLeft ?? Infinity, PER_TASK_BUDGET_USD)) };
 }
 
 /** LiteLLM's token id for a key: the lowercase hex SHA-256 of it. Safe to store; the key is not recoverable from it. */
@@ -183,18 +248,21 @@ export const keyIdOf = (key: string): string => createHash("sha256").update(key)
  * three is 0: a key capped at nothing could be read by the proxy as no cap.
  */
 export async function mintCap(deps: BudgetDependencies, input: { orgId: OrgId; developerId?: string | undefined; budgetUsd: number; previousKeyIds: readonly string[]; budgetBaselineUsd?: number | undefined }): Promise<{ maxBudgetUsd: number }> {
-  await ensureSynced(deps, input.orgId, input.developerId);
+  const settings = await ensureSynced(deps, input.orgId, input.developerId);
   const [taskSpent, figures] = await Promise.all([viaProxy(() => deps.access.keySpend(input.previousKeyIds)), figuresFor(deps, input.orgId, input.developerId)]);
   const { member, org } = figures;
-  if (member !== undefined && remaining(member) <= 0) throw budgetExceeded(member.spentUsd, member.limitUsd);
-  if (remaining(org) <= 0) throw orgBudgetExceeded();
+  // Ruling R47: a limit that is not set is not checked, and does not narrow the key.
+  const memberLeft = member === undefined || input.developerId === undefined || memberLimitOf(settings, input.developerId) === undefined ? undefined : remaining(member);
+  const orgLeft = settings.orgMonthlyUsd === undefined ? undefined : remaining(org);
+  if (member !== undefined && memberLeft !== undefined && memberLeft <= 0) throw budgetExceeded(member.spentUsd, member.limitUsd);
+  if (orgLeft !== undefined && orgLeft <= 0) throw orgBudgetExceeded();
   // Ruling R38: a human Continue starts a new window, so what the task's keys had spent by then no longer counts against its cap.
   const windowSpent = clean(Math.max(0, taskSpent - (input.budgetBaselineUsd ?? 0)));
   const taskRemaining = clean(Math.max(0, input.budgetUsd - windowSpent));
   if (taskRemaining <= 0) {
     throw agentXError("BUDGET_EXCEEDED", `${TASK_BUDGET_EXCEEDED_PREFIX} ($${dollars(windowSpent)} of $${dollars(input.budgetUsd)}). Start a new task to continue.`);
   }
-  return { maxBudgetUsd: clean(Math.min(taskRemaining, member === undefined ? Infinity : remaining(member), remaining(org))) };
+  return { maxBudgetUsd: clean(Math.min(taskRemaining, memberLeft ?? Infinity, orgLeft ?? Infinity)) };
 }
 
 /**

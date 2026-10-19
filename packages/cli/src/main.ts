@@ -25,6 +25,7 @@ import { SSMClient } from "@aws-sdk/client-ssm";
 import { STSClient } from "@aws-sdk/client-sts";
 import { Command, Option } from "commander";
 import { authorizeCredential, expectedAccountEmail, secretsManagerAuthorizeSecrets, type AuthorizeSecrets } from "./admin/authorize.js";
+import { budgetText, parseBudgetUsd, setOrgBudget } from "./admin/budget.js";
 import { listCredentials, registerCredential } from "./admin/credential.js";
 import { requestRuntimeInstallChallenge, submitRuntimeInstallProposal } from "./admin/runtime-installation.js";
 import { cliRuntimeBinding, registerProject } from "./admin/register.js";
@@ -647,6 +648,24 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         workspaceId: options.workspace,
       }, services.fetchImplementation);
       services.stdout.write(formatSuccess(result, globals.json));
+    });
+
+  const adminBudget = admin.command("budget").description("monthly AI budget of a private or single-org install's organization (it has no limit until you set one)");
+  adminBudget
+    .command("set")
+    .description("set the organization's monthly limit and the default monthly limit of each member, in US dollars")
+    .option("--org-monthly <usd>", "the organization's monthly AI limit in US dollars")
+    .option("--member-default <usd>", "each member's monthly AI limit in US dollars, unless they have their own")
+    .action(async (options: { orgMonthly?: string; memberDefault?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const orgMonthlyUsd = options.orgMonthly === undefined ? undefined : parseBudgetUsd("--org-monthly", options.orgMonthly);
+      const memberDefaultMonthlyUsd = options.memberDefault === undefined ? undefined : parseBudgetUsd("--member-default", options.memberDefault);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await setOrgBudget({
+        controlPlaneUrl: settings.controlPlaneUrl, accessToken,
+        ...(orgMonthlyUsd === undefined ? {} : { orgMonthlyUsd }), ...(memberDefaultMonthlyUsd === undefined ? {} : { memberDefaultMonthlyUsd }),
+      }, services.fetchImplementation);
+      services.stdout.write(globals.json ? formatSuccess(result, true) : budgetText(result.budget));
     });
 
   const adminSlack = admin.command("slack").description("bind Slack channels to this project for the hosted orchestrator");

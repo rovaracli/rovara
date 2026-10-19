@@ -63,6 +63,8 @@ export async function createAdminBroker(options: {
   realism?: FakeDynamoDbOptions["realism"];
   /** "eventual": a read without ConsistentRead may see an item's previous version once after a write. */
   consistency?: FakeDynamoDbOptions["consistency"];
+  /** Spread into the broker input last, for inputs this helper has no option for (the model proxy, the cloud switch). */
+  extra?: Record<string, unknown>;
 } = {}): Promise<{ db: FakeDynamoDb; handler: AdminHandler; registry: CredentialRegistry | undefined }> {
   const { createAwsBrokerHandler, CredentialRegistry: Registry } = await loadBroker();
   const db = new FakeDynamoDb({ ...(options.realism === undefined ? {} : { realism: options.realism }), ...(options.consistency === undefined ? {} : { consistency: options.consistency }) });
@@ -90,6 +92,7 @@ export async function createAdminBroker(options: {
     environmentName: TEST_ENV,
     ...(options.orgResolver ? { orgResolver: options.orgResolver } : {}),
     ...(options.chatgpt ? { chatgpt: options.chatgpt(db) } : {}),
+    ...(options.extra ?? {}),
   } as never);
   return { db, handler, registry };
 }

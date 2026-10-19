@@ -8,9 +8,10 @@ describe("AgentX executable command surface", () => {
     expect(program.commands.map((command) => command.name())).toEqual(["login", "logout", "whoami", "workspaces", "chatgpt", "signin", "config", "loop", "doctor", "upgrade", "destroy", "admin", "project", "channel", "connector", "alerts", "env", "deploy", "init", "mcp"]);
 
     const admin = program.commands.find((command) => command.name() === "admin");
-    expect(admin?.commands.map((command) => command.name())).toEqual(["project", "runtime-installation", "workspace", "slack", "eval", "credential", "turns", "task", "changes"]);
+    expect(admin?.commands.map((command) => command.name())).toEqual(["project", "runtime-installation", "workspace", "budget", "slack", "eval", "credential", "turns", "task", "changes"]);
     expect(subcommands(admin, "project")).toEqual(["register", "grant", "revoke"]);
     expect(subcommands(admin, "workspace")).toEqual(["list", "cancel", "stop"]);
+    expect(subcommands(admin, "budget")).toEqual(["set"]);
     expect(subcommands(admin, "slack")).toEqual(["bind", "unbind"]);
     expect(subcommands(admin, "eval")).toEqual(["enable", "show", "disable", "batch"]);
     expect(admin?.commands.find((command) => command.name() === "eval")?.commands.find((command) => command.name() === "batch")?.commands.map((command) => command.name())).toEqual(["start", "show", "stop", "results"]);

@@ -209,7 +209,7 @@ describe("continuing after the budget ran out (ruling R38)", () => {
   /** A task with a proxy: started, its first model key minted, then ended FAILED for budget. Asks for model access as the worker of the latest operation. */
   async function exhausted() {
     const access = fakeModelAccess();
-    const h = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" } } });
+    const h = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true } });
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
     const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "claude-code" });

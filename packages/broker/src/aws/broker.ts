@@ -291,7 +291,7 @@ import { chatGptConnections, kmsChatGptSealer, type ChatGptConnections } from ".
 import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
-import { admitSpend, ensureSynced, keyIdOf, mintCap, recordMintedKey } from "../org/budget.js";
+import { admitSpend, changeBudgets, ensureSynced, keyIdOf, mintCap, recordMintedKey, type OrgBudgetSettings } from "../org/budget.js";
 import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, routeDeveloperRequest, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import { FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
@@ -561,6 +561,27 @@ async function ensureInstallOrg(dependencies: AwsBrokerDependencies, orgId: OrgI
   if (dependencies.orgResolver !== undefined) return;
   await new OrgStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now })
     .ensureOrg(orgId, brokerEnvironmentName(dependencies));
+}
+
+/**
+ * Ruling R47: `PUT /v1/admin/org/budget`. The operator (admin pool) sets the monthly limits of the install's single org, which has
+ * none until they do. A cloud install has no such org (its operators belong to none, ruling R6) and every org there sets its own.
+ */
+async function putInstallBudget(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, body: unknown): Promise<{ budget: OrgBudgetSettings }> {
+  if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+  if (dependencies.cloud === true) throw agentXError("FORBIDDEN", "organizations on this install set their own budgets; ask an owner or admin of the organization");
+  const modelAccess = dependencies.modelAccess;
+  if (modelAccess === undefined) throw agentXError("NOT_FOUND", "budgets are not set up in this deployment");
+  const orgId = requireOrgId(identity.orgId);
+  const orgs = orgStoreOf(dependencies);
+  // The install's org is created on first use; an operator may set its budgets before anyone has signed in.
+  await orgs.ensureOrg(orgId, brokerEnvironmentName(dependencies));
+  const budget = await changeBudgets(
+    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, orgs },
+    { orgId, body, updatedBy: `operator:${identity.subject}`, at: new Date().toISOString() },
+  );
+  console.log(JSON.stringify({ component: "broker", event: "admin.org_budget_changed", orgId, overrides: Object.keys(budget.memberOverrides).length }));
+  return { budget };
 }
 
 function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">): OrgStore {
@@ -1391,6 +1412,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
         if (!dependencies.chatgpt) throw agentXError("NOT_FOUND", "Sign in with ChatGPT is not set up in this deployment");
         return json(await dependencies.chatgpt.health(), request.requestId);
+      }
+      // Ruling R47: an operator sets the budgets of a private or single-org install's one org. A cloud install's orgs set their own.
+      if (request.method === "PUT" && url.pathname === "/v1/admin/org/budget") {
+        return json(await putInstallBudget(dependencies, identity, body), request.requestId);
       }
       if (request.method === "GET" && url.pathname === "/v1/admin/turns") {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
@@ -4393,7 +4418,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       budgetUsd: PER_TASK_BUDGET_USD, previousKeyIds: current.modelKeyIds ?? [], owner: operationKey(current.workspaceId, current.id), budgetBaselineUsd: 0,
     };
   };
-  const budgets = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access };
+  const budgets = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true };
   let scope = await loadScope();
   if (scope === undefined) throw agentXError("NOT_FOUND", "this operation belongs to no organisation");
   try {
@@ -4443,7 +4468,7 @@ async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, reque
   const developerId = await linkedRequester(dependencies, teamOrg, requester);
   try {
     // The proxy must know the org and member before a key names them (the lazy half of syncBudgets).
-    await ensureSynced({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access }, teamOrg, developerId);
+    await ensureSynced({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true }, teamOrg, developerId);
     const minted = await modelAccess.access.mintKey({
       orgId: teamOrg, ...(developerId === undefined ? {} : { developerId }), purpose: "turn", refId: body.data.turnId,
       maxBudgetUsd: PER_TURN_BUDGET_USD, ttlSeconds: TURN_KEY_TTL_SECONDS,

@@ -58,7 +58,7 @@ import {
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
 import { DEFAULT_ROVARA_WEB_ORIGIN, inviteUrl } from "../org/invite-url.js";
-import { MAX_BUDGET_OVERRIDES, isBudgetAmount, readBudgets, syncBudgets, writeBudgets, ensureSynced, type BudgetDependencies, type OrgBudgetSettings } from "../org/budget.js";
+import { changeBudgets, ensureSynced, memberLimitOf, type BudgetDependencies, type OrgBudgetSettings } from "../org/budget.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import type { OrgStore } from "../org/store.js";
 import { checkTaskPersonIdentity, registerTaskChannelPeople, resolveTaskPickerPersonWithId, type ProjectAccessSubject, type TaskPersonIdentityDependencies } from "../developer/task-person-identity.js";
@@ -956,59 +956,32 @@ async function createOrganizationInvite(deps: DeveloperRouteDependencies, caller
 
 function budgetDependencies(deps: DeveloperRouteDependencies): BudgetDependencies {
   if (deps.modelAccess === undefined) throw agentXError("NOT_FOUND", "budgets are not set up in this deployment");
-  return { documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess };
+  return { documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, cloud: deps.cloud === true };
 }
 
 /** What the caller and their org have spent this month, and their limits: LiteLLM's figures (ruling R22), which a soft cap can leave over the limit (ruling R23). */
-async function getBudget(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<{ member: { spentUsd: number; limitUsd: number }; org: { spentUsd: number; limitUsd: number } }> {
+async function getBudget(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<{ member: { spentUsd: number; limitUsd: number | null }; org: { spentUsd: number; limitUsd: number | null } }> {
   const budgets = budgetDependencies(deps);
-  await ensureSynced(budgets, caller.orgId, caller.developerId);
-  return budgets.access.spend(caller.orgId, caller.developerId);
+  const settings = await ensureSynced(budgets, caller.orgId, caller.developerId);
+  const { member, org } = await budgets.access.spend(caller.orgId, caller.developerId);
+  // Ruling R47: a limit that is not set is shown as none, not as the proxy's stand-in figure.
+  return {
+    member: { spentUsd: member.spentUsd, limitUsd: memberLimitOf(settings, caller.developerId) === undefined ? null : member.limitUsd },
+    org: { spentUsd: org.spentUsd, limitUsd: settings.orgMonthlyUsd === undefined ? null : org.limitUsd },
+  };
 }
 
-const BudgetAmountSchema = z.number().refine(isBudgetAmount, "must be a number from 0 to 1000000");
-const PutBudgetBodySchema = z.object({
-  requestId: z.string().uuid(),
-  orgMonthlyUsd: BudgetAmountSchema.optional(),
-  memberDefaultMonthlyUsd: BudgetAmountSchema.optional(),
-  memberOverrides: z.record(z.string().min(1).max(256), BudgetAmountSchema).refine((overrides) => Object.keys(overrides).length <= MAX_BUDGET_OVERRIDES, `at most ${String(MAX_BUDGET_OVERRIDES)} overrides`).optional(),
-}).strict();
-
 /**
- * An owner or admin sets the org's monthly limit, the members' default, and per-member overrides; what is not named
- * stays as it was, and `memberOverrides`, when named, replaces the whole map. The settings are written, then the
- * proxy is told (the org and every member whose limit this named or removed), always. Members under the default are
- * told lazily, at their next start. If the proxy cannot be reached the settings stand and the call answers 503.
+ * An owner or admin sets the org's monthly limit, the members' default, and per-member overrides (changeBudgets).
+ * If the proxy cannot be reached the settings stand and the call answers 503.
  */
 async function putOrganizationBudget(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<{ budget: OrgBudgetSettings }> {
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can change the organization's budgets");
   const budgets = budgetDependencies(deps);
   if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
-  const orgs = deps.orgs;
-  const parsed = PutBudgetBodySchema.safeParse(body);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    // Field names only: the values are the caller's.
-    throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
-  }
-  const { orgMonthlyUsd, memberDefaultMonthlyUsd, memberOverrides } = parsed.data;
-  if (orgMonthlyUsd === undefined && memberDefaultMonthlyUsd === undefined && memberOverrides === undefined) {
-    throw agentXError("CONFIG_INVALID", "body: name at least one of orgMonthlyUsd, memberDefaultMonthlyUsd and memberOverrides");
-  }
-  // Proxy users are global by id: an override may name only a member of the caller's own org, or one admin could set another org's member's cap.
-  for (const developerId of Object.keys(memberOverrides ?? {})) {
-    if ((await orgs.orgForDeveloper(developerId))?.orgId !== caller.orgId) throw agentXError("CONFIG_INVALID", "memberOverrides: every override must name a member of this organization");
-  }
-  const before = await readBudgets(budgets, caller.orgId);
-  const after: OrgBudgetSettings = {
-    orgMonthlyUsd: orgMonthlyUsd ?? before.orgMonthlyUsd,
-    memberDefaultMonthlyUsd: memberDefaultMonthlyUsd ?? before.memberDefaultMonthlyUsd,
-    memberOverrides: memberOverrides ?? before.memberOverrides,
-  };
-  await writeBudgets(budgets, caller.orgId, after, caller.developerId, new Date(deps.now()).toISOString());
-  await syncBudgets({ ...budgets, orgs }, caller.orgId, [...Object.keys(before.memberOverrides), ...Object.keys(after.memberOverrides)]);
-  logDeveloperEvent({ event: "developer.org_budget_changed", orgId: caller.orgId, overrides: String(Object.keys(after.memberOverrides).length) });
-  return { budget: after };
+  const budget = await changeBudgets({ ...budgets, orgs: deps.orgs }, { orgId: caller.orgId, body, updatedBy: caller.developerId, at: new Date(deps.now()).toISOString() });
+  logDeveloperEvent({ event: "developer.org_budget_changed", orgId: caller.orgId, overrides: String(Object.keys(budget.memberOverrides).length) });
+  return { budget };
 }
 
 /** Sign in with ChatGPT (#338): the caller's own connection, and only theirs. No route answers a token. */

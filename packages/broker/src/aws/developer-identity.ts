@@ -208,7 +208,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     orgs,
     singleOrgId: singleOrgIdForEnv(config.env),
     ...(modelAccess === undefined ? {} : {
-      onOrgJoined: ({ orgId, developerId }: { orgId: OrgId; developerId: string }) => syncBudgets({ documentClient, tableName: stateTableName, access: modelAccess, orgs }, orgId, [developerId]),
+      onOrgJoined: ({ orgId, developerId }: { orgId: OrgId; developerId: string }) => syncBudgets({ documentClient, tableName: stateTableName, access: modelAccess, orgs, cloud: config.cloud !== undefined }, orgId, [developerId]),
     }),
     signer: kmsTokenSigner({ kms: new KMSClient(region), keyId: required(env, "DEVELOPER_TOKEN_KEY_ARN") }),
     providers: {
