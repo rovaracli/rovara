@@ -54,6 +54,7 @@ describe("agent DNS firewall (cloud installs)", () => {
       "proxy.golang.org", "sum.golang.org", "repo.maven.apache.org", "repo1.maven.org", "rubygems.org", "*.rubygems.org",
       "deb.debian.org", "security.debian.org", "archive.ubuntu.com", "ports.ubuntu.com", "security.ubuntu.com", "dl-cdn.alpinelinux.org",
       "registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com",
+      "mcr.microsoft.com", "*.data.mcr.microsoft.com", "nodejs.org",
       "api.anthropic.com", "api.openai.com", "chatgpt.com", "auth.openai.com", "openrouter.ai",
       "slack.com", "*.slack.com", "api.linear.app", "mcp.linear.app", "*.atlassian.net", "app.asana.com",
     ]) expect(DEFAULT_AGENT_ALLOW_DOMAINS).toContain(domain);

@@ -24,6 +24,8 @@ export const DEFAULT_AGENT_ALLOW_DOMAINS: readonly string[] = [
   "dl-cdn.alpinelinux.org",
   // Docker images
   "registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com",
+  // Dev container base images and the toolchains their common features download (ruling R40)
+  "mcr.microsoft.com", "*.data.mcr.microsoft.com", "nodejs.org",
   // AI providers (model proxy, ChatGPT plans)
   "api.anthropic.com", "api.openai.com", "chatgpt.com", "auth.openai.com", "openrouter.ai",
   // Slack and connectors
