@@ -8,6 +8,7 @@ import {
   type AuthenticatedIdentity,
 } from "../../packages/broker/src/index.js";
 import { describe, expect, it } from "vitest";
+import { TEST_ORG } from "../support/orgs.js";
 
 describe("worker usage event compatibility", () => {
   it("accepts and stores the usage event through the open control-plane event contract", async () => {
@@ -19,6 +20,7 @@ describe("worker usage event compatibility", () => {
       deploymentMode: "ec2-ebs" as const,
       id: workspaceId,
       ownerKey: owner.ownerKey,
+      orgId: TEST_ORG,
       projectName: "usage",
       projectRevision: 1,
       rootPath: "/mnt/workspace",
@@ -73,6 +75,8 @@ function identity(): AuthenticatedIdentity {
     issuer: "https://identity.example.test",
     subject: "usage-user",
     ownerKey,
+    // A caller with no org uses no workspace, so the usage owner belongs to one.
+    orgId: TEST_ORG,
     isAdministrator: false,
     claims: {},
   };
