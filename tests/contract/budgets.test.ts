@@ -102,7 +102,7 @@ describe("admitSpend", () => {
     access.setMemberSpent(TEST_ORG, "dev1", spent.member ?? 0);
     access.setOrgSpent(TEST_ORG, spent.org ?? 0);
     const developerId = "developerId" in input ? input.developerId : "dev1";
-    return { db, access, run: () => admitSpend({ documentClient: db, tableName: "state", access }, { orgId: TEST_ORG, ...(developerId === undefined ? {} : { developerId }), path: input.path ?? "QUICK" }) };
+    return { db, access, run: () => admitSpend({ documentClient: db, tableName: "state", access, cloud: false }, { orgId: TEST_ORG, ...(developerId === undefined ? {} : { developerId }), path: input.path ?? "QUICK" }) };
   }
 
   it("answers what is left to the member, never more than one task's budget", async () => {

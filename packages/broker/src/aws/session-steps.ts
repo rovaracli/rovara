@@ -7,8 +7,7 @@ import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import { MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS, ec2WorkerUserData } from "@agentx/contracts";
 import { requiredEnvironment } from "./lambda.js";
-import { installOrgIdFromEnvironment } from "../org/resolve.js";
-import { SessionManager, machineTimeRecorder } from "./sessions.js";
+import { SessionManager, computeMeteringFromEnvironment } from "./sessions.js";
 
 /** The worker's health endpoint (#80 leaves it unauthenticated for exactly this probe). */
 const WORKER_PORT = 8080;
@@ -199,7 +198,7 @@ export const handler = createSessionStepsHandler({
   sessions: new SessionManager({
     documentClient: stateClient,
     tableName: stateTableName,
-    recordCompute: machineTimeRecorder(stateClient, stateTableName, installOrgIdFromEnvironment()),
+    ...computeMeteringFromEnvironment(stateClient, stateTableName),
   }),
   async workerSettings() {
     const prefix = requiredEnvironment("WORKER_SETTINGS_PREFIX");

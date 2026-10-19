@@ -5,7 +5,7 @@ import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { Ec2RuntimeBinding, WorkspaceSession } from "@agentx/contracts";
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import { requiredEnvironment } from "./lambda.js";
-import { SessionManager, machineTimeRecorder, workspaceBinding } from "./sessions.js";
+import { SessionManager, computeMeteringFromEnvironment, workspaceBinding } from "./sessions.js";
 
 /** Idle stop and maximum compute lifetime (design in #76). */
 export const IDLE_STOP_MS = 5 * 60_000;
@@ -131,7 +131,7 @@ export const handler = createReaperHandler({
   sessions: new SessionManager({
     documentClient,
     tableName,
-    recordCompute: machineTimeRecorder(documentClient, tableName, installOrgIdFromEnvironment()),
+    ...computeMeteringFromEnvironment(documentClient, tableName),
     executions: {
       provisionerArn: process.env.PROVISIONER_ARN ?? "",
       deleterArn: process.env.DELETER_ARN ?? "",

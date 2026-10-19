@@ -220,6 +220,8 @@ export interface DeveloperTaskRouteDependencies {
   slackTeamId?: string;
   /** The model proxy (ruling R28): a task start is checked against the monthly budgets through it. Absent on an install with no proxy, where nothing is checked. */
   modelAccess?: ModelAccess;
+  /** A cloud install (its sign-in is configured): its orgs are subject to the trial lock and the machine-time allowance (ruling R42). */
+  cloud?: boolean;
   /** C: absent is write-disabled; an existing PEOPLE sidecar remains authoritative either way. */
   taskPeopleConfiguration?: { peopleChangesEnabled: boolean };
   /** Spec 059: absent is the safe default; production factories intentionally leave graph starts disabled. */
@@ -1469,7 +1471,7 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
   let admitted: { maxBudgetUsd: number } | undefined;
   if (deps.modelAccess !== undefined) {
     try {
-      admitted = await admitSpend({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, now: () => deps.now() }, {
+      admitted = await admitSpend({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, now: () => deps.now(), cloud: deps.cloud === true }, {
         orgId: deps.orgId, developerId: caller.developerId, path: request.workflow === true && request.workflowPath === "FULL" ? "FULL" : "QUICK",
       });
     } catch (error) {

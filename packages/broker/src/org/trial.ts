@@ -2,9 +2,9 @@
 // every org has a monthly allowance of EC2 machine time. Both are checked at admission (`admitSpend` calls
 // `admitTrial` then `admitMachineTime`, before the proxy is asked anything and before anything is charged); machine
 // time is recorded when compute stops (`recordMachineTime`, called by the session manager at every stop).
-import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  agentXError, machineTimeMonthKey, machineTimeOnceKey, orgMetaKey, trialGithubKey,
+  agentXError, machineTimeMonthKey, machineTimeOnceKey, openComputeKey, openComputePk, orgMetaKey, trialGithubKey,
   type OrgId,
 } from "@agentx/contracts";
 
@@ -38,6 +38,12 @@ async function get(deps: TrialDependencies, key: { pk: string; sk: string }): Pr
 /** The org's record, or undefined for an org with none (a single-org install's org is only created lazily). */
 const orgOf = async (deps: TrialDependencies, orgId: OrgId): Promise<Item | undefined> => get(deps, orgMetaKey(orgId));
 
+/**
+ * Whether an org record is subject to the trial and the allowance (ruling R42). An org the system created for a private
+ * install (`createdBy: "system"`, as `ensureOrg` does) never is, whatever its plan says.
+ */
+const limited = (org: Item | undefined): org is Item => org !== undefined && org.createdBy !== "system";
+
 const errorName = (error: unknown) => (error instanceof Error ? error.name : undefined);
 
 function cancelledConditions(error: unknown): Set<number> | undefined {
@@ -60,7 +66,8 @@ export async function unlockTrial(deps: TrialDependencies, input: { orgId: OrgId
   if (input.githubUserId.trim() === "") throw agentXError("CONFIG_INVALID", "a GitHub user id is required to unlock a trial");
   const org = await orgOf(deps, input.orgId);
   if (org === undefined) throw agentXError("NOT_FOUND", "organization not found");
-  if (org.trialUnlockedAt !== undefined) return;
+  // Only a trial org has anything to unlock: another plan claims no GitHub account.
+  if (org.plan !== "trial" || org.trialUnlockedAt !== undefined) return;
   const now = (deps.now ?? Date.now)();
   try {
     await deps.documentClient.send(new TransactWriteCommand({
@@ -93,7 +100,7 @@ export async function unlockTrial(deps: TrialDependencies, input: { orgId: OrgId
 /** A trial org with no GitHub connected may not start work (403 TRIAL_LOCKED). Any other plan, and an org with no record, passes. */
 export async function admitTrial(deps: TrialDependencies, orgId: OrgId): Promise<void> {
   const org = await orgOf(deps, orgId);
-  if (org?.plan === "trial" && org.trialUnlockedAt === undefined) throw trialLocked();
+  if (limited(org) && org.plan === "trial" && org.trialUnlockedAt === undefined) throw trialLocked();
 }
 
 /** The hours of machine time a plan allows per month; undefined for an org with no plan on record, which is not limited. */
@@ -114,7 +121,10 @@ export async function recordMachineTime(
   input: { orgId: OrgId; workspaceId: string; instanceType: string; startedAt: number; stoppedAt: number },
 ): Promise<void> {
   const seconds = Math.max(0, Math.round((input.stoppedAt - input.startedAt) / 1000));
-  if (seconds === 0) return;
+  if (seconds === 0) {
+    await closeOpenCompute(deps, input.orgId, input.workspaceId);
+    return;
+  }
   const typed = `seconds_${input.instanceType.replace(/[^A-Za-z0-9]/g, "_")}`;
   try {
     await deps.documentClient.send(new TransactWriteCommand({
@@ -131,6 +141,8 @@ export async function recordMachineTime(
           ExpressionAttributeNames: { "#seconds": "seconds", "#typed": typed },
           ExpressionAttributeValues: { ":type": "MACHINE_TIME", ":seconds": seconds },
         } },
+        // The seconds now count as recorded, so the workspace is no longer counted as running (deleting an absent marker is fine).
+        { Delete: { TableName: deps.tableName, Key: openComputeKey(input.orgId, input.workspaceId) } },
       ],
     }));
   } catch (error) {
@@ -140,16 +152,57 @@ export async function recordMachineTime(
   }
 }
 
+/**
+ * Marks a workspace's instance as running since `startedAt` (epoch milliseconds), so `admitMachineTime` counts the time it
+ * has run so far, not only what a stop will one day record. Put again by a later launch of the same workspace.
+ */
+export async function openCompute(deps: TrialDependencies, input: { orgId: OrgId; workspaceId: string; startedAt: number }): Promise<void> {
+  await deps.documentClient.send(new PutCommand({
+    TableName: deps.tableName,
+    Item: { ...openComputeKey(input.orgId, input.workspaceId), entityType: "OPEN_COMPUTE", workspaceId: input.workspaceId, startedAt: input.startedAt },
+  }));
+}
+
+/** Removes a workspace's running marker without recording anything (a run of no length). */
+async function closeOpenCompute(deps: TrialDependencies, orgId: OrgId, workspaceId: string): Promise<void> {
+  await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: openComputeKey(orgId, workspaceId) }));
+}
+
+/** Seconds the org's workspaces have been running, from their launch to `now`: compute that no stop has recorded yet. */
+async function runningSeconds(deps: TrialDependencies, orgId: OrgId, now: number): Promise<number> {
+  let total = 0;
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+  do {
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName,
+      KeyConditionExpression: "pk = :pk",
+      ExpressionAttributeValues: { ":pk": openComputePk(orgId) },
+      ConsistentRead: true,
+      ...(exclusiveStartKey === undefined ? {} : { ExclusiveStartKey: exclusiveStartKey }),
+    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of page.Items ?? []) if (typeof item.startedAt === "number") total += Math.max(0, now - item.startedAt) / 1000;
+    exclusiveStartKey = page.LastEvaluatedKey;
+  } while (exclusiveStartKey !== undefined);
+  return total;
+}
+
 /** Seconds of machine time an org has used in the UTC month `month` (`YYYY-MM`). */
 export async function machineSecondsUsed(deps: TrialDependencies, orgId: OrgId, month: string): Promise<number> {
   const item = await get(deps, machineTimeMonthKey(orgId, month));
   return typeof item?.seconds === "number" ? item.seconds : 0;
 }
 
-/** An org at or over its month's allowance may not start work (402 MACHINE_TIME_EXCEEDED). Compute already running is not stopped. */
+/**
+ * An org at or over its month's allowance may not start work (402 MACHINE_TIME_EXCEEDED). Compute already running is not
+ * stopped, but the time it has run so far counts.
+ */
 export async function admitMachineTime(deps: TrialDependencies, orgId: OrgId): Promise<void> {
-  const limit = allowanceHours((await orgOf(deps, orgId))?.plan);
+  const org = await orgOf(deps, orgId);
+  const limit = limited(org) ? allowanceHours(org.plan) : undefined;
   if (limit === undefined) return;
-  const used = await machineSecondsUsed(deps, orgId, monthOf((deps.now ?? Date.now)()));
+  const now = (deps.now ?? Date.now)();
+  // What stops recorded this month, plus what the org's running instances have run so far (whole, wherever they launched):
+  // otherwise one workspace could run its 14-day lifetime before any of it counted.
+  const used = await machineSecondsUsed(deps, orgId, monthOf(now)) + await runningSeconds(deps, orgId, now);
   if (used >= limit * SECONDS_PER_HOUR) throw machineTimeExceeded();
 }

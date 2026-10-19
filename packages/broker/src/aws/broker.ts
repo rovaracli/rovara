@@ -460,6 +460,11 @@ interface AwsBrokerDependencies {
   chatgpt?: ChatGptConnections;
   /** The model proxy (rulings R28 and R29): mints each task's key through the VPC-attached function, and says where the proxy is. Absent without one. */
   modelAccess?: { access: ModelAccess; proxyUrl: string };
+  /**
+   * Ruling R42: true only on a cloud install (DEVELOPER_CLOUD_ISSUER is configured, as for the R6 resolver). Only a cloud
+   * install's orgs have a trial lock and a machine-time allowance; a private install's single org is never limited.
+   */
+  cloud?: boolean;
   /** Which org a caller belongs to (ruling R1). Absent means every caller belongs to the install's single org (ruling R3). */
   orgResolver?: OrgResolver;
   /** The install's environment name, which its single org id derives from; defaults to the developer sign-in's, then AGENTX_ENV, then "default". */
@@ -1031,6 +1036,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         if (!url.pathname.startsWith("/review/") || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
         return await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
+          ...(dependencies.cloud === true ? { cloud: true } : {}),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
           workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
@@ -1214,6 +1220,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         if (!dependencies.developer) throw agentXError("NOT_FOUND", "developer sign-in is not set up in this deployment");
         return json(await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
+          ...(dependencies.cloud === true ? { cloud: true } : {}),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
           workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
@@ -3063,7 +3070,7 @@ async function admitSlackWork(dependencies: AwsBrokerDependencies, identity: Aut
   if (modelAccess === undefined || identity.slack === undefined) return;
   const orgId = requireOrgId(identity.orgId);
   await admitSpend(
-    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access },
+    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
     { orgId, developerId: await linkedRequester(dependencies, orgId, identity.slack.requester), path: "CHAT" },
   );
 }
@@ -5481,7 +5488,8 @@ async function startSlackWorkflow(dependencies: AwsBrokerDependencies, tasks: De
   }
   const caller = await slackCallerFor(dependencies, userId, thread.teamId);
   const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
-    ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }) }, caller, thread);
+    ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
+    ...(dependencies.cloud === true ? { cloud: true } : {}) }, caller, thread);
   const request = {
     method: "POST", path: "/v1/dev/tasks", headers: {}, requestId,
     body: JSON.stringify({ requestId, project: binding.projectName, instructions, client: "slack", workflow: true, workflowPath: event.workflowPath, shareToChannel: true, channel: thread.channelId }),
@@ -12041,6 +12049,7 @@ export const handler = createAwsBrokerHandler({
   ...(developer ? { developer } : {}),
   ...(chatgpt ? { chatgpt } : {}),
   ...(modelAccess ? { modelAccess } : {}),
+  cloud: cloudOrgResolver !== undefined,
   // Ruling R6: with the cloud sign-in configured, membership decides who has an org; operators of the admin pool have none.
   ...(cloudOrgResolver === undefined ? {} : { orgResolver: cloudOrgResolver }),
   // Spec 025 A12: set only here, so a test harness without its own `me` never reaches the network.

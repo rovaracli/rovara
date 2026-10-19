@@ -25,8 +25,8 @@ import {
   type ProjectSetupSession,
 } from "@agentx/contracts";
 import { createHash } from "node:crypto";
-import { orgOf } from "../org/resolve.js";
-import { recordMachineTime } from "../org/trial.js";
+import { installOrgIdFromEnvironment, orgOf } from "../org/resolve.js";
+import { openCompute, recordMachineTime } from "../org/trial.js";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { failOutboxOperation } from "./outbox-failure.js";
 
@@ -78,9 +78,38 @@ export function machineTimeRecorder(
   fallbackOrg: OrgId,
 ): (stop: ComputeStop) => Promise<void> {
   return async (stop) => {
-    const workspace = (await documentClient.send(new GetCommand({ TableName: tableName, Key: { pk: `WORKSPACE#${stop.workspaceId}`, sk: "META" } }))).Item;
-    await recordMachineTime({ documentClient, tableName }, { orgId: orgOf(fallbackOrg, workspace), ...stop });
+    await recordMachineTime({ documentClient, tableName }, { orgId: await workspaceOrg(documentClient, tableName, fallbackOrg, stop.workspaceId), ...stop });
   };
+}
+
+async function workspaceOrg(documentClient: Pick<DynamoDBDocumentClient, "send">, tableName: string, fallbackOrg: OrgId, workspaceId: string): Promise<OrgId> {
+  const workspace = (await documentClient.send(new GetCommand({ TableName: tableName, Key: { pk: `WORKSPACE#${workspaceId}`, sk: "META" } }))).Item;
+  return orgOf(fallbackOrg, workspace);
+}
+
+/** Marks the workspace's instance as running, so the org's machine-time admission counts it before it stops. */
+export function openComputeMarker(
+  documentClient: Pick<DynamoDBDocumentClient, "send">,
+  tableName: string,
+  fallbackOrg: OrgId,
+): (start: { workspaceId: string; startedAt: number }) => Promise<void> {
+  return async (start) => {
+    await openCompute({ documentClient, tableName }, { orgId: await workspaceOrg(documentClient, tableName, fallbackOrg, start.workspaceId), ...start });
+  };
+}
+
+/**
+ * The metering a Lambda that launches or ends compute gives its `SessionManager`: only in a named environment (AGENTX_ENV
+ * is set), so a legacy deployment writes no machine-time items. Spread into the manager's dependencies.
+ */
+export function computeMeteringFromEnvironment(
+  documentClient: Pick<DynamoDBDocumentClient, "send">,
+  tableName: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Pick<SessionManagerDependencies, "recordCompute" | "openCompute"> {
+  if (env.AGENTX_ENV === undefined || env.AGENTX_ENV === "") return {};
+  const fallbackOrg = installOrgIdFromEnvironment(env);
+  return { recordCompute: machineTimeRecorder(documentClient, tableName, fallbackOrg), openCompute: openComputeMarker(documentClient, tableName, fallbackOrg) };
 }
 
 export interface SessionManagerDependencies {
@@ -98,6 +127,11 @@ export interface SessionManagerDependencies {
    * Absent where compute is never ended (the dispatcher, the broker).
    */
   recordCompute?: (stop: ComputeStop) => Promise<void>;
+  /**
+   * Called when an instance is launched for a session, so the org's machine-time admission counts it while it runs; the
+   * marker is removed by the same call that records its stop. Best effort, like `recordCompute`.
+   */
+  openCompute?: (start: { workspaceId: string; startedAt: number }) => Promise<void>;
   /** Picks the first availability zone of a workspace; random by default. */
   chooseSubnet?: (subnets: Ec2RuntimeBinding["subnets"]) => Ec2RuntimeBinding["subnets"][number];
 }
@@ -211,10 +245,17 @@ export class SessionManager {
   }
 
   async markInstance(workspaceId: string, generation: number, instanceId: string, privateIp: string, instanceType?: string): Promise<void> {
+    const launchedAt = this.now();
     await this.dependencies.documentClient.send(new UpdateCommand(this.update(workspaceId, {
-      set: { instanceId, privateIp, launchedAt: this.now(), ...(instanceType === undefined ? {} : { instanceType }) },
+      set: { instanceId, privateIp, launchedAt, ...(instanceType === undefined ? {} : { instanceType }) },
       when: { state: "PROVISIONING", generation },
     })));
+    if (this.dependencies.openCompute === undefined) return;
+    try {
+      await this.dependencies.openCompute({ workspaceId, startedAt: Date.parse(launchedAt) });
+    } catch (error) {
+      console.log(JSON.stringify({ component: "session-manager", event: "session.open_compute_failed", workspaceId, error: error instanceof Error ? error.name : "unknown" }));
+    }
   }
 
   /** PROVISIONING → READY once the worker answered its health probe, then re-sends the parked work. */

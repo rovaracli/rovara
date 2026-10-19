@@ -132,6 +132,8 @@ export interface DeveloperRouteDependencies {
   orgs?: Pick<OrgStore, "orgForDeveloper" | "getOrg" | "createInvite">;
   /** The model proxy, for budgets (ruling R28). Absent without one: budgets are not set up, and task starts are not checked against them. */
   modelAccess?: ModelAccess;
+  /** A cloud install (ruling R42): trial lock and machine-time allowance apply to its orgs. */
+  cloud?: boolean;
 }
 /** Who is asking about a project, and in which org: grants and revisions are read in that org only. */
 export type ProjectAccessCaller = ProjectAccessSubject & { orgId: OrgId };
@@ -781,6 +783,7 @@ export function developerTaskRouteDependencies(
     issuer: deps.developer.issuer,
     actions: deps.tasks!,
     ...(deps.modelAccess === undefined ? {} : { modelAccess: deps.modelAccess }),
+    ...(deps.cloud === true ? { cloud: true } : {}),
     ...(deps.workflowE2EPresentation === undefined ? {} : { workflowE2EPresentation: deps.workflowE2EPresentation }),
     ...(deps.workflowE2EPublicationChecks === undefined ? {} : { workflowE2EPublicationChecks: deps.workflowE2EPublicationChecks }),
     ...(deps.registeredRepositoryIdentity === undefined ? {} : { registeredRepositoryIdentity: deps.registeredRepositoryIdentity }),

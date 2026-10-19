@@ -92,6 +92,15 @@ export function machineTimeOnceKey(orgId: OrgId, workspaceId: string, stoppedAt:
   return { pk: machineTimePk(orgId), sk: `ONCE#${workspaceId}#${stoppedAt}` };
 }
 
+/** The partition of an org's open-compute markers: one item per workspace whose instance is running right now. */
+export function openComputePk(orgId: OrgId): string {
+  return orgScoped(orgId, "OPEN_COMPUTE");
+}
+
+export function openComputeKey(orgId: OrgId, workspaceId: string): OrgKey {
+  return { pk: openComputePk(orgId), sk: workspaceId };
+}
+
 /** The org-wide open-workspace counter; it replaces `DEVELOPER_LIMIT#ORGANIZATION`. */
 export function orgLimitKey(orgId: OrgId): OrgKey {
   return { pk: orgScoped(orgId, "DEVELOPER_LIMIT#ORGANIZATION"), sk: "ORGANIZATION" };

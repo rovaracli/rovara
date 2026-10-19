@@ -3,14 +3,14 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agentXError, errorStatus, machineTimeMonthKey, machineTimeOnceKey, orgMetaKey, trialGithubKey, type OrgId,
+  agentXError, errorStatus, machineTimeMonthKey, machineTimeOnceKey, openComputeKey, orgMetaKey, singleOrgIdForEnv, trialGithubKey, type OrgId,
 } from "../../packages/contracts/src/index.js";
 import { createReaperHandler } from "../../packages/broker/src/aws/session-reaper.js";
-import { SessionManager, machineTimeRecorder, type ComputeStop } from "../../packages/broker/src/aws/sessions.js";
-import { admitSpend } from "../../packages/broker/src/org/budget.js";
+import { SessionManager, computeMeteringFromEnvironment, machineTimeRecorder, openComputeMarker, type ComputeStop } from "../../packages/broker/src/aws/sessions.js";
+import { admitSpend, type AdmissionDependencies } from "../../packages/broker/src/org/budget.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import {
-  TEAM_MACHINE_HOURS_PER_MONTH, TRIAL_MACHINE_HOURS_PER_MONTH, admitMachineTime, admitTrial, machineSecondsUsed, monthOf, recordMachineTime, unlockTrial,
+  TEAM_MACHINE_HOURS_PER_MONTH, TRIAL_MACHINE_HOURS_PER_MONTH, admitMachineTime, admitTrial, machineSecondsUsed, monthOf, openCompute, recordMachineTime, unlockTrial,
 } from "../../packages/broker/src/org/trial.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -39,6 +39,11 @@ function seedOrg(db: FakeDynamoDb, orgId: OrgId, plan: "trial" | "team", extra: 
 /** Machine time already recorded for the org in the UTC month of `at`. */
 function seedSeconds(db: FakeDynamoDb, orgId: OrgId, at: number, seconds: number) {
   db.set({ ...machineTimeMonthKey(orgId, monthOf(at)), entityType: "MACHINE_TIME", seconds });
+}
+
+/** An instance of the org's that has been running since `startedAt`, with no stop recorded for it yet. */
+function seedRunning(db: FakeDynamoDb, orgId: OrgId, workspaceId: string, startedAt: number) {
+  db.set({ ...openComputeKey(orgId, workspaceId), entityType: "OPEN_COMPUTE", workspaceId, startedAt });
 }
 
 const NOW = Date.parse("2026-10-19T12:00:00.000Z");
@@ -117,6 +122,17 @@ describe("unlockTrial", () => {
     expect(db.get(trialGithubKey("123"))).toBeUndefined();
   });
 
+  it("is a no-op for an org whose plan is not trial: it claims no GitHub account", async () => {
+    const { db, d } = setup();
+    seedOrg(db, ORG_B, "team");
+    await unlockTrial(d, { orgId: ORG_B, githubUserId: "123" });
+    expect(db.get(orgMetaKey(ORG_B))).not.toHaveProperty("trialUnlockedAt");
+    expect(db.get(trialGithubKey("123"))).toBeUndefined();
+    // The account is still free to unlock a real trial.
+    await unlockTrial(d, { orgId: TEST_ORG, githubUserId: "123" });
+    expect(db.get(trialGithubKey("123"))).toMatchObject({ orgId: TEST_ORG });
+  });
+
   it("refuses an unknown org and an empty GitHub id, writing nothing", async () => {
     const { db, d } = setup();
     expect((await rejection(unlockTrial(d, { orgId: "org_cccccccccccccccccccc", githubUserId: "123" }))).code).toBe("NOT_FOUND");
@@ -141,6 +157,12 @@ describe("admitTrial", () => {
     seedOrg(db, TEST_ORG, "team");
     await expect(admitTrial(deps(db), TEST_ORG)).resolves.toBeUndefined();
     await expect(admitTrial(deps(db), ORG_B)).resolves.toBeUndefined();
+  });
+
+  it("passes an org the system created, whatever its plan says", async () => {
+    const db = new FakeDynamoDb();
+    seedOrg(db, TEST_ORG, "trial", { createdBy: "system" });
+    await expect(admitTrial(deps(db), TEST_ORG)).resolves.toBeUndefined();
   });
 });
 
@@ -170,6 +192,17 @@ describe("recordMachineTime", () => {
     await recordMachineTime(deps(db), stop({ startedAt: Date.parse("2026-10-31T23:00:00.000Z"), stoppedAt }));
     expect(await machineSecondsUsed(deps(db), TEST_ORG, "2026-11")).toBe(2 * HOUR);
     expect(await machineSecondsUsed(deps(db), TEST_ORG, "2026-10")).toBe(0);
+  });
+
+  it("removes the workspace's running marker with the seconds it records, and for a run of no length", async () => {
+    const db = new FakeDynamoDb();
+    await openCompute(deps(db), { orgId: TEST_ORG, workspaceId: "ws-1", startedAt: NOW - HOUR * 1000 });
+    await openCompute(deps(db), { orgId: TEST_ORG, workspaceId: "ws-2", startedAt: NOW });
+    expect(db.get(openComputeKey(TEST_ORG, "ws-1"))).toMatchObject({ startedAt: NOW - HOUR * 1000 });
+    await recordMachineTime(deps(db), stop({ startedAt: NOW - HOUR * 1000 }));
+    expect(db.get(openComputeKey(TEST_ORG, "ws-1"))).toBeUndefined();
+    await recordMachineTime(deps(db), stop({ workspaceId: "ws-2", startedAt: NOW, stoppedAt: NOW }));
+    expect(db.get(openComputeKey(TEST_ORG, "ws-2"))).toBeUndefined();
   });
 
   it("keeps each org's time apart, and writes nothing for a run of no length", async () => {
@@ -217,6 +250,38 @@ describe("admitMachineTime", () => {
     expect((await rejection(admitMachineTime(d, TEST_ORG))).code).toBe("MACHINE_TIME_EXCEEDED");
   });
 
+  it("counts running compute: a trial org with 0 recorded hours and an instance launched 21 hours ago is refused", async () => {
+    const { db, d } = setup();
+    seedRunning(db, TEST_ORG, "ws-running", NOW - 21 * HOUR * 1000);
+    expect(await rejection(admitMachineTime(d, TEST_ORG))).toMatchObject({ code: "MACHINE_TIME_EXCEEDED", statusCode: 402 });
+  });
+
+  it("adds running compute to the month's recorded hours, across instances, and counts an instance launched last month whole", async () => {
+    const { db, d } = setup();
+    seedSeconds(db, TEST_ORG, NOW, 10 * HOUR);
+    seedRunning(db, TEST_ORG, "ws-a", NOW - 5 * HOUR * 1000);
+    await expect(admitMachineTime(d, TEST_ORG)).resolves.toBeUndefined();
+    seedRunning(db, TEST_ORG, "ws-b", NOW - 5.5 * HOUR * 1000);
+    expect((await rejection(admitMachineTime(d, TEST_ORG))).code).toBe("MACHINE_TIME_EXCEEDED");
+    const lastMonthLaunch = setup();
+    seedRunning(lastMonthLaunch.db, TEST_ORG, "ws-c", LAST_MONTH);
+    expect((await rejection(admitMachineTime(lastMonthLaunch.d, TEST_ORG))).code).toBe("MACHINE_TIME_EXCEEDED");
+  });
+
+  it("does not count another org's running compute", async () => {
+    const { db, d } = setup();
+    seedRunning(db, ORG_B, "ws-other", NOW - 100 * HOUR * 1000);
+    await expect(admitMachineTime(d, TEST_ORG)).resolves.toBeUndefined();
+  });
+
+  it("never limits an org the system created, whatever its plan or usage", async () => {
+    const db = new FakeDynamoDb();
+    seedOrg(db, TEST_ORG, "team", { createdBy: "system" });
+    seedSeconds(db, TEST_ORG, NOW, 500 * HOUR);
+    seedRunning(db, TEST_ORG, "ws-1", NOW - 500 * HOUR * 1000);
+    await expect(admitMachineTime(deps(db), TEST_ORG)).resolves.toBeUndefined();
+  });
+
   it("does not limit an org with no record", async () => {
     const db = new FakeDynamoDb();
     seedSeconds(db, TEST_ORG, NOW, 9999 * HOUR);
@@ -234,13 +299,14 @@ describe("admitMachineTime", () => {
 });
 
 describe("admitSpend", () => {
-  function setup(plan: "trial" | "team", extra: Record<string, unknown> = {}) {
+  function setup(plan: "trial" | "team", extra: Record<string, unknown> = {}, cloud = true) {
     const db = new FakeDynamoDb();
     seedOrg(db, TEST_ORG, plan, extra);
     const access = fakeModelAccess();
     access.setMemberSpent(TEST_ORG, "dev1", 0);
     access.setOrgSpent(TEST_ORG, 0);
-    return { db, access, run: () => admitSpend({ documentClient: db, tableName: "state", access, now: () => NOW }, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" }) };
+    const admission: AdmissionDependencies = { documentClient: db, tableName: "state", access, now: () => NOW, cloud };
+    return { db, access, run: () => admitSpend(admission, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" }) };
   }
 
   it("refuses a locked trial before the proxy is asked anything", async () => {
@@ -269,16 +335,50 @@ describe("admitSpend", () => {
     expect((await rejection(broke.run())).code).toBe("BUDGET_EXCEEDED");
   });
 
-  it("admits an unlocked trial with time left, and a team org that was never locked", async () => {
+  it("admits an unlocked trial with time left, and a cloud team org that was never locked", async () => {
     expect(await setup("trial", { trialUnlockedAt: 1 }).run()).toEqual({ maxBudgetUsd: 25 });
     expect(await setup("team").run()).toEqual({ maxBudgetUsd: 25 });
+  });
+
+  it("refuses a cloud team org at 400 hours, and counts its running instances", async () => {
+    const used = setup("team");
+    seedSeconds(used.db, TEST_ORG, NOW, 400 * HOUR);
+    expect((await rejection(used.run())).code).toBe("MACHINE_TIME_EXCEEDED");
+    const running = setup("team");
+    seedRunning(running.db, TEST_ORG, "ws-1", NOW - 401 * HOUR * 1000);
+    expect((await rejection(running.run())).code).toBe("MACHINE_TIME_EXCEEDED");
+  });
+
+  it("applies neither limit on an install that is not a cloud install (ruling R42), even to a trial org", async () => {
+    const locked = setup("trial", {}, false);
+    seedSeconds(locked.db, TEST_ORG, NOW, 500 * HOUR);
+    expect(await locked.run()).toEqual({ maxBudgetUsd: 25 });
+    // The budgets still apply.
+    const broke = setup("team", {}, false);
+    broke.access.setMemberSpent(TEST_ORG, "dev1", 29);
+    expect((await rejection(broke.run())).code).toBe("BUDGET_EXCEEDED");
+  });
+
+  it("admits a private install's single org (made by ensureOrg) with 500 hours recorded, cloud off, and never limits it even cloud on", async () => {
+    const db = new FakeDynamoDb();
+    const orgId = singleOrgIdForEnv("staging");
+    await new OrgStore({ documentClient: db, tableName: "state", now: () => NOW }).ensureOrg(orgId, "staging");
+    expect(db.get(orgMetaKey(orgId))).toMatchObject({ plan: "team", createdBy: "system" });
+    seedSeconds(db, orgId, NOW, 500 * HOUR);
+    seedRunning(db, orgId, "ws-1", NOW - 500 * HOUR * 1000);
+    const access = fakeModelAccess();
+    access.setMemberSpent(orgId, "dev1", 0);
+    access.setOrgSpent(orgId, 0);
+    for (const cloud of [false, true]) {
+      expect(await admitSpend({ documentClient: db, tableName: "state", access, now: () => NOW, cloud }, { orgId, developerId: "dev1", path: "QUICK" })).toEqual({ maxBudgetUsd: 25 });
+    }
   });
 });
 
 describe("a developer task start", () => {
-  async function install(org: { plan: "trial" | "team"; unlocked?: boolean }) {
+  async function install(org: { plan: "trial" | "team"; unlocked?: boolean; cloud?: boolean }) {
     const access = fakeModelAccess();
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL } } });
+    const harness = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: org.cloud !== false } });
     seedOrg(harness.db, TEST_ORG, org.plan, org.unlocked === true ? { trialUnlockedAt: 1 } : {});
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
@@ -326,7 +426,20 @@ describe("a developer task start", () => {
     expect((await other.start()).status).toBe(200);
   });
 
-  it("never locks a team org (a single-org install's org is one)", async () => {
+  it("refuses an unlocked trial org whose one running instance has run 21 hours with nothing recorded yet", async () => {
+    const h = await install({ plan: "trial", unlocked: true });
+    seedRunning(h.db, TEST_ORG, "ws-running", Date.now() - 21 * HOUR * 1000);
+    expect(await h.start()).toMatchObject({ status: 402, body: { error: { code: "MACHINE_TIME_EXCEEDED" } } });
+    expect(h.sent()).not.toContain("TransactWriteCommand");
+  });
+
+  it("applies neither limit on an install that is not a cloud install, even to a locked trial org with 500 hours", async () => {
+    const h = await install({ plan: "trial", cloud: false });
+    seedSeconds(h.db, TEST_ORG, Date.now(), 500 * HOUR);
+    expect((await h.start()).status).toBe(200);
+  });
+
+  it("never locks a team org", async () => {
     const h = await install({ plan: "team" });
     expect((await h.start()).status).toBe(200);
   });
@@ -338,7 +451,7 @@ describe("Slack-started work", () => {
 
   it("refuses a locked trial org with 403 before any workspace, charge or proxy call", async () => {
     const access = fakeModelAccess();
-    const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL } } });
+    const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
     await registerSlackProject(handler);
     seedOrg(db, TEST_ORG, "trial");
     const mark = db.commandNames().length;
@@ -355,7 +468,7 @@ describe("Slack-started work", () => {
 
   it("refuses an org with no machine time left with 402 before any workspace or charge", async () => {
     const access = fakeModelAccess();
-    const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL } } });
+    const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
     await registerSlackProject(handler);
     seedOrg(db, TEST_ORG, "trial", { trialUnlockedAt: 1 });
     seedSeconds(db, TEST_ORG, Date.now(), 20 * HOUR);
@@ -377,10 +490,11 @@ describe("machine time is recorded where compute ends", () => {
     volumeType: "gp3" as const,
   };
 
-  function setup(options: { recordCompute?: (stop: ComputeStop) => Promise<void> } = {}) {
+  function setup(options: { recordCompute?: (stop: ComputeStop) => Promise<void>; openCompute?: (start: { workspaceId: string; startedAt: number }) => Promise<void> } = {}) {
     const db = new FakeDynamoDb();
     let now = LAUNCHED;
     const recordCompute = vi.fn(options.recordCompute ?? machineTimeRecorder(db, "state", ORG_B));
+    const openComputeSpy = vi.fn(options.openCompute ?? openComputeMarker(db, "state", ORG_B));
     const sessions = new SessionManager({
       documentClient: db,
       tableName: "state",
@@ -388,11 +502,12 @@ describe("machine time is recorded where compute ends", () => {
       now: () => new Date(now),
       chooseSubnet: (subnets) => subnets[0]!,
       recordCompute,
+      openCompute: openComputeSpy,
     });
     const workspaceId = randomUUID();
     // The workspace record names its org (Task 5).
     db.set({ pk: `WORKSPACE#${workspaceId}`, sk: "META", entityType: "WORKSPACE", orgId: TEST_ORG, deploymentMode: "ec2-ebs", projectName: "payments", projectRevision: 1 });
-    return { db, sessions, workspaceId, recordCompute, advance: (ms: number) => { now += ms; } };
+    return { db, sessions, workspaceId, recordCompute, openCompute: openComputeSpy, advance: (ms: number) => { now += ms; } };
   }
 
   async function ready(sessions: SessionManager, workspaceId: string, instanceType: string | null = "m7g.large") {
@@ -415,6 +530,37 @@ describe("machine time is recorded where compute ends", () => {
     await sessions.markStopped(workspaceId, 1);
     expect(recordCompute).toHaveBeenCalledOnce();
     expect(await machineSecondsUsed({ documentClient: db, tableName: "state" }, TEST_ORG, "2026-10")).toBe(90 * 60);
+  });
+
+  it("marks the instance as running from its launch, and the stop that records its time removes the marker", async () => {
+    const { db, sessions, workspaceId, advance } = setup();
+    await ready(sessions, workspaceId);
+    expect(db.get(openComputeKey(TEST_ORG, workspaceId))).toMatchObject({ workspaceId, startedAt: LAUNCHED });
+    // While it runs, admission counts it: 21 hours in, a trial org is out of time with nothing recorded.
+    seedOrg(db, TEST_ORG, "trial", { trialUnlockedAt: 1 });
+    advance(21 * HOUR * 1000);
+    const at = { documentClient: db, tableName: "state", now: () => LAUNCHED + 21 * HOUR * 1000 };
+    expect((await rejection(admitMachineTime(at, TEST_ORG))).code).toBe("MACHINE_TIME_EXCEEDED");
+    await sessions.claimStop((await sessions.get(workspaceId))!);
+    await sessions.markStopped(workspaceId, 1);
+    expect(db.get(openComputeKey(TEST_ORG, workspaceId))).toBeUndefined();
+    // Recorded now, not counted twice: 21 hours in all, still over.
+    expect(await machineSecondsUsed(at, TEST_ORG, "2026-10")).toBe(21 * HOUR);
+    expect((await rejection(admitMachineTime(at, TEST_ORG))).code).toBe("MACHINE_TIME_EXCEEDED");
+  });
+
+  it("logs and carries on when the running marker cannot be written", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const { sessions, workspaceId } = setup({ openCompute: async () => { throw new Error("secret detail"); } });
+      await ready(sessions, workspaceId);
+      expect(await sessions.get(workspaceId)).toMatchObject({ state: "READY" });
+      const logged = log.mock.calls.map((entry) => String(entry[0])).join("\n");
+      expect(logged).toContain("session.open_compute_failed");
+      expect(logged).not.toContain("secret detail");
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("counts a session lost from under a READY worker", async () => {
@@ -501,6 +647,25 @@ describe("machine time is recorded where compute ends", () => {
     await sessions.claimStop((await sessions.get(workspaceId))!);
     await sessions.markStopped(workspaceId, 1);
     expect(await machineSecondsUsed({ documentClient: db, tableName: "state" }, ORG_B, "2026-10")).toBe(HOUR);
+  });
+
+  it("meters only in a named environment: the Lambdas get a recorder and a marker when AGENTX_ENV is set, and nothing without it", () => {
+    const db = new FakeDynamoDb();
+    expect(computeMeteringFromEnvironment(db, "state", {})).toEqual({});
+    expect(computeMeteringFromEnvironment(db, "state", { AGENTX_ENV: "" })).toEqual({});
+    expect(Object.keys(computeMeteringFromEnvironment(db, "state", { AGENTX_ENV: "staging" })).sort()).toEqual(["openCompute", "recordCompute"]);
+  });
+
+  it("falls back to the named environment's single org for a workspace record that names none (marker and stop alike)", async () => {
+    const db = new FakeDynamoDb();
+    const workspaceId = randomUUID();
+    db.set({ pk: `WORKSPACE#${workspaceId}`, sk: "META", entityType: "WORKSPACE", deploymentMode: "ec2-ebs" });
+    const metering = computeMeteringFromEnvironment(db, "state", { AGENTX_ENV: "staging" });
+    await metering.openCompute!({ workspaceId, startedAt: LAUNCHED });
+    expect(db.get(openComputeKey(singleOrgIdForEnv("staging"), workspaceId))).toMatchObject({ startedAt: LAUNCHED });
+    await metering.recordCompute!({ workspaceId, instanceType: "m7g.large", startedAt: LAUNCHED, stoppedAt: LAUNCHED + HOUR * 1000 });
+    expect(db.get(openComputeKey(singleOrgIdForEnv("staging"), workspaceId))).toBeUndefined();
+    expect(await machineSecondsUsed({ documentClient: db, tableName: "state" }, singleOrgIdForEnv("staging"), "2026-10")).toBe(HOUR);
   });
 
   it("is wired through the idle reaper: an idle session's stop counts, once, however many ticks follow", async () => {
