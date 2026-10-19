@@ -13,7 +13,7 @@ import { createWorkerServerState, startWorkerServer } from "./server.js";
 import { invokeAuthenticationFromEnvironment } from "./invoke-auth.js";
 import { resolveTaskSessionModel } from "./task-model.js";
 import { chatGptTokenSource } from "./chatgpt-token.js";
-import { modelAccessSource, modelProxyFromSource } from "./model-access.js";
+import { lazyModelProxy, modelAccessSource } from "./model-access.js";
 import { createDefaultProjectSetupExecutor, createReadinessGatedProjectSetupRuntime } from "./project-setup-executor.js";
 import { postProjectSetupTerminalResult } from "./project-setup-callback.js";
 import { postWorkerTerminalResult } from "./terminal-callback.js";
@@ -73,9 +73,10 @@ const state = createWorkerServerState(
         const { chatGptToken, chatGptFallback, ...callbacks } = createWorkerCallbackSinks({ controlPlaneUrl, invocation });
         // #341: a task on its owner's ChatGPT plan; the token never leaves this process's memory.
         // Ruling R29: on an install with a model proxy the task calls models through it, with a key minted for this task;
-        // the worker holds no provider secret. The proxy's address comes with the key.
+        // the worker holds no provider secret. The key is asked for lazily, at the first request that needs the proxy (a ChatGPT
+        // plan's own requests never do), so a task on a plan is not held up by a proxy it may never call.
         const proxy = process.env.AGENTX_MODEL_PROXY_URL
-          ? await modelProxyFromSource(modelAccessSource({ controlPlaneUrl, capability: invocation.callbackCapability }))
+          ? lazyModelProxy({ baseUrl: process.env.AGENTX_MODEL_PROXY_URL, source: modelAccessSource({ controlPlaneUrl, capability: invocation.callbackCapability }) })
           : undefined;
         const session = await resolveTaskSessionModel(invocation.payload,
           invocation.payload.chatgpt === undefined ? undefined : chatGptTokenSource(chatGptToken), process.env, chatGptFallback, proxy);

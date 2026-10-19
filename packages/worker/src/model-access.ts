@@ -51,10 +51,16 @@ async function budgetScopeOf(response: Response): Promise<ModelBudgetScope | und
   return typeof message === "string" && message.startsWith(TASK_BUDGET_EXCEEDED_PREFIX) ? "task" : "member";
 }
 
-/** What the runtime needs from the control plane's answer: the proxy's origin once, and the key as often as it is asked for. */
-export async function modelProxyFromSource(source: () => Promise<ModelAccess>): Promise<{ baseUrl: string; apiKey: () => Promise<string> }> {
-  const first = await source();
-  return { baseUrl: first.baseUrl, apiKey: async () => (await source()).apiKey };
+/**
+ * What the runtime needs of the proxy, without asking for a key: the proxy's origin (the worker's own configuration names it) and
+ * the key as often as it is asked for. Nothing is minted until a request actually needs the proxy, so a ChatGPT-plan task whose
+ * requests go direct to OpenAI never mints one unless its plan falls back to the proxy's models.
+ */
+export function lazyModelProxy(input: { baseUrl: string; source: () => Promise<ModelAccess> }): { baseUrl: string; apiKey: () => Promise<string> } {
+  let origin: URL | undefined;
+  try { origin = new URL(input.baseUrl); } catch { origin = undefined; }
+  if (origin === undefined || !/^https?:$/u.test(origin.protocol)) throw agentXError("CONFIG_INVALID", "the worker's model proxy address is not an http or https URL");
+  return { baseUrl: input.baseUrl, apiKey: async () => (await input.source()).apiKey };
 }
 
 /** The current model access, fetched when there is none or it is about to expire; concurrent callers share one fetch. */

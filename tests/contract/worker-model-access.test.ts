@@ -5,7 +5,7 @@ import type { Context } from "@earendil-works/pi-ai";
 import { PER_TASK_BUDGET_USD, agentXError } from "../../packages/contracts/src/index.js";
 import { bedrockClaudeModelIds } from "../../packages/model-runtime/src/catalog.js";
 import { createConfiguredModelRuntime } from "../../packages/model-runtime/src/index.js";
-import { MODEL_ACCESS_MARGIN_MS, modelAccessSource, modelProxyFromSource } from "../../packages/worker/src/model-access.js";
+import { MODEL_ACCESS_MARGIN_MS, lazyModelProxy, modelAccessSource } from "../../packages/worker/src/model-access.js";
 import { resolveTaskSessionModel } from "../../packages/worker/src/task-model.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { MAYA, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
@@ -165,13 +165,37 @@ describe("modelAccessSource", () => {
 describe("a worker task on an install with a model proxy", () => {
   const environment = { AGENTX_MODEL_PROVIDER: "amazon-bedrock", AGENTX_MODEL_ID: BEDROCK_MODEL };
 
-  it("takes the proxy's address once and its key at every request", async () => {
+  it("takes the proxy's address from the worker's configuration and its key at every request, asking for none before one is needed", async () => {
     let key = "sk-proxy-a";
-    const proxy = await modelProxyFromSource(async () => ({ baseUrl: PROXY_URL, apiKey: key, expiresAt: Date.now() + 3_600_000 }));
+    const source = vi.fn(async () => ({ baseUrl: PROXY_URL, apiKey: key, expiresAt: Date.now() + 3_600_000 }));
+    const proxy = lazyModelProxy({ baseUrl: PROXY_URL, source });
     expect(proxy.baseUrl).toBe(PROXY_URL);
+    expect(source).not.toHaveBeenCalled();
     expect(await proxy.apiKey()).toBe("sk-proxy-a");
     key = "sk-proxy-b";
     expect(await proxy.apiKey()).toBe("sk-proxy-b");
+    expect(source).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses a proxy address that is not an http or https URL", () => {
+    for (const baseUrl of ["", "not a url", "file:///etc/passwd"]) {
+      expect(() => lazyModelProxy({ baseUrl, source: async () => { throw new Error("unreachable"); } }), baseUrl).toThrow(/model proxy address/);
+    }
+  });
+
+  it("runs a ChatGPT-plan task's requests with the proxy down: no key is asked for unless the plan falls back to it", async () => {
+    const source = vi.fn(async (): Promise<never> => { throw agentXError("MODEL_PROXY_UNAVAILABLE", "model proxy is unreachable"); });
+    const proxy = lazyModelProxy({ baseUrl: PROXY_URL, source });
+    const requests: string[] = [];
+    const transport = vi.fn<typeof fetch>(async (input) => { requests.push(String(input instanceof Request ? input.url : input)); return new Response("{}", { status: 500 }); });
+    const apiKey = vi.fn(async () => "chatgpt-access-token-0001");
+    const runtime = await createConfiguredModelRuntime({ provider: "openai", modelId: "gpt-5.4" }, { fetch: transport, apiKey, proxy });
+    await runtime.streamSimple(runtime.getModel("openai", "gpt-5.4")!, context, { maxTokens: 16 }).result();
+    expect(requests.length).toBeGreaterThan(0);
+    for (const url of requests) expect(url.startsWith("https://api.openai.com/")).toBe(true);
+    const payload = { model: { provider: "amazon-bedrock", modelId: BEDROCK_MODEL }, chatgpt: { model: { provider: "openai", modelId: "gpt-5.4" } } };
+    expect((await resolveTaskSessionModel(payload, async () => "chatgpt-access-0001", environment, undefined, proxy)).model).toMatchObject({ provider: "openai", modelId: "gpt-5.4" });
+    expect(source).not.toHaveBeenCalled();
   });
 
   it("runs its session on the proxy adapter, and leaves a task without a proxy on the default one", async () => {
