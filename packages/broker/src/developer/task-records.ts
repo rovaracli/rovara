@@ -143,6 +143,8 @@ export interface DeveloperTaskIndexRecord {
   sk: string;
   entityType: "DEVELOPER_TASK_INDEX";
   taskId: string;
+  /** The org the task was started in; the list shows only rows of the caller's current org. */
+  orgId?: OrgId;
   project: string;
   title: string;
   client: string;

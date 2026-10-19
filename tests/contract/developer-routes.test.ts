@@ -119,7 +119,7 @@ describe("GET /v1/dev/projects (FR-016, FR-013)", () => {
       { TableName: "signin", Key: { pk: "SESSION#s-1", sk: "META" } },
       { TableName: "signin", Key: { pk: `DEVELOPER#${developerId}`, sk: "META" } },
       // The membership the token's org is checked against lives in the state table, beside the org.
-      { TableName: "state", Key: { pk: `DEVELOPER#${developerId}`, sk: "ORG" } },
+      { TableName: "state", Key: { pk: `DEVELOPER_ORG#${developerId}`, sk: "ORG" } },
     ]);
     const queryTables = new Set(sent.filter((command) => command.constructor.name === "QueryCommand").map((command) => command.input.TableName));
     expect([...queryTables]).toEqual(["state"]);

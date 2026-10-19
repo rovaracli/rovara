@@ -54,7 +54,7 @@ describe("org keys", () => {
     expect(orgScoped(ORG, "PROJECT#web")).toBe("ORG#org_aaaaaaaaaaaaaaaaaaaa#PROJECT#web");
     expect(orgMetaKey(ORG)).toEqual({ pk: `ORG#${ORG}`, sk: "META" });
     expect(orgMemberKey(ORG, "dev_1")).toEqual({ pk: `ORG#${ORG}`, sk: "MEMBER#dev_1" });
-    expect(developerOrgKey("dev_1")).toEqual({ pk: "DEVELOPER#dev_1", sk: "ORG" });
+    expect(developerOrgKey("dev_1")).toEqual({ pk: "DEVELOPER_ORG#dev_1", sk: "ORG" });
     expect(orgInviteKey("abc")).toEqual({ pk: "ORG_INVITE#abc", sk: "META" });
     expect(slackTeamOrgKey("T1")).toEqual({ pk: "SLACK_TEAM#T1", sk: "ORG" });
   });

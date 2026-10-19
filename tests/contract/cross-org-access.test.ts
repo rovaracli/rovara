@@ -2,16 +2,18 @@
 // every request, every task, workspace and operation record carries its org, and another org's resource reads as not found.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { developerOrgKey, orgScoped, type OrgId } from "@agentx/contracts";
+import { createWorkflowSnapshot, developerOrgKey, orgScoped, type OrgId } from "@agentx/contracts";
 import { authorizeWorkspace } from "../../packages/broker/src/authorization.js";
 import { resolveTaskAccess } from "../../packages/broker/src/developer/task-access.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import {
   projectMemberKey, projectRevisionKey, projectSetupApprovalKey, workspaceProjectIndexAttributes,
 } from "../../packages/contracts/src/org-scoped-keys.js";
-import { MAYA, OMAR, bearerFor, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
+import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
+import { MAYA, OMAR, bearerFor, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import { SLACK_CHANNEL, call, createBroker, issuer, loadSlackBroker } from "../support/slack-broker.js";
 import { PRIYA, pageTask } from "../support/page-tasks.js";
-import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace, prepareThread } from "../support/slack-broker.js";
+import { SLACK_TEAM, ensureWorkspace, prepareThread } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
@@ -162,5 +164,143 @@ describe("the same project name in two orgs", () => {
     expect(a).toEqual({ pk: `ORG#${TEST_ORG}#PROJECT_SETUP#web`, sk: `PROPOSAL#${sha}` });
     expect(b.pk).not.toBe(a.pk);
     expect(b.sk).toBe(a.sk);
+  });
+});
+
+describe("the same person, now in another org, no longer reaches their old org's task", () => {
+  // Maya's membership is moved to ORG_B and she signs in again there: a token for ORG_B, the same developer ID.
+  async function movedToOrgB() {
+    const harness = await twoOrgs();
+    seedMembership(harness.db, MAYA.developerId, { orgId: ORG_B, role: "member" });
+    const dev = async (method: string, path: string, body?: unknown) => {
+      const response = await harness.handler({
+        version: "2.0", rawPath: path.split("?")[0], rawQueryString: path.split("?")[1] ?? "",
+        headers: { authorization: await bearerFor(MAYA, { orgId: ORG_B, role: "member" }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        requestContext: { requestId: randomUUID(), http: { method } },
+      });
+      return { status: response.statusCode, body: JSON.parse(response.body) as { error?: { code?: string }; tasks?: unknown[] } };
+    };
+    return { ...harness, dev };
+  }
+
+  it("answers 404 TASK_NOT_FOUND on read, cancel and continue for the org A task, and creates no operation", async () => {
+    const { dev, taskId, db } = await movedToOrgB();
+    const before = db.find((item) => item.entityType === "OPERATION").length;
+    for (const [method, path, body] of [
+      ["GET", `/v1/dev/tasks/${taskId}`, undefined],
+      ["GET", `/v1/dev/tasks/${taskId}/events`, undefined],
+      ["POST", `/v1/dev/tasks/${taskId}/cancel`, { requestId: randomUUID() }],
+      ["POST", `/v1/dev/tasks/${taskId}/continue`, { requestId: randomUUID(), instructions: "more" }],
+    ] as const) {
+      const refused = await dev(method, path, body);
+      expect(refused.status, path).toBe(404);
+      expect(refused.body.error, path).toMatchObject({ code: "TASK_NOT_FOUND" });
+    }
+    expect(db.find((item) => item.entityType === "OPERATION")).toHaveLength(before);
+  });
+
+  it("lists none of the tasks started in the old org, and lists the ones started in the new org", async () => {
+    const { dev, db } = await movedToOrgB();
+    expect((await dev("GET", "/v1/dev/tasks")).body.tasks).toEqual([]);
+    // A task row of the new org (written by a start there) is listed; a row with no org is not.
+    const row = db.find((item) => item.entityType === "DEVELOPER_TASK_INDEX")[0]!;
+    db.set({ ...row, sk: String(row.sk).replace("T", "T").replace(/#[0-9a-f-]{36}$/, `#${randomUUID()}`), orgId: ORG_B, taskId: randomUUID() });
+    expect(((await dev("GET", "/v1/dev/tasks")).body.tasks as unknown[])).toHaveLength(1);
+    db.set({ ...row, sk: String(row.sk).replace(/#[0-9a-f-]{36}$/, `#${randomUUID()}`), orgId: undefined, taskId: randomUUID() });
+    expect(((await dev("GET", "/v1/dev/tasks")).body.tasks as unknown[])).toHaveLength(1);
+  });
+
+  it("writes the org on the task index row a start creates", async () => {
+    const { db } = await twoOrgs();
+    expect(db.find((item) => item.entityType === "DEVELOPER_TASK_INDEX")).toEqual([expect.objectContaining({ orgId: TEST_ORG })]);
+  });
+});
+
+describe("a Slack member of the task's channel in another org", () => {
+  const BEA: Developer = { developerId: "b".repeat(64), name: "Bea Okoye", provider: "slack", sessionId: "s-bea", slackUserId: "U0BEA0001" };
+  const CAL: Developer = { developerId: "c".repeat(64), name: "Cal Reyes", provider: "slack", sessionId: "s-cal", slackUserId: "U0CAL0001" };
+  const resolver: OrgResolver = async (subject) => (subject.developerId === BEA.developerId ? ORG_B : TEST_ORG);
+
+  it("reads the shared task's page in the task's own org, and as not found from the other org, though both are in its channel and may use a project of the same name", async () => {
+    const harness = await createDeveloperTaskBroker({
+      orgResolver: resolver,
+      channelMembers: async (request) => ({ ok: true, memberOf: [MAYA, BEA, CAL].some((who) => who.slackUserId === request.slackUserId) ? request.channelIds.filter((id) => id === SLACK_CHANNEL) : [] }),
+    });
+    const { db, dev } = harness;
+    const started = await dev(MAYA, "POST", "/v1/dev/tasks", start({ shareToChannel: true }));
+    expect(started.status, JSON.stringify(started.body)).toBe(200);
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    // Each reader has a session and a developer record; Bea is in ORG_B, which has its own project called payments and a grant on it.
+    for (const who of [BEA, CAL]) {
+      db.set({ pk: `SESSION#${who.sessionId}`, sk: "META", sessionId: who.sessionId, developerId: who.developerId, amr: "slack", slackUserId: who.slackUserId, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
+      db.set({ pk: `DEVELOPER#${who.developerId}`, sk: "META", developerId: who.developerId, provider: "slack", displayName: who.name, slackUserId: who.slackUserId, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    }
+    db.set({ ...projectRevisionKey(ORG_B, "payments", 1), entityType: "PROJECT", definition: { name: "payments", revision: 1 } });
+    db.set({ ...projectMemberKey(ORG_B, BEA.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: BEA.developerId, projectName: "payments", role: "developer" });
+    db.set({ ...projectMemberKey(TEST_ORG, CAL.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: CAL.developerId, projectName: "payments", role: "developer" });
+    // The task page reads through the browser session: each reader opens /task/status with a review cookie.
+    const task = db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { ownerKey: string };
+    db.set({ ...task, workflow: createWorkflowSnapshot({ taskId, ownerId: task.ownerKey, now: new Date().toISOString() }) });
+    const open = async (who: Developer) => {
+      await harness.orgOf(who);
+      const sessionId = randomUUID();
+      db.set({ pk: `SESSION#${sessionId}`, sk: "META", sessionId, developerId: who.developerId, amr: "slack", slackUserId: who.slackUserId,
+        startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 600, reviewExpiresAt: Math.floor(Date.now() / 1000) + 600 });
+      const response = await harness.handler({
+        version: "2.0", routeKey: "ANY /review/{proxy+}", rawPath: `/review/${taskId}/task/status`, rawQueryString: "",
+        headers: { host: "abc123.execute-api.us-east-1.amazonaws.com", cookie: `__Host-agentx_review_session=${sessionId}` },
+        requestContext: { requestId: randomUUID(), http: { method: "GET" } },
+      });
+      return response.statusCode;
+    };
+    // The control: a channel member of the task's own org who may use the project reads the page.
+    expect(await open(CAL)).toBe(200);
+    // The same, from the other org: not found.
+    expect(await open(BEA)).toBe(404);
+  });
+});
+
+describe("a project's setup approval, driven through the broker, in two orgs", () => {
+  const adminKey = ownerKeyForSubject(issuer, "admin-setup");
+  const admin = { subject: "admin-setup", admin: true };
+  const sha = "e".repeat(64);
+  const url = "https://github.com/example/demo.git";
+  const registration = {
+    definition: {
+      name: "web", revision: 1,
+      repositories: [{ name: "demo", url, path: "repo/demo", defaultBranch: "main", credentialRef: "github-app" }],
+      setup: [], readiness: [], orchestratorInstructions: "Delegate work.",
+    },
+    runtimeBinding: { deploymentMode: "ec2-ebs", launchTemplateId: "lt-0123456789abcdef0", subnets: [{ availabilityZone: "us-east-1a", subnetId: "subnet-0123456789abcdef0" }], volumeSizeGiB: 20, volumeType: "gp3" },
+    setupApproval: { proposalRef: `project-setup-proposals/${adminKey}/${sha}.json`, proposalSha256: sha, decision: "decline" },
+  };
+  const approvalRow = (orgId: OrgId) => ({
+    ...projectSetupApprovalKey(orgId, "web", sha), entityType: "PROJECT_SETUP_APPROVAL", ownerKey: adminKey, projectName: "web",
+    proposalRef: registration.setupApproval.proposalRef, proposalSha256: sha, candidateDigest: "d".repeat(64), repositoryUrl: url,
+    identityMapping: { schemaVersion: "github-source-to-agentx-registration/v1", registeredRepositoryId: "demo" }, decision: "decline", policyDigest: "1".repeat(64),
+  });
+
+  it("reads the approval only in the org that holds it, so a same-named project and proposal in another org is refused", async () => {
+    await loadSlackBroker();
+    let current = TEST_ORG;
+    const { handler, db } = createBroker({ extra: { orgResolver: async (subject: { ownerKey?: string }) => (subject.ownerKey === adminKey ? current : undefined) } });
+    db.set(approvalRow(TEST_ORG));
+    const register = async (orgId: OrgId) => { current = orgId; return call(handler, { method: "POST", path: "/v1/admin/projects", user: admin, body: registration }); };
+
+    const refused = await register(ORG_B);
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("setup decision is missing") as unknown });
+    expect(db.find((item) => String(item.pk).startsWith(`ORG#${ORG_B}#PROJECT#web`))).toHaveLength(0);
+
+    expect((await register(TEST_ORG)).status).toBe(201);
+    expect(db.find((item) => String(item.pk).startsWith(`ORG#${TEST_ORG}#PROJECT#web`)).length).toBeGreaterThan(0);
+
+    // Org B's own approval of the same proposal is its own row; with it, org B registers its own project of that name.
+    db.set(approvalRow(ORG_B));
+    expect((await register(ORG_B)).status).toBe(201);
+    const approvals = db.find((item) => item.entityType === "PROJECT_SETUP_APPROVAL").map((item) => item.pk).sort();
+    expect(approvals).toEqual([`ORG#${ORG_B}#PROJECT_SETUP#web`, `ORG#${TEST_ORG}#PROJECT_SETUP#web`].sort());
+    expect(db.find((item) => item.pk === "PROJECT_SETUP#web")).toHaveLength(0);
   });
 });

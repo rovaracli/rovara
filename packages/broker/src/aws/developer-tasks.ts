@@ -1480,7 +1480,7 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
     ...(request.workflow === true ? { workflow: createWorkflowSnapshot({ taskId, ownerId: identity.ownerKey, now: receivedAt, path: request.workflowPath ?? "QUICK", checkPolicy: taskWorkflowCheckPolicy(project.definition) }) } : {}),
   };
   const index: DeveloperTaskIndexRecord = {
-    ...taskIndexKey(caller.developerId, receivedAt, taskId), entityType: "DEVELOPER_TASK_INDEX", taskId, project: request.project, title, client,
+    ...taskIndexKey(caller.developerId, receivedAt, taskId), entityType: "DEVELOPER_TASK_INDEX", taskId, orgId: deps.orgId, project: request.project, title, client,
     status: "STARTING", shared: share !== undefined, startingRevision: revision, workspaceId, createdAt: receivedAt, updatedAt: receivedAt,
   };
   const pointer: DeveloperTaskPointerRecord = {
@@ -1632,6 +1632,8 @@ async function listTasks(deps: DeveloperTaskRouteDependencies, caller: Developer
     const rows = response.Items ?? [];
     for (const [position, row] of rows.entries()) {
       scanned += 1;
+      // A row of another org (a person who moved orgs keeps their old rows) is never listed; a row with no org is no one's.
+      if (row.orgId !== caller.orgId) continue;
       let current: DeveloperTaskStatus = row.status;
       let updatedAt = row.updatedAt;
       // A closed task never changes again, so only open rows are derived afresh.

@@ -87,7 +87,7 @@ export function orgMemberKey(orgId: OrgId, developerId: string): OrgKey {
 
 /** Pointer from a developer to their org. */
 export function developerOrgKey(developerId: string): OrgKey {
-  return { pk: `DEVELOPER#${developerId}`, sk: "ORG" };
+  return { pk: `DEVELOPER_ORG#${developerId}`, sk: "ORG" };
 }
 
 export function orgInviteKey(tokenHash: string): OrgKey {

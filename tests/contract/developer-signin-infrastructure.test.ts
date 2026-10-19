@@ -260,13 +260,16 @@ describe("developer sign-in infrastructure (named environments)", () => {
       "DEVELOPER_SIGNIN_SLACK", "DEVELOPER_OIDC_ISSUER", "DEVELOPER_OIDC_CLIENT_ID", "DEVELOPER_OIDC_REQUIRED_CLAIM", "DEVELOPER_OIDC_REQUIRED_VALUES",
       "DEVELOPER_OIDC_DISPLAY_NAME", "DEVELOPER_OIDC_SECRET_ID", "STATE_TABLE_NAME",
     ]));
-    // A sign-in puts the developer in an org, which lives in the State table: DeveloperIdentity reads and writes only the org keys there.
+    // A sign-in puts the developer in an org, which lives in the State table: DeveloperIdentity reads and writes only the org partition and the developer pointer there.
     const stateGrants = ofType(named, "AWS::IAM::Policy").flatMap(([, policy]) => (policy.Properties.PolicyDocument as { Statement: Array<Record<string, unknown>> }).Statement)
-      .filter((statement) => JSON.stringify(statement.Condition ?? {}).includes("ORG_INVITE#*"));
+      .filter((statement) => JSON.stringify(statement.Condition ?? {}).includes("DEVELOPER_ORG#*"));
     expect(stateGrants).toHaveLength(1);
     expect(stateGrants[0]).toMatchObject({
       Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], Effect: "Allow",
-      Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ORG#*", "DEVELOPER#*", "ORG_INVITE#*", "ORG_EMAIL#*", "SLACK_TEAM#*"] } },
+    });
+    // Exactly the bare org partition (20 characters, an org ID's) and the developer's org pointer: no org-scoped, invite, email or Slack team row.
+    expect((stateGrants[0]!.Condition as Record<string, Record<string, unknown>>)["ForAllValues:StringLike"]).toEqual({
+      "dynamodb:LeadingKeys": ["ORG#org_????????????????????", "DEVELOPER_ORG#*"],
     });
     // FR-045: both functions get each method's enabled-since cutoff straight from its parameter.
     const variables = (prefix: string) => (named.Resources[functionId(named, prefix)]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;

@@ -3764,11 +3764,8 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Condition": {
                 "ForAllValues:StringLike": {
                   "dynamodb:LeadingKeys": [
-                    "ORG#*",
-                    "DEVELOPER#*",
-                    "ORG_INVITE#*",
-                    "ORG_EMAIL#*",
-                    "SLACK_TEAM#*",
+                    "ORG#org_????????????????????",
+                    "DEVELOPER_ORG#*",
                   ],
                 },
               },
