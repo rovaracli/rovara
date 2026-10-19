@@ -307,6 +307,8 @@ export function stackParameters(part: DeployPart, answers: InstallAnswers, outpu
         OperatorAlertsTopicArn: required(outputs, "control-plane", "OperatorAlertsTopicArn", answers.env),
         VpcId: required(outputs, "foundation", "VpcId", answers.env),
         PrivateSubnetIds: required(outputs, "foundation", "PrivateSubnetIds", answers.env),
+        ModelProxyUrl: required(outputs, "control-plane", "ModelProxyUrl", answers.env),
+        ModelProxySecurityGroupId: required(outputs, "control-plane", "ModelProxySecurityGroupId", answers.env),
         ModelProvider: answers.models.providers?.orchestrator ?? "amazon-bedrock",
         ModelId: answers.models.orchestrator,
         ...secret, ...routing,

@@ -13344,6 +13344,15 @@ exports[`named environment templates > agentx-staging-slack is unchanged 1`] = `
       "Default": "amazon-bedrock",
       "Type": "String",
     },
+    "ModelProxySecurityGroupId": {
+      "Description": "ModelProxySecurityGroupId output of AgentXControlPlane: the proxy load balancer's security group",
+      "Type": "AWS::EC2::SecurityGroup::Id",
+    },
+    "ModelProxyUrl": {
+      "AllowedPattern": "^https?://.+$",
+      "Description": "ModelProxyUrl output of AgentXControlPlane",
+      "Type": "String",
+    },
     "OpenAISecretArn": {
       "AllowedPattern": "^$|^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$",
       "Default": "",
@@ -14325,6 +14334,42 @@ exports[`named environment templates > agentx-staging-slack is unchanged 1`] = `
       },
       "Type": "AWS::Logs::MetricFilter",
     },
+    "ModelProxyEgress": {
+      "Properties": {
+        "Description": "Model proxy port 4000 on the proxy load balancer",
+        "DestinationSecurityGroupId": {
+          "Ref": "ModelProxySecurityGroupId",
+        },
+        "FromPort": 4000,
+        "GroupId": {
+          "Fn::GetAtt": [
+            "SecurityGroup",
+            "GroupId",
+          ],
+        },
+        "IpProtocol": "tcp",
+        "ToPort": 4000,
+      },
+      "Type": "AWS::EC2::SecurityGroupEgress",
+    },
+    "ModelProxyIngress": {
+      "Properties": {
+        "Description": "Model proxy port 4000 from the Slack orchestrator",
+        "FromPort": 4000,
+        "GroupId": {
+          "Ref": "ModelProxySecurityGroupId",
+        },
+        "IpProtocol": "tcp",
+        "SourceSecurityGroupId": {
+          "Fn::GetAtt": [
+            "SecurityGroup",
+            "GroupId",
+          ],
+        },
+        "ToPort": 4000,
+      },
+      "Type": "AWS::EC2::SecurityGroupIngress",
+    },
     "SecurityGroup": {
       "Properties": {
         "GroupDescription": "AgentX Slack orchestrator: no ingress and HTTPS-only egress",
@@ -14659,6 +14704,12 @@ exports[`named environment templates > agentx-staging-slack is unchanged 1`] = `
                 "Name": "AGENTX_GATE_CLASSIFIER_MODEL",
                 "Value": {
                   "Ref": "GateClassifierModelId",
+                },
+              },
+              {
+                "Name": "AGENTX_MODEL_PROXY_URL",
+                "Value": {
+                  "Ref": "ModelProxyUrl",
                 },
               },
             ],

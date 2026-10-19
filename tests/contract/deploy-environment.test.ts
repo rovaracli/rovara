@@ -166,6 +166,8 @@ function scriptedOutputs(): Record<string, StackOutputs> {
       SlackThreadSessionBucketName: "b",
       SlackSecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:SlackSecret-x",
       OperatorAlertsTopicArn: "arn:aws:sns:us-east-1:123456789012:agentx-staging-alerts",
+      ModelProxyUrl: "http://internal-proxy.example.test:4000",
+      ModelProxySecurityGroupId: "sg-0123456789abcdef0",
     },
     [stackName("runtime")]: { RuntimeArn: "arn:runtime" },
     [stackName("slack")]: { OrchestratorArn: "arn:slack" },

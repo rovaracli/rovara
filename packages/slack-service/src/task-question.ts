@@ -148,6 +148,7 @@ export async function runTaskAnswer(
     // Nothing reads the conversation of a turn with no tools.
     conversationId: deterministicUuid(`${message.eventId}:task-answer-conversation`),
     orchestratorInstructions: workspace.orchestratorInstructions,
+    ...(workspace.orgId === undefined ? {} : { orgId: workspace.orgId }),
     requestId: requestIdSequence(message.eventId),
     turnNote: workspace.taskContext,
     answerOnly: true,

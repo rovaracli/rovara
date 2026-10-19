@@ -1117,6 +1117,8 @@ export class ControlPlaneStack extends Stack {
     new CfnOutput(this, "OperatorAlertsTopicArn", { value: operatorAlerts.topicArn });
     if (modelProxy !== undefined) {
       new CfnOutput(this, "ModelProxyUrl", { value: modelProxy.url });
+      // The Slack orchestrator stack admits itself to the proxy load balancer with this group (Task 13).
+      new CfnOutput(this, "ModelProxySecurityGroupId", { value: modelProxy.loadBalancerSecurityGroup.attrGroupId });
       new CfnOutput(this, "ModelProxyMasterKeySecretArn", { value: modelProxy.masterKeySecret.secretArn });
     }
   }

@@ -5,7 +5,7 @@ import { createModelRequestRouter, type RequestRouter } from "@agentx/orchestrat
 import { TURN_GATE_REASON_LIMIT, redactAndCap } from "@agentx/contracts";
 import type { ServiceLog, TurnInput } from "./processor.js";
 
-export interface HostedRuntimeOptions extends Pick<OrchestratorOptions, "stateDirectory" | "api" | "model" | "sessionFile" | "onConnectorUnavailable" | "onExtensionError" | "modelRuntime"> {
+export interface HostedRuntimeOptions extends Pick<OrchestratorOptions, "stateDirectory" | "api" | "model" | "sessionFile" | "onConnectorUnavailable" | "onExtensionError" | "modelRuntime" | "proxy"> {
   /** Absent, every change no rule settles asks. */
   classifier?: ActionClassifier;
   /** The gate's deadline for one classifier check; the same setting as the classifier's own timeout. */
@@ -59,6 +59,8 @@ export async function createHostedClassifier(options: {
   log: ServiceLog;
   /** Tests register Pi's faux provider here; production creates its own. */
   modelRuntime?: Parameters<typeof createModelClassifier>[0]["modelRuntime"];
+  /** Task 13: the turn's model proxy and key; present, no provider secret is read. */
+  proxy?: Parameters<typeof createModelClassifier>[0]["proxy"];
   create?: typeof createModelClassifier;
 }): Promise<{ classifier: ActionClassifier; available: boolean }> {
   const create = options.create ?? createModelClassifier;
@@ -68,6 +70,7 @@ export async function createHostedClassifier(options: {
       classifier: await create({
         model: options.model, timeoutMs: options.timeoutMs, failOnUnknownModel: true,
         ...(options.modelRuntime === undefined ? {} : { modelRuntime: options.modelRuntime }),
+        ...(options.proxy === undefined ? {} : { proxy: options.proxy }),
       }),
       available: true,
     };
@@ -90,12 +93,15 @@ export async function createHostedRequestRouter(options: {
   timeoutMs: number;
   log: ServiceLog;
   modelRuntime?: Parameters<typeof createModelRequestRouter>[0]["modelRuntime"];
+  /** Task 13: the model proxy and key to route through; present, no provider secret is read. */
+  proxy?: Parameters<typeof createModelRequestRouter>[0]["proxy"];
 }): Promise<RequestRouter | undefined> {
   if (!options.classifierAvailable) return undefined;
   try {
     return await createModelRequestRouter({
       model: options.model, timeoutMs: options.timeoutMs, failOnUnknownModel: true,
       ...(options.modelRuntime === undefined ? {} : { modelRuntime: options.modelRuntime }),
+      ...(options.proxy === undefined ? {} : { proxy: options.proxy }),
     });
   } catch (error) {
     options.log("route.router_unavailable", { provider: options.model.provider, model: options.model.modelId, errorName: error instanceof Error ? error.name : "unknown" });

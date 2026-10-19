@@ -22,6 +22,7 @@ import {
   aws_sns as sns,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
+import { MODEL_PROXY_PORT } from "./model-proxy.js";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 
 export const AGENTX_SLACK_ORCHESTRATOR_REPOSITORY = "agentx-slack-orchestrator";
@@ -70,6 +71,17 @@ export class SlackOrchestratorStack extends Stack {
       type: "List<AWS::EC2::Subnet::Id>",
       description: "Private subnets with NAT egress, such as AgentXProductionFoundation's PrivateSubnetIds",
     });
+    // Named environments (Task 13): the orchestrator calls models through the model proxy with a key minted per turn.
+    // Both values are the control plane's outputs; the legacy template has neither and stays byte-identical.
+    const modelProxyUrl = naming.env === undefined ? undefined : new CfnParameter(this, "ModelProxyUrl", {
+      type: "String",
+      allowedPattern: "^https?://.+$",
+      description: "ModelProxyUrl output of AgentXControlPlane",
+    });
+    const modelProxySecurityGroupId = naming.env === undefined ? undefined : new CfnParameter(this, "ModelProxySecurityGroupId", {
+      type: "AWS::EC2::SecurityGroup::Id",
+      description: "ModelProxySecurityGroupId output of AgentXControlPlane: the proxy load balancer's security group",
+    });
     const providerKeys = providerKeyParameters(this);
     const openRouterProviders = openRouterRoutingParameter(this);
     const classifierProvider = new CfnParameter(this, "GateClassifierProvider", { type: "String", default: "amazon-bedrock", allowedValues: [...MODEL_PROVIDERS] });
@@ -93,6 +105,21 @@ export class SlackOrchestratorStack extends Stack {
       }],
       tags: [{ key: "Application", value: "AgentX" }],
     });
+    if (modelProxySecurityGroupId !== undefined) {
+      // Orchestrator -> proxy load balancer on the proxy port, and only that: a separate pair of rules, as in ModelProxy.
+      new ec2.CfnSecurityGroupEgress(this, "ModelProxyEgress", {
+        groupId: securityGroup.attrGroupId,
+        ipProtocol: "tcp", fromPort: MODEL_PROXY_PORT, toPort: MODEL_PROXY_PORT,
+        destinationSecurityGroupId: modelProxySecurityGroupId.valueAsString,
+        description: `Model proxy port ${MODEL_PROXY_PORT} on the proxy load balancer`,
+      });
+      new ec2.CfnSecurityGroupIngress(this, "ModelProxyIngress", {
+        groupId: modelProxySecurityGroupId.valueAsString,
+        ipProtocol: "tcp", fromPort: MODEL_PROXY_PORT, toPort: MODEL_PROXY_PORT,
+        sourceSecurityGroupId: securityGroup.attrGroupId,
+        description: `Model proxy port ${MODEL_PROXY_PORT} from the Slack orchestrator`,
+      });
+    }
     const cluster = new ecs.CfnCluster(this, "Cluster", {
       clusterSettings: [{ name: "containerInsights", value: "disabled" }],
       tags: [{ key: "Application", value: "AgentX" }],
@@ -366,6 +393,7 @@ export class SlackOrchestratorStack extends Stack {
           { name: "AGENTX_OPENROUTER_PROVIDERS", value: openRouterProviders.valueAsString },
           { name: "AGENTX_GATE_CLASSIFIER_PROVIDER", value: classifierProvider.valueAsString },
           { name: "AGENTX_GATE_CLASSIFIER_MODEL", value: gateClassifierModelId.valueAsString },
+          ...(modelProxyUrl === undefined ? [] : [{ name: "AGENTX_MODEL_PROXY_URL", value: modelProxyUrl.valueAsString }]),
         ],
         logConfiguration: {
           logDriver: "awslogs",

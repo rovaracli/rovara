@@ -198,6 +198,8 @@ export function allStackOutputs(env = "staging"): Record<string, StackOutputs> {
       SlackRequestQueueUrl: "https://sqs.us-east-1.amazonaws.com/123456789012/requests",
       SlackThreadsTableName: "threads", TurnRecordsTableName: "turns", SlackThreadSessionBucketName: "sessions",
       OperatorAlertsTopicArn: `arn:aws:sns:us-east-1:123456789012:agentx-${env}-alerts`,
+      ModelProxyUrl: "http://internal-proxy.example.test:4000",
+      ModelProxySecurityGroupId: "sg-0123456789abcdef0",
     },
     [name("runtime")]: {},
     [name("slack")]: {},

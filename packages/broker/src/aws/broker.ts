@@ -168,6 +168,7 @@ import {
   type SlackThread,
   type SlackThreadPrepareResult,
   type SlackThreadWorkspaceResult,
+  SlackModelAccessRequestSchema,
   type SlackWorkspaceCloseCompleteResult,
   type SlackWorkspaceCloseStartResult,
   type ThreadConnector,
@@ -1148,9 +1149,17 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           if (dependencies.swebench === undefined) return json({ batches: [], dropped: [] }, request.requestId);
           return json(await listWatchedBatches(swebenchDependencies(dependencies), async (teamId, channelId) => (await getTeamSlackBinding(dependencies, teamId, channelId))?.projectName), request.requestId);
         }
+        // Task 13: a turn's model key. It needs the thread's team, not a channel binding, so it is answered before the identity.
+        if (request.method === "POST" && serviceUrl.pathname === "/v1/model-access") {
+          return await handleSlackModelAccess(dependencies, request);
+        }
         const identity = await slackServiceIdentity(dependencies, request);
         if (request.method === "POST" && serviceUrl.pathname === "/v1/threads/workspace") {
-          return json(await ensureThreadWorkspace(dependencies, identity, parseBody(request.body)), request.requestId);
+          const body = parseBody(request.body);
+          const workspace = await ensureThreadWorkspace(dependencies, identity, body);
+          // Task 13: the org is told only to a service that asks, because older services parse this result strictly.
+          const asksForOrg = body !== null && typeof body === "object" && (body as { includeOrgId?: unknown }).includeOrgId === true;
+          return json(asksForOrg && workspace.outcome === "WORKSPACE" && identity.orgId !== undefined ? { ...workspace, orgId: identity.orgId } : workspace, request.requestId);
         }
         if (request.method === "POST" && serviceUrl.pathname === "/v1/tasks/thread-notes/answered") {
           return json(await markThreadNoteAnswered(dependencies, identity, parseBody(request.body)), request.requestId);
@@ -4359,6 +4368,39 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   }
 }
+
+/**
+ * Task 13: the key the Slack orchestrator calls models with for one turn. The caller is the orchestrator role, the team
+ * comes from the thread header, and the body's org must be the org that team is bound to: the orchestrator cannot name
+ * an org the team does not belong to. The key is minted in the Slack user's name only if the org has them as a member,
+ * else for the org alone. The proxy's failures all answer MODEL_PROXY_UNAVAILABLE, without detail; the key is never logged.
+ */
+async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, request: AdaptedHttpRequest) {
+  requireSlackServiceRole(dependencies, request);
+  const body = SlackModelAccessRequestSchema.safeParse(parseBody(request.body));
+  if (!body.success) throw agentXError("CONFIG_INVALID", "model access needs an orgId, a turnId and optionally a Slack user ID");
+  const context = parseSlackHeaders(request.headers);
+  const teamOrg = await slackTeamOrg(dependencies, context.thread.teamId);
+  if (body.data.orgId !== teamOrg) throw agentXError("FORBIDDEN", "this Slack workspace is not connected to that organization");
+  const modelAccess = dependencies.modelAccess;
+  if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
+  const developerId = body.data.slackUserId === undefined ? undefined
+    : await linkedRequester(dependencies, teamOrg, { teamId: context.thread.teamId, userId: body.data.slackUserId });
+  try {
+    const minted = await modelAccess.access.mintKey({
+      orgId: teamOrg, ...(developerId === undefined ? {} : { developerId }), purpose: "turn", refId: body.data.turnId,
+      maxBudgetUsd: PER_TURN_BUDGET_USD, ttlSeconds: TURN_KEY_TTL_SECONDS,
+    });
+    return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "model_access.turn_mint_failed", errorName: error instanceof Error ? error.name : "unknown" }));
+    throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
+  }
+}
+
+/** What one Slack turn's key may spend, and how long it lasts (a turn holds a queue message for at most 15 minutes). */
+const PER_TURN_BUDGET_USD = 2;
+const TURN_KEY_TTL_SECONDS = 900;
 
 /**
  * The member who asked for an operation, when the org knows them: a developer requester, or the developer a Slack user

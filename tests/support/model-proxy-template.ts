@@ -11,7 +11,7 @@ export const hasModelProxy = (template: unknown): boolean => Object.keys((templa
 
 /**
  * The model proxy (Task 10) adds, to a named control plane: two parameters, one construct's resources
- * (ModelProxy*), two outputs, and it moves the provider-key reads from the Slack orchestrator and the
+ * (ModelProxy*), three outputs (the third is the load balancer's group, which the Slack stack admits itself to), and it moves the provider-key reads from the Slack orchestrator and the
  * EC2 workers to its own task role (ruling R4). Each part is checked to be exactly this, then taken
  * out (the three reads put back on their old roles), so the rest of the template must still match the
  * recorded snapshot. model-proxy-infrastructure.test.ts checks the proxy itself.
@@ -23,7 +23,7 @@ export function withoutModelProxy(template: unknown): unknown {
     expect(synthesized.Parameters[name]).toMatchObject({ Type: "String" });
     delete synthesized.Parameters[name];
   }
-  for (const name of ["ModelProxyUrl", "ModelProxyMasterKeySecretArn"]) {
+  for (const name of ["ModelProxyUrl", "ModelProxyMasterKeySecretArn", "ModelProxySecurityGroupId"]) {
     expect(synthesized.Outputs[name]).toBeDefined();
     delete synthesized.Outputs[name];
   }

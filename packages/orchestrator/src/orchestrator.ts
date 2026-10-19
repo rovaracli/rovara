@@ -1,5 +1,5 @@
 import { mkdir } from "node:fs/promises";
-import { createModelRuntimeWithFallback } from "@agentx/model-runtime";
+import { createModelRuntimeWithFallback, type ModelProxyOptions } from "@agentx/model-runtime";
 import { resolve } from "node:path";
 import {
   createAgentSessionFromServices,
@@ -52,6 +52,8 @@ export interface OrchestratorOptions {
   turnRecorder?: TurnRecorder;
   /** Tests and the offline evaluation register Pi's faux provider here; production creates its own. */
   modelRuntime?: ModelRuntime;
+  /** Task 13: this turn's model proxy and key. Present, the runtime reads no provider secret and calls models through it. */
+  proxy?: ModelProxyOptions;
   /** Issue 157: told each accepted worker task or follow-up operation before its tool waits on it. */
   onOperationAccepted?: (operationId: string) => Promise<void>;
   /** Issue 173: told the operation a recovery tool re-attaches to before it waits on it. */
@@ -106,7 +108,7 @@ export async function createOrchestratorRuntime(options: OrchestratorOptions): P
   // Directories first, then the model check, then discovery: the order this function always had.
   await stateDirectories(options.stateDirectory);
   const resolved = options.modelRuntime ? { runtime: options.modelRuntime, model: options.model }
-    : await createModelRuntimeWithFallback(options.model, "orchestrator");
+    : await createModelRuntimeWithFallback(options.model, "orchestrator", options.proxy === undefined ? {} : { proxy: options.proxy });
   options = { ...options, model: resolved.model };
   const modelRuntime = resolved.runtime;
   if (!modelRuntime.getModel(options.model.provider, options.model.modelId)) {

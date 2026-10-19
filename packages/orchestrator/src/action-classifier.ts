@@ -1,5 +1,5 @@
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { createModelRuntimeWithFallback } from "@agentx/model-runtime";
+import { createModelRuntimeWithFallback, type ModelProxyOptions } from "@agentx/model-runtime";
 
 /**
  * What the classifier sees: the members' own messages and the pending call. Never a tool result.
@@ -149,11 +149,13 @@ export async function createModelClassifier(options: {
   model: { provider: string; modelId: string };
   timeoutMs?: number;
   modelRuntime?: ModelRuntime;
+  /** Task 13: the turn's model proxy and key; present, no provider secret is read. */
+  proxy?: ModelProxyOptions;
   /** Throw here, rather than on every call, when the runtime does not know the model. */
   failOnUnknownModel?: boolean;
 }): Promise<ActionClassifier> {
   const resolved = options.modelRuntime ? { runtime: options.modelRuntime, model: options.model }
-    : await createModelRuntimeWithFallback(options.model, "classifier");
+    : await createModelRuntimeWithFallback(options.model, "classifier", options.proxy === undefined ? {} : { proxy: options.proxy });
   const runtime = resolved.runtime;
   const model = runtime.getModel(resolved.model.provider, resolved.model.modelId);
   if (!model && options.failOnUnknownModel === true) throw new ClassifierError("the classifier model is unavailable");

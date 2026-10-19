@@ -1,7 +1,7 @@
 // Task 21: sorts a plain top-level Slack request into a question, a small change, a large change or unclear, with the
 // action gate's own classifier model, runtime and deadline. It only suggests: nothing that changes code starts from it.
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { createModelRuntimeWithFallback } from "@agentx/model-runtime";
+import { createModelRuntimeWithFallback, type ModelProxyOptions } from "@agentx/model-runtime";
 import { REQUEST_ROUTER_SYSTEM_PROMPT, parseRequestRoute, requestRouterPrompt, type RequestRouteKind, type RequestRouteOutcome } from "@agentx/contracts";
 import { ClassifierError, ClassifierTimeoutError, completeBeforeDeadline, usableClassifierTimeout } from "./action-classifier.js";
 
@@ -25,10 +25,12 @@ export async function createModelRequestRouter(options: {
   model: { provider: string; modelId: string };
   timeoutMs?: number;
   modelRuntime?: ModelRuntime;
+  /** Task 13: the model proxy and key to call through; present, no provider secret is read. */
+  proxy?: ModelProxyOptions;
   failOnUnknownModel?: boolean;
 }): Promise<RequestRouter> {
   const resolved = options.modelRuntime ? { runtime: options.modelRuntime, model: options.model }
-    : await createModelRuntimeWithFallback(options.model, "classifier");
+    : await createModelRuntimeWithFallback(options.model, "classifier", options.proxy === undefined ? {} : { proxy: options.proxy });
   const runtime = resolved.runtime;
   const model = runtime.getModel(resolved.model.provider, resolved.model.modelId);
   if (!model && options.failOnUnknownModel === true) throw new ClassifierError("the classifier model is unavailable");
