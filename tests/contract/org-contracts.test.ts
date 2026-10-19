@@ -36,6 +36,10 @@ describe("org ids", () => {
     expect(OrgIdSchema.safeParse(singleOrgIdForEnv("")).success).toBe(true);
   });
 
+  it("pins the derived id of the staging environment: the ids are persisted, so a refactor must not silently re-key them", () => {
+    expect(singleOrgIdForEnv("staging")).toBe("org_5t5gp58cc1ibgg6e3aoj");
+  });
+
   it("is exported from the contracts index", () => {
     expect(contracts.OrgIdSchema).toBe(OrgIdSchema);
   });

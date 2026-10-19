@@ -246,6 +246,8 @@ export class ModelProxy extends Construct {
           { name: "LITELLM_CONFIG_YAML", value: configYaml },
           { name: "AWS_REGION", value: stack.region },
           { name: "STORE_MODEL_IN_DB", value: "False" },
+          // Prices come from the cost map shipped in the pinned image, never fetched at start: a proxy that cannot reach GitHub still starts.
+          { name: "LITELLM_LOCAL_MODEL_COST_MAP", value: "True" },
         ],
         secrets: [
           { name: "LITELLM_MASTER_KEY", valueFrom: this.masterKeySecret.secretArn },

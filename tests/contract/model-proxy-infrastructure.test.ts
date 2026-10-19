@@ -94,6 +94,10 @@ describe("model proxy infrastructure (named environments)", () => {
     expect(served.every(({ id }) => id.startsWith("us.anthropic.claude-"))).toBe(true);
   });
 
+  it("reads LiteLLM's prices from the cost map in the pinned image instead of fetching them at start", () => {
+    expect(container().Environment).toContainEqual({ Name: "LITELLM_LOCAL_MODEL_COST_MAP", Value: "True" });
+  });
+
   it("takes the master key and the database URL from Secrets Manager, never as plain environment", () => {
     const definition = container();
     expect(definition.Environment.map((variable) => variable.Name)).not.toEqual(expect.arrayContaining(["LITELLM_MASTER_KEY"]));
