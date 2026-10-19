@@ -63,10 +63,18 @@ export function projectMemberKey(orgId: OrgId, ownerKey: string, project: string
   return { pk: memberGrantsPk(orgId, ownerKey), sk: `PROJECT#${project}` };
 }
 
-export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET";
+export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET" | "BUDGET_SYNCED";
 
 export function orgSettingsKey(orgId: OrgId, name: OrgSettingName): OrgKey {
   return { pk: orgScoped(orgId, "SETTINGS"), sk: name };
+}
+
+/**
+ * The marker that says what the model proxy was last told: the org's monthly limit, or, given a developer, that member's.
+ * It sits beside the org's settings, so one lookup says whether an upsert is due.
+ */
+export function budgetSyncedKey(orgId: OrgId, developerId?: string): OrgKey {
+  return developerId === undefined ? orgSettingsKey(orgId, "BUDGET_SYNCED") : { pk: orgScoped(orgId, "SETTINGS"), sk: `BUDGET_SYNCED#${developerId}` };
 }
 
 /** The org-wide open-workspace counter; it replaces `DEVELOPER_LIMIT#ORGANIZATION`. */

@@ -10,6 +10,7 @@ import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess, SpendFigures } 
 const BUDGET_DURATION = "1mo";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_MESSAGE_LENGTH = 300;
+const KEY_INFO_AT_ONCE = 10;
 
 export interface ModelProxyClientInput {
   baseUrl: string;
@@ -83,6 +84,32 @@ export class ModelProxyClient implements ModelAccess {
       member: figures(isRecord(user.body) ? user.body.user_info : undefined, "member"),
       org: figures(isRecord(team.body) ? team.body.team_info : undefined, "org"),
     };
+  }
+
+  async orgSpend(orgId: OrgId): Promise<SpendFigures> {
+    const reply = await this.request("GET", `/team/info?team_id=${encodeURIComponent(orgId)}`, await this.master(), undefined);
+    if (reply.status !== 200) throw refusal(reply);
+    return figures(isRecord(reply.body) ? reply.body.team_info : undefined, "org");
+  }
+
+  async keySpend(keyIds: readonly string[]): Promise<number> {
+    const unique = [...new Set(keyIds)];
+    if (unique.length === 0) return 0;
+    const master = await this.master();
+    let total = 0;
+    for (let start = 0; start < unique.length; start += KEY_INFO_AT_ONCE) {
+      const replies = await Promise.all(unique.slice(start, start + KEY_INFO_AT_ONCE).map((id) => this.request("GET", `/key/info?key=${encodeURIComponent(id)}`, master, undefined)));
+      for (const reply of replies) {
+        // A key the proxy no longer has reports no spend; the others' figures stand.
+        if (reply.status === 404) continue;
+        if (reply.status !== 200) throw refusal(reply);
+        const info = isRecord(reply.body) ? reply.body.info : undefined;
+        const spent = isRecord(info) ? (info.spend === null ? 0 : numberOf(info.spend)) : undefined;
+        if (spent === undefined) throw unavailable("model proxy answered with no key spend");
+        total += spent;
+      }
+    }
+    return total;
   }
 
   async mintKey(input: MintKeyInput): Promise<MintedKey> {

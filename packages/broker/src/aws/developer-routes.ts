@@ -58,6 +58,8 @@ import {
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
 import { DEFAULT_ROVARA_WEB_ORIGIN, inviteUrl } from "../org/invite-url.js";
+import { MAX_BUDGET_OVERRIDES, isBudgetAmount, readBudgets, syncBudgets, writeBudgets, ensureSynced, type BudgetDependencies, type OrgBudgetSettings } from "../org/budget.js";
+import type { ModelAccess } from "../model-proxy/access.js";
 import type { OrgStore } from "../org/store.js";
 import { checkTaskPersonIdentity, registerTaskChannelPeople, resolveTaskPickerPersonWithId, type ProjectAccessSubject, type TaskPersonIdentityDependencies } from "../developer/task-person-identity.js";
 import { taskPeopleDisplayAdmission, type TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
@@ -128,6 +130,8 @@ export interface DeveloperRouteDependencies {
   chatgpt?: ChatGptConnections;
   /** Which org a developer belongs to: the membership a token's `org` claim is checked against on every request. */
   orgs?: Pick<OrgStore, "orgForDeveloper" | "getOrg" | "createInvite">;
+  /** The model proxy, for budgets (ruling R28). Absent without one: budgets are not set up, and task starts are not checked against them. */
+  modelAccess?: ModelAccess;
 }
 /** Who is asking about a project, and in which org: grants and revisions are read in that org only. */
 export type ProjectAccessCaller = ProjectAccessSubject & { orgId: OrgId };
@@ -776,6 +780,7 @@ export function developerTaskRouteDependencies(
     ...(deps.developer.slackTeamId === undefined ? {} : { slackTeamId: deps.developer.slackTeamId }),
     issuer: deps.developer.issuer,
     actions: deps.tasks!,
+    ...(deps.modelAccess === undefined ? {} : { modelAccess: deps.modelAccess }),
     ...(deps.workflowE2EPresentation === undefined ? {} : { workflowE2EPresentation: deps.workflowE2EPresentation }),
     ...(deps.workflowE2EPublicationChecks === undefined ? {} : { workflowE2EPublicationChecks: deps.workflowE2EPublicationChecks }),
     ...(deps.registeredRepositoryIdentity === undefined ? {} : { registeredRepositoryIdentity: deps.registeredRepositoryIdentity }),
@@ -900,6 +905,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "GET" && url.pathname === "/v1/dev/workspaces") return listWorkspaces(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/dev/org") return getOrganization(deps, caller);
   if (request.method === "POST" && url.pathname === "/v1/dev/org/invites") return createOrganizationInvite(deps, caller, jsonBody(request));
+  if (request.method === "GET" && url.pathname === "/v1/dev/budget") return getBudget(deps, caller);
+  if (request.method === "PUT" && url.pathname === "/v1/dev/org/budget") return putOrganizationBudget(deps, caller, jsonBody(request));
   if (url.pathname === "/v1/dev/tasks" || url.pathname.startsWith("/v1/dev/tasks/")) {
     if (deps.tasks === undefined) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
     return routeDeveloperTaskRequest(developerTaskRouteDependencies(deps, caller), caller, request, url);
@@ -942,6 +949,57 @@ async function createOrganizationInvite(deps: DeveloperRouteDependencies, caller
   const { token } = await deps.orgs.createInvite({ orgId: caller.orgId, createdBy: caller.developerId, role, requestId, ...(email === undefined ? {} : { email }) });
   logDeveloperEvent({ event: "developer.org_invite_created", orgId: caller.orgId, role, targeted: String(email !== undefined) });
   return { inviteUrl: inviteUrl(deps.developer.webOrigin ?? DEFAULT_ROVARA_WEB_ORIGIN, token) };
+}
+
+function budgetDependencies(deps: DeveloperRouteDependencies): BudgetDependencies {
+  if (deps.modelAccess === undefined) throw agentXError("NOT_FOUND", "budgets are not set up in this deployment");
+  return { documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess };
+}
+
+/** What the caller and their org have spent this month, and their limits: LiteLLM's figures (ruling R22), which a soft cap can leave over the limit (ruling R23). */
+async function getBudget(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<{ member: { spentUsd: number; limitUsd: number }; org: { spentUsd: number; limitUsd: number } }> {
+  const budgets = budgetDependencies(deps);
+  await ensureSynced(budgets, caller.orgId, caller.developerId);
+  return budgets.access.spend(caller.orgId, caller.developerId);
+}
+
+const BudgetAmountSchema = z.number().refine(isBudgetAmount, "must be a number from 0 to 1000000");
+const PutBudgetBodySchema = z.object({
+  requestId: z.string().uuid(),
+  orgMonthlyUsd: BudgetAmountSchema.optional(),
+  memberDefaultMonthlyUsd: BudgetAmountSchema.optional(),
+  memberOverrides: z.record(z.string().min(1).max(256), BudgetAmountSchema).refine((overrides) => Object.keys(overrides).length <= MAX_BUDGET_OVERRIDES, `at most ${String(MAX_BUDGET_OVERRIDES)} overrides`).optional(),
+}).strict();
+
+/**
+ * An owner or admin sets the org's monthly limit, the members' default, and per-member overrides; what is not named
+ * stays as it was, and `memberOverrides`, when named, replaces the whole map. The settings are written, then the
+ * proxy is told (the org and every member whose limit this named or removed), always. Members under the default are
+ * told lazily, at their next start. If the proxy cannot be reached the settings stand and the call answers 503.
+ */
+async function putOrganizationBudget(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<{ budget: OrgBudgetSettings }> {
+  if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can change the organization's budgets");
+  const budgets = budgetDependencies(deps);
+  const parsed = PutBudgetBodySchema.safeParse(body);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    // Field names only: the values are the caller's.
+    throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
+  }
+  const { orgMonthlyUsd, memberDefaultMonthlyUsd, memberOverrides } = parsed.data;
+  if (orgMonthlyUsd === undefined && memberDefaultMonthlyUsd === undefined && memberOverrides === undefined) {
+    throw agentXError("CONFIG_INVALID", "body: name at least one of orgMonthlyUsd, memberDefaultMonthlyUsd and memberOverrides");
+  }
+  const before = await readBudgets(budgets, caller.orgId);
+  const after: OrgBudgetSettings = {
+    orgMonthlyUsd: orgMonthlyUsd ?? before.orgMonthlyUsd,
+    memberDefaultMonthlyUsd: memberDefaultMonthlyUsd ?? before.memberDefaultMonthlyUsd,
+    memberOverrides: memberOverrides ?? before.memberOverrides,
+  };
+  await writeBudgets(budgets, caller.orgId, after, caller.developerId, new Date(deps.now()).toISOString());
+  await syncBudgets(budgets, caller.orgId, [...Object.keys(before.memberOverrides), ...Object.keys(after.memberOverrides)]);
+  logDeveloperEvent({ event: "developer.org_budget_changed", orgId: caller.orgId, overrides: String(Object.keys(after.memberOverrides).length) });
+  return { budget: after };
 }
 
 /** Sign in with ChatGPT (#338): the caller's own connection, and only theirs. No route answers a token. */

@@ -5,8 +5,8 @@
 import { InvokeCommand, type InvokeCommandOutput } from "@aws-sdk/client-lambda";
 import { AgentXErrorCodeSchema, agentXError, type AgentXError, type OrgId } from "@agentx/contracts";
 import { z } from "zod";
-import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess } from "./access.js";
-import { MintedKeyResultSchema, SpendResultSchema, type ModelAccessRequest } from "./protocol.js";
+import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess, SpendFigures } from "./access.js";
+import { KeySpendResultSchema, MintedKeyResultSchema, SpendFiguresSchema, SpendResultSchema, type ModelAccessRequest } from "./protocol.js";
 
 const DEFAULT_TIMEOUT_MS = 25_000;
 
@@ -35,6 +35,15 @@ export class ModelAccessInvoker implements ModelAccess {
 
   async spend(orgId: OrgId, developerId: string): Promise<MemberSpend> {
     return this.parseResult(await this.invoke({ op: "spend", args: { orgId, developerId } }), SpendResultSchema);
+  }
+
+  async orgSpend(orgId: OrgId): Promise<SpendFigures> {
+    return this.parseResult(await this.invoke({ op: "orgSpend", args: { orgId } }), SpendFiguresSchema);
+  }
+
+  async keySpend(keyIds: readonly string[]): Promise<number> {
+    if (keyIds.length === 0) return 0;
+    return this.parseResult(await this.invoke({ op: "keySpend", args: { keyIds: [...keyIds] } }), KeySpendResultSchema);
   }
 
   async mintKey(input: MintKeyInput): Promise<MintedKey> {

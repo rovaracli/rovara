@@ -18,6 +18,8 @@ function fakeAccess(overrides: Partial<ModelAccess> = {}): ModelAccess & { calls
     upsertOrg: record("upsertOrg", undefined),
     upsertMember: record("upsertMember", undefined),
     spend: record("spend", { member: { spentUsd: 1, limitUsd: 2 }, org: { spentUsd: 3, limitUsd: 4 } }),
+    orgSpend: record("orgSpend", { spentUsd: 3, limitUsd: 4 }),
+    keySpend: record("keySpend", 1.25),
     mintKey: record("mintKey", { key: VIRTUAL, expiresAt: 1234 }),
     revokeKey: record("revokeKey", undefined),
     ...overrides,
@@ -45,6 +47,20 @@ describe("ModelAccessFunction handler", () => {
       ["mintKey", [mint]],
       ["revokeKey", [VIRTUAL]],
     ]);
+  });
+
+  it("runs the org-only spend and the keys' spend", async () => {
+    const access = fakeAccess();
+    const run = createModelAccessHandler({ access, log: quiet });
+    const ids = ["a".repeat(64), "b".repeat(64)];
+    expect(await run({ op: "orgSpend", args: { orgId: ORG } })).toEqual({ ok: true, result: { spentUsd: 3, limitUsd: 4 } });
+    expect(await run({ op: "keySpend", args: { keyIds: ids } })).toEqual({ ok: true, result: 1.25 });
+    expect(access.calls).toEqual([["orgSpend", [ORG]], ["keySpend", [ids]]]);
+    // Key ids are token hashes: a raw key, or too many ids, is refused before the proxy is asked.
+    for (const keyIds of [[VIRTUAL], Array.from({ length: 501 }, () => "c".repeat(64))]) {
+      expect(await run({ op: "keySpend", args: { keyIds } })).toMatchObject({ ok: false, code: "CONFIG_INVALID" });
+    }
+    expect(access.calls).toHaveLength(2);
   });
 
   it("runs a key request with no developer", async () => {

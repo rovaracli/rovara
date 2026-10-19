@@ -132,6 +132,38 @@ describe("ModelProxyClient", () => {
     expect(await client.spend(ORG, DEV)).toEqual({ member: { spentUsd: 0.0617, limitUsd: 0.05 }, org: { spentUsd: 0, limitUsd: 100 } });
   });
 
+  it("orgSpend reads only the team's figures", async () => {
+    const { client, seen } = proxy(({ path }) => (path === "/team/info" ? json({ team_info: { spend: 7.5, max_budget: 500 } }) : undefined));
+    expect(await client.orgSpend(ORG)).toEqual({ spentUsd: 7.5, limitUsd: 500 });
+    expect(seen.map((s) => `${s.method} ${s.path}${s.search}`)).toEqual([`GET /team/info?team_id=${ORG}`]);
+    const unknown = proxy(() => undefined);
+    expect((await failure(unknown.client.orgSpend(ORG))).code).toBe("NOT_FOUND");
+    const noBudget = proxy(() => json({ team_info: { spend: 1 } }));
+    expect((await failure(noBudget.client.orgSpend(ORG))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+  });
+
+  it("keySpend sums /key/info spend over the distinct ids, counting a null spend as 0 and a key the proxy no longer has as 0", async () => {
+    const spends: Record<string, number | null | "gone"> = { ["a".repeat(64)]: 1.5, ["b".repeat(64)]: null, ["c".repeat(64)]: "gone", ["d".repeat(64)]: 2.25 };
+    const { client, seen } = proxy(({ path, search }) => {
+      if (path !== "/key/info") return undefined;
+      const spend = spends[new URLSearchParams(search).get("key") ?? ""];
+      if (spend === "gone" || spend === undefined) return json({ error: { message: "key not found" } }, 404);
+      return json({ key: "ignored", info: { spend, max_budget: 5 } });
+    });
+    expect(await client.keySpend([...Object.keys(spends), "a".repeat(64)])).toBe(3.75);
+    expect(seen).toHaveLength(4);
+    expect(seen.every((s) => s.method === "GET" && s.headers.get("authorization") === `Bearer ${MASTER}`)).toBe(true);
+    expect(await client.keySpend([])).toBe(0);
+    expect(seen).toHaveLength(4);
+  });
+
+  it("keySpend refuses a malformed answer as MODEL_PROXY_UNAVAILABLE and fails on a 5xx or a 403", async () => {
+    const ids = ["a".repeat(64)];
+    expect((await failure(proxy(() => json({ info: {} })).client.keySpend(ids))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+    expect((await failure(proxy(() => json({ error: "busy" }, 503)).client.keySpend(ids))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+    expect((await failure(proxy(() => json({ error: { message: "forbidden" } }, 403)).client.keySpend(ids))).code).toBe("CONFIG_INVALID");
+  });
+
   it("spend refuses an answer without a budget or with the wrong shape as MODEL_PROXY_UNAVAILABLE", async () => {
     const noBudget = proxy(({ path }) => (path === "/team/info" ? json({ team_info: { spend: 1, max_budget: null } }) : json({ user_info: { spend: 1, max_budget: 5 } })));
     expect((await failure(noBudget.client.spend(ORG, DEV))).code).toBe("MODEL_PROXY_UNAVAILABLE");

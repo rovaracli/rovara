@@ -49,6 +49,8 @@ export interface DeveloperTaskRecord {
   orgId?: OrgId;
   /** What the task's model proxy key may spend, in US dollars (ruling R29); a task without one gets PER_TASK_BUDGET_USD. */
   budgetUsd?: number;
+  /** The model proxy keys minted for this task, by key id (a hash, never the key); the next key's cap counts their spend (ruling R30). */
+  modelKeyIds?: string[];
   developerId: string;
   provider: DeveloperSignInMethod;
   developerName: string;

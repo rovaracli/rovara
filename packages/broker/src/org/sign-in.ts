@@ -13,6 +13,13 @@ export interface ResolveOrgOnSignInDependencies {
   singleOrgId?: OrgId;
   /** The name that single org is created with the first time someone joins it; the environment's name. */
   singleOrgName?: string;
+  /**
+   * Called after a sign-in created or joined an org (not for a person who already had one), so the model proxy knows the org and
+   * the member before the first key names them. Best effort: a failure is logged and never fails the sign-in, and the first key
+   * syncs lazily if this did not.
+   */
+  onOrgJoined?: (input: { orgId: OrgId; developerId: string }) => Promise<void>;
+  log?: (entry: Record<string, unknown>) => void;
 }
 
 export interface ResolveOrgOnSignInInput {
@@ -37,6 +44,21 @@ const sameEmail = (a: string, b: string) => a.trim().toLowerCase() === b.trim().
 
 /** The org and role this sign-in belongs to, creating or joining one on a first sign-in. */
 export async function resolveOrgOnSignIn(deps: ResolveOrgOnSignInDependencies, input: ResolveOrgOnSignInInput): Promise<SignInOrg> {
+  const { onOrgJoined } = deps;
+  if (onOrgJoined === undefined) return resolveOrg(deps, input);
+  const hadOrg = await deps.orgs.orgForDeveloper(input.developerId) !== undefined;
+  const org = await resolveOrg(deps, input);
+  if (!hadOrg) {
+    try {
+      await onOrgJoined({ orgId: org.orgId, developerId: input.developerId });
+    } catch (error) {
+      (deps.log ?? (() => undefined))({ event: "signin.org_hook_failed", errorName: error instanceof Error ? error.name : "unknown" });
+    }
+  }
+  return org;
+}
+
+async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOrgOnSignInInput): Promise<SignInOrg> {
   const { orgs } = deps;
   const cloud = input.method === "cloud";
   const verifiedEmail = input.emailVerified ? input.email : undefined;

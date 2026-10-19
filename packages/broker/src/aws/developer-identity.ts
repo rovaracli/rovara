@@ -4,15 +4,18 @@
 // text in an error (a JSON parse error can quote it, so parse errors are replaced).
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
+import { LambdaClient } from "@aws-sdk/client-lambda";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { createRemoteJWKSet, type JWTVerifyGetKey } from "jose";
-import { singleOrgIdForEnv, type ChannelByNameRequest, type ChannelInfoRequest, type ChannelMembersRequest, type DeveloperSignInMethod, type EndDeveloperSessionsRequest, type SlackAuthCheckRequest, type SlackUserByEmailRequest, type TaskChannelPeopleRequest, type TaskPersonProofRequest } from "@agentx/contracts";
+import { singleOrgIdForEnv, type OrgId, type ChannelByNameRequest, type ChannelInfoRequest, type ChannelMembersRequest, type DeveloperSignInMethod, type EndDeveloperSessionsRequest, type SlackAuthCheckRequest, type SlackUserByEmailRequest, type TaskChannelPeopleRequest, type TaskPersonProofRequest } from "@agentx/contracts";
 import { ProviderNotConfiguredError, oidcSignInProvider, slackSignInProvider, type SignInProvider } from "../developer/providers.js";
 import { createDeveloperIdentityHandler, type DeveloperIdentityConfig } from "../developer/server.js";
 import { slackDirectory } from "../developer/slack-directory.js";
 import { DeveloperSignInStore, methodSince } from "../developer/store.js";
 import { kmsTokenSigner } from "../developer/tokens.js";
+import { ModelAccessInvoker } from "../model-proxy/invoker.js";
+import { syncBudgets } from "../org/budget.js";
 import { OrgStore } from "../org/store.js";
 import type { HttpApiV2Event } from "./lambda.js";
 
@@ -188,6 +191,11 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
   if (config.cloudProblem !== undefined) log({ event: "signin.not_configured", method: "cloud", detail: config.cloudProblem });
   if (config.oidcProblem !== undefined) log({ event: "signin.not_configured", method: "oidc", detail: config.oidcProblem });
   const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient(region), { marshallOptions: { removeUndefinedValues: true } });
+  const stateTableName = required(env, "STATE_TABLE_NAME");
+  // Budgets reach the model proxy through its access function (ruling R28). Without MODEL_ACCESS_FUNCTION_NAME nothing is told
+  // at sign-in, and the broker syncs lazily before the first key instead.
+  const modelAccessFunction = env.MODEL_ACCESS_FUNCTION_NAME ?? "";
+  const modelAccess = modelAccessFunction === "" ? undefined : new ModelAccessInvoker({ functionName: modelAccessFunction, lambda: new LambdaClient(region) });
   return createDeveloperIdentityHandler({
     config,
     store: new DeveloperSignInStore({
@@ -196,8 +204,11 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
       now,
     }),
     // Orgs and membership live in the State table, beside the records they scope; the sign-in table holds identities only.
-    orgs: new OrgStore({ documentClient, tableName: required(env, "STATE_TABLE_NAME"), now }),
+    orgs: new OrgStore({ documentClient, tableName: stateTableName, now }),
     singleOrgId: singleOrgIdForEnv(config.env),
+    ...(modelAccess === undefined ? {} : {
+      onOrgJoined: ({ orgId, developerId }: { orgId: OrgId; developerId: string }) => syncBudgets({ documentClient, tableName: stateTableName, access: modelAccess }, orgId, [developerId]),
+    }),
     signer: kmsTokenSigner({ kms: new KMSClient(region), keyId: required(env, "DEVELOPER_TOKEN_KEY_ARN") }),
     providers: {
       slack: slackSignInProvider({ teamId: config.slack.teamId, credentials: slackSecret, fetch, jwks: jwksFor(SLACK_JWKS_URI), now }),

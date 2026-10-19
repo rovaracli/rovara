@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
 import { PER_TASK_BUDGET_USD, agentXError } from "../../packages/contracts/src/index.js";
-import type { MintKeyInput, MintedKey, ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
 import { bedrockClaudeModelIds } from "../../packages/model-runtime/src/catalog.js";
 import { createConfiguredModelRuntime } from "../../packages/model-runtime/src/index.js";
 import { MODEL_ACCESS_MARGIN_MS, modelAccessSource, modelProxyFromSource } from "../../packages/worker/src/model-access.js";
@@ -11,6 +10,7 @@ import { resolveTaskSessionModel } from "../../packages/worker/src/task-model.js
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { MAYA, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall } from "../support/slack-broker.js";
+import { fakeModelAccess as sharedFakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 const PROXY_URL = "http://internal-proxy.example.test:4000";
@@ -190,12 +190,8 @@ describe("a worker task on an install with a model proxy", () => {
 
 describe("GET /v1/internal/model-access", () => {
   function fakeModelAccess(failure?: Error) {
-    const mintKey = vi.fn<(input: MintKeyInput) => Promise<MintedKey>>(async () => {
-      if (failure !== undefined) throw failure;
-      return { key: PROXY_KEY, expiresAt: Date.parse("2026-10-19T13:00:00.000Z") };
-    });
-    const access: ModelAccess = { upsertOrg: vi.fn(), upsertMember: vi.fn(), spend: vi.fn(), mintKey, revokeKey: vi.fn() };
-    return { access, mintKey };
+    const access = sharedFakeModelAccess({ key: PROXY_KEY, ...(failure === undefined ? {} : { mintFailure: failure }) });
+    return { access, mintKey: access.mintKey };
   }
 
   async function runningTask(failure?: Error) {
@@ -284,8 +280,8 @@ describe("GET /v1/internal/model-access for a Slack thread's task, which has no 
   beforeAll(loadSlackBroker);
 
   async function slackTask() {
-    const mintKey = vi.fn<(input: MintKeyInput) => Promise<MintedKey>>(async () => ({ key: PROXY_KEY, expiresAt: Date.parse("2026-10-19T13:00:00.000Z") }));
-    const access: ModelAccess = { upsertOrg: vi.fn(), upsertMember: vi.fn(), spend: vi.fn(), mintKey, revokeKey: vi.fn() };
+    const access = sharedFakeModelAccess({ key: PROXY_KEY });
+    const mintKey = access.mintKey;
     const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL } } });
     await registerSlackProject(handler);
     const workspace = await ensureWorkspace(handler, thread, slackUser);

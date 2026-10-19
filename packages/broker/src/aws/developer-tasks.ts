@@ -148,6 +148,8 @@ import {
 import { z } from "zod";
 import { channelLabel, decideMode, decideShare, type BoundChannel, type ShareDecision } from "../developer/share.js";
 import { PULL_REQUEST_PARTIAL_REVIEW_LINE, PULL_REQUEST_STATUS_END, PULL_REQUEST_STATUS_START } from "../developer/pull-request-feedback-section.js";
+import { admitSpend } from "../org/budget.js";
+import type { ModelAccess } from "../model-proxy/access.js";
 import { chargeConflict, chargeItems, developerCharge, limitReached, readWorkspaceLimits, releaseConflict, releaseItems, type ChargeConflict, type WorkspaceLimits } from "../developer/limits.js";
 import {
   aiToolTurn,
@@ -215,6 +217,8 @@ export interface DeveloperTaskRouteDependencies {
   /** The caller's org: every project, grant, limit and catalog key a route reads or writes is scoped to it. */
   orgId: OrgId;
   slackTeamId?: string;
+  /** The model proxy (ruling R28): a task start is checked against the monthly budgets through it. Absent on an install with no proxy, where nothing is checked. */
+  modelAccess?: ModelAccess;
   /** C: absent is write-disabled; an existing PEOPLE sidecar remains authoritative either way. */
   taskPeopleConfiguration?: { peopleChangesEnabled: boolean };
   /** Spec 059: absent is the safe default; production factories intentionally leave graph starts disabled. */
@@ -1456,6 +1460,19 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
     log(deps, { event: "developer.task_start_revision_changed", checked: access.revision, latest: project.definition.revision });
     throw agentXError("WORKSPACE_BUSY", "the project changed while starting; try again with the same request_id");
   }
+  // The budget comes first (ruling R23: soft caps, so this is a floor, not a promise): before the limit's counters are read
+  // and before any write. A proxy that cannot answer fails the start with nothing recorded; a refusal is audited like any other.
+  let admitted: { maxBudgetUsd: number } | undefined;
+  if (deps.modelAccess !== undefined) {
+    try {
+      admitted = await admitSpend({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, {
+        orgId: deps.orgId, developerId: caller.developerId, path: request.workflow === true && request.workflowPath === "FULL" ? "FULL" : "QUICK",
+      });
+    } catch (error) {
+      if (error instanceof AgentXError && (error.code === "BUDGET_EXCEEDED" || error.code === "ORG_BUDGET_EXCEEDED")) return refused(error);
+      throw error;
+    }
+  }
   const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.orgId, deps.actions.limitDefaults);
   const charge = developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: caller.slackUserId, developerId: caller.developerId });
   let full = await limitReached(deps.documentClient, deps.tableName, charge, limits);
@@ -1470,7 +1487,7 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
   const revision = project.definition.revision;
   const title = redactedTitle(request);
   const task: DeveloperTaskRecord = {
-    ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: deps.orgId, developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
+    ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: deps.orgId, ...(admitted === undefined ? {} : { budgetUsd: admitted.maxBudgetUsd }), developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
     ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
     client, project: request.project, title, workspaceId, ownerKey: identity.ownerKey, conversationId, startingRevision: revision,
     // A workflow task quotes the request in each plan's "why"; every start (Slack and AI tool) comes through here.

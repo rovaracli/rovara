@@ -40,7 +40,7 @@ function fakeModelAccess(failure?: Error) {
     if (failure !== undefined) throw failure;
     return { key: TURN_KEY, expiresAt: Date.now() + 900_000 };
   });
-  const access: ModelAccess = { upsertOrg: vi.fn(), upsertMember: vi.fn(), spend: vi.fn(), mintKey, revokeKey: vi.fn() };
+  const access: ModelAccess = { upsertOrg: vi.fn(), upsertMember: vi.fn(), spend: vi.fn(), orgSpend: vi.fn(), keySpend: vi.fn(), mintKey, revokeKey: vi.fn() };
   return { access, mintKey };
 }
 

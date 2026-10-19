@@ -63,6 +63,8 @@ export interface DeveloperIdentityDependencies {
   orgs: ResolveOrgOnSignInDependencies["orgs"];
   /** The install's single org (ruling R3), which a Slack or company sign-in joins as a member. */
   singleOrgId?: OrgId;
+  /** Told when a sign-in created or joined an org, so the model proxy can be told its budgets (see ResolveOrgOnSignInDependencies.onOrgJoined). */
+  onOrgJoined?: ResolveOrgOnSignInDependencies["onOrgJoined"];
   now: () => number;
   log: (entry: Record<string, unknown>) => void;
 }
@@ -345,7 +347,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     });
     // A first sign-in puts the person in an org (ruling R2); the tokens and the browser session carry it from here.
     const org = await resolveOrgOnSignIn(
-      { orgs: deps.orgs, ...(deps.singleOrgId === undefined ? {} : { singleOrgId: deps.singleOrgId }), singleOrgName: config.env },
+      { orgs: deps.orgs, ...(deps.singleOrgId === undefined ? {} : { singleOrgId: deps.singleOrgId }), singleOrgName: config.env, log: deps.log,
+        ...(deps.onOrgJoined === undefined ? {} : { onOrgJoined: deps.onOrgJoined }) },
       { method, developerId, displayName: identity.displayName, ...(identity.email === undefined ? {} : { email: identity.email }), emailVerified: identity.emailVerified === true,
         ...(request.inviteToken === undefined ? {} : { inviteToken: request.inviteToken }) },
     );

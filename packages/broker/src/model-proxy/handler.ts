@@ -25,6 +25,8 @@ async function perform(access: ModelAccess, request: ModelAccessRequest): Promis
     case "upsertOrg": return access.upsertOrg(request.args.orgId, request.args.monthlyBudgetUsd).then(() => null);
     case "upsertMember": return access.upsertMember(request.args.orgId, request.args.developerId, request.args.monthlyBudgetUsd).then(() => null);
     case "spend": return access.spend(request.args.orgId, request.args.developerId);
+    case "orgSpend": return access.orgSpend(request.args.orgId);
+    case "keySpend": return access.keySpend(request.args.keyIds);
     case "mintKey": return access.mintKey(request.args);
     case "revokeKey": return access.revokeKey(request.args.key).then(() => null);
   }

@@ -291,6 +291,7 @@ import { chatGptConnections, kmsChatGptSealer, type ChatGptConnections } from ".
 import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
+import { admitSpend, ensureSynced, keyIdOf, mintCap, recordMintedKey } from "../org/budget.js";
 import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, routeDeveloperRequest, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import { FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
@@ -1029,6 +1030,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (event.routeKey === FEEDBACK_REVIEW_ROUTE_KEY) {
         if (!url.pathname.startsWith("/review/") || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
         return await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
+          ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
           workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
@@ -1211,6 +1213,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (url.pathname.startsWith("/v1/dev/")) {
         if (!dependencies.developer) throw agentXError("NOT_FOUND", "developer sign-in is not set up in this deployment");
         return json(await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
+          ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
           workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
@@ -3050,6 +3053,21 @@ async function completeThreadWorkspaceClose(
   return { outcome: "CLOSED", workspaceId: workspace.id, operationId, closedAt, storageReleased, ...(operation.discardUnpublished === true ? { discardedUnpublished: !parsedPreflight.safeToClose } : {}) };
 }
 
+/**
+ * Ruling R31: Slack-started work is admitted against the budgets before anything is charged, as a developer task start is.
+ * The member is the developer the Slack user signs in as, when the org has them; an unlinked requester answers to the org alone.
+ * Nothing is checked on an install with no model proxy.
+ */
+async function admitSlackWork(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity): Promise<void> {
+  const modelAccess = dependencies.modelAccess;
+  if (modelAccess === undefined || identity.slack === undefined) return;
+  const orgId = requireOrgId(identity.orgId);
+  await admitSpend(
+    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access },
+    { orgId, developerId: await linkedRequester(dependencies, orgId, identity.slack.requester), path: "CHAT" },
+  );
+}
+
 async function ensureThreadWorkspace(
   dependencies: AwsBrokerDependencies,
   identity: AuthenticatedIdentity,
@@ -3127,6 +3145,8 @@ async function ensureThreadWorkspace(
   if (lazyPreparation) {
     return createUnpreparedThreadWorkspace(dependencies, identity, requestId, project, include, includeSettingsRevision);
   }
+  // Before the limit's counters are read and before the charge: a spent budget, or a proxy that cannot say, stops it here.
+  await admitSlackWork(dependencies, identity);
   const effective = await effectiveSlackLimits(dependencies, requireOrgId(identity.orgId), limits);
   await healSlackMemberSlots(dependencies, requireOrgId(identity.orgId), slack.requester, effective);
   const preparation = await newWorkspacePreparation(dependencies, identity, project, identity.ownerKey, requestId);
@@ -3313,7 +3333,8 @@ async function startThreadPreparation(
   const limits = dependencies.slack;
   if (!slack || !limits) throw agentXError("FORBIDDEN", "a Slack thread identity is required");
   if (workspace.status === "PREPARATION_FAILED" && !workspace.activeOperationId) {
-    // #213: a released failed workspace a lazy turn was told is UNPREPARED; prepared again, charged afresh.
+    // #213: a released failed workspace a lazy turn was told is UNPREPARED; prepared again, charged afresh (so admitted afresh).
+    await admitSlackWork(dependencies, identity);
     const pinned = await requireProject(dependencies, requireOrgId(identity.orgId), workspace.projectName, workspace.projectRevision);
     const retried = await retryThreadPreparation(dependencies, identity, requestId, pinned, workspace, includeOpenTaskCount);
     if ("outcome" in retried) {
@@ -3325,6 +3346,8 @@ async function startThreadPreparation(
   if (workspace.status !== "UNPREPARED") {
     return { outcome: "WORKSPACE", workspaceId: workspace.id, status: workspace.status, operationId: workspace.activeOperationId, created: false };
   }
+  // The lazy path's first charge: admitted against the budgets before it (ruling R31).
+  await admitSlackWork(dependencies, identity);
   const effective = await effectiveSlackLimits(dependencies, requireOrgId(identity.orgId), limits);
   await healSlackMemberSlots(dependencies, requireOrgId(identity.orgId), slack.requester, effective);
   // One read of the latest revision feeds every field below, so a revision registered meanwhile
@@ -4347,19 +4370,32 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
   const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
   const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
-  // A developer task names its org, owner and budget. Work with no task record (a Slack thread's) is minted for from the
-  // signed operation: its org, the operation as the reference, and the default per-task budget (Task 15 adds admission).
+  // A developer task names its org, owner and budget, and the keys already minted for it. Work with no task record (a Slack
+  // thread's) is minted for from the signed operation: its org, the operation as the reference and as the record that keeps its
+  // keys, and the default per-task budget (ruling R31; its start was admitted in ensureThreadWorkspace).
   const scope = task !== undefined
-    ? (task.orgId === undefined ? undefined : { orgId: task.orgId, developerId: task.developerId as string | undefined, refId: task.taskId, maxBudgetUsd: task.budgetUsd ?? PER_TASK_BUDGET_USD })
-    : (operation.orgId === undefined ? undefined : { orgId: operation.orgId, developerId: await linkedRequester(dependencies, operation.orgId, operation.requestedBy), refId: operation.id, maxBudgetUsd: PER_TASK_BUDGET_USD });
+    ? (task.orgId === undefined ? undefined : {
+      orgId: task.orgId, developerId: task.developerId as string | undefined, refId: task.taskId, budgetUsd: task.budgetUsd ?? PER_TASK_BUDGET_USD,
+      previousKeyIds: task.modelKeyIds ?? [], owner: taskKey(task.taskId),
+    })
+    : (operation.orgId === undefined ? undefined : {
+      orgId: operation.orgId, developerId: await linkedRequester(dependencies, operation.orgId, operation.requestedBy), refId: operation.id,
+      budgetUsd: PER_TASK_BUDGET_USD, previousKeyIds: operation.modelKeyIds ?? [], owner: operationKey(operation.workspaceId, operation.id),
+    });
   if (scope === undefined) throw agentXError("NOT_FOUND", "this operation belongs to no organisation");
+  const budgets = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access };
   try {
+    // Ruling R30: the key's cap is what the task has left across all its keys, further limited by the member's and the org's remainder.
+    const { maxBudgetUsd } = await mintCap(budgets, { orgId: scope.orgId, developerId: scope.developerId, budgetUsd: scope.budgetUsd, previousKeyIds: scope.previousKeyIds });
     const minted = await modelAccess.access.mintKey({
       orgId: scope.orgId, ...(scope.developerId === undefined ? {} : { developerId: scope.developerId }), purpose: "task", refId: scope.refId,
-      maxBudgetUsd: scope.maxBudgetUsd, ttlSeconds: MODEL_KEY_TTL_SECONDS,
+      maxBudgetUsd, ttlSeconds: MODEL_KEY_TTL_SECONDS,
     });
+    await recordMintedKey(budgets, scope.owner, keyIdOf(minted.key));
     return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
   } catch (error) {
+    // A spent budget is the member's to know about (402); every other failure is the proxy's, and says nothing of it.
+    if (error instanceof AgentXError && (error.code === "BUDGET_EXCEEDED" || error.code === "ORG_BUDGET_EXCEEDED")) throw error;
     console.log(JSON.stringify({ component: "broker", event: "model_access.mint_failed", operationId: operation.id, errorName: error instanceof Error ? error.name : "unknown" }));
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   }
@@ -4384,6 +4420,8 @@ async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, reque
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
   const developerId = await linkedRequester(dependencies, teamOrg, requester);
   try {
+    // The proxy must know the org and member before a key names them (the lazy half of syncBudgets).
+    await ensureSynced({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access }, teamOrg, developerId);
     const minted = await modelAccess.access.mintKey({
       orgId: teamOrg, ...(developerId === undefined ? {} : { developerId }), purpose: "turn", refId: body.data.turnId,
       maxBudgetUsd: PER_TURN_BUDGET_USD, ttlSeconds: TURN_KEY_TTL_SECONDS,
@@ -5427,7 +5465,8 @@ async function startSlackWorkflow(dependencies: AwsBrokerDependencies, tasks: De
     throw agentXError("WORKSPACE_BUSY", "this Slack thread already has a task; start the workflow in a new thread");
   }
   const caller = await slackCallerFor(dependencies, userId, thread.teamId);
-  const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks }, caller, thread);
+  const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
+    ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }) }, caller, thread);
   const request = {
     method: "POST", path: "/v1/dev/tasks", headers: {}, requestId,
     body: JSON.stringify({ requestId, project: binding.projectName, instructions, client: "slack", workflow: true, workflowPath: event.workflowPath, shareToChannel: true, channel: thread.channelId }),

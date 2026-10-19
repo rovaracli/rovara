@@ -55,6 +55,18 @@ describe("ModelAccessInvoker", () => {
     expect(payloadOf(sent[1]!)).toEqual({ op: "mintKey", args: mint });
   });
 
+  it("asks for the org's spend and the keys' spend, and a key list that is empty needs no invoke", async () => {
+    const ids = ["a".repeat(64), "b".repeat(64)];
+    const { invoker, sent } = invokerWith(async (command) => answer({ ok: true, result: (payloadOf(command) as { op: string }).op === "orgSpend" ? { spentUsd: 3, limitUsd: 4 } : 2.5 }));
+    expect(await invoker.orgSpend(ORG)).toEqual({ spentUsd: 3, limitUsd: 4 });
+    expect(await invoker.keySpend(ids)).toBe(2.5);
+    expect(await invoker.keySpend([])).toBe(0);
+    expect(sent.map(payloadOf)).toEqual([{ op: "orgSpend", args: { orgId: ORG } }, { op: "keySpend", args: { keyIds: ids } }]);
+    const wrong = invokerWith(async () => answer({ ok: true, result: { spentUsd: "x" } }));
+    expect((await failure(wrong.invoker.orgSpend(ORG))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+    expect((await failure(wrong.invoker.keySpend(ids))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+  });
+
   it("sends a key request with no developer as one with no developerId", async () => {
     const { invoker, sent } = invokerWith(async () => answer({ ok: true, result: { key: "sk-v", expiresAt: 99 } }));
     await invoker.mintKey({ orgId: ORG, developerId: undefined, purpose: "task", refId: "op-1", maxBudgetUsd: 25, ttlSeconds: 300 });
