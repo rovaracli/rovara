@@ -58,4 +58,5 @@ export * from "./task-people.js";
 export * from "./e2e-openapi-fixture.js";
 export * from "./workflow-publication-context.js";
 export * from "./org.js";
+export * from "./org-budget.js";
 export * from "./org-scoped-keys.js";

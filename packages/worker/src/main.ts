@@ -13,6 +13,7 @@ import { createWorkerServerState, startWorkerServer } from "./server.js";
 import { invokeAuthenticationFromEnvironment } from "./invoke-auth.js";
 import { resolveTaskSessionModel } from "./task-model.js";
 import { chatGptTokenSource } from "./chatgpt-token.js";
+import { modelAccessSource, modelProxyFromSource } from "./model-access.js";
 import { createDefaultProjectSetupExecutor, createReadinessGatedProjectSetupRuntime } from "./project-setup-executor.js";
 import { postProjectSetupTerminalResult } from "./project-setup-callback.js";
 import { postWorkerTerminalResult } from "./terminal-callback.js";
@@ -71,8 +72,13 @@ const state = createWorkerServerState(
         const controlPlaneUrl = requiredEnvironment("AGENTX_CONTROL_PLANE_URL");
         const { chatGptToken, chatGptFallback, ...callbacks } = createWorkerCallbackSinks({ controlPlaneUrl, invocation });
         // #341: a task on its owner's ChatGPT plan; the token never leaves this process's memory.
+        // Ruling R29: on an install with a model proxy the task calls models through it, with a key minted for this task;
+        // the worker holds no provider secret. The proxy's address comes with the key.
+        const proxy = process.env.AGENTX_MODEL_PROXY_URL
+          ? await modelProxyFromSource(modelAccessSource({ controlPlaneUrl, capability: invocation.callbackCapability }))
+          : undefined;
         const session = await resolveTaskSessionModel(invocation.payload,
-          invocation.payload.chatgpt === undefined ? undefined : chatGptTokenSource(chatGptToken), process.env, chatGptFallback);
+          invocation.payload.chatgpt === undefined ? undefined : chatGptTokenSource(chatGptToken), process.env, chatGptFallback, proxy);
         return runTaskInvocation(invocation, {
           rootPath,
           model: session.model,

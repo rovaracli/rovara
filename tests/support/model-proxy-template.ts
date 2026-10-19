@@ -46,6 +46,7 @@ export function withoutModelProxy(template: unknown): unknown {
 /**
  * Ruling R28: the VPC-attached ModelAccessFunction (ModelAccess* resources) and what it adds to the broker, which
  * is the environment variable MODEL_ACCESS_FUNCTION_NAME and one lambda:InvokeFunction statement on that function.
+ * Ruling R29 adds the broker's MODEL_PROXY_URL and the ModelAccessRoute (a ModelAccess* resource, taken out with them).
  * model-access-infrastructure.test.ts checks them; here they are asserted present and taken out.
  */
 function withoutModelAccess(synthesized: { Resources: Record<string, Resource> }): void {
@@ -57,6 +58,9 @@ function withoutModelAccess(synthesized: { Resources: Record<string, Resource> }
   const variables = brokers[0]![1].Properties.Environment!.Variables;
   expect(variables.MODEL_ACCESS_FUNCTION_NAME).toStrictEqual({ Ref: functionId });
   delete variables.MODEL_ACCESS_FUNCTION_NAME;
+  // Ruling R29: the proxy's address, which the broker hands a task's worker with its key.
+  expect(JSON.stringify(variables.MODEL_PROXY_URL)).toContain("LoadBalancer");
+  delete variables.MODEL_PROXY_URL;
   const grants = Object.values(resources).flatMap((resource) => (resource.Type === "AWS::IAM::Policy" ? [resource.Properties.PolicyDocument!] : []))
     .filter((document) => document.Statement.some((statement) => JSON.stringify(statement.Resource).includes(`"${functionId!}"`)
       && JSON.stringify(statement.Action).includes("lambda:InvokeFunction")));

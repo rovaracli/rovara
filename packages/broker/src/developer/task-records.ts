@@ -47,6 +47,8 @@ export interface DeveloperTaskRecord {
   taskId: string;
   /** The org the task belongs to; every task this release starts carries it, and a caller of another org never sees the task. */
   orgId?: OrgId;
+  /** What the task's model proxy key may spend, in US dollars (ruling R29); a task without one gets PER_TASK_BUDGET_USD. */
+  budgetUsd?: number;
   developerId: string;
   provider: DeveloperSignInMethod;
   developerName: string;

@@ -21,7 +21,7 @@ import {
   type SessionStats,
 } from "@earendil-works/pi-coding-agent";
 import { amazonBedrockProvider } from "@earendil-works/pi-ai/providers/amazon-bedrock";
-import { createModelRuntimeWithFallback, type ChatGptFallback, type ChatGptFallbackReason } from "@agentx/model-runtime";
+import { createModelRuntimeWithFallback, type ChatGptFallback, type ChatGptFallbackReason, type ModelProxyOptions } from "@agentx/model-runtime";
 import { AGENTX_PREAMBLE, AGENTX_WORKER_PROMPT, agentXError, isPipedTestCommand, redactText, ThinkingLevelSchema, type ThinkingLevel } from "@agentx/contracts";
 import { devcontainerContextFile, hostPath, type DevcontainerPaths } from "./devcontainer.js";
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "./git.js";
@@ -207,12 +207,14 @@ export function createChatGptPiSessionAdapter(
   apiKey: () => Promise<string>,
   fallbackModel?: WorkspaceModelConfiguration,
   onFallback: (reason: ChatGptFallbackReason) => void = () => undefined,
+  /** Where the fallback model's requests go on an install with a model proxy; the plan's own stay direct to OpenAI. */
+  proxy?: ModelProxyOptions,
 ): PiSessionAdapter {
   let fallbackRuntime: Promise<{ runtime: ModelRuntime; model: WorkspaceModelConfiguration }> | undefined;
   let told = false;
   const chatgptFallback: ChatGptFallback | undefined = fallbackModel === undefined ? undefined : {
     async stream(context, options) {
-      fallbackRuntime ??= workerModelRuntime(fallbackModel);
+      fallbackRuntime ??= workerModelRuntime(fallbackModel, undefined, undefined, proxy);
       const { runtime, model } = await fallbackRuntime;
       const entry = runtime.getModel(model.provider, model.modelId);
       if (entry === undefined) throw agentXError("RUNTIME_UNAVAILABLE", `the default model ${model.provider}/${model.modelId} is unavailable`);
@@ -231,14 +233,27 @@ export function createChatGptPiSessionAdapter(
   return createDefaultPiSessionAdapter({ modelRuntime: (model) => workerModelRuntime(model, apiKey, chatgptFallback) });
 }
 
+/**
+ * The adapter for a task on an install with a model proxy (ruling R29): its models are called through the proxy with the
+ * task's own key, and the worker holds no provider secret and no Bedrock access of its own.
+ */
+export function createProxyPiSessionAdapter(proxy: ModelProxyOptions): PiSessionAdapter {
+  return createDefaultPiSessionAdapter({ modelRuntime: (model) => workerModelRuntime(model, undefined, undefined, proxy) });
+}
+
 async function workerModelRuntime(
   configured: WorkspaceModelConfiguration,
   apiKey?: () => Promise<string>,
   chatgptFallback?: ChatGptFallback,
+  proxy?: ModelProxyOptions,
 ): Promise<{ runtime: ModelRuntime; model: WorkspaceModelConfiguration }> {
-  const resolved = await createModelRuntimeWithFallback(configured, "worker", apiKey === undefined ? {} : { apiKey, ...(chatgptFallback === undefined ? {} : { chatgptFallback }) });
+  const resolved = await createModelRuntimeWithFallback(configured, "worker", {
+    ...(apiKey === undefined ? {} : { apiKey, ...(chatgptFallback === undefined ? {} : { chatgptFallback }) }),
+    ...(proxy === undefined ? {} : { proxy }),
+  });
   const modelRuntime = resolved.runtime;
-  if (resolved.model.provider === "amazon-bedrock") {
+  // Through the proxy, Bedrock is the proxy's to call: the worker's execution role is not registered.
+  if (resolved.model.provider === "amazon-bedrock" && proxy === undefined) {
     modelRuntime.registerNativeProvider(executionRoleBedrockProvider());
     await modelRuntime.refresh({ allowNetwork: false, providers: ["amazon-bedrock"] });
   }

@@ -998,6 +998,16 @@ export class ControlPlaneStack extends Stack {
       });
       modelAccessFunction.grantInvoke(broker);
       broker.addEnvironment("MODEL_ACCESS_FUNCTION_NAME", modelAccessFunction.functionName);
+      // Ruling R29: the proxy's address, which the broker hands a task's worker together with its key.
+      broker.addEnvironment("MODEL_PROXY_URL", modelProxy.url);
+      // The worker asks for its key with the operation's callback capability, which the broker verifies; like the
+      // setup execution read above, the one GET is exempt from the JWT authorizer.
+      new apigwv2.CfnRoute(this, "ModelAccessRoute", {
+        apiId: api.ref,
+        routeKey: "GET /v1/internal/model-access",
+        target: `integrations/${integration.ref}`,
+        authorizationType: "NONE",
+      });
     }
     sessions.steps.addEnvironment("CONTROL_PLANE_URL", api.attrApiEndpoint);
     sessions.connectDispatcher(dispatcher);

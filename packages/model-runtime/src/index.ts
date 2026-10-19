@@ -1,5 +1,6 @@
 import { MissingProviderSecret, defaultBedrockModel, type ModelRole } from "./config.js";
 import { openRouterRouting, readProviderKey, requireKeyedModel } from "./config.js";
+import { bedrockClaudeModelIds } from "./catalog.js";
 export { readOpenRouterKey, readProviderKey, openRouterRouting, openRouterModel, requireKeyedModel } from "./config.js";
 import { CHATGPT_PLAN_LIMIT_ERROR, KEYED_MODEL_PROVIDERS, agentXError, isKeyedModelProvider, type KeyedModelProvider, type ModelIdentifier } from "@agentx/contracts";
 import { InMemoryCredentialStore, createAssistantMessageEventStream, type Api, type Model, type SimpleStreamOptions, type TranscriptContext, type AssistantMessage, type AssistantMessageEventStream, type AnthropicMessagesCompat, type OpenAICompletionsCompat, type OpenAIResponsesCompat } from "@earendil-works/pi-ai";
@@ -23,6 +24,19 @@ export interface ModelRuntimeOptions {
    * it no longer allows). The request that found it goes there before Pi sees anything, and so does every later one.
    */
   chatgptFallback?: ChatGptFallback;
+  /**
+   * The model proxy (ruling R29): every request goes to `baseUrl` with a per-task proxy key, and no provider secret is read.
+   * Only the Claude models the proxy serves (Bedrock's, under the catalog's own ids) are available; any other model is refused.
+   * `apiKey` may be a function, asked before every request, because a task's key lasts an hour and a task can run longer.
+   * A ChatGPT plan (`apiKey` above) stays direct and ignores this.
+   */
+  proxy?: ModelProxyOptions;
+}
+
+export interface ModelProxyOptions {
+  /** The proxy's origin, without a path: Pi adds /v1/messages. */
+  baseUrl: string;
+  apiKey: string | (() => Promise<string>);
 }
 
 /** Why a ChatGPT task stopped using its plan (#342). */
@@ -79,6 +93,7 @@ const TRANSPORTS = {
  * environment variable, and the stored key wins over those variables if they are set.
  */
 export async function createConfiguredModelRuntime(selected: ModelIdentifier & { thinkingLevel?: string }, options: ModelRuntimeOptions = {}): Promise<ModelRuntime> {
+  if (options.proxy !== undefined && options.apiKey === undefined) return createProxiedModelRuntime(selected, options, options.proxy);
   if (!isKeyedModelProvider(selected.provider)) return ModelRuntime.create({ refreshOnCreate: false });
   const provider = selected.provider;
   const { label, secretArnVariable } = KEYED_MODEL_PROVIDERS[provider];
@@ -99,6 +114,36 @@ export async function createConfiguredModelRuntime(selected: ModelIdentifier & {
   });
   try { await runtime.setRuntimeApiKey(provider, key); }
   catch { throw agentXError("RUNTIME_UNAVAILABLE", `${label} credentials could not be initialized`); }
+  return runtime;
+}
+
+/**
+ * A runtime whose models are the Claude models the proxy serves (rulings R21 and R29). Pi's own Bedrock transport
+ * is replaced by `anthropic-messages` against the proxy, because that is the one route verified end to end; the
+ * models keep Pi's Bedrock catalog ids, which the proxy's model list names exactly. The key is the task's proxy key.
+ */
+async function createProxiedModelRuntime(selected: ModelIdentifier & { thinkingLevel?: string }, options: ModelRuntimeOptions, proxy: ModelProxyOptions): Promise<ModelRuntime> {
+  const served = new Set(bedrockClaudeModelIds());
+  if (selected.provider !== "amazon-bedrock" || !served.has(selected.modelId)) {
+    throw agentXError("CONFIG_INVALID", `model ${selected.modelId} is not available on this install`);
+  }
+  const runtime = await ModelRuntime.create({ refreshOnCreate: false, modelsPath: null, credentials: new InMemoryCredentialStore() });
+  const model = runtime.getModel(selected.provider, selected.modelId);
+  if (model === undefined) throw agentXError("CONFIG_INVALID", `model ${selected.modelId} is not available on this install`);
+  if (!model.reasoning && selected.thinkingLevel && selected.thinkingLevel !== "off") throw agentXError("CONFIG_INVALID", "the selected model does not support reasoning; set thinkingLevel to off");
+  const requestKey = typeof proxy.apiKey === "function" ? proxy.apiKey : undefined;
+  const initialKey = requestKey === undefined ? proxy.apiKey as string : await requestKey().catch(() => {
+    throw agentXError("RUNTIME_UNAVAILABLE", "the model proxy key could not be obtained");
+  });
+  const api = "anthropic-messages";
+  runtime.registerProvider(selected.provider, {
+    baseUrl: proxy.baseUrl, api,
+    models: runtime.getModels(selected.provider).filter((entry) => served.has(entry.id))
+      .map((entry) => ({ ...entry, api, baseUrl: proxy.baseUrl, compat: requestCompat("anthropic", undefined) })),
+    streamSimple: (entry, context, streamOptions) => safeProviderStream("anthropic", entry, context, streamOptions, undefined, options.fetch, options.onUsage, undefined, requestKey),
+  });
+  try { await runtime.setRuntimeApiKey(selected.provider, initialKey); }
+  catch { throw agentXError("RUNTIME_UNAVAILABLE", "the model proxy key could not be initialized"); }
   return runtime;
 }
 
@@ -141,7 +186,7 @@ function eventModel(data: { model?: unknown; message?: { model?: unknown }; resp
   return data.model ?? data.message?.model ?? data.response?.model;
 }
 
-function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, context: TranscriptContext, options: SimpleStreamOptions | undefined, routing: Record<string, unknown> | undefined, transport: typeof fetch = fetch, onUsage = (record: Record<string, unknown>) => console.info(JSON.stringify(record)), plan?: ChatGptPlan) {
+function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, context: TranscriptContext, options: SimpleStreamOptions | undefined, routing: Record<string, unknown> | undefined, transport: typeof fetch = fetch, onUsage = (record: Record<string, unknown>) => console.info(JSON.stringify(record)), plan?: ChatGptPlan, proxyKey?: () => Promise<string>) {
   const output = createAssistantMessageEventStream();
   const chatgpt = plan !== undefined;
   let failureStatus: number | undefined;
@@ -202,6 +247,8 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
           return await fallBack(plan.fallback, "revoked");
         }
       }
+      // A proxy key is asked for each time too: it is minted for an hour, and a task can run longer.
+      if (proxyKey !== undefined) key = { apiKey: await proxyKey() };
       // ChatGPT requests are not retried here: a plan's limit does not lift in seconds, and the fallback is ready.
       const upstream = upstreamStream(provider, model, context, { ...options, ...key, ...(plan === undefined ? {} : { maxRetries: 0 }), fetch: observedFetch }, routing);
       let started = false;

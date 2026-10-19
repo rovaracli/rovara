@@ -226,6 +226,7 @@ import {
   WorkerInvocationSchema,
   workflowPublicationContext,
   workflowPublicationContextDigest,
+  PER_TASK_BUDGET_USD,
 } from "@agentx/contracts";
 import { compileE2EScenarios, collectE2EActualCliRun, qualifyE2ECollection, e2eSnapshotSourceDigest, parseE2EFirstPartyCapture, e2ePrivateTransferMaxBytes } from "@agentx/verifier";
 import { renderE2EMcpProjection, renderE2EPageHtml, renderE2ESlackBlocks, renderE2ENotifierSlackBlocks } from "../e2e-presentation.js";
@@ -287,6 +288,8 @@ import { chatGptOwner, chatGptTaskSelection } from "../chatgpt/task-model.js";
 import { answerSlackChatGpt, isSlackChatGptCommandEvent, isSlackChatGptFinishEvent } from "./slack-chatgpt.js";
 import { chatGptConnections, kmsChatGptSealer, type ChatGptConnections } from "../chatgpt/connections.js";
 import { chatGptHostId } from "../chatgpt/oauth.js";
+import { ModelAccessInvoker } from "../model-proxy/invoker.js";
+import type { ModelAccess } from "../model-proxy/access.js";
 import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, routeDeveloperRequest, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import { FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
@@ -453,6 +456,8 @@ interface AwsBrokerDependencies {
   developer?: DeveloperApiConfiguration;
   /** Sign in with ChatGPT (#338): each developer's ChatGPT connection; absent without its key. */
   chatgpt?: ChatGptConnections;
+  /** The model proxy (rulings R28 and R29): mints each task's key through the VPC-attached function, and says where the proxy is. Absent without one. */
+  modelAccess?: { access: ModelAccess; proxyUrl: string };
   /** Which org a caller belongs to (ruling R1). Absent means every caller belongs to the install's single org (ruling R3). */
   orgResolver?: OrgResolver;
   /** The install's environment name, which its single org id derives from; defaults to the developer sign-in's, then AGENTX_ENV, then "default". */
@@ -1109,6 +1114,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         return json(await handleProjectSetupEvidenceFinalize(dependencies, request, setupArtifact[1]), request.requestId);
       }
       // Internal worker routes authenticate with operation-scoped capabilities; user JWT auth starts below them.
+      // Ruling R29: a task's model proxy key, authorized by the operation's capability, which names the task's operation.
+      if (request.method === "GET" && url.pathname === "/v1/internal/model-access") return await handleModelAccess(dependencies, request);
       const callback = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/(events|artifacts|result|candidate-export|e2e-admission|e2e-evidence|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status)$/.exec(
         url.pathname,
       );
@@ -4138,7 +4145,7 @@ async function taskOperationParts(
     workspaceId: workspace.id,
     fence,
     projectRevision: workspace.projectRevision,
-    callbackCapability: issueCapability(dependencies, workspace.id, operationId, fence, false, input.workflowMode === "FEEDBACK_REVIEW", input.workflowFeedbackApproval !== undefined, chatgpt !== undefined, input.workflowMode === "IMPLEMENT", input.workflowE2EAdmission !== undefined),
+    callbackCapability: issueCapability(dependencies, workspace.id, operationId, fence, false, input.workflowMode === "FEEDBACK_REVIEW", input.workflowFeedbackApproval !== undefined, chatgpt !== undefined, input.workflowMode === "IMPLEMENT", input.workflowE2EAdmission !== undefined, dependencies.modelAccess !== undefined),
     payload: {
       conversationId: input.conversationId,
       prompt,
@@ -4316,6 +4323,40 @@ async function recordChatGptFallback(dependencies: AwsBrokerDependencies, operat
   console.log(JSON.stringify({ component: "broker", event: "chatgpt.fallback", operationId: operation.id, reason }));
   return { recorded: true };
 }
+
+/**
+ * Ruling R29: the key a running task's worker calls models with, minted for the task's org and developer and capped at the
+ * task's budget. The capability is checked like a callback's (signature, expiry, scope, fence); a refused one is 401.
+ * The proxy's own failures all answer MODEL_PROXY_UNAVAILABLE, without their detail. The key is never stored or logged.
+ */
+async function handleModelAccess(dependencies: AwsBrokerDependencies, request: AdaptedHttpRequest) {
+  const token = request.headers["x-agentx-callback-capability"];
+  if (!token) throw agentXError("AUTH_REQUIRED", "callback capability is required");
+  let claims: CallbackClaims;
+  try { claims = verifyCapability(dependencies, token, "model-access"); }
+  catch { throw agentXError("AUTH_REQUIRED", "invalid callback capability"); }
+  const operation = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
+  if (operation.fence !== claims.fence) throw agentXError("STALE_FENCE", "callback fence is stale");
+  if (TERMINAL.has(operation.status)) throw agentXError("STALE_FENCE", "terminal operations cannot ask for model access");
+  const modelAccess = dependencies.modelAccess;
+  if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
+  const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
+  const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+  if (task?.orgId === undefined) throw agentXError("NOT_FOUND", "this operation belongs to no task of an organisation");
+  try {
+    const minted = await modelAccess.access.mintKey({
+      orgId: task.orgId, developerId: task.developerId, purpose: "task", refId: task.taskId,
+      maxBudgetUsd: task.budgetUsd ?? PER_TASK_BUDGET_USD, ttlSeconds: MODEL_KEY_TTL_SECONDS,
+    });
+    return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "model_access.mint_failed", operationId: operation.id, errorName: error instanceof Error ? error.name : "unknown" }));
+    throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
+  }
+}
+
+/** How long a task's model key lasts; the worker asks for a new one a minute before it ends. */
+const MODEL_KEY_TTL_SECONDS = 3_600;
 
 /** #341: the developer who owns the task a workspace runs, or undefined for a workspace that runs no developer task. */
 async function workspaceTaskOwner(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<string | undefined> {
@@ -11842,6 +11883,14 @@ const chatgpt = chatGptKeyArn === undefined || chatGptKeyArn === "" ? undefined 
   hostId: chatGptHostId(chatGptKeyArn),
 });
 
+// Rulings R26 and R28: set only in a named environment, where the control plane has a model proxy and the VPC-attached
+// function that mints its keys. The broker never holds the proxy's master key.
+const modelAccessFunctionName = process.env.MODEL_ACCESS_FUNCTION_NAME;
+const modelProxyUrl = process.env.MODEL_PROXY_URL;
+const modelAccess = modelAccessFunctionName === undefined || modelAccessFunctionName === "" || modelProxyUrl === undefined || modelProxyUrl === ""
+  ? undefined
+  : { access: new ModelAccessInvoker({ functionName: modelAccessFunctionName, lambda: lambdaClient }), proxyUrl: modelProxyUrl };
+
 // Spec 025 A13: the health route's probes (health-probes.ts); clients are called only per request.
 const cloudWatch = new CloudWatchClient(awsClientConfiguration);
 const sqs = new SQSClient(awsClientConfiguration);
@@ -11882,6 +11931,7 @@ export const handler = createAwsBrokerHandler({
     : {}),
   ...(developer ? { developer } : {}),
   ...(chatgpt ? { chatgpt } : {}),
+  ...(modelAccess ? { modelAccess } : {}),
   // Ruling R6: with the cloud sign-in configured, membership decides who has an org; operators of the admin pool have none.
   ...(cloudOrgResolver === undefined ? {} : { orgResolver: cloudOrgResolver }),
   // Spec 025 A12: set only here, so a test harness without its own `me` never reaches the network.

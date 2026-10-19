@@ -1,6 +1,6 @@
 import type { ModelSelection } from "@agentx/contracts";
-import type { ChatGptFallbackReason } from "@agentx/model-runtime";
-import { createChatGptPiSessionAdapter, type PiSessionAdapter, type WorkspaceModelConfiguration } from "./pi-session.js";
+import type { ChatGptFallbackReason, ModelProxyOptions } from "@agentx/model-runtime";
+import { createChatGptPiSessionAdapter, createProxyPiSessionAdapter, type PiSessionAdapter, type WorkspaceModelConfiguration } from "./pi-session.js";
 import { effectiveCacheRetention } from "./usage.js";
 
 export function resolveTaskModel(
@@ -32,15 +32,18 @@ export async function resolveTaskSessionModel(
   environment: NodeJS.ProcessEnv = process.env,
   /** #342: told why, once, when the plan stops serving the task and its requests move to the default model. */
   onFallback: (reason: ChatGptFallbackReason) => Promise<void> = async () => undefined,
+  /** Ruling R29: where an install with a model proxy sends every request but a ChatGPT plan's own. */
+  proxy?: ModelProxyOptions,
 ): Promise<{ model: WorkspaceModelConfiguration; piAdapter?: PiSessionAdapter }> {
-  if (payload.chatgpt === undefined || chatGptToken === undefined) return { model: resolveTaskModel(payload.model, environment) };
+  const proxied = proxy === undefined ? {} : { piAdapter: createProxyPiSessionAdapter(proxy) };
+  if (payload.chatgpt === undefined || chatGptToken === undefined) return { model: resolveTaskModel(payload.model, environment), ...proxied };
   try {
     await chatGptToken();
   } catch (error) {
     const effective = resolveTaskModel(payload.model, environment);
     console.info(JSON.stringify({ event: "model_fallback", role: "worker", reason: "chatgpt_unavailable", errorName: error instanceof Error ? error.name : "unknown",
       requested: { provider: payload.chatgpt.model.provider, modelId: payload.chatgpt.model.modelId }, effective: { provider: effective.provider, modelId: effective.modelId } }));
-    return { model: effective };
+    return { model: effective, ...proxied };
   }
   const fallbackModel = resolveTaskModel(payload.model, environment);
   const report = (reason: ChatGptFallbackReason) => {
@@ -51,5 +54,5 @@ export async function resolveTaskSessionModel(
       console.info(JSON.stringify({ event: "chatgpt_status_unreported", reason, errorName: error instanceof Error ? error.name : "unknown" }));
     });
   };
-  return { model: resolveTaskModel(payload.chatgpt.model, environment), piAdapter: createChatGptPiSessionAdapter(chatGptToken, fallbackModel, report) };
+  return { model: resolveTaskModel(payload.chatgpt.model, environment), piAdapter: createChatGptPiSessionAdapter(chatGptToken, fallbackModel, report, proxy) };
 }

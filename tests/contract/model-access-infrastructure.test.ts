@@ -124,10 +124,17 @@ describe("model access function infrastructure (named environments)", () => {
     }
   });
 
-  it("gives the broker no read of the master key and no proxy address", () => {
+  it("tells the broker where the proxy is (ruling R29) but gives it no read of the master key", () => {
     const [, broker] = only(resources, "AWS::Lambda::Function", "Broker");
-    expect(JSON.stringify(broker.Properties.Environment)).not.toContain("MODEL_PROXY");
+    // The address only: the broker hands it to a task's worker with the task's key.
+    expect(JSON.stringify(broker.Properties.Environment!.Variables!.MODEL_PROXY_URL)).toContain("LoadBalancer");
+    expect(JSON.stringify(broker.Properties.Environment)).not.toContain("LITELLM");
     expect(statementsOf(roleOf(broker.Properties.Role!)).some((statement) => mentions(statement.Resource, masterKeyId))).toBe(false);
+  });
+
+  it("serves a task's key request on one unauthorized GET, which the broker verifies by capability", () => {
+    const routes = ofType(resources, "AWS::ApiGatewayV2::Route").map(([, route]) => route.Properties as { RouteKey?: string; AuthorizationType?: string });
+    expect(routes.filter((route) => route.RouteKey === "GET /v1/internal/model-access")).toEqual([expect.objectContaining({ AuthorizationType: "NONE" })]);
   });
 
   it("names nothing with an em dash", () => {
@@ -142,6 +149,6 @@ describe("model access function infrastructure (legacy)", () => {
     const legacy = controlPlane({});
     const resources = legacy.toJSON().Resources as Resources;
     expect(Object.keys(resources)).not.toContainEqual(expect.stringMatching(/^ModelAccess/));
-    expect(JSON.stringify(legacy.toJSON())).not.toMatch(/MODEL_ACCESS_FUNCTION_NAME|MODEL_PROXY/);
+    expect(JSON.stringify(legacy.toJSON())).not.toMatch(/MODEL_ACCESS_FUNCTION_NAME|MODEL_PROXY|model-access/);
   }, 240_000);
 });
