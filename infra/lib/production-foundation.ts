@@ -11,6 +11,7 @@ import {
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { AgentDnsFirewall, EGRESS_ALLOW_DOMAINS_CONTEXT_KEY, parseExtraAllowDomains } from "./agent-dns-firewall.js";
+import { EgressAlarms, alertsTopicFromName } from "./egress-alarms.js";
 import { Ec2WorkerFoundation } from "./ec2-workers.js";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 
@@ -102,6 +103,7 @@ export class ProductionFoundationStack extends Stack {
     const privateSubnets: ec2.CfnSubnet[] = [];
     const privateRouteTables: ec2.CfnRouteTable[] = [];
     const privateRoutes: ec2.CfnRoute[] = [];
+    const natGateways: Array<{ az: string; natGateway: ec2.CfnNatGateway }> = [];
 
     for (const index of [0, 1] as const) {
       const suffix = index + 1;
@@ -136,6 +138,7 @@ export class ProductionFoundationStack extends Stack {
         tags: resourceTags(`${naming.resourcePrefix}-nat-${suffix}`, naming),
       });
       natGateway.addResourceDependency(publicRoute);
+      natGateways.push({ az: configuration.availabilityZoneIds[index], natGateway });
 
       const privateSubnet = new ec2.CfnSubnet(this, `PrivateSubnet${suffix}`, {
         availabilityZoneId: configuration.availabilityZoneIds[index],
@@ -209,10 +212,17 @@ export class ProductionFoundationStack extends Stack {
 
     // Cloud installs: agent machines (and the proxy, orchestrator and other tasks in this VPC) resolve only an allowlist.
     if (props.cloud === true && naming.env !== undefined) {
-      new AgentDnsFirewall(this, "AgentDnsFirewall", {
+      const dnsFirewall = new AgentDnsFirewall(this, "AgentDnsFirewall", {
         env: naming.env,
         vpcId: vpc.ref,
         extraAllowDomains: parseExtraAllowDomains(this.node.tryGetContext(EGRESS_ALLOW_DOMAINS_CONTEXT_KEY)),
+      });
+      new EgressAlarms(this, "EgressAlarms", {
+        env: naming.env,
+        resourcePrefix: naming.resourcePrefix,
+        dnsFirewallLogGroup: dnsFirewall.logGroup,
+        natGateways,
+        alertsTopic: alertsTopicFromName(this, "OperatorAlerts", naming.alertsTopicName),
       });
     }
 

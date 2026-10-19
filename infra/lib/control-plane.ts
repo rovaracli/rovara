@@ -1,4 +1,5 @@
 import { grantProviderKeySecrets } from "./model-keys.js";
+import { EgressAlarms } from "./egress-alarms.js";
 import { ModelAccess } from "./model-access.js";
 import { ModelProxy } from "./model-proxy.js";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
@@ -74,6 +75,10 @@ function unlistedAlarms(scope: Construct, prefix: string): string[] {
     // CloudWatch returns a composite alarm only to a DescribeAlarms grant on *, which the broker has not.
     if (construct instanceof cloudwatch.CfnCompositeAlarm) return [`the health probe cannot read composite alarm ${construct.node.path}`];
     if (!(construct instanceof cloudwatch.CfnAlarm)) return [];
+    // The egress alarms (foundation stack, cloud installs) are named agentx-<env>-nat-egress-spike-<az> and
+    // blocked-dns-spike; the probe's single-word suffixes cannot list them. They notify the alerts topic
+    // and are not on the admin health route.
+    if (construct.node.scopes.some((scope) => scope instanceof EgressAlarms)) return [];
     const name = construct.alarmName;
     if (name !== undefined && !Token.isUnresolved(name) && listed.has(name)) return [];
     return [`the health probe does not read alarm ${construct.node.path} (${String(name)}): name it ${prefix}<suffix> and add the suffix to HEALTH_ALARM_SUFFIXES`];
