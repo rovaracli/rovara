@@ -230,9 +230,11 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                     "ec2:*",
                     "ecr:*",
                     "ecs:*",
+                    "elasticloadbalancing:*",
                     "kms:*",
                     "lambda:*",
                     "logs:*",
+                    "rds:*",
                     "s3:*",
                     "scheduler:*",
                     "secretsmanager:*",
@@ -419,6 +421,8 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                     "StringLike": {
                       "iam:AWSServiceName": [
                         "ecs.amazonaws.com",
+                        "elasticloadbalancing.amazonaws.com",
+                        "rds.amazonaws.com",
                       ],
                     },
                   },
@@ -502,9 +506,11 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 "ec2:*",
                 "ecr:*",
                 "ecs:*",
+                "elasticloadbalancing:*",
                 "kms:*",
                 "lambda:*",
                 "logs:*",
+                "rds:*",
                 "s3:*",
                 "scheduler:*",
                 "secretsmanager:*",
@@ -664,6 +670,8 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 "StringLike": {
                   "iam:AWSServiceName": [
                     "ecs.amazonaws.com",
+                    "elasticloadbalancing.amazonaws.com",
+                    "rds.amazonaws.com",
                   ],
                 },
               },

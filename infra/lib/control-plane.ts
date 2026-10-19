@@ -1,4 +1,6 @@
 import { grantProviderKeySecrets } from "./model-keys.js";
+import { ModelProxy } from "./model-proxy.js";
+import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
 import { resolve } from "node:path";
 import {
   ArnFormat,
@@ -967,7 +969,22 @@ export class ControlPlaneStack extends Stack {
     if (naming.env !== undefined) sessions.connectUnwaitedTaskBackstop(slackThreads, slackSecret, callbackSigningKey.valueAsString);
     // Own both attachments in this releasable stack. Secret changes must never mutate the
     // protected foundation template or require a separate foundation change set.
-    grantProviderKeySecrets(this, [slackOrchestratorRole.roleName, sessions.instanceRoleName]);
+    // Named environments: the model proxy alone holds provider keys and Bedrock access for members
+    // (R4). It runs in the foundation's private subnets, and the worker group may call it; the
+    // orchestrator and broker are admitted when they are pointed at it. The legacy deployment is unchanged.
+    let modelProxy: ModelProxy | undefined;
+    if (naming.env === undefined) {
+      grantProviderKeySecrets(this, [slackOrchestratorRole.roleName, sessions.instanceRoleName]);
+    } else {
+      modelProxy = new ModelProxy(this, "ModelProxy", {
+        naming,
+        vpcId: new CfnParameter(this, "VpcId", { type: "String", description: "The foundation's VPC" }).valueAsString,
+        subnetIds: Fn.split(",", sessions.privateSubnetIds.valueAsString),
+        clientSecurityGroupIds: [new CfnParameter(this, "Ec2WorkerSecurityGroupId", { type: "String", description: "The foundation's EC2 worker security group" }).valueAsString],
+        models: bedrockClaudeModelIds("us").map((id) => ({ id })),
+      });
+      grantProviderKeySecrets(this, [modelProxy.taskRole.roleName]);
+    }
     sessions.steps.addEnvironment("CONTROL_PLANE_URL", api.attrApiEndpoint);
     sessions.connectDispatcher(dispatcher);
     sessions.connectBroker(broker);
@@ -1074,6 +1091,10 @@ export class ControlPlaneStack extends Stack {
     new CfnOutput(this, "SlackOrchestratorTaskRoleArn", { value: slackOrchestratorRole.roleArn });
     new CfnOutput(this, "TurnRecordsTableName", { value: turnRecords.tableName });
     new CfnOutput(this, "OperatorAlertsTopicArn", { value: operatorAlerts.topicArn });
+    if (modelProxy !== undefined) {
+      new CfnOutput(this, "ModelProxyUrl", { value: modelProxy.url });
+      new CfnOutput(this, "ModelProxyMasterKeySecretArn", { value: modelProxy.masterKeySecret.secretArn });
+    }
   }
 }
 

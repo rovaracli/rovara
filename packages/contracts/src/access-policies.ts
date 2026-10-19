@@ -36,9 +36,11 @@ export const SERVICE_ROLE_SERVICES: readonly string[] = [
   "ec2",
   "ecr",
   "ecs",
+  "elasticloadbalancing",
   "kms",
   "lambda",
   "logs",
+  "rds",
   "s3",
   "scheduler",
   "secretsmanager",
@@ -65,7 +67,7 @@ export const SERVICE_ROLE_SERVICES: readonly string[] = [
 export const BOUNDARY_SERVICES: readonly string[] = [...SERVICE_ROLE_SERVICES, "bedrock", "budgets", "codebuild", "execute-api", "xray"];
 
 /** Service-linked roles the service role may create while deploying. */
-const SERVICE_LINKED_ROLE_SERVICES = ["ecs.amazonaws.com"];
+const SERVICE_LINKED_ROLE_SERVICES = ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com"];
 
 /** Role management the service role needs on this environment's roles. */
 const ROLE_ACTIONS = [

@@ -2,7 +2,7 @@
 // It turns the operator's answers, a release manifest, and the stack outputs collected so far into
 // the exact CloudFormation Parameters map for one environment stack. The caller (phase 15d's `agentx
 // init`/`agentx upgrade`) reads secrets and calls CloudFormation; this file only computes values.
-import { CONTROL_PLANE_FOUNDATION_PARAMETERS, ImageDigest, KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS, environmentStackName } from "@agentx/contracts";
+import { CONTROL_PLANE_FOUNDATION_PARAMETERS, ImageDigest, MODEL_PROXY_FOUNDATION_PARAMETERS, KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS, environmentStackName } from "@agentx/contracts";
 import type { ReleaseManifest, StackPart } from "@agentx/contracts";
 import { signInStackParameters, type StoredDeveloperSignIn } from "../signin/settings.js";
 
@@ -271,7 +271,7 @@ export function stackParameters(part: DeployPart, answers: InstallAnswers, outpu
         GitHubAppPrivateKeySecretArn: answers.github.privateKeySecretArn,
         ...(answers.github.credentialRef === undefined ? {} : { GitHubAppCredentialRef: answers.github.credentialRef }),
         // The EC2 session lifecycle (#83) runs in the foundation's network with its key and role.
-        ...Object.fromEntries(CONTROL_PLANE_FOUNDATION_PARAMETERS.map((name) => [name, required(outputs, "foundation", name, answers.env)])),
+        ...Object.fromEntries([...CONTROL_PLANE_FOUNDATION_PARAMETERS, ...MODEL_PROXY_FOUNDATION_PARAMETERS].map((name) => [name, required(outputs, "foundation", name, answers.env)])),
         ...(answers.slackAppPostedMessages === undefined ? {} : { SlackAppPostedMessages: answers.slackAppPostedMessages }),
         ...(answers.budget === undefined ? {} : { BudgetMonthlyUsd: String(answers.budget.monthlyUsd), BudgetScope: answers.budget.scope }),
         // F24: only when a stored sign-in choice is actually given; the template's own defaults

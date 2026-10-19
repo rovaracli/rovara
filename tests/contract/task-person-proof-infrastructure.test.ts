@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
+import { hasModelProxy, withoutModelProxy } from "../support/model-proxy-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -59,6 +60,8 @@ function appControlPlane(env: string): TemplateJson {
 
 function parentRemainderDigest(template: TemplateJson): string {
   const remainder = structuredClone(template);
+  // The model proxy (Task 10) is no part of the proof-only addition; take it out the way named-templates does.
+  if (hasModelProxy(remainder)) withoutModelProxy(remainder);
   delete remainder.Parameters?.TaskPersonProofEnabled;
   // Spec 059's default-OFF runtime graph addition is asserted exactly below; exclude only that
   // named parameter and its corresponding Broker environment reference from the proof-only hash.

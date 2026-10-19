@@ -30,3 +30,13 @@ export function listPricesPerMillion(model: ModelIdentifier): { input: number; o
   const { input, output, cacheRead, cacheWrite } = known.cost;
   return { input, output, cacheRead, cacheWrite };
 }
+
+/**
+ * Claude models Amazon Bedrock serves through a geography's inference profiles (ids like
+ * us.anthropic.claude-sonnet-4-6), as the installed Pi catalog names them. The model proxy serves
+ * exactly these, because Pi sends the catalog id as the request model.
+ */
+export function bedrockClaudeModelIds(geography = "us"): string[] {
+  const prefix = `${geography}.anthropic.claude-`;
+  return amazonBedrockProvider().getModels().map((entry) => entry.id).filter((id) => id.startsWith(prefix)).sort();
+}

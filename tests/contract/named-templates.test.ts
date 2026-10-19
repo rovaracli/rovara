@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { normalizedTemplate } from "../support/template-snapshot.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
+import { withoutModelProxy } from "../support/model-proxy-template.js";
 
 skipLambdaBundling();
 
@@ -229,7 +230,7 @@ describe("named environment templates", () => {
   for (const stack of stacks) {
     it(`${stack.stackName} is unchanged`, () => {
       const template = normalizedTemplate(stack);
-      expect(stack.stackName === "agentx-staging-control-plane" ? withoutTaskPeopleControls(withoutStuckCancelAlarm(withoutUnwaitedTaskBackstop(withoutDispatchDeadLettersAlarm(template)))) : template).toMatchSnapshot();
+      expect(stack.stackName === "agentx-staging-control-plane" ? withoutTaskPeopleControls(withoutStuckCancelAlarm(withoutUnwaitedTaskBackstop(withoutDispatchDeadLettersAlarm(withoutModelProxy(template))))) : template).toMatchSnapshot();
     }, 120_000);
   }
 });

@@ -48,7 +48,7 @@ export class SessionLifecycle extends Construct {
   readonly reconciler: lambda.Function;
   private readonly naming: AgentXNaming;
   private readonly dispatcherSecurityGroupId: CfnParameter;
-  private readonly privateSubnetIds: CfnParameter;
+  readonly privateSubnetIds: CfnParameter;
   private readonly invokeSigningKey: kms.IKey;
   private readonly notifyOperator: cloudwatchActions.SnsAction;
 

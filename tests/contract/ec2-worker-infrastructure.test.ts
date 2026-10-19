@@ -40,15 +40,18 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
     expect(JSON.stringify(foundation.toJSON())).not.toContain(prefix);
     // Both role attachments live in the control plane, including correct path removal for
     // /agentx/<env>/ worker roles and the legacy production role at /.
-    for (const [templates, roleIndex] of [[[controlPlane], 3], [legacy, 1]] as const) {
-      const policies = templates.flatMap((template) => ofType(template, "AWS::IAM::Policy"))
-        .filter(([, policy]) => policy.Properties.PolicyName === `${prefix}SecretRead`);
-      expect(policies).toHaveLength(1);
-      expect(policies[0]![1].Properties.Roles).toEqual([
-        { Ref: expect.stringMatching(/^SlackOrchestratorTaskRole/) as unknown },
-        { "Fn::Select": [roleIndex, { "Fn::Split": ["/", { Ref: "Ec2WorkerInstanceRoleArn" }] }] },
-      ]);
-    }
+    // A named environment's key reads belong to the model proxy alone (ruling R4); the legacy
+    // deployment keeps them on the orchestrator and the worker role.
+    const namedPolicies = ofType(controlPlane, "AWS::IAM::Policy").filter(([, policy]) => policy.Properties.PolicyName === `${prefix}SecretRead`);
+    expect(namedPolicies).toHaveLength(1);
+    expect(namedPolicies[0]![1].Properties.Roles).toEqual([{ Ref: expect.stringMatching(/^ModelProxyTaskRole/) as unknown }]);
+    const legacyPolicies = legacy.flatMap((template) => ofType(template, "AWS::IAM::Policy"))
+      .filter(([, policy]) => policy.Properties.PolicyName === `${prefix}SecretRead`);
+    expect(legacyPolicies).toHaveLength(1);
+    expect(legacyPolicies[0]![1].Properties.Roles).toEqual([
+      { Ref: expect.stringMatching(/^SlackOrchestratorTaskRole/) as unknown },
+      { "Fn::Select": [1, { "Fn::Split": ["/", { Ref: "Ec2WorkerInstanceRoleArn" }] }] },
+    ]);
     const serialized = JSON.stringify(runtime.toJSON());
     expect(serialized).toContain(`worker-${provider}-secret-arn`);
     expect(serialized).not.toMatch(/OPENROUTER_API_KEY|ANTHROPIC_API_KEY|OPENAI_API_KEY/);

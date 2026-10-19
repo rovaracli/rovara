@@ -254,6 +254,13 @@ export const CONTROL_PLANE_FOUNDATION_PARAMETERS = [
   "Ec2WorkerLaunchTemplateId",
 ] as const;
 
+/**
+ * More foundation outputs a named environment's control plane takes, for the model proxy: the VPC it
+ * runs in and the worker security group it admits. The legacy control plane has no proxy and takes
+ * neither, so these are kept apart from CONTROL_PLANE_FOUNDATION_PARAMETERS, which the release passes to it.
+ */
+export const MODEL_PROXY_FOUNDATION_PARAMETERS = ["VpcId", "Ec2WorkerSecurityGroupId"] as const;
+
 /** The deleter execution for a workspace; a workspace is deleted once. */
 export function sessionDeletionName(workspaceId: string): string {
   return `ws-${workspaceId}-delete`;

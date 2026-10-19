@@ -8,6 +8,8 @@
   },
   "dependencies": {
     "@agentx/contracts": "0.1.0",
+    "@agentx/model-proxy": "0.1.0",
+    "@agentx/model-runtime": "0.1.0",
     "aws-cdk-lib": "2.269.0",
     "constructs": "10.8.1"
   },
