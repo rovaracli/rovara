@@ -1745,6 +1745,21 @@ function busy(error: unknown, taskId: string): never {
   throw error;
 }
 
+/**
+ * Rulings R38 and R39: a human's Continue, workflow retry or send-back starts a new window of the task's own cap, at what its keys
+ * have spent so far. A proxy that cannot say refuses the action before anything is written (MODEL_PROXY_UNAVAILABLE, 503).
+ * Undefined on an install with no model proxy, where there is no cap to reset.
+ */
+async function capWindowBaseline(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): Promise<number | undefined> {
+  return deps.modelAccess === undefined ? undefined
+    : taskSpendBaseline({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, task.modelKeyIds ?? []);
+}
+
+/** The clause and values that record the window in the same update that moves the task, since one transaction cannot touch a record twice. */
+function capWindowUpdate(baseline: number | undefined): { clause: string; values: Record<string, number> } {
+  return baseline === undefined ? { clause: "", values: {} } : { clause: ", budgetBaselineUsd = :budgetBaseline", values: { ":budgetBaseline": baseline } };
+}
+
 async function continueTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "continue");
   const access = await authorizeLegacyTaskAction(deps, caller, taskId, "control");
@@ -2235,6 +2250,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
     const selected = workflowSelectedChecks({ ...policy, selectedOptionalIds, selectedProposedIds });
     if (selected.length === 0) throw agentXError("CONFIG_INVALID", "keep at least one check before retrying verification, or close the task");
     await actionableWorkspace(deps, task);
+    const cap = capWindowUpdate(await capWindowBaseline(deps, task));
     const receivedAt = iso(deps);
     const { blockReason: _previousBlockReason, ...unblocked } = workflow;
     void _previousBlockReason;
@@ -2283,11 +2299,11 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
         await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
           { Update: {
             TableName: deps.tableName, Key: taskKey(taskId),
-            UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+            UpdateExpression: `SET workflow = :workflow, updatedAt = :now${cap.clause}`,
             ConditionExpression: "workflow.revision = :revision AND workflow.#state = :state AND workflow.#stage = :stage AND workflow.e2e.required = :required AND attribute_not_exists(closedAt)",
             ExpressionAttributeNames: { "#state": "state", "#stage": "stage" },
             ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision,
-              ":state": workflow.state, ":stage": workflow.stage, ":required": true },
+              ":state": workflow.state, ":stage": workflow.stage, ":required": true, ...cap.values },
           } },
           putNew(turnTable(deps), aiToolTurn({
             party: partyOfTaskActor(task, caller), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted",
@@ -2313,10 +2329,10 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
       }, (operation) => [
         { Update: {
           TableName: deps.tableName, Key: taskKey(taskId),
-          UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+          UpdateExpression: `SET workflow = :workflow, updatedAt = :now${cap.clause}`,
           ConditionExpression: "workflow.revision = :revision AND workflow.#state = :state AND workflow.#stage = :stage AND attribute_not_exists(closedAt)",
           ExpressionAttributeNames: { "#state": "state", "#stage": "stage" },
-          ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":state": workflow.state, ":stage": workflow.stage },
+          ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":state": workflow.state, ":stage": workflow.stage, ...cap.values },
         } },
         putNew(turnTable(deps), aiToolTurn({
           party: partyOfTaskActor(task, caller), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted",
@@ -2348,6 +2364,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
     throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
   }
   await actionableWorkspace(deps, task);
+  const cap = capWindowUpdate(await capWindowBaseline(deps, task));
   const receivedAt = iso(deps);
   const unblocked = { ...task.workflow };
   delete unblocked.blockReason;
@@ -2363,10 +2380,10 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
       return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: request.requestId, conversationId: current.conversationId, prompt: retryInstructions + notes.suffix }, (operation) => [
         { Update: {
           TableName: deps.tableName, Key: taskKey(taskId),
-          UpdateExpression: `SET workflow = :workflow, updatedAt = :now${fed.clause}`,
+          UpdateExpression: `SET workflow = :workflow, updatedAt = :now${fed.clause}${cap.clause}`,
           ConditionExpression: `workflow.revision = :revision AND workflow.#state = :blocked AND workflow.#stage = :plan${fed.condition}`,
           ExpressionAttributeNames: { "#state": "state", "#stage": "stage" },
-          ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": task.workflow!.revision, ":blocked": "BLOCKED", ":plan": "PLAN", ...fed.values },
+          ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": task.workflow!.revision, ":blocked": "BLOCKED", ":plan": "PLAN", ...fed.values, ...cap.values },
         } },
         putNew(turnTable(deps), aiToolTurn({
           party: partyOfTaskActor(task, caller), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
@@ -2556,6 +2573,8 @@ async function queueWorkflowCoding(
 ): Promise<{ task: DeveloperTaskView }> {
   const { task } = access;
   const { workflow } = task;
+  // Every coding restart here is a human's retry or send-back (rulings R38 and R39): the task's cap window starts anew.
+  const cap = capWindowUpdate(await capWindowBaseline(deps, task));
   const receivedAt = iso(deps);
   try {
     await withCurrentThreadNotes(deps, task, input.requestId, (current, notes) => {
@@ -2563,10 +2582,10 @@ async function queueWorkflowCoding(
       return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: input.requestId, conversationId: current.conversationId, prompt: input.prompt(notes.suffix) }, (operation) => [
         { Update: {
           TableName: deps.tableName, Key: taskKey(task.taskId),
-          UpdateExpression: `SET workflow = :workflow, updatedAt = :now${fed.clause}`,
+          UpdateExpression: `SET workflow = :workflow, updatedAt = :now${fed.clause}${cap.clause}`,
           ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :state AND attribute_not_exists(closedAt)${fed.condition}${input.recovery === undefined ? "" : " AND workflow.blockReason = :recoveryReason AND attribute_not_exists(workflow.candidate) AND workflow.e2e.required = :requiredE2E AND attribute_not_exists(workflow.e2e.currentRoundId) AND workflow.e2e.currentGroupRunIds = :emptyIds AND attribute_not_exists(workflow.e2e.qualifiedRound) AND attribute_not_exists(workflow.e2e.failedRound) AND workflow.e2e.resultRefs = :emptyIds AND workflow.workflowDependenciesOperationId = :graphOperationId AND workflow.workflowDependenciesApproval.graphDigest = :graphDigest AND workflow.workflowDependenciesApproval.runId = :graphRunId AND workflow.workflowDependenciesApproval.artifactDigest = :graphArtifactDigest AND workflow.workflowDependenciesApproval.workflowRevision = :graphApprovalRevision AND workflow.workflowDependenciesApproval.actorId = :graphActorId AND workflow.workflowDependenciesProgress = :graphProgress"}`,
           ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
-          ExpressionAttributeValues: { ":workflow": workflowWithCurrentGraphOperation(input.next, input.workflowDependencies === undefined ? undefined : operation.id, input.workflowDependencies), ":now": receivedAt, ":revision": workflow.revision, ":stage": workflow.stage, ":state": workflow.state, ...fed.values,
+          ExpressionAttributeValues: { ":workflow": workflowWithCurrentGraphOperation(input.next, input.workflowDependencies === undefined ? undefined : operation.id, input.workflowDependencies), ":now": receivedAt, ":revision": workflow.revision, ":stage": workflow.stage, ":state": workflow.state, ...fed.values, ...cap.values,
             ...(input.recovery === undefined ? {} : { ":recoveryReason": WORKFLOW_MISSING_COMMITTED_SOURCE_EXPORT_REASON, ":requiredE2E": true, ":emptyIds": [],
               ":graphOperationId": input.recovery.sourceOperation.id, ":graphDigest": input.recovery.graphApproval.graphDigest, ":graphRunId": input.recovery.graphApproval.runId,
               ":graphArtifactDigest": input.recovery.graphApproval.artifactDigest, ":graphApprovalRevision": input.recovery.graphApproval.workflowRevision,

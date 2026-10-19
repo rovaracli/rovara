@@ -23,7 +23,8 @@ import { attachEvidence, planEvidenceJobItem } from "../../packages/broker/src/d
 import { noticesFromStream } from "../../packages/broker/src/developer/notifications.js";
 import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, markThreadPosted, recordStream, teammate } from "../support/developer-task-broker.js";
 import type { Developer } from "../support/developer-task-broker.js";
-import { registerSlackProject } from "../support/slack-broker.js";
+import { fakeModelAccess } from "../support/fake-model-access.js";
+import { call, registerSlackProject } from "../support/slack-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { projectPk, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -5321,5 +5322,102 @@ describe("Spec 059 ordered workflow broker review regressions", () => {
       expect(rawAudit).toHaveLength(16);
     }
     expect(taskWorkflow(setup.harness, setup.taskId).workflowDependenciesProgress!.length).toBeLessThanOrEqual(32);
+  });
+});
+
+describe("a workflow task's cap window restarts when its owner retries or sends it back (rulings R38 and R39)", () => {
+  const PROXY = "http://internal-proxy.example.test:4000";
+  const SPENT_CAP = 25;
+
+  async function install() {
+    const access = fakeModelAccess();
+    const harness = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: PROXY }, cloud: true } });
+    access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
+    access.setOrgSpent(TEST_ORG, 0);
+    /** Asks for a model key as the worker of an operation. */
+    const ask = (operationId: string) => {
+      const outbox = harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!;
+      const capability = (outbox.invocation as { callbackCapability: string }).callbackCapability;
+      return call(harness.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": capability } });
+    };
+    const record = (taskId: string) => harness.db.get(`DEVTASK#${taskId}`, "META") as { budgetBaselineUsd?: number };
+    /** The operation spent its whole cap on the one key it was given. */
+    const spendCap = async (operationId: string) => {
+      expect((await ask(operationId)).status).toBe(200);
+      access.setKeySpent(access.mintedKeys().at(-1)!, SPENT_CAP + (access.mintedKeys().length - 1) * SPENT_CAP);
+      expect(await ask(operationId)).toMatchObject({ status: 402, body: { error: { code: "BUDGET_EXCEEDED" } } });
+    };
+    return { ...harness, access, ask, record, spendCap };
+  }
+
+  it("gives a task that spent its cap a key again after a retry of its coding, and counts only what it spends after", async () => {
+    const h = await install();
+    const { taskId, workspaceId } = await workflowAtVerification(h);
+    const implementation = operations(h, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
+    await h.spendCap(String(implementation.id));
+    await h.finish(workspaceId, String(implementation.id), "FAILED", { error: "This task has used its AI budget" });
+    const blocked = taskWorkflow(h, taskId);
+    expect(blocked).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    const requestId = randomUUID();
+    expect((await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId, expectedRevision: blocked.revision, instructions: "Try again." })).status).toBe(200);
+    expect(h.record(taskId).budgetBaselineUsd).toBe(SPENT_CAP);
+    const coding = operations(h, workspaceId).find((item) => item.requestId === requestId)!;
+    expect((await h.ask(String(coding.id))).status).toBe(200);
+    expect(h.access.mintKey.mock.calls.at(-1)![0].maxBudgetUsd).toBe(25);
+  });
+
+  it("does the same after a retry of blocked planning", async () => {
+    const h = await install();
+    const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    const workspaceId = (h.db.get(`DEVTASK#${taskId}`, "META") as { workspaceId: string }).workspaceId;
+    await h.finish(workspaceId, String(operations(h, workspaceId).find((item) => item.kind === "prepare")?.id), "SUCCEEDED", PREPARED);
+    const planning = operations(h, workspaceId).find((item) => item.workflowMode === "PLAN")!;
+    await h.spendCap(String(planning.id));
+    await h.finish(workspaceId, String(planning.id), "FAILED", { error: "This task has used its AI budget" });
+    const blocked = taskWorkflow(h, taskId);
+    const requestId = randomUUID();
+    expect((await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId, expectedRevision: blocked.revision, instructions: "Plan it again." })).status).toBe(200);
+    expect(h.record(taskId).budgetBaselineUsd).toBe(SPENT_CAP);
+    const again = operations(h, workspaceId).find((item) => item.requestId === requestId)!;
+    expect((await h.ask(String(again.id))).status).toBe(200);
+    expect(h.access.mintKey.mock.calls.at(-1)![0].maxBudgetUsd).toBe(25);
+  });
+
+  it("does the same after a send-back to coding", async () => {
+    const h = await install();
+    const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(h);
+    const implementation = operations(h, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
+    await h.spendCap(String(implementation.id));
+    await finishImplementation();
+    const review = operations(h, workspaceId).find((item) => item.workflowMode === "REVIEW")!;
+    const now = new Date().toISOString();
+    await h.finish(workspaceId, String(review.id), "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowReviews: [
+      { operationId: review.id, candidateDigest: candidate.digest, role: "CRITIC", provider: "t", version: "1", status: "FINDINGS", findings: [{ text: "The parser drops the last line.", origin: "INTRODUCED", severity: "HIGH" }], readOnly: true, recordedAt: now },
+      { operationId: review.id, candidateDigest: candidate.digest, role: "SECURITY", provider: "t", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: now },
+    ] } });
+    expect(h.record(taskId).budgetBaselineUsd).toBeUndefined();
+    const requestId = randomUUID();
+    expect((await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/send-back`, { requestId, expectedRevision: taskWorkflow(h, taskId).revision, instructions: "Fix it." })).status).toBe(200);
+    expect(h.record(taskId).budgetBaselineUsd).toBe(SPENT_CAP);
+    const coding = operations(h, workspaceId).find((item) => item.requestId === requestId)!;
+    expect((await h.ask(String(coding.id))).status).toBe(200);
+    expect(h.access.mintKey.mock.calls.at(-1)![0].maxBudgetUsd).toBe(25);
+  });
+
+  it("refuses a retry and a send-back with 503 while the proxy is down, and changes nothing", async () => {
+    const h = await install();
+    const { taskId, workspaceId } = await workflowAtVerification(h);
+    const implementation = operations(h, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
+    expect((await h.ask(String(implementation.id))).status).toBe(200);
+    await h.finish(workspaceId, String(implementation.id), "FAILED", { error: "the model stopped" });
+    const blocked = taskWorkflow(h, taskId);
+    const before = JSON.stringify(h.db.find(() => true));
+    h.access.goDown();
+    const refused = await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId: randomUUID(), expectedRevision: blocked.revision, instructions: "Try again." });
+    expect(refused).toMatchObject({ status: 503, body: { error: { code: "MODEL_PROXY_UNAVAILABLE" } } });
+    expect(h.record(taskId).budgetBaselineUsd).toBeUndefined();
+    expect(taskWorkflow(h, taskId)).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", revision: blocked.revision });
+    expect(JSON.stringify(h.db.find(() => true))).toBe(before);
   });
 });
