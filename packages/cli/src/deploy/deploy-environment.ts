@@ -8,6 +8,7 @@ import { currentLockHolder, withEnvironmentLock } from "../environments/lock.js"
 import type { ParameterStore } from "../environments/parameter-store.js";
 import { readEnvironmentSettings, writeEnvironmentSettings, type EnvironmentSettings } from "../environments/settings.js";
 import { CLOUD_NEEDS_CDK_MESSAGE } from "./answer-schemas.js";
+import { assertModelsServedByProxy } from "./proxy-models.js";
 import { installOrder, OPERATOR_PARAMETERS, SECRET_PARAMETERS, stackParameters, upgradeOrder, type DeployPart, type InstallAnswers, type StackOutputs } from "./parameters.js";
 import type { LoadedRelease } from "./release.js";
 import { callbackSigningKey, type SecretValueStore } from "./signing-key.js";
@@ -208,6 +209,8 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
   const now = input.now ?? Date.now;
 
   assertDeployAllowed(await readEnvironmentSettings(store, env), mode, engine, input.parts, env, answers.cloud === true);
+  // Ruling R52: the models must be ones the environment's model proxy serves, before anything deploys.
+  assertModelsServedByProxy(answers.models, answers.region);
   if (answers.identity.mode === "oidc" && answers.identity.clientId === undefined) {
     throw agentXError("CONFIG_INVALID", "bringing your own OIDC provider requires clientId to write environment settings (needed for agentx login)");
   }

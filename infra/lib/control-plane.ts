@@ -2,7 +2,7 @@ import { grantProviderKeySecrets } from "./model-keys.js";
 import { EgressAlarms } from "./egress-alarms.js";
 import { ModelAccess } from "./model-access.js";
 import { ModelProxy } from "./model-proxy.js";
-import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
+import { bedrockClaudeModelIds, proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
 import { resolve } from "node:path";
 import {
   ArnFormat,
@@ -62,6 +62,11 @@ export interface ControlPlaneStackProps extends StackProps {
   naming?: AgentXNaming;
   /** The hosted Rovara cloud (agentxCloud context): adds the self-serve Cognito sign-in. Named environments only. */
   cloud?: boolean;
+  /**
+   * The region this environment installs in (the agentxRegion context; us-east-1 when unset, as for the other stacks). This stack
+   * itself is region-agnostic, so the model proxy's inference-profile geography is derived from this (ruling R52).
+   */
+  deploymentRegion?: string;
 }
 
 /**
@@ -991,7 +996,8 @@ export class ControlPlaneStack extends Stack {
         vpcId,
         subnetIds: Fn.split(",", sessions.privateSubnetIds.valueAsString),
         clientSecurityGroupIds: [new CfnParameter(this, "Ec2WorkerSecurityGroupId", { type: "String", description: "The foundation's EC2 worker security group" }).valueAsString],
-        models: bedrockClaudeModelIds("us").map((id) => ({ id })),
+        // Ruling R52: the geography follows the install's region (an eu install serves eu.* profiles); an unsupported region fails the synth.
+        models: bedrockClaudeModelIds(proxyGeographyForRegion(props?.deploymentRegion ?? "us-east-1")).map((id) => ({ id })),
       });
       grantProviderKeySecrets(this, [modelProxy.taskRole.roleName]);
       // Ruling R28: the broker is outside the VPC, so it mints member keys and reads spend through this

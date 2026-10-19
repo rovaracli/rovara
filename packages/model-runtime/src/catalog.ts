@@ -40,3 +40,23 @@ export function bedrockClaudeModelIds(geography = "us"): string[] {
   const prefix = `${geography}.anthropic.claude-`;
   return amazonBedrockProvider().getModels().map((entry) => entry.id).filter((id) => id.startsWith(prefix)).sort();
 }
+
+/** The Bedrock inference-profile geographies the model proxy can serve (ruling R52). */
+export type ProxyGeography = "us" | "eu" | "apac";
+
+/**
+ * The geography whose inference profiles an install in this region calls: us-* is "us", eu-* is "eu", ap-* is "apac" (ruling R52).
+ * Any other region has no profile the proxy knows, so it is refused here, naming the region.
+ */
+export function proxyGeographyForRegion(region: string): ProxyGeography {
+  if (region.startsWith("us-")) return "us";
+  if (region.startsWith("eu-")) return "eu";
+  if (region.startsWith("ap-")) return "apac";
+  throw new Error(`the model proxy has no Amazon Bedrock inference profile for region ${region}; install in a us-*, eu-* or ap-* region`);
+}
+
+/** The geography a Bedrock model id names (us.anthropic.claude-...), or undefined for an id with none the proxy serves. */
+export function proxyGeographyOfModelId(modelId: string): ProxyGeography | undefined {
+  const prefix = /^(us|eu|apac)\./.exec(modelId)?.[1];
+  return prefix === "us" || prefix === "eu" || prefix === "apac" ? prefix : undefined;
+}

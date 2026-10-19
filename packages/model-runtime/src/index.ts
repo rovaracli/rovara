@@ -1,6 +1,6 @@
 import { MissingProviderSecret, defaultBedrockModel, type ModelRole } from "./config.js";
 import { openRouterRouting, readProviderKey, requireKeyedModel } from "./config.js";
-import { bedrockClaudeModelIds } from "./catalog.js";
+import { bedrockClaudeModelIds, proxyGeographyOfModelId } from "./catalog.js";
 import { ModelBudgetExhaustedError, budgetExhaustedMarker, budgetScopeOfProxyBody, type ModelBudgetScope } from "./budget.js";
 export { ModelBudgetExhaustedError, budgetExhaustedFromMarker, type ModelBudgetScope } from "./budget.js";
 export { readOpenRouterKey, readProviderKey, openRouterRouting, openRouterModel, requireKeyedModel } from "./config.js";
@@ -125,7 +125,8 @@ export async function createConfiguredModelRuntime(selected: ModelIdentifier & {
  * models keep Pi's Bedrock catalog ids, which the proxy's model list names exactly. The key is the task's proxy key.
  */
 async function createProxiedModelRuntime(selected: ModelIdentifier & { thinkingLevel?: string }, options: ModelRuntimeOptions, proxy: ModelProxyOptions): Promise<ModelRuntime> {
-  const served = new Set(bedrockClaudeModelIds());
+  // The geography the model names (the proxy of an eu install serves eu.* profiles); a bare id is judged against the us profiles.
+  const served = new Set(bedrockClaudeModelIds(proxyGeographyOfModelId(selected.modelId) ?? "us"));
   if (selected.provider !== "amazon-bedrock" || !served.has(selected.modelId)) {
     throw agentXError("CONFIG_INVALID", `model ${selected.modelId} is not available on this install`);
   }

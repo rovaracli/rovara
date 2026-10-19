@@ -117,6 +117,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     description: "AgentX authenticated control plane and durable dispatch foundation",
     naming,
     ...(agentxCloud ? { cloud: true } : {}),
+    ...(deploymentRegion === undefined ? {} : { deploymentRegion }),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("control-plane") }),
   });
   new ProductionFoundationStack(app, "AgentXProductionFoundation", {

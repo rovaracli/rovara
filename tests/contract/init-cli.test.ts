@@ -930,11 +930,10 @@ describe("agentx init with an Anthropic API key (spec 054)", () => {
   const ANTHROPIC_KEY = "sk-ant-api03-0123456789abcdefKEYSECRET";
   const ANTHROPIC_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/anthropic-AbCdEf";
 
-  it("stores the key before any stack, checks the models with it, passes only the ARN on, and a resume with --anthropic-key-env rotates it", async () => {
+  it("stores the key and checks the models with it, then refuses to deploy: the model proxy serves Bedrock Claude only (R52), so no stack is touched", async () => {
     const h = await harness();
     const calls: Array<{ provider: string; modelId: string; key?: string }> = [];
     const checks = passingChecks({ directProvider: async (provider, modelId, _config, key) => { calls.push({ provider, modelId, ...(key === undefined ? {} : { key }) }); } });
-    h.deployer.fail.set(environmentStackName("staging", "control-plane"), new Error("Resource limit exceeded"));
     const argv = [...UNATTENDED, "--alert-email", "ops@example.com", "--model-provider", "anthropic", "--anthropic-key-env", "ANTHROPIC_KEY_FOR_AGENTX"];
     expect(await h.run(argv, { processEnv: { ...UNATTENDED_ENV, ANTHROPIC_KEY_FOR_AGENTX: ANTHROPIC_KEY }, checks })).not.toBe(0);
     expect(h.secrets.values.get("agentx/staging/anthropic")).toBe(ANTHROPIC_KEY);
@@ -945,57 +944,41 @@ describe("agentx init with an Anthropic API key (spec 054)", () => {
     ]);
     const saved = (await readInstallAnswers(h.store, "staging"))?.models;
     expect(saved).toMatchObject({ orchestrator: "claude-sonnet-4-6", classifier: "claude-haiku-4-5", worker: "claude-sonnet-4-6", anthropic: { secretArn: ANTHROPIC_ARN } });
-
-    h.deployer.fail.clear();
-    const rotated = ANTHROPIC_KEY.replace("0123456789", "9876543210");
-    expect(await h.run(argv, { processEnv: { ...UNATTENDED_ENV, ANTHROPIC_KEY_FOR_AGENTX: rotated }, checks })).toBe(0);
-    expect(h.secrets.values.get("agentx/staging/anthropic")).toBe(rotated);
-    const withArn = h.deployer.requests.filter((request) => "AnthropicSecretArn" in request.parameters);
-    expect([...new Set(withArn.map((request) => request.part))]).toEqual(["control-plane", "runtime", "slack"]);
-    expect(withArn.every((request) => request.parameters.AnthropicSecretArn === ANTHROPIC_ARN)).toBe(true);
-    const everywhere = await everywhereButSecrets(h);
-    for (const key of [ANTHROPIC_KEY, rotated]) {
-      expect(everywhere).not.toContain(key);
-      expect(JSON.stringify(h.deployer.requests.map((request) => request.parameters))).not.toContain(key);
-    }
+    expect(h.printed()).toContain("the orchestrator model provider is anthropic, but this install calls every model through its model proxy");
+    expect(h.deployer.requests).toEqual([]);
+    expect(await everywhereButSecrets(h)).not.toContain(ANTHROPIC_KEY);
   });
 });
 
 describe("agentx init with OpenRouter", () => {
-  it("asks for the key hidden, stores it raw in agentx/<env>/openrouter before any stack, and passes only its ARN on", async () => {
+  it("asks for the key hidden and stores it raw in agentx/<env>/openrouter, then refuses to deploy: the model proxy serves Bedrock Claude only (R52)", async () => {
     const h = await harness();
     const { calls, checks } = recordingOpenRouterChecks();
-    const prompter = scriptedPrompter([...OPENROUTER_FIRST_RUN, ...SLACK, ...SIGNIN, ...FINISH]);
+    const prompter = scriptedPrompter([...OPENROUTER_FIRST_RUN]);
     const hidden: string[] = [];
     const recording = { ...prompter, secret: async (question: string, options: { flag: string; multiline?: boolean }) => { hidden.push(question); return prompter.secret(question, options); } };
-    expect(await h.run([], { prompter: recording, checks })).toBe(0);
-    expect(prompter.remaining()).toBe(0);
+    expect(await h.run([], { prompter: recording, checks })).not.toBe(0);
     expect(hidden[0]).toBe("OpenRouter API key");
     expect(h.secrets.values.get("agentx/staging/openrouter")).toBe(OPENROUTER_KEY);
     // The preflight used the key before it was stored, so no Bedrock fallback was checked.
     expect(checks.models).toEqual([]);
     expect(calls.map((call) => call.key)).toEqual([OPENROUTER_KEY, OPENROUTER_KEY]);
     expect(h.printed()).toContain("agentx/staging/openrouter");
+    expect(h.printed()).toContain("the orchestrator model provider is openrouter, but this install calls every model through its model proxy");
     expect((await readInstallAnswers(h.store, "staging"))?.models.openRouter).toEqual({ secretArn: OPENROUTER_ARN });
-    const openRouterParameters = h.deployer.requests.filter((request) => "OpenRouterSecretArn" in request.parameters);
-    expect(openRouterParameters.map((request) => request.part)).toEqual(["control-plane", "runtime", "slack"]);
-    expect(openRouterParameters.every((request) => request.parameters.OpenRouterSecretArn === OPENROUTER_ARN)).toBe(true);
-    const everywhere = await everywhereButSecrets(h);
-    expect(everywhere).not.toContain(OPENROUTER_KEY);
-    expect(JSON.stringify(h.deployer.requests.map((request) => request.parameters))).not.toContain(OPENROUTER_KEY);
+    expect(h.deployer.requests).toEqual([]);
+    expect(await everywhereButSecrets(h)).not.toContain(OPENROUTER_KEY);
   });
 
-  it("a resume after the key was stored does not ask for it again", async () => {
+  it("a resume after the key was stored does not ask for it again (and is refused again at deploy, R52)", async () => {
     const h = await harness();
     const { checks } = recordingOpenRouterChecks();
-    h.deployer.fail.set(environmentStackName("staging", "control-plane"), new Error("Resource limit exceeded"));
     expect(await h.run([], { prompter: scriptedPrompter(OPENROUTER_FIRST_RUN), checks })).not.toBe(0);
     expect(h.secrets.values.get("agentx/staging/openrouter")).toBe(OPENROUTER_KEY);
-    h.deployer.fail.clear();
-    const prompter = scriptedPrompter([...SLACK, ...SIGNIN, ...FINISH]);
-    expect(await h.run([], { prompter, checks })).toBe(0);
-    expect(prompter.remaining()).toBe(0);
+    const prompter = scriptedPrompter([]);
+    expect(await h.run([], { prompter, checks })).not.toBe(0);
     expect(prompter.asked).not.toContain("OpenRouter API key");
+    expect(h.deployer.requests).toEqual([]);
     expect(await everywhereButSecrets(h)).not.toContain(OPENROUTER_KEY);
   });
 
@@ -1004,15 +987,15 @@ describe("agentx init with OpenRouter", () => {
     const keyFile = join(await tmp("agentx-openrouter-key-"), "key");
     await writeFile(keyFile, `${OPENROUTER_KEY}\n`);
     const { checks } = recordingOpenRouterChecks();
-    h.deployer.fail.set(environmentStackName("staging", "control-plane"), new Error("Resource limit exceeded"));
     const argv = [...UNATTENDED, "--alert-email", "ops@example.com", ...OPENROUTER_FLAGS, "--openrouter-key-file", keyFile];
+    // Each run stops at the deploy, which refuses a provider the model proxy does not serve (R52); the key was stored first.
     expect(await h.run(argv, { processEnv: UNATTENDED_ENV, checks })).not.toBe(0);
     expect(h.secrets.values.get("agentx/staging/openrouter")).toBe(OPENROUTER_KEY);
-    h.deployer.fail.clear();
     const rotated = OPENROUTER_KEY.replace("feedface", "0ddba11x");
     await writeFile(keyFile, rotated);
-    expect(await h.run(argv, { processEnv: UNATTENDED_ENV, checks })).toBe(0);
+    expect(await h.run(argv, { processEnv: UNATTENDED_ENV, checks })).not.toBe(0);
     expect(h.secrets.values.get("agentx/staging/openrouter")).toBe(rotated);
+    expect(h.deployer.requests).toEqual([]);
     const everywhere = await everywhereButSecrets(h);
     for (const key of [OPENROUTER_KEY, rotated]) expect(everywhere).not.toContain(key);
   });

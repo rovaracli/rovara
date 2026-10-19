@@ -919,6 +919,29 @@ describe("the cdk engine's declared parameters come from its synth (issue 152)",
   });
 });
 
+describe("models the environment's model proxy cannot serve (R52)", () => {
+  it("refuses an install or an upgrade before anything deploys or locks, naming the role", async () => {
+    for (const mode of ["install", "upgrade"] as const) {
+      const store = new MemoryParameterStore();
+      if (mode === "upgrade") await writeEnvironmentSettings(store, { ...stagingSettings, engine: "cdk" });
+      const { deployer, requests } = fakeDeployer(scriptedOutputs());
+      const answers: DeployAnswers = { ...baseAnswers(), models: { ...baseAnswers().models, providers: { orchestrator: "openrouter" } } };
+      await expect(deployEnvironment({
+        mode, engine: "cdk", answers, release: fakeRelease(), deployer, store, secrets: memorySecrets(), holder: HOLDER, deployedParameters: nothingDeployed,
+      })).rejects.toThrow(/the orchestrator model provider is openrouter, but this install calls every model through its model proxy/);
+      expect(requests).toEqual([]);
+      expect(await store.get(lockParameterName(ENV))).toBeUndefined();
+    }
+  });
+
+  it("refuses a model of another geography than the region's", async () => {
+    const answers: DeployAnswers = { ...baseAnswers(), region: "eu-west-1" };
+    await expect(deployEnvironment({
+      mode: "install", engine: "cdk", answers, release: fakeRelease(), deployer: fakeDeployer(scriptedOutputs()).deployer, store: new MemoryParameterStore(), secrets: memorySecrets(), holder: HOLDER,
+    })).rejects.toThrow(/not one the model proxy serves in eu-west-1/);
+  });
+});
+
 describe("keptOperatorParameters", () => {
   it("keeps only listed parameters the answers did not set and the template declares", () => {
     expect(keptOperatorParameters({

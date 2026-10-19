@@ -1093,12 +1093,12 @@ describe("agentx deploy --mode upgrade keeps the deployed budget", () => {
       schemaVersion: 1, env: ENV, account: ACCOUNT, region: REGION, engine: "templates", version: "1.2.2", naming: "environment",
       stacks: { access: stackName("access"), foundation: stackName("foundation"), identity: stackName("identity"), runtime: stackName("runtime"), "control-plane": stackName("control-plane"), slack: stackName("slack") },
       controlPlaneUrl: "https://abc123.execute-api.us-east-1.amazonaws.com", identity: { mode: "cognito", issuer: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc", audience: "client123", clientId: "client123" },
-      models: { orchestrator: "o", classifier: "c", worker: "w" }, updatedAt: "2026-09-29T00:00:00.000Z",
+      models: { orchestrator: "us.anthropic.claude-sonnet-4-6", classifier: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: "us.anthropic.claude-sonnet-4-6" }, updatedAt: "2026-09-29T00:00:00.000Z",
     });
     const answersDir = await tmp("agentx-deploy-cli-answers-");
     const answersFile = join(answersDir, "answers.json");
     await writeFile(answersFile, JSON.stringify({
-      env: ENV, region: REGION, account: ACCOUNT, models: { orchestrator: "o", classifier: "c", worker: "w" }, identity: { mode: "cognito" },
+      env: ENV, region: REGION, account: ACCOUNT, models: { orchestrator: "us.anthropic.claude-sonnet-4-6", classifier: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: "us.anthropic.claude-sonnet-4-6" }, identity: { mode: "cognito" },
       github: { appId: "123", privateKeySecretArn: `arn:aws:secretsmanager:${REGION}:${ACCOUNT}:secret:agentx/staging/github-app-AbCdEf` },
       images: { worker: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/w@sha256:${"b".repeat(64)}`, slack: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/s@sha256:${"c".repeat(64)}` },
     }));
