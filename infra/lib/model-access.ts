@@ -4,7 +4,7 @@ import {
   type aws_lambda as lambda,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { MODEL_PROXY_PORT, type ModelProxy } from "./model-proxy.js";
+import { MODEL_PROXY_MANAGEMENT_PORT, type ModelProxy } from "./model-proxy.js";
 import type { AgentXNaming } from "./naming.js";
 
 export interface ModelAccessProps {
@@ -30,11 +30,11 @@ export class ModelAccess extends Construct {
     super(scope, id);
     const { naming, handler, proxy } = props;
     const tags = [{ key: "Application", value: "AgentX" }, ...(naming.env === undefined ? [] : [{ key: "agentx:env", value: naming.env }])];
-    const port = MODEL_PROXY_PORT;
+    const port = MODEL_PROXY_MANAGEMENT_PORT;
 
-    // Its own group: port 4000 to the proxy load balancer, and HTTPS (through the NAT) for Secrets Manager.
+    // Its own group: the management port (4001) of the proxy load balancer, which no other group may reach (ruling R48), and HTTPS (through the NAT) for Secrets Manager.
     this.securityGroup = new ec2.CfnSecurityGroup(this, "SecurityGroup", {
-      groupDescription: `AgentX model access function: port ${port} to the model proxy and HTTPS to Secrets Manager`,
+      groupDescription: `AgentX model access function: management port ${port} to the model proxy and HTTPS to Secrets Manager`,
       vpcId: props.vpcId,
       securityGroupEgress: [{
         ipProtocol: "tcp", fromPort: 443, toPort: 443, cidrIp: "0.0.0.0/0",
@@ -46,13 +46,13 @@ export class ModelAccess extends Construct {
       groupId: this.securityGroup.attrGroupId,
       ipProtocol: "tcp", fromPort: port, toPort: port,
       destinationSecurityGroupId: proxy.loadBalancerSecurityGroup.attrGroupId,
-      description: `Model proxy port ${port} on the proxy load balancer`,
+      description: `Model proxy management port ${port} on the proxy load balancer`,
     });
     new ec2.CfnSecurityGroupIngress(this, "ProxyIngress", {
       groupId: proxy.loadBalancerSecurityGroup.attrGroupId,
       ipProtocol: "tcp", fromPort: port, toPort: port,
       sourceSecurityGroupId: this.securityGroup.attrGroupId,
-      description: `Model proxy port ${port} from the model access function`,
+      description: `Model proxy management port ${port} from the model access function`,
     });
 
     (handler.node.defaultChild as lambda.CfnFunction).vpcConfig = {
@@ -60,7 +60,7 @@ export class ModelAccess extends Construct {
       securityGroupIds: [this.securityGroup.attrGroupId],
     };
     handler.role!.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaVPCAccessExecutionRole"));
-    handler.addEnvironment("MODEL_PROXY_URL", proxy.url);
+    handler.addEnvironment("MODEL_PROXY_URL", proxy.managementUrl);
     handler.addEnvironment("MODEL_PROXY_MASTER_KEY_SECRET_ARN", proxy.masterKeySecret.secretArn);
     handler.addToRolePolicy(new iam.PolicyStatement({
       sid: "ReadMasterKey",

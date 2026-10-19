@@ -65,16 +65,16 @@ describe("model access function infrastructure (named environments)", () => {
     const group = only(resources, "AWS::EC2::SecurityGroup", "ModelAccessSecurityGroup");
     const balancer = only(resources, "AWS::EC2::SecurityGroup", "ModelProxyLoadBalancerSecurityGroup")[0];
     expect(group[1].Properties.SecurityGroupIngress).toBeUndefined();
-    // Outbound: HTTPS inline, and port 4000 to the proxy's load balancer only.
+    // Outbound: HTTPS inline, and the management port 4001 to the proxy's load balancer only (ruling R48).
     expect(group[1].Properties.SecurityGroupEgress).toEqual([expect.objectContaining({ IpProtocol: "tcp", FromPort: 443, ToPort: 443 })]);
     const egress = ofType(resources, "AWS::EC2::SecurityGroupEgress").filter(([, rule]) => rule.Properties.GroupId?.["Fn::GetAtt"]?.[0] === group[0]);
     expect(egress.map(([, rule]) => rule.Properties)).toEqual([expect.objectContaining({
-      IpProtocol: "tcp", FromPort: 4000, ToPort: 4000, DestinationSecurityGroupId: { "Fn::GetAtt": [balancer, "GroupId"] },
+      IpProtocol: "tcp", FromPort: 4001, ToPort: 4001, DestinationSecurityGroupId: { "Fn::GetAtt": [balancer, "GroupId"] },
     })]);
-    // Inbound on the load balancer from this group, port 4000, by group (no CIDR).
+    // Inbound on the load balancer from this group, port 4001, by group (no CIDR).
     const ingress = ofType(resources, "AWS::EC2::SecurityGroupIngress").filter(([, rule]) =>
       rule.Properties.GroupId?.["Fn::GetAtt"]?.[0] === balancer && rule.Properties.SourceSecurityGroupId?.["Fn::GetAtt"]?.[0] === group[0]);
-    expect(ingress.map(([, rule]) => rule.Properties)).toEqual([expect.objectContaining({ IpProtocol: "tcp", FromPort: 4000, ToPort: 4000 })]);
+    expect(ingress.map(([, rule]) => rule.Properties)).toEqual([expect.objectContaining({ IpProtocol: "tcp", FromPort: 4001, ToPort: 4001 })]);
     expect(ingress[0]![1].Properties.CidrIp).toBeUndefined();
     // Nothing admits anyone to the function's group.
     expect(ofType(resources, "AWS::EC2::SecurityGroupIngress").filter(([, rule]) => rule.Properties.GroupId?.["Fn::GetAtt"]?.[0] === group[0])).toEqual([]);
@@ -83,7 +83,7 @@ describe("model access function infrastructure (named environments)", () => {
   it("is told the proxy's URL and the master key's secret ARN, and nothing else", () => {
     const balancer = only(resources, "AWS::ElasticLoadBalancingV2::LoadBalancer", "ModelProxyLoadBalancer")[0];
     expect(accessFunction.Properties.Environment!.Variables).toEqual({
-      MODEL_PROXY_URL: { "Fn::Join": ["", ["http://", { "Fn::GetAtt": [balancer, "DNSName"] }, ":4000"]] },
+      MODEL_PROXY_URL: { "Fn::Join": ["", ["http://", { "Fn::GetAtt": [balancer, "DNSName"] }, ":4001"]] },
       MODEL_PROXY_MASTER_KEY_SECRET_ARN: { Ref: masterKeyId },
     });
   });

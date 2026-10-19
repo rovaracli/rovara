@@ -20,6 +20,14 @@ import type { AgentXNaming } from "./naming.js";
 /** LiteLLM, pinned by digest (spike: docs/learnings/model-proxy-spike.md). ghcr.io is public; the tasks pull it through the NAT. */
 export const LITELLM_IMAGE = "ghcr.io/berriai/litellm-database:v1.105.1@sha256:2bcadb9905b692a5ca4dadd51bccaaa23a95dc8a0f9322d9c9787f0ac2aeb50e";
 export const MODEL_PROXY_PORT = 4000;
+/**
+ * The load balancer's second listener, for LiteLLM's management routes (teams, users, key minting, spend). Only the
+ * ModelAccessFunction's group may reach it; the worker and orchestrator groups reach port 4000 alone, where only inference
+ * paths are forwarded (ruling R48).
+ */
+export const MODEL_PROXY_MANAGEMENT_PORT = 4001;
+/** The only paths the inference listener forwards: Pi's Anthropic client posts to /v1/messages (and its count_tokens), and the health routes need no key. */
+export const INFERENCE_PATH_PATTERNS = ["/v1/messages*", "/health/*"] as const;
 const DATABASE_NAME = "litellm";
 const DATABASE_USER = "litellm";
 /** LiteLLM's unauthenticated liveness route. */
@@ -45,7 +53,10 @@ export interface ModelProxyProps {
  */
 export class ModelProxy extends Construct {
   readonly taskRole: iam.Role;
+  /** The inference listener (port 4000): what workers and the orchestrator call, and what a member's key is handed out with. */
   readonly url: string;
+  /** The management listener (port 4001): every path, reachable only from the ModelAccessFunction. */
+  readonly managementUrl: string;
   readonly masterKeySecret: secretsmanager.Secret;
   readonly loadBalancerSecurityGroup: ec2.CfnSecurityGroup;
 
@@ -59,7 +70,7 @@ export class ModelProxy extends Construct {
     // Security groups: clients -> load balancer -> service -> database. Every rule between groups is a
     // separate resource, so no group's definition refers to a group that refers back.
     this.loadBalancerSecurityGroup = new ec2.CfnSecurityGroup(this, "LoadBalancerSecurityGroup", {
-      groupDescription: `AgentX model proxy load balancer: port ${port} from registered clients only`,
+      groupDescription: `AgentX model proxy load balancer: port ${port} (inference) from registered clients, port ${MODEL_PROXY_MANAGEMENT_PORT} (management) from the model access function only`,
       vpcId: props.vpcId,
       tags,
     });
@@ -275,10 +286,28 @@ export class ModelProxy extends Construct {
       targetGroupAttributes: [{ key: "deregistration_delay.timeout_seconds", value: "60" }],
       tags,
     });
+    // Ruling R48: the inference listener forwards inference paths only; everything else (LiteLLM's management routes among
+    // them, which a task key must never reach) gets a fixed 403 from the load balancer itself.
     const listener = new elbv2.CfnListener(this, "Listener", {
       loadBalancerArn: loadBalancer.ref,
       protocol: "HTTP",
       port,
+      defaultActions: [{
+        type: "fixed-response",
+        fixedResponseConfig: { statusCode: "403", contentType: "application/json", messageBody: JSON.stringify({ error: { message: "this route is not available here", type: "forbidden" } }) },
+      }],
+    });
+    new elbv2.CfnListenerRule(this, "InferenceRoutes", {
+      listenerArn: listener.ref,
+      priority: 10,
+      conditions: [{ field: "path-pattern", pathPatternConfig: { values: [...INFERENCE_PATH_PATTERNS] } }],
+      actions: [{ type: "forward", targetGroupArn: targetGroup.ref }],
+    });
+    // Every path, on a port only the model access function's group may reach.
+    const managementListener = new elbv2.CfnListener(this, "ManagementListener", {
+      loadBalancerArn: loadBalancer.ref,
+      protocol: "HTTP",
+      port: MODEL_PROXY_MANAGEMENT_PORT,
       defaultActions: [{ type: "forward", targetGroupArn: targetGroup.ref }],
     });
     const service = new ecs.CfnService(this, "Service", {
@@ -305,9 +334,11 @@ export class ModelProxy extends Construct {
       tags,
     });
     service.addResourceDependency(listener);
+    service.addResourceDependency(managementListener);
     service.addResourceDependency(databaseInstance);
 
     this.url = `http://${loadBalancer.attrDnsName}:${port}`;
+    this.managementUrl = `http://${loadBalancer.attrDnsName}:${MODEL_PROXY_MANAGEMENT_PORT}`;
     new ssm.StringParameter(this, "UrlParameter", {
       parameterName: `${naming.ec2.workerSettingsPrefix}${MODEL_PROXY_URL_PARAMETER}`,
       description: "Internal URL of the AgentX model proxy",

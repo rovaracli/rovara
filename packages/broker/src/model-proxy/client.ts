@@ -8,6 +8,12 @@ import { agentXError, type AgentXError, type OrgId } from "@agentx/contracts";
 import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess, SpendFigures } from "./access.js";
 
 const BUDGET_DURATION = "1mo";
+/**
+ * Ruling R48: a task or turn key may call LiteLLM's model routes only, never its management routes (teams, users, keys, spend), and
+ * its user is a viewer. A second layer behind the load balancer, which forwards inference paths only.
+ */
+const KEY_ALLOWED_ROUTES = ["llm_api_routes"];
+const USER_ROLE = "internal_user_viewer";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_MESSAGE_LENGTH = 300;
 const KEY_INFO_AT_ONCE = 10;
@@ -68,7 +74,7 @@ export class ModelProxyClient implements ModelAccess {
   }
 
   async upsertMember(orgId: OrgId, developerId: string, monthlyBudgetUsd: number): Promise<void> {
-    const body = { user_id: developerId, max_budget: monthlyBudgetUsd, budget_duration: BUDGET_DURATION, metadata: { orgId } };
+    const body = { user_id: developerId, user_role: USER_ROLE, max_budget: monthlyBudgetUsd, budget_duration: BUDGET_DURATION, metadata: { orgId } };
     // No key comes with the user: keys are minted per task or turn.
     await this.createOrUpdate("/user/new", "/user/update", { ...body, auto_create_key: false }, body);
   }
@@ -119,6 +125,7 @@ export class ModelProxyClient implements ModelAccess {
       team_id: input.orgId,
       ...(input.developerId === undefined ? {} : { user_id: input.developerId }),
       max_budget: input.maxBudgetUsd,
+      allowed_routes: KEY_ALLOWED_ROUTES,
       duration: `${String(input.ttlSeconds)}s`,
       metadata: { orgId: input.orgId, ...(input.developerId === undefined ? {} : { developerId: input.developerId }), purpose: input.purpose, refId: input.refId },
     });

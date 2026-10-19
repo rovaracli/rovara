@@ -44,7 +44,8 @@ describe("ModelProxyClient", () => {
     expect(seen[0]!.headers.get("authorization")).toBe(`Bearer ${MASTER}`);
     expect(seen[0]!.headers.get("content-type")).toBe("application/json");
     expect(seen[0]!.body).toEqual({
-      team_id: ORG, user_id: DEV, max_budget: 2.5, duration: "3600s",
+      // Ruling R48: a task key reaches the model routes only, never LiteLLM's management routes.
+      team_id: ORG, user_id: DEV, max_budget: 2.5, allowed_routes: ["llm_api_routes"], duration: "3600s",
       metadata: { orgId: ORG, developerId: DEV, purpose: "task", refId: "task-1" },
     });
   });
@@ -52,7 +53,7 @@ describe("ModelProxyClient", () => {
   it("mintKey without a developer mints an org-only key: a team, no user", async () => {
     const { client, seen } = proxy(({ path }) => (path === "/key/generate" ? json({ key: "sk-virtual-2" }) : undefined));
     await client.mintKey({ orgId: ORG, purpose: "task", refId: "op-1", maxBudgetUsd: 25, ttlSeconds: 3600 });
-    expect(seen[0]!.body).toEqual({ team_id: ORG, max_budget: 25, duration: "3600s", metadata: { orgId: ORG, purpose: "task", refId: "op-1" } });
+    expect(seen[0]!.body).toEqual({ team_id: ORG, max_budget: 25, allowed_routes: ["llm_api_routes"], duration: "3600s", metadata: { orgId: ORG, purpose: "task", refId: "op-1" } });
   });
 
   it("upsertOrg creates the LiteLLM team with the monthly budget and 1mo reset", async () => {
@@ -78,7 +79,7 @@ describe("ModelProxyClient", () => {
     const created = proxy(({ path }) => (path === "/user/new" ? json({ user_id: DEV }) : undefined));
     await created.client.upsertMember(ORG, DEV, 20);
     expect(created.seen.map((s) => s.path)).toEqual(["/user/new"]);
-    expect(created.seen[0]!.body).toEqual({ user_id: DEV, max_budget: 20, budget_duration: "1mo", metadata: { orgId: ORG }, auto_create_key: false });
+    expect(created.seen[0]!.body).toEqual({ user_id: DEV, user_role: "internal_user_viewer", max_budget: 20, budget_duration: "1mo", metadata: { orgId: ORG }, auto_create_key: false });
 
     const existing = proxy(({ path }) => {
       if (path === "/user/new") return json({ error: { message: `User with id ${DEV} already exists in the db` } }, 400);
@@ -87,7 +88,7 @@ describe("ModelProxyClient", () => {
     });
     await existing.client.upsertMember(ORG, DEV, 30);
     expect(existing.seen.map((s) => s.path)).toEqual(["/user/new", "/user/update"]);
-    expect(existing.seen[1]!.body).toEqual({ user_id: DEV, max_budget: 30, budget_duration: "1mo", metadata: { orgId: ORG } });
+    expect(existing.seen[1]!.body).toEqual({ user_id: DEV, user_role: "internal_user_viewer", max_budget: 30, budget_duration: "1mo", metadata: { orgId: ORG } });
   });
 
   it("a 400 validation error on create is surfaced as the create's own refusal and never falls back to update", async () => {

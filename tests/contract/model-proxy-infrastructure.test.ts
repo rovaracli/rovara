@@ -141,27 +141,61 @@ describe("model proxy infrastructure (named environments)", () => {
   it("puts the service behind an internal load balancer on HTTP 4000 that checks LiteLLM's liveness path", () => {
     const [, balancer] = ofType(resources, "AWS::ElasticLoadBalancingV2::LoadBalancer")[0]!;
     expect(balancer.Properties).toMatchObject({ Scheme: "internal", Type: "application", Subnets: { "Fn::Split": [",", { Ref: "PrivateSubnetIds" }] } });
-    const [, listener] = ofType(resources, "AWS::ElasticLoadBalancingV2::Listener")[0]!;
-    expect(listener.Properties).toMatchObject({ Port: 4000, Protocol: "HTTP" });
+    const listeners = ofType(resources, "AWS::ElasticLoadBalancingV2::Listener").map(([, listener]) => listener.Properties.Port).sort();
+    expect(listeners).toEqual([4000, 4001]);
     const [, group] = ofType(resources, "AWS::ElasticLoadBalancingV2::TargetGroup")[0]!;
     expect(group.Properties).toMatchObject({ Port: 4000, Protocol: "HTTP", TargetType: "ip", HealthCheckPath: "/health/liveliness", Matcher: { HttpCode: "200" } });
     const targets = proxyService().Properties.LoadBalancers as Array<Record<string, unknown>>;
     expect(targets).toEqual([expect.objectContaining({ ContainerName: "litellm", ContainerPort: 4000 })]);
   });
 
-  it("admits the load balancer's clients only by security group, never from 0.0.0.0/0", () => {
+  it("forwards only inference paths on port 4000 and answers everything else with a fixed 403 (ruling R48)", () => {
+    const listeners = ofType(resources, "AWS::ElasticLoadBalancingV2::Listener");
+    const inference = listeners.find(([, listener]) => listener.Properties.Port === 4000)!;
+    const [, group] = ofType(resources, "AWS::ElasticLoadBalancingV2::TargetGroup")[0]!;
+    const groupId = ofType(resources, "AWS::ElasticLoadBalancingV2::TargetGroup")[0]![0];
+    expect(inference[1].Properties.DefaultActions).toEqual([expect.objectContaining({ Type: "fixed-response", FixedResponseConfig: expect.objectContaining({ StatusCode: "403" }) })]);
+    expect(JSON.stringify(inference[1].Properties.DefaultActions)).not.toContain("forward");
+    const rules = ofType(resources, "AWS::ElasticLoadBalancingV2::ListenerRule");
+    expect(rules).toHaveLength(1);
+    expect(rules[0]![1].Properties).toMatchObject({
+      ListenerArn: { Ref: inference[0] },
+      Conditions: [{ Field: "path-pattern", PathPatternConfig: { Values: ["/v1/messages*", "/health/*"] } }],
+      Actions: [{ Type: "forward", TargetGroupArn: { Ref: groupId } }],
+    });
+    expect(group.Properties.Port).toBe(4000);
+  });
+
+  it("forwards every path on port 4001, the management listener", () => {
+    const listeners = ofType(resources, "AWS::ElasticLoadBalancingV2::Listener");
+    const management = listeners.find(([, listener]) => listener.Properties.Port === 4001)!;
+    expect(management[1].Properties.DefaultActions).toEqual([expect.objectContaining({ Type: "forward" })]);
+    // Nothing narrows it by rule: the group that may reach it is the narrowing.
+    expect(ofType(resources, "AWS::ElasticLoadBalancingV2::ListenerRule").filter(([, rule]) => (rule.Properties.ListenerArn as Ref).Ref === management[0])).toEqual([]);
+  });
+
+  it("admits the load balancer's clients only by security group, never from 0.0.0.0/0, and the management port to the model access function alone", () => {
     const balancerGroup = idOf(resources, "AWS::EC2::SecurityGroup", "ModelProxyLoadBalancerSecurityGroup");
     const group = resources[balancerGroup]!;
     expect(group.Properties.SecurityGroupIngress).toBeUndefined();
     const rules = ofType(resources, "AWS::EC2::SecurityGroupIngress").filter(([, rule]) => (rule.Properties.GroupId as Ref)["Fn::GetAtt"]?.[0] === balancerGroup);
     expect(rules.length).toBeGreaterThan(0);
     for (const [, rule] of rules) {
-      expect(rule.Properties).toMatchObject({ IpProtocol: "tcp", FromPort: 4000, ToPort: 4000 });
       expect(rule.Properties.CidrIp).toBeUndefined();
       expect(rule.Properties.CidrIpv6).toBeUndefined();
       expect(rule.Properties.SourceSecurityGroupId).toBeDefined();
     }
-    expect(rules.map(([, rule]) => rule.Properties.SourceSecurityGroupId)).toContainEqual({ Ref: "Ec2WorkerSecurityGroupId" });
+    const onPort = (port: number) => rules.filter(([, rule]) => rule.Properties.FromPort === port && rule.Properties.ToPort === port && rule.Properties.IpProtocol === "tcp");
+    expect(onPort(4000).length + onPort(4001).length).toBe(rules.length);
+    // Port 4001 (LiteLLM's management routes): the model access function's group, and no other.
+    const accessGroup = idOf(resources, "AWS::EC2::SecurityGroup", "ModelAccessSecurityGroup");
+    expect(onPort(4001).map(([, rule]) => rule.Properties.SourceSecurityGroupId)).toEqual([{ "Fn::GetAtt": [accessGroup, "GroupId"] }]);
+    // Port 4000 (inference): the worker group, never the model access function's.
+    expect(onPort(4000).map(([, rule]) => rule.Properties.SourceSecurityGroupId)).toContainEqual({ Ref: "Ec2WorkerSecurityGroupId" });
+    expect(onPort(4000).map(([, rule]) => rule.Properties.SourceSecurityGroupId)).not.toContainEqual({ "Fn::GetAtt": [accessGroup, "GroupId"] });
+    // The worker group's own egress to the proxy is the inference port only.
+    const workerEgress = ofType(resources, "AWS::EC2::SecurityGroupEgress").filter(([, rule]) => (rule.Properties.GroupId as Ref).Ref === "Ec2WorkerSecurityGroupId" && JSON.stringify(rule.Properties.DestinationSecurityGroupId).includes(balancerGroup));
+    expect(workerEgress.map(([, rule]) => [rule.Properties.FromPort, rule.Properties.ToPort])).toEqual([[4000, 4000]]);
     // Nothing inline admits anyone to any proxy group; the only open rule is the tasks' outbound HTTPS.
     for (const [id, other] of ofType(resources, "AWS::EC2::SecurityGroup").filter(([name]) => name.startsWith("ModelProxy"))) {
       expect(other.Properties.SecurityGroupIngress, id).toBeUndefined();
