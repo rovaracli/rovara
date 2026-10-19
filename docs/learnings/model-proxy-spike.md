@@ -93,7 +93,7 @@ Exact bodies (HTTP 422, `Content-Type: application/json`):
 Key budget:
 
 ```json
-{"error":{"message":"Budget has been exceeded! Key=spike-key-budget (sk-...6FVw) Current cost: 0.06170999999999999, Max budget: 0.05","type":"budget_exceeded","param":null,"code":"422"}}
+{"error":{"message":"Budget has been exceeded! Key=spike-key-budget (sk-...<redacted>) Current cost: 0.06170999999999999, Max budget: 0.05","type":"budget_exceeded","param":null,"code":"422"}}
 ```
 
 User budget:
@@ -118,13 +118,22 @@ Reset job exercised: with the rescheduler interval set to 5 to 8 seconds, `budge
 
 Accepted and honoured: `team_id`, `user_id`, `max_budget`, `duration` (`"30d"` became an `expires` timestamp 30 days out; the response shows `duration: null` and `expires` set), `budget_duration` (`"1mo"`, key reset_at 2026-11-01), `metadata` (an arbitrary object, echoed in the response and in `/key/info`), plus `models` and `key_alias`. Team and user must exist beforehand (created with `/team/new` and `/user/new`, which accept `max_budget` and `budget_duration`; `/user/new` also returns a key). A key with `team_id` and `user_id` and its own `max_budget` is checked against all of them; any one over its limit returns the matching 422 above.
 
-## Caveats and facts for Tasks 10 to 14
+## Caveats and facts for Tasks 10 to 16
 
-- Task 12: Pi cannot see the budget error today. `safeError` in `packages/model-runtime/src/index.ts` discards the response body and has no 422 branch, so an exhausted key surfaces as the generic "Anthropic request failed; check credentials, model availability, rate limits and provider status" and `onUsage` reports `costSource: "unknown"`, `outcome: "error"`. Pi made one request and did not retry (the 422 is final). Task 12 should read the body in `observedFetch` (it already clones responses) for `type: "budget_exceeded"` and map `Team=` to `ORG_BUDGET_EXCEEDED`, `Key=` or `User=` to `BUDGET_EXCEEDED`, and add a 422 case to `safeError` without echoing the body.
+- Task 16 (runtime) and Task 15 (start-time): Pi cannot see the budget error today. `safeError` in `packages/model-runtime/src/index.ts` discards the response body and has no 422 branch, so an exhausted key surfaces as the generic "Anthropic request failed; check credentials, model availability, rate limits and provider status" and `onUsage` reports `costSource: "unknown"`, `outcome: "error"`. Pi made one request and did not retry (the 422 is final). Runtime recognition of the 422 body belongs to Task 16 (`safeProviderStream` / `ModelBudgetExhaustedError`): read the body in `observedFetch` (it already clones responses) for `type: "budget_exceeded"`, classify by message text (`Team=` for the organisation, `Key=` or `User=` for the member), and add a 422 case to `safeError` without echoing the body. The start-time `BUDGET_EXCEEDED` / `ORG_BUDGET_EXCEEDED` 402 codes are Task 15's.
+- Caps are soft. LiteLLM checks spend-so-far against the cap before a request, so the request that crosses the line is allowed (observed: spend 0.0617 against a 0.05 cap, and 0.0612 for user and team), and concurrent in-flight requests can overshoot further (not measured). Task 15 must clamp remaining budget at 0 (never show or compute a negative remainder) and must not promise exact caps to members or organisations.
 - The runtime has no baseUrl override yet (expected, Task 12); use `registerProvider` with `api: "anthropic-messages"` and the proxy origin as the baseUrl.
 - LiteLLM spend is written to Postgres in batches; the in-memory counters used by the budget check are current. `/key/info` lagged by a few seconds right after requests.
 - Mock model artefacts (not LiteLLM defects): cost is `$0` on `/v1/messages` for a `mock_response` model ("priced at $0, pricing_not_applied"); cost accrues on `/v1/chat/completions`; `stream: true` returns non-streamed JSON. Mock budgets were therefore exhausted on `/v1/chat/completions`. The budget gate is route independent (an exhausted key got the same 422 on `/v1/messages`). Real Claude cost accrues on `/v1/messages` (confirmed: key spend 0.0064251 after the five real requests).
 - Pricing for the mock was first set in `model_info` only (as the brief asked) and cost stayed `$0` on `/v1/messages`; it was then set in both `litellm_params` and `model_info`, after which `/v1/chat/completions` priced correctly. Whether `model_info` alone suffices on `/v1/chat/completions` was not isolated.
+
+## Ruling R21 (amended): what the proxy serves at launch
+
+- At launch the proxy serves Claude models only (Amazon Bedrock and Anthropic). This is the only combination the spike verified.
+- LiteLLM `model_name` aliases must equal Pi's catalog ids exactly, because Pi sends the catalog id as the request `model`. Pi's `amazon-bedrock` catalog ids include the inference-profile forms, so the Bedrock default is `us.anthropic.claude-sonnet-4-6` and the classifier default is `us.anthropic.claude-haiku-4-5-20251001-v1:0` (`DEFAULT_BEDROCK_MODELS`).
+- Bedrock provider mapping Task 10 must emit: for each served Bedrock model, a `model_list` entry `model_name: <Pi catalog id>` (for example `us.anthropic.claude-sonnet-4-6`) with `litellm_params.model: bedrock/<the same id>` and `aws_region_name`. The Pi side must register the provider with `api: "anthropic-messages"` (overriding the catalog's native `bedrock-converse-stream`) and `baseUrl` = the proxy origin, with the virtual key as the API key. The spike ran this transport with the Anthropic catalog id `claude-sonnet-4-6` aliased to `bedrock/us.anthropic.claude-sonnet-4-6`; a `us.`-prefixed `model_name` under the overridden api is the same LiteLLM path but was not itself run (NOT TESTED below). Anthropic direct models (`anthropic/<id>` with an Anthropic key) were not run either.
+- OpenAI (`openai-responses` to `/v1/responses`) and OpenRouter (`openai-completions` to `/chat/completions`) are NOT routed through the proxy until a follow-up spike verifies them.
+- The ChatGPT plan path stays direct (its token and fallback logic is not proxied).
 
 ## NOT TESTED
 
@@ -132,8 +141,15 @@ Accepted and honoured: `team_id`, `user_id`, `max_budget`, `duration` (`"30d"` b
 - Streaming and tool calls for any model other than Claude on Bedrock.
 - Prompt-cache read and write token counts and their cost (no cache-eligible prompt sent).
 - Extended thinking / reasoning blocks through the proxy.
+- A `us.`-prefixed `model_name` with Pi's api overridden to `anthropic-messages` (the spike used the alias `claude-sonnet-4-6`), and Anthropic direct models.
+- Seconds-based key `duration` (`"<ttl>s"`); only `"30d"` was run.
+- OpenAI `/v1/responses` and OpenRouter `/chat/completions` through the proxy (see R21).
 - Concurrent requests racing a budget boundary (overspend by in-flight requests is therefore not measured).
 - The default reset-job cadence (a forced reset was tested with a shortened interval).
 - Production hosting concerns (ECS, Secrets Manager resolution, IAM): out of scope for the spike.
 
-Decision: GO. Pi's `anthropic-messages` transport streams text and tool calls correctly through LiteLLM's `/v1/messages` for Claude on Bedrock; usage tokens come back to `onUsage` and match LiteLLM's ledger; key, user and team `max_budget` each block with a recognisable HTTP 422 `budget_exceeded` body; `/key/generate` takes `team_id`, `user_id`, `max_budget`, `duration` and `metadata`; and `budget_duration: "1mo"` resets on the 1st of each month UTC. The open items (GPT route, cache tokens, the 10 percent price skew, and Pi hiding the budget error body) are known and handled in Tasks 12 to 14, not blockers.
+## Decision rationale
+
+GO covers ONLY Claude through Pi `anthropic-messages` to LiteLLM `/v1/messages` (Bedrock-served), under ruling R21 above. Verified for that path: text and tool calls stream correctly; usage tokens come back to `onUsage` and match LiteLLM's ledger; key, user and team `max_budget` each block with a recognisable HTTP 422 `budget_exceeded` body; `/key/generate` takes `team_id`, `user_id`, `max_budget`, `duration` and `metadata`; `budget_duration: "1mo"` resets on the 1st of each month UTC. Not covered by this decision: GPT/OpenAI, OpenRouter, ChatGPT-plan, prompt caching, reasoning blocks. The known caveats (10 percent price skew, soft caps, Pi hiding the budget error body) are handled in Tasks 15 and 16 and are not blockers.
+
+Decision: GO
