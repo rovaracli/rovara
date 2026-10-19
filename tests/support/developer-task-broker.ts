@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { vi, type Mock } from "vitest";
-import { sharedTaskKey, type ChannelInfoRequest, type ChannelInfoResponse, type ChannelMembersRequest, type ChannelMembersResponse } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey, sharedTaskKey, singleOrgIdForEnv, type OrgId, type OrgRole, type ChannelInfoRequest, type ChannelInfoResponse, type ChannelMembersRequest, type ChannelMembersResponse } from "@agentx/contracts";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import type { DeveloperApiConfiguration } from "../../packages/broker/src/aws/developer-routes.js";
 import type { DeveloperTaskActions } from "../../packages/broker/src/aws/developer-task-actions.js";
@@ -13,11 +13,13 @@ import { developerTokenVerifier } from "../../packages/broker/src/developer/veri
 import { localSigner } from "./developer-fakes.js";
 import type { FakeDynamoDb, FakeDynamoDbOptions } from "./fake-dynamodb.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, loadSlackBroker, orchestratorPrincipal, registerSlackProject, type Handler } from "./slack-broker.js";
-import { TEST_ORG } from "./orgs.js";
+import { TEST_ENV, TEST_ORG } from "./orgs.js";
 import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 export const DEV_ISSUER = "https://abc123.execute-api.us-east-1.amazonaws.com/v1/auth";
 export interface Developer { developerId: string; name: string; provider: "slack" | "oidc"; sessionId: string; slackUserId?: string }
+/** The org a harness developer belongs to, and their role in it. */
+export interface DeveloperOrg { orgId: OrgId; role: OrgRole }
 export const MAYA: Developer = { developerId: "d".repeat(64), name: "Maya Chen", provider: "slack", sessionId: "s-maya", slackUserId: "U0MAYA001" };
 export const OMAR: Developer = { developerId: "e".repeat(64), name: "Omar Diaz", provider: "oidc", sessionId: "s-omar" };
 
@@ -53,9 +55,10 @@ export function memoryS3() {
   return { send, objects };
 }
 
-async function bearer(who: Developer): Promise<string> {
+/** `org: null` signs a token with no org claims, as one issued before orgs would be. */
+async function bearer(who: Developer, org: DeveloperOrg | null = { orgId: TEST_ORG, role: "member" }): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
-  const claims = { iss: DEV_ISSUER, aud: "agentx-developer", sub: who.developerId, amr: who.provider, env: "staging", sid: who.sessionId, iat: now, nbf: now, exp: now + 3600 };
+  const claims = { iss: DEV_ISSUER, aud: "agentx-developer", sub: who.developerId, amr: who.provider, env: "staging", sid: who.sessionId, ...(org === null ? {} : { org: org.orgId, org_role: org.role }), iat: now, nbf: now, exp: now + 3600 };
   const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid: (await signer.publicJwk()).kid })).toString("base64url");
   const input = `${header}.${Buffer.from(JSON.stringify(claims)).toString("base64url")}`;
   return `Bearer ${input}.${(await signer.sign(Buffer.from(input))).toString("base64url")}`;
@@ -63,6 +66,14 @@ async function bearer(who: Developer): Promise<string> {
 
 /** A signed access token for `who`, as an `authorization` header value (Task 16 plants it in a token store). */
 export const bearerFor = bearer;
+
+/** Puts a developer in an org: the org record and the membership rows OrgStore reads (what a sign-in does). */
+export function seedMembership(db: FakeDynamoDb, developerId: string, org: DeveloperOrg = { orgId: TEST_ORG, role: "member" }): void {
+  const joinedAt = new Date().toISOString();
+  db.set({ ...orgMetaKey(org.orgId), entityType: "ORG", orgId: org.orgId, name: org.orgId === TEST_ORG ? TEST_ENV : "test", createdAt: joinedAt, createdBy: "system", plan: "team" });
+  db.set({ ...orgMemberKey(org.orgId, developerId), entityType: "ORG_MEMBER", orgId: org.orgId, developerId, role: org.role, joinedAt });
+  db.set({ ...developerOrgKey(developerId), entityType: "DEVELOPER_ORG", orgId: org.orgId, role: org.role, joinedAt });
+}
 
 type DeveloperTaskBrokerHarness = ReturnType<typeof createBroker> & {
   actions: DeveloperTaskActions;
@@ -74,6 +85,8 @@ type DeveloperTaskBrokerHarness = ReturnType<typeof createBroker> & {
   finish: (workspaceId: string, operationId: string, status: "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED", detail?: { result?: unknown; error?: string }) => Promise<Record<string, unknown>>;
   events: (workspaceId: string, operationId: string, events: Array<{ type: string; payload: unknown }>) => Promise<Record<string, unknown>>;
   artifact: (workspaceId: string, operationId: string, name: string, content: string) => Promise<Record<string, unknown>>;
+  /** The org a developer was put in when they first called the API (the injected resolver's, else the install's single org). */
+  orgOf: (who: Developer) => Promise<DeveloperOrg>;
 };
 
 export async function createDeveloperTaskBroker(options: {
@@ -117,7 +130,38 @@ export async function createDeveloperTaskBroker(options: {
     ...(options.brokerExtra === undefined && options.orgResolver === undefined ? {} : { extra: { ...options.brokerExtra, ...(options.orgResolver === undefined ? {} : { orgResolver: options.orgResolver }) } }),
   });
   const actions = module.createDeveloperTaskActions(brokerInput as never);
+  // A developer is put in an org the first time they appear, as a sign-in does; the injected resolver says which, and
+  // a later change to the membership rows (a removal) is never undone.
+  const memberships = new Map<string, DeveloperOrg>();
+  // The install's single org: the one its environment name derives (ruling R3), which a test naming its environment changes.
+  const environmentName = options.brokerExtra?.environmentName;
+  const installOrg = typeof environmentName === "string" ? singleOrgIdForEnv(environmentName) : TEST_ORG;
+  const orgOf = async (who: Developer): Promise<DeveloperOrg> => {
+    let org = memberships.get(who.developerId);
+    if (org === undefined) {
+      const orgId = options.orgResolver === undefined ? installOrg : await options.orgResolver({ developerId: who.developerId });
+      org = { orgId: orgId ?? installOrg, role: "member" };
+      memberships.set(who.developerId, org);
+      seedMembership(db, who.developerId, org);
+    }
+    return org;
+  };
+  if (options.orgResolver === undefined) {
+    // Recording a signed-in developer (a test writes the sign-in table's DEVELOPER# record) puts them in the install's org,
+    // as the sign-in that created the record did. A test with its own resolver puts its developers in orgs itself.
+    const record = db.set.bind(db);
+    db.set = (item: Record<string, unknown>) => {
+      record(item);
+      const pk = item.pk;
+      if (typeof pk === "string" && pk.startsWith("DEVELOPER#") && item.sk === "META" && typeof item.developerId === "string" && !memberships.has(item.developerId)) {
+        const org = { orgId: installOrg, role: "member" as const };
+        memberships.set(item.developerId, org);
+        seedMembership(db, item.developerId, org);
+      }
+    };
+  }
   for (const who of [MAYA, OMAR]) {
+    await orgOf(who);
     db.set({ pk: `SESSION#${who.sessionId}`, sk: "META", sessionId: who.sessionId, developerId: who.developerId, amr: who.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
     db.set({
       pk: `DEVELOPER#${who.developerId}`, sk: "META", developerId: who.developerId, provider: who.provider, displayName: who.name,
@@ -129,7 +173,7 @@ export async function createDeveloperTaskBroker(options: {
   const dev = async (who: Developer, method: string, path: string, body?: unknown) => {
     const response = await handler({
       version: "2.0", rawPath: path.split("?")[0], rawQueryString: path.split("?")[1] ?? "",
-      headers: { authorization: await bearer(who) },
+      headers: { authorization: await bearer(who, await orgOf(who)) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       requestContext: { requestId: randomUUID(), http: { method } },
     });
@@ -150,7 +194,7 @@ export async function createDeveloperTaskBroker(options: {
     return response.body;
   };
   return {
-    db, handler, actions, s3, brokerInput, deleteEc2Session, channelMembers, channelInfo, dev, callback,
+    db, handler, actions, s3, brokerInput, deleteEc2Session, channelMembers, channelInfo, dev, callback, orgOf,
     finish: (workspaceId: string, operationId: string, status: "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED", detail: { result?: unknown; error?: string } = {}) =>
       callback(workspaceId, operationId, "result", { operationId, status, ...(detail.result === undefined ? {} : { result: detail.result }), ...(detail.error === undefined ? {} : { error: detail.error }) }),
     events: (workspaceId: string, operationId: string, events: Array<{ type: string; payload: unknown }>) =>

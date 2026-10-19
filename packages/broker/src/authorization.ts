@@ -1,4 +1,4 @@
-import { agentXError } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "./auth.js";
 
 export interface ProjectMembership {
@@ -19,11 +19,15 @@ export function authorizeProject(
   return membership;
 }
 
+/**
+ * The owner may use their workspace. A workspace of another org, like one of another owner, reads as not found,
+ * never forbidden, so the answer does not confirm that it exists.
+ */
 export function authorizeWorkspace(
   identity: AuthenticatedIdentity,
-  workspace: { ownerKey: string; projectName: string },
+  workspace: { ownerKey: string; projectName: string; orgId?: OrgId | undefined },
 ): void {
-  if (workspace.ownerKey !== identity.ownerKey) throw agentXError("NOT_FOUND", "workspace not found");
+  if (workspace.ownerKey !== identity.ownerKey || workspace.orgId !== identity.orgId) throw agentXError("NOT_FOUND", "workspace not found");
 }
 
 const FORBIDDEN_ROUTING_FIELDS = new Set([

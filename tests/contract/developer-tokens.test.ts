@@ -3,10 +3,11 @@ import { createLocalJWKSet, decodeProtectedHeader, jwtVerify } from "jose";
 import { describe, expect, it } from "vitest";
 import { issueAccessToken, kmsTokenSigner, pkceChallengeMatches, randomToken, sha256Hex } from "../../packages/broker/src/developer/tokens.js";
 import { ISSUER, T0, fakeKms, rsaKeyPair } from "../support/developer-fakes.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const KEY = "arn:aws:kms:us-east-1:123456789012:key/k1";
 const issue = (signer: ReturnType<typeof kmsTokenSigner>, now = T0) =>
-  issueAccessToken(signer, { issuer: ISSUER, subject: "d".repeat(64), amr: "slack", env: "staging", sessionId: "s-1", now });
+  issueAccessToken(signer, { issuer: ISSUER, subject: "d".repeat(64), amr: "slack", env: "staging", sessionId: "s-1", now, orgId: TEST_ORG, orgRole: "member" });
 
 /** Runs `publicJwk()` to rejection and returns the error, for asserting on its message. */
 async function publicJwkError(kms: { send(command: unknown): Promise<unknown> }): Promise<Error> {

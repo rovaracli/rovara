@@ -57,6 +57,8 @@ export interface DeveloperSignInProps {
    * optional string, but Table's getter returns string | undefined, which this repo's
    * exactOptionalPropertyTypes rejects as an ITable. */
   turnRecords: dynamodb.Table;
+  /** The State table, where orgs and membership live; sign-in puts a developer in an org and the tokens carry it. */
+  state: dynamodb.Table;
 }
 
 export class DeveloperSignIn extends Construct {
@@ -95,6 +97,7 @@ export class DeveloperSignIn extends Construct {
       AGENTX_ENV: props.env,
       DEVELOPER_TOKEN_ISSUER: issuer,
       DEVELOPER_SIGNIN_TABLE_NAME: table.tableName,
+      STATE_TABLE_NAME: props.state.tableName,
       DEVELOPER_TOKEN_KEY_ARN: tokenKey.keyArn,
       SLACK_SECRET_ARN: props.slackSecret.secretArn,
       SLACK_TEAM_ID: p.slackTeamId.valueAsString,
@@ -114,6 +117,13 @@ export class DeveloperSignIn extends Construct {
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
       resources: [table.tableArn],
+    }));
+    // Orgs and membership (OrgStore): the org, member, developer-pointer, invite, email and Slack team rows only. Its
+    // transactions are made of Put and Update items, which IAM authorizes as PutItem and UpdateItem.
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
+      resources: [props.state.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ORG#*", "DEVELOPER#*", "ORG_INVITE#*", "ORG_EMAIL#*", "SLACK_TEAM#*"] } },
     }));
     tokenKey.grant(fn, "kms:Sign", "kms:GetPublicKey");
     tokenKey.addToResourcePolicy(new iam.PolicyStatement({

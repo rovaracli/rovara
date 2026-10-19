@@ -27,7 +27,7 @@ const TASK_REQUEST = { includeIntegrations: true, includeSettingsRevision: true,
 interface Sent { body: string; groupId: string; deduplicationId: string; attributes: Record<string, unknown> }
 
 /** A teammate in the task's channel. */
-const SAM: DeveloperCaller = { orgId: TEST_ORG, developerId: "5".repeat(64), sessionId: "s-sam", amr: "slack", name: "Sam Lee", slackUserId: "U0SAMLEE01" };
+const SAM: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member" as const, developerId: "5".repeat(64), sessionId: "s-sam", amr: "slack", name: "Sam Lee", slackUserId: "U0SAMLEE01" };
 const NO_DECIDING = "You cannot approve, choose answers or make decisions; if asked to, say only the owner decides on the page.";
 
 const operations = (harness: Harness, workspaceId: string) => harness.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION");
@@ -60,7 +60,7 @@ async function waitingTask(options: { fromTool?: boolean; queue?: false | ((sent
     ...(options.wrap === undefined ? {} : { documentClient: options.wrap(validatingDocumentClient(harness.db)) }),
     ...(options.queue === false ? {} : { slackRequestQueue: { send: async (message: Sent) => { if (typeof options.queue === "function") await options.queue(message); sent.push(message); } } }),
   };
-  const owner: DeveloperCaller = { orgId: TEST_ORG, developerId: record.developerId, sessionId: MAYA.sessionId, amr: "slack", name: MAYA.name, slackUserId: MAYA.slackUserId! };
+  const owner: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member" as const, developerId: record.developerId, sessionId: MAYA.sessionId, amr: "slack", name: MAYA.name, slackUserId: MAYA.slackUserId! };
   const comment = (extra: { text?: string; ask?: boolean; parentId?: string; requestId?: string; as?: DeveloperCaller } = {}) => createPageComment(deps, extra.as ?? owner, taskId, {
     requestId: extra.requestId ?? randomUUID(), document: "plan", version: 1, target: { kind: "claim", id: "2.1" }, text: extra.text ?? "Why below the button?", ask: extra.ask ?? true,
     ...(extra.parentId === undefined ? {} : { parentId: extra.parentId }),

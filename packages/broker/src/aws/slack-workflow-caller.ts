@@ -13,5 +13,7 @@ export function slackWorkflowCaller(userId: string, orgId: OrgId): DeveloperCall
     name: `Slack user ${userId}`,
     slackUserId: userId,
     orgId,
+    // A Slack workflow acts as the task, never as an org administrator.
+    orgRole: "member",
   };
 }

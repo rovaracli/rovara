@@ -13,9 +13,9 @@ import { TEST_ORG } from "./orgs.js";
 export const TEAM = "T0PAGE001";
 export const CHANNEL = "C0PAGE001";
 export const OWNER_KEY = "a".repeat(64);
-export const PRIYA: DeveloperCaller = { orgId: TEST_ORG, developerId: "d".repeat(64), sessionId: "s-priya", amr: "slack", name: "Priya Shah", slackUserId: "U0PRIYA01" };
-export const SAM: DeveloperCaller = { orgId: TEST_ORG, developerId: "e".repeat(64), sessionId: "s-sam", amr: "slack", name: "Sam Lee", slackUserId: "U0SAM0001" };
-export const OMAR: DeveloperCaller = { orgId: TEST_ORG, developerId: "f".repeat(64), sessionId: "s-omar", amr: "slack", name: "Omar Diaz", slackUserId: "U0OMAR001" };
+export const PRIYA: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member" as const, developerId: "d".repeat(64), sessionId: "s-priya", amr: "slack", name: "Priya Shah", slackUserId: "U0PRIYA01" };
+export const SAM: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member" as const, developerId: "e".repeat(64), sessionId: "s-sam", amr: "slack", name: "Sam Lee", slackUserId: "U0SAM0001" };
+export const OMAR: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member" as const, developerId: "f".repeat(64), sessionId: "s-omar", amr: "slack", name: "Omar Diaz", slackUserId: "U0OMAR001" };
 export const START = Date.parse("2026-10-11T10:00:00.000Z");
 
 /** A coding plan with claims 1, 2 and 2.1, decision d1 on 2.1 (Above or Below, AgentX recommends Below) and one proposed check. */
@@ -68,7 +68,7 @@ export function pageTask(options: { path?: "QUICK" | "FULL"; reviewPhase?: "REQU
   });
   const phase = options.reviewPhase ?? (options.path === "FULL" ? "REQUIREMENTS" : undefined);
   db.set({
-    pk: `DEVTASK#${taskId}`, sk: "META", entityType: "DEVELOPER_TASK", taskId, developerId: PRIYA.developerId, provider: "slack", developerName: PRIYA.name,
+    pk: `DEVTASK#${taskId}`, sk: "META", entityType: "DEVELOPER_TASK", taskId, orgId: TEST_ORG, developerId: PRIYA.developerId, provider: "slack", developerName: PRIYA.name,
     slackUserId: PRIYA.slackUserId, client: "slack", project: "payments", title: "Retry failed payments", workspaceId, ownerKey: OWNER_KEY,
     conversationId: "conversation", startingRevision: 1, charge: { member: { pk: "x", sk: "y" }, organization: { pk: "x", sk: "z" } },
     shared: options.shared !== false, ...(options.shared === false ? {} : { share: { teamId: TEAM, channelId: CHANNEL, mode: "view", sharedReason: "requested", sharedAt: iso(), threadTs: "1760000000.000100" } }),

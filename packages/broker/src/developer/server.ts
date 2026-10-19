@@ -33,6 +33,7 @@ import {
   type TaskPeopleDisplayReadRequest,
   type TaskPeopleDisplayReadResponse,
   type DeveloperSignInMethod,
+  type OrgId,
   type EndDeveloperSessionsRequest,
   type EndDeveloperSessionsResponse,
   type SlackAuthCheckRequest,
@@ -42,6 +43,8 @@ import {
 } from "@agentx/contracts";
 import { adaptHttpApiEvent, ownerKeyForSubject, type HttpApiV2Event } from "../aws/lambda.js";
 import { SESSION_MAX_AGE_SECONDS } from "../aws/web-session.js";
+import type { OrgStore } from "../org/store.js";
+import { resolveOrgOnSignIn } from "../org/sign-in.js";
 import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderResult, type SignInProvider } from "./providers.js";
 import type { SlackDirectory } from "./slack-directory.js";
 import { endedByAdmin, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type SessionRecord } from "./store.js";
@@ -56,6 +59,10 @@ export interface DeveloperIdentityDependencies {
   signer: TokenSigner;
   providers: Partial<Record<DeveloperSignInMethod, SignInProvider>>;
   directory: SlackDirectory;
+  /** The org store: a sign-in puts the developer in an org, and the tokens carry it. */
+  orgs: Pick<OrgStore, "orgForDeveloper" | "ensureOrg" | "addMember">;
+  /** The install's single org (ruling R3), which a Slack or company sign-in joins as a member. */
+  singleOrgId?: OrgId;
   now: () => number;
   log: (entry: Record<string, unknown>) => void;
 }
@@ -136,8 +143,15 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     return found;
   };
 
-  const accessToken = (session: SessionRecord) =>
-    issueAccessToken(deps.signer, { issuer: config.issuer, subject: session.developerId, amr: session.amr, env: config.env, sessionId: session.sessionId, now: deps.now() });
+  /** The session's access token, carrying the org the developer belongs to now; none while they belong to no org. */
+  async function accessToken(session: SessionRecord): Promise<{ token: string; expiresIn: number } | undefined> {
+    const membership = await deps.orgs.orgForDeveloper(session.developerId);
+    if (membership === undefined) return undefined;
+    return issueAccessToken(deps.signer, {
+      issuer: config.issuer, subject: session.developerId, amr: session.amr, env: config.env, sessionId: session.sessionId, now: deps.now(),
+      orgId: membership.orgId, orgRole: membership.role,
+    });
+  }
   const tokens = (access: { token: string; expiresIn: number }, refreshToken: string): HttpResult =>
     jsonResult(200, { access_token: access.token, token_type: "Bearer", expires_in: access.expiresIn, refresh_token: refreshToken });
 
@@ -323,6 +337,11 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       ...(identity.email === undefined ? {} : { email: identity.email }),
       ...(slackUserId === undefined ? {} : { slackUserId }),
     });
+    // A first sign-in puts the person in an org (ruling R2); the tokens and the browser session carry it from here.
+    await resolveOrgOnSignIn(
+      { orgs: deps.orgs, ...(deps.singleOrgId === undefined ? {} : { singleOrgId: deps.singleOrgId }), singleOrgName: config.env },
+      { method, developerId, displayName: identity.displayName, ...(identity.email === undefined ? {} : { email: identity.email }), emailVerified: identity.email !== undefined },
+    );
     if (request.browserReturnTo !== undefined) {
       // A fixed 30 days from sign-in, with no renewal: the session record ends then, whatever the cookie says.
       const endsAt = Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS;
@@ -346,7 +365,12 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (developer === undefined || developer.revoked) return oauthError(400, "invalid_grant", "your AgentX sign-in was turned off by an admin; contact an admin");
     const { session, refreshToken } = await store.createSession(redeemed);
     deps.log({ event: "signin.session_started", method: redeemed.amr, developerId: redeemed.developerId, sessionId: session.sessionId });
-    return tokens(await accessToken(session), refreshToken);
+    const access = await accessToken(session);
+    if (access === undefined) {
+      await revoke(session.sessionId, "no_org");
+      return oauthError(400, "invalid_grant", "your AgentX sign-in belongs to no organization; run agentx login again");
+    }
+    return tokens(access, refreshToken);
   }
 
   async function refreshTokenGrant(form: URLSearchParams, methods: DeveloperSignInMethod[]): Promise<HttpResult> {
@@ -386,6 +410,10 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     }
     // Signed before the rotation: a signing failure then leaves the presented token untouched.
     const access = await accessToken(session);
+    if (access === undefined) {
+      await revoke(session.sessionId, "no_org");
+      return ended;
+    }
     const rotated = lookup.kind === "active" ? await store.rotateRefresh(lookup) : await store.rotateRecentlyUsed(lookup);
     if ("reused" in rotated) {
       await revoke(session.sessionId, "refresh_token_reused");

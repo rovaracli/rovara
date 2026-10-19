@@ -26,7 +26,7 @@ const PLAN: PlanDocument = pagePlan({
   ],
 });
 delete PLAN.checks;
-const maya: DeveloperCaller = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack", name: MAYA.name, slackUserId: MAYA.slackUserId! };
+const maya: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack", name: MAYA.name, slackUserId: MAYA.slackUserId! };
 
 const operations = (harness: Harness, workspaceId: string) => harness.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION");
 const workflowOf = (harness: Harness, taskId: string) => (harness.db.get(`DEVTASK#${taskId}`, "META") as { workflow: WorkflowSnapshot }).workflow;

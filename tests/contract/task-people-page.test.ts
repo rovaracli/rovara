@@ -17,7 +17,7 @@ const personId = "33333333-3333-4333-8333-333333333333";
 const sessionId = "44444444-4444-4444-8444-444444444444";
 const csrf = "c".repeat(43);
 const origin = "https://agentx.example.test";
-const caller: DeveloperCaller = { orgId: TEST_ORG, developerId: "d".repeat(64), sessionId, amr: "slack", name: "Maya" };
+const caller: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member" as const, developerId: "d".repeat(64), sessionId, amr: "slack", name: "Maya" };
 const people: TaskPeopleView = {
   revision: 7, orphaned: false,
   people: [{ personId, name: "Lee <script>", role: "commenter", you: false, effectiveRole: "commenter" }],

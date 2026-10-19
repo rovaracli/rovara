@@ -2,11 +2,12 @@
 // them, read through the sparse byWorkspaceProject index.
 import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WORKSPACE_PROJECT_INDEX, type ChannelMembersRequest, type ChannelMembersResponse } from "@agentx/contracts";
+import { WORKSPACE_PROJECT_INDEX, orgScoped, type ChannelMembersRequest, type ChannelMembersResponse } from "@agentx/contracts";
 import type { DeveloperApiConfiguration } from "../../packages/broker/src/aws/developer-routes.js";
 import { developerTokenVerifier } from "../../packages/broker/src/developer/verify-token.js";
 import { createAdminBroker, type AdminHandler } from "../support/admin-broker.js";
 import { localSigner } from "../support/developer-fakes.js";
+import { seedMembership } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -22,7 +23,7 @@ let config: DeveloperApiConfiguration;
 
 const signer = localSigner();
 const claims = (overrides: Record<string, unknown> = {}) => ({
-  iss: ISSUER, aud: "agentx-developer", sub: developerId, amr: "slack", env: "staging", sid: "s-1", iat: T0 / 1000, nbf: T0 / 1000, exp: T0 / 1000 + 3600, ...overrides,
+  iss: ISSUER, aud: "agentx-developer", sub: developerId, amr: "slack", env: "staging", sid: "s-1", org: TEST_ORG, org_role: "member", iat: T0 / 1000, nbf: T0 / 1000, exp: T0 / 1000 + 3600, ...overrides,
 });
 async function bearer(jwt: Record<string, unknown>): Promise<string> {
   const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid: (await signer.publicJwk()).kid })).toString("base64url");
@@ -39,9 +40,10 @@ function workspace(input: { id: string; project: string; created: string; status
     pk: `WORKSPACE#${input.id}`,
     sk: "META",
     entityType: "WORKSPACE",
-    [WORKSPACE_PROJECT_INDEX.partitionKey]: input.project,
+    [WORKSPACE_PROJECT_INDEX.partitionKey]: orgScoped(TEST_ORG, input.project),
     [WORKSPACE_PROJECT_INDEX.sortKey]: created,
     id: input.id,
+    orgId: TEST_ORG,
     ownerKey: "o".repeat(64),
     projectName: input.project,
     projectRevision: input.revision ?? 7,
@@ -76,6 +78,7 @@ beforeEach(async () => {
     verifyAccessToken: developerTokenVerifier({ issuer: ISSUER, keys: async () => [await signer.publicJwk()], now: () => Date.now() }),
   };
   ({ db, handler } = await createAdminBroker({ developer: config }));
+  seedMembership(db, developerId);
   db.set({ pk: "SESSION#s-1", sk: "META", sessionId: "s-1", developerId, amr: "slack", slackUserId: "U0MAYA001", startedAt: new Date(T0).toISOString(), endsAt: T0 / 1000 + 604_800 });
   db.set({ pk: `DEVELOPER#${developerId}`, sk: "META", developerId, provider: "slack", issuer: "https://slack.com", subject: "U0MAYA001", displayName: "Maya Chen", slackUserId: "U0MAYA001", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
   db.set({ pk: slackBindingPk(TEST_ORG, "T0TEAM1"), sk: "CHANNEL#C0PAY0001", teamId: "T0TEAM1", channelId: "C0PAY0001", projectName: "payments-api", updatedAt: "2026-09-27T00:00:00.000Z" });
@@ -120,8 +123,8 @@ describe("GET /v1/dev/workspaces (spec 041 FR-001, FR-002)", () => {
     });
     await call("/v1/dev/workspaces", claims());
     expect(sent.map((input) => [input.IndexName, (input.ExpressionAttributeValues as Record<string, unknown>)[":project"], input.ScanIndexForward])).toEqual([
-      [WORKSPACE_PROJECT_INDEX.name, "payments-api", false],
-      [WORKSPACE_PROJECT_INDEX.name, "solo", false],
+      [WORKSPACE_PROJECT_INDEX.name, orgScoped(TEST_ORG, "payments-api"), false],
+      [WORKSPACE_PROJECT_INDEX.name, orgScoped(TEST_ORG, "solo"), false],
     ]);
   });
 

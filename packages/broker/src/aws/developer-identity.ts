@@ -7,12 +7,13 @@ import { KMSClient } from "@aws-sdk/client-kms";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { createRemoteJWKSet, type JWTVerifyGetKey } from "jose";
-import type { ChannelByNameRequest, ChannelInfoRequest, ChannelMembersRequest, DeveloperSignInMethod, EndDeveloperSessionsRequest, SlackAuthCheckRequest, SlackUserByEmailRequest, TaskChannelPeopleRequest, TaskPersonProofRequest } from "@agentx/contracts";
+import { singleOrgIdForEnv, type ChannelByNameRequest, type ChannelInfoRequest, type ChannelMembersRequest, type DeveloperSignInMethod, type EndDeveloperSessionsRequest, type SlackAuthCheckRequest, type SlackUserByEmailRequest, type TaskChannelPeopleRequest, type TaskPersonProofRequest } from "@agentx/contracts";
 import { ProviderNotConfiguredError, oidcSignInProvider, slackSignInProvider, type SignInProvider } from "../developer/providers.js";
 import { createDeveloperIdentityHandler, type DeveloperIdentityConfig } from "../developer/server.js";
 import { slackDirectory } from "../developer/slack-directory.js";
 import { DeveloperSignInStore, methodSince } from "../developer/store.js";
 import { kmsTokenSigner } from "../developer/tokens.js";
+import { OrgStore } from "../org/store.js";
 import type { HttpApiV2Event } from "./lambda.js";
 
 const SECRET_CACHE_MS = 5 * 60 * 1000;
@@ -160,13 +161,17 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
   };
   const oidc = oidcProvider();
   if (config.oidcProblem !== undefined) log({ event: "signin.not_configured", method: "oidc", detail: config.oidcProblem });
+  const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient(region), { marshallOptions: { removeUndefinedValues: true } });
   return createDeveloperIdentityHandler({
     config,
     store: new DeveloperSignInStore({
-      documentClient: DynamoDBDocumentClient.from(new DynamoDBClient(region), { marshallOptions: { removeUndefinedValues: true } }),
+      documentClient,
       tableName: required(env, "DEVELOPER_SIGNIN_TABLE_NAME"),
       now,
     }),
+    // Orgs and membership live in the State table, beside the records they scope; the sign-in table holds identities only.
+    orgs: new OrgStore({ documentClient, tableName: required(env, "STATE_TABLE_NAME"), now }),
+    singleOrgId: singleOrgIdForEnv(config.env),
     signer: kmsTokenSigner({ kms: new KMSClient(region), keyId: required(env, "DEVELOPER_TOKEN_KEY_ARN") }),
     providers: {
       slack: slackSignInProvider({ teamId: config.slack.teamId, credentials: slackSecret, fetch, jwks: jwksFor(SLACK_JWKS_URI), now }),

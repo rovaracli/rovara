@@ -604,7 +604,7 @@ describe("native developer task workflow", () => {
         eligible: true, channelMember: true,
       }) };
 
-    await expect(captureWorkflowFeedbackNote(deps as never, second as never, taskId, {
+    await expect(captureWorkflowFeedbackNote(deps as never, { ...second, orgId: TEST_ORG } as never, taskId, {
       thread, userId: second.slackUserId!, eventId: "EvSecondOwnerNote", messageTs: "1695500001.000001", text: "Please preserve the current candidate.",
     })).resolves.toEqual({ captured: true });
     expect((harness.db.get(`DEVTASK#${taskId}`, "META")!.workflow as WorkflowSnapshot).feedbackNotes?.at(-1)?.actorId)
@@ -836,7 +836,7 @@ describe("native developer task workflow", () => {
       expect(blocked, ending).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.feedbackReviewFailed });
       const deps = { documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
         orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.parse(now) };
-      const page = () => getTaskDocumentView(deps, { developerId: task.developerId } as never, taskId);
+      const page = () => getTaskDocumentView(deps, { orgId: TEST_ORG, developerId: task.developerId } as never, taskId);
       expect(await page(), ending).toMatchObject({ status: "Couldn't review the pull request feedback", nextStep: "Merge it on GitHub and the task finishes, or close the task in Slack." });
       expect(workflowMessage({ taskId, workflow: blocked })!.text, ending).toBe("I couldn't review the feedback on the pull request, so I have nothing to propose from it. I'm still watching the pull request and will finish this task when it's merged.");
       // A task blocked before the reason existed reads the same; a failed push has its own words; a changed pull request keeps its own.
@@ -2676,7 +2676,7 @@ describe("the draft pull request AgentX opens (final review)", () => {
     await finishImplementation();
     await passReviews(harness, workspaceId, candidate);
     const task = harness.db.get(`DEVTASK#${taskId}`, "META") as { developerId: string };
-    const page = () => getTaskDocumentView(routeDeps(harness), { developerId: task.developerId } as never, taskId);
+    const page = () => getTaskDocumentView(routeDeps(harness), { orgId: TEST_ORG, developerId: task.developerId } as never, taskId);
     expect((await page()).status).toBe("Opening a draft pull request");
     await harness.finish(workspaceId, publishOf(harness, workspaceId)[0]!.id, "FAILED", { error: "push refused" });
     const failed = taskWorkflow(harness, taskId);
@@ -2876,7 +2876,7 @@ describe("checks AgentX proposes in the coding plan", () => {
     const dependencyInvocation = retryPayload.workflowDependencies as { resumeTreeSha: string; sequenceStart: number; resumeProgress: WorkItemProgressV1[] };
     const retryPage = await getTaskDocumentView({ orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
       checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
-    { developerId: MAYA.developerId } as never, taskId);
+    { orgId: TEST_ORG, developerId: MAYA.developerId } as never, taskId);
     expect(retryPage.workflowDependenciesProgress).toEqual(dependencyInvocation.resumeProgress);
     const execution = await executeSerialWorkflowDependencies({ graph, graphDigest, runId: approval.runId, operationId: String(retryOperation.id), initialTreeSha: "f".repeat(40),
       sequenceStart: dependencyInvocation.sequenceStart, resumeProgress: dependencyInvocation.resumeProgress,
@@ -3679,7 +3679,7 @@ describe("structured plan documents in the planner's prompts", () => {
     const pointerOf = (harness: Harness, taskId: string, artifactId: string) => harness.db.get(`DEVTASK#${taskId}`, `PLAN_EVIDENCE#${artifactId}`);
     const taskPage = (harness: Harness, taskId: string) => getTaskDocumentView(
       { orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
-      { developerId: String(taskRecordOf(harness, taskId).developerId) } as never, taskId);
+      { orgId: TEST_ORG, developerId: String(taskRecordOf(harness, taskId).developerId) } as never, taskId);
 
     it("stores a readable answer as canonical JSON at once, without reading the code it cites, and queues one evidence job", async () => {
       const getFileAtCommit = vi.fn(async () => { throw new Error("GitHub is down"); });
@@ -3794,7 +3794,7 @@ describe("structured plan documents in the planner's prompts", () => {
       await finishPlanning(harness, workspaceId, planAnswer(citing("repo/demo/src/charge.ts", 2, 3)));
       const now = Date.now() + 60_000;
       const deps = { documentClient: harness.db, tableName: "state", actions: harness.actions, orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => now };
-      const view = await getTaskDocumentView(deps, { developerId: String(taskRecordOf(harness, taskId).developerId) } as never, taskId);
+      const view = await getTaskDocumentView(deps, { orgId: TEST_ORG, developerId: String(taskRecordOf(harness, taskId).developerId) } as never, taskId);
       expect(view.now).toBe(now);
       expect(view.documents[0]).toMatchObject({ format: "structured", createdAt: lastArtifact(harness, taskId).createdAt });
       expect(view.documents[0]).not.toHaveProperty("evidence");
@@ -3882,7 +3882,7 @@ describe("structured plan documents in the planner's prompts", () => {
         const deps = { documentClient: harness.db, tableName: "state", actions: harness.actions, log: (entry: Record<string, unknown>) => { lines.push(entry); },
           orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() };
         const developerId = String((harness.db.get(`DEVTASK#${taskId}`, "META") as { developerId: string }).developerId);
-        const page = () => getTaskDocumentView(deps, { developerId } as never, taskId);
+        const page = () => getTaskDocumentView(deps, { orgId: TEST_ORG, developerId } as never, taskId);
         // Intact: the cited code is shown and nothing is logged.
         expect((await page()).documents[0]).toMatchObject({ evidence: { excerpts: [{ status: "ok" }] } });
         expect(lines.filter((line) => line.event === "evidence_unverified")).toEqual([]);
@@ -4683,7 +4683,7 @@ describe("the owner resolves each blocking review finding (Task 5)", () => {
     const ids = [comment(1), comment(2)];
     const deps = { documentClient: harness.db, tableName: "state", actions: harness.actions, orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "channel" as const, channelIds: [SLACK_CHANNEL] }),
       projectChannelIds: async () => [SLACK_CHANNEL], now: () => Date.now(), log: () => undefined };
-    const caller = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId! };
+    const caller = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId! };
     const workflow = taskWorkflow(harness, taskId);
     await decideTaskWorkflow(deps, caller, taskId, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved on the task page.",
       artifactDigest: workflow.artifacts.at(-1)!.sha256, answers: [{ decisionId: "d1", optionId: "five", opened: true }], includedCommentIds: ids }, { via: "PAGE" });
@@ -4699,7 +4699,7 @@ describe("the owner resolves each blocking review finding (Task 5)", () => {
     t.harness.db.set({ ...(t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as object), developerName: "Slack user U0BSPTAFNG2" });
     const deps = { documentClient: t.harness.db, tableName: "state", actions: t.harness.actions, log: () => undefined,
       orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() };
-    const view = await getTaskDocumentView(deps, { developerId: row.developerId } as never, t.taskId);
+    const view = await getTaskDocumentView(deps, { orgId: TEST_ORG, developerId: row.developerId } as never, t.taskId);
     expect(view.acceptedFindings).toEqual([expect.objectContaining({ owner: "The task owner" })]);
     expect(view.history.map((entry) => entry.text)).toEqual(expect.arrayContaining(["The task owner approved Coding plan v1", "The task owner resolved the review findings: 1 accepted, 0 to fix"]));
     expect(JSON.stringify(view)).not.toContain("Slack user U");
@@ -4815,7 +4815,7 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
     const task = harness.db.get(`DEVTASK#${taskId}`, "META") as { developerId: string };
     return getTaskDocumentView({ orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
       checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
-    { developerId: task.developerId } as never, taskId);
+    { orgId: TEST_ORG, developerId: task.developerId } as never, taskId);
   };
   const STILL_WATCHING = "I'm still watching the pull request and will finish this task when it's merged.";
   const STOPPED_FOLLOWING = "it changed on GitHub since I opened it. I've stopped following it, so merge or close it on GitHub and then close this task.";
@@ -5310,7 +5310,7 @@ describe("Spec 059 ordered workflow broker review regressions", () => {
         operation = operations(setup.harness, setup.workspaceId).find((row) => row.requestId === requestId)!;
         expect(taskWorkflow(setup.harness, setup.taskId).workflowDependenciesProgress!.length).toBeLessThanOrEqual(32);
         if (attempt === 0) {
-          const resetPage = await getTaskDocumentView(pageDependencies(setup.harness), { developerId: MAYA.developerId } as never, setup.taskId);
+          const resetPage = await getTaskDocumentView(pageDependencies(setup.harness), { orgId: TEST_ORG, developerId: MAYA.developerId } as never, setup.taskId);
           expect(resetPage.workflowDependenciesProgress).toEqual([]);
         }
       }

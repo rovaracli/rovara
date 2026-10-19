@@ -44,6 +44,8 @@ export interface DeveloperTaskRecord {
   sk: "META";
   entityType: "DEVELOPER_TASK";
   taskId: string;
+  /** The org the task belongs to; every task this release starts carries it, and a caller of another org never sees the task. */
+  orgId?: OrgId;
   developerId: string;
   provider: "slack" | "oidc";
   developerName: string;

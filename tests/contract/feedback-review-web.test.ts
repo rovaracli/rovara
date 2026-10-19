@@ -54,7 +54,7 @@ function dependencies(overrides: Partial<FeedbackReviewWebDependencies> = {}): F
   return {
     origin,
     authenticateSession: vi.fn(async (sessionId: string) => sessionId === "session-owner"
-      ? { orgId: TEST_ORG, developerId: "d".repeat(64), sessionId, amr: "slack" as const, name: "Maya", slackUserId: "UOWNER" }
+      ? { orgId: TEST_ORG, orgRole: "member" as const, developerId: "d".repeat(64), sessionId, amr: "slack" as const, name: "Maya", slackUserId: "UOWNER" }
       : undefined),
     getWorkflowFeedbackReview: getReview,
     submitWorkflowFeedbackDecision: submitDecision,
@@ -198,8 +198,9 @@ describe("authenticated PR feedback review web journey", () => {
           sent.push(command);
           return { Item: command.input?.Key?.pk?.startsWith("DEVELOPER#")
             ? { displayName: "Maya", slackUserId: "UOWNER", revoked: false }
-            : { orgId: TEST_ORG, sessionId: "session-owner", developerId: "d".repeat(64), amr: "slack", startedAt: new Date(signedInAt).toISOString(), endsAt, reviewExpiresAt: endsAt, ...session } };
+            : { sessionId: "session-owner", developerId: "d".repeat(64), amr: "slack", startedAt: new Date(signedInAt).toISOString(), endsAt, reviewExpiresAt: endsAt, ...session } };
         }) },
+        orgs: { orgForDeveloper: async () => ({ orgId: TEST_ORG, role: "member" as const }) },
         now: () => signedInAt,
       };
       return { deps, sent };
@@ -406,7 +407,7 @@ describe("broker-backed feedback review data", () => {
     return { harness, taskId, deps, workflow, bundleDigest: bundles[0]!.digest, bundleDigests: bundles.map(bundle => bundle.digest), reviewDigest, githubRead };
   }
 
-  const coOwner = { orgId: TEST_ORG, developerId: developerIdForSlackUser("U0COOWNER1"), slackUserId: "U0COOWNER1", name: "Bailey Co-owner",
+  const coOwner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: developerIdForSlackUser("U0COOWNER1"), slackUserId: "U0COOWNER1", name: "Bailey Co-owner",
     sessionId: "s-feedback-co-owner", amr: "slack" as const };
   const backupOwner = { developerId: developerIdForSlackUser("U0BACKUP01"), slackUserId: "U0BACKUP01", name: "Riley Backup" };
 
@@ -455,7 +456,7 @@ describe("broker-backed feedback review data", () => {
     };
     const peopleDeps: TaskPeopleDependencies = { ...fixture.deps, now: () => Date.parse("2026-10-05T12:00:00.000Z"),
       taskPeopleConfiguration: { peopleChangesEnabled: true }, checkTaskPerson };
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId! };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId! };
     await changeTaskPeople(peopleDeps, owner, fixture.taskId, { requestId: randomUUID(), expectedPeopleRevision: 1,
       targetDeveloperId: coOwner.developerId, role: "owner" });
     await changeTaskPeople(peopleDeps, owner, fixture.taskId, { requestId: randomUUID(), expectedPeopleRevision: 2,
@@ -541,21 +542,21 @@ describe("broker-backed feedback review data", () => {
     fixture.harness.db.set({ ...task, workflow: { ...task.workflow!, stage: "MERGED", state: "COMPLETE" } });
     const readArtifact = vi.spyOn(fixture.harness.actions, "readArtifact");
 
-    await expect(getWorkflowFeedbackReview(fixture.deps as never, { orgId: TEST_ORG, ...external, sessionId: "s-external", amr: "oidc" }, fixture.taskId))
+    await expect(getWorkflowFeedbackReview(fixture.deps as never, { orgId: TEST_ORG, orgRole: "member" as const, ...external, sessionId: "s-external", amr: "oidc" }, fixture.taskId))
       .rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
     expect(readArtifact).not.toHaveBeenCalled();
   });
 
   it("loads only the current owner's verified report and comment bundles through broker artifact reads", async () => {
     const fixture = await preparedReview();
-    const data = await getWorkflowFeedbackReview(fixture.deps, { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack", name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" }, fixture.taskId);
+    const data = await getWorkflowFeedbackReview(fixture.deps, { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack", name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" }, fixture.taskId);
     expect(data).toMatchObject({ status: "PENDING", qualification: "AI_GENERATED_ADVISORY", reviewDigest: fixture.reviewDigest, bundleDigests: [fixture.bundleDigest], findings: [{ id: "finding-1", comments: [{ body: "Handle empty input" }] }] });
-    await expect(getWorkflowFeedbackReview(fixture.deps as never, { orgId: TEST_ORG, developerId: OMAR.developerId, sessionId: OMAR.sessionId, amr: "oidc", name: OMAR.name }, fixture.taskId)).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
+    await expect(getWorkflowFeedbackReview(fixture.deps as never, { orgId: TEST_ORG, orgRole: "member" as const, developerId: OMAR.developerId, sessionId: OMAR.sessionId, amr: "oidc", name: OMAR.name }, fixture.taskId)).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
   });
 
   it("returns a review that could not be completed without reading its report, pointing to the Slack thread", async () => {
     const fixture = await preparedReview();
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     const task = fixture.harness.db.get(`DEVTASK#${fixture.taskId}`, "META") as Record<string, unknown> & { workflow: WorkflowSnapshot };
     const review = task.workflow.feedbackReview;
     if (review?.status !== "PENDING") throw new Error("the fixture's review is pending");
@@ -571,7 +572,7 @@ describe("broker-backed feedback review data", () => {
     ["PULL_REQUEST", "READY", "Create the required pull requests for the verified code."],
   ] as const)("shows the current %s stage action after the feedback decision", async (stage, state, expectedNextAction) => {
     const fixture = await preparedReview();
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     const task = fixture.harness.db.get(`DEVTASK#${fixture.taskId}`, "META") as Record<string, unknown> & { workflow: Record<string, unknown> };
     fixture.harness.db.set({ ...task, workflow: { ...task.workflow, stage, state } });
 
@@ -582,7 +583,7 @@ describe("broker-backed feedback review data", () => {
 
   it("stores the attributed owner decision with a revision and digest condition", async () => {
     const fixture = await preparedReview();
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     const result = await submitWorkflowFeedbackDecision(fixture.deps, owner, fixture.taskId, {
       requestId: randomUUID(), expectedRevision: fixture.workflow.revision, reviewDigest: fixture.reviewDigest, proposalDigest: "b".repeat(64),
       bundleDigests: [fixture.bundleDigest], decision: "APPROVE", selectedFindingIds: ["finding-1"],
@@ -594,7 +595,7 @@ describe("broker-backed feedback review data", () => {
 
   it("carries an existing approved whole-plan graph into PR-feedback coding from the current candidate tree", async () => {
     const fixture = await preparedReview(1, {}, undefined, {}, undefined, true);
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     Object.assign(fixture.deps, { workflowDependenciesEnabled: true });
     const graph = { schemaVersion: 1 as const, taskId: fixture.taskId, version: 1, items: [
       { id: randomUUID(), title: "Handle feedback", description: "Apply the owner-approved feedback", repository: "demo", dependsOn: [] },
@@ -658,7 +659,7 @@ describe("broker-backed feedback review data", () => {
       fileChanges: [{ repositoryId: "demo", path: "README.md", operation: "MODIFY", change: "Use the shorter sentence." }], tests: [],
       obsoleteChecks: ["proposed-1"], replacementChecks: [replacement] } },
     { required: [unit], optional: [], selectedOptionalIds: [], proposed: [sentence, links] });
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     const review = await getWorkflowFeedbackReview(fixture.deps, owner, fixture.taskId);
     const added = { cwd: replacement.cwd, executable: replacement.executable, args: replacement.args, timeoutSeconds: 600 };
     // The review returns each added check's command, which the owner approves with the fix.
@@ -700,7 +701,7 @@ describe("broker-backed feedback review data", () => {
       fileChanges: [{ repositoryId: "demo", path: "README.md", operation: "MODIFY", change: "Use the shorter sentence." }], tests: [], replacementChecks: [replacement(label)] } });
     // The report lists finding-1 first; the page lists finding-2 first, because it is a must fix and finding-1 only a should fix.
     const fixture = await preparedReview(2, { priority: "SHOULD_FIX", ...fix("First label") }, { required: [], optional: [], selectedOptionalIds: [], proposed: [sentence] }, fix("Second label"));
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     const review = await getWorkflowFeedbackReview(fixture.deps, owner, fixture.taskId);
     expect((review.findings as Array<{ id: string }>).map(finding => finding.id)).toEqual(["finding-2", "finding-1"]);
     expect(review.reportOrder).toEqual(["finding-1", "finding-2"]);
@@ -723,7 +724,7 @@ describe("broker-backed feedback review data", () => {
     const grep = (text: string) => ({ cwd: "repo/demo", executable: "grep", args: ["-q", text, "README.md"], timeoutSeconds: 30 });
     const unit = { id: "required-1", label: "Unit tests", command: { cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 600 } };
     const sentence = { id: "proposed-1", label: "Sentence present", command: grep("Old sentence.") };
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     for (const [checks, problem] of [
       [{ obsoleteChecks: ["proposed-1"], replacementChecks: [{ label: "Shorter sentence present", cwd: "other", executable: "grep", args: ["-q", "New.", "README.md"] }] }, "it must run in one of the task's repositories"],
       [{ obsoleteChecks: ["required-1"] }, "it names a project check, which always runs"],
@@ -746,7 +747,7 @@ describe("broker-backed feedback review data", () => {
   it("checks corrected checks against the folders of the task's starting project revision, and looks the project up only when a fix adds checks (0.2.12 review)", async () => {
     const grep = (text: string) => ({ cwd: "repo/demo", executable: "grep", args: ["-q", text, "README.md"], timeoutSeconds: 30 });
     const sentence = { id: "proposed-1", label: "Sentence present", command: grep("Old sentence.") };
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     const approve = (fixture: Awaited<ReturnType<typeof preparedReview>>) => submitWorkflowFeedbackDecision(fixture.deps, owner, fixture.taskId, {
       requestId: randomUUID(), expectedRevision: fixture.workflow.revision, reviewDigest: fixture.reviewDigest, proposalDigest: "b".repeat(64),
       bundleDigests: [fixture.bundleDigest], decision: "APPROVE", selectedFindingIds: ["finding-1"],
@@ -778,7 +779,7 @@ describe("broker-backed feedback review data", () => {
 
   it("emits only privacy-safe aggregate decision measures after the owner decision commits", async () => {
     const fixture = await preparedReview();
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     const events: Array<Record<string, unknown>> = [];
     const decisionDeps = { ...fixture.deps, log: (entry: Record<string, unknown>) => { events.push(entry); } };
     fixture.harness.db.set({ pk: `DEVTASK#${fixture.taskId}`,
@@ -799,7 +800,7 @@ describe("broker-backed feedback review data", () => {
 
   it("refreshes GitHub twice and commits approval with one fenced implementation outbox", async () => {
     const fixture = await preparedReview();
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     const refresh = vi.fn(async () => undefined);
     fixture.deps.refreshTaskFeedback = refresh;
     const requestId = randomUUID();
@@ -827,7 +828,7 @@ describe("broker-backed feedback review data", () => {
   it("refuses in plain words a decision whose GitHub refresh collected new feedback, before or right before dispatch", async () => {
     for (const refreshThatCollects of [1, 2]) {
       const fixture = await preparedReview();
-      const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+      const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
       let refreshes = 0;
       // GitHub has a comment the card did not show: the refresh collects it, which starts a new review.
       fixture.deps.refreshTaskFeedback = vi.fn(async (): Promise<undefined> => {
@@ -855,7 +856,7 @@ describe("broker-backed feedback review data", () => {
 
   it("refuses approving a question without the owner's answer, from the web page as from Slack", async () => {
     const fixture = await preparedReview(1, QUESTION);
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     const payload = { requestId: randomUUID(), expectedRevision: fixture.workflow.revision, reviewDigest: fixture.reviewDigest, proposalDigest: "b".repeat(64),
       bundleDigests: [fixture.bundleDigest], decision: "APPROVE" as const, selectedFindingIds: ["finding-1"] };
     await expect(submitWorkflowFeedbackDecision(fixture.deps, owner, fixture.taskId, payload)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
@@ -866,7 +867,7 @@ describe("broker-backed feedback review data", () => {
 
   it("caps the owner's words that reach the coder at 500 characters, as in Slack, and scopes them to the question", async () => {
     const fixture = await preparedReview(1, QUESTION);
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     const payload = { requestId: randomUUID(), expectedRevision: fixture.workflow.revision, reviewDigest: fixture.reviewDigest, proposalDigest: "b".repeat(64),
       bundleDigests: [fixture.bundleDigest], decision: "APPROVE" as const, selectedFindingIds: ["finding-1"] };
     await expect(submitWorkflowFeedbackDecision(fixture.deps, owner, fixture.taskId, { ...payload, ownerNote: "x".repeat(501) }))
@@ -884,7 +885,7 @@ describe("broker-backed feedback review data", () => {
 
   it("lets the owner approve findings bound to both linked PRs in one decision and dispatches once", async () => {
     const fixture = await preparedReview(2);
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     const review = await getWorkflowFeedbackReview(fixture.deps, owner, fixture.taskId);
     expect(review.candidates).toEqual([
       { repositoryId: "demo", number: 42, headSha: "c".repeat(40) },
@@ -903,7 +904,7 @@ describe("broker-backed feedback review data", () => {
 
   it("recreated review handlers show current blocked and merged status after an earlier approval", async () => {
     const fixture = await preparedReview();
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     const webDependencies = (): FeedbackReviewWebDependencies => ({
       origin,
       authenticateSession: async sessionId => sessionId === "session-owner" ? owner : undefined,
@@ -964,7 +965,7 @@ describe("broker-backed feedback review data", () => {
 
   it("refuses a queued implementation at the broker worker-start callback after approval is invalidated", async () => {
     const fixture = await preparedReview();
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     await submitWorkflowFeedbackDecision(fixture.deps, owner, fixture.taskId, {
       requestId: randomUUID(), expectedRevision: fixture.workflow.revision, reviewDigest: fixture.reviewDigest, proposalDigest: "b".repeat(64),
       bundleDigests: [fixture.bundleDigest], decision: "APPROVE", selectedFindingIds: ["finding-1"],
@@ -1036,7 +1037,7 @@ describe("broker-backed feedback review data", () => {
 
   it("keeps the legacy no-People creator callback valid", async () => {
     const fixture = await preparedReview();
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     await submitWorkflowFeedbackDecision(fixture.deps, owner, fixture.taskId, {
       requestId: randomUUID(), expectedRevision: fixture.workflow.revision, reviewDigest: fixture.reviewDigest, proposalDigest: "b".repeat(64),
       bundleDigests: [fixture.bundleDigest], decision: "APPROVE", selectedFindingIds: ["finding-1"],
@@ -1050,7 +1051,7 @@ describe("broker-backed feedback review data", () => {
 
   it("fences People creation that commits after a legacy authorization read", async () => {
     const fixture = await preparedReview();
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     await submitWorkflowFeedbackDecision(fixture.deps, owner, fixture.taskId, {
       requestId: randomUUID(), expectedRevision: fixture.workflow.revision, reviewDigest: fixture.reviewDigest, proposalDigest: "b".repeat(64),
       bundleDigests: [fixture.bundleDigest], decision: "APPROVE", selectedFindingIds: ["finding-1"],
@@ -1077,7 +1078,7 @@ describe("broker-backed feedback review data", () => {
 
   it("does not dispatch when the second fresh GitHub read advances the bound workflow", async () => {
     const fixture = await preparedReview();
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     let reads = 0;
     fixture.deps.refreshTaskFeedback = async () => {
       reads += 1;
@@ -1101,7 +1102,7 @@ describe("broker-backed feedback review data", () => {
     ["DISMISS", "DISMISSED", "No code changes will start from this proposal.", []],
   ] as const)("keeps a verified %s review available as a private outcome after the owner decision", async (action, status, nextAction, selectedFindingIds) => {
     const fixture = await preparedReview();
-    const owner = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
+    const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };
     await submitWorkflowFeedbackDecision(fixture.deps, owner, fixture.taskId, {
       requestId: randomUUID(), expectedRevision: fixture.workflow.revision, reviewDigest: fixture.reviewDigest, proposalDigest: "b".repeat(64),
       bundleDigests: [fixture.bundleDigest], decision: action, selectedFindingIds: [...selectedFindingIds],

@@ -2,7 +2,7 @@
 // The private key never leaves KMS; this file builds the JWS signing input and asks KMS to sign it.
 import { createHash, createPublicKey, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { GetPublicKeyCommand, SignCommand } from "@aws-sdk/client-kms";
-import { DEVELOPER_ACCESS_TOKEN_SECONDS, DEVELOPER_TOKEN_AUDIENCE, type DeveloperSignInMethod } from "@agentx/contracts";
+import { DEVELOPER_ACCESS_TOKEN_SECONDS, DEVELOPER_TOKEN_AUDIENCE, type DeveloperSignInMethod, type OrgId, type OrgRole } from "@agentx/contracts";
 
 export interface PublicSigningJwk { kty: "RSA"; n: string; e: string; kid: string; alg: "RS256"; use: "sig" }
 
@@ -57,6 +57,8 @@ const base64url = (value: unknown) => Buffer.from(JSON.stringify(value)).toStrin
 
 export async function issueAccessToken(signer: TokenSigner, input: {
   issuer: string; subject: string; amr: DeveloperSignInMethod; env: string; sessionId: string; now: number;
+  /** The org the developer belongs to and their role in it: the `org` and `org_role` claims. */
+  orgId: OrgId; orgRole: OrgRole;
 }): Promise<{ token: string; expiresIn: number }> {
   const { kid } = await signer.publicJwk();
   const iat = Math.floor(input.now / 1000);
@@ -68,6 +70,8 @@ export async function issueAccessToken(signer: TokenSigner, input: {
     amr: input.amr,
     env: input.env,
     sid: input.sessionId,
+    org: input.orgId,
+    org_role: input.orgRole,
     iat,
     // Backdated, so a verifier whose clock runs a little behind still accepts a fresh token.
     nbf: iat - NOT_BEFORE_SKEW_SECONDS,

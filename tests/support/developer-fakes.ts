@@ -9,9 +9,11 @@ import type { DeveloperIdentityDependencies, HttpResult } from "../../packages/b
 import { createDeveloperIdentityHandler } from "../../packages/broker/src/developer/server.js";
 import { slackDirectory } from "../../packages/broker/src/developer/slack-directory.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
+import { OrgStore } from "../../packages/broker/src/org/store.js";
 import type { PublicSigningJwk, TokenSigner } from "../../packages/broker/src/developer/tokens.js";
 import { kmsTokenSigner } from "../../packages/broker/src/developer/tokens.js";
 import { FakeDynamoDb } from "./fake-dynamodb.js";
+import { TEST_ORG } from "./orgs.js";
 
 export const T0 = Date.parse("2026-09-27T12:00:00.000Z");
 export const API = "https://abc123.execute-api.us-east-1.amazonaws.com";
@@ -281,10 +283,16 @@ export function identityHarness(options: {
   slackUsers?: FakeSlackUser[]; oidcUsers?: FakeOidcUser[]; channels?: Record<string, string[]>;
   channelInfo?: Record<string, { name: string; isPrivate?: boolean }>;
   slackCredentials?: { clientId?: string; clientSecret?: string };
+  /** The State table, where orgs and membership live; a fresh one when absent. */
+  state?: FakeDynamoDb;
+  /** false: the install has no single org for a Slack or company sign-in to join. */
+  singleOrg?: boolean;
 } = {}) {
   let clock = T0;
   const now = () => clock;
   const db = new FakeDynamoDb();
+  const state = options.state ?? new FakeDynamoDb();
+  const orgs = new OrgStore({ documentClient: state, tableName: "state", now });
   const slack = fakeSlack({ users: options.slackUsers ?? [], now, ...(options.channels ? { channels: options.channels } : {}), ...(options.channelInfo ? { channelInfo: options.channelInfo } : {}) });
   const oidc = fakeOidc({ users: options.oidcUsers ?? [], now });
   const fetch = routeFetch(slack.handler, oidc.handler);
@@ -308,6 +316,8 @@ export function identityHarness(options: {
       ...(options.oidc === undefined ? {} : { oidc: { displayName: "Okta" } }),
     },
     store: new DeveloperSignInStore({ documentClient: db, tableName: "signin", now }),
+    orgs,
+    ...(options.singleOrg === false ? {} : { singleOrgId: TEST_ORG }),
     signer,
     providers,
     directory: slackDirectory({ teamId, botToken: async () => BOT_TOKEN, fetch, now }),
@@ -317,7 +327,7 @@ export function identityHarness(options: {
   const handler = createDeveloperIdentityHandler(deps);
   const http = async (event: HttpApiV2Event) => handler(event) as Promise<HttpResult>;
   return {
-    db, slack, oidc, fetch, signer, logs, deps, handler, http,
+    db, state, orgs, slack, oidc, fetch, signer, logs, deps, handler, http,
     tick: (ms: number) => { clock += ms; },
     now,
     /** GET authorize, follow to the provider, approve as `who`, follow the callback: the CLI's loopback URL. */

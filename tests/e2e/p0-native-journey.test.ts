@@ -246,7 +246,7 @@ describe("P0 normal project onboarding journey", () => {
     expect(module).toBeDefined();
     expect(manifest).toBeDefined();
     const setupApproval = registered?.setupApproval as { proposalRef: string; proposalSha256: string; candidateDigest: string };
-    const storedApproval = broker.db.get(`PROJECT_SETUP#ordinary-orders`, `PROPOSAL#${setupApproval.proposalSha256}`)!;
+    const storedApproval = broker.db.get(`ORG#${TEST_ORG}#PROJECT_SETUP#ordinary-orders`, `PROPOSAL#${setupApproval.proposalSha256}`)!;
     const setupSmokePreview = deriveProjectSetupSourceSmoke({ projectName: "ordinary-orders", proposalSha256: setupApproval.proposalSha256,
       approval: { proposalRef: setupApproval.proposalRef, proposalSha256: setupApproval.proposalSha256, candidateDigest: setupApproval.candidateDigest,
         policyDigest: storedApproval.policyDigest, runtimeCatalogId, catalogRevision: 1, bindingDigest: projectSetupBindingDigest(runtimeBinding),

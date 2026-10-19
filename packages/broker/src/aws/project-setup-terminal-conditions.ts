@@ -1,5 +1,5 @@
 import type { ProjectSetupExecution } from "@agentx/contracts";
-import { projectMemberKey, projectRevisionKey, projectSetupSessionKey, type OrgId, type ProjectSetupSession } from "@agentx/contracts";
+import { projectMemberKey, projectRevisionKey, projectSetupApprovalKey, projectSetupSessionKey, type OrgId, type ProjectSetupSession } from "@agentx/contracts";
 import { projectSetupRuntimeKey, type ProjectSetupRuntimeRecord } from "./project-setup-runtime-catalog.js";
 
 type TerminalExecutionAuthority = Pick<ProjectSetupExecution,
@@ -35,7 +35,7 @@ export function projectSetupTerminalAuthorityChecks(
     } },
     { ConditionCheck: {
       TableName: tableName,
-      Key: { pk: `PROJECT_SETUP#${execution.projectName}`, sk: `PROPOSAL#${execution.proposalSha256}` },
+      Key: projectSetupApprovalKey(orgId, execution.projectName, execution.proposalSha256),
       ConditionExpression: "entityType = :approval AND ownerKey = :ownerKey AND projectName = :projectName AND proposalRef = :proposalRef AND proposalSha256 = :proposalSha AND candidateDigest = :candidateDigest AND decision = :approve AND policyDigest = :policyDigest",
       ExpressionAttributeValues: { ":approval": "PROJECT_SETUP_APPROVAL", ":ownerKey": execution.ownerKey, ":projectName": execution.projectName,
         ":proposalRef": execution.proposalRef, ":proposalSha": execution.proposalSha256, ":candidateDigest": execution.candidateDigest,

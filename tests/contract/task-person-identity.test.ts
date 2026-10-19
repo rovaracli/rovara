@@ -219,7 +219,7 @@ describe("task person identity registry", () => {
     const h = harness({ proof: async (request) => ({
       ok: true, user: { id: request.slackUserId, teamId: TEAM, name: "Current Actor" }, memberOf: ["C0PAY0001"],
     }) });
-    Reflect.set(h.deps, "trustedCaller", { orgId: TEST_ORG, developerId: actorDeveloperId, sessionId: "s-current", amr: "slack", name: "Current Actor", slackUserId: actorSlack });
+    Reflect.set(h.deps, "trustedCaller", { orgId: TEST_ORG, orgRole: "member" as const, developerId: actorDeveloperId, sessionId: "s-current", amr: "slack", name: "Current Actor", slackUserId: actorSlack });
 
     await expect(checkTaskPersonIdentity(h.deps, task, actorDeveloperId)).resolves.toMatchObject({
       subject: { developerId: actorDeveloperId, slackUserId: actorSlack },

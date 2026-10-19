@@ -21,6 +21,7 @@ import {
   SLACK_BINDING_SK_PREFIX,
   developerTaskPolicy,
   memberGrantsPk,
+  workspaceProjectIndexValue,
   projectPk,
   slackBindingPk,
   workspaceRecordFields,
@@ -38,6 +39,9 @@ import {
   type EndDeveloperSessionsRequest,
   type EndDeveloperSessionsResponse,
   type OrgId,
+  type OrgRole,
+  OrgIdSchema,
+  OrgRoleSchema,
   type SlackAuthCheckRequest,
   type SlackAuthCheckResponse,
   type SlackChannelBinding,
@@ -52,7 +56,7 @@ import {
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
-import { requireOrgId, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
+import type { OrgStore } from "../org/store.js";
 import { checkTaskPersonIdentity, registerTaskChannelPeople, resolveTaskPickerPersonWithId, type ProjectAccessSubject, type TaskPersonIdentityDependencies } from "../developer/task-person-identity.js";
 import { taskPeopleDisplayAdmission, type TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
 import { META, endedByAdmin, methodSince, startedBeforeMethodOn, type DeveloperRecord, type SessionRecord } from "../developer/store.js";
@@ -118,12 +122,12 @@ export interface DeveloperRouteDependencies {
   registeredRepositoryIdentity?: DeveloperTaskRouteDependencies["registeredRepositoryIdentity"];
   /** Sign in with ChatGPT (#338): each developer's connection; without it /v1/dev/chatgpt/* answers NOT_FOUND. */
   chatgpt?: ChatGptConnections;
-  /** Which org a developer belongs to (ruling R1); absent means the install's single org (ruling R3). */
-  orgResolver?: OrgResolver;
+  /** Which org a developer belongs to: the membership a token's `org` claim is checked against on every request. */
+  orgs?: Pick<OrgStore, "orgForDeveloper">;
 }
 /** Who is asking about a project, and in which org: grants and revisions are read in that org only. */
 export type ProjectAccessCaller = ProjectAccessSubject & { orgId: OrgId };
-export interface DeveloperCaller { developerId: string; sessionId: string; amr: DeveloperSignInMethod; name: string; slackUserId?: string; email?: string; orgId: OrgId }
+export interface DeveloperCaller { developerId: string; sessionId: string; amr: DeveloperSignInMethod; name: string; slackUserId?: string; email?: string; orgId: OrgId; orgRole: OrgRole }
 
 /** What the broker needs from a Lambda invoke; `@aws-sdk/client-lambda`'s InvokeCommand output fits. */
 export interface ChannelMembersInvokeResult { FunctionError?: string | undefined; Payload?: Uint8Array | undefined }
@@ -354,7 +358,10 @@ export function developerKeysThroughLambda(invoke: (payload: Uint8Array) => Prom
 
 const SIGN_IN_AGAIN = "your AgentX sign-in has ended; run agentx login <url> again";
 
-export function developerClaims(claims: Record<string, unknown> | undefined, config: DeveloperApiConfiguration): { developerId: string; sessionId: string; amr: DeveloperSignInMethod } {
+/** What a verified developer token names: who, which sign-in, and the org and role the token was issued for. */
+export interface DeveloperTokenClaims { developerId: string; sessionId: string; amr: DeveloperSignInMethod; orgId: OrgId; orgRole: OrgRole }
+
+export function developerClaims(claims: Record<string, unknown> | undefined, config: DeveloperApiConfiguration): DeveloperTokenClaims {
   if (claims === undefined || claims.iss !== config.issuer || claims.aud !== DEVELOPER_TOKEN_AUDIENCE || claims.env !== config.env) {
     throw agentXError("AUTH_REQUIRED", "this route needs an AgentX developer sign-in; run agentx login <url>");
   }
@@ -366,7 +373,11 @@ export function developerClaims(claims: Record<string, unknown> | undefined, con
   if (!config.methods[amr]) {
     throw agentXError("AUTH_REQUIRED", `${amr === "slack" ? "Slack" : "Company"} sign-in is turned off in this environment; sign in another way with agentx login <url>`);
   }
-  return { developerId: claims.sub, sessionId: claims.sid, amr };
+  // A token with no org (one issued before orgs, or forged) is refused like a token with no session: sign in again.
+  const orgId = OrgIdSchema.safeParse(claims.org);
+  const orgRole = OrgRoleSchema.safeParse(claims.org_role);
+  if (!orgId.success || !orgRole.success) throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
+  return { developerId: claims.sub, sessionId: claims.sid, amr, orgId: orgId.data, orgRole: orgRole.data };
 }
 
 async function getSignIn<T>(deps: DeveloperRouteDependencies, pk: string): Promise<T | undefined> {
@@ -379,7 +390,8 @@ export async function authenticateDeveloper(deps: DeveloperRouteDependencies, cl
   return authenticateSession(deps, token);
 }
 
-async function authenticateSession(deps: DeveloperRouteDependencies, token: { developerId: string; sessionId: string; amr: DeveloperSignInMethod }): Promise<DeveloperCaller> {
+/** A session's identity; `orgId` is present when a token named the org it was issued for, which must still be the developer's. */
+async function authenticateSession(deps: DeveloperRouteDependencies, token: { developerId: string; sessionId: string; amr: DeveloperSignInMethod; orgId?: OrgId }): Promise<DeveloperCaller> {
   const session = await getSignIn<Pick<SessionRecord, "developerId" | "amr" | "endsAt" | "revokedAt" | "startedAt" | "slackUserId">>(deps, `SESSION#${token.sessionId}`);
   if (session === undefined || session.developerId !== token.developerId || session.revokedAt !== undefined || session.endsAt <= Math.floor(deps.now() / 1000)) {
     throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
@@ -396,10 +408,16 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
     // E9: D16's per-request check ends the session at once; the token endpoint revokes it at its next refresh.
     throw agentXError("AUTH_REQUIRED", "an AgentX admin ended your sign-in; run agentx login <url> again");
   }
-  const orgId = requireOrgId(await (deps.orgResolver ?? singleOrgResolver(deps.developer.env))({ developerId: token.developerId }));
+  // The org is the developer's membership now: a person removed from the org, or moved to another, is refused even
+  // while their token is still valid. The role is the current one, so a demotion applies at once.
+  const membership = await deps.orgs?.orgForDeveloper(token.developerId);
+  if (membership === undefined || (token.orgId !== undefined && membership.orgId !== token.orgId)) throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   return {
-    ...token,
-    orgId,
+    developerId: token.developerId,
+    sessionId: token.sessionId,
+    amr: token.amr,
+    orgId: membership.orgId,
+    orgRole: membership.role,
     name: developer.displayName,
     ...(developer.slackUserId === undefined ? {} : { slackUserId: developer.slackUserId }),
     ...(developer.email === undefined ? {} : { email: developer.email }),
@@ -641,7 +659,7 @@ export async function checkProjectAccess(
  * Only a workspace's own fields are read; the index carries the whole item, so no second get is
  * needed per workspace.
  */
-async function projectWorkspaces(deps: DeveloperRouteDependencies, project: string): Promise<DeveloperWorkspace[]> {
+async function projectWorkspaces(deps: DeveloperRouteDependencies, orgId: OrgId, project: string): Promise<DeveloperWorkspace[]> {
   const items: Array<Record<string, unknown>> = [];
   let start: Record<string, unknown> | undefined;
   do {
@@ -650,7 +668,7 @@ async function projectWorkspaces(deps: DeveloperRouteDependencies, project: stri
       IndexName: WORKSPACE_PROJECT_INDEX.name,
       KeyConditionExpression: "#project = :project",
       ExpressionAttributeNames: { "#project": WORKSPACE_PROJECT_INDEX.partitionKey },
-      ExpressionAttributeValues: { ":project": project },
+      ExpressionAttributeValues: { ":project": workspaceProjectIndexValue(orgId, project) },
       // Newest first, and never more than one page past the cap: a project with thousands of
       // thread workspaces must not turn one page load into an unbounded scan.
       ScanIndexForward: false,
@@ -691,7 +709,7 @@ async function projectWorkspaces(deps: DeveloperRouteDependencies, project: stri
 async function listWorkspaces(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<DeveloperWorkspacesResponse> {
   const listing = await listProjects(deps, caller);
   const workspaces: DeveloperWorkspace[] = [];
-  for (const project of listing.projects) workspaces.push(...await projectWorkspaces(deps, project.name));
+  for (const project of listing.projects) workspaces.push(...await projectWorkspaces(deps, caller.orgId, project.name));
   // Across projects, still newest first, so the page's list reads as one timeline.
   workspaces.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   return { ...listing, workspaces };

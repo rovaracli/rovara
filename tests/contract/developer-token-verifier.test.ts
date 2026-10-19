@@ -5,11 +5,12 @@ import { AgentXError } from "@agentx/contracts";
 import { developerTokenVerifier } from "../../packages/broker/src/developer/verify-token.js";
 import { issueAccessToken, kmsTokenSigner, type PublicSigningJwk } from "../../packages/broker/src/developer/tokens.js";
 import { ISSUER, T0, fakeKms, localSigner } from "../support/developer-fakes.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const SUB = "d".repeat(64);
 const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
 const claims = (overrides: Record<string, unknown> = {}) => ({
-  iss: ISSUER, aud: "agentx-developer", sub: SUB, amr: "slack", env: "staging", sid: "s-1",
+  iss: ISSUER, aud: "agentx-developer", sub: SUB, amr: "slack", env: "staging", sid: "s-1", org: TEST_ORG, org_role: "member",
   iat: T0 / 1000, nbf: T0 / 1000, exp: T0 / 1000 + 3600, jti: "j-1", ...overrides,
 });
 
@@ -42,8 +43,8 @@ const expectUnauthorized = async (promise: Promise<unknown>) => {
 describe("the broker's developer token check (D17)", () => {
   it("accepts a token the sign-in server issued, and returns its claims", async () => {
     const h = await setup();
-    const { token } = await issueAccessToken(h.signer, { issuer: ISSUER, subject: SUB, amr: "slack", env: "staging", sessionId: "s-1", now: T0 });
-    expect(await h.verify(`Bearer ${token}`)).toMatchObject({ iss: ISSUER, aud: "agentx-developer", sub: SUB, amr: "slack", env: "staging", sid: "s-1" });
+    const { token } = await issueAccessToken(h.signer, { issuer: ISSUER, subject: SUB, amr: "slack", env: "staging", sessionId: "s-1", now: T0, orgId: TEST_ORG, orgRole: "member" });
+    expect(await h.verify(`Bearer ${token}`)).toMatchObject({ iss: ISSUER, aud: "agentx-developer", sub: SUB, amr: "slack", env: "staging", sid: "s-1", org: TEST_ORG, org_role: "member" });
   });
 
   it.each([
@@ -98,6 +99,8 @@ describe("the broker's developer token check (D17)", () => {
     ["a numeric sid", { sid: 7 }],
     ["no amr", { amr: undefined }],
     ["an array env", { env: ["staging"] }],
+    ["no org", { org: undefined }],
+    ["no org_role", { org_role: undefined }],
   ])("refuses %s", async (_name, overrides) => {
     const h = await setup();
     await expectUnauthorized(h.verify(`Bearer ${await h.sign(claims(overrides))}`));

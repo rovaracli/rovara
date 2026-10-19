@@ -42,7 +42,7 @@ const inviteOutcome = (request: TaskPersonInviteClaimRequest, status: "accepted"
   status, ...(status === "accepted" ? { executionReceiptId: randomUUID() } : { reason: status === "failed" ? "effect_rejected" : "transport_unknown" }),
 });
 
-const actor = (developerId: string, slackUserId: string, name: string): DeveloperCaller => ({ orgId: TEST_ORG,
+const actor = (developerId: string, slackUserId: string, name: string): DeveloperCaller => ({ orgId: TEST_ORG, orgRole: "member" as const,
   developerId, slackUserId, name, sessionId: `session-${name}`, amr: "slack",
 });
 

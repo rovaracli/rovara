@@ -10,6 +10,7 @@ import {
   type CodeBuildGateDefinition,
   type Operation,
   type OperationRequester,
+  type OrgId,
   type OperationStatus,
   type WorkerInvocation,
   type WorkspaceInstance,
@@ -135,6 +136,11 @@ export function operationKey(workspaceId: string, operationId: string) {
   return { pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}` };
 }
 
+/** The `orgId` an operation of this workspace is written with: the workspace's own org. */
+export function operationOrg(workspace: { orgId?: OrgId | undefined }): { orgId?: OrgId } {
+  return workspace.orgId === undefined ? {} : { orgId: workspace.orgId };
+}
+
 export function operationRecord(operation: Operation, targetOperationId?: string): OperationRecord {
   const parsed = OperationSchema.parse(operation);
   return {
@@ -257,6 +263,7 @@ export async function requestCancellation(
   const now = new Date().toISOString();
   const operationId = randomUUID();
   const operation = operationRecord({
+    ...operationOrg(workspace),
     id: operationId,
     workspaceId,
     kind: "cancel",

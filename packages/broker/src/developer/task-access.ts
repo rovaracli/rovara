@@ -58,7 +58,8 @@ export async function resolveTaskAccess(deps: AccessDependencies, caller: Develo
   if (!TASK_ID.test(taskId)) throw notFound();
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(taskId), ConsistentRead: true })) as { Item?: DeveloperTaskRecord };
   const task = response.Item;
-  if (task === undefined) throw notFound();
+  // Another org's task reads exactly as no task: never FORBIDDEN, which would confirm it exists.
+  if (task === undefined || task.orgId !== caller.orgId) throw notFound();
   try {
     const people = await resolveTaskPeopleAccess(deps, task, caller.developerId);
     if (people !== undefined) {

@@ -512,7 +512,7 @@ async function refuse(deps: DeveloperTaskRouteDependencies, turns: string, party
 /** The developer's own task, or TASK_NOT_FOUND for anyone else and for a malformed ID (FR-036). */
 export async function loadOwnedTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<DeveloperTaskRecord> {
   const task = TASK_ID.test(taskId) ? await get<DeveloperTaskRecord>(deps, taskKey(taskId)) : undefined;
-  if (task === undefined || task.developerId !== caller.developerId) {
+  if (task === undefined || task.developerId !== caller.developerId || task.orgId !== caller.orgId) {
     // A malformed ID is never echoed back: it could be long or carry markup.
     throw agentXError("TASK_NOT_FOUND", TASK_ID.test(taskId) ? `no task ${taskId} of yours` : "that is not a task ID of yours");
   }
@@ -1470,7 +1470,7 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
   const revision = project.definition.revision;
   const title = redactedTitle(request);
   const task: DeveloperTaskRecord = {
-    ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
+    ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: deps.orgId, developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
     ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
     client, project: request.project, title, workspaceId, ownerKey: identity.ownerKey, conversationId, startingRevision: revision,
     // A workflow task quotes the request in each plan's "why"; every start (Slack and AI tool) comes through here.

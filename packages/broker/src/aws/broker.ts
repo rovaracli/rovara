@@ -198,6 +198,7 @@ import {
   PROJECT_REVISION_SK_PREFIX,
   orgProjectCatalogKey,
   projectMemberKey,
+  projectSetupApprovalKey,
   slackBindingKey,
   slackMemberLimitKey,
   slackOrganizationLimitKey,
@@ -238,7 +239,7 @@ import { healthProbes } from "./health-probes.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
 import { releaseFailedPreparation, slackThreadKey } from "./failed-preparation.js";
 import { releaseFailedCancelWorkspace } from "./failed-cancel-release.js";
-import { assertNoUntrustedRoutingFields } from "../authorization.js";
+import { assertNoUntrustedRoutingFields, authorizeWorkspace } from "../authorization.js";
 import type { GitHubAppCredentialProvider } from "../github-app.js";
 import { GithubMergeRateLimitError, isWebhookSecretMissing } from "../github-app.js";
 import { createGitHubAppCredentials } from "./github-credentials.js";
@@ -274,7 +275,7 @@ import { issueRuntimeInstallChallenge, registerRuntimeInstallation, type Runtime
 import { resolveWorkflowE2ECanonicalApproval, workflowE2ECurrentAuthorityMatches } from "./workflow-e2e-current-authority.js";
 import { createWorkflowE2EDisplayObject, readWorkflowE2ENotifierProjection } from "./workflow-e2e-notifier-projection.js";
 import {
-  TERMINAL, getItem, issueCapability, operationKey, operationRecord, outboxRecord, publicOperation, requestCancellation, requireOperation,
+  TERMINAL, getItem, issueCapability, operationKey, operationOrg, operationRecord, outboxRecord, publicOperation, requestCancellation, requireOperation,
   type CallbackClaims, type OperationRecord,
 } from "./cancellation.js";
 import { aiToolTurn, completedTurn, developerFooter, E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON, githubWorkflowPullRequestKey, inertName, OUTCOME, partyOfTask, taskKey, taskOwnerKey, taskOwnerSubject, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type GithubWorkflowPullRequestRecord, type StoredEvent } from "../developer/task-records.js";
@@ -530,12 +531,12 @@ async function orgOfRecord(
 }
 
 /**
- * The repository URL a task's linked PR belongs to, for the webhook paths. A webhook has no caller and
- * its task is read by id only, so the project is the install's single org's until tasks record theirs (Task 5).
+ * The repository URL a task's linked PR belongs to, for the webhook paths. A webhook has no caller and its task is
+ * read by id only, so the project is read in the org the task names, else the install's single org.
  */
-function webhookRepositoryUrl(dependencies: AwsBrokerDependencies): (projectName: string, revision: number, repositoryId: string) => Promise<string | undefined> {
-  return async (projectName, revision, repositoryId) => {
-    const project = await requireProject(dependencies, installOrgId(dependencies), projectName, revision);
+function webhookRepositoryUrl(dependencies: AwsBrokerDependencies): (projectName: string, revision: number, repositoryId: string, orgId?: OrgId) => Promise<string | undefined> {
+  return async (projectName, revision, repositoryId, orgId) => {
+    const project = await requireProject(dependencies, orgId ?? installOrgId(dependencies), projectName, revision);
     return project.definition.repositories.find((repository) => repository.name === repositoryId)?.url;
   };
 }
@@ -782,7 +783,7 @@ function developerTaskActions(dependencies: AwsBrokerDependencies): DeveloperTas
           && publication.expectedTreeSha === candidate.treeSha;
       }).length,
     cancelRunning: async (identity, workspace, extra) => {
-      if (workspace.ownerKey !== identity.ownerKey) throw agentXError("NOT_FOUND", "workspace not found");
+      authorizeWorkspace(identity, workspace);
       const result = await cancelRunningTask(dependencies, workspace, requesterOf(identity), extra);
       return result.outcome === "CANCEL_REQUESTED"
         ? { outcome: "CANCEL_REQUESTED", targetOperationId: result.targetOperationId, cancelOperationId: result.cancelOperationId }
@@ -1021,7 +1022,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // request. Only API Gateway's exact public review route may reach this branch.
       if (event.routeKey === FEEDBACK_REVIEW_ROUTE_KEY) {
         if (!url.pathname.startsWith("/review/") || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
-        return await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgResolver: orgResolverOf(dependencies),
+        return await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
           workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
@@ -1197,7 +1198,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // verifies the developer token, then checks the method and session (FR-009).
       if (url.pathname.startsWith("/v1/dev/")) {
         if (!dependencies.developer) throw agentXError("NOT_FOUND", "developer sign-in is not set up in this deployment");
-        return json(await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgResolver: orgResolverOf(dependencies),
+        return json(await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
           workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
@@ -1338,7 +1339,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           || typeof (identityMapping as Record<string, unknown>).registeredRepositoryId !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "stored setup repository identity mapping is invalid");
         const canonicalArtifact = { ...artifact, snapshot: { ...snapshotObject, sources: sources.map(source => ({ path: source.path, sha256: source.sha256, kind: source.kind, bytesBase64: source.bytes.toString("base64") })) }, proposal };
         if (canonicalJson(canonicalArtifact) !== stored || proposeE2ESetup({ inspection, snapshot, expectedCandidate: candidate }).candidateDigest !== proposal.candidateDigest) throw agentXError("RUNTIME_UNAVAILABLE", "stored setup proposal does not match its source-derived bytes");
-        const approvalKey = { pk: `PROJECT_SETUP#${approvalInput.projectName}`, sk: `PROPOSAL#${approvalInput.proposalSha256}` };
+        const approvalKey = projectSetupApprovalKey(requireOrgId(identity.orgId), approvalInput.projectName, approvalInput.proposalSha256);
         const existing = await getItem<Record<string, unknown>>(dependencies, approvalKey);
         if (existing) {
           if (existing.ownerKey !== identity.ownerKey || existing.decision !== approvalInput.decision) throw agentXError("PROJECT_REVISION_MISMATCH", "setup proposal already has a different immutable decision");
@@ -1836,7 +1837,7 @@ async function registerProject(
     if (setupApproval === undefined) throw agentXError("FORBIDDEN", "E2E project registration requires a stored source-backed setup decision");
     const expectedProposalPrefix = `project-setup-proposals/${identity.ownerKey}/`;
     if (!setupApproval.proposalRef.startsWith(expectedProposalPrefix) || setupApproval.proposalRef !== `${expectedProposalPrefix}${setupApproval.proposalSha256}.json`) throw agentXError("FORBIDDEN", "setup approval reference is outside the authenticated administrator scope");
-    const approval = await getItem<Record<string, unknown>>(dependencies, { pk: `PROJECT_SETUP#${definition.name}`, sk: `PROPOSAL#${setupApproval.proposalSha256}` });
+    const approval = await getItem<Record<string, unknown>>(dependencies, projectSetupApprovalKey(orgId, definition.name, setupApproval.proposalSha256));
     if (!approval || approval.ownerKey !== identity.ownerKey || approval.proposalRef !== setupApproval.proposalRef || approval.decision !== setupApproval.decision) throw agentXError("FORBIDDEN", "setup decision is missing, stale, or belongs to another administrator");
     const repository = definition.repositories[0];
     const mapping = approval.identityMapping;
@@ -2021,7 +2022,7 @@ async function createProjectSetupAdmissionRows(
   if (!dependencies.projectSetupRuntimeCatalogId || project.runtimeBinding.deploymentMode !== "ec2-ebs") return undefined;
   const endpoint = new URL(runtime.endpoint);
   if (endpoint.protocol !== "http:" || !z.ipv4().safeParse(endpoint.hostname).success) return undefined;
-  const approval = await getItem<Record<string, unknown>>(dependencies, { pk: `PROJECT_SETUP#${project.definition.name}`, sk: `PROPOSAL#${setupApproval.proposalSha256}` });
+  const approval = await getItem<Record<string, unknown>>(dependencies, projectSetupApprovalKey(requireOrgId(identity.orgId), project.definition.name, setupApproval.proposalSha256));
   if (!approval || approval.ownerKey !== identity.ownerKey || approval.decision !== "approve" || approval.proposalRef !== setupApproval.proposalRef
     || typeof approval.policyDigest !== "string" || !sameJsonContent(approval.policy, project.definition.e2e)) return undefined;
   const stored = await readStoredText(dependencies.s3, dependencies.artifactBucketName, setupApproval.proposalRef, MAX_SETUP_PROPOSAL_BYTES);
@@ -2206,7 +2207,7 @@ async function retryProjectSetupAsAdministrator(
     || projectSetupBindingDigest(project.runtimeBinding) !== parked.data.bindingDigest) {
     throw agentXError("PROJECT_REVISION_MISMATCH", "setup source, policy, binding, or catalog changed; complete normal approval before retry");
   }
-  const approval = await getItem<Record<string, unknown>>(dependencies, { pk: `PROJECT_SETUP#${project.definition.name}`, sk: `PROPOSAL#${parked.data.proposalSha256}` });
+  const approval = await getItem<Record<string, unknown>>(dependencies, projectSetupApprovalKey(await orgOfRecord(dependencies, parked.data), project.definition.name, parked.data.proposalSha256));
   if (!approval || approval.ownerKey !== parked.data.ownerKey || approval.decision !== "approve" || approval.proposalRef !== parked.data.proposalRef
     || approval.policyDigest !== parked.data.policyDigest || !sameJsonContent(approval.policy, project.definition.e2e)) {
     throw agentXError("PROJECT_REVISION_MISMATCH", "current setup approval no longer matches the parked source and policy");
@@ -2372,6 +2373,7 @@ async function newWorkspacePreparation(
   const workspace = WorkspaceInstanceSchema.parse({
     id: workspaceId,
     ownerKey: targetOwnerKey,
+    orgId: requireOrgId(identity.orgId),
     projectName,
     projectRevision,
     ...workspaceRuntime(project.runtimeBinding),
@@ -2383,6 +2385,7 @@ async function newWorkspacePreparation(
     updatedAt: now,
   });
   const operation = operationRecord({
+    ...operationOrg(workspace),
     id: operationId,
     workspaceId,
     kind: "prepare",
@@ -2425,7 +2428,7 @@ async function newWorkspacePreparation(
     workspace,
     operationId,
     items: [
-      { Put: { TableName: dependencies.tableName, Item: workspaceItem(workspace), ConditionExpression: "attribute_not_exists(pk)" } },
+      { Put: { TableName: dependencies.tableName, Item: workspaceItem(requireOrgId(identity.orgId), workspace), ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: { pk: `OWNER#${targetOwnerKey}`, sk: `PROJECT#${projectName}`, entityType: "DEFAULT_WORKSPACE", workspaceId }, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: operation, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: outbox, ConditionExpression: "attribute_not_exists(pk)" } },
@@ -2699,6 +2702,7 @@ function closeOperationParts(
   const operationId = randomUUID();
   const fence = workspace.fence + 1;
   const operation = operationRecord({
+    ...operationOrg(workspace),
     id: operationId,
     workspaceId: workspace.id,
     kind: "close",
@@ -2846,7 +2850,7 @@ async function startTaskClose(
   extra: ExtraItems,
   discardUnpublished = false,
 ): Promise<{ operationId: string; duplicate: boolean }> {
-  if (workspace.ownerKey !== identity.ownerKey) throw agentXError("NOT_FOUND", "workspace not found");
+  authorizeWorkspace(identity, workspace);
   if ((workspace.status === "CLOSING" || workspace.status === "CLOSED") && workspace.closeOperationId) {
     return { operationId: workspace.closeOperationId, duplicate: true };
   }
@@ -3163,11 +3167,11 @@ async function createUnpreparedThreadWorkspace(
   includeSettingsRevision: boolean,
 ): Promise<SlackThreadWorkspaceResult> {
   const projectName = project.definition.name;
-  const workspace = unpreparedWorkspace(project, identity.ownerKey);
+  const workspace = unpreparedWorkspace(project, identity.ownerKey, requireOrgId(identity.orgId));
   const existingMembership = await getMembership(dependencies, requireOrgId(identity.orgId), identity.ownerKey, projectName);
   try {
     await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
-      { Put: { TableName: dependencies.tableName, Item: workspaceItem(workspace), ConditionExpression: "attribute_not_exists(pk)" } },
+      { Put: { TableName: dependencies.tableName, Item: workspaceItem(requireOrgId(identity.orgId), workspace), ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: {
         TableName: dependencies.tableName,
         Item: { pk: `OWNER#${identity.ownerKey}`, sk: `PROJECT#${projectName}`, entityType: "DEFAULT_WORKSPACE", workspaceId: workspace.id },
@@ -3217,11 +3221,12 @@ async function createUnpreparedThreadWorkspace(
  * A workspace record naming the thread's starting revision and runtime, with fence 0 and no
  * operation. startThreadPreparation replaces the revision with the latest one when it prepares.
  */
-function unpreparedWorkspace(project: RegisteredProjectRecord, ownerKey: string): WorkspaceInstance {
+function unpreparedWorkspace(project: RegisteredProjectRecord, ownerKey: string, orgId: OrgId): WorkspaceInstance {
   const now = new Date().toISOString();
   return WorkspaceInstanceSchema.parse({
     id: randomUUID(),
     ownerKey,
+    orgId,
     projectName: project.definition.name,
     projectRevision: project.definition.revision,
     ...workspaceRuntime(project.runtimeBinding),
@@ -3318,6 +3323,7 @@ async function startThreadPreparation(
   const operationId = randomUUID();
   const fence = workspace.fence + 1;
   const operation = operationRecord({
+    ...operationOrg(workspace),
     id: operationId,
     workspaceId: workspace.id,
     kind: "prepare",
@@ -3935,6 +3941,7 @@ async function retryWorkspacePreparation(
   const operationId = randomUUID();
   const fence = workspace.fence + 1;
   const operation = operationRecord({
+    ...operationOrg(workspace),
     id: operationId,
     workspaceId: workspace.id,
     kind: "prepare",
@@ -4063,6 +4070,7 @@ async function taskOperationParts(
   const operationId = input.operationId ?? randomUUID();
   const fence = workspace.fence + 1;
   const operation = operationRecord({
+    ...operationOrg(workspace),
     id: operationId,
     workspaceId: workspace.id,
     conversationId: input.conversationId,
@@ -4495,6 +4503,7 @@ async function acceptPullRequest(
   const fence = workspace.fence + 1;
   const headBranch = `agentx/${operationId}`;
   const operation = operationRecord({
+    ...operationOrg(workspace),
     id: operationId,
     workspaceId,
     kind: "publish",
@@ -4714,6 +4723,7 @@ async function acceptPullRequestLifecycle(
       reconciled: false,
     });
     const operation = operationRecord({
+      ...operationOrg(workspace),
       id: operationId, workspaceId, kind: "maintain", requestId: request.requestId,
       payloadHash: requestHash, status: "SUCCEEDED", fence: workspace.fence,
       createdAt: now, updatedAt: now, result,
@@ -4758,6 +4768,7 @@ async function acceptPullRequestLifecycle(
     const body = (await attributedBody(dependencies, identity, baseBody)) ?? baseBody;
     const headBranch = `agentx/${operationId}`;
     const operation = operationRecord({
+      ...operationOrg(workspace),
       id: operationId, workspaceId, kind: "publish", requestId: request.requestId,
       payloadHash: requestHash, status: "ACCEPTED", fence, createdAt: now, updatedAt: now,
       ...requesterOf(identity),
@@ -4834,6 +4845,7 @@ async function acceptPullRequestLifecycle(
   }
   const fence = workspace.fence + 1;
   const operation = operationRecord({
+    ...operationOrg(workspace),
     id: operationId, workspaceId, kind: "maintain", requestId: request.requestId,
     payloadHash: requestHash, status: "ACCEPTED", fence, createdAt: now, updatedAt: now,
     ...requesterOf(identity),
@@ -6406,7 +6418,7 @@ async function requireProjectSetupCapability(
   }
   const project = await requireRecordProject(dependencies, execution.data, execution.data.projectName, execution.data.projectRevision);
   if (project.runtimeBinding.deploymentMode !== "ec2-ebs") throw agentXError("RUNTIME_UNAVAILABLE", "project setup requires the configured EC2 setup runtime");
-  const approval = await getItem<Record<string, unknown>>(dependencies, { pk: `PROJECT_SETUP#${execution.data.projectName}`, sk: `PROPOSAL#${execution.data.proposalSha256}` });
+  const approval = await getItem<Record<string, unknown>>(dependencies, projectSetupApprovalKey(await orgOfRecord(dependencies, execution.data), execution.data.projectName, execution.data.proposalSha256));
   if (project.registeredBy !== execution.data.ownerKey || project.setupApproval?.decision !== "approve"
     || project.setupApproval.proposalSha256 !== execution.data.proposalSha256 || !approval || approval.ownerKey !== execution.data.ownerKey
     || approval.decision !== "approve" || approval.proposalRef !== execution.data.proposalRef || approval.policyDigest !== execution.data.policyDigest) {
@@ -7384,7 +7396,7 @@ async function authorizeWorkflowFeedbackApproval(dependencies: AwsBrokerDependen
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer,
     now: Date.now, tasks: developerTaskActions(dependencies),
   }, {
-    developerId: task.developerId, sessionId: "workflow-feedback-approval", amr: task.provider, name: task.developerName, orgId: await orgOfRecord(dependencies, task),
+    developerId: task.developerId, sessionId: "workflow-feedback-approval", amr: task.provider, name: task.developerName, orgId: await orgOfRecord(dependencies, task), orgRole: "member" as const,
     ...(task.slackUserId === undefined ? {} : { slackUserId: task.slackUserId }),
   }, undefined, null);
   const access = await resolveTaskDispatchPeople({
@@ -8900,7 +8912,7 @@ export async function processGithubWorkflowEvent(
   if (linked !== undefined && options?.release !== "queue") {
     const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(linked.taskId));
     if (task !== undefined && dependencies.developer !== undefined) {
-      const caller = { developerId: task.developerId, sessionId: "github-webhook", amr: task.provider, name: task.developerName, orgId: await orgOfRecord(dependencies, task) };
+      const caller = { developerId: task.developerId, sessionId: "github-webhook", amr: task.provider, name: task.developerName, orgId: await orgOfRecord(dependencies, task), orgRole: "member" as const };
       const routeDependencies = developerTaskRouteDependencies({
         documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer,
         now: Date.now, tasks: developerTaskActions(dependencies),
@@ -9276,7 +9288,7 @@ async function ensureWorkflowE2EComputeReadiness(
     const operationId = workflowRequestId("agentx-workflow-e2e-readiness", item.taskId, item.workflowRevision, item.candidateDigest);
     const requestId = operationId;
     const fence = workspace.data.fence + 1;
-    const operation = operationRecord({ id: operationId, workspaceId: task.workspaceId, kind: "resume", requestId,
+    const operation = operationRecord({ ...operationOrg(workspace.data), id: operationId, workspaceId: task.workspaceId, kind: "resume", requestId,
       payloadHash: hashJson(marker), status: "ACCEPTED", fence, createdAt: now, updatedAt: now });
     const outboxId = workflowRequestId("agentx-workflow-e2e-readiness-outbox", item.taskId, item.workflowRevision, item.candidateDigest);
     operation.workflowE2EReadiness = { ...marker, outboxId };
@@ -9397,7 +9409,7 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       await remove();
       return "STALE";
     }
-    const caller = { developerId: task.developerId, sessionId: "workflow-dispatch", amr: task.provider, name: task.developerName, orgId: await orgOfRecord(dependencies, task) };
+    const caller = { developerId: task.developerId, sessionId: "workflow-dispatch", amr: task.provider, name: task.developerName, orgId: await orgOfRecord(dependencies, task), orgRole: "member" as const };
     const routeDependencies = developerTaskRouteDependencies({
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer,
       now: Date.now, tasks: developerTaskActions(dependencies), refreshTaskFeedback: (taskId) => refreshTaskFeedbackForOwnerDecision(dependencies, taskId),
@@ -11100,7 +11112,7 @@ async function requireOwnedWorkspace(
   workspaceId: string,
 ): Promise<WorkspaceInstance> {
   const workspace = await requireWorkspace(dependencies, workspaceId);
-  if (workspace.ownerKey !== identity.ownerKey) throw agentXError("NOT_FOUND", "workspace not found");
+  authorizeWorkspace(identity, workspace);
   return workspace;
 }
 
@@ -11479,15 +11491,16 @@ function workspaceRuntime(runtimeBinding: RuntimeBinding) {
   }
 }
 
-function workspaceItem(workspace: WorkspaceInstance) {
+function workspaceItem(orgId: OrgId, workspace: WorkspaceInstance) {
   // Spec 041: the sparse byWorkspaceProject index attributes make this record findable by project,
   // which is how a developer's workspaces are listed. They are storage keys, not record fields, so
   // workspaceRecordFields strips them again on the way back.
   return {
     ...workspaceKey(workspace.id),
     entityType: "WORKSPACE",
-    ...workspaceProjectIndexAttributes(workspace),
+    ...workspaceProjectIndexAttributes({ orgId, projectName: workspace.projectName, createdAt: workspace.createdAt }),
     ...workspace,
+    orgId,
   };
 }
 

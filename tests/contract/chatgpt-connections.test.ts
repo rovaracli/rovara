@@ -9,6 +9,8 @@ import { chatGptAuthorization, chatGptHostId, chatGptModels, parseChatGptCallbac
 import { developerTokenVerifier } from "../../packages/broker/src/developer/verify-token.js";
 import { createAdminBroker } from "../support/admin-broker.js";
 import { localSigner } from "../support/developer-fakes.js";
+import { seedMembership } from "../support/developer-task-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const HOST = chatGptHostId("arn:aws:kms:us-east-1:123456789012:key/test");
@@ -216,7 +218,7 @@ describe("the developer routes for a ChatGPT connection", () => {
   const signer = localSigner();
   const developerId = "d".repeat(64);
   const bearer = async (sub: string) => {
-    const jwt = { iss: ISSUER, aud: "agentx-developer", sub, amr: "slack", env: "staging", sid: `s-${sub.slice(0, 4)}`, iat: T0 / 1000, nbf: T0 / 1000, exp: T0 / 1000 + 3600 };
+    const jwt = { iss: ISSUER, aud: "agentx-developer", sub, amr: "slack", env: "staging", sid: `s-${sub.slice(0, 4)}`, org: TEST_ORG, org_role: "member", iat: T0 / 1000, nbf: T0 / 1000, exp: T0 / 1000 + 3600 };
     const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid: (await signer.publicJwk()).kid })).toString("base64url");
     const input = `${header}.${Buffer.from(JSON.stringify(jwt)).toString("base64url")}`;
     return `Bearer ${input}.${(await signer.sign(Buffer.from(input))).toString("base64url")}`;
@@ -239,6 +241,7 @@ describe("the developer routes for a ChatGPT connection", () => {
     for (const id of [developerId, "e".repeat(64)]) {
       db.set({ pk: `SESSION#s-${id.slice(0, 4)}`, sk: "META", sessionId: `s-${id.slice(0, 4)}`, developerId: id, amr: "slack", startedAt: new Date(T0).toISOString(), endsAt: T0 / 1000 + 604_800 });
       db.set({ pk: `DEVELOPER#${id}`, sk: "META", developerId: id, provider: "slack", issuer: "https://slack.com", subject: id, displayName: "Dev", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+      seedMembership(db, id);
     }
     const call = async (method: string, as: string, body?: unknown) => {
       const response = await handler({

@@ -258,6 +258,7 @@ describe("AWS control-plane handlers", () => {
       entityType: "WORKSPACE",
       id: workspaceId,
       ownerKey,
+      orgId: TEST_ORG,
       projectName: "demo",
       projectRevision: 1,
       environmentDigest: `example.test/agentx@sha256:${"a".repeat(64)}`,

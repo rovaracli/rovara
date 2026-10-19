@@ -14,6 +14,7 @@ describe("Slack workflow caller", () => {
       name: "Slack user U0BSPTAFNG2",
       slackUserId: "U0BSPTAFNG2",
       orgId: TEST_ORG,
+      orgRole: "member",
     });
     expect(caller.developerId).toMatch(/^[a-f0-9]{64}$/);
   });

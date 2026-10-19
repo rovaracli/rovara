@@ -16,7 +16,7 @@ async function ownerPage(): Promise<string> {
     revision: 3, commentSeq: 0, access: { role: "owner", canComment: true, canSuggest: false, canDecide: true, canAsk: true }, pageComments: [], pageSuggestions: [],
     waiting: { kind: "coding plan", version: 1, artifactDigest: "f".repeat(64) }, optionalChecks: [],
   };
-  const web = createTaskWeb({ authenticateSession: async () => ({ orgId: TEST_ORG, developerId: "d".repeat(64), sessionId: "s", amr: "slack", name: "Maya" }), getTaskDocumentView: async () => view });
+  const web = createTaskWeb({ authenticateSession: async () => ({ orgId: TEST_ORG, orgRole: "member" as const, developerId: "d".repeat(64), sessionId: "s", amr: "slack", name: "Maya" }), getTaskDocumentView: async () => view });
   const answer = await web({ method: "GET", path: `/review/${taskId}/task`, headers: { cookie: `__Host-agentx_review_session=${taskId}` }, requestId: "r" }, new URL(`https://agentx.example.test/review/${taskId}/task`));
   return answer.body;
 }

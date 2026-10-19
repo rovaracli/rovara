@@ -1580,7 +1580,7 @@ export async function createWorkflowE2E(options: {
     async mcp(tool: string, args: Record<string, unknown> = {}, who: Developer = SLACK_MAYA): Promise<ToolAnswer> {
       let client = mcpClients.get(who.developerId);
       if (client === undefined) {
-        client = await signedInClient({ handler: harness.handler } as never, who);
+        client = await signedInClient({ handler: harness.handler, orgOf: harness.orgOf } as never, who);
         mcpClients.set(who.developerId, client);
       }
       return client.tool(tool, args);

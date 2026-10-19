@@ -112,7 +112,7 @@ export async function adminHealth(deps: AdminReadDependencies, identity: Authent
   const statePart = async (): Promise<Pick<AdminHealthResponse, "workerModes" | "workspaces" | "workspacesTruncated">> => {
     const projects = await adminProjects(deps, identity);
     const modes = new Set(projects.map((project) => project.latest.runtimeBinding.deploymentMode));
-    const reads = await Promise.all(projects.map((project) => projectWorkspaceRows(deps, project.name, WORKSPACE_COUNT_CAP)));
+    const reads = await Promise.all(projects.map((project) => projectWorkspaceRows(deps, requireOrgId(identity.orgId), project.name, WORKSPACE_COUNT_CAP)));
     const workspaces: Record<string, number> = {};
     const workspacesTruncated = reads.some((read) => read.truncated);
     for (const { rows } of reads) for (const row of rows) if (row.status !== "CLOSED") workspaces[row.status] = (workspaces[row.status] ?? 0) + 1;

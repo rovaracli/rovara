@@ -121,7 +121,7 @@ describe("grants and limits stay in their org", () => {
     issuer: "https://dev.example.test", env: "staging", methods: { slack: true, oidc: false }, signInTableName: "signin",
     channelMembers: async () => ({ ok: true as const, memberOf: [] }), verifyAccessToken: async () => undefined as never,
   };
-  const caller = (orgId: OrgId): DeveloperCaller => ({ developerId, sessionId: "s", amr: "slack", name: "Maya", orgId });
+  const caller = (orgId: OrgId): DeveloperCaller => ({ developerId, sessionId: "s", amr: "slack", name: "Maya", orgId, orgRole: "member" });
 
   it("does not grant access to another org's project of the same name", async () => {
     const db = new FakeDynamoDb();

@@ -30,6 +30,27 @@ export function projectSelectionKey(orgId: OrgId, name: string): OrgKey {
   return { pk: projectPk(orgId, name), sk: "SELECTION" };
 }
 
+/** A project's setup approval: the proposal an administrator approved, held once per project name in one org. */
+export function projectSetupApprovalKey(orgId: OrgId, projectName: string, proposalSha256: string): OrgKey {
+  return { pk: orgScoped(orgId, `PROJECT_SETUP#${projectName}`), sk: `PROPOSAL#${proposalSha256}` };
+}
+
+/**
+ * The value a workspace META item carries in the byWorkspaceProject index's partition attribute: the
+ * project name prefixed with its org, so two orgs' same-named projects list separately.
+ */
+export function workspaceProjectIndexValue(orgId: OrgId, projectName: string): string {
+  return orgScoped(orgId, projectName);
+}
+
+/** The index attributes a workspace META item is written with (see WORKSPACE_PROJECT_INDEX); the project is prefixed with its org. */
+export function workspaceProjectIndexAttributes(workspace: { orgId: OrgId; projectName: string; createdAt: string }): {
+  workspaceProject: string;
+  workspaceCreatedAt: string;
+} {
+  return { workspaceProject: workspaceProjectIndexValue(workspace.orgId, workspace.projectName), workspaceCreatedAt: workspace.createdAt };
+}
+
 /** The partition holding one person's project grants in one org. */
 export function memberGrantsPk(orgId: OrgId, ownerKey: string): string {
   return orgScoped(orgId, `MEMBER#${ownerKey}`);

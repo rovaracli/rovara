@@ -12,7 +12,7 @@ import { planDocument } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 const taskId = "11111111-1111-4111-8111-111111111111";
-const caller = { orgId: TEST_ORG, developerId: "d".repeat(64), sessionId: "s", amr: "slack", name: "Maya" } as const;
+const caller = { orgId: TEST_ORG, orgRole: "member" as const, developerId: "d".repeat(64), sessionId: "s", amr: "slack", name: "Maya" } as const;
 const SESSION = "__Host-agentx_review_session=11111111-1111-4111-8111-111111111111";
 const digest = "f".repeat(64);
 const BANNED = /\b(candidate|revision|digest|operation|artifact|workflow|invalid json)\b|\b(SUCCEEDED|FAILED|INTERRUPTED|CANCELLED)\b/i;

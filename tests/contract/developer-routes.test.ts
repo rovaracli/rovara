@@ -9,6 +9,7 @@ import { slackDirectory } from "../../packages/broker/src/developer/slack-direct
 import { getTaskPeople, getTaskPeopleCapabilities } from "../../packages/broker/src/developer/task-people.js";
 import { adminIssuer, createAdminBroker, type AdminHandler } from "../support/admin-broker.js";
 import { identityHarness, localSigner } from "../support/developer-fakes.js";
+import { seedMembership } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -41,7 +42,7 @@ function captureLogs(): () => Array<Record<string, unknown>> {
 
 const signer = localSigner();
 const claims = (overrides: Record<string, unknown> = {}) => ({
-  iss: ISSUER, aud: "agentx-developer", sub: developerId, amr: "slack", env: "staging", sid: "s-1", iat: T0 / 1000, nbf: T0 / 1000, exp: T0 / 1000 + 3600, ...overrides,
+  iss: ISSUER, aud: "agentx-developer", sub: developerId, amr: "slack", env: "staging", sid: "s-1", org: TEST_ORG, org_role: "member", iat: T0 / 1000, nbf: T0 / 1000, exp: T0 / 1000 + 3600, ...overrides,
 });
 /** A developer access token for `jwt`, signed with the sign-in server's (fake KMS) key. */
 async function bearer(jwt: Record<string, unknown>): Promise<string> {
@@ -69,6 +70,7 @@ beforeEach(async () => {
     verifyAccessToken: developerTokenVerifier({ issuer: ISSUER, keys: async () => [await signer.publicJwk()], now: () => Date.now() }),
   };
   ({ db, handler } = await createAdminBroker({ developer: config }));
+  seedMembership(db, developerId);
   db.set({ pk: "SESSION#s-1", sk: "META", sessionId: "s-1", developerId, amr: "slack", slackUserId: "U0MAYA001", startedAt: new Date(T0).toISOString(), endsAt: T0 / 1000 + 604_800 });
   db.set({ pk: `DEVELOPER#${developerId}`, sk: "META", developerId, provider: "slack", issuer: "https://slack.com", subject: "U0MAYA001", displayName: "Maya Chen", slackUserId: "U0MAYA001", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
   db.set({ pk: slackBindingPk(TEST_ORG, "T0TEAM1"), sk: "CHANNEL#C0PAY0001", teamId: "T0TEAM1", channelId: "C0PAY0001", projectName: "payments-api", updatedAt: "2026-09-27T00:00:00.000Z" });
@@ -116,6 +118,8 @@ describe("GET /v1/dev/projects (FR-016, FR-013)", () => {
     expect(gets).toEqual([
       { TableName: "signin", Key: { pk: "SESSION#s-1", sk: "META" } },
       { TableName: "signin", Key: { pk: `DEVELOPER#${developerId}`, sk: "META" } },
+      // The membership the token's org is checked against lives in the state table, beside the org.
+      { TableName: "state", Key: { pk: `DEVELOPER#${developerId}`, sk: "ORG" } },
     ]);
     const queryTables = new Set(sent.filter((command) => command.constructor.name === "QueryCommand").map((command) => command.input.TableName));
     expect([...queryTables]).toEqual(["state"]);
@@ -463,7 +467,7 @@ describe("GET /v1/dev/projects with the task policy (FR-014, FR-016)", () => {
 });
 
 describe("checkProjectAccess, FR-018's first three checks (FR-013, FR-014, FR-049, R10)", () => {
-  const maya: DeveloperCaller = { orgId: TEST_ORG, developerId, sessionId: "s-1", amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001" };
+  const maya: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member" as const, developerId, sessionId: "s-1", amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001" };
   const deps = () => ({ documentClient: db, tableName: "state", developer: config, now: () => T0 });
   const refusal = async (project: string, caller: DeveloperCaller = maya) => {
     try {
@@ -538,7 +542,7 @@ describe("checkProjectAccess, FR-018's first three checks (FR-013, FR-014, FR-04
   });
 
   it("does not name channels to a caller with no Slack link, and never asks Slack for them", async () => {
-    const company: DeveloperCaller = { orgId: TEST_ORG, developerId, sessionId: "s-1", amr: "oidc", name: "Maya Chen", email: "maya@example.test" };
+    const company: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member" as const, developerId, sessionId: "s-1", amr: "oidc", name: "Maya Chen", email: "maya@example.test" };
     const channelInfo = names({ C0LEDGER1: { name: "ledger-dev", isPrivate: false } });
     config.channelInfo = channelInfo;
     expect(await refusal("ledger", company)).toEqual({ code: "PROJECT_ACCESS_DENIED", message: "you don't have access to `ledger`: ask an admin" });
@@ -567,7 +571,7 @@ describe("checkProjectAccess, FR-018's first three checks (FR-013, FR-014, FR-04
 });
 
 describe("D2 task-person route dependencies", () => {
-  const maya: DeveloperCaller = { orgId: TEST_ORG, developerId, sessionId: "s-1", amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001" };
+  const maya: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member" as const, developerId, sessionId: "s-1", amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001" };
   const taskId = "11111111-1111-4111-8111-111111111111";
   const nativeDeveloperId = developerIdForSlackUser("U0MAYA001");
   const task = {
@@ -872,7 +876,7 @@ describe("the projects list's cost and consistency (Task 7 fix round 1)", () => 
 
 describe("PROJECT_NOT_FOUND for a name that is not a project name (Task 7 fix round 1)", () => {
   it("does not echo the raw input", async () => {
-    const maya: DeveloperCaller = { orgId: TEST_ORG, developerId, sessionId: "s-1", amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001" };
+    const maya: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member" as const, developerId, sessionId: "s-1", amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001" };
     const raw = `${"x".repeat(200)}\`\nplanted-injection`;
     const error = await checkProjectAccess({ documentClient: db, tableName: "state", developer: config, now: () => T0 }, maya, raw).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(AgentXError);

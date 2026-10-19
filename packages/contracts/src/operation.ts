@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { z } from "zod";
+import { OrgIdSchema } from "./org.js";
 import { WorkflowFeedbackApprovalBindingSchema } from "./task-workflow.js";
 import { WorkflowDependencyInvocationSchema } from "./workflow-dependencies.js";
 import { SlackRequesterSchema } from "./slack.js";
@@ -206,6 +207,8 @@ export const OperationSchema = z
   .object({
     id: z.string().uuid(),
     workspaceId: z.string().uuid(),
+    /** The org the operation belongs to (its workspace's); written on every operation this release creates. */
+    orgId: OrgIdSchema.optional(),
     conversationId: z.string().uuid().optional(),
     kind: OperationKindSchema,
     /** Explicit owner authorization to delete unpublished state during a close operation. */

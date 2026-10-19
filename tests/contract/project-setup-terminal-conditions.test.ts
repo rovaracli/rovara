@@ -41,7 +41,7 @@ describe("project setup terminal authority transaction checks", () => {
       { availabilityZone: "us-east-1a", subnetId: "subnet-12345678" }, { availabilityZone: "us-east-1b", subnetId: "subnet-87654321" },
     ], volumeSizeGiB: 20, volumeType: "gp3" });
     const approval = checks[2]?.ConditionCheck;
-    expect(approval?.Key).toEqual({ pk: "PROJECT_SETUP#orders", sk: `PROPOSAL#${"e".repeat(64)}` });
+    expect(approval?.Key).toEqual({ pk: `ORG#${TEST_ORG}#PROJECT_SETUP#orders`, sk: `PROPOSAL#${"e".repeat(64)}` });
     expect(approval?.ConditionExpression).toContain("decision = :approve AND policyDigest = :policyDigest");
     expect(value(2, ":policyDigest")).toBe("1".repeat(64));
     const session = checks[3]?.ConditionCheck;

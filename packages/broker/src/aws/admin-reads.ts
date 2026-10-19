@@ -28,6 +28,7 @@ import {
   orgLimitKey,
   orgProjectCatalogPk,
   orgUsageDayPk,
+  workspaceProjectIndexValue,
   parseSlackThreadSubject,
   projectPk,
   PROJECT_REVISION_SK_PREFIX,
@@ -507,7 +508,7 @@ async function usageSummary(deps: AdminReadDependencies, orgId: OrgId, url: URL)
 }
 
 /** A10: a project's workspaces from spec 041's byWorkspaceProject index, newest first, at most `cap`. Task 12 counts statuses with it. */
-export async function projectWorkspaceRows(deps: AdminReadDependencies, project: string, cap: number): Promise<{ rows: WorkspaceInstance[]; truncated: boolean }> {
+export async function projectWorkspaceRows(deps: AdminReadDependencies, orgId: OrgId, project: string, cap: number): Promise<{ rows: WorkspaceInstance[]; truncated: boolean }> {
   const rows: WorkspaceInstance[] = [];
   let start: Record<string, unknown> | undefined;
   let truncated = false;
@@ -517,7 +518,7 @@ export async function projectWorkspaceRows(deps: AdminReadDependencies, project:
       IndexName: WORKSPACE_PROJECT_INDEX.name,
       KeyConditionExpression: "#project = :project",
       ExpressionAttributeNames: { "#project": WORKSPACE_PROJECT_INDEX.partitionKey },
-      ExpressionAttributeValues: { ":project": project },
+      ExpressionAttributeValues: { ":project": workspaceProjectIndexValue(orgId, project) },
       ScanIndexForward: false,
       Limit: ADMIN_LIST_MAX,
       ...(start === undefined ? {} : { ExclusiveStartKey: start }),
@@ -579,7 +580,7 @@ async function listWorkspaces(deps: AdminReadDependencies, identity: Authenticat
   const found: WorkspaceInstance[] = [];
   let truncated = false;
   for (const name of projects) {
-    const { rows, truncated: more } = await projectWorkspaceRows(deps, name, WORKSPACES_READ_PER_PROJECT);
+    const { rows, truncated: more } = await projectWorkspaceRows(deps, requireOrgId(identity.orgId), name, WORKSPACES_READ_PER_PROJECT);
     truncated = truncated || more;
     found.push(...rows.filter((row) => (status === undefined ? row.status !== "CLOSED" : row.status === status.data)));
   }

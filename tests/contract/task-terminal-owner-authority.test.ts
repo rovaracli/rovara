@@ -72,7 +72,7 @@ describe("terminal task Slack authorization", () => {
     ] as const;
 
     for (const slackUserId of [creator, coOwner]) {
-      const caller: DeveloperCaller = { orgId: TEST_ORG, developerId: developerIdForSlackUser(slackUserId), slackUserId, name: slackUserId, sessionId: `session-${slackUserId}`, amr: "slack" };
+      const caller: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member" as const, developerId: developerIdForSlackUser(slackUserId), slackUserId, name: slackUserId, sessionId: `session-${slackUserId}`, amr: "slack" };
       const deps = developerTaskRouteDependencies({ documentClient: h.db, tableName: "state", developer: h.brokerInput.developer, now: Date.now, tasks: h.actions } as never, caller);
       for (const [route, body] of requests) {
         let refusal: unknown;

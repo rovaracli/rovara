@@ -72,7 +72,7 @@ export async function signedInClient(harness: Harness, who: Developer | undefine
   const home = await mkdtemp(join(tmpdir(), "agentx-mcp-"));
   const tokenStore = new InMemoryTokenStore();
   await saveDeveloperEnvironment(home, "staging", { url: URL_BASE, issuer: DEV_ISSUER, tokenEndpoint: `${DEV_ISSUER}/token`, revocationEndpoint: `${DEV_ISSUER}/revoke` });
-  const accessToken = who === undefined ? undefined : (await bearerFor(who)).slice("Bearer ".length);
+  const accessToken = who === undefined ? undefined : (await bearerFor(who, await harness.orgOf(who))).slice("Bearer ".length);
   if (accessToken !== undefined) await tokenStore.set(developerTokenKey(DEV_ISSUER), { accessToken, refreshToken: REFRESH_TOKEN, expiresAt: Date.now() + 3_600_000 });
   const stderr: string[] = [];
   let now = 0;
@@ -122,7 +122,7 @@ export async function adminSignedInClient(harness: Harness, options: {
   const home = await mkdtemp(join(tmpdir(), "agentx-mcp-admin-"));
   const tokenStore = new InMemoryTokenStore();
   await saveDeveloperEnvironment(home, "staging", { url: URL_BASE, issuer: DEV_ISSUER, tokenEndpoint: `${DEV_ISSUER}/token`, revocationEndpoint: `${DEV_ISSUER}/revoke` });
-  const developerToken = (await bearerFor(options.who ?? MAYA)).slice("Bearer ".length);
+  const developerToken = (await bearerFor(options.who ?? MAYA, await harness.orgOf(options.who ?? MAYA))).slice("Bearer ".length);
   await tokenStore.set(developerTokenKey(DEV_ISSUER), { accessToken: developerToken, refreshToken: REFRESH_TOKEN, expiresAt: Date.now() + 3_600_000 });
   const adminToken = options.adminToken === null ? undefined : options.adminToken ?? ADMIN_TOKEN;
   const stderr: string[] = [];

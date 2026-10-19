@@ -33,6 +33,7 @@ describe("thread-authenticated GitHub MCP routes", () => {
       deploymentMode: "ec2-ebs" as const,
       id: workspaceId,
       ownerKey,
+      orgId: TEST_ORG,
       projectName: "demo",
       projectRevision: 2,
       environmentDigest: `example.test/agentx@sha256:${"a".repeat(64)}`,

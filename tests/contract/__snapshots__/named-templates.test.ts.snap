@@ -3584,6 +3584,9 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "SLACK_TEAM_ID": {
               "Ref": "SlackTeamId",
             },
+            "STATE_TABLE_NAME": {
+              "Ref": "State1C20CC9A",
+            },
           },
         },
         "Handler": "index.handler",
@@ -3748,6 +3751,31 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Resource": {
                 "Fn::GetAtt": [
                   "DeveloperSignInTable26CE739E",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:PutItem",
+                "dynamodb:UpdateItem",
+              ],
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "ORG#*",
+                    "DEVELOPER#*",
+                    "ORG_INVITE#*",
+                    "ORG_EMAIL#*",
+                    "SLACK_TEAM#*",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
                   "Arn",
                 ],
               },

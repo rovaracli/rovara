@@ -36,7 +36,7 @@ describe("the client a task keeps (FR-033)", () => {
     };
     const fromSlack = await route(slackWorkflowCaller("U0BSPTAFNG2", TEST_ORG));
     expect(db.get(`DEVTASK#${fromSlack.task.taskId}`, "META")).toMatchObject({ client: "Slack" });
-    const fromTool = await route({ orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: MAYA.provider, name: MAYA.name, slackUserId: MAYA.slackUserId! });
+    const fromTool = await route({ orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: MAYA.provider, name: MAYA.name, slackUserId: MAYA.slackUserId! });
     expect(db.get(`DEVTASK#${fromTool.task.taskId}`, "META")).toMatchObject({ client: "an AI tool" });
   });
 });
@@ -125,7 +125,7 @@ describe("sharing at the start (FR-031)", () => {
     // The hosted router finds no binding without a team ID, so this guard is reached only by
     // dependencies that report a channel anyway: call the task routes directly with such a checkAccess.
     const { db, actions } = await createDeveloperTaskBroker({ channelInfo: names });
-    const caller = { orgId: TEST_ORG, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: MAYA.provider, name: MAYA.name, slackUserId: MAYA.slackUserId! };
+    const caller = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: MAYA.provider, name: MAYA.name, slackUserId: MAYA.slackUserId! };
     const refusal = await routeDeveloperTaskRequest({ orgId: TEST_ORG,
       documentClient: db, tableName: "state", actions, now: () => Date.now(),
       checkAccess: async () => ({ revision: 1, policy: DEFAULT_DEVELOPER_TASK_POLICY, access: "granted", channelIds: [SLACK_CHANNEL] }),

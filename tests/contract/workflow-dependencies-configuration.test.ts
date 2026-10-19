@@ -31,7 +31,7 @@ describe("workflow dependency runtime configuration", () => {
     }));
     const routesFor = (developer: NonNullable<ReturnType<typeof build>>) => developerTaskRouteDependencies({
       documentClient: { send: async () => ({}) }, tableName: "state", developer, now: Date.now,
-    }, { orgId: TEST_ORG, developerId: "dev", sessionId: "session", amr: "slack", name: "Dev" });
+    }, { orgId: TEST_ORG, orgRole: "member" as const, developerId: "dev", sessionId: "session", amr: "slack", name: "Dev" });
 
     const enabled = build("true");
     expect(enabled).toBeDefined();

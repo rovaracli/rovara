@@ -258,8 +258,16 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(functions.DeveloperSignInFunction).toEqual(expect.arrayContaining([
       "AGENTX_ENV", "DEVELOPER_TOKEN_ISSUER", "DEVELOPER_SIGNIN_TABLE_NAME", "DEVELOPER_TOKEN_KEY_ARN", "SLACK_SECRET_ARN", "SLACK_TEAM_ID",
       "DEVELOPER_SIGNIN_SLACK", "DEVELOPER_OIDC_ISSUER", "DEVELOPER_OIDC_CLIENT_ID", "DEVELOPER_OIDC_REQUIRED_CLAIM", "DEVELOPER_OIDC_REQUIRED_VALUES",
-      "DEVELOPER_OIDC_DISPLAY_NAME", "DEVELOPER_OIDC_SECRET_ID",
+      "DEVELOPER_OIDC_DISPLAY_NAME", "DEVELOPER_OIDC_SECRET_ID", "STATE_TABLE_NAME",
     ]));
+    // A sign-in puts the developer in an org, which lives in the State table: DeveloperIdentity reads and writes only the org keys there.
+    const stateGrants = ofType(named, "AWS::IAM::Policy").flatMap(([, policy]) => (policy.Properties.PolicyDocument as { Statement: Array<Record<string, unknown>> }).Statement)
+      .filter((statement) => JSON.stringify(statement.Condition ?? {}).includes("ORG_INVITE#*"));
+    expect(stateGrants).toHaveLength(1);
+    expect(stateGrants[0]).toMatchObject({
+      Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], Effect: "Allow",
+      Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ORG#*", "DEVELOPER#*", "ORG_INVITE#*", "ORG_EMAIL#*", "SLACK_TEAM#*"] } },
+    });
     // FR-045: both functions get each method's enabled-since cutoff straight from its parameter.
     const variables = (prefix: string) => (named.Resources[functionId(named, prefix)]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
     expect(variables("Broker")).toMatchObject({
