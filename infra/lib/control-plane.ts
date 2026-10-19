@@ -56,6 +56,8 @@ export const TURN_DETAILS_READ_ATTRIBUTES = [
 
 export interface ControlPlaneStackProps extends StackProps {
   naming?: AgentXNaming;
+  /** The hosted Rovara cloud (agentxCloud context): adds the self-serve Cognito sign-in. Named environments only. */
+  cloud?: boolean;
 }
 
 /**
@@ -832,6 +834,7 @@ export class ControlPlaneStack extends Stack {
     if (naming.env !== undefined && signInParameters !== undefined) {
       const developerSignIn = new DeveloperSignIn(this, "DeveloperSignIn", {
         naming, env: naming.env, api, stage: defaultStage, brokerIntegration: integration, broker, slackSecret, parameters: signInParameters, turnRecords, state,
+        ...(props?.cloud === true ? { cloud: true } : {}),
       });
       if (naming.env === "agentxlivetest123" && taskPersonProofEnabled !== undefined) {
         new TaskPersonProof(this, "TaskPersonProof", {

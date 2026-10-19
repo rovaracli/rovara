@@ -96,6 +96,10 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     );
   }
 
+  // The hosted Rovara cloud (-c agentxCloud=true): a self-serve Cognito sign-in in the control plane. Named
+  // environments only; the legacy deployment is unchanged whatever this says (ruling R12).
+  const agentxCloud = naming.env !== undefined && (app.node.tryGetContext("agentxCloud") === true || app.node.tryGetContext("agentxCloud") === "true");
+
   // The access stack holds the roles every other environment stack is deployed with, so it comes
   // first. The deployment that predates environments has none.
   let accessStack: AccessStack | undefined;
@@ -112,6 +116,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   new ControlPlaneStack(app, "AgentXControlPlane", {
     description: "AgentX authenticated control plane and durable dispatch foundation",
     naming,
+    ...(agentxCloud ? { cloud: true } : {}),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("control-plane") }),
   });
   new ProductionFoundationStack(app, "AgentXProductionFoundation", {

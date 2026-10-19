@@ -4,6 +4,7 @@ import { ArnFormat, CfnOutput, CfnParameter, Duration, RemovalPolicy, Stack, aws
 import { Construct } from "constructs";
 import type { AgentXNaming } from "./naming.js";
 import { packagedFunction } from "./control-plane.js";
+import { CloudIdentity } from "./cloud-identity.js";
 
 const SIGN_IN_ROUTE_KEY = "ANY /v1/auth/{proxy+}";
 const DEV_ROUTE_KEY = "ANY /v1/dev/{proxy+}";
@@ -59,11 +60,15 @@ export interface DeveloperSignInProps {
   turnRecords: dynamodb.Table;
   /** The State table, where orgs and membership live; sign-in puts a developer in an org and the tokens carry it. */
   state: dynamodb.Table;
+  /** The hosted Rovara cloud (agentxCloud context): the self-serve Cognito sign-in is created here and wired to the sign-in function and the broker. */
+  cloud?: boolean;
 }
 
 export class DeveloperSignIn extends Construct {
   /** Existing table, exposed without changing its construct path or permissions. */
   readonly table: dynamodb.Table;
+  /** The cloud sign-in, when the agentxCloud context is on. */
+  readonly cloud: CloudIdentity | undefined;
 
   constructor(scope: Construct, id: string, props: DeveloperSignInProps) {
     super(scope, id);
@@ -92,6 +97,10 @@ export class DeveloperSignIn extends Construct {
       removalPolicy: RemovalPolicy.DESTROY,
     });
 
+    // The cloud sign-in's Cognito pool calls back to this server, so the construct needs its issuer.
+    const cloud = props.cloud === true ? new CloudIdentity(this, "CloudIdentity", { env: props.env, signInIssuer: issuer }) : undefined;
+    this.cloud = cloud;
+
     const oidcSecretName = `agentx/${props.env}/developer-oidc`;
     const fn = packagedFunction(this, "Function", "packages/broker/src/aws/developer-identity.ts", {
       AGENTX_ENV: props.env,
@@ -111,6 +120,12 @@ export class DeveloperSignIn extends Construct {
       DEVELOPER_SIGNIN_SLACK_SINCE: p.slackSince.valueAsString,
       DEVELOPER_OIDC_SINCE: p.oidcSince.valueAsString,
       MCP_CONFIRM_ELICITATION: p.mcpConfirmElicitation.valueAsString,
+      ...(cloud === undefined ? {} : {
+        DEVELOPER_CLOUD_ISSUER: cloud.issuer,
+        DEVELOPER_CLOUD_CLIENT_ID: cloud.clientId,
+        DEVELOPER_CLOUD_SECRET_ID: cloud.secretName,
+        DEVELOPER_CLOUD_DISPLAY_NAME: cloud.displayName,
+      }),
     }, Duration.seconds(15));
     // Exactly what DeveloperSignInStore sends: GetItem, PutItem, UpdateItem, and TransactWriteItems
     // made of Put and Update items (IAM authorizes each item as PutItem or UpdateItem).
@@ -142,6 +157,11 @@ export class DeveloperSignIn extends Construct {
       // Secrets Manager appends "-" and six characters to a secret's name in its ARN.
       resources: [stack.formatArn({ service: "secretsmanager", resource: "secret", resourceName: `${oidcSecretName}-??????`, arnFormat: ArnFormat.COLON_RESOURCE_NAME })],
     }));
+
+    // Only this function exchanges the cloud pool's authorization code, so only it may read the client secret.
+    if (cloud !== undefined) {
+      fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["secretsmanager:GetSecretValue"], resources: [cloud.secret.secretArn] }));
+    }
 
     const integration = new apigwv2.CfnIntegration(this, "Integration", {
       apiId: props.api.ref, integrationType: "AWS_PROXY", integrationUri: fn.functionArn, payloadFormatVersion: "2.0",
@@ -184,6 +204,12 @@ export class DeveloperSignIn extends Construct {
     broker.addEnvironment("DEVELOPER_SIGNIN_SLACK_SINCE", p.slackSince.valueAsString);
     broker.addEnvironment("DEVELOPER_OIDC_SINCE", p.oidcSince.valueAsString);
     broker.addEnvironment("MCP_CONFIRM_ELICITATION", p.mcpConfirmElicitation.valueAsString);
+    // The broker reads only whether the cloud sign-in is configured (it then resolves orgs by membership, R6)
+    // and where invite links point; the sign-in function holds the client settings and the secret.
+    if (cloud !== undefined) {
+      broker.addEnvironment("DEVELOPER_CLOUD_ISSUER", cloud.issuer);
+      broker.addEnvironment("ROVARA_WEB_ORIGIN", cloud.webOrigin.valueAsString);
+    }
     fn.grantInvoke(broker);
     // Spec 025 25e: EMAIL# is the email index resolveDeveloper reads to name a developer by email.
     broker.addToRolePolicy(new iam.PolicyStatement({
