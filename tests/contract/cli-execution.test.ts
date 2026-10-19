@@ -64,7 +64,7 @@ describe("AgentX administration workflow", () => {
       expect(new URL(requestUrl(input)).pathname).toBe("/v1/admin/org/budget");
       expect(init?.method).toBe("PUT");
       expect(new Headers(init?.headers).get("authorization")).toBe("Bearer access-secret");
-      bodies.push(JSON.parse(String(init?.body)));
+      bodies.push(JSON.parse(typeof init?.body === "string" ? init.body : "null") as unknown);
       return Response.json({ budget: { orgMonthlyUsd: 2000, memberDefaultMonthlyUsd: 150, memberOverrides: {} } });
     });
     let output = "";
@@ -72,7 +72,7 @@ describe("AgentX administration workflow", () => {
       fetchImplementation, tokenStore: context.tokens, stdout: { write(text) { output += text; } }, stderr: { write(text) { throw new Error(text); } },
     });
     expect(exitCode).toBe(0);
-    expect(bodies).toEqual([{ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/), orgMonthlyUsd: 2000, memberDefaultMonthlyUsd: 150 }]);
+    expect(bodies).toEqual([{ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) as unknown, orgMonthlyUsd: 2000, memberDefaultMonthlyUsd: 150 }]);
     expect(output).toBe("Monthly AI budget: organization $2000.00, each member $150.00.\n");
   });
 

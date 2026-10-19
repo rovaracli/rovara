@@ -158,7 +158,7 @@ describe("model proxy infrastructure (named environments)", () => {
     const inference = listeners.find(([, listener]) => listener.Properties.Port === 4000)!;
     const [, group] = ofType(resources, "AWS::ElasticLoadBalancingV2::TargetGroup")[0]!;
     const groupId = ofType(resources, "AWS::ElasticLoadBalancingV2::TargetGroup")[0]![0];
-    expect(inference[1].Properties.DefaultActions).toEqual([expect.objectContaining({ Type: "fixed-response", FixedResponseConfig: expect.objectContaining({ StatusCode: "403" }) })]);
+    expect(inference[1].Properties.DefaultActions).toEqual([expect.objectContaining({ Type: "fixed-response", FixedResponseConfig: expect.objectContaining({ StatusCode: "403" }) as unknown })]);
     expect(JSON.stringify(inference[1].Properties.DefaultActions)).not.toContain("forward");
     const rules = ofType(resources, "AWS::ElasticLoadBalancingV2::ListenerRule");
     expect(rules).toHaveLength(1);
