@@ -107,12 +107,14 @@ export class ModelProxyClient implements ModelAccess {
     if (reply.status !== 200) throw refusal(reply);
   }
 
-  /** Creates the record; when it already exists the proxy refuses with a 4xx, and the record is updated instead. */
+  /** Creates the record; when the proxy says it already exists, the record is updated instead. Any other refusal is the create's own. */
   private async createOrUpdate(createPath: string, updatePath: string, createBody: Json, updateBody: Json = createBody): Promise<void> {
     const master = await this.master();
     const created = await this.request("POST", createPath, master, createBody);
     if (created.status === 200) return;
-    if (created.status !== 400 && created.status !== 409) throw refusal(created);
+    // LiteLLM answers 400 for validation errors too, so only a 409 or an "already exists" 400 means the record is there.
+    const exists = created.status === 409 || (created.status === 400 && /already exists/iu.test(proxyMessage(created.body)));
+    if (!exists) throw refusal(created);
     const updated = await this.request("POST", updatePath, master, updateBody);
     if (updated.status !== 200) throw refusal(updated);
   }

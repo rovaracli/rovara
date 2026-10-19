@@ -84,6 +84,29 @@ describe("ModelProxyClient", () => {
     expect(existing.seen[1]!.body).toEqual({ user_id: DEV, max_budget: 30, budget_duration: "1mo", metadata: { orgId: ORG } });
   });
 
+  it("a 400 validation error on create is surfaced as the create's own refusal and never falls back to update", async () => {
+    for (const [create, update, call] of [
+      ["/team/new", "/team/update", (client: ModelProxyClient) => client.upsertOrg(ORG, -5)],
+      ["/user/new", "/user/update", (client: ModelProxyClient) => client.upsertMember(ORG, DEV, -5)],
+    ] as const) {
+      const { client, seen } = proxy(({ path }) => {
+        if (path === create) return json({ error: { message: "max_budget must be a non-negative number" } }, 400);
+        if (path === update) return json({ error: { message: "not found" } }, 404);
+        return undefined;
+      });
+      const error = await failure(call(client));
+      expect(error.code, create).toBe("CONFIG_INVALID");
+      expect(error.message, create).toContain("max_budget must be a non-negative number");
+      expect(seen.map((s) => s.path), create).toEqual([create]);
+    }
+  });
+
+  it("a 409 on create also falls back to update", async () => {
+    const { client, seen } = proxy(({ path }) => (path === "/team/new" ? json({ error: { message: "conflict" } }, 409) : path === "/team/update" ? json({}) : undefined));
+    await client.upsertOrg(ORG, 5);
+    expect(seen.map((s) => s.path)).toEqual(["/team/new", "/team/update"]);
+  });
+
   it("spend maps /team/info and /user/info to the member and org figures LiteLLM reports", async () => {
     const { client, seen } = proxy(({ path, search }) => {
       if (path === "/team/info" && search === `?team_id=${ORG}`) return json({ team_id: ORG, team_info: { spend: 12.5, max_budget: 100 }, keys: [] });
