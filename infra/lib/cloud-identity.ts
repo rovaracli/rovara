@@ -77,7 +77,8 @@ export class CloudIdentity extends Construct {
       clientId: googleClientId.valueAsString,
       clientSecretValue: SecretValue.secretsManager(googleClientSecretArn.valueAsString, { jsonField: "clientSecret" }),
       scopes: ["openid", "email", "profile"],
-      attributeMapping: { email: cognito.ProviderAttribute.GOOGLE_EMAIL },
+      // email_verified too: the broker keeps an email only when the ID token says it is verified (providers.ts verifiedEmail).
+      attributeMapping: { email: cognito.ProviderAttribute.GOOGLE_EMAIL, emailVerified: cognito.ProviderAttribute.GOOGLE_EMAIL_VERIFIED },
     });
 
     const client = pool.addClient("SignIn", {

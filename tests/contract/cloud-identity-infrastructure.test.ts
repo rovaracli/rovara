@@ -58,7 +58,7 @@ describe("cloud identity infrastructure", () => {
       ProviderName: "Google",
       ProviderType: "Google",
       ProviderDetails: Match.objectLike({ client_id: { Ref: "GoogleClientId" }, authorize_scopes: "openid email profile" }),
-      AttributeMapping: { email: "email" },
+      AttributeMapping: { email: "email", email_verified: "email_verified" },
     });
     const secret = JSON.stringify(resourcesOf(template, "AWS::Cognito::UserPoolIdentityProvider")[0]![1].Properties.ProviderDetails.client_secret);
     expect(secret).toContain("{{resolve:secretsmanager:");
