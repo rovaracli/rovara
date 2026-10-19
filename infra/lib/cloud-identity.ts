@@ -108,9 +108,10 @@ export class CloudIdentity extends Construct {
       idTokenValidity: Duration.hours(1),
       refreshTokenValidity: Duration.days(30),
     });
-    // The client lists Google as a supported provider only when Google exists, which must then be created first.
-    (client.node.defaultChild as cognito.CfnUserPoolClient).addPropertyOverride("SupportedIdentityProviders", Fn.conditionIf(googleEnabled.logicalId, ["COGNITO", "Google"], ["COGNITO"]));
-    client.node.addDependency(google);
+    // The client lists Google only when it exists. The Ref returns the provider's name and orders the client after it,
+    // but a Ref inside the true branch is evaluated only then; an unconditional DependsOn on the conditional provider
+    // would fail the email-only deploy, so there is none.
+    (client.node.defaultChild as cognito.CfnUserPoolClient).addPropertyOverride("SupportedIdentityProviders", Fn.conditionIf(googleEnabled.logicalId, ["COGNITO", cfnGoogle.ref], ["COGNITO"]));
 
     // Email codes are offered by managed login only, not the classic hosted UI.
     const domain = pool.addDomain("HostedUi", {

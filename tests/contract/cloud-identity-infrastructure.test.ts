@@ -32,6 +32,7 @@ const functionNamed = (template: Template, prefix: string): Resource => {
   expect(found, prefix).toBeDefined();
   return found![1];
 };
+const googleProviderId = (template: Template): string => resourcesOf(template, "AWS::Cognito::UserPoolIdentityProvider")[0]![0];
 const brokerEnvironment = (template: Template) => functionNamed(template, "Broker").Properties.Environment.Variables;
 const identityEnvironment = (template: Template) => functionNamed(template, "DeveloperSignInFunction").Properties.Environment.Variables;
 
@@ -83,6 +84,25 @@ describe("cloud identity infrastructure", () => {
     }
   });
 
+  it("lets the app client deploy without Google: no unconditional DependsOn on the provider, which a Ref makes conditional (email-only sign-in)", () => {
+    const template = cloud();
+    const providerId = googleProviderId(template);
+    const [clientId, client] = resourcesOf(template, "AWS::Cognito::UserPoolClient")[0]!;
+    // The client is always created, so it must not name the conditional provider in DependsOn.
+    expect((client as unknown as { DependsOn?: string | string[] }).DependsOn ?? []).not.toContain(providerId);
+    expect(JSON.stringify(client)).not.toContain(`"DependsOn":["${providerId}"`);
+    // Without a GoogleClientId the condition is false, so the providers resolve to COGNITO alone.
+    const providers = client.Properties.SupportedIdentityProviders as { "Fn::If": [string, unknown, unknown] };
+    expect(providers["Fn::If"][0]).toBe("GoogleSignInEnabled");
+    expect(providers["Fn::If"][2]).toEqual(["COGNITO"]);
+    // With one, they include the provider's name through a Ref, which orders the client after it.
+    expect(providers["Fn::If"][1]).toEqual(["COGNITO", { Ref: providerId }]);
+    // Nothing else in the template points at the client's dependency on the provider unconditionally.
+    const dependants = Object.entries(template.toJSON().Resources as Record<string, { DependsOn?: string | string[] }>)
+      .filter(([id, resource]) => id !== clientId && [resource.DependsOn ?? []].flat().includes(providerId));
+    expect(dependants).toEqual([]);
+  });
+
   it("takes the Google client, its secret, the hosted-domain prefix and the web origin as parameters", () => {
     const parameters = cloud().toJSON().Parameters as Record<string, { Type: string; Default?: string }>;
     expect(parameters.GoogleClientId?.Type).toBe("String");
@@ -101,8 +121,8 @@ describe("cloud identity infrastructure", () => {
       AllowedOAuthFlows: ["code"],
       AllowedOAuthFlowsUserPoolClient: true,
       AllowedOAuthScopes: Match.arrayEquals(["openid", "email", "profile"]),
-      // Google is listed only when it exists (the GoogleSignInEnabled condition).
-      SupportedIdentityProviders: { "Fn::If": ["GoogleSignInEnabled", ["COGNITO", "Google"], ["COGNITO"]] },
+      // Google is listed only when it exists (the GoogleSignInEnabled condition), by a Ref to the provider.
+      SupportedIdentityProviders: { "Fn::If": ["GoogleSignInEnabled", ["COGNITO", { Ref: googleProviderId(template) }], ["COGNITO"]] },
       PreventUserExistenceErrors: "ENABLED",
     });
     // The broker's cloud provider sends `${DEVELOPER_TOKEN_ISSUER}/callback/cloud` as redirect_uri (developer/server.ts).
