@@ -125,6 +125,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     env: { region: deploymentRegion ?? "us-east-1" },
     terminationProtection: true,
     naming,
+    ...(agentxCloud ? { cloud: true } : {}),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("foundation") }),
   });
   // The identity stack is new with named environments; the legacy deployment brings its own OIDC

@@ -10,6 +10,7 @@ import {
   aws_logs as logs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
+import { AgentDnsFirewall, EGRESS_ALLOW_DOMAINS_CONTEXT_KEY, parseExtraAllowDomains } from "./agent-dns-firewall.js";
 import { Ec2WorkerFoundation } from "./ec2-workers.js";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 
@@ -37,6 +38,8 @@ export interface ProductionFoundationStackProps extends StackProps {
   deploymentRegion: string;
   configuration?: Partial<Omit<ProductionFoundationConfiguration, "region">>;
   naming?: AgentXNaming;
+  /** The hosted Rovara cloud (agentxCloud context, named environments only): adds the DNS firewall that limits which websites agent machines can resolve. */
+  cloud?: boolean;
 }
 
 export function defaultProductionAvailabilityZoneIds(
@@ -203,6 +206,15 @@ export class ProductionFoundationStack extends Stack {
       workspaceKey,
       instanceType: configuration.instanceType,
     });
+
+    // Cloud installs: agent machines (and the proxy, orchestrator and other tasks in this VPC) resolve only an allowlist.
+    if (props.cloud === true && naming.env !== undefined) {
+      new AgentDnsFirewall(this, "AgentDnsFirewall", {
+        env: naming.env,
+        vpcId: vpc.ref,
+        extraAllowDomains: parseExtraAllowDomains(this.node.tryGetContext(EGRESS_ALLOW_DOMAINS_CONTEXT_KEY)),
+      });
+    }
 
     new CfnOutput(this, "VpcId", { value: vpc.ref });
     new CfnOutput(this, "PrivateSubnetIds", {
