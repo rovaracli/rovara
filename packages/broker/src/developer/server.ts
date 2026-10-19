@@ -43,6 +43,7 @@ import {
 } from "@agentx/contracts";
 import { adaptHttpApiEvent, ownerKeyForSubject, type HttpApiV2Event } from "../aws/lambda.js";
 import { SESSION_MAX_AGE_SECONDS } from "../aws/web-session.js";
+import { INVITE_TOKEN_PATTERN } from "../org/invite-url.js";
 import { resolveOrgOnSignIn, type ResolveOrgOnSignInDependencies } from "../org/sign-in.js";
 import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderResult, type SignInProvider } from "./providers.js";
 import type { SlackDirectory } from "./slack-directory.js";
@@ -186,12 +187,15 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (query.get("response_type") !== "code") return invalid("response_type must be code; update the AgentX CLI and run agentx login again");
     if (query.get("code_challenge_method") !== "S256" || !CHALLENGE.test(challenge)) return invalid("PKCE with S256 is required; update the AgentX CLI and run agentx login again");
     if (clientState.length < 1 || clientState.length > 512) return invalid("state is required; update the AgentX CLI and run agentx login again");
+    // An invite link's token rides the sign-in to its end; the token is never logged, and a malformed one is refused now.
+    const invite = query.get("invite");
+    if (invite !== null && !INVITE_TOKEN_PATTERN.test(invite)) return invalid("invite is not a valid invite token; ask for a new invite link");
     if (methods.length === 0) {
       return toClient(redirectUri, { error: "access_denied", state: clientState, error_description: "developer sign-in is not enabled in this AgentX environment; ask an admin to run agentx signin enable slack" });
     }
     let request: AuthRequestRecord;
     try {
-      request = await store.createAuthRequest({ clientRedirectUri: redirectUri, clientState, codeChallenge: challenge, nonce: randomBytes(32).toString("base64url") });
+      request = await store.createAuthRequest({ clientRedirectUri: redirectUri, clientState, codeChallenge: challenge, nonce: randomBytes(32).toString("base64url"), ...(invite === null ? {} : { inviteToken: invite }) });
       if (methods.length === 1) {
         const method = methods[0]!;
         if (await store.chooseMethod(request.id, method) === undefined) return expired();
@@ -340,9 +344,10 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       ...(slackUserId === undefined ? {} : { slackUserId }),
     });
     // A first sign-in puts the person in an org (ruling R2); the tokens and the browser session carry it from here.
-    await resolveOrgOnSignIn(
+    const org = await resolveOrgOnSignIn(
       { orgs: deps.orgs, ...(deps.singleOrgId === undefined ? {} : { singleOrgId: deps.singleOrgId }), singleOrgName: config.env },
-      { method, developerId, displayName: identity.displayName, ...(identity.email === undefined ? {} : { email: identity.email }), emailVerified: identity.emailVerified === true },
+      { method, developerId, displayName: identity.displayName, ...(identity.email === undefined ? {} : { email: identity.email }), emailVerified: identity.emailVerified === true,
+        ...(request.inviteToken === undefined ? {} : { inviteToken: request.inviteToken }) },
     );
     if (request.browserReturnTo !== undefined) {
       // A fixed 30 days from sign-in, with no renewal: the session record ends then, whatever the cookie says.
@@ -356,7 +361,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     }
     const agentxCode = await store.issueCode({ developerId, amr: method, ...(slackUserId === undefined ? {} : { slackUserId }), codeChallenge: request.codeChallenge, redirectUri: request.clientRedirectUri });
     deps.log({ event: "signin.succeeded", method, developerId, linkedToSlack: slackUserId !== undefined });
-    return client({ code: agentxCode });
+    // An invite that was not used (the person is already in an org, or it is unknown, used, expired or for another email) is reported, not hidden.
+    return client({ code: agentxCode, ...(org.inviteError === undefined ? {} : { inviteError: org.inviteError }) });
   }
 
   async function authorizationCodeGrant(form: URLSearchParams, methods: DeveloperSignInMethod[]): Promise<HttpResult> {

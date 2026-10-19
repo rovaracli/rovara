@@ -1,5 +1,6 @@
 import type { DeveloperApiConfiguration } from "./developer-routes.js";
 import { developerSinceFromEnvironment } from "./developer-routes.js";
+import { webOriginFromEnvironment } from "../org/invite-url.js";
 
 export function workflowDependenciesConfigurationFromEnvironment(environment: Record<string, string | undefined>): {
   workflowDependenciesEnabled: boolean;
@@ -9,7 +10,7 @@ export function workflowDependenciesConfigurationFromEnvironment(environment: Re
 
 type DeveloperApiIntegrations = Omit<DeveloperApiConfiguration,
   "issuer" | "env" | "methods" | "slackTeamId" | "since" | "signInTableName" |
-  "taskPeopleConfiguration" | "workflowDependenciesEnabled" | "inviteTaskPerson">;
+  "taskPeopleConfiguration" | "workflowDependenciesEnabled" | "inviteTaskPerson" | "webOrigin">;
 
 /** The deployed developer configuration factory; transports remain injected and this seam is directly contract-tested. */
 export function createDeveloperApiConfiguration(
@@ -34,6 +35,7 @@ export function createDeveloperApiConfiguration(
     ...(slackTeamId === "" ? {} : { slackTeamId }),
     since: developerSinceFromEnvironment(environment),
     signInTableName,
+    webOrigin: webOriginFromEnvironment(environment),
     ...workflowDependenciesConfigurationFromEnvironment(environment),
     taskPeopleConfiguration: { peopleChangesEnabled: environment.AGENTX_TASK_PEOPLE_CHANGES_ENABLED === "true" },
     ...(inviteTaskPerson === undefined ? {} : { inviteTaskPerson }),

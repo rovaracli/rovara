@@ -3,6 +3,7 @@
 // access token itself, then checks the environment, the method and the sign-in session on every
 // request (R12, R13), so a revoked session stops at once.
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import type { SlackRequestQueue } from "../developer/page-comments.js";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
@@ -56,6 +57,7 @@ import {
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
+import { DEFAULT_ROVARA_WEB_ORIGIN, inviteUrl } from "../org/invite-url.js";
 import type { OrgStore } from "../org/store.js";
 import { checkTaskPersonIdentity, registerTaskChannelPeople, resolveTaskPickerPersonWithId, type ProjectAccessSubject, type TaskPersonIdentityDependencies } from "../developer/task-person-identity.js";
 import { taskPeopleDisplayAdmission, type TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
@@ -78,6 +80,8 @@ export interface DeveloperApiConfiguration {
   /** Each method's enabled-since cutoff, epoch seconds (FR-045): a session started before it was ended by a disable. */
   since?: { slack?: number; oidc?: number; cloud?: number };
   signInTableName: string;
+  /** The hosted Rovara web app's origin, which invite links point at (ROVARA_WEB_ORIGIN); https://rovara.dev when absent. */
+  webOrigin?: string;
   channelMembers(request: ChannelMembersRequest): Promise<ChannelMembersResponse>;
   /** C0: optional until the compatible identity function is deployed; callers must fail closed when absent. */
   taskPersonProof?: (request: TaskPersonProofRequest) => Promise<TaskPersonProofResponse>;
@@ -123,7 +127,7 @@ export interface DeveloperRouteDependencies {
   /** Sign in with ChatGPT (#338): each developer's connection; without it /v1/dev/chatgpt/* answers NOT_FOUND. */
   chatgpt?: ChatGptConnections;
   /** Which org a developer belongs to: the membership a token's `org` claim is checked against on every request. */
-  orgs?: Pick<OrgStore, "orgForDeveloper">;
+  orgs?: Pick<OrgStore, "orgForDeveloper" | "getOrg" | "createInvite">;
 }
 /** Who is asking about a project, and in which org: grants and revisions are read in that org only. */
 export type ProjectAccessCaller = ProjectAccessSubject & { orgId: OrgId };
@@ -894,6 +898,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   const caller = await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization));
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/dev/workspaces") return listWorkspaces(deps, caller);
+  if (request.method === "GET" && url.pathname === "/v1/dev/org") return getOrganization(deps, caller);
+  if (request.method === "POST" && url.pathname === "/v1/dev/org/invites") return createOrganizationInvite(deps, caller, jsonBody(request));
   if (url.pathname === "/v1/dev/tasks" || url.pathname.startsWith("/v1/dev/tasks/")) {
     if (deps.tasks === undefined) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
     return routeDeveloperTaskRequest(developerTaskRouteDependencies(deps, caller), caller, request, url);
@@ -902,6 +908,40 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     return routeChatGptConnection(deps, caller, request, url);
   }
   throw agentXError("NOT_FOUND", "route not found");
+}
+
+/** The caller's own org and their role in it. */
+async function getOrganization(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<{ org: { orgId: OrgId; name: string; plan: string }; role: OrgRole }> {
+  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
+  const org = await deps.orgs.getOrg(caller.orgId);
+  if (org === undefined) throw agentXError("NOT_FOUND", "your organization was not found");
+  return { org: { orgId: org.orgId, name: org.name, plan: org.plan }, role: caller.orgRole };
+}
+
+const CreateInviteBodySchema = z.object({
+  requestId: z.string().uuid(),
+  role: z.enum(["admin", "member"]),
+  email: z.string().trim().email().max(254).optional(),
+}).strict();
+
+/**
+ * An owner or admin invites someone to their org; only an owner may invite an admin. A replay of one requestId is
+ * refused (IDEMPOTENCY_CONFLICT) because only the token's hash is stored, so the first link cannot be given again.
+ */
+async function createOrganizationInvite(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<{ inviteUrl: string }> {
+  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
+  if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can invite people to the organization");
+  const parsed = CreateInviteBodySchema.safeParse(body);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    // Field names only: the values are the caller's.
+    throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
+  }
+  const { requestId, role, email } = parsed.data;
+  if (role === "admin" && caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can invite an admin; an admin can invite members");
+  const { token } = await deps.orgs.createInvite({ orgId: caller.orgId, createdBy: caller.developerId, role, requestId, ...(email === undefined ? {} : { email }) });
+  logDeveloperEvent({ event: "developer.org_invite_created", orgId: caller.orgId, role, targeted: String(email !== undefined) });
+  return { inviteUrl: inviteUrl(deps.developer.webOrigin ?? DEFAULT_ROVARA_WEB_ORIGIN, token) };
 }
 
 /** Sign in with ChatGPT (#338): the caller's own connection, and only theirs. No route answers a token. */

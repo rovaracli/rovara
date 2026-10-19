@@ -31,6 +31,8 @@ export interface OrgInviteRecord {
   email?: string;
   role: Exclude<OrgRole, "owner">;
   createdBy: string;
+  /** The request that created it (POST /v1/dev/org/invites); a replay of that request is refused. */
+  requestId?: string;
   createdAt: string;
   expiresAt: string;
   acceptedBy?: string;
@@ -92,6 +94,11 @@ export function developerOrgKey(developerId: string): OrgKey {
 
 export function orgInviteKey(tokenHash: string): OrgKey {
   return { pk: `ORG_INVITE#${tokenHash}`, sk: "META" };
+}
+
+/** Marks that an org's invite request was served, so a replay of the same requestId is refused rather than minting a second invite. */
+export function orgInviteRequestKey(orgId: OrgId, requestId: string): OrgKey {
+  return { pk: orgPk(orgId), sk: `INVITE_REQUEST#${requestId}` };
 }
 
 export function slackTeamOrgKey(teamId: string): OrgKey {

@@ -11,6 +11,7 @@ import {
   newOrgId as generateOrgId,
   orgEmailKey,
   orgInviteKey,
+  orgInviteRequestKey,
   orgMemberKey,
   orgMetaKey,
   slackTeamOrgKey,
@@ -149,7 +150,12 @@ export class OrgStore {
     );
   }
 
-  async createInvite(input: { orgId: OrgId; createdBy: string; role: Exclude<OrgRole, "owner">; email?: string; ttlSeconds?: number }): Promise<{ token: string }> {
+  /**
+   * A new invite. Given a `requestId`, the invite and a marker for that request are written together, so a
+   * replay of the same request is refused with IDEMPOTENCY_CONFLICT: only the token's hash is stored, so the
+   * first answer cannot be given again.
+   */
+  async createInvite(input: { orgId: OrgId; createdBy: string; role: Exclude<OrgRole, "owner">; email?: string; requestId?: string; ttlSeconds?: number }): Promise<{ token: string }> {
     const token = randomBytes(32).toString("base64url");
     const tokenHash = sha256Hex(token);
     const ttlMs = (input.ttlSeconds ?? DEFAULT_INVITE_TTL_SECONDS) * 1000;
@@ -159,14 +165,17 @@ export class OrgStore {
       ...(input.email === undefined ? {} : { email: normalizeEmail(input.email) }),
       role: input.role,
       createdBy: input.createdBy,
+      ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
       createdAt: this.iso(),
       expiresAt: new Date(this.input.now() + ttlMs).toISOString(),
     };
-    await this.input.documentClient.send(new PutCommand({
-      TableName: this.input.tableName,
-      Item: { ...orgInviteKey(tokenHash), entityType: "ORG_INVITE", ...invite },
-      ConditionExpression: NOT_EXISTS,
-    }));
+    await this.transact(
+      [
+        this.put(orgInviteKey(tokenHash), "ORG_INVITE", invite as unknown as Item),
+        ...(input.requestId === undefined ? [] : [this.put(orgInviteRequestKey(input.orgId, input.requestId), "ORG_INVITE_REQUEST", { tokenHash, createdAt: invite.createdAt })]),
+      ],
+      (failed) => (failed.has(1) ? coded("IDEMPOTENCY_CONFLICT", "invite already created for this request") : undefined),
+    );
     return { token };
   }
 
