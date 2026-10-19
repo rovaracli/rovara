@@ -2,6 +2,7 @@
 // control plane through the operation's callback capability. The worker holds no provider secret; the key
 // stays in memory until shortly before it expires, is asked for once at a time, and is never logged.
 import { agentXError } from "@agentx/contracts";
+import { ModelBudgetExhaustedError, type ModelBudgetScope } from "@agentx/model-runtime";
 
 /** Asked for again this long before the key expires, so no request carries one about to lapse. */
 export const MODEL_ACCESS_MARGIN_MS = 60_000;
@@ -36,6 +37,20 @@ function parseModelAccess(body: unknown): ModelAccess {
   return { baseUrl: baseUrl as string, apiKey, expiresAt };
 }
 
+/**
+ * A 402 from the control plane is a spent budget (ruling R37): ORG_BUDGET_EXCEEDED is the organisation's, and BUDGET_EXCEEDED
+ * is the task's own when its message says so (ruling R35) and the member's otherwise. Only the code and the first words
+ * of the message are read; nothing of the body is kept.
+ */
+async function budgetScopeOf(response: Response): Promise<ModelBudgetScope | undefined> {
+  if (response.status !== 402) return undefined;
+  const body = await response.json().catch(() => undefined) as { error?: { code?: unknown; message?: unknown } } | undefined;
+  const { code, message } = body?.error ?? {};
+  if (code === "ORG_BUDGET_EXCEEDED") return "org";
+  if (code !== "BUDGET_EXCEEDED") return undefined;
+  return typeof message === "string" && message.startsWith("This task has used its AI budget") ? "task" : "member";
+}
+
 /** What the runtime needs from the control plane's answer: the proxy's origin once, and the key as often as it is asked for. */
 export async function modelProxyFromSource(source: () => Promise<ModelAccess>): Promise<{ baseUrl: string; apiKey: () => Promise<string> }> {
   const first = await source();
@@ -54,7 +69,11 @@ export function modelAccessSource(input: ModelAccessSourceInput): () => Promise<
     pending ??= (async () => {
       try {
         const response = await transport(url, { method: "GET", headers: { "x-agentx-callback-capability": input.capability } });
-        if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `model access request failed with HTTP ${response.status}`);
+        if (!response.ok) {
+          const exhausted = await budgetScopeOf(response);
+          if (exhausted !== undefined) throw new ModelBudgetExhaustedError(exhausted);
+          throw agentXError("RUNTIME_UNAVAILABLE", `model access request failed with HTTP ${response.status}`);
+        }
         current = parseModelAccess(await response.json().catch(() => undefined));
         return current;
       } finally {

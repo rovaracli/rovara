@@ -2,6 +2,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, parsePlanDocument, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EWorkflowAdmissionRef } from "@agentx/contracts";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
+import { budgetExhaustedFromMarker } from "@agentx/model-runtime";
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
 import { WorkspaceConversationStore, type ConversationRecord } from "./conversations.js";
 import { checkCodeCitations, sameCitedRanges, withCorrectedRanges } from "./plan-citations.js";
@@ -1035,6 +1036,9 @@ function assistantOutcome(event: unknown): AssistantOutcome | undefined {
  */
 function failedTurn(outcome: AssistantOutcome | undefined): Error | undefined {
   if (outcome?.stopReason === "error") {
+    // A spent AI budget ends the task with its own category and words, and it can be continued once the budget is raised.
+    const exhausted = budgetExhaustedFromMarker(outcome.errorMessage);
+    if (exhausted !== undefined) return exhausted;
     const detail = String(redactCredentials(outcome.errorMessage ?? "no error message")).slice(0, 1_000);
     return agentXError("RUNTIME_UNAVAILABLE", `the model call failed: ${detail}`);
   }

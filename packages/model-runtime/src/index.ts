@@ -1,6 +1,8 @@
 import { MissingProviderSecret, defaultBedrockModel, type ModelRole } from "./config.js";
 import { openRouterRouting, readProviderKey, requireKeyedModel } from "./config.js";
 import { bedrockClaudeModelIds } from "./catalog.js";
+import { ModelBudgetExhaustedError, budgetExhaustedMarker, budgetScopeOfProxyBody, type ModelBudgetScope } from "./budget.js";
+export { ModelBudgetExhaustedError, budgetExhaustedFromMarker, type ModelBudgetScope } from "./budget.js";
 export { readOpenRouterKey, readProviderKey, openRouterRouting, openRouterModel, requireKeyedModel } from "./config.js";
 import { CHATGPT_PLAN_LIMIT_ERROR, KEYED_MODEL_PROVIDERS, agentXError, isKeyedModelProvider, type KeyedModelProvider, type ModelIdentifier } from "@agentx/contracts";
 import { InMemoryCredentialStore, createAssistantMessageEventStream, type Api, type Model, type SimpleStreamOptions, type TranscriptContext, type AssistantMessage, type AssistantMessageEventStream, type AnthropicMessagesCompat, type OpenAICompletionsCompat, type OpenAIResponsesCompat } from "@earendil-works/pi-ai";
@@ -132,7 +134,9 @@ async function createProxiedModelRuntime(selected: ModelIdentifier & { thinkingL
   if (model === undefined) throw agentXError("CONFIG_INVALID", `model ${selected.modelId} is not available on this install`);
   if (!model.reasoning && selected.thinkingLevel && selected.thinkingLevel !== "off") throw agentXError("CONFIG_INVALID", "the selected model does not support reasoning; set thinkingLevel to off");
   const requestKey = typeof proxy.apiKey === "function" ? proxy.apiKey : undefined;
-  const initialKey = requestKey === undefined ? proxy.apiKey as string : await requestKey().catch(() => {
+  const initialKey = requestKey === undefined ? proxy.apiKey as string : await requestKey().catch((error: unknown) => {
+    // A spent budget is the task's to end on, not a proxy fault.
+    if (error instanceof ModelBudgetExhaustedError) throw error;
     throw agentXError("RUNTIME_UNAVAILABLE", "the model proxy key could not be obtained");
   });
   const api = "anthropic-messages";
@@ -190,12 +194,17 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
   const output = createAssistantMessageEventStream();
   const chatgpt = plan !== undefined;
   let failureStatus: number | undefined;
+  // Set when the proxy answered 422 budget_exceeded. The response is returned to Pi untouched rather than thrown: the
+  // Anthropic client retries a thrown fetch error but never a 422, and Pi then reports an error, which safeError words.
+  let exhausted: ModelBudgetScope | undefined;
   let refusal: ChatGptFallbackReason | undefined;
   let returnedModel: string | undefined;
   let returnedProvider: string | undefined;
   const observedFetch: typeof fetch = async (input, init) => {
     const response = await transport(input, init);
     if (!response.ok) failureStatus = response.status;
+    // The proxy's body is read for a 422 only (never a stream), classified and dropped.
+    if (response.status === 422) exhausted = budgetScopeOfProxyBody(422, (await response.clone().text().catch(() => "")).slice(0, 65_536)) ?? exhausted;
     // A ChatGPT refusal is told apart by its body, which is read here and never kept, logged or shown.
     if (!response.ok && plan?.fallback !== undefined) refusal = chatGptRefusal(response.status, (await response.clone().text().catch(() => "")).slice(0, 65_536));
     if (!response.ok || !response.body) return response;
@@ -258,7 +267,7 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
           return await fallBack(plan.fallback, refusal);
         }
         started = true;
-        if (event.type === "error") event.error.errorMessage = safeError(provider, event.reason === "aborted", failureStatus, chatgpt);
+        if (event.type === "error") event.error.errorMessage = safeError(provider, event.reason === "aborted", failureStatus, chatgpt, exhausted);
         if (event.type === "done" || event.type === "error") {
           const message = event.type === "done" ? event.message : event.error;
           // Pi retains the response in the transcript. This record also identifies the serving model
@@ -274,10 +283,10 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
         output.push(event);
       }
       output.end(await upstream.result());
-    } catch {
+    } catch (error) {
       const aborted = options?.signal?.aborted === true;
       const message: AssistantMessage = { role: "assistant", api: model.api, provider, model: model.id,
-        content: [], timestamp: Date.now(), stopReason: aborted ? "aborted" : "error", errorMessage: safeError(provider, aborted, failureStatus, chatgpt),
+        content: [], timestamp: Date.now(), stopReason: aborted ? "aborted" : "error", errorMessage: safeError(provider, aborted, failureStatus, chatgpt, exhausted ?? (error instanceof ModelBudgetExhaustedError ? error.scope : undefined)),
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
       };
       output.push({ type: "error", reason: aborted ? "aborted" : "error", error: message });
@@ -288,9 +297,11 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
 }
 
 /** A diagnostic chosen from the HTTP status alone, so provider error bodies (which can echo prompts) never surface. */
-function safeError(provider: KeyedModelProvider, aborted: boolean, status?: number, chatgpt = false): string {
+function safeError(provider: KeyedModelProvider, aborted: boolean, status?: number, chatgpt = false, exhausted?: ModelBudgetScope): string {
   const { label } = KEYED_MODEL_PROVIDERS[provider];
   if (aborted) return `${label} request cancelled`;
+  // The proxy's budget refusal: the worker ends the task on this text (see budgetExhaustedFromMarker).
+  if (exhausted !== undefined) return budgetExhaustedMarker(exhausted);
   // A ChatGPT plan has no API key or credit balance: its refusals are the plan's.
   if (chatgpt && (status === 401 || status === 403)) return "ChatGPT request failed; the ChatGPT connection was refused, so connect ChatGPT again";
   if (chatgpt && status === 429) return "ChatGPT request failed; your ChatGPT plan's usage limit may be reached, see https://chatgpt.com/settings/usage";

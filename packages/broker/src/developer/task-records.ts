@@ -2,6 +2,7 @@
 // and audit records. No I/O; aws/developer-tasks.ts and the broker's result hook call these.
 import { createHash } from "node:crypto";
 import {
+  BUDGET_EXHAUSTED_FAILURE_MESSAGE,
   inertName,
   AiToolTurnRecordSchema,
   DEVELOPER_EVENT_TEXT_MAX,
@@ -238,6 +239,8 @@ const TIMED_OUT = /\btimed? ?out\b|\btimeout:/i;
 /** R5. */
 export function failureCategory(kind: string, status: string, error: string | undefined): DeveloperTaskFailureCategory {
   if (status === "INTERRUPTED") return "interrupted";
+  // Task 16: the worker's one message for a spent AI budget, whoever's budget it was.
+  if (error?.startsWith(BUDGET_EXHAUSTED_FAILURE_MESSAGE) === true) return "budget_exhausted";
   // A worker that ran and whose callback the control plane refused (opening the pull request on GitHub failed, say) was
   // available: that is the step failing, not "no worker was free".
   if (error !== undefined && DISPATCH_OR_COMPUTE.test(error) && !WORKER_CALLBACK_REFUSED.test(error)) return "worker_unavailable";

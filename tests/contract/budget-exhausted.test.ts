@@ -1,0 +1,204 @@
+// Task 16: a budget running out mid-task ends the task clearly, and the owner can continue it once the budget is raised.
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import type { Context } from "@earendil-works/pi-ai";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, DeveloperTaskFailureCategorySchema, agentXError } from "../../packages/contracts/src/index.js";
+import { ModelBudgetExhaustedError, budgetExhaustedFromMarker, createConfiguredModelRuntime } from "../../packages/model-runtime/src/index.js";
+import { failureCategory } from "../../packages/broker/src/developer/task-records.js";
+import { modelAccessSource } from "../../packages/worker/src/model-access.js";
+import { createDefaultPiSessionAdapter } from "../../packages/worker/src/pi-session.js";
+import { runTaskInvocation } from "../../packages/worker/src/run-task.js";
+import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+
+const PROXY_URL = "http://internal-proxy.example.test:4000";
+const PROXY_KEY = "sk-proxy-budget-key-0001";
+const BEDROCK_MODEL = "us.anthropic.claude-sonnet-4-6";
+const context: Context = { messages: [{ role: "user", content: "hello", timestamp: 0 }] };
+const EXACT = "Stopped: the AI budget for this task ran out. Raise the budget and choose Continue to resume.";
+
+// The bodies the proxy answered with (docs/learnings/model-proxy-spike.md, question 3), HTTP 422.
+const KEY_BODY = { error: { message: "Budget has been exceeded! Key=spike-key-budget (sk-...<redacted>) Current cost: 0.06170999999999999, Max budget: 0.05", type: "budget_exceeded", param: null, code: "422" } };
+const USER_BODY = { error: { message: "ExceededBudget: User=spike-user-u over budget. Spend=0.06119999999999999, Budget=0.05", type: "budget_exceeded", param: null, code: "422" } };
+const TEAM_BODY = { error: { message: "Budget has been exceeded! Team=spike-team-t Current cost: 0.06119999999999999, Max budget: 0.05", type: "budget_exceeded", param: null, code: "422" } };
+const refusal = (body: unknown, status = 422) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+function sse(events: Array<{ type: string } & Record<string, unknown>>) {
+  return new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "Content-Type": "text/event-stream" } });
+}
+
+async function proxiedRuntime(transport: typeof fetch, apiKey: string | (() => Promise<string>) = PROXY_KEY, onUsage: (record: Record<string, unknown>) => void = () => undefined) {
+  const runtime = await createConfiguredModelRuntime({ provider: "amazon-bedrock", modelId: BEDROCK_MODEL }, { fetch: transport, onUsage, proxy: { baseUrl: PROXY_URL, apiKey } });
+  return { runtime, model: runtime.getModel("amazon-bedrock", BEDROCK_MODEL)! };
+}
+
+describe("the model runtime meets the proxy's budget refusal", () => {
+  it.each([
+    ["Team=", TEAM_BODY, "org"],
+    ["User=", USER_BODY, "member"],
+    ["Key=", KEY_BODY, "task"],
+  ] as const)("classifies a %s refusal as the %s's budget, once, without keeping the body", async (_name, body, scope) => {
+    const transport = vi.fn<typeof fetch>(async () => refusal(body));
+    const usage = vi.fn();
+    const { runtime, model } = await proxiedRuntime(transport, PROXY_KEY, usage);
+    const result = await runtime.streamSimple(model, context, { maxTokens: 64 }).result();
+    expect(result).toMatchObject({ stopReason: "error", errorMessage: `AI budget exhausted (${scope})` });
+    expect(budgetExhaustedFromMarker(result.errorMessage)).toMatchObject({ name: "ModelBudgetExhaustedError", scope, message: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    // A 422 is final: it is not retried.
+    expect(transport).toHaveBeenCalledTimes(1);
+    for (const surfaced of [result.errorMessage, JSON.stringify(usage.mock.calls)]) {
+      expect(surfaced).not.toContain("spike-");
+      expect(surfaced).not.toContain("Max budget");
+      expect(surfaced).not.toContain(PROXY_KEY);
+    }
+  });
+
+  it("leaves any other 422, or a 422 that is not JSON, as the generic failure", async () => {
+    for (const answer of [refusal({ error: { message: "Invalid request", type: "invalid_request_error" } }), new Response("Budget has been exceeded! Team=x", { status: 422 }), refusal(TEAM_BODY, 400)]) {
+      const { runtime, model } = await proxiedRuntime(async () => answer.clone());
+      const result = await runtime.streamSimple(model, context, { maxTokens: 64 }).result();
+      expect(result.stopReason).toBe("error");
+      expect(budgetExhaustedFromMarker(result.errorMessage)).toBeUndefined();
+      expect(result.errorMessage).toMatch(/^Anthropic request failed; /);
+    }
+  });
+
+  it("does not read or buffer a successful stream's body for a budget", async () => {
+    const usage = { input_tokens: 10, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+    const cloned = vi.spyOn(Response.prototype, "clone");
+    try {
+      const { runtime, model } = await proxiedRuntime(async () => sse([
+        { type: "message_start", message: { id: "m", type: "message", role: "assistant", model: BEDROCK_MODEL, content: [], stop_reason: null, usage } },
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi" } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } },
+        { type: "message_stop" },
+      ]));
+      expect((await runtime.streamSimple(model, context, { maxTokens: 64 }).result()).stopReason).toBe("stop");
+      expect(cloned).not.toHaveBeenCalled();
+    } finally { cloned.mockRestore(); }
+  });
+
+  it("surfaces a budget refusal of a re-minted key the same way", async () => {
+    let asked = 0;
+    const transport = vi.fn<typeof fetch>(async () => refusal(TEAM_BODY));
+    const { runtime, model } = await proxiedRuntime(transport, async () => {
+      asked += 1;
+      if (asked > 1) throw new ModelBudgetExhaustedError("org");
+      return PROXY_KEY;
+    });
+    const result = await runtime.streamSimple(model, context, { maxTokens: 64 }).result();
+    expect(result).toMatchObject({ stopReason: "error", errorMessage: "AI budget exhausted (org)" });
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("refuses a runtime whose first key is already refused for budget, as the budget and not as a proxy fault", async () => {
+    const error = await createConfiguredModelRuntime({ provider: "amazon-bedrock", modelId: BEDROCK_MODEL }, { proxy: { baseUrl: PROXY_URL, apiKey: async () => { throw new ModelBudgetExhaustedError("member"); } } }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ModelBudgetExhaustedError);
+  });
+});
+
+describe("the worker's model access meets a spent budget at a re-mint (ruling R37)", () => {
+  const source = (response: Response) => modelAccessSource({ controlPlaneUrl: "https://api.example.test", capability: "cap.sig", fetch: async () => response.clone() });
+  const body = (code: string, message: string) => JSON.stringify({ error: { code, message } });
+  const caught = async (response: Response) => source(response)().catch((error: unknown) => error);
+
+  it.each([
+    ["the organisation's", "ORG_BUDGET_EXCEEDED", "Your company's monthly AI budget is used up. Ask an admin to raise it.", "org"],
+    ["the member's", "BUDGET_EXCEEDED", "Your monthly AI budget is used up ($29.00 of $29.00). Ask an admin to raise it.", "member"],
+    ["the task's own", "BUDGET_EXCEEDED", "This task has used its AI budget ($25.00 of $25.00). Start a new task to continue.", "task"],
+  ] as const)("ends on %s 402 with ModelBudgetExhaustedError", async (_name, code, message, scope) => {
+    const error = await caught(new Response(body(code, message), { status: 402 }));
+    // By name: the worker's source imports the package's built copy of the class, this test its source's.
+    expect(error).toMatchObject({ name: "ModelBudgetExhaustedError", scope, message: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+  });
+
+  it.each([
+    ["a 503", new Response(body("MODEL_PROXY_UNAVAILABLE", "x"), { status: 503 })],
+    ["a 402 of another code", new Response(body("SOMETHING_ELSE", "x"), { status: 402 })],
+    ["a 402 without a body", new Response("", { status: 402 })],
+  ])("keeps %s a RUNTIME_UNAVAILABLE", async (_name, response) => {
+    const error = await caught(response);
+    expect(error).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+});
+
+describe("a task whose budget runs out mid-task", () => {
+  it("ends FAILED with the one message, whichever budget it was", async () => {
+    for (const [body, scope] of [[TEAM_BODY, "org"], [USER_BODY, "member"], [KEY_BODY, "task"]] as const) {
+      const rootPath = await mkdtemp(join(tmpdir(), "agentx-budget-"));
+      try {
+        const repository = join(rootPath, "repo/app");
+        await mkdir(repository, { recursive: true });
+        const git = (...args: string[]) => execFileSync("git", ["-C", repository, ...args], { encoding: "utf8" }).trim();
+        git("init", "--quiet", "--initial-branch=main");
+        await writeFile(join(repository, "README.md"), "base\n");
+        git("add", ".");
+        git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--quiet", "-m", "base");
+        const at = new Date().toISOString();
+        await mkdir(join(rootPath, ".agentx"));
+        await writeFile(join(rootPath, ".agentx/preparation-manifest.json"), JSON.stringify({ schemaVersion: 2, projectName: "x", projectRevision: 1,
+          repositories: [{ name: "app", path: "repo/app", defaultBranch: "main", resolvedCommit: git("rev-parse", "HEAD"), resolvedAt: at, completedAt: at }],
+          completedSetupSteps: [], readinessResults: [], creationIdentity: "fixture", complete: true, updatedAt: at }));
+        // The real model runtime and session, with the proxy answering the model request with the recorded refusal.
+        const transport = vi.fn<typeof fetch>(async () => refusal(body));
+        const model = { provider: "amazon-bedrock", modelId: BEDROCK_MODEL };
+        const piAdapter = createDefaultPiSessionAdapter({ modelRuntime: async () => ({ runtime: (await proxiedRuntime(transport)).runtime, model }) });
+        const invocation = { protocolVersion: 1, kind: "task", operationId: randomUUID(), workspaceId: randomUUID(), fence: 1, projectRevision: 1, callbackCapability: "c".repeat(64),
+          payload: { conversationId: randomUUID(), prompt: "Change the readme" } };
+        const failure = await runTaskInvocation(invocation as never, { rootPath, model, piAdapter, eventSink: async () => undefined, artifactSink: async () => undefined }).catch((error: unknown) => error);
+        expect(failure).toMatchObject({ name: "ModelBudgetExhaustedError", scope, message: EXACT });
+        expect(transport).toHaveBeenCalledTimes(1);
+      } finally {
+        await rm(rootPath, { recursive: true, force: true });
+      }
+    }
+  }, 60_000);
+});
+
+describe("the control plane reads the task's failure", () => {
+  it("has budget_exhausted among the failure categories, with the plan's exact message", () => {
+    expect(DeveloperTaskFailureCategorySchema.options).toContain("budget_exhausted");
+    expect(BUDGET_EXHAUSTED_FAILURE_MESSAGE).toBe(EXACT);
+  });
+
+  it("categorises the message as budget_exhausted for a task, and nothing else is", () => {
+    expect(failureCategory("task", "FAILED", EXACT)).toBe("budget_exhausted");
+    expect(failureCategory("task", "FAILED", "the model call failed: rate limited")).toBe("task_failed");
+    expect(failureCategory("task", "FAILED", `RUNTIME_UNAVAILABLE: ${EXACT}`)).toBe("worker_unavailable");
+    expect(failureCategory("task", "INTERRUPTED", EXACT)).toBe("interrupted");
+  });
+
+  async function exhaustedTask() {
+    const harness = await createDeveloperTaskBroker();
+    const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the flaky retry test", client: "claude-code" });
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    const task = harness.db.get(`DEVTASK#${taskId}`, "META") as { workspaceId: string };
+    const active = () => String((harness.db.get(`WORKSPACE#${task.workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
+    await harness.finish(task.workspaceId, active(), "SUCCEEDED");
+    await harness.finish(task.workspaceId, active(), "FAILED", { error: EXACT });
+    return { ...harness, taskId, task, active };
+  }
+
+  it("shows the ended task FAILED with category budget_exhausted and the exact message", async () => {
+    const { dev, taskId } = await exhaustedTask();
+    const view = await dev(MAYA, "GET", `/v1/dev/tasks/${taskId}`);
+    expect(view.status).toBe(200);
+    expect(view.body.task).toMatchObject({ status: "FAILED", failure: { category: "budget_exhausted", message: EXACT } });
+  });
+
+  it("accepts continue on that task once the budget is raised", async () => {
+    const { dev, db, taskId, task, active } = await exhaustedTask();
+    const requestId = randomUUID();
+    const continued = await dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/continue`, { requestId, instructions: "Carry on where you stopped." });
+    expect(continued.status).toBe(200);
+    expect(continued.body.task).toMatchObject({ status: "RUNNING" });
+    expect(db.get(`WORKSPACE#${task.workspaceId}`, `OPERATION#${active()}`)).toMatchObject({ kind: "task", requestId });
+  });
+});
+
+void agentXError;

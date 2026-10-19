@@ -138,8 +138,10 @@ export const DeveloperTaskStatusSchema = z.enum(["STARTING", "RUNNING", "SUCCEED
 export type DeveloperTaskStatus = z.infer<typeof DeveloperTaskStatusSchema>;
 export const ENDED_TASK_STATUSES: ReadonlySet<DeveloperTaskStatus> = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED", "CLOSED"]);
 
-export const DeveloperTaskFailureCategorySchema = z.enum(["setup_failed", "worker_unavailable", "task_failed", "timed_out", "interrupted", "publication_failed"]);
+export const DeveloperTaskFailureCategorySchema = z.enum(["setup_failed", "worker_unavailable", "task_failed", "timed_out", "interrupted", "publication_failed", "budget_exhausted"]);
 export type DeveloperTaskFailureCategory = z.infer<typeof DeveloperTaskFailureCategorySchema>;
+/** Task 16: what a task says when its AI budget ran out, for every scope (organisation, member, task); the broker reads the category from it. */
+export const BUDGET_EXHAUSTED_FAILURE_MESSAGE = "Stopped: the AI budget for this task ran out. Raise the budget and choose Continue to resume.";
 /** #154: where a failure happened. "setup" means the workspace was never set up, so the task
  * cannot be continued. Optional (a control plane that predates it sends none), and a stage this
  * release does not know is dropped rather than refusing the view. */
