@@ -164,7 +164,7 @@ describe("POST /v1/dev/projects", () => {
 
   it("answers a moved or renamed repository with a 400 that says so, not a 500, and writes nothing", async () => {
     const h = await cloudInstall();
-    h.github.getRepositoryIdentity.mockRejectedValueOnce(new TypeError("fetch failed"));
+    h.github.getRepositoryIdentity.mockRejectedValueOnce(new TypeError("fetch failed", { cause: new Error("unexpected redirect") }));
     const refused = await h.create(MAYA, { repository: "acme/web" });
     expect(refused).toMatchObject({ status: 400, body: { error: { code: "CONFIG_INVALID" } } });
     expect((refused.body.error as { message: string }).message).toContain("moved or renamed acme/web; use its current owner/name");
@@ -172,6 +172,20 @@ describe("POST /v1/dev/projects", () => {
     // GitHub being down is not the member's mistake.
     h.github.getRepositoryIdentity.mockRejectedValueOnce(packageError("RUNTIME_UNAVAILABLE", "GitHub repository lookup failed with HTTP 502"));
     expect((await h.create(MAYA, { repository: "acme/web" })).status).toBe(503);
+  });
+
+  it("answers a network failure reaching GitHub with 503, not as a moved repository, and a programming TypeError is not relabeled", async () => {
+    const h = await cloudInstall();
+    h.github.getRepositoryIdentity.mockRejectedValueOnce(new TypeError("fetch failed", { cause: new Error("getaddrinfo ENOTFOUND api.github.com") }));
+    const down = await h.create(MAYA, { repository: "acme/web" });
+    expect(down).toMatchObject({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE" } } });
+    expect((down.body.error as { message: string }).message).not.toContain("moved or renamed");
+    h.github.getRepositoryIdentity.mockRejectedValueOnce(new TypeError("Cannot read properties of undefined (reading 'x')"));
+    const bug = await h.create(MAYA, { repository: "acme/web" });
+    // The broker's own catch-all answers it (generic words, logged by name); it is not relabeled as a repository problem.
+    expect((bug.body.error as { message: string }).message).toContain("AgentX could not handle this request");
+    expect((bug.body.error as { message: string }).message).not.toContain("moved or renamed");
+    expect(h.everyRow(h.db)).toEqual([]);
   });
 
   it("refuses a repository the GitHub App cannot see with 400 CONFIG_INVALID and writes nothing", async () => {
@@ -221,7 +235,8 @@ describe("POST /v1/dev/projects", () => {
     ["no repository", { name: "web" }],
     ["a repository without an owner", { repository: "web" }],
     ["a repository URL", { repository: "https://github.com/acme/web" }],
-    ["a repository named .. or .git", { repository: "acme/.." }],
+    ["a repository named ..", { repository: "acme/.." }],
+    ["a repository named .", { repository: "acme/." }],
     ["a repository named .git", { repository: "acme/.git" }],
     ["a name that is not a project name", { repository: "acme/web", name: "My Web" }],
     ["a command that chains steps", { repository: "acme/web", setupCommand: "npm ci && npm run build" }],

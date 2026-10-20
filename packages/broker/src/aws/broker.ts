@@ -2138,8 +2138,13 @@ async function createCloudProject(dependencies: AwsBrokerDependencies, caller: D
   const lookUp = dependencies.githubPullRequests.getRepositoryIdentity;
   if (defaults === undefined || lookUp === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "creating projects is not set up in this deployment; ask Rovara support");
   const identity = await lookUp.call(dependencies.githubPullRequests, `https://github.com/${input.owner}/${input.repositoryName}.git`).catch((error: unknown) => {
-    // GitHub answers a renamed or transferred repository with a redirect, which the lookup refuses (redirect: "error") as a TypeError.
-    if (error instanceof TypeError) throw agentXError("CONFIG_INVALID", `GitHub moved or renamed ${input.owner}/${input.repositoryName}; use its current owner/name`);
+    if (error instanceof TypeError) {
+      // GitHub answers a renamed or transferred repository with a redirect, which the lookup refuses (redirect: "error"): Node's fetch
+      // rejects with TypeError("fetch failed") whose cause says so. DNS and connection failures reject the same way, with other causes.
+      const cause = error.cause instanceof Error ? error.cause.message : undefined;
+      if (cause === "unexpected redirect") throw agentXError("CONFIG_INVALID", `GitHub moved or renamed ${input.owner}/${input.repositoryName}; use its current owner/name`);
+      if (error.message === "fetch failed") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub could not be reached just now; try again in a moment");
+    }
     throw error;
   });
   if (identity === undefined) throw agentXError("CONFIG_INVALID", `the GitHub App cannot see ${input.owner}/${input.repositoryName}; check the name, or ask Rovara support to install the GitHub App on it`);
@@ -2153,7 +2158,8 @@ async function createCloudProject(dependencies: AwsBrokerDependencies, caller: D
     { definition, runtimeBinding: defaults.runtimeBinding },
     { creatorMembership: "none" },
   ).catch((error: unknown) => {
-    if (error instanceof AgentXError && error.code === "PROJECT_REVISION_MISMATCH") {
+    // Only the immutable-revision refusal is a name clash; the catalog-contention refusals keep their own words.
+    if (error instanceof AgentXError && error.code === "PROJECT_REVISION_MISMATCH" && error.message.includes("are immutable")) {
       throw agentXError("PROJECT_REVISION_MISMATCH", `a project named ${definition.name} already exists with other settings (another repository, or settings that changed); choose another --name`);
     }
     throw error;
