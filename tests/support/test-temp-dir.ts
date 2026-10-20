@@ -28,9 +28,20 @@ export default function setup(): () => void {
   const runDir = mkdtempSync(join(parent, TEST_TMP_PREFIX));
   const previous = process.env.TMPDIR;
   process.env.TMPDIR = runDir;
+  // The worker runs a task's commands in a sandbox container unless told otherwise (R56). Tests run them as children of
+  // the test process, which they must ask for, and keep the worker's private state in the run's directory, not in $HOME.
+  const previousShell = process.env.AGENTX_TASK_SHELL;
+  const previousState = process.env.AGENTX_WORKER_STATE_DIR;
+  process.env.AGENTX_TASK_SHELL = "local";
+  process.env.AGENTX_WORKER_STATE_DIR = join(runDir, "worker-state");
+  const restore = (name: string, value: string | undefined) => {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  };
   return () => {
-    if (previous === undefined) delete process.env.TMPDIR;
-    else process.env.TMPDIR = previous;
+    restore("TMPDIR", previous);
+    restore("AGENTX_TASK_SHELL", previousShell);
+    restore("AGENTX_WORKER_STATE_DIR", previousState);
     rmSync(runDir, { recursive: true, force: true });
   };
 }

@@ -561,7 +561,9 @@ export async function runReadinessChecks(
   const sandbox = target === undefined && readiness.length > 0
     ? taskSandboxFor(options.taskShell ?? taskShellSelection(), { rootPath, taskId: invocation.operationId })
     : undefined;
-  let runner: PreparationCommandRunner = sandbox === undefined ? runProjectCommand : (command) => sandbox.runCommand(command);
+  let runner: PreparationCommandRunner = sandbox === undefined
+    ? (command, index, root) => runProjectCommand(command, index, root, undefined, true)
+    : (command) => sandbox.runCommand(command);
   try {
     if (target !== undefined && readiness.length > 0) {
       const cli = options.devcontainerCli ?? createDevcontainerCli();

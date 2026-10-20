@@ -296,6 +296,8 @@ export interface CheckRunnerOptions {
    * a developer's machine only: the EC2 runtime refuses (task-sandbox.ts).
    */
   sandbox?: TaskSandbox;
+  /** The caller was told to use the local shell (taskShell: local); otherwise AGENTX_TASK_SHELL=local must say so. */
+  local?: boolean;
 }
 
 /** The real runners: readiness as preparation runs it, and agent commands as the agent's own shell runs them. */
@@ -305,7 +307,7 @@ export function createCheckRunners(options: CheckRunnerOptions): CheckRunners {
   const sandbox = options.sandbox;
   const operations = options.bashOperations
     ?? (devcontainer !== undefined ? devcontainerBashOperations(devcontainer.cli, devcontainer.target)
-      : sandbox !== undefined ? sandbox.bashOperations() : localBashOperations());
+      : sandbox !== undefined ? sandbox.bashOperations() : localBashOperations({ explicit: options.local === true }));
   const inContainer = devcontainer !== undefined || sandbox !== undefined || options.bashOperations !== undefined;
   const canonicalRoot = realpath(resolve(options.rootPath));
   canonicalRoot.catch(() => undefined);
@@ -318,7 +320,7 @@ export function createCheckRunners(options: CheckRunnerOptions): CheckRunners {
           ? await runDevcontainerCommand(devcontainer.cli, devcontainer.target, command, signal)
           : sandbox !== undefined
             ? await sandbox.runCommand(command, signal)
-            : await runProjectCommand(command, 0, root, signal);
+            : await runProjectCommand(command, 0, root, signal, options.local === true);
         if (signal.aborted) throw new Error("aborted");
         return { exitCode: result.exitCode, timedOut: result.timedOut === true, stdout: result.stdout, stderr: result.stderr };
       } catch (error) {

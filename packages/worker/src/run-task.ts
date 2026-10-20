@@ -42,7 +42,7 @@ import {
 } from "./usage.js";
 import { assertWorkflowDependencyResumeTree, executeSerialWorkflowDependencies } from "./workflow-dependencies.js";
 import { executeWorkflowE2EChecks } from "./workflow-e2e-checks.js";
-import { taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
+import { localBashOperations, taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
 
 export interface TaskInvocationResult {
   /** The broker-issued conversation ID, which stays the same for every turn of one conversation. */
@@ -205,12 +205,16 @@ async function runTask(
   // children of the worker. A sandbox that cannot start fails the task here, before the agent runs; it is not a reason to
   // fall back to the local shell.
   let sandbox: TaskSandbox | undefined;
+  let localShell = false;
   if (devcontainer === undefined) {
     sandbox = taskSandboxFor(dependencies.taskShell ?? taskShellSelection(), { rootPath: canonicalRoot, taskId: invocation.operationId });
     if (sandbox !== undefined) {
       sandboxes.push(sandbox);
       await sandbox.start();
       bashOperations = sandbox.bashOperations();
+    } else {
+      // The local shell, chosen explicitly (taskShell or AGENTX_TASK_SHELL=local): tests and a developer's machine.
+      localShell = true;
     }
   }
   // Spec 051 Ruling L: the check history as it was before the agent ran. The agent can write to .agentx, so every
@@ -244,6 +248,7 @@ async function runTask(
         ...(devcontainer === undefined || devcontainerCli === undefined ? {} : { devcontainer: { cli: devcontainerCli, target: devcontainer } }),
         ...(bashOperations === undefined ? {} : { bashOperations }),
         ...(sandbox === undefined ? {} : { sandbox }),
+        ...(localShell ? { local: true } : {}),
       });
       const round = await runChecks(plan, runners, { budgetMs: dependencies.checkBudgetMs?.() ?? CHECK_ROUND_BUDGET_MS, signal: stop.signal });
       const status = round.stopped ? "not_verified" : reportStatus(round.entries);
@@ -363,6 +368,7 @@ async function runTask(
     rootPath: canonicalRoot,
     ...(devcontainer === undefined || devcontainerCli === undefined ? {} : { devcontainer: { cli: devcontainerCli, target: devcontainer } }),
     ...(sandbox === undefined ? {} : { sandbox }),
+    ...(localShell ? { local: true } : {}),
   });
   const checkBudgetMs = dependencies.checkBudgetMs ?? (() => CHECK_ROUND_BUDGET_MS);
   let checkPlan: CheckPlan | undefined;
@@ -405,6 +411,8 @@ async function runTask(
     ...(dependencies.originalCode === undefined ? defaultOriginalCode(manifest, canonicalRoot) : { originalCode: dependencies.originalCode }),
   });
 
+  // The agent's shell: the devcontainer's or the sandbox's, or the local one when it was chosen.
+  const agentShell = bashOperations ?? (localShell ? localBashOperations({ explicit: true }) : undefined);
   let session: PiSessionHandle;
   if (registered) {
     session = await openRegisteredWorkspacePiSession(
@@ -416,7 +424,7 @@ async function runTask(
         sessionFile: registered.sessionFile,
         onDiagnostic,
         extensionFactories: planning || reviewing ? [] : [verification],
-        ...(bashOperations === undefined ? {} : { bashOperations }),
+        ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
       },
       dependencies.piAdapter,
@@ -426,7 +434,7 @@ async function runTask(
       {
         rootPath: dependencies.rootPath, model: dependencies.model, workflowMode: invocation.payload.workflowMode ?? "IMPLEMENT", conversationId, onDiagnostic,
         extensionFactories: planning || reviewing ? [] : [verification],
-        ...(bashOperations === undefined ? {} : { bashOperations }),
+        ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
       },
       dependencies.piAdapter,

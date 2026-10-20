@@ -176,12 +176,38 @@ describe("a task in a project without a devcontainer", () => {
 
   it("on the EC2 runtime selects the sandbox from the environment, and refuses to start without its image", async () => {
     const { root } = await workspace();
+    // An EC2 worker's environment: marked, no local shell, no sandbox image.
     vi.stubEnv("AGENTX_WORKER_PROCESS_SCOPE", "container");
+    vi.stubEnv("AGENTX_TASK_SHELL", "");
     vi.stubEnv("AGENTX_SANDBOX_IMAGE", "");
     const inputs: PiSessionInput[] = [];
     await expect(runTaskInvocation(taskInvocation(), dependencies(root, adapterOf(inputs))))
       .rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("task sandbox image") as unknown });
     expect(inputs).toEqual([]);
+  });
+
+  it("uses the sandbox when nothing says otherwise: no EC2 marker and no variable is not a reason to run locally", async () => {
+    const { root } = await workspace();
+    vi.stubEnv("AGENTX_TASK_SHELL", "");
+    vi.stubEnv("AGENTX_WORKER_PROCESS_SCOPE", "");
+    vi.stubEnv("AGENTX_RUNTIME", "");
+    vi.stubEnv("AGENTX_SANDBOX_IMAGE", "");
+    const inputs: PiSessionInput[] = [];
+    await expect(runTaskInvocation(taskInvocation(), dependencies(root, adapterOf(inputs))))
+      .rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("task sandbox image") as unknown });
+    expect(inputs).toEqual([]);
+  });
+
+  it("runs the local shell when the caller chose it explicitly, with the environment silent", async () => {
+    const { root, checkout } = await workspace();
+    vi.stubEnv("AGENTX_TASK_SHELL", "");
+    const marker = join(checkout, "ran-in-test");
+    const inputs: PiSessionInput[] = [];
+    const adapter = adapterOf(inputs, async () => {
+      await inputs[0]!.bashOperations!.exec(`touch ${marker}`, checkout, { onData: () => undefined });
+    });
+    await runTaskInvocation(taskInvocation(), dependencies(root, adapter, { taskShell: { kind: "local" } }));
+    await expect(stat(marker)).resolves.toBeDefined();
   });
 
   it("on the EC2 runtime refuses an explicit request for the local shell", async () => {
@@ -212,6 +238,20 @@ describe("AgentX's checks in a project without a devcontainer", () => {
     expect(fake.verbs("exec").some((args) => args.some((arg) => arg === "npm test"))).toBe(true);
   });
 
+  it("refuse to run a command locally when nothing asked for the local shell, and run nothing", async () => {
+    const { root } = await workspace();
+    vi.stubEnv("AGENTX_TASK_SHELL", "");
+    const runners = createCheckRunners({ rootPath: root });
+    const marker = join(root, "checked-locally");
+    await expect(runners.runProjectCommand(command("touch", [marker]), new AbortController().signal)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(runners.runAgentCommand("npm test", 5_000, new AbortController().signal)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    // Told to use it, the same call runs.
+    const local = createCheckRunners({ rootPath: root, local: true });
+    await expect(local.runProjectCommand(command("touch", [marker]), new AbortController().signal)).resolves.toMatchObject({ exitCode: 0 });
+    await expect(stat(marker)).resolves.toBeDefined();
+  });
+
   it("on the EC2 runtime refuse to run a command locally, and run nothing", async () => {
     const { root } = await workspace();
     vi.stubEnv("AGENTX_WORKER_PROCESS_SCOPE", "container");
@@ -236,7 +276,18 @@ describe("the agent's shell tool", () => {
     await expect(stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("off EC2 still runs a command locally, for tests and a developer's machine", async () => {
+  it("refuses the local shell when nothing asked for it, not only on EC2", async () => {
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), "agentx-sandbox-shell-")));
+    cleanup.push(cwd);
+    vi.stubEnv("AGENTX_TASK_SHELL", "");
+    const marker = join(cwd, "ran");
+    const shell = agentShellTool(cwd) as unknown as { execute: (id: string, params: { command: string }) => Promise<{ isError?: boolean }> };
+    const result = await shell.execute("t", { command: `touch ${marker}` }).catch(() => ({ isError: true }));
+    expect(result.isError).toBe(true);
+    await expect(stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("with AGENTX_TASK_SHELL=local runs a command locally, for tests and a developer's machine", async () => {
     const cwd = await realpath(await mkdtemp(join(tmpdir(), "agentx-sandbox-shell-")));
     cleanup.push(cwd);
     const shell = agentShellTool(cwd) as unknown as { execute: (id: string, params: { command: string }) => Promise<{ structuredContent?: { exit_code?: number } }> };
@@ -284,7 +335,9 @@ describe("preparing a workspace in a project without a devcontainer", () => {
   });
 
   it("on the EC2 runtime refuses to run a project's setup command locally", async () => {
+    // An EC2 worker's environment: marked, no local shell, no sandbox image.
     vi.stubEnv("AGENTX_WORKER_PROCESS_SCOPE", "container");
+    vi.stubEnv("AGENTX_TASK_SHELL", "");
     vi.stubEnv("AGENTX_SANDBOX_IMAGE", "");
     await expect(workspace(project({ setup: [{ cwd: "repo/sample", executable: "true", args: [], timeoutSeconds: 60 }] })))
       .rejects.toThrow(/task sandbox image/u);

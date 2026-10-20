@@ -106,6 +106,7 @@ describe("EC2 worker user data", () => {
       });
       expect(run.status, run.stderr).toBe(0);
       expect(readFileSync(file, "utf8")).toContain(`AGENTX_SANDBOX_IMAGE=${image}\n`);
+      expect(readFileSync(file, "utf8")).toContain("AGENTX_RUNTIME=ec2\n");
       rmSync(file);
     }
   });

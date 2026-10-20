@@ -11,6 +11,7 @@ import {
   removeLeftoverTaskSandboxes,
   taskSandboxRunArgs,
   taskShellFromEnvironment,
+  taskShellSelection,
 } from "../../packages/worker/src/task-sandbox.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 
@@ -201,21 +202,30 @@ describe("starting and stopping a sandbox", () => {
 });
 
 describe("where the local shell may run (R56)", () => {
-  it("is refused on the EC2 runtime, whatever asks for it", () => {
-    expect(() => assertLocalTaskExecutionAllowed(EC2)).toThrowError(expect.objectContaining({ code: "RUNTIME_UNAVAILABLE" }));
-    expect(() => taskShellFromEnvironment({ ...EC2, AGENTX_TASK_SHELL: "local" })).toThrowError(expect.objectContaining({ code: "RUNTIME_UNAVAILABLE" }));
+  it("is refused on the EC2 runtime, whatever asks for it, and whichever marker says it is EC2", () => {
+    for (const marker of [EC2, { AGENTX_RUNTIME: "ec2" }, { ...EC2, AGENTX_RUNTIME: "ec2" }]) {
+      expect(() => assertLocalTaskExecutionAllowed({ ...marker, AGENTX_TASK_SHELL: "local" })).toThrowError(expect.objectContaining({ code: "RUNTIME_UNAVAILABLE" }));
+      expect(() => assertLocalTaskExecutionAllowed(marker, { explicit: true })).toThrowError(expect.objectContaining({ code: "RUNTIME_UNAVAILABLE" }));
+      expect(() => taskShellFromEnvironment({ ...marker, AGENTX_TASK_SHELL: "local" })).toThrowError(expect.objectContaining({ code: "RUNTIME_UNAVAILABLE" }));
+      expect(taskShellFromEnvironment(marker)).toBe("sandbox");
+    }
   });
 
-  it("selects the sandbox on the EC2 runtime", () => {
-    expect(taskShellFromEnvironment(EC2)).toBe("sandbox");
-    expect(taskShellFromEnvironment({ ...EC2, AGENTX_TASK_SHELL: "sandbox" })).toBe("sandbox");
-  });
-
-  it("allows the local shell off EC2, and the sandbox when asked for", () => {
-    expect(() => assertLocalTaskExecutionAllowed({})).not.toThrow();
-    expect(taskShellFromEnvironment({})).toBe("local");
-    expect(taskShellFromEnvironment({ AGENTX_TASK_SHELL: "local" })).toBe("local");
+  it("selects the sandbox when the environment says nothing, so a missing EC2 marker cannot put task code in the worker", () => {
+    expect(taskShellFromEnvironment({})).toBe("sandbox");
+    expect(taskShellFromEnvironment({ AGENTX_TASK_SHELL: "" })).toBe("sandbox");
     expect(taskShellFromEnvironment({ AGENTX_TASK_SHELL: "sandbox" })).toBe("sandbox");
+    expect(taskShellSelection({})).toMatchObject({ kind: "sandbox" });
+  });
+
+  it("allows the local shell only when it is asked for: AGENTX_TASK_SHELL=local, or an explicit choice", () => {
+    expect(taskShellFromEnvironment({ AGENTX_TASK_SHELL: "local" })).toBe("local");
+    expect(taskShellSelection({ AGENTX_TASK_SHELL: "local" })).toEqual({ kind: "local" });
+    expect(() => assertLocalTaskExecutionAllowed({ AGENTX_TASK_SHELL: "local" })).not.toThrow();
+    expect(() => assertLocalTaskExecutionAllowed({}, { explicit: true })).not.toThrow();
+    // Nothing chose it: a call that reaches the local shell anyway is refused.
+    expect(() => assertLocalTaskExecutionAllowed({})).toThrowError(expect.objectContaining({ code: "RUNTIME_UNAVAILABLE" }));
+    expect(() => assertLocalTaskExecutionAllowed({ AGENTX_TASK_SHELL: "sandbox" })).toThrowError(expect.objectContaining({ code: "RUNTIME_UNAVAILABLE" }));
   });
 
   it("refuses a value it does not know", () => {

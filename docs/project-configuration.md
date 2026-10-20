@@ -415,7 +415,10 @@ workspace mounted. The agent's shell, AgentX's checks, and the project's `setup`
 commands all run there, and the sandbox is removed when the task, the preparation or the
 publication step ends, on success or failure. The image carries `curl`, `git`, `python3`, `uv`,
 `bash` and a POSIX shell; a project that needs more tools should use a dev container. A sandbox
-that cannot start fails the task. AgentX never falls back to running the command in the worker.
+that cannot start fails the task. AgentX never falls back to running the command in the worker. The
+sandbox is the default everywhere; running commands as children of the worker is for tests and a
+developer's machine, needs `AGENTX_TASK_SHELL=local`, and is refused on EC2 (the boot script sets
+`AGENTX_RUNTIME=ec2`).
 
 #### Security follow-ups
 

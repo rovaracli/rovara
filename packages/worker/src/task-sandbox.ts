@@ -26,7 +26,7 @@ export const TASK_SANDBOX_LABEL = "agentx.task";
 export const TASK_SANDBOX_USER = "1000:1000";
 /** The environment variable that names the sandbox image; boot.sh sets it to the worker's own image. */
 export const TASK_SANDBOX_IMAGE_ENVIRONMENT = "AGENTX_SANDBOX_IMAGE";
-/** `local` or `sandbox`: where a project without a devcontainer runs its commands. Off EC2 only; EC2 is always `sandbox`. */
+/** `local` or `sandbox` (the default): where a project without a devcontainer runs its commands. `local` is for tests and a developer's machine, never EC2. */
 export const TASK_SHELL_ENVIRONMENT = "AGENTX_TASK_SHELL";
 /** The image's init (environments/base/Dockerfile): PID 1 that reaps what a command leaves behind. */
 const SANDBOX_INIT = "/usr/bin/tini";
@@ -35,45 +35,53 @@ const DOCKER_CALL_TIMEOUT_MS = 60_000;
 /** What hides a folder of the workspace volume that is not the project's. */
 const MASK_OPTIONS = "ro,noexec,nosuid,size=4k";
 
-/** The deployed worker image sets this (environments/base/Dockerfile); only EC2 workers run it. */
+/**
+ * An EC2 worker, by either marker: boot.sh writes AGENTX_RUNTIME=ec2 to the worker's environment, and the worker image sets
+ * AGENTX_WORKER_PROCESS_SCOPE=container. Neither is needed for the sandbox, which is the default everywhere; they make
+ * the local shell impossible to ask for.
+ */
 export function isEc2WorkerRuntime(environment: NodeJS.ProcessEnv = process.env): boolean {
-  return environment.AGENTX_WORKER_PROCESS_SCOPE === "container";
+  return environment.AGENTX_RUNTIME === "ec2" || environment.AGENTX_WORKER_PROCESS_SCOPE === "container";
 }
 
 /**
- * The local shell runs task code as a child of the worker. It stays for tests and for a developer's own machine, and is
- * never a fallback: on the EC2 runtime it is refused.
+ * The local shell runs task code as a child of the worker. It is for tests and a developer's own machine, and only when
+ * it is asked for (`explicit`: the caller was told to use it, or AGENTX_TASK_SHELL=local). Nothing falls back to it: not
+ * a missing sandbox, not an unset variable, and on the EC2 runtime it is refused whatever asks.
  */
-export function assertLocalTaskExecutionAllowed(environment: NodeJS.ProcessEnv = process.env): void {
+export function assertLocalTaskExecutionAllowed(environment: NodeJS.ProcessEnv = process.env, options: { explicit?: boolean } = {}): void {
   if (isEc2WorkerRuntime(environment)) {
     throw agentXError("RUNTIME_UNAVAILABLE", "AgentX does not run a task's commands inside the worker on an EC2 worker; they run in the task sandbox");
+  }
+  if (options.explicit !== true && environment[TASK_SHELL_ENVIRONMENT] !== "local") {
+    throw agentXError("RUNTIME_UNAVAILABLE", `AgentX runs a task's commands in the task sandbox; the local shell is for tests and a developer's machine, and needs ${TASK_SHELL_ENVIRONMENT}=local`);
   }
 }
 
 /**
- * Pi's local shell, which runs a command as a child of this process. Every use asks first, so on the EC2 runtime a
- * command that reaches it fails with RUNTIME_UNAVAILABLE instead of running in the worker.
+ * Pi's local shell, which runs a command as a child of this process. Every use asks first (assertLocalTaskExecutionAllowed).
+ * `explicit` is for a caller that was told to use the local shell.
  */
-export function localBashOperations(environment: NodeJS.ProcessEnv = process.env): BashOperations {
+export function localBashOperations(options: { environment?: NodeJS.ProcessEnv; explicit?: boolean } = {}): BashOperations {
   const local = createLocalBashOperations();
   return {
-    exec(command, cwd, options) {
-      assertLocalTaskExecutionAllowed(environment);
-      return local.exec(command, cwd, options);
+    exec(command, cwd, execOptions) {
+      assertLocalTaskExecutionAllowed(options.environment ?? process.env, options.explicit === true ? { explicit: true } : {});
+      return local.exec(command, cwd, execOptions);
     },
   };
 }
 
 export type TaskShellKind = "sandbox" | "local";
 
-/** Where a project without a devcontainer runs its commands: the sandbox on EC2 (always), the local shell elsewhere unless the sandbox is asked for. */
+/** Where a project without a devcontainer runs its commands: the sandbox, unless AGENTX_TASK_SHELL=local says otherwise (never on EC2). */
 export function taskShellFromEnvironment(environment: NodeJS.ProcessEnv = process.env): TaskShellKind {
   const requested = environment[TASK_SHELL_ENVIRONMENT];
   if (requested !== undefined && requested !== "" && requested !== "sandbox" && requested !== "local") {
     throw agentXError("CONFIG_INVALID", `${TASK_SHELL_ENVIRONMENT} must be "sandbox" or "local"`);
   }
   if (requested === "local") assertLocalTaskExecutionAllowed(environment);
-  return isEc2WorkerRuntime(environment) || requested === "sandbox" ? "sandbox" : "local";
+  return requested === "local" ? "local" : "sandbox";
 }
 
 /** How a project without a devcontainer runs its commands: chosen explicitly, never by falling back from the other. */
@@ -217,7 +225,7 @@ export async function removeLeftoverTaskSandboxes(docker: DockerCli = createDock
 /** The sandbox for a selection, or undefined for the local shell (refused on the EC2 runtime). */
 export function taskSandboxFor(selection: TaskShellSelection, input: { rootPath: string; taskId: string }): TaskSandbox | undefined {
   if (selection.kind === "local") {
-    assertLocalTaskExecutionAllowed();
+    assertLocalTaskExecutionAllowed(process.env, { explicit: true });
     return undefined;
   }
   return new TaskSandbox({

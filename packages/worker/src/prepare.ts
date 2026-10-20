@@ -146,7 +146,7 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
       ? (command: ProjectCommand) => runDevcontainerCommand(devcontainerCli, target, command)
       : sandbox !== undefined
         ? (command: ProjectCommand) => sandbox.runCommand(command)
-        : runProjectCommand);
+        : (command: ProjectCommand, index: number, root: string) => runProjectCommand(command, index, root, undefined, true));
   let manifest = await loadOrCreateManifest(
     canonicalRoot,
     project,
@@ -417,9 +417,11 @@ export async function runProjectCommand(
   _index: number,
   rootPath: string,
   signal?: AbortSignal,
+  /** The caller was told to use the local shell (taskShell: local); otherwise AGENTX_TASK_SHELL=local must say so. */
+  explicitLocal = false,
 ): Promise<CommandResult> {
-  // A child of the worker: refused on the EC2 runtime, where project commands run in the task sandbox (R56).
-  assertLocalTaskExecutionAllowed();
+  // A child of the worker: refused on the EC2 runtime, and unless asked for, so project commands run in the task sandbox (R56).
+  assertLocalTaskExecutionAllowed(process.env, { explicit: explicitLocal });
   const cwd = containedPath(rootPath, command.cwd);
   // The workspace-relative path only: Node's own error would show the worker's absolute path (#154).
   const cwdStat = await stat(cwd).catch(() => undefined);
