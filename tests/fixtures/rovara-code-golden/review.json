@@ -1,4 +1,124 @@
 {
+  "afterRun": {
+    "indexItems": [
+      {
+        "at": "2026-10-20T00:00:00.000Z",
+        "costUsd": 0.0421,
+        "durationMs": 0,
+        "entityType": "USAGE_INDEX",
+        "indexExpiresAt": 1795046400,
+        "inputTokens": 1700,
+        "operationId": "00000008-0000-4000-8000-00000000001c",
+        "origin": "ai_tool",
+        "outputTokens": 300,
+        "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#USAGE#2026-10-20",
+        "project": "payments",
+        "requester": {
+          "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "kind": "developer",
+          "name": "Maya Chen",
+          "provider": "slack"
+        },
+        "sk": "2026-10-20T00:00:00.000Z#00000008-0000-4000-8000-00000000001c",
+        "taskId": "00000008-0000-4000-8000-000000000006",
+        "workspaceId": "00000008-0000-4000-8000-000000000007"
+      },
+      {
+        "category": "task_failed",
+        "endedAt": "2026-10-20T00:00:00.000Z",
+        "entityType": "FAILURE_INDEX",
+        "error": "clone failed",
+        "indexExpiresAt": 1795046400,
+        "kind": "task",
+        "operationId": "00000008-0000-4000-8000-00000000001c",
+        "origin": "ai_tool",
+        "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#FAILURE#2026-10-20",
+        "project": "payments",
+        "requester": {
+          "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "kind": "developer",
+          "name": "Maya Chen",
+          "provider": "slack"
+        },
+        "sk": "2026-10-20T00:00:00.000Z#00000008-0000-4000-8000-00000000001c",
+        "status": "FAILED",
+        "taskId": "00000008-0000-4000-8000-000000000006",
+        "workspaceId": "00000008-0000-4000-8000-000000000007"
+      }
+    ],
+    "indexResult": {
+      "failed": 0,
+      "failures": 1,
+      "usage": 1
+    },
+    "indexWrites": [
+      {
+        "change": "INSERT",
+        "entityType": "USAGE_INDEX",
+        "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#USAGE#2026-10-20",
+        "sk": "2026-10-20T00:00:00.000Z#00000008-0000-4000-8000-00000000001c"
+      },
+      {
+        "change": "INSERT",
+        "entityType": "FAILURE_INDEX",
+        "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#FAILURE#2026-10-20",
+        "sk": "2026-10-20T00:00:00.000Z#00000008-0000-4000-8000-00000000001c"
+      }
+    ],
+    "operation": {
+      "conversationId": "00000008-0000-4000-8000-00000000000c",
+      "createdAt": "2026-10-20T00:00:00.000Z",
+      "entityType": "OPERATION",
+      "error": "clone failed",
+      "eventSequence": 1,
+      "fence": 4,
+      "id": "00000008-0000-4000-8000-00000000001c",
+      "kind": "task",
+      "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+      "payloadHash": "94bc056d9b0114bfd96c9b4fa70441b2f9bb8d33aacaa08424a10f8724416b3b",
+      "pk": "WORKSPACE#00000008-0000-4000-8000-000000000007",
+      "requestId": "9bbaf12e-5d33-58f9-8a3b-b904dff47779",
+      "requestedBy": {
+        "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "kind": "developer",
+        "provider": "slack"
+      },
+      "result": null,
+      "settingsRevision": 1,
+      "sk": "OPERATION#00000008-0000-4000-8000-00000000001c",
+      "status": "FAILED",
+      "updatedAt": "2026-10-20T00:00:00.000Z",
+      "workflowMode": "REVIEW",
+      "workspaceId": "00000008-0000-4000-8000-000000000007"
+    },
+    "status": "FAILED",
+    "usageEvent": {
+      "entityType": "EVENT",
+      "operationId": "00000008-0000-4000-8000-00000000001c",
+      "payload": {
+        "cacheReadRatio": 0.25,
+        "cacheRetention": "short",
+        "costUsd": 0.0421,
+        "modelId": "default-model",
+        "outcome": "FAILED",
+        "provider": "amazon-bedrock",
+        "schemaVersion": 1,
+        "tokens": {
+          "cacheRead": 400,
+          "cacheWrite": 100,
+          "input": 1200,
+          "output": 300,
+          "total": 2000
+        }
+      },
+      "pk": "OPERATION#00000008-0000-4000-8000-00000000001c",
+      "sequence": 1,
+      "sk": "EVENT#000000000001",
+      "timestamp": "2026-10-20T00:00:00.000Z",
+      "type": "usage",
+      "workspaceId": "00000008-0000-4000-8000-000000000007"
+    }
+  },
   "forWorker": {
     "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDA4LTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMDgtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDFjIiwiZmVuY2UiOjQsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwibW9kZWwtYWNjZXNzIl0sImV4cGlyZXNBdCI6MTc5MjQ4NjgwMH0.Ly_7R3WQiCak_JvAf9XAU3vpOr4MNaClIj8ChlL61x0",
     "fence": 4,
@@ -70,6 +190,50 @@
     "workspaceId": "00000008-0000-4000-8000-000000000007"
   },
   "modelAccess": {
+    "calls": {
+      "keySpend": [
+        [
+          []
+        ]
+      ],
+      "mintKey": [
+        [
+          {
+            "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "maxBudgetUsd": 25,
+            "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+            "purpose": "task",
+            "refId": "00000008-0000-4000-8000-000000000006",
+            "ttlSeconds": 3600
+          }
+        ]
+      ],
+      "orgSpend": [],
+      "revokeKey": [],
+      "spend": [
+        [
+          "org_5t5gp58cc1ibgg6e3aoj",
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        ],
+        [
+          "org_5t5gp58cc1ibgg6e3aoj",
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        ]
+      ],
+      "upsertMember": [
+        [
+          "org_5t5gp58cc1ibgg6e3aoj",
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          29
+        ]
+      ],
+      "upsertOrg": [
+        [
+          "org_5t5gp58cc1ibgg6e3aoj",
+          500
+        ]
+      ]
+    },
     "mintKeyCalls": [
       {
         "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
@@ -210,9 +374,6 @@
       "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       "developerName": "Maya Chen",
       "entityType": "DEVELOPER_TASK",
-      "modelKeyIds": [
-        "48c0bb601ee2711d3370b300628108b90c75d087695f801d2603a7147a2e9f1c"
-      ],
       "orgId": "org_5t5gp58cc1ibgg6e3aoj",
       "ownerKey": "b5006e1aff894f84c162de3d698b3cd29f264dfaad209679eee2f1de9aba0ca0",
       "pk": "DEVTASK#00000008-0000-4000-8000-000000000006",
@@ -332,5 +493,8 @@
       "sha256": "2304f5e32dac7606f7c9d8cfa515b2ea801d1ffcc61b650afec89e0e40762783",
       "sk": "PLAN_EVIDENCE#00000008-0000-4000-8000-000000000013"
     }
-  ]
+  ],
+  "workerRun": {
+    "ended": "returned"
+  }
 }

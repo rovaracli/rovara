@@ -1,4 +1,102 @@
 {
+  "afterRun": {
+    "indexItems": [
+      {
+        "at": "2026-10-20T00:00:00.000Z",
+        "costUsd": 0.0421,
+        "durationMs": 0,
+        "entityType": "USAGE_INDEX",
+        "indexExpiresAt": 1795046400,
+        "inputTokens": 1700,
+        "operationId": "0000000e-0000-4000-8000-00000000000f",
+        "origin": "slack",
+        "outputTokens": 300,
+        "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#USAGE#2026-10-20",
+        "project": "payments",
+        "requester": {
+          "kind": "slack",
+          "teamId": "T0BSHLLUGBD",
+          "userId": "U0123456789"
+        },
+        "sk": "2026-10-20T00:00:00.000Z#0000000e-0000-4000-8000-00000000000f",
+        "thread": "T0BSHLLUGBD/C0123456789/1695500000.000001",
+        "workspaceId": "0000000e-0000-4000-8000-000000000006"
+      }
+    ],
+    "indexResult": {
+      "failed": 0,
+      "failures": 0,
+      "usage": 1
+    },
+    "indexWrites": [
+      {
+        "change": "INSERT",
+        "entityType": "USAGE_INDEX",
+        "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#USAGE#2026-10-20",
+        "sk": "2026-10-20T00:00:00.000Z#0000000e-0000-4000-8000-00000000000f"
+      }
+    ],
+    "operation": {
+      "chatgptDeveloperId": "658416e9197c542374bcf35a5d2ad80c1f58000de42bb7d43bec0c73e58d45df",
+      "chatgptThread": {
+        "channelId": "C0123456789",
+        "teamId": "T0BSHLLUGBD",
+        "threadTs": "1695500000.000001"
+      },
+      "conversationId": "0000000e-0000-4000-8000-00000000000c",
+      "createdAt": "2026-10-20T00:00:00.000Z",
+      "entityType": "OPERATION",
+      "error": null,
+      "eventSequence": 1,
+      "fence": 2,
+      "id": "0000000e-0000-4000-8000-00000000000f",
+      "kind": "task",
+      "modelKeyIds": [
+        "48c0bb601ee2711d3370b300628108b90c75d087695f801d2603a7147a2e9f1c"
+      ],
+      "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+      "payloadHash": "bafd70e5528a0665d102e3286c4d40a676dc821f3243bf7f6be5e429911a181d",
+      "pk": "WORKSPACE#0000000e-0000-4000-8000-000000000006",
+      "requestId": "0000000e-0000-4000-8000-00000000000d",
+      "requestedBy": {
+        "teamId": "T0BSHLLUGBD",
+        "userId": "U0123456789"
+      },
+      "result": null,
+      "settingsRevision": 1,
+      "sk": "OPERATION#0000000e-0000-4000-8000-00000000000f",
+      "status": "SUCCEEDED",
+      "updatedAt": "2026-10-20T00:00:00.000Z",
+      "workspaceId": "0000000e-0000-4000-8000-000000000006"
+    },
+    "status": "SUCCEEDED",
+    "usageEvent": {
+      "entityType": "EVENT",
+      "operationId": "0000000e-0000-4000-8000-00000000000f",
+      "payload": {
+        "cacheReadRatio": 0.25,
+        "cacheRetention": "short",
+        "costUsd": 0.0421,
+        "modelId": "gpt-6.1-sol",
+        "outcome": "SUCCEEDED",
+        "provider": "openai",
+        "schemaVersion": 1,
+        "tokens": {
+          "cacheRead": 400,
+          "cacheWrite": 100,
+          "input": 1200,
+          "output": 300,
+          "total": 2000
+        }
+      },
+      "pk": "OPERATION#0000000e-0000-4000-8000-00000000000f",
+      "sequence": 1,
+      "sk": "EVENT#000000000001",
+      "timestamp": "2026-10-20T00:00:00.000Z",
+      "type": "usage",
+      "workspaceId": "0000000e-0000-4000-8000-000000000006"
+    }
+  },
   "forWorker": {
     "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDBlLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNiIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMGUtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBmIiwiZmVuY2UiOjIsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwiY2hhdGdwdC10b2tlbiIsImNoYXRncHQtc3RhdHVzIiwibW9kZWwtYWNjZXNzIl0sImV4cGlyZXNBdCI6MTc5MjQ4NjgwMH0.-_frNxYa_k9F1gCj3Dq5Kqw9Cxj1y5ladtZUvMt03Y0",
     "fence": 2,
@@ -48,6 +146,41 @@
     "workspaceId": "0000000e-0000-4000-8000-000000000006"
   },
   "modelAccess": {
+    "calls": {
+      "keySpend": [
+        [
+          []
+        ]
+      ],
+      "mintKey": [
+        [
+          {
+            "maxBudgetUsd": 25,
+            "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+            "purpose": "task",
+            "refId": "0000000e-0000-4000-8000-00000000000f",
+            "ttlSeconds": 3600
+          }
+        ]
+      ],
+      "orgSpend": [
+        [
+          "org_5t5gp58cc1ibgg6e3aoj"
+        ],
+        [
+          "org_5t5gp58cc1ibgg6e3aoj"
+        ]
+      ],
+      "revokeKey": [],
+      "spend": [],
+      "upsertMember": [],
+      "upsertOrg": [
+        [
+          "org_5t5gp58cc1ibgg6e3aoj",
+          500
+        ]
+      ]
+    },
     "mintKeyCalls": [
       {
         "maxBudgetUsd": 25,
@@ -142,5 +275,8 @@
     ]
   },
   "reviewSessions": [],
-  "scenario": "chatgpt-task"
+  "scenario": "chatgpt-task",
+  "workerRun": {
+    "ended": "returned"
+  }
 }

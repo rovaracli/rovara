@@ -17,6 +17,10 @@ vi.mock("node:crypto", async (importOriginal) => {
   return { ...actual, randomUUID: goldenUuid, default: { ...actual, randomUUID: goldenUuid } };
 });
 
+// The hash of SHA256SUMS itself, so the list of fixture hashes cannot be edited in the same breath as a fixture. A change
+// to this value is a re-record: it needs the per-path attribution and the Opus review that PF4 requires of a Plan 2 merge.
+const SHA256SUMS_SHA256 = "b006ba1c6be019c8527a175b8afec654d9921f23d0df48609892fdd8a1397737";
+
 beforeAll(async () => { await loadSlackBroker(); });
 
 describe("Rovara Code before agents", () => {
@@ -49,6 +53,7 @@ describe("Rovara Code before agents", () => {
 
   it("fixture files match the SHA-256 values committed in Task 1", () => {
     if (updatingGolden()) return;
+    expect(createHash("sha256").update(readFileSync(join(GOLDEN_FIXTURE_DIRECTORY, "SHA256SUMS"))).digest("hex"), "SHA256SUMS").toBe(SHA256SUMS_SHA256);
     const sums = readFileSync(join(GOLDEN_FIXTURE_DIRECTORY, "SHA256SUMS"), "utf8").trim().split("\n").map((line) => {
       const [sha256, path] = line.split(/\s+/);
       return [basename(path ?? ""), sha256] as const;

@@ -1,4 +1,96 @@
 {
+  "afterRun": {
+    "indexItems": [
+      {
+        "at": "2026-10-20T00:00:00.000Z",
+        "costUsd": 0.0421,
+        "durationMs": 0,
+        "entityType": "USAGE_INDEX",
+        "indexExpiresAt": 1795046400,
+        "inputTokens": 1700,
+        "operationId": "0000000b-0000-4000-8000-000000000010",
+        "origin": "ai_tool",
+        "outputTokens": 300,
+        "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#USAGE#2026-10-20",
+        "project": "payments",
+        "requester": {
+          "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "kind": "developer",
+          "name": "Maya Chen",
+          "provider": "slack"
+        },
+        "sk": "2026-10-20T00:00:00.000Z#0000000b-0000-4000-8000-000000000010",
+        "taskId": "0000000b-0000-4000-8000-000000000006",
+        "workspaceId": "0000000b-0000-4000-8000-000000000007"
+      }
+    ],
+    "indexResult": {
+      "failed": 0,
+      "failures": 0,
+      "usage": 1
+    },
+    "indexWrites": [
+      {
+        "change": "INSERT",
+        "entityType": "USAGE_INDEX",
+        "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#USAGE#2026-10-20",
+        "sk": "2026-10-20T00:00:00.000Z#0000000b-0000-4000-8000-000000000010"
+      }
+    ],
+    "operation": {
+      "conversationId": "0000000b-0000-4000-8000-00000000000c",
+      "createdAt": "2026-10-20T00:00:00.000Z",
+      "entityType": "OPERATION",
+      "error": null,
+      "eventSequence": 1,
+      "fence": 2,
+      "id": "0000000b-0000-4000-8000-000000000010",
+      "kind": "task",
+      "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+      "payloadHash": "d3b0023057b500d12d92c7c6425d6f9c9f19777836143604506f4fc59219eb6c",
+      "pk": "WORKSPACE#0000000b-0000-4000-8000-000000000007",
+      "requestId": "0000000b-0000-4000-8000-00000000000d",
+      "requestedBy": {
+        "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "kind": "developer",
+        "provider": "slack"
+      },
+      "result": null,
+      "settingsRevision": 1,
+      "sk": "OPERATION#0000000b-0000-4000-8000-000000000010",
+      "status": "SUCCEEDED",
+      "updatedAt": "2026-10-20T00:00:00.000Z",
+      "workflowMode": "IMPLEMENT",
+      "workspaceId": "0000000b-0000-4000-8000-000000000007"
+    },
+    "status": "SUCCEEDED",
+    "usageEvent": {
+      "entityType": "EVENT",
+      "operationId": "0000000b-0000-4000-8000-000000000010",
+      "payload": {
+        "cacheReadRatio": 0.25,
+        "cacheRetention": "short",
+        "costUsd": 0.0421,
+        "modelId": "default-model",
+        "outcome": "SUCCEEDED",
+        "provider": "amazon-bedrock",
+        "schemaVersion": 1,
+        "tokens": {
+          "cacheRead": 400,
+          "cacheWrite": 100,
+          "input": 1200,
+          "output": 300,
+          "total": 2000
+        }
+      },
+      "pk": "OPERATION#0000000b-0000-4000-8000-000000000010",
+      "sequence": 1,
+      "sk": "EVENT#000000000001",
+      "timestamp": "2026-10-20T00:00:00.000Z",
+      "type": "usage",
+      "workspaceId": "0000000b-0000-4000-8000-000000000007"
+    }
+  },
   "forWorker": {
     "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDBiLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMGItMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDEwIiwiZmVuY2UiOjIsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwiY2FuZGlkYXRlLWV4cG9ydCJdLCJleHBpcmVzQXQiOjE3OTI0ODY4MDB9.aApVkiXxBnpD9I16EvVaP4aBFQC-MGtoxmls0iS8fT8",
     "fence": 2,
@@ -126,5 +218,12 @@
       "updatedAt": "2026-10-20T00:00:00.000Z",
       "workspaceId": "0000000b-0000-4000-8000-000000000007"
     }
-  ]
+  ],
+  "workerRun": {
+    "ended": "threw",
+    "error": {
+      "code": "CONFIG_INVALID",
+      "name": "AgentXError"
+    }
+  }
 }

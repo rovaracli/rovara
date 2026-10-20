@@ -20,6 +20,9 @@ import {
   WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, WorkflowFeedbackBundleSchema, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles,
   createCandidateManifest, createWorkflowSnapshot, type WorkerInvocation,
 } from "@agentx/contracts";
+import { indexActivity } from "../../packages/broker/src/aws/activity-index.js";
+import type { Notice } from "../../packages/broker/src/developer/notifications.js";
+import { createNotifierHandler } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { startTaskWorkflowFeedbackReviewFromWebhook } from "../../packages/broker/src/aws/developer-tasks.js";
 import { createEc2Delivery } from "../../packages/broker/src/aws/ec2-delivery.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
@@ -32,12 +35,12 @@ import { createFixtureDirectory } from "../fixtures/index.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import type { ChatGptConnections } from "../../packages/broker/src/chatgpt/connections.js";
 import { planAnswer, planDocument } from "./plan-documents.js";
-import { MAYA, createDeveloperTaskBroker } from "./developer-task-broker.js";
+import { MAYA, createDeveloperTaskBroker, recordStream } from "./developer-task-broker.js";
 import { fakeModelAccess } from "./fake-model-access.js";
 import { FAUX_MODEL, fauxModelRuntime } from "./faux-model.js";
 import { goldenUuid, seedGoldenIds } from "./golden-ids.js";
 import { TEST_ORG } from "./orgs.js";
-import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, ensureWorkspace, loadSlackBroker, markReady, orchestratorPrincipal, registerSlackProject, serviceCall } from "./slack-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, ensureWorkspace, finishOperation, loadSlackBroker, markReady, orchestratorPrincipal, registerSlackProject, serviceCall } from "./slack-broker.js";
 
 export { goldenUuid };
 
@@ -58,6 +61,8 @@ export const GOLDEN_SCENARIOS = [
   "slack-thread-operation",
   "chatgpt-task",
   "orchestrator-turn",
+  "plan-ready-quick",
+  "plan-ready-full",
 ] as const;
 export type GoldenScenario = (typeof GOLDEN_SCENARIOS)[number];
 
@@ -84,8 +89,21 @@ export interface GoldenRecord {
   decision?: Json;
   /** Every item of the task's own partition (`DEVTASK#<id>`), the record where change 5 adds fields and a RECIPE item. */
   taskItems?: Json[];
-  /** The model key the operation's capability asks for, and the key requests the proxy received. */
-  modelAccess?: { status: number; response: Json; mintKeyCalls: Json[] };
+  /**
+   * The model key the operation's capability asks for, and every call the proxy received by the end of the scenario (key
+   * requests, spend reads, settles and revokes), by method. Change 3 adds reservations and settlement here.
+   */
+  modelAccess?: { status: number; response: Json; mintKeyCalls: Json[]; calls: { [method: string]: Json[] } };
+  /**
+   * What happens when the operation ends (change 3 and the usage part of change 5): the usage event the worker sent, the
+   * operation as it ended, the usage and failure index items the stream writer made from them, and every write that
+   * writer did. A ChatGPT-plan counter write (`PERSONAL#`) would show among the writes.
+   */
+  afterRun?: { status: "SUCCEEDED" | "FAILED"; operation: Json; usageEvent: Json; indexResult: Json; indexItems: Json[]; indexWrites: Json[] };
+  /** Every Slack post the notifier made for the task, in order (change 4: the plan-ready message). */
+  notifications?: Json[];
+  /** How the worker's run of the invocation ended: it returns, or throws (a scripted model gives no plan and no change). */
+  workerRun?: { ended: "returned" | "threw"; error?: { name: string; code?: string } };
 }
 
 // ---- the clock, the ids and the canonical form ----
@@ -106,6 +124,13 @@ function canonical(value: unknown): Json {
   }
   if (typeof value === "bigint") return value.toString();
   return value as Json;
+}
+
+/** A copy of the object without the named keys. */
+function without<T extends object, K extends keyof T>(value: T, ...keys: K[]): Omit<T, K> {
+  const copy: Record<PropertyKey, unknown> = { ...(value as Record<PropertyKey, unknown>) };
+  for (const key of keys) delete copy[key];
+  return copy as Omit<T, K>;
 }
 
 // ---- the worker's workspace ----
@@ -210,17 +235,15 @@ function feedbackBundles(directory: string): (binding: { taskId: string; workflo
       producer: "agentx-github-reconciler", version: "1", recordedAt: GOLDEN_CLOCK, comments, sourceDeliveryIds: ["delivery-1"] };
     const bytes = JSON.stringify(bundle);
     const sha256 = createHash("sha256").update(bytes).digest("hex");
-    const { sourceDeliveryIds: deliveryIds, comments: kept, ...metadata } = bundle;
-    void deliveryIds;
     return {
       taskRequirements: "Fix the retry bug",
-      bundles: [{ ref: { ...metadata, sha256, objectKey: `feedback/${sha256}.json`, comments: kept.map(({ body: text, ...comment }) => { void text; return comment; }) }, bytes }],
+      bundles: [{ ref: { ...without(bundle, "sourceDeliveryIds", "comments"), sha256, objectKey: `feedback/${sha256}.json`, comments: comments.map((comment) => without(comment, "body")) }, bytes }],
     };
   };
 }
 
 /** Runs the worker on the invocation the broker would post and reports what the models were offered. */
-async function workerHalf(forWorker: WorkerInvocation): Promise<Pick<GoldenRecord, "piInputs" | "reviewSessions">> {
+async function workerHalf(forWorker: WorkerInvocation): Promise<Pick<GoldenRecord, "piInputs" | "reviewSessions" | "workerRun">> {
   if (forWorker.kind !== "task") throw new Error("a golden worker half runs a task invocation");
   const mode = forWorker.payload.workflowMode;
   // CHECKS runs the owner's checks with no model; nothing is offered to one.
@@ -230,6 +253,7 @@ async function workerHalf(forWorker: WorkerInvocation): Promise<Pick<GoldenRecor
   process.env.AGENTX_WORKER_STATE_DIR = workspace.state;
   try {
     const { adapter, views, inputs } = await scriptedModel();
+    let workerRun: NonNullable<GoldenRecord["workerRun"]> = { ended: "returned" };
     try {
       await runTaskInvocation(forWorker, {
         rootPath: workspace.rootPath, model: FAUX_MODEL, piAdapter: adapter, taskShell: { kind: "local" },
@@ -237,8 +261,11 @@ async function workerHalf(forWorker: WorkerInvocation): Promise<Pick<GoldenRecor
         checkRunners: { runProjectCommand: async () => ({ exitCode: 0, timedOut: false, stdout: "", stderr: "" }), runAgentCommand: async () => ({ exitCode: 0, timedOut: false, output: "" }) },
         ...(mode === "FEEDBACK_REVIEW" ? { feedbackBundleReader: feedbackBundles(workspace.directory) } : {}),
       });
-    } catch {
-      // A scripted model gives no plan and no change, so a run may end in an error. What matters is what the models were offered.
+    } catch (error) {
+      // A scripted model gives no plan and no change, so a run may end in an error. What the models were offered is what the
+      // record is about, and how the run ended is kept beside it so a change in that shows too.
+      const code = (error as { code?: unknown }).code;
+      workerRun = { ended: "threw", error: { name: error instanceof Error ? error.name : typeof error, ...(typeof code === "string" ? { code } : {}) } };
     }
     const root = realpathSync(workspace.rootPath);
     const normalize = (text: string) => text.split(root).join("<workspace>").split(workspace.rootPath).join("<workspace>");
@@ -252,10 +279,12 @@ async function workerHalf(forWorker: WorkerInvocation): Promise<Pick<GoldenRecor
       const prompt = firstUserText(view);
       return { role: prompt.startsWith(FEEDBACK_CRITIC) ? "FEEDBACK" : /Review role: SECURITY\./.test(prompt) ? "SECURITY" : "CRITIC", prompt: normalize(prompt), tools: view.tools };
     });
-    // A REVIEW run has no main session: the reviewers are its only models.
+    // A REVIEW run opens a read-only session of its own for the invocation's prompt, then one session per reviewer; a
+    // FEEDBACK_REVIEW run has only its critic, so it has no main session.
     return {
       piInputs: main === undefined ? null : { systemPrompt: normalize(main.systemPrompt), tools: main.tools, skills },
       reviewSessions,
+      workerRun,
     };
   } finally {
     if (stateBefore === undefined) delete process.env.AGENTX_WORKER_STATE_DIR; else process.env.AGENTX_WORKER_STATE_DIR = stateBefore;
@@ -276,8 +305,59 @@ interface BrokerHandles {
   access: ReturnType<typeof fakeModelAccess> | undefined;
 }
 
-/** The operation's outbox item, its invocation, and the invocation as the EC2 delivery posts it. */
-async function captureOperation(handles: BrokerHandles, workspaceId: string, operationId: string, taskId?: string): Promise<GoldenRecord> {
+type Captured = Omit<GoldenRecord, "scenario">;
+
+const USAGE_EVENT_TIME = "2026-10-20T00:00:00.000Z";
+const MODEL_ACCESS_METHODS = ["upsertOrg", "upsertMember", "spend", "orgSpend", "keySpend", "mintKey", "revokeKey"] as const;
+
+/** Every call the proxy received so far, by method. */
+function proxyCalls(access: NonNullable<BrokerHandles["access"]>): { [method: string]: Json[] } {
+  return Object.fromEntries(MODEL_ACCESS_METHODS.map((method) => [method, access[method].mock.calls.map((args: unknown[]) => canonical(args))]));
+}
+
+/**
+ * Ends the operation the way a worker's run does: its usage event, then its terminal result. Then the stream writer makes the
+ * usage and failure index items from what the table recorded, and every write it does is kept. A ChatGPT task reports usage
+ * on the plan's model.
+ */
+async function endOperation(handles: BrokerHandles, workspaceId: string, operationId: string, status: "SUCCEEDED" | "FAILED", chatgpt: boolean): Promise<NonNullable<GoldenRecord["afterRun"]>> {
+  const { db, handler } = handles;
+  const capability = (db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]?.invocation as { callbackCapability: string }).callbackCapability;
+  const stream = recordStream(db);
+  const payload = { schemaVersion: 1, outcome: status, provider: chatgpt ? "openai" : "amazon-bedrock", modelId: chatgpt ? "gpt-6.1-sol" : "default-model", cacheRetention: "short",
+    tokens: { input: 1200, output: 300, cacheRead: 400, cacheWrite: 100, total: 2000 }, cacheReadRatio: 0.25, costUsd: 0.0421 };
+  const posted = await call(handler, { method: "POST", path: `/v1/internal/workspaces/${workspaceId}/operations/${operationId}/events`,
+    headers: { "x-agentx-callback-capability": capability }, body: { events: [{ type: "usage", timestamp: USAGE_EVENT_TIME, payload }] } });
+  if (posted.status !== 200) throw new Error(`the usage event was refused: ${JSON.stringify(posted.body)}`);
+  await finishOperation(handler, db, workspaceId, operationId, status);
+  const writes: Json[] = [];
+  const noteWrite = (change: "INSERT" | "MODIFY" | "REMOVE", item: Record<string, unknown> | undefined) =>
+    writes.push(canonical({ change, pk: item?.pk, sk: item?.sk, entityType: item?.entityType }));
+  const stopListening = db.onWrite(({ before, after }) => noteWrite(before === undefined ? "INSERT" : after === undefined ? "REMOVE" : "MODIFY", after ?? before));
+  let result: Json;
+  try {
+    result = canonical(await indexActivity(stream.take(), {
+      get: async (key) => db.get(key.pk, key.sk),
+      put: async (item) => { noteWrite(db.get(item.pk as string, item.sk as string) === undefined ? "INSERT" : "MODIFY", item); db.set(item); },
+    }, () => undefined, undefined, TEST_ORG));
+  } finally {
+    stopListening();
+  }
+  return {
+    status,
+    operation: canonical(db.get(`WORKSPACE#${workspaceId}`, `OPERATION#${operationId}`)),
+    usageEvent: canonical(db.find((item) => item.entityType === "EVENT" && item.type === "usage" && item.operationId === operationId)[0]),
+    indexResult: result,
+    indexItems: db.find((item) => item.entityType === "USAGE_INDEX" || item.entityType === "FAILURE_INDEX").map(canonical),
+    indexWrites: writes,
+  };
+}
+
+/**
+ * The operation's outbox item, its invocation, the invocation as the EC2 delivery posts it, what the worker's models are
+ * offered, the model key its capability asks for, and (unless `end` is false) what happens when the operation ends.
+ */
+async function captureOperation(handles: BrokerHandles, workspaceId: string, operationId: string, taskId?: string, options: { end?: "SUCCEEDED" | "FAILED" | false } = {}): Promise<Captured> {
   const { db, handler, access } = handles;
   const operation = db.get(`WORKSPACE#${workspaceId}`, `OPERATION#${operationId}`);
   const outbox = db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0];
@@ -295,25 +375,29 @@ async function captureOperation(handles: BrokerHandles, workspaceId: string, ope
   })(outbox as unknown as Ec2OutboxRecord, invocation);
   if (delivery !== "DELIVERED" || posted.length !== 1) throw new Error(`the delivery of ${operationId} was ${JSON.stringify(delivery)}`);
   const forWorker = WorkerInvocationSchema.parse(JSON.parse(posted[0]!));
-  let modelAccess: GoldenRecord["modelAccess"];
+  // The task's own items as the operation started; the end of the operation below may change them.
+  const taskItems = taskId === undefined ? undefined : db.find((item) => item.pk === `DEVTASK#${taskId}`).map(canonical);
+  let key: { status: number; response: Json } | undefined;
   if (access !== undefined) {
     // The model key the worker would ask this operation's capability for (a task's key is capped at the task's budget).
     const asked = await call(handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": invocation.callbackCapability } });
-    modelAccess = { status: asked.status, response: canonical(asked.body), mintKeyCalls: access.mintKey.mock.calls.map((callArguments) => canonical(callArguments[0])) };
+    key = { status: asked.status, response: canonical(asked.body) };
   }
   const worker = await workerHalf(forWorker);
+  const status = options.end ?? "SUCCEEDED";
+  const afterRun = status === false ? undefined : await endOperation(handles, workspaceId, operationId, status, invocation.kind === "task" && invocation.payload.chatgpt !== undefined);
   return {
-    scenario: "plan-quick",
     operation: canonical(operation), outbox: canonical(outbox), invocation: canonical(invocation), forWorker: canonical(forWorker),
     ...worker,
-    ...(taskId === undefined ? {} : { taskItems: db.find((item) => item.pk === `DEVTASK#${taskId}`).map(canonical) }),
-    ...(modelAccess === undefined ? {} : { modelAccess }),
+    ...(taskItems === undefined ? {} : { taskItems }),
+    ...(access === undefined || key === undefined ? {} : { modelAccess: { ...key, mintKeyCalls: access.mintKey.mock.calls.map((callArguments) => canonical(callArguments[0])), calls: proxyCalls(access) } }),
+    ...(afterRun === undefined ? {} : { afterRun }),
   };
 }
 
-async function developerBroker(proxy: boolean) {
+async function developerBroker(proxy: boolean, brokerExtra: Record<string, unknown> = {}) {
   const access = proxy ? fakeModelAccess() : undefined;
-  const harness = await createDeveloperTaskBroker({ brokerExtra: access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+  const harness = await createDeveloperTaskBroker({ brokerExtra: { ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }), ...brokerExtra } });
   if (access !== undefined) {
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
@@ -375,25 +459,28 @@ async function implementedQuickTask(broker: DeveloperBroker) {
   const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: "d".repeat(40), treeSha: "b".repeat(40), baseCommitSha: base }]);
   const checks = { status: "verified", source: "project", preambleVersion: "1", preambleSha256: "c".repeat(64),
     checks: [{ id: "readiness:0", label: "npm test", source: "project", before: "passed", after: "passed", class: "passing", output: "", durationMs: 12 }], extraTry: "not_needed", agentClaim: "success" };
-  const finishImplementation = () => broker.harness.finish(workspaceId, implementationId, "SUCCEEDED", { result: {
-    workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories, checks } });
+  // `unverified`: the agent reported no checks, which blocks the task at its checks.
+  const finishImplementation = (options: { unverified?: boolean } = {}) => broker.harness.finish(workspaceId, implementationId, "SUCCEEDED", { result: options.unverified === true
+    ? { workflowCandidateRepositories: candidate.repositories,
+        checks: { status: "not_verified", notVerifiedReason: "no_checks", source: "none", preambleVersion: "1", preambleSha256: "c".repeat(64), checks: [], extraTry: "not_needed", agentClaim: "failure" } }
+    : { workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories, checks } });
   return { taskId, workspaceId, plan, implementationId, candidate, finishImplementation };
 }
 
-async function recordPlan(broker: DeveloperBroker, phase: "QUICK" | "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"): Promise<GoldenRecord> {
+async function recordPlan(broker: DeveloperBroker, phase: "QUICK" | "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"): Promise<Captured> {
   const { taskId, workspaceId } = await broker.start({ workflow: true, workflowPath: phase === "QUICK" ? "QUICK" : "FULL" });
   await broker.finishPrepare(workspaceId);
   const planning = () => broker.operationWhere(workspaceId, (item) => item.workflowMode === "PLAN" && item.status === "ACCEPTED");
-  for (const earlier of phase === "QUICK" || phase === "REQUIREMENTS" ? [] : phase === "DESIGN" ? ["REQUIREMENTS"] : ["REQUIREMENTS", "DESIGN"]) {
-    void earlier;
+  const earlierPhases = phase === "QUICK" || phase === "REQUIREMENTS" ? 0 : phase === "DESIGN" ? 1 : 2;
+  for (let done = 0; done < earlierPhases; done += 1) {
     const plan = await finishPlanning(broker, taskId, workspaceId, planning());
     const approved = await decide(broker, taskId, plan, "APPROVE", "Approved");
     if (approved.status !== 200) throw new Error(`the approval was refused: ${JSON.stringify(approved.body)}`);
   }
-  return captureOperation(broker.handles, workspaceId, planning(), taskId);
+  return captureOperation(broker.handles, workspaceId, planning(), taskId, { end: "FAILED" });
 }
 
-async function brokerScenario(scenario: GoldenScenario): Promise<GoldenRecord> {
+async function brokerScenario(scenario: GoldenScenario): Promise<Captured> {
   switch (scenario) {
     case "plan-quick": return recordPlan(await developerBroker(true), "QUICK");
     case "plan-full-requirements": return recordPlan(await developerBroker(true), "REQUIREMENTS");
@@ -408,7 +495,7 @@ async function brokerScenario(scenario: GoldenScenario): Promise<GoldenRecord> {
       const response = await decide(broker, taskId, plan, "REQUEST_CHANGES", "Use the existing helper.");
       if (response.status !== 200) throw new Error(`the decision was refused: ${JSON.stringify(response.body)}`);
       const replanning = broker.operationWhere(workspaceId, (item) => item.workflowMode === "PLAN" && item.id !== first);
-      const record = await captureOperation(broker.handles, workspaceId, replanning, taskId);
+      const record = await captureOperation(broker.handles, workspaceId, replanning, taskId, { end: "FAILED" });
       const workflow = (response.body.task as { workflow: { stage: string; state: string; revision: number } }).workflow;
       return { ...record, decision: canonical({ status: response.status, stage: workflow.stage, state: workflow.state, revision: workflow.revision }) };
     }
@@ -420,29 +507,23 @@ async function brokerScenario(scenario: GoldenScenario): Promise<GoldenRecord> {
       const plan = await finishPlanning(broker, taskId, workspaceId, broker.operationWhere(workspaceId, (item) => item.workflowMode === "PLAN"));
       const response = await decide(broker, taskId, plan, "APPROVE", "Approved");
       if (response.status !== 200) throw new Error(`the approval was refused: ${JSON.stringify(response.body)}`);
-      return captureOperation(broker.handles, workspaceId, broker.operationWhere(workspaceId, (item) => item.workflowMode === "IMPLEMENT"), taskId);
+      return captureOperation(broker.handles, workspaceId, broker.operationWhere(workspaceId, (item) => item.workflowMode === "IMPLEMENT"), taskId, { end: "SUCCEEDED" });
     }
     case "checks": {
       const broker = await developerBroker(true);
-      const { taskId, workspaceId, implementationId, finishImplementation } = await implementedQuickTask(broker);
+      const { taskId, workspaceId, finishImplementation } = await implementedQuickTask(broker);
       // The code is blocked at its checks (the agent reported none), and the owner asks AgentX to run the selected checks again.
-      const base = await fixtureBaseCommit();
-      const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: "d".repeat(40), treeSha: "b".repeat(40), baseCommitSha: base }]);
-      void finishImplementation;
-      await broker.harness.finish(workspaceId, implementationId, "SUCCEEDED", { result: {
-        workflowCandidateRepositories: candidate.repositories,
-        checks: { status: "not_verified", notVerifiedReason: "no_checks", source: "none", preambleVersion: "1", preambleSha256: "c".repeat(64), checks: [], extraTry: "not_needed", agentClaim: "failure" } } });
+      await finishImplementation({ unverified: true });
       const blocked = (broker.harness.db.get(`DEVTASK#${taskId}`, "META") as { workflow: { revision: number } }).workflow;
-      const requestId = randomUUID();
-      const retried = await broker.harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId, expectedRevision: blocked.revision, instructions: "Run the checks again." });
+      const retried = await broker.harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId: randomUUID(), expectedRevision: blocked.revision, instructions: "Run the checks again." });
       if (retried.status !== 200) throw new Error(`the retry was refused: ${JSON.stringify(retried.body)}`);
-      return captureOperation(broker.handles, workspaceId, broker.operationWhere(workspaceId, (item) => item.workflowMode === "CHECKS"), taskId);
+      return captureOperation(broker.handles, workspaceId, broker.operationWhere(workspaceId, (item) => item.workflowMode === "CHECKS"), taskId, { end: "SUCCEEDED" });
     }
     case "review": {
       const broker = await developerBroker(true);
       const { taskId, workspaceId, finishImplementation } = await implementedQuickTask(broker);
       await finishImplementation();
-      return captureOperation(broker.handles, workspaceId, broker.operationWhere(workspaceId, (item) => item.workflowMode === "REVIEW"), taskId);
+      return captureOperation(broker.handles, workspaceId, broker.operationWhere(workspaceId, (item) => item.workflowMode === "REVIEW"), taskId, { end: "FAILED" });
     }
     case "feedback-review": return feedbackReviewScenario();
     case "task-no-workflow": return plainTask(await developerBroker(true), {});
@@ -451,33 +532,70 @@ async function brokerScenario(scenario: GoldenScenario): Promise<GoldenRecord> {
     case "slack-thread-operation": return slackThreadOperation(false);
     case "chatgpt-task": return slackThreadOperation(true);
     case "orchestrator-turn": return orchestratorScenario();
+    case "plan-ready-quick": return planReady("QUICK");
+    case "plan-ready-full": return planReady("FULL");
   }
 }
 
 /** A task started with no workflow: after preparation its prompt runs as the task's one operation. */
-async function plainTask(broker: DeveloperBroker, extra: Record<string, unknown>): Promise<GoldenRecord> {
+async function plainTask(broker: DeveloperBroker, extra: Record<string, unknown>): Promise<Captured> {
   const { taskId, workspaceId } = await broker.start(extra);
   await broker.finishPrepare(workspaceId);
-  return captureOperation(broker.handles, workspaceId, broker.operationWhere(workspaceId, (item) => item.kind === "task"), taskId);
+  return captureOperation(broker.handles, workspaceId, broker.operationWhere(workspaceId, (item) => item.kind === "task"), taskId, { end: "SUCCEEDED" });
+}
+
+// ---- the plan-ready message (change 4) ----
+
+/**
+ * A shared workflow task whose planning step ends with a plan: the notifier (over the real stream records, with Slack faked)
+ * posts the task's messages, among them "<document> is ready for your approval". The record's operation is the planning step.
+ */
+async function planReady(path: "QUICK" | "FULL"): Promise<Captured> {
+  const broker = await developerBroker(true);
+  const stream = recordStream(broker.harness.db);
+  const posts: Json[] = [];
+  const queue: Array<{ notice: Notice; attempt: number }> = [];
+  let ts = 1_695_500_000_000_100;
+  const handle = createNotifierHandler({
+    documentClient: broker.harness.db, tableName: "state",
+    enqueue: async (notices) => { for (const notice of notices) queue.push({ notice, attempt: 0 }); },
+    retryLater: async () => undefined,
+    post: async (input) => { posts.push(canonical(input)); ts += 1; const text = String(ts); return { ts: `${text.slice(0, 10)}.${text.slice(10)}` }; },
+    update: async () => undefined, postEphemeral: async () => undefined,
+    readArtifact: async (key) => {
+      const body = broker.harness.s3.objects.get(key);
+      if (body === undefined) throw new Error(`no stored document at ${key}`);
+      return body;
+    },
+    now: () => Date.parse(GOLDEN_CLOCK), log: () => undefined, deliveryFailed: () => undefined,
+  });
+  const pump = async () => {
+    await handle({ Records: stream.take().map((record) => ({ ...record, eventSource: "aws:dynamodb" })) });
+    const batch = queue.splice(0, queue.length);
+    await handle({ Records: batch.map((entry, index) => ({ eventSource: "aws:sqs", messageId: `m${index}`, receiptHandle: `r${index}`, body: JSON.stringify(entry.notice), attributes: { ApproximateReceiveCount: "1" } })) });
+  };
+  const { taskId, workspaceId } = await broker.start({ shareToChannel: true, workflow: true, workflowPath: path });
+  await pump();
+  await broker.finishPrepare(workspaceId);
+  await pump();
+  const planning = broker.operationWhere(workspaceId, (item) => item.workflowMode === "PLAN");
+  const record = await captureOperation(broker.handles, workspaceId, planning, taskId, { end: false });
+  await finishPlanning(broker, taskId, workspaceId, planning);
+  await pump();
+  return { ...record, notifications: posts };
 }
 
 // ---- a task whose candidate is waiting for merge, and the critic that reads the pull request's feedback ----
 
-async function feedbackReviewScenario(): Promise<GoldenRecord> {
+async function feedbackReviewScenario(): Promise<Captured> {
   const currentFeedback = { pullRequest: { number: 7, url: "https://github.com/example/demo/pull/7", state: "open" as const,
     headBranch: "feature", baseBranch: "main", headCommit: "a".repeat(40), headTreeSha: "b".repeat(40), title: "Fix retry", body: "" }, comments: [], threads: [] };
-  const access = fakeModelAccess();
-  const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: { getPullRequestFeedback: async () => currentFeedback }, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
-  access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
-  access.setOrgSpent(TEST_ORG, 0);
-  const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
-  const taskId = String((started.body.task as { taskId: string }).taskId);
-  const workspaceId = String(harness.db.get(`DEVTASK#${taskId}`, "META")?.workspaceId);
+  const broker = await developerBroker(true, { githubPullRequests: { getPullRequestFeedback: async () => currentFeedback } });
+  const { harness } = broker;
+  const { taskId, workspaceId } = await broker.start({ workflow: true, workflowPath: "QUICK" });
   const base = await fixtureBaseCommit();
-  const prepare = operationsOf(harness.db, workspaceId).find((item) => item.kind === "prepare");
-  await harness.finish(workspaceId, String(prepare!.id), "SUCCEEDED", { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: base }] } });
-  const planning = operationsOf(harness.db, workspaceId).find((item) => item.workflowMode === "PLAN");
-  await harness.finish(workspaceId, String(planning!.id), "FAILED", { error: "the scenario moves the workspace on without a plan" });
+  await broker.finishPrepare(workspaceId);
+  await harness.finish(workspaceId, broker.operationWhere(workspaceId, (item) => item.workflowMode === "PLAN"), "FAILED", { error: "the scenario moves the workspace on without a plan" });
   const task = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { ownerKey: string };
   const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: "a".repeat(40), treeSha: "b".repeat(40), baseCommitSha: base }]);
   const now = GOLDEN_CLOCK.replace("Z", ".000Z");
@@ -501,15 +619,12 @@ async function feedbackReviewScenario(): Promise<GoldenRecord> {
   const bundleDigest = createHash("sha256").update(bundleBytes).digest("hex");
   const bundleKey = `private/${task.ownerKey}/${workspaceId}/feedback/${bundleDigest}.json`;
   harness.s3.objects.set(bundleKey, bundleBytes);
-  const { sourceDeliveryIds: deliveryIds, comments, ...metadata } = bundle;
-  void deliveryIds;
-  workflow = collectWorkflowFeedbackBundles(workflow, { bundleRefs: [{ ...metadata, sha256: bundleDigest, objectKey: bundleKey, comments }], threadObservations: [] }, now);
+  workflow = collectWorkflowFeedbackBundles(workflow, { bundleRefs: [{ ...without(bundle, "sourceDeliveryIds", "comments"), sha256: bundleDigest, objectKey: bundleKey, comments: bundle.comments }], threadObservations: [] }, now);
   harness.db.set({ ...task, workflow, updatedAt: now });
   const routeDeps = { documentClient: harness.db, tableName: "state", actions: harness.actions, orgId: TEST_ORG,
     checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.parse(now) };
   if (!await startTaskWorkflowFeedbackReviewFromWebhook(routeDeps, taskId)) throw new Error("the feedback critic did not start");
-  const operation = operationsOf(harness.db, workspaceId).find((item) => item.workflowMode === "FEEDBACK_REVIEW");
-  return captureOperation({ db: harness.db, handler: harness.handler, access }, workspaceId, String(operation!.id), taskId);
+  return captureOperation(broker.handles, workspaceId, broker.operationWhere(workspaceId, (item) => item.workflowMode === "FEEDBACK_REVIEW"), taskId, { end: "FAILED" });
 }
 
 // ---- Slack threads ----
@@ -518,7 +633,7 @@ const THREAD = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000001`;
 const SLACK_USER = "U0123456789";
 
 /** A task the Slack orchestrator starts in a thread's workspace; with `chatgpt`, its asker has a working ChatGPT plan and the install's switch is on. */
-async function slackThreadOperation(chatgpt: boolean): Promise<GoldenRecord> {
+async function slackThreadOperation(chatgpt: boolean): Promise<Captured> {
   await loadSlackBroker();
   const access = fakeModelAccess();
   const owner = developerIdForSlackUser(SLACK_USER);
@@ -529,7 +644,6 @@ async function slackThreadOperation(chatgpt: boolean): Promise<GoldenRecord> {
     markStatus: async () => undefined, refreshModels: async () => undefined,
   } as unknown as ChatGptConnections : undefined;
   const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true, ...(connections === undefined ? {} : { chatgpt: connections }) } });
-  void owner;
   await registerSlackProject(handler, { models: {
     default: { provider: "amazon-bedrock", modelId: "default-model", label: "Balanced" },
     approved: [{ provider: "amazon-bedrock", modelId: "default-model", label: "Balanced" }],
@@ -543,12 +657,12 @@ async function slackThreadOperation(chatgpt: boolean): Promise<GoldenRecord> {
   const conversationId = (conversation.body.conversation as { id: string }).id;
   const task = await serviceCall(handler, THREAD, SLACK_USER, "POST", `/v1/service/workspaces/${workspaceId}/tasks`, { requestId: randomUUID(), conversationId, prompt: "Fix the retry bug" });
   if (task.status !== 202) throw new Error(`the thread task was refused: ${JSON.stringify(task.body)}`);
-  return captureOperation({ db: db, handler, access }, workspaceId, (task.body.operation as { id: string }).id);
+  return captureOperation({ db, handler, access }, workspaceId, (task.body.operation as { id: string }).id, undefined, { end: "SUCCEEDED" });
 }
 
 // ---- the Slack assistant's turn ----
 
-async function orchestratorScenario(): Promise<GoldenRecord> {
+async function orchestratorScenario(): Promise<Captured> {
   await loadSlackBroker();
   const access = fakeModelAccess();
   const { handler } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
@@ -579,7 +693,7 @@ async function orchestratorScenario(): Promise<GoldenRecord> {
   const view = views[0];
   if (view === undefined) throw new Error("the orchestrator never called its model");
   return {
-    scenario: "orchestrator-turn", operation: null, outbox: null, invocation: null, forWorker: null, piInputs: null, reviewSessions: [],
+    operation: null, outbox: null, invocation: null, forWorker: null, piInputs: null, reviewSessions: [],
     orchestratorTurn: {
       modelAccessResponse: canonical({ status: response.status, body: response.body, mintKeyCalls: access.mintKey.mock.calls.map((callArguments) => callArguments[0]) }),
       tools: view.tools,

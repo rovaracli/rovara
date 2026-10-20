@@ -1,0 +1,312 @@
+{
+  "forWorker": {
+    "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDExLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMTEtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDEwIiwiZmVuY2UiOjIsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwibW9kZWwtYWNjZXNzIl0sImV4cGlyZXNBdCI6MTc5MjQ4NjgwMH0._L5txI6PWr5CyQvVY0i4yoha75-j1HwXEcAUQObnj7M",
+    "fence": 2,
+    "kind": "task",
+    "operationId": "00000011-0000-4000-8000-000000000010",
+    "payload": {
+      "conversationId": "00000011-0000-4000-8000-00000000000c",
+      "conversationStarted": false,
+      "planFormat": "structured",
+      "prompt": "You are one step inside AgentX's gated task workflow. AgentX itself asks the task owner for every approval, runs the project's checks, runs the independent code and security reviews, and opens the draft pull request. Never plan, describe or perform git push, creating remote branches, opening or updating pull requests (for example gh pr create), merging, or deploying. Never treat any step as already approved: the owner approves each document in Slack.\n\nPlanning phase only. Do not edit, write, or create files. Inspect the request and repository. Your document's steps end when the code is changed and the checks to run are named. Do not include steps to push, open a pull request, request approval, or wait for review. Avoid filler and include only material risks or genuine unanswered questions. This linked detail is shown to the owner for approval before the next phase or code changes.\n\nEnd your answer with exactly one fenced block whose info string is agentx-plan. It holds one JSON object of this shape, and AgentX reads nothing else from your answer. Keep the whole document under 32,768 bytes, with at most 50 claims and 20 decisions.\n\n```ts\ntype PlanDocument = {\n  schemaVersion: 1;\n  title: string; // up to 80 characters\n  why: { text: string; author: string }[]; // 1 to 10 entries: why this is wanted, credited to the person who said it (text up to 500 characters, author up to 80)\n  claims: PlanClaim[]; // ranked, most important first, at every level\n  notChanging: string[]; // 1 to 10 entries of up to 200 characters; [\"None\"] when nothing stays as it is on purpose\n  risks: string[]; // 1 to 10 entries of up to 200 characters; [\"None\"] when there are none\n  decisions: PlanDecision[]; // up to 20; [] when the owner has nothing to decide\n};\ntype PlanClaim = {\n  id: string; // 1, 2 at the top; 1.1 under 1; 1.1.1 under 1.1; a child's ID extends its parent's; each part is at most 3 digits\n  text: string; // up to 300 characters\n  evidence?: Evidence[]; // up to 3 per claim\n  children?: PlanClaim[]; // nest at most 3 levels deep (1, 1.1, 1.1.1)\n};\ntype Evidence =\n  | { kind: \"code\"; path: string; startLine: number; endLine: number; anchor?: string; note?: string } // a file you read, by workspace path and line range (up to 80 lines); anchor: the first line of the range, copied exactly from the file, up to 300 characters; note up to 200 characters\n  | { kind: \"sketch\"; language: string; code: string; note?: string } // new code that does not exist yet (code up to 4,000 characters)\n  | { kind: \"flow\"; participants: string[]; steps: { from: string; to: string; label: string }[] } // 2 to 8 participants, 1 to 30 steps; from and to name participants\n  | { kind: \"schema\"; entities: { name: string; fields: { name: string; type: string; note?: string }[] }[]; relations: { from: string; to: string; label: string }[] } // 1 to 12 entities\n  | { kind: \"stateMachine\"; states: string[]; initial?: string; transitions: { from: string; to: string; label: string }[] } // 2 to 15 states, 1 to 40 transitions\n  | { kind: \"quote\"; text: string; author: string }; // text up to 500 characters, author up to 80\ntype PlanDecision = {\n  id: string; // d1, d2 and so on\n  claimId: string; // the claim this decision changes\n  question: string; // up to 300 characters\n  options: { id: string; label: string; consequence: string }[]; // 2 to 4; id lowercase letters, digits and hyphens; label up to 80 characters; consequence up to 200\n  recommended: string; // the id of exactly one option\n};\n```\n\nYou are writing the requirements: the level 1 claims (what someone can do or see), notChanging, risks and decisions. Do not describe how it works or where in the code.\n\nClaims: rank them by importance at every level, most important first. Write as many claims as the task needs and no more, and scale the plan to the task: a one-line change gets a tiny plan. Level 1 says what someone can do or see, level 2 says how it works, level 3 says where in the code. How deep the tree goes follows the task. Keep each claim to about 15 words.\n\nRe-read files before citing them, and cite the exact lines. For each `code` item, copy the first cited line exactly into its `anchor`; AgentX uses it to correct line numbers that are off.\n\nEvidence: add it when it proves the claim. A `code` item must cite a real file you read, by workspace path and line range, at most 80 lines. Code that does not exist yet is a `sketch`. Use `flow`, `schema` and `stateMachine` for behaviour that has a flow, a data shape or states. A `quote` credits its author. To quote a comment from the task page, write its author as \"comment c1\" (the comment's ref, nothing else); AgentX shows who wrote it.\n\nDecisions: include only real choices the owner should make, ranked by impact, each on the claim it changes, with 2 to 4 options that each say what follows from choosing them, and exactly one recommended. No decisions is fine.\n\nEvery decision option must be something AgentX can carry out; custom wording goes through Request changes, never an option.\n\n`notChanging` and `risks` are required: say \"None\" when there is nothing to list.\n\nIDs: keep a claim's ID from the previous version of this document when the claim still exists. Give new claims new IDs. Never reuse the ID of a claim that was removed.\n\nA later step may change a claim the owner already approved only when it has to.\n\nRequest:\nFix the retry bug",
+      "workflowMode": "PLAN",
+      "workflowPhase": "REQUIREMENTS"
+    },
+    "projectRevision": 1,
+    "protocolVersion": 1,
+    "workspaceId": "00000011-0000-4000-8000-000000000007"
+  },
+  "invocation": {
+    "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDExLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMTEtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDEwIiwiZmVuY2UiOjIsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwibW9kZWwtYWNjZXNzIl0sImV4cGlyZXNBdCI6MTc5MjQ4NjgwMH0._L5txI6PWr5CyQvVY0i4yoha75-j1HwXEcAUQObnj7M",
+    "fence": 2,
+    "kind": "task",
+    "operationId": "00000011-0000-4000-8000-000000000010",
+    "payload": {
+      "conversationId": "00000011-0000-4000-8000-00000000000c",
+      "conversationStarted": false,
+      "planFormat": "structured",
+      "prompt": "You are one step inside AgentX's gated task workflow. AgentX itself asks the task owner for every approval, runs the project's checks, runs the independent code and security reviews, and opens the draft pull request. Never plan, describe or perform git push, creating remote branches, opening or updating pull requests (for example gh pr create), merging, or deploying. Never treat any step as already approved: the owner approves each document in Slack.\n\nPlanning phase only. Do not edit, write, or create files. Inspect the request and repository. Your document's steps end when the code is changed and the checks to run are named. Do not include steps to push, open a pull request, request approval, or wait for review. Avoid filler and include only material risks or genuine unanswered questions. This linked detail is shown to the owner for approval before the next phase or code changes.\n\nEnd your answer with exactly one fenced block whose info string is agentx-plan. It holds one JSON object of this shape, and AgentX reads nothing else from your answer. Keep the whole document under 32,768 bytes, with at most 50 claims and 20 decisions.\n\n```ts\ntype PlanDocument = {\n  schemaVersion: 1;\n  title: string; // up to 80 characters\n  why: { text: string; author: string }[]; // 1 to 10 entries: why this is wanted, credited to the person who said it (text up to 500 characters, author up to 80)\n  claims: PlanClaim[]; // ranked, most important first, at every level\n  notChanging: string[]; // 1 to 10 entries of up to 200 characters; [\"None\"] when nothing stays as it is on purpose\n  risks: string[]; // 1 to 10 entries of up to 200 characters; [\"None\"] when there are none\n  decisions: PlanDecision[]; // up to 20; [] when the owner has nothing to decide\n};\ntype PlanClaim = {\n  id: string; // 1, 2 at the top; 1.1 under 1; 1.1.1 under 1.1; a child's ID extends its parent's; each part is at most 3 digits\n  text: string; // up to 300 characters\n  evidence?: Evidence[]; // up to 3 per claim\n  children?: PlanClaim[]; // nest at most 3 levels deep (1, 1.1, 1.1.1)\n};\ntype Evidence =\n  | { kind: \"code\"; path: string; startLine: number; endLine: number; anchor?: string; note?: string } // a file you read, by workspace path and line range (up to 80 lines); anchor: the first line of the range, copied exactly from the file, up to 300 characters; note up to 200 characters\n  | { kind: \"sketch\"; language: string; code: string; note?: string } // new code that does not exist yet (code up to 4,000 characters)\n  | { kind: \"flow\"; participants: string[]; steps: { from: string; to: string; label: string }[] } // 2 to 8 participants, 1 to 30 steps; from and to name participants\n  | { kind: \"schema\"; entities: { name: string; fields: { name: string; type: string; note?: string }[] }[]; relations: { from: string; to: string; label: string }[] } // 1 to 12 entities\n  | { kind: \"stateMachine\"; states: string[]; initial?: string; transitions: { from: string; to: string; label: string }[] } // 2 to 15 states, 1 to 40 transitions\n  | { kind: \"quote\"; text: string; author: string }; // text up to 500 characters, author up to 80\ntype PlanDecision = {\n  id: string; // d1, d2 and so on\n  claimId: string; // the claim this decision changes\n  question: string; // up to 300 characters\n  options: { id: string; label: string; consequence: string }[]; // 2 to 4; id lowercase letters, digits and hyphens; label up to 80 characters; consequence up to 200\n  recommended: string; // the id of exactly one option\n};\n```\n\nYou are writing the requirements: the level 1 claims (what someone can do or see), notChanging, risks and decisions. Do not describe how it works or where in the code.\n\nClaims: rank them by importance at every level, most important first. Write as many claims as the task needs and no more, and scale the plan to the task: a one-line change gets a tiny plan. Level 1 says what someone can do or see, level 2 says how it works, level 3 says where in the code. How deep the tree goes follows the task. Keep each claim to about 15 words.\n\nRe-read files before citing them, and cite the exact lines. For each `code` item, copy the first cited line exactly into its `anchor`; AgentX uses it to correct line numbers that are off.\n\nEvidence: add it when it proves the claim. A `code` item must cite a real file you read, by workspace path and line range, at most 80 lines. Code that does not exist yet is a `sketch`. Use `flow`, `schema` and `stateMachine` for behaviour that has a flow, a data shape or states. A `quote` credits its author. To quote a comment from the task page, write its author as \"comment c1\" (the comment's ref, nothing else); AgentX shows who wrote it.\n\nDecisions: include only real choices the owner should make, ranked by impact, each on the claim it changes, with 2 to 4 options that each say what follows from choosing them, and exactly one recommended. No decisions is fine.\n\nEvery decision option must be something AgentX can carry out; custom wording goes through Request changes, never an option.\n\n`notChanging` and `risks` are required: say \"None\" when there is nothing to list.\n\nIDs: keep a claim's ID from the previous version of this document when the claim still exists. Give new claims new IDs. Never reuse the ID of a claim that was removed.\n\nA later step may change a claim the owner already approved only when it has to.\n\nRequest:\nFix the retry bug",
+      "workflowMode": "PLAN",
+      "workflowPhase": "REQUIREMENTS"
+    },
+    "projectRevision": 1,
+    "protocolVersion": 1,
+    "workspaceId": "00000011-0000-4000-8000-000000000007"
+  },
+  "modelAccess": {
+    "calls": {
+      "keySpend": [
+        [
+          []
+        ]
+      ],
+      "mintKey": [
+        [
+          {
+            "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "maxBudgetUsd": 25,
+            "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+            "purpose": "task",
+            "refId": "00000011-0000-4000-8000-000000000006",
+            "ttlSeconds": 3600
+          }
+        ]
+      ],
+      "orgSpend": [],
+      "revokeKey": [],
+      "spend": [
+        [
+          "org_5t5gp58cc1ibgg6e3aoj",
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        ],
+        [
+          "org_5t5gp58cc1ibgg6e3aoj",
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        ]
+      ],
+      "upsertMember": [
+        [
+          "org_5t5gp58cc1ibgg6e3aoj",
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          29
+        ]
+      ],
+      "upsertOrg": [
+        [
+          "org_5t5gp58cc1ibgg6e3aoj",
+          500
+        ]
+      ]
+    },
+    "mintKeyCalls": [
+      {
+        "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "maxBudgetUsd": 25,
+        "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+        "purpose": "task",
+        "refId": "00000011-0000-4000-8000-000000000006",
+        "ttlSeconds": 3600
+      }
+    ],
+    "response": {
+      "apiKey": "sk-fake-key-0001",
+      "baseUrl": "http://internal-proxy.example.test:4000",
+      "expiresAt": 1792414800000,
+      "requestId": "00000011-0000-4000-8000-000000000012"
+    },
+    "status": 200
+  },
+  "notifications": [
+    {
+      "channel": "C0123456789",
+      "text": "<@U0MAYA001> started a task from an AI tool: *Fix the retry bug*\nProject: `payments`. Status: STARTING.\nView only: follow-ups happen in <@U0MAYA001>'s AI tool, and I post each update here."
+    },
+    {
+      "channel": "C0123456789",
+      "text": "The workspace is ready, and the task is running.",
+      "threadTs": "1695500000.000101"
+    },
+    {
+      "blocks": [
+        {
+          "text": {
+            "text": "*Requirements v1 is ready for your approval.* No code has changed yet.\n> Payments that fail with a timeout are retried.\n> A payment is never charged twice.\nAnd 1 more claim.\nApprove here uses AgentX's answers for 1 decision and includes the open comments (up to 25) from the task page.\nI couldn't link the full requirements; ask an AgentX admin to check the task page.",
+            "type": "mrkdwn"
+          },
+          "type": "section"
+        },
+        {
+          "elements": [
+            {
+              "action_id": "agentx_workflow_approve",
+              "style": "primary",
+              "text": {
+                "text": "Approve requirements",
+                "type": "plain_text"
+              },
+              "type": "button",
+              "value": "{\"taskId\":\"00000011-0000-4000-8000-000000000006\",\"revision\":2,\"digest\":\"b1d0be05ea61318ae89395cc4f381942c922cca71124abb382f58e4762b291c9\",\"decision\":\"APPROVE\"}"
+            },
+            {
+              "action_id": "agentx_workflow_changes",
+              "text": {
+                "text": "Request changes",
+                "type": "plain_text"
+              },
+              "type": "button",
+              "value": "{\"taskId\":\"00000011-0000-4000-8000-000000000006\",\"revision\":2,\"digest\":\"b1d0be05ea61318ae89395cc4f381942c922cca71124abb382f58e4762b291c9\",\"decision\":\"REQUEST_CHANGES\"}"
+            },
+            {
+              "action_id": "agentx_workflow_close",
+              "text": {
+                "text": "Close task",
+                "type": "plain_text"
+              },
+              "type": "button",
+              "value": "{\"taskId\":\"00000011-0000-4000-8000-000000000006\",\"revision\":2}"
+            }
+          ],
+          "type": "actions"
+        }
+      ],
+      "channel": "C0123456789",
+      "text": "*Requirements v1 is ready for your approval.* No code has changed yet.\n> Payments that fail with a timeout are retried.\n> A payment is never charged twice.\nAnd 1 more claim.\nApprove here uses AgentX's answers for 1 decision and includes the open comments (up to 25) from the task page.\nI couldn't link the full requirements; ask an AgentX admin to check the task page.",
+      "threadTs": "1695500000.000101"
+    }
+  ],
+  "operation": {
+    "conversationId": "00000011-0000-4000-8000-00000000000c",
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "entityType": "OPERATION",
+    "eventSequence": 0,
+    "fence": 2,
+    "id": "00000011-0000-4000-8000-000000000010",
+    "kind": "task",
+    "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+    "payloadHash": "566862e6c61517fd383217957dc3b2cd5073c5bafa0790b25e21cf2f808886aa",
+    "pk": "WORKSPACE#00000011-0000-4000-8000-000000000007",
+    "requestId": "00000011-0000-4000-8000-00000000000d",
+    "requestedBy": {
+      "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "kind": "developer",
+      "provider": "slack"
+    },
+    "settingsRevision": 1,
+    "sk": "OPERATION#00000011-0000-4000-8000-000000000010",
+    "status": "ACCEPTED",
+    "updatedAt": "2026-10-20T00:00:00.000Z",
+    "workflowMode": "PLAN",
+    "workspaceId": "00000011-0000-4000-8000-000000000007"
+  },
+  "outbox": {
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "deploymentMode": "ec2-ebs",
+    "entityType": "OUTBOX",
+    "id": "00000011-0000-4000-8000-000000000011",
+    "invocation": {
+      "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDExLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMTEtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDEwIiwiZmVuY2UiOjIsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwibW9kZWwtYWNjZXNzIl0sImV4cGlyZXNBdCI6MTc5MjQ4NjgwMH0._L5txI6PWr5CyQvVY0i4yoha75-j1HwXEcAUQObnj7M",
+      "fence": 2,
+      "kind": "task",
+      "operationId": "00000011-0000-4000-8000-000000000010",
+      "payload": {
+        "conversationId": "00000011-0000-4000-8000-00000000000c",
+        "conversationStarted": false,
+        "planFormat": "structured",
+        "prompt": "You are one step inside AgentX's gated task workflow. AgentX itself asks the task owner for every approval, runs the project's checks, runs the independent code and security reviews, and opens the draft pull request. Never plan, describe or perform git push, creating remote branches, opening or updating pull requests (for example gh pr create), merging, or deploying. Never treat any step as already approved: the owner approves each document in Slack.\n\nPlanning phase only. Do not edit, write, or create files. Inspect the request and repository. Your document's steps end when the code is changed and the checks to run are named. Do not include steps to push, open a pull request, request approval, or wait for review. Avoid filler and include only material risks or genuine unanswered questions. This linked detail is shown to the owner for approval before the next phase or code changes.\n\nEnd your answer with exactly one fenced block whose info string is agentx-plan. It holds one JSON object of this shape, and AgentX reads nothing else from your answer. Keep the whole document under 32,768 bytes, with at most 50 claims and 20 decisions.\n\n```ts\ntype PlanDocument = {\n  schemaVersion: 1;\n  title: string; // up to 80 characters\n  why: { text: string; author: string }[]; // 1 to 10 entries: why this is wanted, credited to the person who said it (text up to 500 characters, author up to 80)\n  claims: PlanClaim[]; // ranked, most important first, at every level\n  notChanging: string[]; // 1 to 10 entries of up to 200 characters; [\"None\"] when nothing stays as it is on purpose\n  risks: string[]; // 1 to 10 entries of up to 200 characters; [\"None\"] when there are none\n  decisions: PlanDecision[]; // up to 20; [] when the owner has nothing to decide\n};\ntype PlanClaim = {\n  id: string; // 1, 2 at the top; 1.1 under 1; 1.1.1 under 1.1; a child's ID extends its parent's; each part is at most 3 digits\n  text: string; // up to 300 characters\n  evidence?: Evidence[]; // up to 3 per claim\n  children?: PlanClaim[]; // nest at most 3 levels deep (1, 1.1, 1.1.1)\n};\ntype Evidence =\n  | { kind: \"code\"; path: string; startLine: number; endLine: number; anchor?: string; note?: string } // a file you read, by workspace path and line range (up to 80 lines); anchor: the first line of the range, copied exactly from the file, up to 300 characters; note up to 200 characters\n  | { kind: \"sketch\"; language: string; code: string; note?: string } // new code that does not exist yet (code up to 4,000 characters)\n  | { kind: \"flow\"; participants: string[]; steps: { from: string; to: string; label: string }[] } // 2 to 8 participants, 1 to 30 steps; from and to name participants\n  | { kind: \"schema\"; entities: { name: string; fields: { name: string; type: string; note?: string }[] }[]; relations: { from: string; to: string; label: string }[] } // 1 to 12 entities\n  | { kind: \"stateMachine\"; states: string[]; initial?: string; transitions: { from: string; to: string; label: string }[] } // 2 to 15 states, 1 to 40 transitions\n  | { kind: \"quote\"; text: string; author: string }; // text up to 500 characters, author up to 80\ntype PlanDecision = {\n  id: string; // d1, d2 and so on\n  claimId: string; // the claim this decision changes\n  question: string; // up to 300 characters\n  options: { id: string; label: string; consequence: string }[]; // 2 to 4; id lowercase letters, digits and hyphens; label up to 80 characters; consequence up to 200\n  recommended: string; // the id of exactly one option\n};\n```\n\nYou are writing the requirements: the level 1 claims (what someone can do or see), notChanging, risks and decisions. Do not describe how it works or where in the code.\n\nClaims: rank them by importance at every level, most important first. Write as many claims as the task needs and no more, and scale the plan to the task: a one-line change gets a tiny plan. Level 1 says what someone can do or see, level 2 says how it works, level 3 says where in the code. How deep the tree goes follows the task. Keep each claim to about 15 words.\n\nRe-read files before citing them, and cite the exact lines. For each `code` item, copy the first cited line exactly into its `anchor`; AgentX uses it to correct line numbers that are off.\n\nEvidence: add it when it proves the claim. A `code` item must cite a real file you read, by workspace path and line range, at most 80 lines. Code that does not exist yet is a `sketch`. Use `flow`, `schema` and `stateMachine` for behaviour that has a flow, a data shape or states. A `quote` credits its author. To quote a comment from the task page, write its author as \"comment c1\" (the comment's ref, nothing else); AgentX shows who wrote it.\n\nDecisions: include only real choices the owner should make, ranked by impact, each on the claim it changes, with 2 to 4 options that each say what follows from choosing them, and exactly one recommended. No decisions is fine.\n\nEvery decision option must be something AgentX can carry out; custom wording goes through Request changes, never an option.\n\n`notChanging` and `risks` are required: say \"None\" when there is nothing to list.\n\nIDs: keep a claim's ID from the previous version of this document when the claim still exists. Give new claims new IDs. Never reuse the ID of a claim that was removed.\n\nA later step may change a claim the owner already approved only when it has to.\n\nRequest:\nFix the retry bug",
+        "workflowMode": "PLAN",
+        "workflowPhase": "REQUIREMENTS"
+      },
+      "projectRevision": 1,
+      "protocolVersion": 1,
+      "workspaceId": "00000011-0000-4000-8000-000000000007"
+    },
+    "operationId": "00000011-0000-4000-8000-000000000010",
+    "pk": "OUTBOX#00000011-0000-4000-8000-000000000011",
+    "sk": "OUTBOX",
+    "status": "PENDING",
+    "workspaceId": "00000011-0000-4000-8000-000000000007"
+  },
+  "piInputs": {
+    "skills": [],
+    "systemPrompt": "You are the AgentX coding worker. AgentX gave you a software task to carry out in a prepared workspace. You work alone: nobody can answer questions while you work, and your changes may become a pull request that people review.\n\nHow to work:\n- Find the relevant code before changing it, and read a file before you edit it.\n- Make the smallest change that fully does what was asked, in the style of the code around it. Don't refactor, rename or reformat code the task doesn't need changed, and keep existing comments and logging.\n- When something is unclear, take the most reasonable reading, carry on, and say what you assumed in your final message.\n- If the same error comes back after two attempts at a fix, stop repeating it. Re-read the error, note what you have tried, and test a different explanation.\n\nTools:\n- Use read to look at files rather than cat or sed. Use edit to change existing files, and write only for new files or complete rewrites.\n\nFinal message:\nKeep it short. Say what you changed and why, name the files, give the commands you ran with their results, and list any assumptions or anything left undone.\n\n<addendum>\nAgentX checks your work after you finish. Work this way:\n1. Reproduce the problem before changing code, and say how you reproduced it.\n2. Run the relevant tests before and after your change.\n3. A test that passed before your change and fails after it is your own regression. Fix your change, not the test; never call it unrelated.\n4. The one exception is a test that checks the old behaviour the task asks you to change. Leave it as it is and name it in your final message, with the behaviour it checks. Never edit or delete a test to make it pass, unless the task explicitly asks you to change tests.\n5. Report the commands you ran and their results.\n6. You must never claim a test passed unless you saw it pass.\nEnd your final message with exactly one line: \"AgentX result: done\" if the work is complete and every test you ran passes, apart from tests you named under rule 4, otherwise \"AgentX result: not done\".\n</addendum>\n\n<project_context>\nProject-specific instructions and guidelines:\n\n<project_instructions path=\"AgentX workspace\">\nAgentX workspace note (written by AgentX, not by any repository):\nThe repository \"demo\" is checked out at repo/demo in this workspace. Make every change inside it; files outside it are not part of the repository or its pull request.\n</project_instructions>\n</project_context>\n\n<cwd>\n<workspace>\n</cwd>",
+    "tools": [
+      "read",
+      "grep",
+      "find",
+      "ls"
+    ]
+  },
+  "reviewSessions": [],
+  "scenario": "plan-ready-full",
+  "taskItems": [
+    {
+      "budgetUsd": 25,
+      "charge": {
+        "member": {
+          "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#SLACK_LIMIT#T0BSHLLUGBD",
+          "sk": "MEMBER#U0MAYA001"
+        },
+        "organization": {
+          "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#SLACK_LIMIT#T0BSHLLUGBD",
+          "sk": "ORGANIZATION"
+        }
+      },
+      "client": "an AI tool",
+      "conversationId": "00000011-0000-4000-8000-00000000000c",
+      "createdAt": "2026-10-20T00:00:00.000Z",
+      "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "developerName": "Maya Chen",
+      "entityType": "DEVELOPER_TASK",
+      "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+      "ownerKey": "2446b7c6138aed8931bbc315672a8fb3ddf52b24c814122f01e1c524381bc972",
+      "pk": "DEVTASK#00000011-0000-4000-8000-000000000006",
+      "preparedBase": [
+        {
+          "baseCommitSha": "d5e5fae6efa239fff60c0365f91fb79a0601be36",
+          "repositoryId": "demo"
+        }
+      ],
+      "project": "payments",
+      "provider": "slack",
+      "requestText": "Fix the retry bug",
+      "share": {
+        "channelId": "C0123456789",
+        "channelName": "payments-dev",
+        "mode": "view",
+        "sharedAt": "2026-10-20T00:00:00.000Z",
+        "sharedReason": "requested",
+        "teamId": "T0BSHLLUGBD",
+        "threadTs": "1695500000.000101"
+      },
+      "shareVersion": 2,
+      "shared": true,
+      "sk": "META",
+      "slackUserId": "U0MAYA001",
+      "startingRevision": 1,
+      "taskId": "00000011-0000-4000-8000-000000000006",
+      "title": "Fix the retry bug",
+      "updatedAt": "2026-10-20T00:00:00.000Z",
+      "workflow": {
+        "artifacts": [],
+        "checkPolicy": {
+          "optional": [],
+          "proposed": [],
+          "required": [],
+          "selectedOptionalIds": []
+        },
+        "createdAt": "2026-10-20T00:00:00.000Z",
+        "decisions": [],
+        "definitionId": "agentx-task-to-pr",
+        "definitionVersion": "1.0.0",
+        "ownerId": "2446b7c6138aed8931bbc315672a8fb3ddf52b24c814122f01e1c524381bc972",
+        "path": "FULL",
+        "reviewPhase": "REQUIREMENTS",
+        "revision": 1,
+        "schemaVersion": 1,
+        "stage": "PLAN",
+        "state": "RUNNING",
+        "taskId": "00000011-0000-4000-8000-000000000006",
+        "updatedAt": "2026-10-20T00:00:00.000Z"
+      },
+      "workspaceId": "00000011-0000-4000-8000-000000000007"
+    },
+    {
+      "deliveredAt": "2026-10-20T00:00:00.000Z",
+      "entityType": "NOTICE",
+      "indexExpiresAt": 1795046400,
+      "pk": "DEVTASK#00000011-0000-4000-8000-000000000006",
+      "sk": "NOTICE#00000011-0000-4000-8000-000000000006:start"
+    },
+    {
+      "deliveredAt": "2026-10-20T00:00:00.000Z",
+      "entityType": "NOTICE",
+      "indexExpiresAt": 1795046400,
+      "pk": "DEVTASK#00000011-0000-4000-8000-000000000006",
+      "postedTs": "1695500000.000102",
+      "sk": "NOTICE#00000011-0000-4000-8000-000000000008:ready"
+    }
+  ],
+  "workerRun": {
+    "ended": "returned"
+  }
+}
