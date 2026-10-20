@@ -30,6 +30,8 @@ const trustedRuntimeBackingOwner = CONTAINED_RUNTIME_PROFILE?.id === "linux-arm6
 
 // Read first, so a partly configured EC2 boot fails before the port opens.
 const invokeAuthentication = invokeAuthenticationFromEnvironment();
+// Pi installs no package for the worker (R56): a settings file's `packages` would otherwise make it run `npmCommand` here.
+process.env.PI_OFFLINE = "1";
 // R56: where a project without a devcontainer runs its commands comes from the environment (always the task sandbox on EC2),
 // so a bad AGENTX_TASK_SHELL, or a request for the local shell on EC2, stops the worker here, not on its first task.
 if (taskShellSelection().kind === "sandbox") {

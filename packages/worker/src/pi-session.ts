@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { mkdir, realpath } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   createAgentSession,
   createBashToolDefinition,
@@ -87,6 +89,24 @@ export interface PiSessionAdapter {
   open?(input: PiSessionInput & { conversationId: string; sessionFile: string }): Promise<PiSessionHandle>;
 }
 
+/** Where the worker keeps its own state that is not the workspace's: a folder of its home, or `AGENTX_WORKER_STATE_DIR`. */
+export const WORKER_STATE_DIRECTORY_ENVIRONMENT = "AGENTX_WORKER_STATE_DIR";
+
+/**
+ * Pi's agent directory for this workspace (ruling R56). Pi reads its settings from it, and a `packages` entry there makes
+ * the worker run `npmCommand` to install it. Task code writes the workspace (its sandbox or devcontainer mounts it), so the
+ * directory is in the worker's own private state, which no task container mounts, and never in the workspace.
+ */
+export function workerPiDirectory(rootPath: string, environment: NodeJS.ProcessEnv = process.env): string {
+  const state = resolve(environment[WORKER_STATE_DIRECTORY_ENVIRONMENT] || join(homedir(), ".agentx-worker"));
+  const workspace = resolve(rootPath);
+  const fromWorkspace = relative(workspace, state);
+  if (fromWorkspace === "" || (!fromWorkspace.startsWith("..") && !isAbsolute(fromWorkspace))) {
+    throw agentXError("CONFIG_INVALID", `${WORKER_STATE_DIRECTORY_ENVIRONMENT} must not be inside the workspace, which task code can write`);
+  }
+  return join(state, "pi", createHash("sha256").update(workspace).digest("hex").slice(0, 16));
+}
+
 export async function createWorkspacePiSession(
   input: {
     rootPath: string;
@@ -102,7 +122,7 @@ export async function createWorkspacePiSession(
 ): Promise<PiSessionHandle> {
   const rootPath = await realpath(resolve(input.rootPath));
   const sessionDirectory = resolve(rootPath, "agent-sessions");
-  const agentDirectory = resolve(rootPath, ".agentx/pi");
+  const agentDirectory = workerPiDirectory(rootPath);
   await Promise.all([
     mkdir(sessionDirectory, { recursive: true, mode: 0o700 }),
     mkdir(agentDirectory, { recursive: true, mode: 0o700 }),
@@ -141,7 +161,7 @@ export async function openRegisteredWorkspacePiSession(
 ): Promise<PiSessionHandle> {
   const rootPath = await realpath(resolve(input.rootPath));
   const sessionDirectory = resolve(rootPath, "agent-sessions");
-  const agentDirectory = resolve(rootPath, ".agentx/pi");
+  const agentDirectory = workerPiDirectory(rootPath);
   const sessionFile = await realpath(resolve(input.sessionFile)).catch(() => {
     throw agentXError(
       "CONVERSATION_STATE_LOST",
@@ -397,10 +417,24 @@ function conversationStats(stats: SessionStats, entries: readonly SessionEntry[]
 export async function createWorkerResources(
   input: Pick<PiSessionInput, "cwd" | "agentDirectory" | "contextFiles" | "extensionFactories">,
 ): Promise<{ resourceLoader: DefaultResourceLoader; settingsManager: SettingsManager }> {
+  // Pi never installs a package for the worker: the reload below would otherwise fetch every `packages` entry of the
+  // settings it reads, running `npmCommand`, in the worker (R56). AgentX loads no package.
+  process.env.PI_OFFLINE = "1";
   const settingsManager = SettingsManager.create(input.cwd, input.agentDirectory, { projectTrusted: false });
   // Pi 0.86+ warms prompt caches with extra paid requests during long tool runs by default ("streaming"); 0.85.1 made
   // none. The mode is a global-only setting, so it is written to AgentX's own agent directory.
   settingsManager.setCacheWarmingMode("off");
+  // Defence in depth for a settings file the worker did not write: PI_OFFLINE stops installs, but Pi still runs `npmCommand`
+  // to find its global package root. AgentX loads no package, extension path, skill, prompt or theme from settings, and
+  // runs no configured shell or npm command, whatever the file says.
+  settingsManager.setNpmCommand(undefined);
+  settingsManager.setPackages([]);
+  settingsManager.setExtensionPaths([]);
+  settingsManager.setSkillPaths([]);
+  settingsManager.setPromptTemplatePaths([]);
+  settingsManager.setThemePaths([]);
+  settingsManager.setShellPath(undefined);
+  settingsManager.setShellCommandPrefix(undefined);
   const resourceLoader = new DefaultResourceLoader({
     cwd: input.cwd,
     agentDir: input.agentDirectory,
