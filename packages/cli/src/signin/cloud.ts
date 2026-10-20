@@ -59,7 +59,7 @@ function checkFlags(flags: CloudSignInFlags): void {
     }
   }
   if (METHOD_IDS.every((method) => off[method] !== true && given[method][0] === undefined)) {
-    throw agentXError("CONFIG_INVALID", "give --github-client-id and --github-client-secret-arn, --google-client-id and --google-client-secret-arn, --no-github or --no-google; agentx signin show lists what is on");
+    throw agentXError("CONFIG_INVALID", "give --github-client-id and --github-client-secret-arn, --google-client-id and --google-client-secret-arn, --no-github or --no-google");
   }
 }
 
@@ -154,7 +154,8 @@ export async function runSigninCloud(services: SigninServices, env: string, flag
   if (first.cloud !== true) throw agentXError("CONFIG_INVALID", `only a Rovara Cloud install has these sign-in methods; ${env} was not installed with --rovara-cloud`);
   for (const method of METHOD_IDS) {
     const { idKey, arnKey, arnFlag } = METHODS[method];
-    const arn = flags[arnKey];
+    // Trimmed here as nextSignIn trims what it stores, so the secret checked is the secret kept.
+    const arn = flags[arnKey]?.trim();
     if (flags[idKey] !== undefined && arn !== undefined) await checkSecret(services, first, arnFlag, arn);
   }
   const holder = (await services.identity.get()).arn;

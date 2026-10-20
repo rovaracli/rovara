@@ -181,6 +181,21 @@ describe("the control-plane client (FR-027)", () => {
     expect((error as ToolError).nextStep).not.toContain("try again later");
   });
 
+  it("maps MACHINE_TIME_EXCEEDED (HTTP 402) to MACHINE_TIME_REACHED with the broker's words and the monthly reset", async () => {
+    const message = "Your free machine time for this month is used up.";
+    const used = vi.fn(async () => reply(402, { error: { code: "MACHINE_TIME_EXCEEDED", message } }));
+    const error = await client(used).startTask(start).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ToolError);
+    expect(error).toMatchObject({ code: "MACHINE_TIME_REACHED", message });
+    expect((error as ToolError).nextStep).toBe("your machine time allowance starts again on the 1st of next month (UTC)");
+    expect((error as ToolError).nextStep).not.toContain("admin");
+    expect(used).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the generic TRIAL_LOCKED step in step with the built one", () => {
+    expect(NEXT_STEPS.TRIAL_LOCKED).toMatch(/^Sign in with GitHub to start your free trial: run npx \S+ login <your AgentX URL> and choose GitHub$/);
+  });
+
   it("stops trying at the deadline when AgentX never answers", async () => {
     vi.useFakeTimers();
     const started = Date.now();

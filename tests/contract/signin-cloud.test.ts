@@ -227,6 +227,20 @@ describe("agentx signin cloud", () => {
     });
   });
 
+  it("checks the secret a flag names without its stray whitespace, and stores it trimmed", async () => {
+    const h = await harness();
+    await run(h, { githubClientId: ` ${github.githubClientId} `, githubClientSecretArn: ` ${GITHUB_ARN}\n` });
+    expect((await readEnvironmentSettings(h.store, "staging"))?.cloudSignIn).toEqual(github);
+  });
+
+  it("refuses, writing nothing, a control-plane stack from before GitHub sign-in, and says to upgrade", async () => {
+    const h = await harness({ parameters: SIGN_IN_PARAMETERS });
+    await expect(run(h, github)).rejects.toThrow(/has no GitHubClientId, GitHubClientSecretArn parameter; it runs an older AgentX release, so upgrade it with agentx upgrade/);
+    expect(h.cloudFormation.calls.map((call) => call.name)).not.toContain("CreateChangeSetCommand");
+    expect((await readEnvironmentSettings(h.store, "staging"))?.cloudSignIn).toBeUndefined();
+    expect((await readInstallAnswers(h.store, "staging"))?.cloudSignIn).toBeUndefined();
+  });
+
   it("works on an install whose init answers were never stored", async () => {
     const h = await harness({ answers: false });
     await run(h, github);
