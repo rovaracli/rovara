@@ -11512,36 +11512,6 @@ exports[`named environment templates > agentx-staging-foundation is unchanged 1`
             },
             {
               "Action": [
-                "ecr:BatchGetImage",
-                "ecr:GetDownloadUrlForLayer",
-                "ecr:BatchImportUpstreamImage",
-                "ecr:CreateRepository",
-              ],
-              "Effect": "Allow",
-              "Resource": {
-                "Fn::Join": [
-                  "",
-                  [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition",
-                    },
-                    ":ecr:",
-                    {
-                      "Ref": "AWS::Region",
-                    },
-                    ":",
-                    {
-                      "Ref": "AWS::AccountId",
-                    },
-                    ":repository/agentx-staging/*/agentx-worker",
-                  ],
-                ],
-              },
-              "Sid": "EcrPullThroughCache",
-            },
-            {
-              "Action": [
                 "logs:CreateLogStream",
                 "logs:PutLogEvents",
               ],
@@ -12930,6 +12900,11 @@ exports[`named environment templates > agentx-staging-runtime is unchanged 1`] =
       "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
       "Type": "AWS::SSM::Parameter::Value<String>",
     },
+    "Ec2WorkerInstanceRoleArn": {
+      "AllowedPattern": "^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$",
+      "Description": "The EC2 workers' instance role, which is allowed to pull the worker image",
+      "Type": "String",
+    },
     "ModelId": {
       "Description": "pi model identifier available in the deployment region",
       "Type": "String",
@@ -12973,7 +12948,7 @@ exports[`named environment templates > agentx-staging-runtime is unchanged 1`] =
       "Type": "String",
     },
     "WorkerImageUri": {
-      "AllowedPattern": "^.+@sha256:[a-f0-9]{64}$",
+      "AllowedPattern": "^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[a-z0-9]([a-z0-9._/-]*[a-z0-9])?@sha256:[a-f0-9]{64}$",
       "Description": "Immutable private ECR linux/arm64 worker image URI",
       "Type": "String",
     },
@@ -12992,6 +12967,278 @@ exports[`named environment templates > agentx-staging-runtime is unchanged 1`] =
         },
       },
       "Type": "AWS::SSM::Parameter",
+    },
+    "WorkerImagePull": {
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "ecr:BatchGetImage",
+                "ecr:GetDownloadUrlForLayer",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ecr:",
+                    {
+                      "Fn::Select": [
+                        0,
+                        {
+                          "Fn::Split": [
+                            ".amazonaws.com/",
+                            {
+                              "Fn::Select": [
+                                1,
+                                {
+                                  "Fn::Split": [
+                                    ".dkr.ecr.",
+                                    {
+                                      "Fn::Select": [
+                                        0,
+                                        {
+                                          "Fn::Split": [
+                                            "@",
+                                            {
+                                              "Ref": "WorkerImageUri",
+                                            },
+                                          ],
+                                        },
+                                      ],
+                                    },
+                                  ],
+                                },
+                              ],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                    ":",
+                    {
+                      "Fn::Select": [
+                        0,
+                        {
+                          "Fn::Split": [
+                            ".dkr.ecr.",
+                            {
+                              "Fn::Select": [
+                                0,
+                                {
+                                  "Fn::Split": [
+                                    "@",
+                                    {
+                                      "Ref": "WorkerImageUri",
+                                    },
+                                  ],
+                                },
+                              ],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                    ":repository/",
+                    {
+                      "Fn::Select": [
+                        1,
+                        {
+                          "Fn::Split": [
+                            ".amazonaws.com/",
+                            {
+                              "Fn::Select": [
+                                1,
+                                {
+                                  "Fn::Split": [
+                                    ".dkr.ecr.",
+                                    {
+                                      "Fn::Select": [
+                                        0,
+                                        {
+                                          "Fn::Split": [
+                                            "@",
+                                            {
+                                              "Ref": "WorkerImageUri",
+                                            },
+                                          ],
+                                        },
+                                      ],
+                                    },
+                                  ],
+                                },
+                              ],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                ],
+              },
+              "Sid": "PullWorkerImage",
+            },
+            {
+              "Action": [
+                "ecr:BatchImportUpstreamImage",
+                "ecr:CreateRepository",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ecr:",
+                    {
+                      "Fn::Select": [
+                        0,
+                        {
+                          "Fn::Split": [
+                            ".amazonaws.com/",
+                            {
+                              "Fn::Select": [
+                                1,
+                                {
+                                  "Fn::Split": [
+                                    ".dkr.ecr.",
+                                    {
+                                      "Fn::Select": [
+                                        0,
+                                        {
+                                          "Fn::Split": [
+                                            "@",
+                                            {
+                                              "Ref": "WorkerImageUri",
+                                            },
+                                          ],
+                                        },
+                                      ],
+                                    },
+                                  ],
+                                },
+                              ],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                    ":",
+                    {
+                      "Fn::Select": [
+                        0,
+                        {
+                          "Fn::Split": [
+                            ".dkr.ecr.",
+                            {
+                              "Fn::Select": [
+                                0,
+                                {
+                                  "Fn::Split": [
+                                    "@",
+                                    {
+                                      "Ref": "WorkerImageUri",
+                                    },
+                                  ],
+                                },
+                              ],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                    ":repository/",
+                    {
+                      "Fn::Select": [
+                        1,
+                        {
+                          "Fn::Split": [
+                            ".amazonaws.com/",
+                            {
+                              "Fn::Select": [
+                                1,
+                                {
+                                  "Fn::Split": [
+                                    ".dkr.ecr.",
+                                    {
+                                      "Fn::Select": [
+                                        0,
+                                        {
+                                          "Fn::Split": [
+                                            "@",
+                                            {
+                                              "Ref": "WorkerImageUri",
+                                            },
+                                          ],
+                                        },
+                                      ],
+                                    },
+                                  ],
+                                },
+                              ],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                ],
+              },
+              "Sid": "CachedWorkerImage",
+            },
+            {
+              "Action": [
+                "ecr:BatchImportUpstreamImage",
+                "ecr:CreateRepository",
+              ],
+              "Effect": "Deny",
+              "NotResource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ecr:*:",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":repository/agentx-staging/*",
+                  ],
+                ],
+              },
+              "Sid": "NoCacheOutsideThePrefix",
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "PolicyName": "WorkerImagePull-staging",
+        "Roles": [
+          {
+            "Fn::Select": [
+              3,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Ref": "Ec2WorkerInstanceRoleArn",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Policy",
     },
     "WorkerModelIdParameter02DE997A": {
       "Properties": {

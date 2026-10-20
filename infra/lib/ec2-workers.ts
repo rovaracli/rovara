@@ -18,8 +18,6 @@ import type { AgentXNaming } from "./naming.js";
 export const EC2_WORKER_PORT = 8080;
 /** Amazon Linux 2023 for arm64, resolved when each instance launches. The boot script installs Docker. */
 export const EC2_WORKER_AMI_PARAMETER = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64";
-/** The repository the release pipeline publishes the worker image to (`public.ecr.aws/<alias>/agentx-worker`, .github/workflows/release.yml). */
-export const EC2_WORKER_IMAGE_REPOSITORY = "agentx-worker";
 /** Holds the OS, Docker and the worker image; the workspace lives on its own volume. */
 export const EC2_WORKER_ROOT_VOLUME_GIB = 30;
 
@@ -97,15 +95,8 @@ export class Ec2WorkerFoundation extends Construct {
       actions: ["ecr:GetAuthorizationToken"],
       resources: ["*"],
     }));
-    // A named environment reads one repository, never repository/* (R56: it is the account's every image, the CDK asset
-    // repository included), cached by its ECR pull-through cache as <prefix>/<publisher alias>/agentx-worker (release.yml).
-    if (naming.env !== undefined) {
-      this.instanceRole.addToPolicy(new iam.PolicyStatement({
-        sid: "EcrPullThroughCache",
-        actions: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchImportUpstreamImage", "ecr:CreateRepository"],
-        resources: [`arn:${Aws.PARTITION}:ecr:${Aws.REGION}:${Aws.ACCOUNT_ID}:repository/${naming.pullThroughPrefix}/*/${EC2_WORKER_IMAGE_REPOSITORY}`],
-      }));
-    }
+    // A named environment's worker role reads its one worker image through a policy the runtime stack attaches, which names
+    // exactly that image's repository (infra/lib/worker-settings.ts): never repository/*, and no statement here.
     // A named environment's workers call models through the model proxy, the only principal with Bedrock access
     // (Task 14); the legacy deployment's workers still call Bedrock themselves.
     if (naming.env === undefined) {

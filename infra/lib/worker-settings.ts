@@ -1,4 +1,4 @@
-import { CfnCondition, Fn } from "aws-cdk-lib";
+import { Aws, CfnCondition, Fn, aws_iam as iam } from "aws-cdk-lib";
 import { providerKeyParameters } from "./model-keys.js";
 import { openRouterRoutingParameter } from "./openrouter.js";
 import { CfnParameter, Stack, type StackProps, aws_ssm as ssm } from "aws-cdk-lib";
@@ -22,9 +22,12 @@ export class WorkerSettingsStack extends Stack {
 
     const imageUri = new CfnParameter(this, "WorkerImageUri", {
       type: "String",
-      allowedPattern: "^.+@sha256:[a-f0-9]{64}$",
+      // A named environment derives the worker role's ECR access from this value, so it must be a private ECR digest
+      // reference whose parts can be told apart; the legacy deployment's pattern is unchanged (ruling R58).
+      allowedPattern: naming.env === undefined ? "^.+@sha256:[a-f0-9]{64}$" : WORKER_IMAGE_URI_PATTERN,
       description: "Immutable private ECR linux/arm64 worker image URI",
     });
+    if (naming.env !== undefined) this.grantWorkerImagePull(naming.env, naming.pullThroughPrefix, imageUri);
     const modelProvider = new CfnParameter(this, "ModelProvider", {
       type: "String",
       default: "amazon-bedrock",
@@ -78,4 +81,46 @@ export class WorkerSettingsStack extends Stack {
       });
     }
   }
+
+  /**
+   * Task 25 (R56): the worker role reads exactly the repository of the image this stack publishes, wherever it lives (a
+   * pull-through release image, a hand-pushed one, an override), never repository/*. The repository, region and account
+   * are cut out of the image URI in CloudFormation. Creating or importing a repository is allowed only for that same
+   * repository and only under the environment's pull-through prefix: an Allow on the exact repository, and a Deny of
+   * those two actions on everything outside the prefix (a CloudFormation condition cannot test a string cut from a
+   * parameter, so IAM does the intersection).
+   */
+  private grantWorkerImagePull(env: string, pullThroughPrefix: string, imageUri: CfnParameter): void {
+    const roleArn = new CfnParameter(this, "Ec2WorkerInstanceRoleArn", {
+      type: "String",
+      allowedPattern: "^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$",
+      description: "The EC2 workers' instance role, which is allowed to pull the worker image",
+    });
+    // arn:<partition>:iam::<account>:role/agentx/<env>/<name>: the name is the fourth part, as the session lifecycle reads it.
+    const roleName = Fn.select(3, Fn.split("/", roleArn.valueAsString));
+    const imageName = Fn.select(0, Fn.split("@", imageUri.valueAsString));
+    const afterEcr = Fn.select(1, Fn.split(".dkr.ecr.", imageName));
+    const account = Fn.select(0, Fn.split(".dkr.ecr.", imageName));
+    const region = Fn.select(0, Fn.split(".amazonaws.com/", afterEcr));
+    const repository = Fn.select(1, Fn.split(".amazonaws.com/", afterEcr));
+    const repositoryArn = `arn:${Aws.PARTITION}:ecr:${region}:${account}:repository/${repository}`;
+    new iam.CfnPolicy(this, "WorkerImagePull", {
+      policyName: `WorkerImagePull-${env}`,
+      roles: [roleName],
+      policyDocument: {
+        Version: "2012-10-17",
+        Statement: [
+          { Sid: "PullWorkerImage", Effect: "Allow", Action: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"], Resource: repositoryArn },
+          { Sid: "CachedWorkerImage", Effect: "Allow", Action: ["ecr:BatchImportUpstreamImage", "ecr:CreateRepository"], Resource: repositoryArn },
+          {
+            Sid: "NoCacheOutsideThePrefix", Effect: "Deny", Action: ["ecr:BatchImportUpstreamImage", "ecr:CreateRepository"],
+            NotResource: `arn:${Aws.PARTITION}:ecr:*:${Aws.ACCOUNT_ID}:repository/${pullThroughPrefix}/*`,
+          },
+        ],
+      },
+    });
+  }
 }
+
+/** A private ECR image pinned by digest, with a lower-case repository name (one or more path parts). */
+export const WORKER_IMAGE_URI_PATTERN = "^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[a-z0-9]([a-z0-9._/-]*[a-z0-9])?@sha256:[a-f0-9]{64}$";

@@ -108,23 +108,13 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
     const ecr = (templates: Template[]) => statementsOf(templates).filter((statement) => [statement.Action].flat().some((action) => action.startsWith("ecr:")));
     const resources = (statement: Statement) => JSON.stringify(statement.Resource);
 
-    it("gives a named environment no ECR statement on repository/*, only the token (which AWS lets no resource scope)", () => {
+    it("gives a named environment's role no ECR statement on repository/*, only the token (which AWS lets no resource scope)", () => {
       const statements = ecr([foundation]).filter((statement) => statement.Sid !== undefined);
-      expect(statements.map((statement) => statement.Sid).sort()).toEqual(["EcrPullThroughCache", "EcrTokenAccess"]);
-      for (const statement of statements) {
-        if (statement.Sid === "EcrTokenAccess") continue;
-        expect(resources(statement), statement.Sid).not.toMatch(/repository\/\*"/u);
-      }
-      expect(JSON.stringify(foundation.toJSON())).not.toContain("EcrImageAccess");
+      expect(statements.map((statement) => statement.Sid)).toEqual(["EcrTokenAccess"]);
+      expect(JSON.stringify(foundation.toJSON())).not.toMatch(/EcrImageAccess|EcrPullThroughCache|repository\/\*/u);
     });
 
-    it("limits a named environment to the cached worker repository: <prefix>/<publisher alias>/agentx-worker", () => {
-      const [cache] = ecr([foundation]).filter((statement) => statement.Sid === "EcrPullThroughCache");
-      expect(cache!.Action).toEqual(["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchImportUpstreamImage", "ecr:CreateRepository"]);
-      expect(resources(cache!)).toContain("repository/agentx-staging/*/agentx-worker\"");
-      expect(resources(cache!)).not.toContain("repository/agentx-staging/*\"");
-    });
-
+    // The image's own repository is granted by the runtime stack, from the image URI: tests/contract/worker-image-pull.test.ts.
     // Ruling R58: the production templates do not change in this task, so its role keeps what it had.
     it("leaves the legacy deployment's worker role as it was (ruling R58)", () => {
       const statements = ecr(legacy).filter((statement) => ["EcrImageAccess", "EcrTokenAccess", "EcrPullThroughCache"].includes(statement.Sid ?? ""));
@@ -132,12 +122,6 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
       expect(resources(statements[0]!)).toContain("repository/*\"");
     });
 
-    it("never grants a worker role ecr:CreateRepository outside the worker's cached repository", () => {
-      for (const statement of ecr([foundation]).filter((entry) => ["EcrImageAccess", "EcrPullThroughCache"].includes(entry.Sid ?? ""))) {
-        if (![statement.Action].flat().includes("ecr:CreateRepository")) continue;
-        expect(resources(statement)).toContain("/agentx-worker");
-      }
-    });
   });
 
   it("launches arm64 Amazon Linux 2023 m6g.large with IMDSv2 at one hop and an encrypted root volume", () => {
@@ -181,7 +165,7 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
     expect(ofType(foundation, "AWS::EC2::SecurityGroup").map(([, r]) => r.Properties.GroupName)).not.toContain("agentx-staging-workers");
   });
 
-  it("gives instances ECR pull and their own log group, and nothing of Bedrock, retired runtime, KMS or SSM", () => {
+  it("gives instances the ECR token and their own log group, and nothing of Bedrock, retired runtime, KMS or SSM", () => {
     const [[, profile]] = ofType(foundation, "AWS::IAM::InstanceProfile") as [[string, Resource]];
     expect(profile.Properties.Path).toBe("/agentx/staging/");
     const roleId = (profile.Properties.Roles as Array<{ Ref: string }>)[0]!.Ref;
@@ -189,10 +173,8 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
     expect(JSON.stringify(role.Properties.AssumeRolePolicyDocument)).toContain("ec2.amazonaws.com");
     const policies = ofType(foundation, "AWS::IAM::Policy").filter(([, p]) => JSON.stringify(p.Properties.Roles).includes(roleId));
     const actions = actionsOf(policies.flatMap(([, p]) => (p.Properties.PolicyDocument as { Statement: Array<{ Action: string | string[] }> }).Statement));
-    expect(new Set(actions)).toEqual(new Set([
-      "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:GetAuthorizationToken", "ecr:BatchImportUpstreamImage", "ecr:CreateRepository",
-      "logs:CreateLogStream", "logs:PutLogEvents",
-    ]));
+    // The image's own repository is granted by the runtime stack (worker-image-pull.test.ts), so only the token is here.
+    expect(new Set(actions)).toEqual(new Set(["ecr:GetAuthorizationToken", "logs:CreateLogStream", "logs:PutLogEvents"]));
     foundation.hasResourceProperties("AWS::Logs::LogGroup", { LogGroupName: "/agentx/staging/worker", RetentionInDays: 30 });
   });
 

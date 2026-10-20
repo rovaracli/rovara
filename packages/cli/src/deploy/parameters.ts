@@ -302,6 +302,8 @@ export function stackParameters(part: DeployPart, answers: InstallAnswers, outpu
       return {
         ...base,
         WorkerImageUri: resolvedImage(answers, "worker", outputs),
+        // The worker role reads exactly its image's repository (task 25): the runtime stack attaches that policy to the role.
+        Ec2WorkerInstanceRoleArn: required(outputs, "foundation", "Ec2WorkerInstanceRoleArn", answers.env),
         ModelProvider: answers.models.providers?.worker ?? "amazon-bedrock",
         ModelId: answers.models.worker,
         ...secret, ...routing,
