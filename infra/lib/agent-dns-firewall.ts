@@ -9,6 +9,11 @@ import { Construct } from "constructs";
 export const DEFAULT_AGENT_ALLOW_DOMAINS: readonly string[] = [
   // AWS services
   "*.amazonaws.com", "*.aws",
+  // The VPC's own names: a machine's hostname (ip-10-42-....<region>.compute.internal, or ec2.internal in
+  // us-east-1) and reverse lookups inside the VPC's 10.42.0.0/16 range. These are private zones, never
+  // delegated to the internet, so allowing them opens no exfiltration path; build tools and test servers
+  // that resolve their own hostname otherwise fail.
+  "*.compute.internal", "*.ec2.internal", "*.42.10.in-addr.arpa",
   // GitHub (the model proxy image comes from ghcr.io, whose blobs come from *.githubusercontent.com)
   "github.com", "*.github.com", "*.githubusercontent.com", "ghcr.io", "*.ghcr.io",
   // Package registries: npm and Yarn, Python, Rust, Go, Java, Ruby

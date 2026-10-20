@@ -3,6 +3,7 @@ import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { DEFAULT_AGENT_ALLOW_DOMAINS, DNS_FIREWALL_ASSOCIATION_PRIORITY } from "../../infra/lib/agent-dns-firewall.js";
+import { AGENTX_PRODUCTION_VPC_CIDR } from "../../infra/lib/production-foundation.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -59,6 +60,14 @@ describe("agent DNS firewall (cloud installs)", () => {
       "slack.com", "*.slack.com", "api.linear.app", "mcp.linear.app", "*.atlassian.net", "app.asana.com",
     ]) expect(DEFAULT_AGENT_ALLOW_DOMAINS).toContain(domain);
     expect(DEFAULT_AGENT_ALLOW_DOMAINS).toHaveLength(new Set(DEFAULT_AGENT_ALLOW_DOMAINS).size);
+  });
+
+  it("lets machines resolve their own VPC names and nothing wider (found live on staging: hostname lookups were blocked)", () => {
+    for (const domain of ["*.compute.internal", "*.ec2.internal", "*.42.10.in-addr.arpa"]) expect(DEFAULT_AGENT_ALLOW_DOMAINS).toContain(domain);
+    // A public reverse zone would let a query for <data>.<attacker IP>.in-addr.arpa reach the attacker's name server.
+    expect(DEFAULT_AGENT_ALLOW_DOMAINS).not.toContain("*.in-addr.arpa");
+    expect(DEFAULT_AGENT_ALLOW_DOMAINS).not.toContain("*.arpa");
+    expect(AGENTX_PRODUCTION_VPC_CIDR).toBe("10.42.0.0/16");
   });
 
   it("associates the rule group with the install VPC", () => {
