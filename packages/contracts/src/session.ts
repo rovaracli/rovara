@@ -365,6 +365,8 @@ export const Ec2WorkerBootConfigSchema = z
     openaiSecretArn: z.string().max(SECRET_ARN_MAX_LENGTH).regex(SECRET_ARN_PATTERN).optional(),
     /** AGENTX_MODEL_PROXY_URL: the internal model proxy a named environment's workers call models through. */
     modelProxyUrl: z.string().url().max(512).regex(/^https?:\/\//).regex(SHELL_SAFE, "model proxy URL has unsafe characters").optional(),
+    /** AGENTX_ENVIRONMENT_KIND: set for a named environment's worker, whose launcher keeps it off the host network and away from the metadata service. Absent for the legacy deployment. */
+    environmentKind: z.literal("named").optional(),
     /** PI_CACHE_RETENTION */
     promptCacheRetention: z.enum(["short", "long"]),
     /** AGENTX_LOG_GROUP: the CloudWatch Logs group the worker container writes to. */
@@ -396,6 +398,7 @@ export function ec2WorkerBootScript(config: Ec2WorkerBootConfig, bootScript: str
   if (parsed.anthropicSecretArn) variables.push([KEYED_MODEL_PROVIDERS.anthropic.secretArnVariable, parsed.anthropicSecretArn]);
   if (parsed.openaiSecretArn) variables.push([KEYED_MODEL_PROVIDERS.openai.secretArnVariable, parsed.openaiSecretArn]);
   if (parsed.modelProxyUrl) variables.push(["AGENTX_MODEL_PROXY_URL", parsed.modelProxyUrl]);
+  if (parsed.environmentKind) variables.push(["AGENTX_ENVIRONMENT_KIND", parsed.environmentKind]);
   const body = bootScript.replace(/^#!.*\n/, "");
   return [
     "#!/bin/bash",

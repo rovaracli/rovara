@@ -23,7 +23,7 @@ readonly WORKER_CONTAINER=agentx-worker
 # Docker's data root, on the workspace volume so devcontainer images and volumes survive an idle stop (#121).
 readonly DOCKER_DATA_ROOT=$MOUNT_PATH/.docker
 readonly DOCKER_SOCKET=/var/run/docker.sock
-# The provisioner attaches the volume after the instance is running, so it may appear late.
+# The volume is attached after the instance runs, so it may appear late.
 readonly DEVICE_WAIT_SECONDS=${AGENTX_DEVICE_WAIT_SECONDS:-120}
 # Where /sys and /dev/disk are; tests set it.
 readonly HOST_ROOT=${AGENTX_HOST_ROOT:-}
@@ -37,7 +37,7 @@ readonly RETRY_MAX_SECONDS=30
 readonly BOOT_DEADLINE=$((SECONDS + ${AGENTX_BOOT_DEADLINE_SECONDS:-480}))
 # The worker's port, which the provisioner probes; a failed boot answers there instead.
 readonly WORKER_PORT=8080
-# Where fail records its reason, since it may run in a command substitution's subshell.
+# Where fail records its reason (it may run in a subshell).
 readonly FAILURE_FILE=/run/agentx-boot-failure
 
 log() { printf 'agentx-boot: %s\n' "$*" >&2; }
@@ -47,7 +47,7 @@ fail() {
   exit 1
 }
 
-# The time limit for one network try: LIMIT seconds, or less when the boot deadline is closer.
+# Time limit for one network try: LIMIT seconds, or less near the boot deadline.
 try_seconds() {
   local remaining=$((BOOT_DEADLINE - SECONDS))
   ((remaining > 1)) || remaining=1
@@ -129,7 +129,7 @@ require_configuration() {
     || fail "AGENTX_EXPECT_NEW_VOLUME must be true or false"
 }
 
-# Prints the value only once it is whole, so a try that fails part-way leaves nothing behind.
+# Prints the value only once it is whole.
 imds_once() {
   local token value
   token=$(curl -fsS --connect-timeout 2 --max-time 5 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 300') \
@@ -289,6 +289,7 @@ AGENTX_SESSION_GENERATION=$AGENTX_SESSION_GENERATION
 AGENTX_SANDBOX_IMAGE=$AGENTX_WORKER_IMAGE
 AGENTX_RUNTIME=ec2
 EOF
+  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then printf 'AGENTX_ENVIRONMENT_KIND=named\n' >>"$WORKER_ENV_FILE"; fi
   if [[ -n ${AGENTX_MODEL_PROXY_URL:-} ]]; then
     # A model proxy holds the provider keys: the worker gets its address and no secret reference at all.
     printf 'AGENTX_MODEL_PROXY_URL=%s\n' "$AGENTX_MODEL_PROXY_URL" >>"$WORKER_ENV_FILE"
@@ -322,8 +323,9 @@ readonly DOCKER_SOCKET=/var/run/docker.sock
 readonly WORKER_UID=1000
 readonly WORKER_GID=1000
 log() { printf 'agentx-worker-start: %s\n' "$*" >&2; }
-# R56: a named environment's worker runs on a bridge; the legacy worker is unchanged (R58).
-named_environment() { grep -q '^AGENTX_MODEL_PROXY_URL=.' "$WORKER_ENV_FILE"; }
+# R56: a named environment (AGENTX_ENVIRONMENT_KIND=named) runs on a bridge; the legacy worker is unchanged (R58).
+named_environment() { grep -qx 'AGENTX_ENVIRONMENT_KIND=named' "$WORKER_ENV_FILE"; }
+require_model_proxy() { ! named_environment || grep -q '^AGENTX_MODEL_PROXY_URL=.' "$WORKER_ENV_FILE"; }
 worker_network_args() {
   if named_environment; then printf '%s\n' --network bridge --publish 8080:8080; else printf '%s\n' --network host; fi
 }
@@ -338,6 +340,7 @@ worker_image=$(cat /etc/agentx/worker-image 2>/dev/null || true)
 [[ "$docker" == /* && -x "$docker" ]] || { log 'Docker CLI unavailable'; exit 1; }
 [[ "$worker_image" =~ ^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]] || { log 'worker image identity is invalid'; exit 1; }
 docker_gid=$(stat -c %g "$DOCKER_SOCKET") || { log 'Docker socket unavailable'; exit 1; }
+require_model_proxy || { log 'no model proxy'; exit 1; }
 if named_environment; then block_imds || { log 'iptables failed'; exit 1; }; fi
 mapfile -t network_args < <(worker_network_args)
 runtime_ready=false

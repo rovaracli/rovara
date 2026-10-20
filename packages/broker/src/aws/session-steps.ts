@@ -139,6 +139,8 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
           ...(settings.anthropicSecretArn ? { anthropicSecretArn: settings.anthropicSecretArn } : {}),
           ...(settings.openaiSecretArn ? { openaiSecretArn: settings.openaiSecretArn } : {}),
           ...(settings.modelProxyUrl ? { modelProxyUrl: settings.modelProxyUrl } : {}),
+          // A named environment is the one that requires a model proxy; the legacy deployment's launch says nothing.
+          ...(dependencies.modelProxyRequired ? { environmentKind: "named" as const } : {}),
           logGroupName: dependencies.logGroupName,
         }, dependencies.bootScript());
         // Already base64 gzip, the form RunInstances takes (#229).

@@ -94,6 +94,14 @@ describe("session steps", () => {
       expect(userData).not.toMatch(/^export \w*_SECRET_ARN=/m);
     });
 
+    // Task 25 Part B fix: the launcher switches on this, not on whether a proxy URL happens to be present.
+    it("says explicitly that this is a named environment, and the legacy launch says nothing", async () => {
+      const { handler } = setup(undefined, { modelProxyRequired: true }, named(proxyUrl));
+      expect(gunzipSync(Buffer.from((await launch(handler)).userData, "base64")).toString("utf8")).toContain("export AGENTX_ENVIRONMENT_KIND='named'");
+      const legacy = setup();
+      expect(gunzipSync(Buffer.from((await launch(legacy.handler)).userData, "base64")).toString("utf8")).not.toContain("export AGENTX_ENVIRONMENT_KIND=");
+    });
+
     it("refuses to launch a worker without the proxy URL when the environment requires one, naming the missing setting", async () => {
       const { handler } = setup(undefined, { modelProxyRequired: true }, named());
       await expect(launch(handler)).rejects.toThrow(/model proxy URL.*missing/i);

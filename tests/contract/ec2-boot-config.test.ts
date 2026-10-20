@@ -174,6 +174,12 @@ describe("EC2 worker user data", () => {
     expect(() => ec2WorkerUserData(config, incompressible)).toThrow(/worker user data is \d+ bytes compressed; EC2 allows less than 16384/);
   });
 
+  it("exports AGENTX_ENVIRONMENT_KIND only for a named environment, and refuses any other value", () => {
+    expect(ec2WorkerBootScript({ ...config, environmentKind: "named" }, bootScript)).toContain("export AGENTX_ENVIRONMENT_KIND='named'");
+    expect(ec2WorkerBootScript(config, bootScript)).not.toContain("export AGENTX_ENVIRONMENT_KIND=");
+    expect(() => ec2WorkerBootScript({ ...config, environmentKind: "legacy" as "named" }, bootScript)).toThrow();
+  });
+
   it("exports exactly the variables the boot script requires", () => {
     const required = /for name in ([\s\S]*?); do/.exec(bootScript)?.[1]?.split(/[\s\\]+/).filter(Boolean) ?? [];
     const exported = [...ec2WorkerBootScript(config, bootScript).matchAll(/^export (\w+)=/gm)].map((match) => match[1]);
@@ -203,7 +209,7 @@ describe("EC2 worker user data", () => {
       writeFileSync(envFile, `${lines.join("\n")}\n`);
       return { directory, envFile };
     };
-    const NAMED = ["AGENTX_MODEL_PROVIDER=amazon-bedrock", "AGENTX_MODEL_PROXY_URL=http://proxy.test:4000"];
+    const NAMED = ["AGENTX_MODEL_PROVIDER=amazon-bedrock", "AGENTX_ENVIRONMENT_KIND=named", "AGENTX_MODEL_PROXY_URL=http://proxy.test:4000"];
     const LEGACY = ["AGENTX_MODEL_PROVIDER=amazon-bedrock", "AGENTX_ANTHROPIC_SECRET_ARN=", "AGENTX_OPENAI_SECRET_ARN="];
 
     const networkArgs = (lines: string[]) => {
@@ -223,6 +229,44 @@ describe("EC2 worker user data", () => {
     it("leaves the legacy deployment's worker on the host network, where its Bedrock calls need the instance role", () => {
       expect(networkArgs(LEGACY)).toEqual(["--network", "host"]);
       expect(networkArgs(["AGENTX_MODEL_PROXY_URL="])).toEqual(["--network", "host"]);
+    });
+
+    it("tells a named environment by an explicit marker, not by whether a proxy URL is present", () => {
+      // A named environment that lost its proxy URL is still named: bridge, never the host network.
+      expect(networkArgs(["AGENTX_ENVIRONMENT_KIND=named"])).toEqual(["--network", "bridge", "--publish", "8080:8080"]);
+      // A proxy URL alone does not make a legacy launch named.
+      expect(networkArgs(["AGENTX_MODEL_PROXY_URL=http://proxy.test:4000"])).toEqual(["--network", "host"]);
+    });
+
+    it("refuses to start a named worker that has no model proxy URL", () => {
+      const check = (lines: string[]) => {
+        const { envFile } = withEnvironment(lines);
+        const functions = ["named_environment", "require_model_proxy"].map(launcherFunction).join("\n");
+        expect(functions).toContain("require_model_proxy()");
+        return spawnSync("bash", ["-c", `readonly WORKER_ENV_FILE=${envFile}\n${functions}\nrequire_model_proxy`], { encoding: "utf8" }).status;
+      };
+      expect(check(["AGENTX_ENVIRONMENT_KIND=named"])).not.toBe(0);
+      expect(check(["AGENTX_ENVIRONMENT_KIND=named", "AGENTX_MODEL_PROXY_URL="])).not.toBe(0);
+      expect(check(NAMED)).toBe(0);
+      expect(check(LEGACY)).toBe(0);
+      expect(workerLauncher).toContain("require_model_proxy || {");
+    });
+
+    it("writes the marker to worker.env only for a named environment", () => {
+      const written = (kind?: string) => {
+        const directory = mkdtempSync(join(tmpdir(), "boot-env-"));
+        const file = join(directory, "etc", "worker.env");
+        const fn = /^write_worker_environment\(\) \{[\s\S]*?^\}$/m.exec(bootScript)?.[0] ?? "";
+        const run = spawnSync("bash", ["-c", `readonly WORKER_ENV_FILE=${file} MOUNT_PATH=/mnt/workspace\n${fn}\nwrite_worker_environment us-east-1`], {
+          encoding: "utf8",
+          env: { PATH: process.env.PATH ?? "", AGENTX_CONTROL_PLANE_URL: "https://c.test", AGENTX_MODEL_PROVIDER: "amazon-bedrock", AGENTX_MODEL_ID: "m", PI_CACHE_RETENTION: "short",
+            AGENTX_INVOKE_PUBLIC_KEY: "k", AGENTX_WORKSPACE_ID: "w", AGENTX_SESSION_GENERATION: "1", AGENTX_WORKER_IMAGE: "image", ...(kind === undefined ? {} : { AGENTX_ENVIRONMENT_KIND: kind }) },
+        });
+        expect(run.status, run.stderr).toBe(0);
+        return readFileSync(file, "utf8");
+      };
+      expect(written("named")).toContain("AGENTX_ENVIRONMENT_KIND=named\n");
+      expect(written()).not.toContain("export AGENTX_ENVIRONMENT_KIND=");
     });
 
     it("never says --network host outside the legacy branch", () => {
