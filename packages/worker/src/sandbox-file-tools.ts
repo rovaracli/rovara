@@ -18,7 +18,7 @@ import {
   type WriteOperations,
 } from "@earendil-works/pi-coding-agent";
 import { hostPath as devcontainerHostPath } from "./devcontainer.js";
-import { notMountedMessage, toContainerPath, toHostPath } from "./devcontainer-file-paths.js";
+import { notMountedMessage, type FileMount, toContainerPath, toHostPath } from "./devcontainer-file-paths.js";
 import { FileOpsInterruptedError, fileOpsExec, type FileOpsReply, type FileOpsResult, type FileOpsTarget } from "./file-ops-exec.js";
 import type { SandboxFileRequest } from "./sandbox-file-ops.js";
 
@@ -62,11 +62,23 @@ function map(env: ToolEnvironment, path: string): Mapped {
   const { target } = env;
   if (target.mounts !== undefined) {
     const mapped = toContainerPath(target.mounts, env.cwd, path);
+    // A search or listing with no path means the working folder, the workspace root, which is not a mount. It defaults to the
+    // repository's mount, as the agent's shell sees it; any other workspace-level path stays NOT_MOUNTED.
+    if ("notMounted" in mapped && absolute(path, env.cwd) === posix.normalize(env.cwd)) {
+      const repository = repositoryMount(target);
+      if (repository !== undefined) return { path: repository.containerPath, root: repository.containerPath };
+    }
     if ("notMounted" in mapped) throw new FileToolError("NOT_MOUNTED", notMountedMessage(mapped.notMounted, target.mounts));
     return { path: mapped.containerPath, root: mapped.mountRoot };
   }
   const known = target.paths === undefined ? path : devcontainerHostPath(target.paths, path);
   return { path: absolute(known, env.cwd), root: target.root };
+}
+
+/** The mount of the devcontainer's repository: the one at its workspace folder, or the only mount there is. */
+function repositoryMount(target: FileOpsTarget): FileMount | undefined {
+  const mounts = target.mounts ?? [];
+  return mounts.find((mount) => mount.containerPath === target.root) ?? (mounts.length === 1 ? mounts[0] : undefined);
 }
 
 function backToHost(env: ToolEnvironment, containerPath: string): string {
@@ -81,6 +93,7 @@ function refusal(code: string, message: string, shown: string): FileToolError {
     case "ENOENT": return new FileToolError("ENOENT", `ENOENT: no such file or directory, '${shown}'`);
     case "EISDIR": return new FileToolError("EISDIR", `EISDIR: illegal operation on a directory, '${shown}'`);
     case "ENOTDIR": return new FileToolError("ENOTDIR", `ENOTDIR: not a directory, '${shown}'`);
+    case "PATTERN_TOO_SLOW": return new FileToolError("PATTERN_TOO_SLOW", message);
     case "TOO_LARGE": return new FileToolError("TOO_LARGE", `${shown}: ${message}. Use bash (head, tail or sed -n) to work with part of it.`);
     default: return new FileToolError("INVALID", message);
   }

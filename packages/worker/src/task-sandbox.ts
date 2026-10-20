@@ -35,6 +35,9 @@ export const TASK_SANDBOX_USER = "1000:1000";
 /** Where the worker image (which is the sandbox image) keeps Node and the file-tool helper (environments/base/Dockerfile). */
 export const SANDBOX_FILE_OPS_NODE = "/usr/local/bin/node";
 export const SANDBOX_FILE_OPS_HELPER = "/opt/agentx/packages/worker/dist/sandbox-file-ops.js";
+/** The most CPU and processes one sandbox may use. */
+export const TASK_SANDBOX_CPUS = "2";
+export const TASK_SANDBOX_PIDS_LIMIT = "1024";
 /** The environment variable that names the sandbox image; boot.sh sets it to the worker's own image. */
 export const TASK_SANDBOX_IMAGE_ENVIRONMENT = "AGENTX_SANDBOX_IMAGE";
 /** `local` or `sandbox` (the default): where a project without a devcontainer runs its commands. `local` is for tests and a developer's machine, never EC2. */
@@ -123,6 +126,9 @@ export function taskSandboxRunArgs(input: TaskSandboxRunInput): string[] {
     "--label", `${TASK_SANDBOX_WORKSPACE_LABEL}=${workspaceKey(input.rootPath)}`,
     "--network", TASK_SANDBOX_NETWORK,
     "--user", TASK_SANDBOX_USER,
+    // A sandbox shares the instance with the worker: a runaway command (or a file-tool search) must not take every core or process.
+    "--cpus", TASK_SANDBOX_CPUS,
+    "--pids-limit", TASK_SANDBOX_PIDS_LIMIT,
     "--cap-drop", "ALL",
     "--security-opt", "no-new-privileges",
     "--volume", `${input.rootPath}:${input.rootPath}`,

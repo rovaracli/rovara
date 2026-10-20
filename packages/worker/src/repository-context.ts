@@ -1,7 +1,8 @@
 import { readFile, realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { AgentXNameSchema, RelativeWorkspacePathSchema } from "@agentx/contracts";
 import type { PreparationManifest } from "./prepare.js";
+import { runFileOp } from "./sandbox-file-ops.js";
 
 // Pi discovers these names in its working directory, in the directories above it, and in the
 // agent directory. The worker runs Pi at the workspace root, so the repositories checked out
@@ -133,6 +134,9 @@ async function loadRepositoryContextFile(
       diagnostic: `skipped the context file of ${repository.name}: ${repository.path} resolves outside the workspace`,
     };
   }
+  // R56: the task controls these files and can flip one between a real file and a link while this reads it, so on Linux the
+  // read is confined to the repository and never lets the kernel follow a link (the file tools' own walk).
+  if (process.platform === "linux") return loadConfinedContextFile(directory, repository);
   for (const candidate of REPOSITORY_CONTEXT_FILE_CANDIDATES) {
     const candidatePath = resolve(directory, candidate);
     const metadata = await stat(candidatePath).catch(() => undefined);
@@ -157,6 +161,41 @@ async function loadRepositoryContextFile(
       };
     }
     return { file: { path: resolvedPath, content: labelledContent(repository, candidate, content) } };
+  }
+  return {};
+}
+
+/** The same checks as the portable path above, through the no-follow walk rooted at the repository's folder. */
+async function loadConfinedContextFile(
+  directory: string,
+  repository: WorkspaceRepositoryReference,
+): Promise<{ file?: RepositoryContextFile; diagnostic?: string }> {
+  const outside = (candidate: string) => ({ diagnostic: `skipped ${repository.path}/${candidate}: it resolves outside the repository` });
+  const tooBig = (candidate: string, detail: string) => ({ diagnostic: `skipped ${repository.path}/${candidate}: ${detail}` });
+  for (const candidate of REPOSITORY_CONTEXT_FILE_CANDIDATES) {
+    const info = await runFileOp({ root: directory, op: "stat", path: candidate });
+    if (!info.ok) {
+      if (info.code === "OUTSIDE") return outside(candidate);
+      // Missing names and broken links are passed over, as Pi passes over them; anything else contributes no context.
+      if (info.code === "ENOENT" || info.code === "ENOTDIR") continue;
+      return {};
+    }
+    const metadata = info.result as { type?: string; size?: number };
+    if (metadata.type !== "file") continue;
+    if ((metadata.size ?? 0) > MAX_REPOSITORY_CONTEXT_FILE_BYTES) {
+      return tooBig(candidate, `${String(metadata.size)} bytes exceeds the ${MAX_REPOSITORY_CONTEXT_FILE_BYTES}-byte limit`);
+    }
+    const read = await runFileOp({ root: directory, op: "readFile", path: candidate });
+    if (!read.ok) {
+      if (read.code === "OUTSIDE") return outside(candidate);
+      if (read.code === "TOO_LARGE") return tooBig(candidate, `it exceeds the ${MAX_REPOSITORY_CONTEXT_FILE_BYTES}-byte limit`);
+      return {};
+    }
+    const content = Buffer.from((read.result as { contentBase64: string }).contentBase64, "base64").toString("utf8");
+    if (Buffer.byteLength(content, "utf8") > MAX_REPOSITORY_CONTEXT_FILE_BYTES) {
+      return tooBig(candidate, `it exceeds the ${MAX_REPOSITORY_CONTEXT_FILE_BYTES}-byte limit`);
+    }
+    return { file: { path: join(directory, candidate), content: labelledContent(repository, candidate, content) } };
   }
   return {};
 }

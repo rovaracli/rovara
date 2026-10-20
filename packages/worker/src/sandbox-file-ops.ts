@@ -18,7 +18,8 @@ import type { Dirent, Stats } from "node:fs";
 import { lstat, mkdir, open, opendir, readlink, realpath, rename, unlink, access } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 
 /** The prefix of the temporary file an atomic write makes in the target's own directory. */
 export const FILE_OPS_TEMP_PREFIX = ".agentx-file-ops-";
@@ -33,8 +34,12 @@ const MAX_CONTEXT_LINES = 50;
 const MAX_RESULT_LIMIT = 10_000;
 const SKIPPED_DIRECTORIES: ReadonlySet<string> = new Set([".git", "node_modules"]);
 const WATCHDOG_MS = 58_000;
+/** How long a grep or a glob may match before the helper gives up on the pattern (the match runs in a thread it can end). */
+export const DEFAULT_MATCH_DEADLINE_MS = 20_000;
+/** Names the variable that lowers the deadline (the contract test sets it); it is the container's, never the agent's. */
+export const MATCH_DEADLINE_ENVIRONMENT = "AGENTX_FILE_OPS_DEADLINE_MS";
 
-export type FileOpsErrorCode = "ENOENT" | "EISDIR" | "ENOTDIR" | "OUTSIDE" | "EACCES" | "TOO_LARGE" | "INVALID";
+export type FileOpsErrorCode = "ENOENT" | "EISDIR" | "ENOTDIR" | "OUTSIDE" | "EACCES" | "TOO_LARGE" | "INVALID" | "PATTERN_TOO_SLOW";
 
 export type SandboxFileRequest = { root: string } & (
   | { op: "readFile"; path: string; /** Read only this many leading bytes (an image check); absent: the whole file. */ head?: number }
@@ -317,7 +322,8 @@ export function globToRegExp(pattern: string): RegExp {
     else if (char === "\\" && index + 1 < pattern.length) { index += 1; source += pattern[index]!.replace(/[.*+?^${}()|[\]\\/]/gu, "\\$&"); }
     else source += char.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   }
-  return new RegExp(`^${source}$`, "su");
+  // No `u` flag, so the linear-time fallback for catastrophic backtracking can apply (see grepOp).
+  return new RegExp(`^${source}$`, "s");
 }
 
 // --- tree walking -------------------------------------------------------------------------------------------------------
@@ -633,15 +639,13 @@ function absoluteOfPath(root: string, path: string): string {
 
 async function grepOp(walker: RootWalker, request: Extract<SandboxFileRequest, { op: "grep" }>): Promise<SandboxFileResult> {
   if (typeof request.pattern !== "string" || request.pattern === "") throw new FileOpsError("INVALID", "the search pattern is empty");
+  // No `u` flag: V8's linear-time fallback for catastrophic backtracking (the flag the worker starts this process with) does
+  // not apply to a `u` or `i` expression. A case-insensitive search still has the deadline.
   let expression: RegExp;
   try {
-    expression = new RegExp(request.literal === true ? request.pattern.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&") : request.pattern, request.ignoreCase === true ? "iu" : "u");
+    expression = new RegExp(request.literal === true ? request.pattern.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&") : request.pattern, request.ignoreCase === true ? "i" : "");
   } catch (error) {
-    try {
-      expression = new RegExp(request.literal === true ? request.pattern.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&") : request.pattern, request.ignoreCase === true ? "i" : "");
-    } catch {
-      throw new FileOpsError("INVALID", `the search pattern is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300));
-    }
+    throw new FileOpsError("INVALID", `the search pattern is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300));
   }
   const limit = limitOf(request.limit, 100);
   const context = Math.min(MAX_CONTEXT_LINES, Math.max(0, Math.floor(request.context ?? 0)));
@@ -723,6 +727,36 @@ export async function runFileOp(request: SandboxFileRequest, input?: AsyncIterab
   }
 }
 
+/**
+ * A grep or a glob runs in a worker thread of this file, under a deadline. A pattern that backtracks catastrophically
+ * (`(a+)+$`, `*a*a*a*a*b`) blocks the thread's event loop, which no timer in it can interrupt; the main thread can, and
+ * ends the thread (V8 stops a running regular expression). The caller is told PATTERN_TOO_SLOW.
+ */
+export function runMatchingWithDeadline(request: SandboxFileRequest, deadlineMs: number): Promise<SandboxFileResponse> {
+  return new Promise((resolvePromise) => {
+    let settled = false;
+    const worker = new Worker(fileURLToPath(import.meta.url), { workerData: { agentxFileOpsRequest: request } });
+    const finish = (response: SandboxFileResponse): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      void worker.terminate().then(() => resolvePromise(response), () => resolvePromise(response));
+    };
+    const timer = setTimeout(() => finish({
+      ok: false, code: "PATTERN_TOO_SLOW",
+      message: `matching took longer than ${Math.round(deadlineMs / 1_000)} s; use a simpler pattern, a plain string (literal), or a narrower path`,
+    }), deadlineMs);
+    worker.once("message", (message: unknown) => finish(message as SandboxFileResponse));
+    worker.once("error", (error) => finish({ ok: false, code: "INVALID", message: `the search failed: ${error.message}`.slice(0, 300) }));
+    worker.once("exit", () => finish({ ok: false, code: "INVALID", message: "the search ended without an answer" }));
+  });
+}
+
+function matchDeadline(environment: NodeJS.ProcessEnv = process.env): number {
+  const requested = Number(environment[MATCH_DEADLINE_ENVIRONMENT]);
+  return Number.isFinite(requested) && requested >= 50 && requested <= 50_000 ? requested : DEFAULT_MATCH_DEADLINE_MS;
+}
+
 /** The request in `argument` (base64url JSON), refused when it is longer than MAX_REQUEST_ARGUMENT_BYTES. */
 export function parseRequestArgument(argument: string | undefined): SandboxFileRequest {
   if (argument === undefined || argument === "") throw new FileOpsError("INVALID", "the request is missing");
@@ -742,19 +776,27 @@ async function main(): Promise<void> {
   let response: SandboxFileResponse;
   try {
     const request = parseRequestArgument(process.argv[2]);
-    response = await runFileOp(request, request.op === "writeFile" ? process.stdin : undefined);
+    response = request.op === "grep" || request.op === "glob"
+      ? await runMatchingWithDeadline(request, matchDeadline())
+      : await runFileOp(request, request.op === "writeFile" ? process.stdin : undefined);
   } catch (error) {
     const failure = error instanceof FileOpsError ? error : fromKernel(error, "the request");
     response = { ok: false, code: failure.code, message: failure.message };
   }
   await new Promise<void>((done) => process.stdout.write(`${JSON.stringify(response)}\n`, () => done()));
   process.exitCode = 0;
-  // A write whose stdin was never read must not keep the process open.
+  // A write whose stdin was never read must not keep the process open, and a terminated search thread is already gone.
   process.stdin.destroy();
+  process.exit(0);
 }
 
 const entryScript = process.argv[1];
-if (entryScript !== undefined) {
+const searchRequest = (workerData as { agentxFileOpsRequest?: SandboxFileRequest } | null)?.agentxFileOpsRequest;
+if (!isMainThread && searchRequest !== undefined && parentPort !== null) {
+  // The search thread: run the one request and answer.
+  const port = parentPort;
+  void runFileOp(searchRequest).then((response) => { port.postMessage(response); });
+} else if (isMainThread && entryScript !== undefined) {
   let isEntry = false;
   try {
     isEntry = pathToFileURL(realpathSync(entryScript)).href === import.meta.url;

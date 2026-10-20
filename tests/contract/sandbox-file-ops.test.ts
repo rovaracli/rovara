@@ -7,6 +7,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, s
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { FILE_OPS_NODE_FLAGS } from "../../packages/worker/src/file-ops-exec.js";
 import {
   FILE_OPS_TEMP_PREFIX,
   MAX_REQUEST_ARGUMENT_BYTES,
@@ -340,15 +341,7 @@ onLinux("sandbox-file-ops (Linux filesystem)", () => {
   });
 
   it("is a one-file process: one JSON line out, content on stdin, exit 0 whatever the outcome", async () => {
-    const helper = resolve(import.meta.dirname, "../../packages/worker/src/sandbox-file-ops.ts");
-    const run = (request: Record<string, unknown>, stdin?: Buffer) => new Promise<{ code: number | null; stdout: string }>((done, reject) => {
-      const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", helper, Buffer.from(JSON.stringify({ root, ...request })).toString("base64url")], { stdio: ["pipe", "pipe", "inherit"] });
-      let stdout = "";
-      child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-      child.on("error", reject);
-      child.on("close", (code) => done({ code, stdout }));
-      child.stdin.end(stdin);
-    });
+    const run = (request: Record<string, unknown>, stdin?: Buffer) => runHelperProcess(request, stdin === undefined ? {} : { stdin });
     const written = await run({ op: "writeFile", path: "real/via-process.txt", size: 5 }, Buffer.from("hello"));
     expect(written.code).toBe(0);
     expect(JSON.parse(written.stdout)).toEqual({ ok: true, result: {} });
@@ -359,4 +352,60 @@ onLinux("sandbox-file-ops (Linux filesystem)", () => {
     expect(refused.code).toBe(0);
     expect(JSON.parse(refused.stdout)).toMatchObject({ ok: false, code: "OUTSIDE" });
   });
+
+  it("answers a grep and a glob through its search thread, as the process does", async () => {
+    const grep = await runHelperProcess({ op: "grep", pattern: "inside", path: "real", limit: 5 });
+    expect(JSON.parse(grep.stdout)).toMatchObject({ ok: true, result: { searchIsDirectory: true, blocks: [{ path: `${root}/real/secret.txt` }] } });
+    const glob = await runHelperProcess({ op: "glob", pattern: "*.md", cwd: root, ignore: [], limit: 5 });
+    expect(JSON.parse(glob.stdout)).toEqual({ ok: true, result: { paths: [`${root}/real/docs/guide.md`] } });
+  });
+
+  describe("a pattern that backtracks catastrophically (ReDoS)", () => {
+    const DEADLINE = { AGENTX_FILE_OPS_DEADLINE_MS: "600" };
+    const gone = (pid: number | undefined): boolean => {
+      if (pid === undefined) return false;
+      try { process.kill(pid, 0); return false; } catch { return true; }
+    };
+
+    it("gives up on `(a+)+$` against a 28-character line within the deadline, and the helper process is gone", async () => {
+      await writeFile(join(root, "real", "evil.txt"), `${"a".repeat(28)}!\n`);
+      const started = Date.now();
+      const result = await runHelperProcess({ op: "grep", pattern: "(a+)+$", path: "real/evil.txt", limit: 5 }, { env: DEADLINE });
+      expect(JSON.parse(result.stdout)).toMatchObject({ ok: false, code: "PATTERN_TOO_SLOW" });
+      expect(result.code).toBe(0);
+      // Unbounded, this match takes about 10 s; the deadline is 0.6 s, plus the start of the process.
+      expect(Date.now() - started).toBeLessThan(6_000);
+      expect(gone(result.pid)).toBe(true);
+    }, 30_000);
+
+    it("gives up on the glob `*a*a*a*a*a*a*b` against a long name within the deadline, and the helper process is gone", async () => {
+      await writeFile(join(root, "real", "a".repeat(200)), "x");
+      const started = Date.now();
+      const result = await runHelperProcess({ op: "glob", pattern: "*a*a*a*a*a*a*b", cwd: root, ignore: [], limit: 5 }, { env: DEADLINE });
+      expect(JSON.parse(result.stdout)).toMatchObject({ ok: false, code: "PATTERN_TOO_SLOW" });
+      expect(Date.now() - started).toBeLessThan(6_000);
+      expect(gone(result.pid)).toBe(true);
+    }, 30_000);
+
+    it("with V8's linear-time fallback on (the flag the worker starts the helper with), the same grep finishes at once", async () => {
+      await writeFile(join(root, "real", "evil.txt"), `${"a".repeat(28)}!\n`);
+      const started = Date.now();
+      const result = await runHelperProcess({ op: "grep", pattern: "(a+)+$", path: "real/evil.txt", limit: 5 }, { env: { AGENTX_FILE_OPS_DEADLINE_MS: "20000" }, flags: [...FILE_OPS_NODE_FLAGS] });
+      expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, result: { blocks: [] } });
+      expect(Date.now() - started).toBeLessThan(6_000);
+    }, 30_000);
+  });
 });
+
+/** The helper as a real process (Node strips the types of the source), the way `docker exec` runs it. */
+function runHelperProcess(request: Record<string, unknown>, options: { stdin?: Buffer; env?: Record<string, string>; flags?: string[] } = {}) {
+  const helper = resolve(import.meta.dirname, "../../packages/worker/src/sandbox-file-ops.ts");
+  return new Promise<{ code: number | null; stdout: string; pid: number | undefined }>((done, reject) => {
+    const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", ...(options.flags ?? []), helper, Buffer.from(JSON.stringify({ root, ...request })).toString("base64url")], { stdio: ["pipe", "pipe", "inherit"], env: { ...process.env, ...options.env } });
+    let stdout = "";
+    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.on("error", reject);
+    child.on("close", (code) => done({ code, stdout, pid: child.pid }));
+    child.stdin.end(options.stdin);
+  });
+}

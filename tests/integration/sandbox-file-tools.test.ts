@@ -13,7 +13,7 @@ import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installFileOpsHelper } from "../../packages/worker/src/devcontainer.js";
 import { devcontainerMounts, notMountedMessage, toContainerPath, toHostPath } from "../../packages/worker/src/devcontainer-file-paths.js";
-import { fileOpsExec, type FileOpsTarget } from "../../packages/worker/src/file-ops-exec.js";
+import { FILE_OPS_NODE_FLAGS, fileOpsExec, type FileOpsTarget } from "../../packages/worker/src/file-ops-exec.js";
 import {
   FILE_TOOLS_NEED_SANDBOX_MESSAGE,
   createDefaultPiSessionAdapter,
@@ -160,7 +160,7 @@ describe("the task sandbox's file tools", () => {
     // Every call is the sandbox's: docker exec -i as uid 1000, with the sandbox's Node and helper by absolute path.
     expect(fake.execs.length).toBeGreaterThanOrEqual(6);
     for (const exec of fake.execs) {
-      expect(exec.args.slice(0, 7)).toEqual(["exec", "-i", "--user", "1000:1000", sandbox.name, NODE, HELPER]);
+      expect(exec.args.slice(0, 8)).toEqual(["exec", "-i", "--user", "1000:1000", sandbox.name, NODE, ...FILE_OPS_NODE_FLAGS, HELPER]);
       expect(exec.request.root).toBe(rootPath);
     }
     const ops = new Set(fake.execs.map(({ request }) => request.op));
@@ -323,7 +323,7 @@ describe("the devcontainer's file tools", () => {
     try { expect(await settle(handle, "read")).toBe("resolved"); } finally { handle.dispose(); }
     expect(results[0]!.content[0]!.text).toBe("api alpha\n");
     for (const exec of fake.execs) {
-      expect(exec.args.slice(0, 7)).toEqual(["exec", "-i", "--user", "vscode", "dev-container-id", "/opt/agentx-file-ops/node", "/opt/agentx-file-ops/sandbox-file-ops.js"]);
+      expect(exec.args.slice(0, 8)).toEqual(["exec", "-i", "--user", "vscode", "dev-container-id", "/opt/agentx-file-ops/node", ...FILE_OPS_NODE_FLAGS, "/opt/agentx-file-ops/sandbox-file-ops.js"]);
       expect(exec.request).toMatchObject({ root: "/workspaces/api", path: "/workspaces/api/a.txt" });
     }
   });
@@ -347,10 +347,37 @@ describe("the devcontainer's file tools", () => {
     const reads = fake.execs.filter(({ request }) => request.op === "readFile" && "path" in request && request.path.endsWith("a.ts")).map(({ request }) => ("path" in request ? request.path : ""));
     expect(reads.length).toBeGreaterThan(0);
     expect(new Set(reads)).toEqual(new Set(["/workspaces/api/src/a.ts"]));
-    // grep with no path searches the host cwd (the workspace root), which the devcontainer does not mount as a whole.
-    expect(results[2]).toMatchObject({ toolName: "grep", isError: true });
+    // grep with no path means the workspace root, which is not a mount: it defaults to the repository's mount (I2).
+    expect(results[2]!.content[0]!.text).toBe("api/src/a.ts:1: const needle = 1;");
     expect(results[3]!.content[0]!.text).toBe("src/a.ts:1: const needle = 1;");
     expect(fake.execs.find(({ request }) => request.op === "grep")!.request).toMatchObject({ root: "/workspaces/api", path: "/workspaces/api" });
+  });
+
+  it("defaults a pathless grep, find and ls to the repository's mount, and still refuses workspace-level files (I2)", async () => {
+    const results: Array<ReturnType<typeof lastResult>> = [];
+    const { rootPath, fake, handle } = await devcontainerSession({
+      files: { "/workspaces/api/src/a.ts": "const needle = 1;\n", "/workspaces/api/README.md": "readme\n" },
+      mounts: (path) => [MOUNT(join(path, "api"), "/workspaces/api")],
+      responses: (path) => [
+        toolUse(fauxToolCall("grep", { pattern: "needle" }, { id: "i1" })),
+        (context) => { results.push(lastResult(context)); return toolUse(fauxToolCall("find", { pattern: "*.ts" }, { id: "i2" })); },
+        (context) => { results.push(lastResult(context)); return toolUse(fauxToolCall("ls", {}, { id: "i3" })); },
+        (context) => { results.push(lastResult(context)); return toolUse(fauxToolCall("ls", { path: "." }, { id: "i4" })); },
+        (context) => { results.push(lastResult(context)); return toolUse(fauxToolCall("read", { path: join(path, "notes.md") }, { id: "i5" })); },
+        (context) => { results.push(lastResult(context)); return fauxAssistantMessage("Done."); },
+      ],
+    });
+    try { expect(await settle(handle, "go")).toBe("resolved"); } finally { handle.dispose(); }
+    expect(results.map((result) => result.isError)).toEqual([false, false, false, false, true]);
+    expect(results[0]!.content[0]!.text).toBe("api/src/a.ts:1: const needle = 1;");
+    expect(results[1]!.content[0]!.text).toBe("api/src/a.ts");
+    expect(results[2]!.content[0]!.text).toBe("README.md\nsrc/");
+    expect(results[3]!.content[0]!.text).toBe("README.md\nsrc/");
+    expect(results[4]!.content[0]!.text).toContain("isn't in a workspace folder mounted in this devcontainer");
+    expect(results[4]!.content[0]!.text).toContain(join(rootPath, "notes.md"));
+    // Every call that did reach the container was rooted at the repository's mount.
+    expect(fake.execs.length).toBeGreaterThan(0);
+    for (const exec of fake.execs) expect(exec.request.root).toBe("/workspaces/api");
   });
 
   it("refuses a second repository the devcontainer does not mount, and a workspace-level file, with NOT_MOUNTED and no docker exec", async () => {
@@ -406,7 +433,7 @@ describe("the devcontainer's file tools", () => {
       ["exec", "--user", "vscode", "dev-container-id", "/opt/agentx-file-ops/node", "--version"],
     ]);
     expect(fake.execs).toHaveLength(1);
-    expect(fake.execs[0]!.args.slice(0, 7)).toEqual(["exec", "-i", "--user", "vscode", "dev-container-id", "/opt/agentx-file-ops/node", "/opt/agentx-file-ops/sandbox-file-ops.js"]);
+    expect(fake.execs[0]!.args.slice(0, 8)).toEqual(["exec", "-i", "--user", "vscode", "dev-container-id", "/opt/agentx-file-ops/node", ...FILE_OPS_NODE_FLAGS, "/opt/agentx-file-ops/sandbox-file-ops.js"]);
   });
 
   it("refuses, with the reason, when the copied Node cannot start in the devcontainer", async () => {

@@ -55,6 +55,11 @@ describe("the task sandbox's docker run arguments (R56)", () => {
     expect(TASK_SANDBOX_NETWORK).toBe("agentx-task");
   });
 
+  it("cap the sandbox's CPUs and processes, so a runaway command or search cannot starve the instance the worker shares", () => {
+    expect(args[args.indexOf("--cpus") + 1]).toBe("2");
+    expect(args[args.indexOf("--pids-limit") + 1]).toBe("1024");
+  });
+
   it("mount only the workspace, and never the Docker socket, the host network or privileges", () => {
     const joined = args.join(" ");
     expect(args.filter((arg) => arg === "--volume")).toHaveLength(1);
@@ -63,7 +68,7 @@ describe("the task sandbox's docker run arguments (R56)", () => {
     expect(joined).not.toContain("/var/run");
     expect(args).not.toContain("--privileged");
     expect(args).not.toContain("host");
-    expect(joined).not.toMatch(/--network[ =]host|--net[ =]host|--pid|--ipc|--userns|--uts|--device|--cap-add|--volumes-from|--add-host/);
+    expect(joined).not.toMatch(/--network[ =]host|--net[ =]host|--pid(?!s-limit)|--ipc|--userns|--uts|--device|--cap-add|--volumes-from|--add-host/);
   });
 
   it("label the container with the task and start the image's own init with nothing to run", () => {
