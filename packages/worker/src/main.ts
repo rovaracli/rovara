@@ -18,7 +18,7 @@ import { createDefaultProjectSetupExecutor, createReadinessGatedProjectSetupRunt
 import { postProjectSetupTerminalResult } from "./project-setup-callback.js";
 import { postWorkerTerminalResult } from "./terminal-callback.js";
 import { executeWorkerCancelInvocation } from "./cancel-invocation.js";
-import { taskShellSelection } from "./task-sandbox.js";
+import { removeLeftoverTaskSandboxes, taskShellSelection } from "./task-sandbox.js";
 
 const rootPath = process.env.AGENTX_WORKSPACE_ROOT ?? "/mnt/workspace";
 const port = Number.parseInt(process.env.PORT ?? "8080", 10);
@@ -32,7 +32,13 @@ const trustedRuntimeBackingOwner = CONTAINED_RUNTIME_PROFILE?.id === "linux-arm6
 const invokeAuthentication = invokeAuthenticationFromEnvironment();
 // R56: where a project without a devcontainer runs its commands comes from the environment (always the task sandbox on EC2),
 // so a bad AGENTX_TASK_SHELL, or a request for the local shell on EC2, stops the worker here, not on its first task.
-taskShellSelection();
+if (taskShellSelection().kind === "sandbox") {
+  // A crash or restart skips a sandbox's removal; none of this process's exists yet, so none found is in use.
+  await removeLeftoverTaskSandboxes().then(
+    (removed) => { if (removed > 0) console.log(JSON.stringify({ component: "worker", event: "task-sandbox.leftovers.removed", removed })); },
+    (error: unknown) => { console.error(`could not remove leftover task sandboxes: ${error instanceof Error ? error.message : String(error)}`); },
+  );
+}
 const containedRuntimeReadiness: ContainedRuntimeReadiness = await inspectContainedRuntimeReadiness().catch((): ContainedRuntimeReadiness => ({ status: "unavailable", reason: "private-runtime-paths-unavailable" }));
 if (containedRuntimeReadiness.status !== "ready") {
   console.error(`project.setupSmoke unavailable: ${containedRuntimeReadiness.reason}`);

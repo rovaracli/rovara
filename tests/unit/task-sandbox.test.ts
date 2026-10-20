@@ -8,6 +8,7 @@ import {
   TASK_SANDBOX_NETWORK,
   TaskSandbox,
   assertLocalTaskExecutionAllowed,
+  removeLeftoverTaskSandboxes,
   taskSandboxRunArgs,
   taskShellFromEnvironment,
 } from "../../packages/worker/src/task-sandbox.js";
@@ -123,14 +124,22 @@ describe("starting and stopping a sandbox", () => {
     expect(sandbox.name).toMatch(/^agentx-task-0b9f6a1e-6c1e-4c53-9d0a-5d3a1d6f2c11-[0-9a-f]{8}$/u);
   });
 
-  it("removes containers an earlier worker process left behind, by label, before it starts", async () => {
+  it("never removes another sandbox when it starts: only the worker's startup sweep does, by label", async () => {
     const root = await workspace();
     const fake = fakeDocker({ stale: ["abc123", "def456"] });
     await new TaskSandbox({ rootPath: root, taskId: TASK, docker: fake.docker, image: IMAGE }).start();
-    expect(fake.calls).toContainEqual(["ps", "--all", "--quiet", "--filter", "label=agentx.task"]);
-    expect(fake.calls).toContainEqual(["rm", "--force", "abc123", "def456"]);
-    const order = fake.calls.map((args) => args[0]);
-    expect(order.indexOf("rm")).toBeLessThan(order.indexOf("run"));
+    expect(fake.verbs("ps")).toEqual([]);
+    expect(fake.verbs("rm")).toEqual([]);
+
+    const sweep = fakeDocker({ stale: ["abc123", "def456"] });
+    await expect(removeLeftoverTaskSandboxes(sweep.docker)).resolves.toBe(2);
+    expect(sweep.calls).toEqual([
+      ["ps", "--all", "--quiet", "--filter", "label=agentx.task"],
+      ["rm", "--force", "abc123", "def456"],
+    ]);
+    const none = fakeDocker();
+    await expect(removeLeftoverTaskSandboxes(none.docker)).resolves.toBe(0);
+    expect(none.verbs("rm")).toEqual([]);
   });
 
   it("masks .docker and .agentx-runtime only where they exist in the workspace", async () => {

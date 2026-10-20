@@ -180,7 +180,6 @@ export class TaskSandbox {
       throw agentXError("RUNTIME_UNAVAILABLE", `AgentX has no task sandbox image (${TASK_SANDBOX_IMAGE_ENVIRONMENT}), so it did not run the task's commands`);
     }
     const root = resolve(this.options.rootPath);
-    await this.removeLeftovers();
     await this.ensureNetwork();
     const maskedPaths: string[] = [];
     for (const directory of [DOCKER_DATA_DIRECTORY, RUNTIME_BACKING_DIRECTORY]) {
@@ -197,13 +196,6 @@ export class TaskSandbox {
     }
   }
 
-  /** Containers an earlier worker process left (a crash skips dispose); one operation runs at a time, so none is in use. */
-  private async removeLeftovers(): Promise<void> {
-    const listed = await this.docker.run(["ps", "--all", "--quiet", "--filter", `label=${TASK_SANDBOX_LABEL}`], { timeoutMs: DOCKER_CALL_TIMEOUT_MS });
-    const ids = listed.exitCode === 0 ? listed.stdout.split("\n").map((line) => line.trim()).filter((line) => line !== "") : [];
-    if (ids.length > 0) await this.docker.run(["rm", "--force", ...ids], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
-  }
-
   /** Idempotent: another start may create the network between the check and the create. */
   private async ensureNetwork(): Promise<void> {
     const inspect = ["network", "inspect", TASK_SANDBOX_NETWORK];
@@ -214,6 +206,17 @@ export class TaskSandbox {
     const detail = (created.stderr || created.stdout).trim().split("\n").slice(-3).join(" ").slice(0, 400);
     throw agentXError("RUNTIME_UNAVAILABLE", `AgentX could not create the ${TASK_SANDBOX_NETWORK} network for the task sandbox: ${detail || `exit ${String(created.exitCode)}`}`);
   }
+}
+
+/**
+ * Removes the sandboxes an earlier worker process left (a crash or a restart skips dispose). The worker calls it once at
+ * startup, when none of its own exists yet, so it cannot remove one that is in use.
+ */
+export async function removeLeftoverTaskSandboxes(docker: DockerCli = createDockerCli()): Promise<number> {
+  const listed = await docker.run(["ps", "--all", "--quiet", "--filter", `label=${TASK_SANDBOX_LABEL}`], { timeoutMs: DOCKER_CALL_TIMEOUT_MS });
+  const ids = listed.exitCode === 0 ? listed.stdout.split("\n").map((line) => line.trim()).filter((line) => line !== "") : [];
+  if (ids.length > 0) await docker.run(["rm", "--force", ...ids], { timeoutMs: DOCKER_CALL_TIMEOUT_MS });
+  return ids.length;
 }
 
 /** The sandbox for a selection, or undefined for the local shell (refused on the EC2 runtime). */
