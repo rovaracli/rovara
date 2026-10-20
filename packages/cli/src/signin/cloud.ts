@@ -10,7 +10,7 @@ import { CloudSignInAnswersSchema, type CloudSignInAnswers } from "../deploy/ans
 import { updateStackParameters } from "../deploy/parameter-update.js";
 import { withEnvironmentLock } from "../environments/lock.js";
 import { readEnvironmentSettings, writeEnvironmentSettings, type EnvironmentSettings } from "../environments/settings.js";
-import { readInstallAnswers, writeInstallAnswers, type InitAnswers } from "../init/install-state.js";
+import { readInstallAnswers, writeInstallAnswers } from "../init/install-state.js";
 import { errorReason } from "./apply.js";
 import { installed, type SigninServices } from "./commands.js";
 
@@ -114,6 +114,14 @@ function stackChanges(next: CloudSignInAnswers | undefined, flags: CloudSignInFl
   }));
 }
 
+/** `record` with its cloudSignIn set to `signIn`, or without one: an optional property is absent, never undefined. */
+function withSignIn<T extends { cloudSignIn?: CloudSignInAnswers | undefined }>(record: T, signIn: CloudSignInAnswers | undefined, more: Partial<T>): T {
+  const copy = { ...record, ...more };
+  if (signIn === undefined) delete copy.cloudSignIn;
+  else copy.cloudSignIn = signIn;
+  return copy;
+}
+
 const notApplied = (stackName: string) => agentXError("CONFIG_INVALID", `the cloud sign-in change to ${stackName} was not applied; nothing changed`);
 const sameSignIn = (a: CloudSignInAnswers | undefined, b: CloudSignInAnswers | undefined) => JSON.stringify(Object.entries(a ?? {}).sort()) === JSON.stringify(Object.entries(b ?? {}).sort());
 
@@ -177,12 +185,8 @@ export async function runSigninCloud(services: SigninServices, env: string, flag
     if (!stackChanged && settingsChanged && !asked && !(await confirm([...summary, `${stackName} already has these parameters; the settings will record them.`].join("\n")))) throw notApplied(stackName);
     if (settingsChanged || stackChanged) {
       try {
-        const { cloudSignIn: _old, ...rest } = settings;
-        await writeEnvironmentSettings(services.store, { ...rest, ...(next === undefined ? {} : { cloudSignIn: next }), updatedAt: new Date(services.now()).toISOString() });
-        if (answers !== undefined) {
-          const { cloudSignIn: _answered, ...kept } = answers;
-          await writeInstallAnswers(services.store, { ...kept, ...(next === undefined ? {} : { cloudSignIn: next }) } satisfies InitAnswers);
-        }
+        await writeEnvironmentSettings(services.store, withSignIn(settings, next, { updatedAt: new Date(services.now()).toISOString() }));
+        if (answers !== undefined) await writeInstallAnswers(services.store, withSignIn(answers, next, {}));
       } catch (error) {
         const what = stackChanged ? `${stackName} was updated` : `${stackName} already had these parameters`;
         throw error instanceof AgentXError

@@ -183,7 +183,8 @@ describe("agentx signin cloud", () => {
     });
 
     it("refuses an environment that is not a Rovara Cloud install", async () => {
-      const { cloud: _cloud, ...plain } = installed;
+      const plain: EnvironmentSettings = { ...installed };
+      delete plain.cloud;
       const h = await harness({ settings: plain });
       const before = h.store.values.get("/agentx/staging/settings");
       await expect(run(h, github)).rejects.toThrow("CONFIG_INVALID: only a Rovara Cloud install has these sign-in methods");
@@ -212,7 +213,7 @@ describe("agentx signin cloud", () => {
 
     it("names the prefix a secret must start with, and why, rather than widening the operator role", async () => {
       const h = await harness();
-      const error = await run(h, { githubClientId: github.githubClientId, githubClientSecretArn: arnOf("shared/github-oauth") }).catch((caught: unknown) => caught as Error);
+      const error = await run(h, { githubClientId: github.githubClientId, githubClientSecretArn: arnOf("shared/github-oauth") }).then(() => new Error("test setup: expected a refusal"), (caught: unknown) => caught as Error);
       expect(error.message).toContain("agentx/staging/");
       expect(error.message).toContain("operator role");
     });
