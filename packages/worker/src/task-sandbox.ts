@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { agentXError, type ProjectCommand } from "@agentx/contracts";
 import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
 import { containerBashOperations, runContainerCommand, type ContainerExec } from "./devcontainer.js";
-import { DOCKER_DATA_DIRECTORY, RUNTIME_BACKING_DIRECTORY } from "./devcontainer-policy.js";
 import type { CommandResult } from "./readiness.js";
+import { hiddenWorkspaceDirectories } from "./workspace-state.js";
 import { createDockerCli, removeContainer, taskContainerExec, type DockerCli } from "./swebench/containers.js";
 
 /**
@@ -13,7 +12,7 @@ import { createDockerCli, removeContainer, taskContainerExec, type DockerCli } f
  * checks) never runs in the worker's own process namespace, network namespace or user. The worker container has the
  * host's Docker socket and, until the network moves off the host (boot.sh), the instance role, so anything that ran in it
  * had both. A project without a devcontainer gets this sandbox instead: a container with no Docker socket, no host
- * network, no capabilities and only the workspace mounted. It is started from the worker's own image (the base
+ * network, no capabilities and only the workspace mounted, without the worker's own state in it (workspace-state.ts). It is started from the worker's own image (the base
  * environment), which AGENTX_SANDBOX_IMAGE names, and removed when the operation ends.
  *
  * A project's devcontainer is the other sandbox (devcontainer.ts, devcontainer-policy.ts).
@@ -92,7 +91,7 @@ export interface TaskSandboxRunInput {
   taskId: string;
   image: string;
   rootPath: string;
-  /** Folders of the workspace that exist and are not the project's: each gets an empty read-only tmpfs over it. */
+  /** Folders of the workspace volume that are the worker's, not the project's (workspace-state.ts): each gets an empty read-only tmpfs over it. */
   maskedPaths: readonly string[];
 }
 
@@ -181,11 +180,7 @@ export class TaskSandbox {
     }
     const root = resolve(this.options.rootPath);
     await this.ensureNetwork();
-    const maskedPaths: string[] = [];
-    for (const directory of [DOCKER_DATA_DIRECTORY, RUNTIME_BACKING_DIRECTORY]) {
-      const path = join(root, directory);
-      if ((await stat(path).catch(() => undefined))?.isDirectory() === true) maskedPaths.push(path);
-    }
+    const maskedPaths = await hiddenWorkspaceDirectories(root);
     const result = await this.docker.run(
       taskSandboxRunArgs({ name: this.name, taskId: this.options.taskId, image, rootPath: root, maskedPaths }),
       { timeoutMs: SANDBOX_START_TIMEOUT_MS },

@@ -1,6 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -15,6 +15,7 @@ import { runCollected, TIMEOUT_KILL_GRACE_MS } from "./collected-process.js";
 import {
   DOCKER_DATA_DIRECTORY,
   DOCKER_DATA_VISIBLE,
+  WORKER_STATE_VISIBLE,
   containerProblems,
   devcontainerConfigRefusal,
   parseJsonc,
@@ -23,6 +24,7 @@ import {
 } from "./devcontainer-policy.js";
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "./git.js";
 import type { CommandResult } from "./readiness.js";
+import { hiddenWorkspaceDirectories } from "./workspace-state.js";
 
 const execFile = promisify(execFileCallback);
 const UP_TIMEOUT_MS = 20 * 60_000;
@@ -173,6 +175,12 @@ export interface DevcontainerChecks {
 /** The empty volume mounted over the workspace's Docker data folder in every dev container. */
 export const DOCKER_DATA_MASK_VOLUME = "agentx-docker-data-mask";
 
+/** The empty volume mounted over one of the workspace's hidden folders: the Docker data folder keeps its original name. */
+function maskVolume(path: string): string {
+  const name = basename(path);
+  return name === DOCKER_DATA_DIRECTORY ? DOCKER_DATA_MASK_VOLUME : `agentx-mask-${name.replace(/^\./u, "")}`;
+}
+
 export function devcontainerTarget(rootPath: string, project: StoredProjectDefinition): DevcontainerTarget | undefined {
   const devcontainer = project.devcontainer;
   if (devcontainer === undefined) return undefined;
@@ -210,22 +218,22 @@ export async function ensureDevcontainer(cli: DevcontainerCli, target: Devcontai
   const lockfile = cli.checks === undefined ? undefined : await assertFullConfigurationAllowed(cli.checks, target);
   // `up` fetches remote features again. With a lockfile of the digests just checked, and --frozen-lockfile, it uses
   // exactly that content or fails before it builds anything.
-  const start = (data: string | undefined) => lockfile === undefined
-    ? startDevcontainer(cli, target, data, false)
-    : withFeatureLockfile(target, lockfile, () => startDevcontainer(cli, target, data, true));
-  // On an EC2 worker the workspace volume also holds Docker's data root, which is not the project's: a volume
-  // mounted over it inside the dev container hides it there.
-  const dockerDataPath = join(target.rootPath, DOCKER_DATA_DIRECTORY);
-  const hasDockerData = (await stat(dockerDataPath).catch(() => undefined))?.isDirectory() === true;
-  const started = await start(hasDockerData ? dockerDataPath : undefined);
+  const start = (hidden: readonly string[]) => lockfile === undefined
+    ? startDevcontainer(cli, target, hidden, false)
+    : withFeatureLockfile(target, lockfile, () => startDevcontainer(cli, target, hidden, true));
+  // On an EC2 worker the workspace volume also holds Docker's data root, the verifier's runtime and the worker's own state,
+  // none of them the project's: a volume mounted over each inside the dev container hides it there.
+  let hidden = await hiddenWorkspaceDirectories(target.rootPath);
+  const started = await start(hidden);
   if (cli.checks === undefined) return started;
-  let problems = await startedContainerProblems(cli.checks, started.containerId, target, hasDockerData ? dockerDataPath : undefined);
+  let problems = await startedContainerProblems(cli.checks, started.containerId, target, hidden);
   let current = started;
-  if (problems.length === 1 && problems[0] === DOCKER_DATA_VISIBLE) {
-    // A container created before AgentX hid the Docker data folder: created again, with it hidden.
+  if (problems.length > 0 && problems.every((problem) => problem === DOCKER_DATA_VISIBLE || problem === WORKER_STATE_VISIBLE)) {
+    // A container created before AgentX hid these folders: created again, with them hidden.
     await removeStartedContainer(cli.checks, current.containerId);
-    current = await start(dockerDataPath);
-    problems = await startedContainerProblems(cli.checks, current.containerId, target, dockerDataPath);
+    hidden = await hiddenWorkspaceDirectories(target.rootPath);
+    current = await start(hidden);
+    problems = await startedContainerProblems(cli.checks, current.containerId, target, hidden);
   }
   if (problems.length > 0) {
     await removeStartedContainer(cli.checks, current.containerId);
@@ -361,7 +369,7 @@ async function startedContainerProblems(
   containers: DevcontainerChecks,
   containerId: string,
   target: DevcontainerTarget,
-  dockerDataPath: string | undefined,
+  hidden: readonly string[],
 ): Promise<string[]> {
   let inspection: ContainerInspection;
   try {
@@ -370,7 +378,14 @@ async function startedContainerProblems(
     await removeStartedContainer(containers, containerId);
     throw new Error(`AgentX could not check the dev container it started, so it removed it: ${error instanceof Error ? error.message : String(error)}`.slice(0, 512), { cause: error });
   }
-  return containerProblems(inspection, { rootPath: target.rootPath, resolvePath: hostPathResolver(target.rootPath), ...(dockerDataPath === undefined ? {} : { dockerDataPath }) });
+  const dockerDataPath = hidden.find((path) => basename(path) === DOCKER_DATA_DIRECTORY);
+  const maskedPaths = hidden.filter((path) => path !== dockerDataPath);
+  return containerProblems(inspection, {
+    rootPath: target.rootPath,
+    resolvePath: hostPathResolver(target.rootPath),
+    ...(dockerDataPath === undefined ? {} : { dockerDataPath }),
+    maskedPaths,
+  });
 }
 
 async function removeStartedContainer(containers: DevcontainerChecks, containerId: string): Promise<void> {
@@ -382,13 +397,13 @@ async function removeStartedContainer(containers: DevcontainerChecks, containerI
   }
 }
 
-async function startDevcontainer(cli: DevcontainerCli, target: DevcontainerTarget, dockerDataPath: string | undefined, frozenLockfile: boolean): Promise<DevcontainerUpResult> {
+async function startDevcontainer(cli: DevcontainerCli, target: DevcontainerTarget, hidden: readonly string[], frozenLockfile: boolean): Promise<DevcontainerUpResult> {
   const result = await cli.run([
     "up",
     ...targetArgs(target),
     ...(frozenLockfile ? ["--frozen-lockfile"] : []),
     "--mount", `type=bind,source=${target.rootPath},target=${target.rootPath}`,
-    ...(dockerDataPath === undefined ? [] : ["--mount", `type=volume,source=${DOCKER_DATA_MASK_VOLUME},target=${dockerDataPath}`]),
+    ...hidden.flatMap((path) => ["--mount", `type=volume,source=${maskVolume(path)},target=${path}`]),
     "--log-format", "json",
   ], { timeoutMs: UP_TIMEOUT_MS });
   const outcome = lastJsonLine(result.stdout);

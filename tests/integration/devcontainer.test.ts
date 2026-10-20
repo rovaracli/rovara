@@ -341,6 +341,8 @@ describe("the devcontainer CLI seam", () => {
       }] };
       const { cli, calls, removed, lockfiles } = dockerCli([() => ({ ...ordinary, Mounts: [
         { Type: "bind", Source: target.rootPath, Destination: target.rootPath },
+        { Type: "volume", Source: "/var/lib/docker/volumes/agentx-mask-agentx/_data", Destination: join(target.rootPath, ".agentx") },
+        { Type: "volume", Source: "/var/lib/docker/volumes/agentx-mask-agent-sessions/_data", Destination: join(target.rootPath, "agent-sessions") },
         { Type: "volume", Source: "/var/lib/docker/volumes/agentx-docker-data-mask/_data", Destination: join(target.rootPath, ".docker") },
       ] })], { configuration: {}, mergedConfiguration: {}, featuresConfiguration });
       await writeFile(join(target.workspaceFolder, ".devcontainer/devcontainer-lock.json"), "the project's own lockfile\n", "utf8");
@@ -353,6 +355,9 @@ describe("the devcontainer CLI seam", () => {
       expect(calls).toEqual([[
         "up", "--workspace-folder", target.workspaceFolder, "--config", target.configPath, "--frozen-lockfile",
         "--mount", `type=bind,source=${target.rootPath},target=${target.rootPath}`,
+        // The worker's own state is hidden too (task 25 fix round 1): created if missing, then masked.
+        "--mount", `type=volume,source=agentx-mask-agentx,target=${join(target.rootPath, ".agentx")}`,
+        "--mount", `type=volume,source=agentx-mask-agent-sessions,target=${join(target.rootPath, "agent-sessions")}`,
         "--mount", `type=volume,source=agentx-docker-data-mask,target=${join(target.rootPath, ".docker")}`,
         "--log-format", "json",
       ]]);
@@ -362,11 +367,22 @@ describe("the devcontainer CLI seam", () => {
     it("creates again a container made before the Docker data folder was hidden (a resumed workspace)", async () => {
       const target = await workspaceWith('{ "image": "node:22" }', { dockerData: true });
       const unmasked = { ...ordinary, Mounts: [{ Type: "bind", Source: target.rootPath, Destination: target.rootPath }] };
-      const masked = { ...ordinary, Mounts: [...unmasked.Mounts, { Type: "volume", Destination: join(target.rootPath, ".docker") }] };
+      const masked = { ...ordinary, Mounts: [...unmasked.Mounts, ...[".agentx", "agent-sessions", ".docker"].map((name) => ({ Type: "volume", Destination: join(target.rootPath, name) }))] };
       const { cli, calls, removed } = dockerCli([() => unmasked, () => masked]);
       await expect(ensureDevcontainer(cli, target)).resolves.toMatchObject({ containerId: "id-2" });
       expect(removed).toEqual(["id-1"]);
       expect(calls).toHaveLength(2);
+    });
+
+    it("creates again a container that shows the worker's own state, and refuses one that still does", async () => {
+      const target = await workspaceWith('{ "image": "node:22" }');
+      const unmasked = { ...ordinary, Mounts: [{ Type: "bind", Source: target.rootPath, Destination: target.rootPath }] };
+      const { cli, removed } = dockerCli([() => unmasked, () => unmasked]);
+      await expect(ensureDevcontainer(cli, target)).rejects.toMatchObject({
+        code: "CONFIG_INVALID",
+        message: expect.stringContaining("the worker's own folders of the workspace (.agentx, agent-sessions, .agentx-runtime) visible inside it") as unknown,
+      });
+      expect(removed).toEqual(["id-1", "id-2"]);
     });
 
     it("removes and refuses a container a feature or the image's metadata made privileged", async () => {

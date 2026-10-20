@@ -1,6 +1,6 @@
 // Ruling R56: on an EC2 worker, task-controlled code never runs in the worker's own process, network or user. It runs
 // in a sandbox container with no Docker socket, no host network, no capabilities and only the workspace mounted.
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -142,14 +142,21 @@ describe("starting and stopping a sandbox", () => {
     expect(none.verbs("rm")).toEqual([]);
   });
 
-  it("masks .docker and .agentx-runtime only where they exist in the workspace", async () => {
+  it("hides the worker's own state from the sandbox, creating it first so the task cannot, and the boot script's folders where they exist", async () => {
     const root = await workspace();
     await mkdir(join(root, ".docker"));
     const fake = fakeDocker();
     await new TaskSandbox({ rootPath: root, taskId: TASK, docker: fake.docker, image: IMAGE }).start();
     const run = fake.verbs("run")[0]!;
     const tmpfs = run.flatMap((arg, index) => (arg === "--tmpfs" ? [run[index + 1]] : []));
-    expect(tmpfs).toEqual([`${root}/.docker:ro,noexec,nosuid,size=4k`]);
+    expect(tmpfs).toEqual([
+      `${root}/.agentx:ro,noexec,nosuid,size=4k`,
+      `${root}/agent-sessions:ro,noexec,nosuid,size=4k`,
+      `${root}/.docker:ro,noexec,nosuid,size=4k`,
+    ]);
+    // Created by the worker, private to it, before the container could create them.
+    expect((await stat(join(root, ".agentx"))).mode & 0o777).toBe(0o700);
+    expect((await stat(join(root, "agent-sessions"))).isDirectory()).toBe(true);
   });
 
   it("removes the container when it is disposed, and does nothing when nothing was started", async () => {
