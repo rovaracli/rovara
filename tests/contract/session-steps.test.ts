@@ -113,6 +113,17 @@ describe("session steps", () => {
     });
   });
 
+  it("boots the worker with EXECUTOR_IMAGE when the release has set an executor image, and without it otherwise", async () => {
+    const executorImage = `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-worker-production-executor@sha256:${"e".repeat(64)}`;
+    const launch = async (extra: { executorImage?: string }) => {
+      const { handler } = setup(undefined, {}, (base) => ({ ...base, ...extra }));
+      const result = await handler({ action: "launchConfiguration", workspaceId, generation: 2, volumeId: "vol-0123456789abcdef0", expectNewVolume: false }) as { userData: string };
+      return gunzipSync(Buffer.from(result.userData, "base64")).toString("utf8");
+    };
+    expect(await launch({ executorImage })).toContain(`export EXECUTOR_IMAGE='${executorImage}'`);
+    expect(await launch({})).not.toContain("export EXECUTOR_IMAGE=");
+  });
+
   it("records the volume and instance, and marks the session ready, failed or deleted", async () => {
     const { handler, sessions } = setup();
     await handler({ action: "recordVolume", workspaceId, generation: 1, volumeId: "vol-0123456789abcdef0" });

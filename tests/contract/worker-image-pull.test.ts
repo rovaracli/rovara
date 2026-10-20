@@ -110,4 +110,44 @@ describe("the named environment's worker role and its image", () => {
       }
     }
   });
+
+  // Merge of public mainline's executor image: the workers boot-pull it (docker pull "$EXECUTOR_IMAGE"), so the named role gets
+  // its one repository too, only once a release sets one, and nothing else.
+  describe("the executor image", () => {
+    const executorPolicy = (parameters: Record<string, string>) => {
+      const context: CfnContext = {
+        parameters: { WorkerImageUri: image("agentx-staging/worker"), Ec2WorkerInstanceRoleArn: ROLE_ARN, ...parameters },
+        conditions: (template.Conditions ?? {}) as Record<string, unknown>,
+      };
+      return Object.values(template.Resources as Record<string, PolicyResource>)
+        .filter((resource) => resource.Type === "AWS::IAM::Policy" && resource.Properties.PolicyName.startsWith("ExecutorImagePull"))
+        .filter((resource) => resource.Condition !== undefined && evaluateCondition(resource.Condition, context))
+        .map((resource) => ({
+          roles: evaluate(resource.Properties.Roles, context) as string[],
+          statements: evaluate(resource.Properties.PolicyDocument.Statement, context) as Statement[],
+        }));
+    };
+
+    it("adds no statement while the release has no executor image", () => {
+      expect(executorPolicy({ ExecutorImageUri: "none" })).toEqual([]);
+    });
+
+    it("lets the worker role pull exactly the executor image's repository, and import it only under the prefix", () => {
+      const [policy, ...rest] = executorPolicy({ ExecutorImageUri: image("agentx-staging/agentx/agentx-executor") });
+      expect(rest).toEqual([]);
+      expect(policy!.roles).toEqual(["agentx-staging-worker-InstanceRole-ABC123"]);
+      const allows = policy!.statements.filter((entry) => entry.Effect === "Allow");
+      expect(allows.map((entry) => entry.Resource)).toEqual([`arn:aws:ecr:us-west-2:${ACCOUNT}:repository/agentx-staging/agentx/agentx-executor`, `arn:aws:ecr:us-west-2:${ACCOUNT}:repository/agentx-staging/agentx/agentx-executor`]);
+      expect(JSON.stringify(allows)).not.toContain("*");
+      expect(policy!.statements.find((entry) => entry.Effect === "Deny")!.NotResource).toBe(`arn:aws:ecr:*:${ACCOUNT}:repository/agentx-staging/*`);
+    });
+
+    it("refuses an executor image that is neither none nor a private ECR digest reference", () => {
+      const parameters = template.Parameters as Record<string, { AllowedPattern?: string; Default?: string }>;
+      expect(parameters.ExecutorImageUri!.Default).toBe("none");
+      const pattern = new RegExp(parameters.ExecutorImageUri!.AllowedPattern!, "u");
+      for (const good of ["none", image("agentx-staging/agentx/agentx-executor")]) expect(pattern.test(good), good).toBe(true);
+      for (const bad of [`docker.io/library/node@${DIGEST}`, `${ACCOUNT}.dkr.ecr.us-west-2.amazonaws.com/x:latest`, `${ACCOUNT}.dkr.ecr.us-west-2.evil.example/x@${DIGEST}`]) expect(pattern.test(bad), bad).toBe(false);
+    });
+  });
 });

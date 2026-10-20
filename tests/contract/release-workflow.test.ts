@@ -4,6 +4,7 @@ import YAML from "yaml";
 
 interface Step {
   id?: string;
+  if?: string;
   name?: string;
   run?: string;
   uses?: string;
@@ -13,7 +14,9 @@ interface Step {
 }
 interface Job {
   if?: string;
+  "runs-on"?: string;
   needs?: string | string[];
+  outputs?: Record<string, string>;
   permissions?: Record<string, string>;
   steps: Step[];
 }
@@ -114,7 +117,49 @@ describe("release workflow", () => {
     expect(release.indexOf("release:verify")).toBeGreaterThan(release.indexOf("release:build"));
     expect(release.indexOf("gh release create")).toBeGreaterThan(release.indexOf("release:verify"));
     expect(release).toContain('--worker-image "$WORKER"');
+    // The browser executor ships with every release, built for linux/arm64 from its own Dockerfile and pinned by the same
+    // registry-confirmed digest as the worker, and recorded in release.json for the runtime stack to take.
+    expect(wf.jobs.images!.outputs?.executor).toBe("${{ steps.push.outputs.executor }}");
+    // Off by default: a tagged release must not fail on a repository the owner has not created yet.
+    expect(push).toContain('if [ "$PUBLISH_EXECUTOR" = "true" ]; then images="$images executor"; fi');
+    expect(push).toContain("for image in $images; do");
+    expect(wf.jobs.images!.steps.find((step) => step.id === "push")?.env?.PUBLISH_EXECUTOR).toBe("${{ vars.AGENTX_PUBLISH_EXECUTOR_IMAGE }}");
+    expect(push).toContain("environments/e2e-executor/Dockerfile");
+    // The flag is passed only when the images job produced an executor digest.
+    expect(release).toContain('if [ -n "$EXECUTOR" ]; then executor_flag=(--executor-image "$EXECUTOR"); fi');
+    expect(release).toContain('"${executor_flag[@]}"');
+    expect(wf.jobs.release!.steps.some((s) => s.env?.EXECUTOR === "${{ needs.images.outputs.executor }}")).toBe(true);
     expect(wf.jobs.release!.steps.some((s) => s.env?.GH_TOKEN === "${{ github.token }}")).toBe(true);
+  });
+
+  it("smoke-tests the executor image under its production sandbox before it is pushed, and pushes the very image it tested", async () => {
+    const wf = await workflow();
+    const steps = wf.jobs.images!.steps;
+    const index = (match: (step: (typeof steps)[number]) => boolean) => steps.findIndex(match);
+    const text = (step: (typeof steps)[number]) => step.run ?? "";
+    const awsIndex = index((step) => step.uses?.startsWith("aws-actions/configure-aws-credentials") === true);
+    const pushIndex = index((step) => step.id === "push");
+    // Dependencies, the build and the userns sysctl come before any AWS credential exists, and only when the executor is published.
+    const npmIndex = index((step) => text(step).includes("npm ci") && text(step).includes("npm run build"));
+    const nodeIndex = index((step) => step.uses?.startsWith("actions/setup-node") === true);
+    const sysctlIndex = index((step) => text(step).includes("sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"));
+    for (const found of [nodeIndex, npmIndex, sysctlIndex]) { expect(found).toBeGreaterThanOrEqual(0); expect(found).toBeLessThan(awsIndex); expect(steps[found]!.if).toBe("vars.AGENTX_PUBLISH_EXECUTOR_IMAGE == 'true'"); }
+    expect(nodeIndex).toBeLessThan(npmIndex);
+    expect(awsIndex).toBeLessThan(pushIndex);
+    expect(wf.jobs.images!["runs-on"]).toBe("ubuntu-24.04-arm");
+    // The executor branch: build into the local Docker, smoke through the shared script, then push that image; it never builds with --push.
+    const push = text(steps[pushIndex]!);
+    const branch = push.slice(push.indexOf('if [ "$image" = executor ]; then'), push.indexOf("else\n"));
+    expect(branch).toContain("--platform linux/arm64");
+    expect(branch).toContain("--load");
+    expect(branch).not.toContain("--push");
+    expect(branch).toContain('npx tsx scripts/executor-smoke.ts "$repo:$VERSION"');
+    expect(branch.indexOf("--load")).toBeLessThan(branch.indexOf("executor-smoke.ts"));
+    expect(branch.indexOf("executor-smoke.ts")).toBeLessThan(branch.indexOf('docker push "$repo:$VERSION"'));
+    expect(branch).toContain("digest=$(docker push");
+    // The registry still confirms what was pushed, whichever branch pushed it.
+    expect(push.indexOf("registry_digest=$(")).toBeGreaterThan(push.indexOf("docker push"));
+    expect(push).not.toMatch(/--no-sandbox|seccomp=unconfined/);
   });
 
   it("runs the images push step with shell: bash, so a failing `imagetools inspect | tr` fails the step instead of being swallowed by the pipe", async () => {

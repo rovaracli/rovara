@@ -2,6 +2,7 @@
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+import { executorSmokeDockerArgs, explainExecutorSmokeFailure } from "./executor-smoke.js";
 
 const DEFAULT_REGION = "us-east-1";
 const DEFAULT_REPOSITORY = "agentx-worker-production";
@@ -315,7 +316,20 @@ export async function buildAndPushImage(
   return pushed;
 }
 
-async function smokeTestWorker(runner: Runner, image: string): Promise<void> {
+/**
+ * The executor image's own smoke check (the one CI runs, through the same definition in scripts/executor-smoke.ts): its smoke module, run as the worker's
+ * Docker host runs the executor (pinned seccomp profile, no capability, read-only, no network). Chromium's sandbox is never skipped; when it cannot start the
+ * error says how to fix the Docker VM.
+ */
+export async function smokeTestExecutor(runner: Runner, image: string): Promise<void> {
+  const result = runner.capture("docker", executorSmokeDockerArgs(image), true);
+  if (result.status !== 0) {
+    process.stderr.write(result.stderr);
+    throw new Error(explainExecutorSmokeFailure(`${result.stderr}${result.stdout}`) ?? "executor image smoke test failed");
+  }
+}
+
+export async function smokeTestWorker(runner: Runner, image: string): Promise<void> {
   // The tools that run a project's devcontainer through the EC2 host's Docker (#121).
   const tools = runner.capture("docker", [
     "run", "--rm", "--entrypoint", "sh", image, "-c",
@@ -372,7 +386,7 @@ export function stackExists(runner: Runner, region: string, stack: string): bool
   throw new Error(`unable to inspect CloudFormation stack ${stack}`);
 }
 
-export function describeStack(runner: Runner, region: string, stack: string): StackDescription {
+export function describeStack(runner: Pick<Runner, "aws">, region: string, stack: string): StackDescription {
   const result = runner.aws([
     "cloudformation",
     "describe-stacks",

@@ -27,7 +27,22 @@ export class WorkerSettingsStack extends Stack {
       allowedPattern: naming.env === undefined ? "^.+@sha256:[a-f0-9]{64}$" : WORKER_IMAGE_URI_PATTERN,
       description: "Immutable private ECR linux/arm64 worker image URI",
     });
-    if (naming.env !== undefined) this.grantWorkerImagePull(naming.env, naming.pullThroughPrefix, imageUri);
+    // Optional: a release before the web/API runtime has no executor, and an environment that never deploys one keeps "none".
+    const executorImageUri = new CfnParameter(this, "ExecutorImageUri", {
+      type: "String",
+      default: "none",
+      // A named environment derives the worker role's ECR access from this value too, so a value other than "none" must
+      // be a private ECR digest reference; the legacy deployment's pattern is unchanged.
+      allowedPattern: naming.env === undefined ? "^(none|.+@sha256:[a-f0-9]{64})$" : `^(none|${WORKER_IMAGE_URI_PATTERN.slice(1, -1)})$`,
+      description: "Immutable private ECR linux/arm64 browser executor image URI, or none",
+    });
+    if (naming.env !== undefined) {
+      this.grantImagePull("WorkerImagePull", "PullWorkerImage", "CachedWorkerImage", naming.env, naming.pullThroughPrefix, imageUri);
+      // The workers boot-pull the executor image too (the web/API runtime): a named environment's role gets exactly that
+      // image's repository as well, and only once a release sets one ("none" leaves the role with the worker image alone).
+      this.grantImagePull("ExecutorImagePull", "PullExecutorImage", "CachedExecutorImage", naming.env, naming.pullThroughPrefix, executorImageUri,
+        new CfnCondition(this, "HasExecutorImage", { expression: Fn.conditionNot(Fn.conditionEquals(executorImageUri.valueAsString, "none")) }));
+    }
     const modelProvider = new CfnParameter(this, "ModelProvider", {
       type: "String",
       default: "amazon-bedrock",
@@ -69,6 +84,7 @@ export class WorkerSettingsStack extends Stack {
     const workerSettings: Array<[string, keyof typeof WORKER_SETTING_PARAMETERS, string]> = [
       ...secretSettings,
       ["WorkerOpenRouterProvidersParameter", "openRouterProviders", Fn.conditionIf(hasProviders.logicalId, providers.valueAsString, "none").toString()],
+      ["WorkerExecutorImageParameter", "executorImage", executorImageUri.valueAsString],
       ["WorkerModelProviderParameter", "modelProvider", modelProvider.valueAsString],
       ["WorkerModelIdParameter", "modelId", modelId.valueAsString],
       ["WorkerPromptCacheRetentionParameter", "promptCacheRetention", promptCacheRetention.valueAsString],
@@ -88,10 +104,12 @@ export class WorkerSettingsStack extends Stack {
    * are cut out of the image URI in CloudFormation. Creating or importing a repository is allowed only for that same
    * repository and only under the environment's pull-through prefix: an Allow on the exact repository, and a Deny of
    * those two actions on everything outside the prefix (a CloudFormation condition cannot test a string cut from a
-   * parameter, so IAM does the intersection).
+   * parameter, so IAM does the intersection). Called once for the worker image and once, under a condition, for the
+   * executor image (public mainline's browser executor, which workers boot-pull).
    */
-  private grantWorkerImagePull(env: string, pullThroughPrefix: string, imageUri: CfnParameter): void {
-    const roleArn = new CfnParameter(this, "Ec2WorkerInstanceRoleArn", {
+  private grantImagePull(policyId: string, sid: string, cacheSid: string, env: string, pullThroughPrefix: string, imageUri: CfnParameter, condition?: CfnCondition): void {
+    // Declared once, by the first grant, and shared by the second.
+    const roleArn = (this.node.tryFindChild("Ec2WorkerInstanceRoleArn") as CfnParameter | undefined) ?? new CfnParameter(this, "Ec2WorkerInstanceRoleArn", {
       type: "String",
       allowedPattern: "^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$",
       description: "The EC2 workers' instance role, which is allowed to pull the worker image",
@@ -104,14 +122,14 @@ export class WorkerSettingsStack extends Stack {
     const region = Fn.select(0, Fn.split(".amazonaws.com/", afterEcr));
     const repository = Fn.select(1, Fn.split(".amazonaws.com/", afterEcr));
     const repositoryArn = `arn:${Aws.PARTITION}:ecr:${region}:${account}:repository/${repository}`;
-    new iam.CfnPolicy(this, "WorkerImagePull", {
-      policyName: `WorkerImagePull-${env}`,
+    const policy = new iam.CfnPolicy(this, policyId, {
+      policyName: `${policyId}-${env}`,
       roles: [roleName],
       policyDocument: {
         Version: "2012-10-17",
         Statement: [
-          { Sid: "PullWorkerImage", Effect: "Allow", Action: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"], Resource: repositoryArn },
-          { Sid: "CachedWorkerImage", Effect: "Allow", Action: ["ecr:BatchImportUpstreamImage", "ecr:CreateRepository"], Resource: repositoryArn },
+          { Sid: sid, Effect: "Allow", Action: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"], Resource: repositoryArn },
+          { Sid: cacheSid, Effect: "Allow", Action: ["ecr:BatchImportUpstreamImage", "ecr:CreateRepository"], Resource: repositoryArn },
           {
             Sid: "NoCacheOutsideThePrefix", Effect: "Deny", Action: ["ecr:BatchImportUpstreamImage", "ecr:CreateRepository"],
             NotResource: `arn:${Aws.PARTITION}:ecr:*:${Aws.ACCOUNT_ID}:repository/${pullThroughPrefix}/*`,
@@ -119,6 +137,7 @@ export class WorkerSettingsStack extends Stack {
         ],
       },
     });
+    if (condition !== undefined) policy.cfnOptions.condition = condition;
   }
 }
 
