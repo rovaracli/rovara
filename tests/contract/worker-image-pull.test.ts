@@ -44,7 +44,7 @@ describe("the named environment's worker role and its image", () => {
   const glob = (pattern: string, text: string) => new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, ".*")}$`, "u").test(text);
   const matches = (statement: Statement, action: string, resource: string) => {
     if (![statement.Action].flat().includes(action)) return false;
-    if (statement.NotResource !== undefined) return ![statement.NotResource].flat().some((pattern) => glob(pattern, resource));
+    if (statement.NotResource !== undefined) return ![statement.NotResource].flat().some((pattern) => glob(pattern as string, resource));
     return [statement.Resource].flat().some((pattern) => glob(pattern as string, resource));
   };
   /** IAM's answer for the role: allowed by some Allow and denied by no Deny. */
