@@ -114,7 +114,9 @@ export class AgentDnsFirewall extends Construct {
     this.ruleGroup = new resolver.CfnFirewallRuleGroup(this, "RuleGroup", {
       name: `agentx-${props.env}-agents`,
       firewallRules: [
-        { action: "ALLOW", priority: 100, firewallDomainListId: allowList.attrId },
+        // An allowed name may CNAME to a CDN name not on the list (auth.docker.io -> *.cdn.cloudflare.net, found live
+        // on staging); trust the chain only for names this rule already allowed. Everything else still meets BLOCK.
+        { action: "ALLOW", priority: 100, firewallDomainListId: allowList.attrId, firewallDomainRedirectionAction: "TRUST_REDIRECTION_DOMAIN" },
         { action: "BLOCK", blockResponse: "NXDOMAIN", priority: 200, firewallDomainListId: blockList.attrId },
       ],
     });

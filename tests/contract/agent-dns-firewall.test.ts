@@ -9,7 +9,7 @@ import { skipLambdaBundling } from "../support/skip-bundling.js";
 skipLambdaBundling();
 
 type Resource = { Type: string; Properties: Record<string, unknown> };
-type Rule = { Action: string; BlockResponse?: string; FirewallDomainListId: unknown; Priority: number };
+type Rule = { Action: string; BlockResponse?: string; FirewallDomainListId: unknown; Priority: number; FirewallDomainRedirectionAction?: string };
 
 function foundation(context: Record<string, unknown>): Template {
   const app = buildAgentXApp(context);
@@ -60,6 +60,12 @@ describe("agent DNS firewall (cloud installs)", () => {
       "slack.com", "*.slack.com", "api.linear.app", "mcp.linear.app", "*.atlassian.net", "app.asana.com",
     ]) expect(DEFAULT_AGENT_ALLOW_DOMAINS).toContain(domain);
     expect(DEFAULT_AGENT_ALLOW_DOMAINS).toHaveLength(new Set(DEFAULT_AGENT_ALLOW_DOMAINS).size);
+  });
+
+  it("follows CNAME chains only from allowed names (found live: Docker Hub's auth.docker.io CNAMEs to Cloudflare)", () => {
+    const { allow, block } = ruleGroup(foundation({ agentxEnv: "staging", agentxCloud: true }));
+    expect(allow.FirewallDomainRedirectionAction).toBe("TRUST_REDIRECTION_DOMAIN");
+    expect(block.FirewallDomainRedirectionAction).toBeUndefined();
   });
 
   it("lets machines resolve their own VPC names and nothing wider (found live on staging: hostname lookups were blocked)", () => {
