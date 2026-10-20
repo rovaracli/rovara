@@ -17,7 +17,7 @@ export interface SigninServices {
   sleep?: (ms: number) => Promise<void>; pollMs?: number;
 }
 
-async function installed(services: SigninServices, env: string): Promise<EnvironmentSettings> {
+export async function installed(services: SigninServices, env: string): Promise<EnvironmentSettings> {
   const settings = await readEnvironmentSettings(services.store, env);
   if (settings === undefined) throw agentXError("CONFIG_INVALID", `environment ${env} is not installed in this account and region; check --env and --region`);
   if (settings.naming !== "environment") throw agentXError("CONFIG_INVALID", `developer sign-in needs an environment installed with agentx init; ${env} uses the legacy stack names`);

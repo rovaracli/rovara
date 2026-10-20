@@ -13,7 +13,7 @@ export const SIGN_IN_PARAMETERS: Record<string, string> = {
 type Command = { constructor: { name: string }; input: Record<string, unknown> };
 
 /** Applies an executed change set's parameters, so a later update sees the new values. */
-export function fakeCloudFormation(options: { parameters?: Record<string, string>; status?: string; changeSet?: { status: "CREATE_COMPLETE" | "FAILED"; reason?: string }; finalStatus?: string; absent?: boolean } = {}) {
+export function fakeCloudFormation(options: { parameters?: Record<string, string>; status?: string; changeSet?: { status: "CREATE_COMPLETE" | "FAILED"; reason?: string }; finalStatus?: string; absent?: boolean; outputs?: Record<string, string> } = {}) {
   const calls: Array<{ name: string; input: Record<string, unknown> }> = [];
   const parameters: Record<string, string> = { ...(options.parameters ?? { CallbackSigningKey: "****", SlackTeamId: "", DeveloperSignInSlack: "disabled", DeveloperOidcIssuer: "" }) };
   let pending: Array<{ ParameterKey: string; ParameterValue?: string; UsePreviousValue?: boolean }> = [];
@@ -25,7 +25,7 @@ export function fakeCloudFormation(options: { parameters?: Record<string, string
       calls.push({ name: command.constructor.name, input: command.input });
       if (command instanceof DescribeStacksCommand) {
         if (options.absent) throw Object.assign(new Error(`Stack with id ${STACK} does not exist`), { name: "ValidationError" });
-        return { Stacks: [{ StackName: STACK, StackStatus: executed ? options.finalStatus ?? "UPDATE_COMPLETE" : options.status ?? "UPDATE_COMPLETE", Parameters: Object.entries(parameters).map(([ParameterKey, ParameterValue]) => ({ ParameterKey, ParameterValue })) }] };
+        return { Stacks: [{ StackName: STACK, Outputs: Object.entries(options.outputs ?? {}).map(([OutputKey, OutputValue]) => ({ OutputKey, OutputValue })), StackStatus: executed ? options.finalStatus ?? "UPDATE_COMPLETE" : options.status ?? "UPDATE_COMPLETE", Parameters: Object.entries(parameters).map(([ParameterKey, ParameterValue]) => ({ ParameterKey, ParameterValue })) }] };
       }
       if (command instanceof CreateChangeSetCommand) {
         pending = (command.input.Parameters ?? []) as typeof pending;

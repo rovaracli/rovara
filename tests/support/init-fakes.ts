@@ -163,7 +163,12 @@ export function memoryInitSecrets(initial: Record<string, string> = {}, options:
       if (options.failCreate === true && reserved.has(name)) throw Object.assign(new Error("test setup: secret write refused"), { name: "AccessDeniedException" });
       if (!exists(name)) throw Object.assign(new Error(`Secrets Manager can't find ${name}`), { name: "ResourceNotFoundException" }); values.set(name, value);
     },
-    async arn(name) { return exists(name) ? arnOf(name) : undefined; },
+    // DescribeSecret takes a name or an ARN: an ARN finds the secret by the name between `:secret:` and the six-character suffix.
+    async arn(name) {
+      const named = /^arn:[^:]+:secretsmanager:[^:]+:\d{12}:secret:(.+)-[A-Za-z0-9]{6}$/.exec(name)?.[1];
+      if (named !== undefined) return exists(named) ? name : undefined;
+      return exists(name) ? arnOf(name) : undefined;
+    },
     async reserve(name) { if (!exists(name)) reserved.add(name); return arnOf(name); },
   };
 }

@@ -13,6 +13,7 @@ import { processPrompter, unattendedPrompter, type SecretSource, type TextWriter
 import { slackWebApi } from "../init/slack-app.js";
 import { formatSuccess } from "../output.js";
 import { checkLines } from "./check.js";
+import { runSigninCloud, type CloudSignInFlags } from "./cloud.js";
 import { SIGNIN_FLAG_NAMES, type SigninFlags, type SigninSecretFlags } from "./collect.js";
 import { runSigninCheck, runSigninDisable, runSigninEnable, runSigninShow, type SigninServices } from "./commands.js";
 
@@ -75,7 +76,7 @@ export interface SigninCommandContext {
 const globalOptions = (command: Command) => command.optsWithGlobals<{ env: string; json: boolean }>();
 
 export function registerSigninCommands(program: Command, context: SigninCommandContext): void {
-  const signin = program.command("signin").description("choose how developers sign in: Slack, your company's sign-in, or both (operator role)");
+  const signin = program.command("signin").description("choose how developers sign in: Slack, your company's sign-in, or both; on a Rovara Cloud install, GitHub and Google (operator role)");
   /** Real AWS and Slack clients for --region, each built only when a test has not overridden it. */
   const signinServices = (region: string | undefined, yes: boolean): SigninServices => {
     const overrides = context.overrides ?? {};
@@ -134,6 +135,32 @@ export function registerSigninCommands(program: Command, context: SigninCommandC
       const globals = globalOptions(command);
       const result = await runSigninDisable(signinServices(options.region, options.yes), globals.env, signinMethod(method), options.yes);
       context.stdout.write(globals.json ? formatSuccess(result, true) : changedText(result.changed));
+    });
+  signin
+    .command("cloud")
+    .description("turn GitHub and Google sign-in on, change or off on a Rovara Cloud install; shows the change and asks first")
+    .option("--github-client-id <id>", "the GitHub OAuth app's client id (with --github-client-secret-arn)")
+    .option("--github-client-secret-arn <arn>", "the Secrets Manager secret holding the GitHub OAuth client secret as {\"clientSecret\": ...}; its name must start with agentx/<env>/")
+    .option("--google-client-id <id>", "the Google OAuth client id (with --google-client-secret-arn)")
+    .option("--google-client-secret-arn <arn>", "the Secrets Manager secret holding the Google client secret as {\"clientSecret\": ...}; its name must start with agentx/<env>/")
+    .option("--no-github", "turn GitHub sign-in off")
+    .option("--no-google", "turn Google sign-in off")
+    .option(regionOption, regionHelp)
+    .option("--yes", "apply without asking; the change is still printed", false)
+    .action(async (options: { githubClientId?: string; githubClientSecretArn?: string; googleClientId?: string; googleClientSecretArn?: string; github: boolean; google: boolean; region?: string; yes: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const flags = definedEntries<CloudSignInFlags>({
+        githubClientId: options.githubClientId, githubClientSecretArn: options.githubClientSecretArn,
+        googleClientId: options.googleClientId, googleClientSecretArn: options.googleClientSecretArn,
+        // commander names a lone --no-<x> option <x>, true unless the flag was given.
+        noGithub: options.github ? undefined : true, noGoogle: options.google ? undefined : true,
+      });
+      const result = await runSigninCloud(signinServices(options.region, options.yes), globals.env, flags, options.yes);
+      context.stdout.write(globals.json ? formatSuccess(result, true) : [
+        result.changed ? "Cloud sign-in updated.\n" : "Nothing to change.\n",
+        ...(result.githubCallbackUrl === undefined ? [] : [`Register this authorization callback URL with the GitHub OAuth app: ${result.githubCallbackUrl}\n`]),
+        ...(result.googleRedirectUri === undefined ? [] : [`Register this authorized redirect URI with the Google OAuth app: ${result.googleRedirectUri}\n`]),
+      ].join(""));
     });
   signin
     .command("check")
