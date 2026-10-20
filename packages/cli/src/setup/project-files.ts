@@ -7,7 +7,7 @@
 // this file writes itself. No file content ever becomes part of a command's executable or args, and
 // no file content, private key or installation token is ever logged.
 import { createHash } from "node:crypto";
-import { agentXError, createCandidateManifest, type CandidateManifest, type CandidateRepository, type ProjectCommand } from "@agentx/contracts";
+import { SETUP_TIMEOUT, TEST_TIMEOUT, agentXError, agentxRepositoryName, createCandidateManifest, parseCommandLine, type CandidateManifest, type CandidateRepository, type ProjectCommand } from "@agentx/contracts";
 import type { InitSecrets } from "../init/context.js";
 import { githubAppJwt, githubAppSecretName, parseAppSecret, type GitHubApi } from "../init/github-app.js";
 
@@ -29,11 +29,10 @@ export interface RepositorySnapshot {
 }
 
 
+// Re-exported from contracts: the broker builds a cloud org's project from the same parts.
+export { SETUP_TIMEOUT, TEST_TIMEOUT, agentxRepositoryName, parseCommandLine };
+
 const API = "https://api.github.com";
-/** Seconds a setup command may run (the proposal's and a typed command's alike). */
-export const SETUP_TIMEOUT = 900;
-/** Seconds a test (readiness) command may run. */
-export const TEST_TIMEOUT = 1800;
 const NPM_PLACEHOLDER = /no test specified/;
 /** A repository's file is untrusted content: never hold more of it than this in memory. Every
  * build file this module reads (package.json, pyproject.toml, requirements.txt, a Makefile) states
@@ -182,37 +181,6 @@ export function githubRepositoryApi(fetchImplementation: typeof fetch): GitHubRe
       return readCapped(response, MAX_FILE_BYTES);
     },
   };
-}
-
-export function agentxRepositoryName(githubName: string): string {
-  const cleaned = githubName.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63);
-  return /^[a-z]/.test(cleaned) ? cleaned : `repo-${cleaned}`.slice(0, 63);
-}
-
-export function parseCommandLine(line: string, cwd: string, timeoutSeconds: number): ProjectCommand {
-  const words: string[] = [];
-  let current = "";
-  let quote: string | undefined;
-  let started = false;
-  for (const character of line.trim()) {
-    if (quote !== undefined) {
-      if (character === quote) quote = undefined; else current += character;
-    } else if (character === '"' || character === "'") {
-      quote = character; started = true;
-    } else if (/\s/.test(character)) {
-      if (started) { words.push(current); current = ""; started = false; }
-    } else {
-      current += character; started = true;
-    }
-  }
-  if (quote !== undefined) throw agentXError("CONFIG_INVALID", "the command has an unclosed quote");
-  if (started) words.push(current);
-  if (words.length === 0) throw agentXError("CONFIG_INVALID", "the command is empty");
-  if (words.some((word) => ["&&", "||", "|", ";"].includes(word))) {
-    throw agentXError("CONFIG_INVALID", "a command runs one program; put && , | and ; steps in a script or Makefile target and call that");
-  }
-  const [executable, ...args] = words as [string, ...string[]];
-  return { cwd, executable, args, timeoutSeconds };
 }
 
 export function commandLine(command: ProjectCommand): string {
