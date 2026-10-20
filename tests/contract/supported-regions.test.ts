@@ -3,7 +3,7 @@ import { SUPPORTED_REGIONS, defaultProductionAvailabilityZoneIds } from "../../i
 
 describe("supported regions", () => {
   it("are exactly the regions with verified retired runtime availability-zone IDs", () => {
-    expect(SUPPORTED_REGIONS).toEqual(["us-east-1"]);
+    expect(SUPPORTED_REGIONS).toEqual(["us-east-1", "us-west-2"]);
     for (const region of SUPPORTED_REGIONS) expect(defaultProductionAvailabilityZoneIds(region)).toHaveLength(2);
   });
 });

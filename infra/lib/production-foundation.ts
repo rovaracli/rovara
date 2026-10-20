@@ -21,6 +21,7 @@ export const AGENTX_PRODUCTION_INSTANCE_TYPE = "m6g.large";
 
 const DEFAULT_AZ_IDS: Readonly<Record<string, readonly [string, string]>> = {
   "us-east-1": ["use1-az1", "use1-az2"],
+  "us-west-2": ["usw2-az1", "usw2-az2"],
 };
 
 /**
