@@ -1,0 +1,276 @@
+{
+  "forWorker": {
+    "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDA2LTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMDYtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDE4IiwiZmVuY2UiOjMsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwiY2FuZGlkYXRlLWV4cG9ydCIsIm1vZGVsLWFjY2VzcyJdLCJleHBpcmVzQXQiOjE3OTI0ODY4MDB9.CCPWpaR0NjbUTCyMpeUT4jAohFVpzjinQwPk-pb9cn8",
+    "fence": 3,
+    "kind": "task",
+    "operationId": "00000006-0000-4000-8000-000000000018",
+    "payload": {
+      "conversationId": "00000006-0000-4000-8000-00000000000c",
+      "conversationStarted": false,
+      "prompt": "You are one step inside AgentX's gated task workflow. AgentX itself asks the task owner for every approval, runs the project's checks, runs the independent code and security reviews, and opens the draft pull request. Never plan, describe or perform git push, creating remote branches, opening or updating pull requests (for example gh pr create), merging, or deploying. Never treat any step as already approved: the owner approves each document in Slack.\n\nImplement the human-approved plan below. Follow its ordered steps, run the listed checks, and report results and limitations. Do not push branches or create pull requests; AgentX handles publication after the required gates.\n\nApproved plan (sha256 94a474a3f36e9ad225dc6de5fcee0daa537c740f42ddf5ca2a5e01796e6c1672):\n# Coding plan v1 (sha256 94a474a3f36e): Retry failed payments\n## Why\n> Fix the retry bug (from Maya Chen)\n## Claims\n- **1** Payments that fail with a timeout are retried.\n  - Evidence: code `payments/src/charge.ts` lines 10-24 — Today a timeout throws.\n  - **1.1** The retry waits longer each time.\n- **2** A payment is never charged twice.\n## Decisions\nThe owner approved AgentX's recommended answer to every decision; treat each as decided.\n- **d1** (on claim 1) How many times should a payment be retried?\n  - Three times: Most timeouts clear by the third try. (AgentX recommends this)\n  - Five times: Customers wait longer before seeing a failure.\n## Not changing\n- The refund flow stays as it is.\n## Risks\n- A slow gateway could keep a retry open for a long time.\n",
+      "readiness": [
+        {
+          "args": [
+            "test"
+          ],
+          "cwd": "repo/demo",
+          "executable": "npm",
+          "timeoutSeconds": 30
+        }
+      ],
+      "workflowBase": [
+        {
+          "baseCommitSha": "d5e5fae6efa239fff60c0365f91fb79a0601be36",
+          "repositoryId": "demo"
+        }
+      ],
+      "workflowMode": "IMPLEMENT"
+    },
+    "projectRevision": 1,
+    "protocolVersion": 1,
+    "workspaceId": "00000006-0000-4000-8000-000000000007"
+  },
+  "invocation": {
+    "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDA2LTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMDYtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDE4IiwiZmVuY2UiOjMsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwiY2FuZGlkYXRlLWV4cG9ydCIsIm1vZGVsLWFjY2VzcyJdLCJleHBpcmVzQXQiOjE3OTI0ODY4MDB9.CCPWpaR0NjbUTCyMpeUT4jAohFVpzjinQwPk-pb9cn8",
+    "fence": 3,
+    "kind": "task",
+    "operationId": "00000006-0000-4000-8000-000000000018",
+    "payload": {
+      "conversationId": "00000006-0000-4000-8000-00000000000c",
+      "conversationStarted": false,
+      "prompt": "You are one step inside AgentX's gated task workflow. AgentX itself asks the task owner for every approval, runs the project's checks, runs the independent code and security reviews, and opens the draft pull request. Never plan, describe or perform git push, creating remote branches, opening or updating pull requests (for example gh pr create), merging, or deploying. Never treat any step as already approved: the owner approves each document in Slack.\n\nImplement the human-approved plan below. Follow its ordered steps, run the listed checks, and report results and limitations. Do not push branches or create pull requests; AgentX handles publication after the required gates.\n\nApproved plan (sha256 94a474a3f36e9ad225dc6de5fcee0daa537c740f42ddf5ca2a5e01796e6c1672):\n# Coding plan v1 (sha256 94a474a3f36e): Retry failed payments\n## Why\n> Fix the retry bug (from Maya Chen)\n## Claims\n- **1** Payments that fail with a timeout are retried.\n  - Evidence: code `payments/src/charge.ts` lines 10-24 — Today a timeout throws.\n  - **1.1** The retry waits longer each time.\n- **2** A payment is never charged twice.\n## Decisions\nThe owner approved AgentX's recommended answer to every decision; treat each as decided.\n- **d1** (on claim 1) How many times should a payment be retried?\n  - Three times: Most timeouts clear by the third try. (AgentX recommends this)\n  - Five times: Customers wait longer before seeing a failure.\n## Not changing\n- The refund flow stays as it is.\n## Risks\n- A slow gateway could keep a retry open for a long time.\n",
+      "readiness": [
+        {
+          "args": [
+            "test"
+          ],
+          "cwd": "repo/demo",
+          "executable": "npm",
+          "timeoutSeconds": 30
+        }
+      ],
+      "workflowBase": [
+        {
+          "baseCommitSha": "d5e5fae6efa239fff60c0365f91fb79a0601be36",
+          "repositoryId": "demo"
+        }
+      ],
+      "workflowMode": "IMPLEMENT"
+    },
+    "projectRevision": 1,
+    "protocolVersion": 1,
+    "workspaceId": "00000006-0000-4000-8000-000000000007"
+  },
+  "modelAccess": {
+    "mintKeyCalls": [
+      {
+        "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "maxBudgetUsd": 25,
+        "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+        "purpose": "task",
+        "refId": "00000006-0000-4000-8000-000000000006",
+        "ttlSeconds": 3600
+      }
+    ],
+    "response": {
+      "apiKey": "sk-fake-key-0001",
+      "baseUrl": "http://internal-proxy.example.test:4000",
+      "expiresAt": 1792414800000,
+      "requestId": "00000006-0000-4000-8000-00000000001b"
+    },
+    "status": 200
+  },
+  "operation": {
+    "conversationId": "00000006-0000-4000-8000-00000000000c",
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "entityType": "OPERATION",
+    "eventSequence": 0,
+    "fence": 3,
+    "id": "00000006-0000-4000-8000-000000000018",
+    "kind": "task",
+    "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+    "payloadHash": "f869f78015014b7c5f7cfe37166f9c3f2eacaa0927a871d13c1667841dc3084d",
+    "pk": "WORKSPACE#00000006-0000-4000-8000-000000000007",
+    "requestId": "00000006-0000-4000-8000-000000000016",
+    "requestedBy": {
+      "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "kind": "developer",
+      "provider": "slack"
+    },
+    "settingsRevision": 1,
+    "sk": "OPERATION#00000006-0000-4000-8000-000000000018",
+    "status": "ACCEPTED",
+    "updatedAt": "2026-10-20T00:00:00.000Z",
+    "workflowMode": "IMPLEMENT",
+    "workspaceId": "00000006-0000-4000-8000-000000000007"
+  },
+  "outbox": {
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "deploymentMode": "ec2-ebs",
+    "entityType": "OUTBOX",
+    "id": "00000006-0000-4000-8000-000000000019",
+    "invocation": {
+      "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDA2LTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMDYtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDE4IiwiZmVuY2UiOjMsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwiY2FuZGlkYXRlLWV4cG9ydCIsIm1vZGVsLWFjY2VzcyJdLCJleHBpcmVzQXQiOjE3OTI0ODY4MDB9.CCPWpaR0NjbUTCyMpeUT4jAohFVpzjinQwPk-pb9cn8",
+      "fence": 3,
+      "kind": "task",
+      "operationId": "00000006-0000-4000-8000-000000000018",
+      "payload": {
+        "conversationId": "00000006-0000-4000-8000-00000000000c",
+        "conversationStarted": false,
+        "prompt": "You are one step inside AgentX's gated task workflow. AgentX itself asks the task owner for every approval, runs the project's checks, runs the independent code and security reviews, and opens the draft pull request. Never plan, describe or perform git push, creating remote branches, opening or updating pull requests (for example gh pr create), merging, or deploying. Never treat any step as already approved: the owner approves each document in Slack.\n\nImplement the human-approved plan below. Follow its ordered steps, run the listed checks, and report results and limitations. Do not push branches or create pull requests; AgentX handles publication after the required gates.\n\nApproved plan (sha256 94a474a3f36e9ad225dc6de5fcee0daa537c740f42ddf5ca2a5e01796e6c1672):\n# Coding plan v1 (sha256 94a474a3f36e): Retry failed payments\n## Why\n> Fix the retry bug (from Maya Chen)\n## Claims\n- **1** Payments that fail with a timeout are retried.\n  - Evidence: code `payments/src/charge.ts` lines 10-24 — Today a timeout throws.\n  - **1.1** The retry waits longer each time.\n- **2** A payment is never charged twice.\n## Decisions\nThe owner approved AgentX's recommended answer to every decision; treat each as decided.\n- **d1** (on claim 1) How many times should a payment be retried?\n  - Three times: Most timeouts clear by the third try. (AgentX recommends this)\n  - Five times: Customers wait longer before seeing a failure.\n## Not changing\n- The refund flow stays as it is.\n## Risks\n- A slow gateway could keep a retry open for a long time.\n",
+        "readiness": [
+          {
+            "args": [
+              "test"
+            ],
+            "cwd": "repo/demo",
+            "executable": "npm",
+            "timeoutSeconds": 30
+          }
+        ],
+        "workflowBase": [
+          {
+            "baseCommitSha": "d5e5fae6efa239fff60c0365f91fb79a0601be36",
+            "repositoryId": "demo"
+          }
+        ],
+        "workflowMode": "IMPLEMENT"
+      },
+      "projectRevision": 1,
+      "protocolVersion": 1,
+      "workspaceId": "00000006-0000-4000-8000-000000000007"
+    },
+    "operationId": "00000006-0000-4000-8000-000000000018",
+    "pk": "OUTBOX#00000006-0000-4000-8000-000000000019",
+    "sk": "OUTBOX",
+    "status": "PENDING",
+    "workspaceId": "00000006-0000-4000-8000-000000000007"
+  },
+  "piInputs": {
+    "skills": [],
+    "systemPrompt": "You are the AgentX coding worker. AgentX gave you a software task to carry out in a prepared workspace. You work alone: nobody can answer questions while you work, and your changes may become a pull request that people review.\n\nHow to work:\n- Find the relevant code before changing it, and read a file before you edit it.\n- Make the smallest change that fully does what was asked, in the style of the code around it. Don't refactor, rename or reformat code the task doesn't need changed, and keep existing comments and logging.\n- When something is unclear, take the most reasonable reading, carry on, and say what you assumed in your final message.\n- If the same error comes back after two attempts at a fix, stop repeating it. Re-read the error, note what you have tried, and test a different explanation.\n\nTools:\n- Use read to look at files rather than cat or sed. Use edit to change existing files, and write only for new files or complete rewrites.\n\nFinal message:\nKeep it short. Say what you changed and why, name the files, give the commands you ran with their results, and list any assumptions or anything left undone.\n\n<addendum>\nAgentX checks your work after you finish. Work this way:\n1. Reproduce the problem before changing code, and say how you reproduced it.\n2. Run the relevant tests before and after your change.\n3. A test that passed before your change and fails after it is your own regression. Fix your change, not the test; never call it unrelated.\n4. The one exception is a test that checks the old behaviour the task asks you to change. Leave it as it is and name it in your final message, with the behaviour it checks. Never edit or delete a test to make it pass, unless the task explicitly asks you to change tests.\n5. Report the commands you ran and their results.\n6. You must never claim a test passed unless you saw it pass.\nEnd your final message with exactly one line: \"AgentX result: done\" if the work is complete and every test you ran passes, apart from tests you named under rule 4, otherwise \"AgentX result: not done\".\n</addendum>\n\n<project_context>\nProject-specific instructions and guidelines:\n\n<project_instructions path=\"AgentX workspace\">\nAgentX workspace note (written by AgentX, not by any repository):\nThe repository \"demo\" is checked out at repo/demo in this workspace. Make every change inside it; files outside it are not part of the repository or its pull request.\n</project_instructions>\n</project_context>\n\n<cwd>\n<workspace>\n</cwd>",
+    "tools": [
+      "read",
+      "bash",
+      "edit",
+      "write",
+      "grep",
+      "find",
+      "ls"
+    ]
+  },
+  "reviewSessions": [],
+  "scenario": "implement",
+  "taskItems": [
+    {
+      "budgetUsd": 25,
+      "charge": {
+        "member": {
+          "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#SLACK_LIMIT#T0BSHLLUGBD",
+          "sk": "MEMBER#U0MAYA001"
+        },
+        "organization": {
+          "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#SLACK_LIMIT#T0BSHLLUGBD",
+          "sk": "ORGANIZATION"
+        }
+      },
+      "client": "an AI tool",
+      "conversationId": "00000006-0000-4000-8000-00000000000c",
+      "createdAt": "2026-10-20T00:00:00.000Z",
+      "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "developerName": "Maya Chen",
+      "entityType": "DEVELOPER_TASK",
+      "modelKeyIds": [
+        "48c0bb601ee2711d3370b300628108b90c75d087695f801d2603a7147a2e9f1c"
+      ],
+      "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+      "ownerKey": "63ad6293956ee091781a9fd2734f4f9581c5f57db1244ff83206f2f6125fffa1",
+      "pk": "DEVTASK#00000006-0000-4000-8000-000000000006",
+      "preparedBase": [
+        {
+          "baseCommitSha": "d5e5fae6efa239fff60c0365f91fb79a0601be36",
+          "repositoryId": "demo"
+        }
+      ],
+      "project": "payments",
+      "provider": "slack",
+      "requestText": "Fix the retry bug",
+      "shared": false,
+      "sk": "META",
+      "slackUserId": "U0MAYA001",
+      "startingRevision": 1,
+      "taskId": "00000006-0000-4000-8000-000000000006",
+      "title": "Fix the retry bug",
+      "updatedAt": "2026-10-20T00:00:00.000Z",
+      "workflow": {
+        "artifacts": [
+          {
+            "createdAt": "2026-10-20T00:00:00.000Z",
+            "format": "structured",
+            "id": "00000006-0000-4000-8000-000000000013",
+            "objectKey": "private/63ad6293956ee091781a9fd2734f4f9581c5f57db1244ff83206f2f6125fffa1/00000006-0000-4000-8000-000000000007/plan-documents/00000006-0000-4000-8000-000000000013.json",
+            "producer": "agentx-worker-untrusted",
+            "sha256": "94a474a3f36e9ad225dc6de5fcee0daa537c740f42ddf5ca2a5e01796e6c1672",
+            "type": "plan",
+            "version": 1
+          }
+        ],
+        "checkPolicy": {
+          "optional": [],
+          "proposed": [],
+          "required": [
+            {
+              "command": {
+                "args": [
+                  "test"
+                ],
+                "cwd": "repo/demo",
+                "executable": "npm",
+                "timeoutSeconds": 30
+              },
+              "id": "required-1",
+              "label": "npm test"
+            }
+          ],
+          "selectedOptionalIds": []
+        },
+        "createdAt": "2026-10-20T00:00:00.000Z",
+        "decisions": [
+          {
+            "actorId": "63ad6293956ee091781a9fd2734f4f9581c5f57db1244ff83206f2f6125fffa1",
+            "actorRole": "TASK_OWNER",
+            "artifactDigest": "94a474a3f36e9ad225dc6de5fcee0daa537c740f42ddf5ca2a5e01796e6c1672",
+            "at": "2026-10-20T00:00:00.000Z",
+            "decision": "APPROVE",
+            "reason": "Approved",
+            "requestId": "00000006-0000-4000-8000-000000000016",
+            "selectedOptionalCheckIds": [],
+            "workflowRevision": 2
+          }
+        ],
+        "definitionId": "agentx-task-to-pr",
+        "definitionVersion": "1.0.0",
+        "outcome": "PASSED",
+        "ownerId": "63ad6293956ee091781a9fd2734f4f9581c5f57db1244ff83206f2f6125fffa1",
+        "path": "QUICK",
+        "revision": 4,
+        "schemaVersion": 1,
+        "stage": "IMPLEMENT",
+        "state": "RUNNING",
+        "taskId": "00000006-0000-4000-8000-000000000006",
+        "updatedAt": "2026-10-20T00:00:00.000Z"
+      },
+      "workspaceId": "00000006-0000-4000-8000-000000000007"
+    },
+    {
+      "artifactId": "00000006-0000-4000-8000-000000000013",
+      "artifactSha256": "94a474a3f36e9ad225dc6de5fcee0daa537c740f42ddf5ca2a5e01796e6c1672",
+      "attachedAt": "2026-10-20T00:00:00.000Z",
+      "entityType": "PLAN_EVIDENCE_POINTER",
+      "objectKey": "private/63ad6293956ee091781a9fd2734f4f9581c5f57db1244ff83206f2f6125fffa1/00000006-0000-4000-8000-000000000007/plan-documents/00000006-0000-4000-8000-000000000013.evidence.2304f5e32dac7606f7c9d8cfa515b2ea801d1ffcc61b650afec89e0e40762783.json",
+      "pk": "DEVTASK#00000006-0000-4000-8000-000000000006",
+      "sha256": "2304f5e32dac7606f7c9d8cfa515b2ea801d1ffcc61b650afec89e0e40762783",
+      "sk": "PLAN_EVIDENCE#00000006-0000-4000-8000-000000000013"
+    }
+  ]
+}

@@ -1,0 +1,275 @@
+{
+  "forWorker": {
+    "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDA3LTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMDctMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDFlIiwiZmVuY2UiOjQsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwibW9kZWwtYWNjZXNzIl0sImV4cGlyZXNBdCI6MTc5MjQ4NjgwMH0.KAzHTtTquNMq6FTg3vcysNoD93npaYGx5Q0E4kSuOjk",
+    "fence": 4,
+    "kind": "task",
+    "operationId": "00000007-0000-4000-8000-00000000001e",
+    "payload": {
+      "conversationId": "00000007-0000-4000-8000-00000000000c",
+      "conversationStarted": false,
+      "prompt": "You are one step inside AgentX's gated task workflow. AgentX itself asks the task owner for every approval, runs the project's checks, runs the independent code and security reviews, and opens the draft pull request. Never plan, describe or perform git push, creating remote branches, opening or updating pull requests (for example gh pr create), merging, or deploying. Never treat any step as already approved: the owner approves each document in Slack.\n\nOwner-authorized verification retry. Run only the selected project checks against the current code, without editing files. Owner note: Run the checks again.",
+      "readiness": [
+        {
+          "args": [
+            "test"
+          ],
+          "cwd": "repo/demo",
+          "executable": "npm",
+          "timeoutSeconds": 30
+        }
+      ],
+      "workflowBase": [
+        {
+          "baseCommitSha": "d5e5fae6efa239fff60c0365f91fb79a0601be36",
+          "repositoryId": "demo"
+        }
+      ],
+      "workflowMode": "CHECKS"
+    },
+    "projectRevision": 1,
+    "protocolVersion": 1,
+    "workspaceId": "00000007-0000-4000-8000-000000000007"
+  },
+  "invocation": {
+    "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDA3LTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMDctMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDFlIiwiZmVuY2UiOjQsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwibW9kZWwtYWNjZXNzIl0sImV4cGlyZXNBdCI6MTc5MjQ4NjgwMH0.KAzHTtTquNMq6FTg3vcysNoD93npaYGx5Q0E4kSuOjk",
+    "fence": 4,
+    "kind": "task",
+    "operationId": "00000007-0000-4000-8000-00000000001e",
+    "payload": {
+      "conversationId": "00000007-0000-4000-8000-00000000000c",
+      "conversationStarted": false,
+      "prompt": "You are one step inside AgentX's gated task workflow. AgentX itself asks the task owner for every approval, runs the project's checks, runs the independent code and security reviews, and opens the draft pull request. Never plan, describe or perform git push, creating remote branches, opening or updating pull requests (for example gh pr create), merging, or deploying. Never treat any step as already approved: the owner approves each document in Slack.\n\nOwner-authorized verification retry. Run only the selected project checks against the current code, without editing files. Owner note: Run the checks again.",
+      "readiness": [
+        {
+          "args": [
+            "test"
+          ],
+          "cwd": "repo/demo",
+          "executable": "npm",
+          "timeoutSeconds": 30
+        }
+      ],
+      "workflowBase": [
+        {
+          "baseCommitSha": "d5e5fae6efa239fff60c0365f91fb79a0601be36",
+          "repositoryId": "demo"
+        }
+      ],
+      "workflowMode": "CHECKS"
+    },
+    "projectRevision": 1,
+    "protocolVersion": 1,
+    "workspaceId": "00000007-0000-4000-8000-000000000007"
+  },
+  "modelAccess": {
+    "mintKeyCalls": [
+      {
+        "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "maxBudgetUsd": 25,
+        "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+        "purpose": "task",
+        "refId": "00000007-0000-4000-8000-000000000006",
+        "ttlSeconds": 3600
+      }
+    ],
+    "response": {
+      "apiKey": "sk-fake-key-0001",
+      "baseUrl": "http://internal-proxy.example.test:4000",
+      "expiresAt": 1792414800000,
+      "requestId": "00000007-0000-4000-8000-000000000021"
+    },
+    "status": 200
+  },
+  "operation": {
+    "conversationId": "00000007-0000-4000-8000-00000000000c",
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "entityType": "OPERATION",
+    "eventSequence": 0,
+    "fence": 4,
+    "id": "00000007-0000-4000-8000-00000000001e",
+    "kind": "task",
+    "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+    "payloadHash": "f156f6d14fc40c6a2af50da950edf43b8fdaa38869fde589fc5b3d8c6389bcbd",
+    "pk": "WORKSPACE#00000007-0000-4000-8000-000000000007",
+    "requestId": "00000007-0000-4000-8000-00000000001c",
+    "requestedBy": {
+      "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "kind": "developer",
+      "provider": "slack"
+    },
+    "settingsRevision": 1,
+    "sk": "OPERATION#00000007-0000-4000-8000-00000000001e",
+    "status": "ACCEPTED",
+    "updatedAt": "2026-10-20T00:00:00.000Z",
+    "workflowMode": "CHECKS",
+    "workspaceId": "00000007-0000-4000-8000-000000000007"
+  },
+  "outbox": {
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "deploymentMode": "ec2-ebs",
+    "entityType": "OUTBOX",
+    "id": "00000007-0000-4000-8000-00000000001f",
+    "invocation": {
+      "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDA3LTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMDctMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDFlIiwiZmVuY2UiOjQsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwibW9kZWwtYWNjZXNzIl0sImV4cGlyZXNBdCI6MTc5MjQ4NjgwMH0.KAzHTtTquNMq6FTg3vcysNoD93npaYGx5Q0E4kSuOjk",
+      "fence": 4,
+      "kind": "task",
+      "operationId": "00000007-0000-4000-8000-00000000001e",
+      "payload": {
+        "conversationId": "00000007-0000-4000-8000-00000000000c",
+        "conversationStarted": false,
+        "prompt": "You are one step inside AgentX's gated task workflow. AgentX itself asks the task owner for every approval, runs the project's checks, runs the independent code and security reviews, and opens the draft pull request. Never plan, describe or perform git push, creating remote branches, opening or updating pull requests (for example gh pr create), merging, or deploying. Never treat any step as already approved: the owner approves each document in Slack.\n\nOwner-authorized verification retry. Run only the selected project checks against the current code, without editing files. Owner note: Run the checks again.",
+        "readiness": [
+          {
+            "args": [
+              "test"
+            ],
+            "cwd": "repo/demo",
+            "executable": "npm",
+            "timeoutSeconds": 30
+          }
+        ],
+        "workflowBase": [
+          {
+            "baseCommitSha": "d5e5fae6efa239fff60c0365f91fb79a0601be36",
+            "repositoryId": "demo"
+          }
+        ],
+        "workflowMode": "CHECKS"
+      },
+      "projectRevision": 1,
+      "protocolVersion": 1,
+      "workspaceId": "00000007-0000-4000-8000-000000000007"
+    },
+    "operationId": "00000007-0000-4000-8000-00000000001e",
+    "pk": "OUTBOX#00000007-0000-4000-8000-00000000001f",
+    "sk": "OUTBOX",
+    "status": "PENDING",
+    "workspaceId": "00000007-0000-4000-8000-000000000007"
+  },
+  "piInputs": null,
+  "reviewSessions": [],
+  "scenario": "checks",
+  "taskItems": [
+    {
+      "budgetBaselineUsd": 0,
+      "budgetUsd": 25,
+      "charge": {
+        "member": {
+          "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#SLACK_LIMIT#T0BSHLLUGBD",
+          "sk": "MEMBER#U0MAYA001"
+        },
+        "organization": {
+          "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#SLACK_LIMIT#T0BSHLLUGBD",
+          "sk": "ORGANIZATION"
+        }
+      },
+      "client": "an AI tool",
+      "conversationId": "00000007-0000-4000-8000-00000000000c",
+      "createdAt": "2026-10-20T00:00:00.000Z",
+      "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "developerName": "Maya Chen",
+      "entityType": "DEVELOPER_TASK",
+      "modelKeyIds": [
+        "48c0bb601ee2711d3370b300628108b90c75d087695f801d2603a7147a2e9f1c"
+      ],
+      "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+      "ownerKey": "4dee606e9b291b63c24345ac0784ad77688595e9fdc4362eaec15144d80096e8",
+      "pk": "DEVTASK#00000007-0000-4000-8000-000000000006",
+      "preparedBase": [
+        {
+          "baseCommitSha": "d5e5fae6efa239fff60c0365f91fb79a0601be36",
+          "repositoryId": "demo"
+        }
+      ],
+      "project": "payments",
+      "provider": "slack",
+      "requestText": "Fix the retry bug",
+      "shared": false,
+      "sk": "META",
+      "slackUserId": "U0MAYA001",
+      "startingRevision": 1,
+      "taskId": "00000007-0000-4000-8000-000000000006",
+      "title": "Fix the retry bug",
+      "updatedAt": "2026-10-20T00:00:00.000Z",
+      "workflow": {
+        "artifacts": [
+          {
+            "createdAt": "2026-10-20T00:00:00.000Z",
+            "format": "structured",
+            "id": "00000007-0000-4000-8000-000000000013",
+            "objectKey": "private/4dee606e9b291b63c24345ac0784ad77688595e9fdc4362eaec15144d80096e8/00000007-0000-4000-8000-000000000007/plan-documents/00000007-0000-4000-8000-000000000013.json",
+            "producer": "agentx-worker-untrusted",
+            "sha256": "94a474a3f36e9ad225dc6de5fcee0daa537c740f42ddf5ca2a5e01796e6c1672",
+            "type": "plan",
+            "version": 1
+          }
+        ],
+        "checkPolicy": {
+          "optional": [],
+          "proposed": [],
+          "required": [
+            {
+              "command": {
+                "args": [
+                  "test"
+                ],
+                "cwd": "repo/demo",
+                "executable": "npm",
+                "timeoutSeconds": 30
+              },
+              "id": "required-1",
+              "label": "npm test"
+            }
+          ],
+          "selectedOptionalIds": [],
+          "selectedProposedIds": []
+        },
+        "createdAt": "2026-10-20T00:00:00.000Z",
+        "decisions": [
+          {
+            "actorId": "4dee606e9b291b63c24345ac0784ad77688595e9fdc4362eaec15144d80096e8",
+            "actorRole": "TASK_OWNER",
+            "artifactDigest": "94a474a3f36e9ad225dc6de5fcee0daa537c740f42ddf5ca2a5e01796e6c1672",
+            "at": "2026-10-20T00:00:00.000Z",
+            "decision": "APPROVE",
+            "reason": "Approved",
+            "requestId": "00000007-0000-4000-8000-000000000016",
+            "selectedOptionalCheckIds": [],
+            "workflowRevision": 2
+          }
+        ],
+        "definitionId": "agentx-task-to-pr",
+        "definitionVersion": "1.0.0",
+        "outcome": "PASSED",
+        "ownerId": "4dee606e9b291b63c24345ac0784ad77688595e9fdc4362eaec15144d80096e8",
+        "path": "QUICK",
+        "revision": 7,
+        "schemaVersion": 1,
+        "stage": "VERIFY",
+        "state": "RUNNING",
+        "taskId": "00000007-0000-4000-8000-000000000006",
+        "updatedAt": "2026-10-20T00:00:00.000Z",
+        "verificationRetries": [
+          {
+            "actorId": "4dee606e9b291b63c24345ac0784ad77688595e9fdc4362eaec15144d80096e8",
+            "at": "2026-10-20T00:00:00.000Z",
+            "requestId": "00000007-0000-4000-8000-00000000001c",
+            "selectedOptionalCheckIds": [],
+            "selectedProposedCheckIds": []
+          }
+        ]
+      },
+      "workspaceId": "00000007-0000-4000-8000-000000000007"
+    },
+    {
+      "artifactId": "00000007-0000-4000-8000-000000000013",
+      "artifactSha256": "94a474a3f36e9ad225dc6de5fcee0daa537c740f42ddf5ca2a5e01796e6c1672",
+      "attachedAt": "2026-10-20T00:00:00.000Z",
+      "entityType": "PLAN_EVIDENCE_POINTER",
+      "objectKey": "private/4dee606e9b291b63c24345ac0784ad77688595e9fdc4362eaec15144d80096e8/00000007-0000-4000-8000-000000000007/plan-documents/00000007-0000-4000-8000-000000000013.evidence.2304f5e32dac7606f7c9d8cfa515b2ea801d1ffcc61b650afec89e0e40762783.json",
+      "pk": "DEVTASK#00000007-0000-4000-8000-000000000006",
+      "sha256": "2304f5e32dac7606f7c9d8cfa515b2ea801d1ffcc61b650afec89e0e40762783",
+      "sk": "PLAN_EVIDENCE#00000007-0000-4000-8000-000000000013"
+    }
+  ]
+}

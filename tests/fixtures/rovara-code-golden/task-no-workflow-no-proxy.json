@@ -1,0 +1,130 @@
+{
+  "forWorker": {
+    "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDBiLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMGItMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDEwIiwiZmVuY2UiOjIsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwiY2FuZGlkYXRlLWV4cG9ydCJdLCJleHBpcmVzQXQiOjE3OTI0ODY4MDB9.aApVkiXxBnpD9I16EvVaP4aBFQC-MGtoxmls0iS8fT8",
+    "fence": 2,
+    "kind": "task",
+    "operationId": "0000000b-0000-4000-8000-000000000010",
+    "payload": {
+      "conversationId": "0000000b-0000-4000-8000-00000000000c",
+      "conversationStarted": false,
+      "prompt": "Fix the retry bug",
+      "workflowMode": "IMPLEMENT"
+    },
+    "projectRevision": 1,
+    "protocolVersion": 1,
+    "workspaceId": "0000000b-0000-4000-8000-000000000007"
+  },
+  "invocation": {
+    "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDBiLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMGItMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDEwIiwiZmVuY2UiOjIsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwiY2FuZGlkYXRlLWV4cG9ydCJdLCJleHBpcmVzQXQiOjE3OTI0ODY4MDB9.aApVkiXxBnpD9I16EvVaP4aBFQC-MGtoxmls0iS8fT8",
+    "fence": 2,
+    "kind": "task",
+    "operationId": "0000000b-0000-4000-8000-000000000010",
+    "payload": {
+      "conversationId": "0000000b-0000-4000-8000-00000000000c",
+      "conversationStarted": false,
+      "prompt": "Fix the retry bug",
+      "workflowMode": "IMPLEMENT"
+    },
+    "projectRevision": 1,
+    "protocolVersion": 1,
+    "workspaceId": "0000000b-0000-4000-8000-000000000007"
+  },
+  "operation": {
+    "conversationId": "0000000b-0000-4000-8000-00000000000c",
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "entityType": "OPERATION",
+    "eventSequence": 0,
+    "fence": 2,
+    "id": "0000000b-0000-4000-8000-000000000010",
+    "kind": "task",
+    "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+    "payloadHash": "d3b0023057b500d12d92c7c6425d6f9c9f19777836143604506f4fc59219eb6c",
+    "pk": "WORKSPACE#0000000b-0000-4000-8000-000000000007",
+    "requestId": "0000000b-0000-4000-8000-00000000000d",
+    "requestedBy": {
+      "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "kind": "developer",
+      "provider": "slack"
+    },
+    "settingsRevision": 1,
+    "sk": "OPERATION#0000000b-0000-4000-8000-000000000010",
+    "status": "ACCEPTED",
+    "updatedAt": "2026-10-20T00:00:00.000Z",
+    "workflowMode": "IMPLEMENT",
+    "workspaceId": "0000000b-0000-4000-8000-000000000007"
+  },
+  "outbox": {
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "deploymentMode": "ec2-ebs",
+    "entityType": "OUTBOX",
+    "id": "0000000b-0000-4000-8000-000000000011",
+    "invocation": {
+      "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDBiLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMGItMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDEwIiwiZmVuY2UiOjIsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwiY2FuZGlkYXRlLWV4cG9ydCJdLCJleHBpcmVzQXQiOjE3OTI0ODY4MDB9.aApVkiXxBnpD9I16EvVaP4aBFQC-MGtoxmls0iS8fT8",
+      "fence": 2,
+      "kind": "task",
+      "operationId": "0000000b-0000-4000-8000-000000000010",
+      "payload": {
+        "conversationId": "0000000b-0000-4000-8000-00000000000c",
+        "conversationStarted": false,
+        "prompt": "Fix the retry bug",
+        "workflowMode": "IMPLEMENT"
+      },
+      "projectRevision": 1,
+      "protocolVersion": 1,
+      "workspaceId": "0000000b-0000-4000-8000-000000000007"
+    },
+    "operationId": "0000000b-0000-4000-8000-000000000010",
+    "pk": "OUTBOX#0000000b-0000-4000-8000-000000000011",
+    "sk": "OUTBOX",
+    "status": "PENDING",
+    "workspaceId": "0000000b-0000-4000-8000-000000000007"
+  },
+  "piInputs": {
+    "skills": [],
+    "systemPrompt": "You are the AgentX coding worker. AgentX gave you a software task to carry out in a prepared workspace. You work alone: nobody can answer questions while you work, and your changes may become a pull request that people review.\n\nHow to work:\n- Find the relevant code before changing it, and read a file before you edit it.\n- Make the smallest change that fully does what was asked, in the style of the code around it. Don't refactor, rename or reformat code the task doesn't need changed, and keep existing comments and logging.\n- When something is unclear, take the most reasonable reading, carry on, and say what you assumed in your final message.\n- If the same error comes back after two attempts at a fix, stop repeating it. Re-read the error, note what you have tried, and test a different explanation.\n\nTools:\n- Use read to look at files rather than cat or sed. Use edit to change existing files, and write only for new files or complete rewrites.\n\nFinal message:\nKeep it short. Say what you changed and why, name the files, give the commands you ran with their results, and list any assumptions or anything left undone.\n\n<addendum>\nAgentX checks your work after you finish. Work this way:\n1. Reproduce the problem before changing code, and say how you reproduced it.\n2. Run the relevant tests before and after your change.\n3. A test that passed before your change and fails after it is your own regression. Fix your change, not the test; never call it unrelated.\n4. The one exception is a test that checks the old behaviour the task asks you to change. Leave it as it is and name it in your final message, with the behaviour it checks. Never edit or delete a test to make it pass, unless the task explicitly asks you to change tests.\n5. Report the commands you ran and their results.\n6. You must never claim a test passed unless you saw it pass.\nEnd your final message with exactly one line: \"AgentX result: done\" if the work is complete and every test you ran passes, apart from tests you named under rule 4, otherwise \"AgentX result: not done\".\n</addendum>\n\n<project_context>\nProject-specific instructions and guidelines:\n\n<project_instructions path=\"AgentX workspace\">\nAgentX workspace note (written by AgentX, not by any repository):\nThe repository \"demo\" is checked out at repo/demo in this workspace. Make every change inside it; files outside it are not part of the repository or its pull request.\n</project_instructions>\n</project_context>\n\n<cwd>\n<workspace>\n</cwd>",
+    "tools": [
+      "read",
+      "bash",
+      "edit",
+      "write",
+      "grep",
+      "find",
+      "ls"
+    ]
+  },
+  "reviewSessions": [],
+  "scenario": "task-no-workflow-no-proxy",
+  "taskItems": [
+    {
+      "charge": {
+        "member": {
+          "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#SLACK_LIMIT#T0BSHLLUGBD",
+          "sk": "MEMBER#U0MAYA001"
+        },
+        "organization": {
+          "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#SLACK_LIMIT#T0BSHLLUGBD",
+          "sk": "ORGANIZATION"
+        }
+      },
+      "client": "an AI tool",
+      "conversationId": "0000000b-0000-4000-8000-00000000000c",
+      "createdAt": "2026-10-20T00:00:00.000Z",
+      "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "developerName": "Maya Chen",
+      "entityType": "DEVELOPER_TASK",
+      "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+      "ownerKey": "0b948db6d0fb339e1f1c9ce29a535f6088f0473399c95ac55620bec3c75dde3c",
+      "pk": "DEVTASK#0000000b-0000-4000-8000-000000000006",
+      "project": "payments",
+      "provider": "slack",
+      "shared": false,
+      "sk": "META",
+      "slackUserId": "U0MAYA001",
+      "startingRevision": 1,
+      "taskId": "0000000b-0000-4000-8000-000000000006",
+      "title": "Fix the retry bug",
+      "updatedAt": "2026-10-20T00:00:00.000Z",
+      "workspaceId": "0000000b-0000-4000-8000-000000000007"
+    }
+  ]
+}

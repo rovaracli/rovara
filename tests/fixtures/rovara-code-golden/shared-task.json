@@ -1,0 +1,162 @@
+{
+  "forWorker": {
+    "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDBjLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMGMtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDEwIiwiZmVuY2UiOjIsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwiY2FuZGlkYXRlLWV4cG9ydCIsIm1vZGVsLWFjY2VzcyJdLCJleHBpcmVzQXQiOjE3OTI0ODY4MDB9.Ci6gM3tK7CpBV-ye5xjKN8J_Of6ooImCzq4J3xFPcCc",
+    "fence": 2,
+    "kind": "task",
+    "operationId": "0000000c-0000-4000-8000-000000000010",
+    "payload": {
+      "conversationId": "0000000c-0000-4000-8000-00000000000c",
+      "conversationStarted": false,
+      "prompt": "Fix the retry bug",
+      "workflowMode": "IMPLEMENT"
+    },
+    "projectRevision": 1,
+    "protocolVersion": 1,
+    "workspaceId": "0000000c-0000-4000-8000-000000000007"
+  },
+  "invocation": {
+    "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDBjLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMGMtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDEwIiwiZmVuY2UiOjIsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwiY2FuZGlkYXRlLWV4cG9ydCIsIm1vZGVsLWFjY2VzcyJdLCJleHBpcmVzQXQiOjE3OTI0ODY4MDB9.Ci6gM3tK7CpBV-ye5xjKN8J_Of6ooImCzq4J3xFPcCc",
+    "fence": 2,
+    "kind": "task",
+    "operationId": "0000000c-0000-4000-8000-000000000010",
+    "payload": {
+      "conversationId": "0000000c-0000-4000-8000-00000000000c",
+      "conversationStarted": false,
+      "prompt": "Fix the retry bug",
+      "workflowMode": "IMPLEMENT"
+    },
+    "projectRevision": 1,
+    "protocolVersion": 1,
+    "workspaceId": "0000000c-0000-4000-8000-000000000007"
+  },
+  "modelAccess": {
+    "mintKeyCalls": [
+      {
+        "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "maxBudgetUsd": 25,
+        "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+        "purpose": "task",
+        "refId": "0000000c-0000-4000-8000-000000000006",
+        "ttlSeconds": 3600
+      }
+    ],
+    "response": {
+      "apiKey": "sk-fake-key-0001",
+      "baseUrl": "http://internal-proxy.example.test:4000",
+      "expiresAt": 1792414800000,
+      "requestId": "0000000c-0000-4000-8000-000000000012"
+    },
+    "status": 200
+  },
+  "operation": {
+    "conversationId": "0000000c-0000-4000-8000-00000000000c",
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "entityType": "OPERATION",
+    "eventSequence": 0,
+    "fence": 2,
+    "id": "0000000c-0000-4000-8000-000000000010",
+    "kind": "task",
+    "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+    "payloadHash": "a3dbee10f53104e0816e5ca48f7b6c9e1c79f955739a6ba99b92e98cbc5df75d",
+    "pk": "WORKSPACE#0000000c-0000-4000-8000-000000000007",
+    "requestId": "0000000c-0000-4000-8000-00000000000d",
+    "requestedBy": {
+      "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "kind": "developer",
+      "provider": "slack"
+    },
+    "settingsRevision": 1,
+    "sk": "OPERATION#0000000c-0000-4000-8000-000000000010",
+    "status": "ACCEPTED",
+    "updatedAt": "2026-10-20T00:00:00.000Z",
+    "workflowMode": "IMPLEMENT",
+    "workspaceId": "0000000c-0000-4000-8000-000000000007"
+  },
+  "outbox": {
+    "createdAt": "2026-10-20T00:00:00.000Z",
+    "deploymentMode": "ec2-ebs",
+    "entityType": "OUTBOX",
+    "id": "0000000c-0000-4000-8000-000000000011",
+    "invocation": {
+      "callbackCapability": "eyJ3b3Jrc3BhY2VJZCI6IjAwMDAwMDBjLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwNyIsIm9wZXJhdGlvbklkIjoiMDAwMDAwMGMtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDEwIiwiZmVuY2UiOjIsImFjdGlvbnMiOlsiYXJ0aWZhY3RzIiwiZXZlbnRzIiwicmVzdWx0IiwiY2FuZGlkYXRlLWV4cG9ydCIsIm1vZGVsLWFjY2VzcyJdLCJleHBpcmVzQXQiOjE3OTI0ODY4MDB9.Ci6gM3tK7CpBV-ye5xjKN8J_Of6ooImCzq4J3xFPcCc",
+      "fence": 2,
+      "kind": "task",
+      "operationId": "0000000c-0000-4000-8000-000000000010",
+      "payload": {
+        "conversationId": "0000000c-0000-4000-8000-00000000000c",
+        "conversationStarted": false,
+        "prompt": "Fix the retry bug",
+        "workflowMode": "IMPLEMENT"
+      },
+      "projectRevision": 1,
+      "protocolVersion": 1,
+      "workspaceId": "0000000c-0000-4000-8000-000000000007"
+    },
+    "operationId": "0000000c-0000-4000-8000-000000000010",
+    "pk": "OUTBOX#0000000c-0000-4000-8000-000000000011",
+    "sk": "OUTBOX",
+    "status": "PENDING",
+    "workspaceId": "0000000c-0000-4000-8000-000000000007"
+  },
+  "piInputs": {
+    "skills": [],
+    "systemPrompt": "You are the AgentX coding worker. AgentX gave you a software task to carry out in a prepared workspace. You work alone: nobody can answer questions while you work, and your changes may become a pull request that people review.\n\nHow to work:\n- Find the relevant code before changing it, and read a file before you edit it.\n- Make the smallest change that fully does what was asked, in the style of the code around it. Don't refactor, rename or reformat code the task doesn't need changed, and keep existing comments and logging.\n- When something is unclear, take the most reasonable reading, carry on, and say what you assumed in your final message.\n- If the same error comes back after two attempts at a fix, stop repeating it. Re-read the error, note what you have tried, and test a different explanation.\n\nTools:\n- Use read to look at files rather than cat or sed. Use edit to change existing files, and write only for new files or complete rewrites.\n\nFinal message:\nKeep it short. Say what you changed and why, name the files, give the commands you ran with their results, and list any assumptions or anything left undone.\n\n<addendum>\nAgentX checks your work after you finish. Work this way:\n1. Reproduce the problem before changing code, and say how you reproduced it.\n2. Run the relevant tests before and after your change.\n3. A test that passed before your change and fails after it is your own regression. Fix your change, not the test; never call it unrelated.\n4. The one exception is a test that checks the old behaviour the task asks you to change. Leave it as it is and name it in your final message, with the behaviour it checks. Never edit or delete a test to make it pass, unless the task explicitly asks you to change tests.\n5. Report the commands you ran and their results.\n6. You must never claim a test passed unless you saw it pass.\nEnd your final message with exactly one line: \"AgentX result: done\" if the work is complete and every test you ran passes, apart from tests you named under rule 4, otherwise \"AgentX result: not done\".\n</addendum>\n\n<project_context>\nProject-specific instructions and guidelines:\n\n<project_instructions path=\"AgentX workspace\">\nAgentX workspace note (written by AgentX, not by any repository):\nThe repository \"demo\" is checked out at repo/demo in this workspace. Make every change inside it; files outside it are not part of the repository or its pull request.\n</project_instructions>\n</project_context>\n\n<cwd>\n<workspace>\n</cwd>",
+    "tools": [
+      "read",
+      "bash",
+      "edit",
+      "write",
+      "grep",
+      "find",
+      "ls"
+    ]
+  },
+  "reviewSessions": [],
+  "scenario": "shared-task",
+  "taskItems": [
+    {
+      "budgetUsd": 25,
+      "charge": {
+        "member": {
+          "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#SLACK_LIMIT#T0BSHLLUGBD",
+          "sk": "MEMBER#U0MAYA001"
+        },
+        "organization": {
+          "pk": "ORG#org_5t5gp58cc1ibgg6e3aoj#SLACK_LIMIT#T0BSHLLUGBD",
+          "sk": "ORGANIZATION"
+        }
+      },
+      "client": "an AI tool",
+      "conversationId": "0000000c-0000-4000-8000-00000000000c",
+      "createdAt": "2026-10-20T00:00:00.000Z",
+      "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "developerName": "Maya Chen",
+      "entityType": "DEVELOPER_TASK",
+      "modelKeyIds": [
+        "48c0bb601ee2711d3370b300628108b90c75d087695f801d2603a7147a2e9f1c"
+      ],
+      "orgId": "org_5t5gp58cc1ibgg6e3aoj",
+      "ownerKey": "87e33496c7f3703c85e1d4333ca12d394a8506b216d42acac38a10803ded939d",
+      "pk": "DEVTASK#0000000c-0000-4000-8000-000000000006",
+      "project": "payments",
+      "provider": "slack",
+      "share": {
+        "channelId": "C0123456789",
+        "channelName": "payments-dev",
+        "mode": "view",
+        "sharedAt": "2026-10-20T00:00:00.000Z",
+        "sharedReason": "requested",
+        "teamId": "T0BSHLLUGBD"
+      },
+      "shareVersion": 1,
+      "shared": true,
+      "sk": "META",
+      "slackUserId": "U0MAYA001",
+      "startingRevision": 1,
+      "taskId": "0000000c-0000-4000-8000-000000000006",
+      "title": "Fix the retry bug",
+      "updatedAt": "2026-10-20T00:00:00.000Z",
+      "workspaceId": "0000000c-0000-4000-8000-000000000007"
+    }
+  ]
+}
