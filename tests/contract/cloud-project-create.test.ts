@@ -2,6 +2,8 @@
 // under the org's operator-set GitHub owner. It registers through the admin route's own registration code, and the creator is granted
 // access like any developer.
 import { describe, expect, it, vi } from "vitest";
+// The package the broker imports, not its source: the broker tests an error for that package's class.
+import { agentXError as packageError } from "@agentx/contracts";
 import { agentXError, orgMetaKey, orgProjectCatalogKey, projectMemberKey, projectRevisionKey, type OrgId, type OrgRole } from "../../packages/contracts/src/index.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -74,12 +76,14 @@ describe("POST /v1/dev/projects", () => {
     const h = await cloudInstall();
     const created = await h.create(MAYA, { repository: "acme/web" });
     expect(created.status).toBe(201);
-    expect(created.body).toMatchObject({ duplicate: false, project: { definition: { name: "web", revision: 1 }, runtimeBinding: BINDING } });
+    expect(created.body).toMatchObject({ duplicate: false, project: { definition: { name: "web", revision: 1 } } });
     expect((created.body.project as { definition: unknown }).definition).toEqual({
       name: "web", revision: 1,
-      repositories: [{ name: "web", url: "https://github.com/Acme/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }],
+      repositories: [{ name: "web", url: "https://github.com/Acme/web.git", path: "repo/web", defaultBranch: "main" }],
       setup: [], readiness: [], orchestratorInstructions: "Delegate every repository read, edit, build, and test to the remote AgentX worker.",
     });
+    // The stored project is bound to the foundation's workers with the built-in credential; a tenant is not told either.
+    expect(h.db.get(projectRevisionKey(TEST_ORG, "web", 1))).toMatchObject({ runtimeBinding: BINDING, definition: { repositories: [{ credentialRef: "github-app" }] } });
     expect(h.db.get(projectRevisionKey(TEST_ORG, "web", 1))).toMatchObject({ entityType: "PROJECT", registeredBy: MAYA.developerId });
     expect(h.db.get(orgProjectCatalogKey(TEST_ORG, "web"))).toMatchObject({ latestRevision: 1 });
     expect(h.db.get(projectMemberKey(TEST_ORG, MAYA.developerId, "web"))).toMatchObject({ entityType: "MEMBERSHIP", role: "developer", ownerKey: MAYA.developerId });
@@ -97,6 +101,18 @@ describe("POST /v1/dev/projects", () => {
     const h = await cloudInstall({ roles: { maya: "admin" } });
     expect((await h.create(MAYA, { repository: "acme/web" })).status).toBe(201);
     expect(await h.listed(MAYA)).toEqual([{ name: "web", access: "granted" }]);
+  });
+
+  it("never tells a tenant the shared launch template, subnets or credential, on a new project or a duplicate", async () => {
+    const h = await cloudInstall();
+    for (const status of [201, 200]) {
+      const answered = await h.create(MAYA, { repository: "acme/web" });
+      expect(answered.status).toBe(status);
+      const text = JSON.stringify(answered.body);
+      for (const internal of ["lt-0123456789abcdef0", "subnet-0123456789abcdef0", "subnet-0fedcba9876543210", "runtimeBinding", "credentialRef", "github-app", MAYA.developerId]) {
+        expect(text, internal).not.toContain(internal);
+      }
+    }
   });
 
   it("takes the project name, setup command and test command from the body, and the default branch from GitHub", async () => {
@@ -139,6 +155,25 @@ describe("POST /v1/dev/projects", () => {
     expect(h.everyRow(h.db)).toEqual([]);
   });
 
+  it("refuses a repository GitHub reports under another owner with 403 and writes nothing", async () => {
+    const h = await cloudInstall();
+    h.github.getRepositoryIdentity.mockResolvedValueOnce({ repositoryId: 9, fullName: "rival/web", defaultBranch: "main" });
+    expect(await h.create(MAYA, { repository: "acme/web" })).toMatchObject({ status: 403, body: { error: { code: "FORBIDDEN" } } });
+    expect(h.everyRow(h.db)).toEqual([]);
+  });
+
+  it("answers a moved or renamed repository with a 400 that says so, not a 500, and writes nothing", async () => {
+    const h = await cloudInstall();
+    h.github.getRepositoryIdentity.mockRejectedValueOnce(new TypeError("fetch failed"));
+    const refused = await h.create(MAYA, { repository: "acme/web" });
+    expect(refused).toMatchObject({ status: 400, body: { error: { code: "CONFIG_INVALID" } } });
+    expect((refused.body.error as { message: string }).message).toContain("moved or renamed acme/web; use its current owner/name");
+    expect(h.everyRow(h.db)).toEqual([]);
+    // GitHub being down is not the member's mistake.
+    h.github.getRepositoryIdentity.mockRejectedValueOnce(packageError("RUNTIME_UNAVAILABLE", "GitHub repository lookup failed with HTTP 502"));
+    expect((await h.create(MAYA, { repository: "acme/web" })).status).toBe(503);
+  });
+
   it("refuses a repository the GitHub App cannot see with 400 CONFIG_INVALID and writes nothing", async () => {
     const h = await cloudInstall();
     expect(await h.create(MAYA, { repository: "acme/not-installed" })).toMatchObject({ status: 400, body: { error: { code: "CONFIG_INVALID" } } });
@@ -175,7 +210,10 @@ describe("POST /v1/dev/projects", () => {
   it("refuses the same project name for a different repository with 409 and changes nothing", async () => {
     const h = await cloudInstall();
     expect((await h.create(MAYA, { repository: "acme/web" })).status).toBe(201);
-    expect(await h.create(MAYA, { repository: "acme/api", name: "web" })).toMatchObject({ status: 409, body: { error: { code: "PROJECT_REVISION_MISMATCH" } } });
+    const clash = await h.create(MAYA, { repository: "acme/api", name: "web" });
+    expect(clash).toMatchObject({ status: 409, body: { error: { code: "PROJECT_REVISION_MISMATCH" } } });
+    expect((clash.body.error as { message: string }).message).toContain("a project named web already exists with other settings");
+    expect((clash.body.error as { message: string }).message).toContain("choose another --name");
     expect(h.projectRows()).toHaveLength(1);
   });
 
@@ -183,6 +221,8 @@ describe("POST /v1/dev/projects", () => {
     ["no repository", { name: "web" }],
     ["a repository without an owner", { repository: "web" }],
     ["a repository URL", { repository: "https://github.com/acme/web" }],
+    ["a repository named .. or .git", { repository: "acme/.." }],
+    ["a repository named .git", { repository: "acme/.git" }],
     ["a name that is not a project name", { repository: "acme/web", name: "My Web" }],
     ["a command that chains steps", { repository: "acme/web", setupCommand: "npm ci && npm run build" }],
     ["a command with an unclosed quote", { repository: "acme/web", testCommand: "npm test \"x" }],

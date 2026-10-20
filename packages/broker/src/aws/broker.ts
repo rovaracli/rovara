@@ -2113,16 +2113,35 @@ async function registerProjectFor(
   throw agentXError("PROJECT_REVISION_MISMATCH", "project revision registration exceeded its bounded catalog retries");
 }
 
+/** What a tenant is told of a project it created: no runtime binding (the shared foundation's launch template and subnets) and no credential reference. */
+type CloudProjectCreated = { duplicate: boolean; project: { definition: Omit<ProjectDefinition, "repositories"> & { repositories: Array<Pick<ProjectDefinition["repositories"][number], "name" | "url" | "path" | "defaultBranch">> }; registeredAt: string }; warnings?: string[] };
+
+function cloudProjectAnswer(registered: RegistrationResult): CloudProjectCreated {
+  const { definition } = registered.project;
+  return {
+    duplicate: registered.duplicate,
+    project: {
+      definition: { ...definition, repositories: definition.repositories.map(({ name, url, path, defaultBranch }) => ({ name, url, path, defaultBranch })) },
+      registeredAt: registered.project.registeredAt,
+    },
+    ...(registered.warnings === undefined ? {} : { warnings: registered.warnings }),
+  };
+}
+
 /**
  * Ruling R55: `POST /v1/dev/projects`, after the route has checked the install, the caller's role and the requested owner. The
  * repository must be visible to the install's GitHub App, and GitHub's own spelling of its owner is checked again against the org's
  * allowed owner. It registers through registerProjectFor, as the admin route does, then grants the creator access like any developer.
  */
-async function createCloudProject(dependencies: AwsBrokerDependencies, caller: DeveloperCaller, input: CreateProjectInput, org: Pick<OrgRecord, "githubOwner">): Promise<RegistrationResult> {
+async function createCloudProject(dependencies: AwsBrokerDependencies, caller: DeveloperCaller, input: CreateProjectInput, org: Pick<OrgRecord, "githubOwner">): Promise<CloudProjectCreated> {
   const defaults = dependencies.cloudProjects;
   const lookUp = dependencies.githubPullRequests.getRepositoryIdentity;
   if (defaults === undefined || lookUp === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "creating projects is not set up in this deployment; ask Rovara support");
-  const identity = await lookUp.call(dependencies.githubPullRequests, `https://github.com/${input.owner}/${input.repositoryName}.git`);
+  const identity = await lookUp.call(dependencies.githubPullRequests, `https://github.com/${input.owner}/${input.repositoryName}.git`).catch((error: unknown) => {
+    // GitHub answers a renamed or transferred repository with a redirect, which the lookup refuses (redirect: "error") as a TypeError.
+    if (error instanceof TypeError) throw agentXError("CONFIG_INVALID", `GitHub moved or renamed ${input.owner}/${input.repositoryName}; use its current owner/name`);
+    throw error;
+  });
   if (identity === undefined) throw agentXError("CONFIG_INVALID", `the GitHub App cannot see ${input.owner}/${input.repositoryName}; check the name, or ask Rovara support to install the GitHub App on it`);
   const spelledOwner = identity.fullName.split("/")[0];
   if (spelledOwner === undefined || identity.defaultBranch === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not describe that repository; try again");
@@ -2133,7 +2152,12 @@ async function createCloudProject(dependencies: AwsBrokerDependencies, caller: D
     { orgId: caller.orgId, ownerKey: caller.developerId },
     { definition, runtimeBinding: defaults.runtimeBinding },
     { creatorMembership: "none" },
-  );
+  ).catch((error: unknown) => {
+    if (error instanceof AgentXError && error.code === "PROJECT_REVISION_MISMATCH") {
+      throw agentXError("PROJECT_REVISION_MISMATCH", `a project named ${definition.name} already exists with other settings (another repository, or settings that changed); choose another --name`);
+    }
+    throw error;
+  });
   // The grant is idempotent, so an identical request after a failed grant repairs it.
   await grantProjectAccess(
     { documentClient: dependencies.documentClient, tableName: dependencies.tableName, limitDefaults: { member: 0, organization: 0 }, now: Date.now },
@@ -2143,7 +2167,7 @@ async function createCloudProject(dependencies: AwsBrokerDependencies, caller: D
     caller.developerId,
   );
   console.log(JSON.stringify({ component: "broker", event: "developer.project_created", orgId: caller.orgId, project: definition.name, duplicate: registered.duplicate }));
-  return registered;
+  return cloudProjectAnswer(registered);
 }
 
 async function createProjectSetupAdmissionRows(

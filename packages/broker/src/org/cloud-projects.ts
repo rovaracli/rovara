@@ -55,7 +55,7 @@ const COMMAND_MAX_LENGTH = 500;
 const REPOSITORY = /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9._-]{1,100})$/;
 
 const CreateProjectBodySchema = z.object({
-  repository: z.string().regex(REPOSITORY, "must be owner/name"),
+  repository: z.string().regex(REPOSITORY, "must be owner/name").refine((value) => !/\/(\.{1,2}|\.git)$/.test(value), "must be owner/name"),
   name: AgentXNameSchema.optional(),
   setupCommand: z.string().max(COMMAND_MAX_LENGTH).optional(),
   testCommand: z.string().max(COMMAND_MAX_LENGTH).optional(),
