@@ -1,5 +1,5 @@
 // agentx whoami and agentx logout (FR-011).
-import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, DeveloperProjectsResponseSchema, agentXError, type DeveloperProjectsResponse } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse } from "@agentx/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerTokenKey, removeDeveloperEnvironment, resolveDeveloperEnvironment } from "./config.js";
 import { developerAccessToken, type DeveloperSessionDeps } from "./session.js";
@@ -80,13 +80,23 @@ function refusalMessage(body: unknown): string | undefined {
   return text === "" ? undefined : text;
 }
 
+/** How a developer signed in, for whoami: "Rovara sign-in" and "GitHub" are Rovara Cloud's. */
+const SIGN_IN_METHOD_TEXT = { slack: "Slack", oidc: "your company sign-in", cloud: "Rovara sign-in", github: "GitHub" } as const;
+
 export function whoamiText(result: { env: string; url: string; projects: DeveloperProjectsResponse }): string {
   const { developer, projects, notices } = result.projects;
-  const method = developer.provider === "slack" ? "Slack" : "your company sign-in";
+  const method = SIGN_IN_METHOD_TEXT[developer.provider];
   const link = developer.slackUserId === undefined ? "" : ` (${developer.slackUserId})`;
   const lines = [`Signed in to AgentX environment ${result.env} (${result.url}) as ${sanitizeServerText(developer.name)}, with ${method}${link}.`];
   if (projects.length === 0) {
-    lines.push("You cannot use any project yet: join a project's Slack channel, or ask an admin for access.");
+    // Only Rovara Cloud signs people in with these two. There an owner or admin creates the org's projects; a member asks one.
+    if (developer.provider === "cloud" || developer.provider === "github") {
+      lines.push(developer.orgRole === "owner" || developer.orgRole === "admin"
+        ? "You cannot use any project yet. Create one with: agentx project create --repository <owner/name>"
+        : "You cannot use any project yet: ask your org's owner to create one.");
+    } else {
+      lines.push("You cannot use any project yet: join a project's Slack channel, or ask an admin for access.");
+    }
   } else {
     lines.push("Projects you can use:");
     for (const project of projects) {
@@ -96,6 +106,34 @@ export function whoamiText(result: { env: string; url: string; projects: Develop
   }
   if (notices.includes("slack_unavailable")) lines.push("Slack could not be reached, so projects you use through a Slack channel are not listed; try again later.");
   return `${lines.join("\n")}\n`;
+}
+
+/** `agentx project create` (ruling R55): the signed-in owner or admin of a cloud org creates a project from a repository. */
+export async function createDeveloperProject(
+  deps: DeveloperSessionDeps,
+  env: string | undefined,
+  input: { repository: string; name?: string; setupCommand?: string; testCommand?: string },
+): Promise<{ env: string; url: string; created: DeveloperCreateProjectResponse }> {
+  const { env: resolved, url, body } = await developerRequest(deps, env, "/v1/dev/projects", DeveloperCreateProjectResponseSchema, {
+    method: "POST",
+    body: {
+      repository: input.repository,
+      ...(input.name === undefined ? {} : { name: input.name }),
+      ...(input.setupCommand === undefined ? {} : { setupCommand: input.setupCommand }),
+      ...(input.testCommand === undefined ? {} : { testCommand: input.testCommand }),
+    },
+    explain: true,
+  });
+  return { env: resolved, url, created: body };
+}
+
+/** What `agentx project create` prints, with the next step. */
+export function createProjectText(result: { env: string; created: DeveloperCreateProjectResponse }): string {
+  const name = result.created.project.definition.name;
+  const first = result.created.duplicate
+    ? `Project ${name} already exists in AgentX environment ${result.env} with these settings. You have access to it.`
+    : `Created project ${name} in AgentX environment ${result.env}. You have access to it.`;
+  return `${first}\nNext: start a task in ${name} from your coding tool (agentx mcp install connects it), or run agentx whoami to see your projects.\n`;
 }
 
 /** How the logout went at the server: revoked, not answered at all, or answered without confirming. */

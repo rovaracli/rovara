@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { EnvironmentNameSchema } from "./environments.js";
 import { looseCopy } from "./loose.js";
+import { OrgRoleSchema } from "./org.js";
 import { DeveloperTaskPolicySchema } from "./project.js";
 import { SlackChannelIdSchema, SlackTeamIdSchema, SlackUserIdSchema } from "./slack.js";
 import { WorkspaceStatusSchema } from "./workspace.js";
@@ -74,6 +75,8 @@ export const DeveloperSummarySchema = z.object({
   provider: DeveloperSignInMethodSchema,
   slackUserId: SlackUserIdSchema.optional(),
   email: z.string().email().optional(),
+  /** The developer's role in their org; absent from a control plane that predates it. */
+  orgRole: OrgRoleSchema.optional(),
 });
 export type DeveloperSummary = z.infer<typeof DeveloperSummarySchema>;
 
@@ -102,6 +105,13 @@ export const DeveloperProjectsResponseSchema = z.object({
   notices: z.array(z.enum(["slack_unavailable"])),
 });
 export type DeveloperProjectsResponse = z.infer<typeof DeveloperProjectsResponseSchema>;
+
+/** POST /v1/dev/projects (ruling R55): what the CLI reads of the answer; the rest of the registration is the broker's. */
+export const DeveloperCreateProjectResponseSchema = z.object({
+  duplicate: z.boolean(),
+  project: z.object({ definition: z.object({ name: z.string().min(1), revision: z.number().int().positive() }) }),
+});
+export type DeveloperCreateProjectResponse = z.infer<typeof DeveloperCreateProjectResponseSchema>;
 
 /**
  * Spec 041: one workspace as a developer may see it. It names what the workspace is and how it is

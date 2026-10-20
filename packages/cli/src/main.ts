@@ -40,7 +40,7 @@ import { disableEvalChannel, enableEvalChannel, parseMaxCostUsd, showEvalChannel
 import { exportTurns, parseSince } from "./admin/turns.js";
 import { loginWithPkce, openSystemBrowser, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
-import { developerLogout, fetchDeveloperProjects, logoutText, whoamiText } from "./developer/commands.js";
+import { createDeveloperProject, createProjectText, developerLogout, fetchDeveloperProjects, logoutText, whoamiText } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
 import { developerLogin } from "./developer/login.js";
@@ -991,6 +991,31 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   registerSetupCommands(program, dependencies.setup ?? realSetupContext({
     parameterStore, fetch: services.fetchImplementation, tokenStore: services.tokenStore, stdout: services.stdout, stderr: services.stderr, home,
   }));
+
+  // Ruling R55: on Rovara Cloud an owner or admin creates the org's projects with their own sign-in (agentx project add is the
+  // administrator's, for a private install).
+  const projectCommand = program.commands.find((candidate) => candidate.name() === "project");
+  if (projectCommand === undefined) throw new Error("the project command is registered by registerSetupCommands");
+  projectCommand
+    .command("create")
+    .description("create a project from a GitHub repository, on Rovara Cloud (an owner or admin of your organization)")
+    .option("--repository <owner/name>", "the GitHub repository, which must be under your organization's connected GitHub owner")
+    .option("--name <name>", "the project's name (default: the repository's)")
+    .option("--setup-command <command>", "the setup command, or \"\" for none")
+    .option("--test-command <command>", "the test command, or \"\" for none")
+    .action(async (options: { repository?: string; name?: string; setupCommand?: string; testCommand?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      if (options.repository === undefined) throw agentXError("CONFIG_INVALID", "name the repository: --repository <owner/name>");
+      const result = await createDeveloperProject(developerSession(), developerEnv(command), {
+        repository: options.repository,
+        ...(options.name === undefined ? {} : { name: options.name }),
+        ...(options.setupCommand === undefined ? {} : { setupCommand: options.setupCommand }),
+        ...(options.testCommand === undefined ? {} : { testCommand: options.testCommand }),
+      });
+      services.stdout.write(globals.json
+        ? formatSuccess({ env: result.env, url: result.url, duplicate: result.created.duplicate, project: result.created.project.definition }, true)
+        : createProjectText(result));
+    });
 
   const envCommand = program.command("env").description("AgentX environments in this AWS account and region");
   envCommand

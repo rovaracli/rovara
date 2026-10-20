@@ -613,7 +613,7 @@ async function listProjects(deps: DeveloperRouteDependencies, caller: DeveloperC
   }
   return {
     developer: {
-      id: caller.developerId, name: caller.name, provider: caller.amr,
+      id: caller.developerId, name: caller.name, provider: caller.amr, orgRole: caller.orgRole,
       ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
       ...(caller.email === undefined ? {} : { email: caller.email }),
     },

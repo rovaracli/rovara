@@ -87,6 +87,12 @@ describe("POST /v1/dev/projects", () => {
     expect(await h.listed(MAYA)).toEqual([{ name: "web", access: "granted" }]);
   });
 
+  it("tells the projects list the caller's org role, which agentx whoami uses to say who may create", async () => {
+    const h = await cloudInstall({ roles: { maya: "owner", omar: "member" } });
+    expect((await h.dev(MAYA, "GET", "/v1/dev/projects")).body).toMatchObject({ developer: { orgRole: "owner" } });
+    expect((await h.dev(OMAR, "GET", "/v1/dev/projects")).body).toMatchObject({ developer: { orgRole: "member" } });
+  });
+
   it("lets an admin create a project too", async () => {
     const h = await cloudInstall({ roles: { maya: "admin" } });
     expect((await h.create(MAYA, { repository: "acme/web" })).status).toBe(201);
