@@ -4,7 +4,7 @@
 // invite is accepted in one transaction with the membership writes, so a refused acceptance never
 // burns the invite. Invite tokens are stored only as SHA-256 hashes.
 import { randomBytes } from "node:crypto";
-import { GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   agentXError,
   developerOrgKey,
@@ -127,6 +127,22 @@ export class OrgStore {
       }));
     } catch (error) {
       if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+    }
+  }
+
+  /** Ruling R55: sets the org's allowed GitHub owner (already lower case). An org that does not exist is NOT_FOUND; nothing is created. */
+  async setGithubOwner(orgId: OrgId, githubOwner: string): Promise<void> {
+    try {
+      await this.input.documentClient.send(new UpdateCommand({
+        TableName: this.input.tableName,
+        Key: orgMetaKey(orgId),
+        UpdateExpression: "SET githubOwner = :owner",
+        ConditionExpression: "attribute_exists(pk)",
+        ExpressionAttributeValues: { ":owner": githubOwner },
+      }));
+    } catch (error) {
+      if (errorName(error) === "ConditionalCheckFailedException") throw coded("NOT_FOUND", "no organization has that ID");
+      throw error;
     }
   }
 

@@ -26,6 +26,7 @@ import { STSClient } from "@aws-sdk/client-sts";
 import { Command, Option } from "commander";
 import { authorizeCredential, expectedAccountEmail, secretsManagerAuthorizeSecrets, type AuthorizeSecrets } from "./admin/authorize.js";
 import { budgetText, parseBudgetUsd, setOrgBudget } from "./admin/budget.js";
+import { githubOwnerText, setOrgGithubOwner } from "./admin/github-owner.js";
 import { listCredentials, registerCredential } from "./admin/credential.js";
 import { requestRuntimeInstallChallenge, submitRuntimeInstallProposal } from "./admin/runtime-installation.js";
 import { cliRuntimeBinding, registerProject } from "./admin/register.js";
@@ -666,6 +667,22 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         ...(orgMonthlyUsd === undefined ? {} : { orgMonthlyUsd }), ...(memberDefaultMonthlyUsd === undefined ? {} : { memberDefaultMonthlyUsd }),
       }, services.fetchImplementation);
       services.stdout.write(globals.json ? formatSuccess(result, true) : budgetText(result.budget));
+    });
+
+  const adminOrg = admin.command("org").description("organizations on Rovara Cloud");
+  adminOrg
+    .command("github-owner")
+    .description("the one GitHub account or organization whose repositories an organization's owners and admins may create projects for")
+    .command("set")
+    .description("set an organization's allowed GitHub owner (Rovara Cloud operators only)")
+    .option("--org <org-id>", "the organization's ID")
+    .option("--owner <login>", "the GitHub account or organization login, such as acme-corp")
+    .action(async (options: { org?: string; owner?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      if (options.org === undefined || options.owner === undefined) throw agentXError("CONFIG_INVALID", "name the organization and the GitHub owner: --org <org-id> --owner <login>");
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await setOrgGithubOwner({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, orgId: options.org, githubOwner: options.owner }, services.fetchImplementation);
+      services.stdout.write(globals.json ? formatSuccess(result, true) : githubOwnerText(result.org));
     });
 
   const adminSlack = admin.command("slack").description("bind Slack channels to this project for the hosted orchestrator");

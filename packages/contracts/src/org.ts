@@ -20,7 +20,17 @@ export interface OrgRecord {
   trialUnlockedAt?: number;
   /** The GitHub account whose connection unlocked the trial; it can unlock no other org. */
   trialGithubUserId?: string;
+  /**
+   * Ruling R55: the one GitHub account or organization login (lower case) whose repositories an owner or admin of this cloud org may
+   * register as projects. Only an operator sets it; absent, the org cannot create projects.
+   */
+  githubOwner?: string;
 }
+
+/** A GitHub account or organization login, stored lower case: 1 to 39 letters, digits and single hyphens, never starting or ending with one. */
+export const GithubOwnerSchema = z.string().trim().min(1).max(39)
+  .regex(/^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/, "must be a GitHub account or organization login")
+  .transform((login) => login.toLowerCase());
 
 export interface OrgMembershipRecord {
   orgId: OrgId;

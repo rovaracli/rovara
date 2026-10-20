@@ -195,6 +195,7 @@ import {
   type ModelRef,
   type ModelSelection,
   type ProjectModelOptions,
+  GithubOwnerSchema,
   OrgIdSchema,
   PROJECT_REVISION_SK_PREFIX,
   orgProjectCatalogKey,
@@ -582,6 +583,26 @@ async function putInstallBudget(dependencies: AwsBrokerDependencies, identity: A
   );
   console.log(JSON.stringify({ component: "broker", event: "admin.org_budget_changed", orgId, overrides: Object.keys(budget.memberOverrides).length }));
   return { budget };
+}
+
+const SetGithubOwnerBodySchema = z.object({ orgId: OrgIdSchema, githubOwner: GithubOwnerSchema }).strict();
+
+/**
+ * Ruling R55: `PUT /v1/admin/org/github-owner`. An operator (admin pool) sets the one GitHub account or organization whose repositories
+ * an owner or admin of a cloud org may register as projects. Cloud installs only: any other install has one org and registers its
+ * projects with the administrator's `project add`.
+ */
+async function putOrgGithubOwner(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, body: unknown): Promise<{ org: { orgId: OrgId; githubOwner: string } }> {
+  if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+  if (dependencies.cloud !== true) throw agentXError("CONFIG_INVALID", "this install has one organization; register its projects with agentx project add");
+  const parsed = SetGithubOwnerBodySchema.safeParse(body);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
+  }
+  await orgStoreOf(dependencies).setGithubOwner(parsed.data.orgId, parsed.data.githubOwner);
+  console.log(JSON.stringify({ component: "broker", event: "admin.org_github_owner_changed", orgId: parsed.data.orgId, githubOwner: parsed.data.githubOwner }));
+  return { org: { orgId: parsed.data.orgId, githubOwner: parsed.data.githubOwner } };
 }
 
 function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">): OrgStore {
@@ -1416,6 +1437,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Ruling R47: an operator sets the budgets of a private or single-org install's one org. A cloud install's orgs set their own.
       if (request.method === "PUT" && url.pathname === "/v1/admin/org/budget") {
         return json(await putInstallBudget(dependencies, identity, body), request.requestId);
+      }
+      // Ruling R55: an operator names the one GitHub owner a cloud org may create projects for.
+      if (request.method === "PUT" && url.pathname === "/v1/admin/org/github-owner") {
+        return json(await putOrgGithubOwner(dependencies, identity, body), request.requestId);
       }
       if (request.method === "GET" && url.pathname === "/v1/admin/turns") {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
