@@ -13,7 +13,6 @@ import {
 import { Construct } from "constructs";
 import { environmentRolePath } from "@agentx/contracts";
 import type { AgentXNaming } from "./naming.js";
-import { AGENTX_PRODUCTION_WORKER_REPOSITORY } from "./release-pipeline.js";
 
 /** The worker's HTTP port: /ping for health probes, /invocations for signed work (#80). */
 export const EC2_WORKER_PORT = 8080;
@@ -85,28 +84,26 @@ export class Ec2WorkerFoundation extends Construct {
       }),
       description: `AgentX ${naming.environmentTagValue} EC2 worker instances`,
     });
+    // The legacy deployment's role is unchanged (ruling R58): its worker image is not derived from a parameter here.
+    if (naming.env === undefined) {
+      this.instanceRole.addToPolicy(new iam.PolicyStatement({
+        sid: "EcrImageAccess",
+        actions: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
+        resources: [`arn:${Aws.PARTITION}:ecr:${Aws.REGION}:${Aws.ACCOUNT_ID}:repository/*`],
+      }));
+    }
     this.instanceRole.addToPolicy(new iam.PolicyStatement({
       sid: "EcrTokenAccess",
       actions: ["ecr:GetAuthorizationToken"],
       resources: ["*"],
     }));
-    // The role pulls one image, so it reads one repository, never repository/* (R56: it is the account's every image, the
-    // CDK asset repository included). A named environment pulls the released worker image through its ECR pull-through
-    // cache, which caches public.ecr.aws/<publisher alias>/agentx-worker (release.yml) as <prefix>/<alias>/agentx-worker.
-    // The alias is the publisher's and is not known here, so it is a wildcard; the repository name is not, which also
-    // bounds what ecr:CreateRepository and ecr:BatchImportUpstreamImage can make. Production pushes its own worker image
-    // and has no cache.
+    // A named environment reads one repository, never repository/* (R56: it is the account's every image, the CDK asset
+    // repository included), cached by its ECR pull-through cache as <prefix>/<publisher alias>/agentx-worker (release.yml).
     if (naming.env !== undefined) {
       this.instanceRole.addToPolicy(new iam.PolicyStatement({
         sid: "EcrPullThroughCache",
         actions: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchImportUpstreamImage", "ecr:CreateRepository"],
         resources: [`arn:${Aws.PARTITION}:ecr:${Aws.REGION}:${Aws.ACCOUNT_ID}:repository/${naming.pullThroughPrefix}/*/${EC2_WORKER_IMAGE_REPOSITORY}`],
-      }));
-    } else {
-      this.instanceRole.addToPolicy(new iam.PolicyStatement({
-        sid: "EcrImageAccess",
-        actions: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
-        resources: [`arn:${Aws.PARTITION}:ecr:${Aws.REGION}:${Aws.ACCOUNT_ID}:repository/${AGENTX_PRODUCTION_WORKER_REPOSITORY}`],
       }));
     }
     // A named environment's workers call models through the model proxy, the only principal with Bedrock access

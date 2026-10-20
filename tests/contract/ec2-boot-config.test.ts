@@ -261,13 +261,17 @@ exit 0
       expect(blockImds(NAMED, [DOCKER_USER])).toEqual([`-C ${DOCKER_USER}`, `-C ${OUTPUT}`, `-I ${OUTPUT}`]);
     });
 
-    it("in the legacy deployment closes it to bridged containers only, since the worker itself still needs the role", () => {
-      expect(blockImds(LEGACY)).toEqual([`-C ${DOCKER_USER}`, `-I ${DOCKER_USER}`]);
+    it("leaves the legacy deployment's boot exactly as it was: no firewall rule and the host network (ruling R58)", () => {
+      const launcher = workerLauncher.replace(/^block_imds\(\) \{[\s\S]*?^\}$/m, "");
+      // The only place block_imds runs is behind the named-environment test.
+      expect(launcher).toContain("if named_environment; then block_imds || ");
+      expect(launcher.match(/block_imds/gu)).toHaveLength(1);
+      expect(networkArgs(LEGACY)).toEqual(["--network", "host"]);
     });
 
     it("applies the rules as root before the worker starts, and does not start it when they fail", () => {
-      expect(workerLauncher).toMatch(/block_imds \|\| \{[^}]*exit 1; \}/u);
-      expect(workerLauncher.indexOf("block_imds ||")).toBeLessThan(workerLauncher.indexOf('exec "$docker"'));
+      expect(workerLauncher).toMatch(/if named_environment; then block_imds \|\| \{[^}]*exit 1; \}; fi/u);
+      expect(workerLauncher.indexOf("then block_imds ||")).toBeLessThan(workerLauncher.indexOf('exec "$docker"'));
       expect(workerLauncher).toContain('mapfile -t network_args < <(worker_network_args)');
     });
   });

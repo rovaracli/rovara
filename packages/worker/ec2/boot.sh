@@ -322,22 +322,23 @@ readonly DOCKER_SOCKET=/var/run/docker.sock
 readonly WORKER_UID=1000
 readonly WORKER_GID=1000
 log() { printf 'agentx-worker-start: %s\n' "$*" >&2; }
-# R56: a named environment (it has a model proxy) runs on a bridge; the legacy worker needs the host network.
+# R56: a named environment's worker runs on a bridge; the legacy worker is unchanged (R58).
 named_environment() { grep -q '^AGENTX_MODEL_PROXY_URL=.' "$WORKER_ENV_FILE"; }
 worker_network_args() {
   if named_environment; then printf '%s\n' --network bridge --publish 8080:8080; else printf '%s\n' --network host; fi
 }
 block_imds() {
-  local rule rules=("DOCKER-USER -d 169.254.169.254/32 -j REJECT")
-  if named_environment; then rules+=("OUTPUT -d 169.254.169.254/32 -m owner ! --uid-owner 0 -j REJECT"); fi
-  for rule in "${rules[@]}"; do iptables -C $rule 2>/dev/null || iptables -I $rule || return 1; done
+  local rule
+  for rule in "DOCKER-USER -d 169.254.169.254/32 -j REJECT" "OUTPUT -d 169.254.169.254/32 -m owner ! --uid-owner 0 -j REJECT"; do
+    iptables -C $rule 2>/dev/null || iptables -I $rule || return 1
+  done
 }
 docker=$(cat /etc/agentx/docker-path 2>/dev/null || true)
 worker_image=$(cat /etc/agentx/worker-image 2>/dev/null || true)
 [[ "$docker" == /* && -x "$docker" ]] || { log 'Docker CLI unavailable'; exit 1; }
 [[ "$worker_image" =~ ^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]] || { log 'worker image identity is invalid'; exit 1; }
 docker_gid=$(stat -c %g "$DOCKER_SOCKET") || { log 'Docker socket unavailable'; exit 1; }
-block_imds || { log 'iptables failed'; exit 1; }
+if named_environment; then block_imds || { log 'iptables failed'; exit 1; }; fi
 mapfile -t network_args < <(worker_network_args)
 runtime_ready=false
 if [[ -d "$RUNTIME_SOURCE" && ! -L "$RUNTIME_SOURCE" && $(stat -c %u:%g:%a "$RUNTIME_SOURCE" 2>/dev/null) == 0:0:755 ]]; then

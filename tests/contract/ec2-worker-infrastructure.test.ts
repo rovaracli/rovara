@@ -125,18 +125,15 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
       expect(resources(cache!)).not.toContain("repository/agentx-staging/*\"");
     });
 
-    it("limits the legacy deployment to the worker image's own repository, with no cache statement", () => {
+    // Ruling R58: the production templates do not change in this task, so its role keeps what it had.
+    it("leaves the legacy deployment's worker role as it was (ruling R58)", () => {
       const statements = ecr(legacy).filter((statement) => ["EcrImageAccess", "EcrTokenAccess", "EcrPullThroughCache"].includes(statement.Sid ?? ""));
-      expect(statements.map((statement) => statement.Sid).sort()).toEqual(["EcrImageAccess", "EcrTokenAccess"]);
-      const access = statements.find((statement) => statement.Sid === "EcrImageAccess")!;
-      expect(access.Action).toEqual(["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]);
-      expect(resources(access)).toContain("repository/agentx-worker-production\"");
-      // No worker statement of the legacy deployment names repository/*, wherever it sits.
-      for (const statement of statements) expect(resources(statement)).not.toMatch(/repository\/\*"/u);
+      expect(statements.map((statement) => statement.Sid)).toEqual(["EcrImageAccess", "EcrTokenAccess"]);
+      expect(resources(statements[0]!)).toContain("repository/*\"");
     });
 
     it("never grants a worker role ecr:CreateRepository outside the worker's cached repository", () => {
-      for (const statement of ecr([foundation, ...legacy]).filter((entry) => ["EcrImageAccess", "EcrPullThroughCache"].includes(entry.Sid ?? ""))) {
+      for (const statement of ecr([foundation]).filter((entry) => ["EcrImageAccess", "EcrPullThroughCache"].includes(entry.Sid ?? ""))) {
         if (![statement.Action].flat().includes("ecr:CreateRepository")) continue;
         expect(resources(statement)).toContain("/agentx-worker");
       }
