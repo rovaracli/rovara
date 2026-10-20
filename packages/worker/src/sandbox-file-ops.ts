@@ -50,6 +50,7 @@ export type SandboxFileRequest = { root: string } & (
   | { op: "writeFile"; path: string; /** The byte length of the content on stdin, so a cut-short stream is told apart from a short file. */ size: number }
   | { op: "mkdir"; path: string }
   | { op: "sweep"; path: string }
+  | { op: "countLines"; path: string }
   | { op: "glob"; pattern: string; cwd: string; ignore: string[]; limit: number }
   | { op: "grep"; pattern: string; path: string; glob?: string; ignoreCase?: boolean; literal?: boolean; context?: number; limit: number }
 );
@@ -66,6 +67,7 @@ export type SandboxFileResult =
   | { paths: string[] }
   | { searchIsDirectory: boolean; blocks: GrepBlock[]; limitReached: boolean }
   | { removed: number }
+  | { lineCount: number }
   | Record<string, never>;
 
 export type SandboxFileResponse = { ok: true; result: SandboxFileResult } | { ok: false; code: FileOpsErrorCode; message: string };
@@ -586,6 +588,37 @@ async function writeFileOp(
   }
 }
 
+/** The lines of a regular file of any size, counted as it streams (a last line with no newline counts), never held. */
+async function countLinesOp(walker: RootWalker, request: Extract<SandboxFileRequest, { op: "countLines" }>): Promise<SandboxFileResult> {
+  const located = await walker.locate(request.path);
+  if (located.entry === undefined || located.entry.stat === undefined) throw new FileOpsError("ENOENT", `${show(request.path)} does not exist`);
+  if (!located.entry.stat.isFile()) throw new FileOpsError(located.entry.stat.isDirectory() ? "EISDIR" : "INVALID", `${show(request.path)} is not a regular file`);
+  let handle: FileHandle;
+  try {
+    handle = await open(procPath(located.entry.parent, located.entry.name), READ_FLAGS);
+  } catch (error) {
+    throw fromKernel(error, show(request.path));
+  }
+  try {
+    if (!(await handle.stat()).isFile()) throw new FileOpsError("INVALID", `${show(request.path)} is not a regular file`);
+    const buffer = Buffer.alloc(64 * 1024);
+    let newlines = 0;
+    let last = 0x0a;
+    for (let position = 0; ;) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+      if (bytesRead === 0) break;
+      position += bytesRead;
+      for (let index = 0; index < bytesRead; index += 1) if (buffer[index] === 0x0a) newlines += 1;
+      last = buffer[bytesRead - 1]!;
+    }
+    return { lineCount: last === 0x0a ? newlines : newlines + 1 };
+  } catch (error) {
+    throw fromKernel(error, show(request.path));
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
 async function sweepOp(walker: RootWalker, request: Extract<SandboxFileRequest, { op: "sweep" }>): Promise<SandboxFileResult> {
   let start: FileHandle;
   try {
@@ -639,11 +672,13 @@ function absoluteOfPath(root: string, path: string): string {
 
 async function grepOp(walker: RootWalker, request: Extract<SandboxFileRequest, { op: "grep" }>): Promise<SandboxFileResult> {
   if (typeof request.pattern !== "string" || request.pattern === "") throw new FileOpsError("INVALID", "the search pattern is empty");
-  // No `u` flag: V8's linear-time fallback for catastrophic backtracking (the flag the worker starts this process with) does
-  // not apply to a `u` or `i` expression. A case-insensitive search still has the deadline.
+  // No `u` flag, unless the pattern needs it: V8's linear-time fallback for catastrophic backtracking (the flag the worker
+  // starts this process with) does not apply to a `u` or `i` expression. A pattern with `\p{`, `\P{` or `\u{` means nothing
+  // without `u`, so it gets it, and (like a case-insensitive search) relies on the deadline alone.
+  const needsUnicode = request.literal !== true && /\\[pPu]\{/u.test(request.pattern);
   let expression: RegExp;
   try {
-    expression = new RegExp(request.literal === true ? request.pattern.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&") : request.pattern, request.ignoreCase === true ? "i" : "");
+    expression = new RegExp(request.literal === true ? request.pattern.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&") : request.pattern, `${request.ignoreCase === true ? "i" : ""}${needsUnicode ? "u" : ""}`);
   } catch (error) {
     throw new FileOpsError("INVALID", `the search pattern is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300));
   }
@@ -714,6 +749,7 @@ export async function runFileOp(request: SandboxFileRequest, input?: AsyncIterab
       case "writeFile": result = await writeFileOp(walker, request, input); break;
       case "mkdir": result = await mkdirOp(walker, request); break;
       case "sweep": result = await sweepOp(walker, request); break;
+      case "countLines": result = await countLinesOp(walker, request); break;
       case "glob": result = await globOp(walker, request); break;
       case "grep": result = await grepOp(walker, request); break;
       default: throw new FileOpsError("INVALID", "the request has an unknown operation");
@@ -744,7 +780,7 @@ export function runMatchingWithDeadline(request: SandboxFileRequest, deadlineMs:
     };
     const timer = setTimeout(() => finish({
       ok: false, code: "PATTERN_TOO_SLOW",
-      message: `matching took longer than ${Math.round(deadlineMs / 1_000)} s; use a simpler pattern, a plain string (literal), or a narrower path`,
+      message: `the search took longer than ${Math.round(deadlineMs / 1_000)} s and was stopped; narrow the path or the glob, or simplify the pattern`,
     }), deadlineMs);
     worker.once("message", (message: unknown) => finish(message as SandboxFileResponse));
     worker.once("error", (error) => finish({ ok: false, code: "INVALID", message: `the search failed: ${error.message}`.slice(0, 300) }));

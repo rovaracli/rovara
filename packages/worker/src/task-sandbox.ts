@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import { agentXError, type ProjectCommand } from "@agentx/contracts";
 import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
@@ -35,9 +36,19 @@ export const TASK_SANDBOX_USER = "1000:1000";
 /** Where the worker image (which is the sandbox image) keeps Node and the file-tool helper (environments/base/Dockerfile). */
 export const SANDBOX_FILE_OPS_NODE = "/usr/local/bin/node";
 export const SANDBOX_FILE_OPS_HELPER = "/opt/agentx/packages/worker/dist/sandbox-file-ops.js";
-/** The most CPU and processes one sandbox may use. */
-export const TASK_SANDBOX_CPUS = "2";
-export const TASK_SANDBOX_PIDS_LIMIT = "1024";
+/**
+ * The most processes and threads one sandbox may use (the limit counts threads, so a JVM or browser build needs room; it
+ * still stops a fork bomb).
+ */
+export const TASK_SANDBOX_PIDS_LIMIT = "4096";
+
+/**
+ * The CPU limit of a sandbox on a host with `hostCpus`: all but one, so the worker and Docker keep a core. The Docker daemon
+ * refuses a limit above the host's CPU count, so a one-CPU host gets no limit rather than a sandbox that cannot start.
+ */
+export function sandboxCpuLimit(hostCpus: number): string | undefined {
+  return Number.isInteger(hostCpus) && hostCpus > 1 ? String(hostCpus - 1) : undefined;
+}
 /** The environment variable that names the sandbox image; boot.sh sets it to the worker's own image. */
 export const TASK_SANDBOX_IMAGE_ENVIRONMENT = "AGENTX_SANDBOX_IMAGE";
 /** `local` or `sandbox` (the default): where a project without a devcontainer runs its commands. `local` is for tests and a developer's machine, never EC2. */
@@ -115,6 +126,8 @@ export interface TaskSandboxRunInput {
   rootPath: string;
   /** Folders of the workspace volume that are the worker's, not the project's (workspace-state.ts): each gets an empty read-only tmpfs over it. */
   maskedPaths: readonly string[];
+  /** The host's CPU count, which sets the sandbox's CPU limit (sandboxCpuLimit). Default: this machine's, which is the host's. */
+  hostCpus?: number;
 }
 
 /** The `docker run` arguments of a sandbox (R56). The workspace is the only mount, at its own path. */
@@ -127,7 +140,7 @@ export function taskSandboxRunArgs(input: TaskSandboxRunInput): string[] {
     "--network", TASK_SANDBOX_NETWORK,
     "--user", TASK_SANDBOX_USER,
     // A sandbox shares the instance with the worker: a runaway command (or a file-tool search) must not take every core or process.
-    "--cpus", TASK_SANDBOX_CPUS,
+    ...(sandboxCpuLimit(input.hostCpus ?? availableParallelism()) === undefined ? [] : ["--cpus", sandboxCpuLimit(input.hostCpus ?? availableParallelism())!]),
     "--pids-limit", TASK_SANDBOX_PIDS_LIMIT,
     "--cap-drop", "ALL",
     "--security-opt", "no-new-privileges",

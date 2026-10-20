@@ -246,6 +246,25 @@ onLinux("sandbox-file-ops (Linux filesystem)", () => {
     expect(failure(await op({ op: "grep", pattern: "x", path: "missing", limit: 5 }))).toBe("ENOENT");
   });
 
+  it("gives a pattern that needs Unicode its `u` flag, and counts the lines of a file of any size", async () => {
+    await writeFile(join(root, "real", "letters.txt"), "plain\nacc\u00e9nt\n");
+    const letters = await op({ op: "grep", pattern: "^\\p{L}+$", path: "real/letters.txt", limit: 5 });
+    expect((letters as { result: { blocks: Array<{ lines: Array<{ text: string }> }> } }).result.blocks.map((block) => block.lines[0]!.text)).toEqual(["plain", "acc\u00e9nt"]);
+    const emoji = await op({ op: "grep", pattern: "\\u{1F600}", path: "real/letters.txt", limit: 5 });
+    expect(emoji.ok).toBe(true);
+    await writeFile(join(root, "real", "count.txt"), "one\ntwo\nthree");
+    await writeFile(join(root, "real", "count-nl.txt"), "one\ntwo\n");
+    await writeFile(join(root, "real", "count-empty.txt"), "");
+    await writeFile(join(root, "real", "count-big.txt"), `${"x".repeat(1023)}\n`.repeat(5_000));
+    expect(await op({ op: "countLines", path: "real/count.txt" })).toEqual({ ok: true, result: { lineCount: 3 } });
+    expect(await op({ op: "countLines", path: "real/count-nl.txt" })).toEqual({ ok: true, result: { lineCount: 2 } });
+    expect(await op({ op: "countLines", path: "real/count-empty.txt" })).toEqual({ ok: true, result: { lineCount: 0 } });
+    expect(await op({ op: "countLines", path: "real/count-big.txt" })).toEqual({ ok: true, result: { lineCount: 5_000 } });
+    expect(failure(await op({ op: "countLines", path: "real" }))).toBe("EISDIR");
+    await symlink("../../outside/secret.txt", join(root, "real", "out-link"));
+    expect(failure(await op({ op: "countLines", path: "real/out-link" }))).toBe("OUTSIDE");
+  });
+
   it("lists a symlinked directory that leads outside as OUTSIDE, and lists the entries of one inside", async () => {
     await symlink("../outside", join(root, "out"));
     await symlink("real/docs", join(root, "docs"));
@@ -372,6 +391,10 @@ onLinux("sandbox-file-ops (Linux filesystem)", () => {
       const started = Date.now();
       const result = await runHelperProcess({ op: "grep", pattern: "(a+)+$", path: "real/evil.txt", limit: 5 }, { env: DEADLINE });
       expect(JSON.parse(result.stdout)).toMatchObject({ ok: false, code: "PATTERN_TOO_SLOW" });
+      // It says the search was slow and what to do; it does not blame the pattern outright (a big tree is slow too).
+      const message = (JSON.parse(result.stdout) as { message: string }).message;
+      expect(message).toMatch(/^the search took longer than \d+ s and was stopped; narrow the path/u);
+      expect(message).toContain("simplify the pattern");
       expect(result.code).toBe(0);
       // Unbounded, this match takes about 10 s; the deadline is 0.6 s, plus the start of the process.
       expect(Date.now() - started).toBeLessThan(6_000);

@@ -67,6 +67,23 @@ export function toHostPath(mounts: readonly FileMount[], containerPath: string):
   return mount === undefined ? containerPath : joinUnder(mount.hostPath, containerPath.slice(mount.containerPath.length));
 }
 
+/**
+ * What a listing of `path` shows when `path` is a folder above the mounts (the workspace root, say) and no mount holds it:
+ * the next folder of each mount below it, so the agent sees `api/` and reads `api/src/a.ts`, which maps. Undefined when
+ * `path` is inside a mount, or above none.
+ */
+export function virtualDirectoryEntries(mounts: readonly FileMount[], path: string): string[] | undefined {
+  const folder = trimSlash(posix.normalize(path));
+  if (longest(mounts, (mount) => mount.hostPath, folder) !== undefined || longest(mounts, (mount) => mount.containerPath, folder) !== undefined) return undefined;
+  const names = new Set<string>();
+  for (const mount of mounts) {
+    if (!isUnder(mount.hostPath, folder) || mount.hostPath === folder) continue;
+    const first = mount.hostPath.slice(folder === "/" ? 1 : folder.length + 1).split("/")[0];
+    if (first !== undefined && first !== "") names.add(first);
+  }
+  return names.size === 0 ? undefined : [...names].sort();
+}
+
 /** The copy the agent sees for a path no mount holds. */
 export function notMountedMessage(path: string, mounts: readonly FileMount[]): string {
   const folders = mounts.length === 0 ? "no host folders" : mounts.map((mount) => mount.hostPath).join(", ");

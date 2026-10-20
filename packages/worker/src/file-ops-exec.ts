@@ -49,6 +49,7 @@ const ResultSchemas = {
   writeFile: EmptySchema,
   mkdir: EmptySchema,
   sweep: z.object({ removed: z.number() }),
+  countLines: z.object({ lineCount: z.number() }),
   glob: z.object({ paths: z.array(z.string()) }),
   grep: z.object({
     searchIsDirectory: z.boolean(),

@@ -12,7 +12,7 @@ import { fauxAssistantMessage, fauxToolCall, getCurrentTools, type FauxResponseS
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installFileOpsHelper } from "../../packages/worker/src/devcontainer.js";
-import { devcontainerMounts, notMountedMessage, toContainerPath, toHostPath } from "../../packages/worker/src/devcontainer-file-paths.js";
+import { devcontainerMounts, notMountedMessage, toContainerPath, toHostPath, virtualDirectoryEntries } from "../../packages/worker/src/devcontainer-file-paths.js";
 import { FILE_OPS_NODE_FLAGS, fileOpsExec, type FileOpsTarget } from "../../packages/worker/src/file-ops-exec.js";
 import {
   FILE_TOOLS_NEED_SANDBOX_MESSAGE,
@@ -353,7 +353,7 @@ describe("the devcontainer's file tools", () => {
     expect(fake.execs.find(({ request }) => request.op === "grep")!.request).toMatchObject({ root: "/workspaces/api", path: "/workspaces/api" });
   });
 
-  it("defaults a pathless grep, find and ls to the repository's mount, and still refuses workspace-level files (I2)", async () => {
+  it("defaults a pathless grep and find to the repository's mount, lists the mounted folders for a pathless ls, and refuses workspace-level files (I2, R4)", async () => {
     const results: Array<ReturnType<typeof lastResult>> = [];
     const { rootPath, fake, handle } = await devcontainerSession({
       files: { "/workspaces/api/src/a.ts": "const needle = 1;\n", "/workspaces/api/README.md": "readme\n" },
@@ -364,20 +364,34 @@ describe("the devcontainer's file tools", () => {
         (context) => { results.push(lastResult(context)); return toolUse(fauxToolCall("ls", {}, { id: "i3" })); },
         (context) => { results.push(lastResult(context)); return toolUse(fauxToolCall("ls", { path: "." }, { id: "i4" })); },
         (context) => { results.push(lastResult(context)); return toolUse(fauxToolCall("read", { path: join(path, "notes.md") }, { id: "i5" })); },
+        // What the listing shows can be used: the folder it names lists, and a path under it reads.
+        (context) => { results.push(lastResult(context)); return toolUse(fauxToolCall("ls", { path: "api" }, { id: "i6" })); },
+        (context) => { results.push(lastResult(context)); return toolUse(fauxToolCall("read", { path: "api/src/a.ts" }, { id: "i7" })); },
         (context) => { results.push(lastResult(context)); return fauxAssistantMessage("Done."); },
       ],
     });
     try { expect(await settle(handle, "go")).toBe("resolved"); } finally { handle.dispose(); }
-    expect(results.map((result) => result.isError)).toEqual([false, false, false, false, true]);
+    expect(results.map((result) => result.isError)).toEqual([false, false, false, false, true, false, false]);
     expect(results[0]!.content[0]!.text).toBe("api/src/a.ts:1: const needle = 1;");
     expect(results[1]!.content[0]!.text).toBe("api/src/a.ts");
-    expect(results[2]!.content[0]!.text).toBe("README.md\nsrc/");
-    expect(results[3]!.content[0]!.text).toBe("README.md\nsrc/");
+    expect(results[2]!.content[0]!.text).toBe("api/");
+    expect(results[3]!.content[0]!.text).toBe("api/");
     expect(results[4]!.content[0]!.text).toContain("isn't in a workspace folder mounted in this devcontainer");
     expect(results[4]!.content[0]!.text).toContain(join(rootPath, "notes.md"));
-    // Every call that did reach the container was rooted at the repository's mount.
+    expect(results[5]!.content[0]!.text).toBe("README.md\nsrc/");
+    expect(results[6]!.content[0]!.text).toBe("const needle = 1;\n");
+    // The listing of the workspace root made no call; every call that did reach the container was rooted at the mount.
     expect(fake.execs.length).toBeGreaterThan(0);
     for (const exec of fake.execs) expect(exec.request.root).toBe("/workspaces/api");
+  });
+
+  it("lists the next folder of every mount below a folder that is no mount, and nothing inside a mount", () => {
+    const mounts = [{ hostPath: "/ws/repo/api", containerPath: "/workspaces/api" }, { hostPath: "/ws/repo/web", containerPath: "/workspaces/web" }, { hostPath: "/ws/tools", containerPath: "/t" }];
+    expect(virtualDirectoryEntries(mounts, "/ws")).toEqual(["repo", "tools"]);
+    expect(virtualDirectoryEntries(mounts, "/ws/repo")).toEqual(["api", "web"]);
+    expect(virtualDirectoryEntries(mounts, "/ws/repo/api")).toBeUndefined();
+    expect(virtualDirectoryEntries(mounts, "/ws/repo/api/src")).toBeUndefined();
+    expect(virtualDirectoryEntries(mounts, "/ws/other")).toBeUndefined();
   });
 
   it("refuses a second repository the devcontainer does not mount, and a workspace-level file, with NOT_MOUNTED and no docker exec", async () => {

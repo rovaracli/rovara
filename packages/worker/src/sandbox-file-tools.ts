@@ -18,7 +18,7 @@ import {
   type WriteOperations,
 } from "@earendil-works/pi-coding-agent";
 import { hostPath as devcontainerHostPath } from "./devcontainer.js";
-import { notMountedMessage, type FileMount, toContainerPath, toHostPath } from "./devcontainer-file-paths.js";
+import { notMountedMessage, type FileMount, toContainerPath, toHostPath, virtualDirectoryEntries } from "./devcontainer-file-paths.js";
 import { FileOpsInterruptedError, fileOpsExec, type FileOpsReply, type FileOpsResult, type FileOpsTarget } from "./file-ops-exec.js";
 import type { SandboxFileRequest } from "./sandbox-file-ops.js";
 
@@ -179,8 +179,12 @@ function writeOperations(env: ToolEnvironment): WriteOperations {
 function lsOperations(env: ToolEnvironment): LsOperations {
   // `ls` stats every entry it lists; the listing already says which are directories, so those answers are kept for it.
   const kinds = new Map<string, "dir" | "file" | "gone">();
+  // In a devcontainer the folders above the mounts (the workspace root) are no mount: they list the mounted folders, so the
+  // agent sees `api/` and goes on to `api/src/a.ts`, which the other tools map.
+  const virtual = (path: string): string[] | undefined =>
+    env.target.mounts === undefined ? undefined : virtualDirectoryEntries(env.target.mounts, absolute(path, env.cwd));
   return {
-    exists: async (path) => (await call<"exists">(env, path, (mapped) => ({ op: "exists", path: mapped.path }))).exists,
+    exists: async (path) => virtual(path) !== undefined || (await call<"exists">(env, path, (mapped) => ({ op: "exists", path: mapped.path }))).exists,
     stat: async (path) => {
       const known = kinds.get(path);
       if (known !== undefined) {
@@ -188,10 +192,17 @@ function lsOperations(env: ToolEnvironment): LsOperations {
         if (known === "gone") throw new FileToolError("ENOENT", `ENOENT: no such file or directory, '${path}'`);
         return { isDirectory: () => known === "dir" };
       }
+      if (virtual(path) !== undefined) return { isDirectory: () => true };
       const stat = await call<"stat">(env, path, (mapped) => ({ op: "stat", path: mapped.path }));
       return { isDirectory: () => stat.type === "dir" };
     },
     readdir: async (path) => {
+      const names = virtual(path);
+      if (names !== undefined) {
+        kinds.clear();
+        for (const name of names) kinds.set(join(path, name), "dir");
+        return names;
+      }
       const { entries } = await call<"readdir">(env, path, (mapped) => ({ op: "readdir", path: mapped.path }));
       kinds.clear();
       for (const entry of entries) kinds.set(join(path, entry.name), entry.kind);
