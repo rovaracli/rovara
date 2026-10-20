@@ -49,6 +49,8 @@ export class SessionLifecycle extends Construct {
   private readonly naming: AgentXNaming;
   private readonly dispatcherSecurityGroupId: CfnParameter;
   readonly privateSubnetIds: CfnParameter;
+  /** The EC2 workers' launch template, which a cloud org's projects are bound to. */
+  readonly launchTemplateId: CfnParameter;
   private readonly invokeSigningKey: kms.IKey;
   private readonly notifyOperator: cloudwatchActions.SnsAction;
 
@@ -71,6 +73,7 @@ export class SessionLifecycle extends Construct {
     // IAM inline-policy attachments require the name, without the role's path.
     this.instanceRoleName = Fn.select(naming.env === undefined ? 1 : 3, Fn.split("/", instanceRoleArn.valueAsString));
     const launchTemplateId = parameter("Ec2WorkerLaunchTemplateId", "The EC2 workers' launch template");
+    this.launchTemplateId = launchTemplateId;
 
     // Named environments (Task 14): workers hold no provider keys or Bedrock access and call models through the
     // proxy, whose URL is one more setting. Launching a worker without it fails; the legacy function is unchanged.

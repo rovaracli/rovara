@@ -272,6 +272,12 @@ export const CONTROL_PLANE_FOUNDATION_PARAMETERS = [
  */
 export const MODEL_PROXY_FOUNDATION_PARAMETERS = ["VpcId", "Ec2WorkerSecurityGroupId"] as const;
 
+/**
+ * One more foundation output a named environment's control plane takes: the EC2 worker subnets (availabilityZone=subnetId pairs),
+ * which the broker binds a cloud org's new project to (ruling R55). Kept apart for the same reason as the model proxy's.
+ */
+export const CLOUD_PROJECT_FOUNDATION_PARAMETERS = ["Ec2WorkerSubnets"] as const;
+
 /** The deleter execution for a workspace; a workspace is deleted once. */
 export function sessionDeletionName(workspaceId: string): string {
   return `ws-${workspaceId}-delete`;

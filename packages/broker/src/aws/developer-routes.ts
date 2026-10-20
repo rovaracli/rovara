@@ -40,6 +40,7 @@ import {
   type EndDeveloperSessionsRequest,
   type EndDeveloperSessionsResponse,
   type OrgId,
+  type OrgRecord,
   type OrgRole,
   OrgIdSchema,
   OrgRoleSchema,
@@ -58,6 +59,7 @@ import {
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
 import { DEFAULT_ROVARA_WEB_ORIGIN, inviteUrl } from "../org/invite-url.js";
+import { parseCreateProjectBody, requireAllowedGithubOwner, type CreateProjectInput } from "../org/cloud-projects.js";
 import { changeBudgets, ensureSynced, memberLimitOf, type BudgetDependencies, type OrgBudgetSettings } from "../org/budget.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import type { OrgStore } from "../org/store.js";
@@ -134,6 +136,16 @@ export interface DeveloperRouteDependencies {
   modelAccess?: ModelAccess;
   /** A cloud install (ruling R42): trial lock and machine-time allowance apply to its orgs. */
   cloud?: boolean;
+  /**
+   * Ruling R55: registers a project in the caller's org and grants the caller access, through the broker's registration. The route has
+   * already checked the install, the caller's role and the repository's owner against the org's allowed GitHub owner.
+   */
+  createProject?: (caller: DeveloperCaller, input: CreateProjectInput, org: Pick<OrgRecord, "githubOwner">) => Promise<{ duplicate: boolean }>;
+}
+
+/** A route's answer with a status other than 200; the broker's handler writes the status and the body. */
+export class StatusReply {
+  constructor(readonly statusCode: number, readonly body: object) {}
 }
 /** Who is asking about a project, and in which org: grants and revisions are read in that org only. */
 export type ProjectAccessCaller = ProjectAccessSubject & { orgId: OrgId };
@@ -905,6 +917,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // Never request.jwtClaims: no API Gateway authorizer runs on /v1/dev/* (D17).
   const caller = await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization));
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);
+  if (request.method === "POST" && url.pathname === "/v1/dev/projects") return createProject(deps, caller, jsonBody(request));
   if (request.method === "GET" && url.pathname === "/v1/dev/workspaces") return listWorkspaces(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/dev/org") return getOrganization(deps, caller);
   if (request.method === "POST" && url.pathname === "/v1/dev/org/invites") return createOrganizationInvite(deps, caller, jsonBody(request));
@@ -918,6 +931,22 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     return routeChatGptConnection(deps, caller, request, url);
   }
   throw agentXError("NOT_FOUND", "route not found");
+}
+
+/**
+ * Ruling R55: an owner or admin of a cloud org creates a project from a repository under the org's allowed GitHub owner, which only an
+ * operator sets. Any other install registers projects through an administrator.
+ */
+async function createProject(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<StatusReply> {
+  if (deps.cloud !== true) throw agentXError("FORBIDDEN", "projects on this install are created by an administrator; ask an administrator to run agentx project add");
+  if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can create a project; ask your organization's owner");
+  if (deps.orgs === undefined || deps.createProject === undefined) throw agentXError("NOT_FOUND", "project creation is not set up in this deployment");
+  const input = parseCreateProjectBody(body);
+  const org = await deps.orgs.getOrg(caller.orgId);
+  if (org === undefined) throw agentXError("NOT_FOUND", "your organization was not found");
+  requireAllowedGithubOwner(org, input.owner);
+  const created = await deps.createProject(caller, input, org);
+  return new StatusReply(created.duplicate ? 200 : 201, created);
 }
 
 /** The caller's own org and their role in it. */

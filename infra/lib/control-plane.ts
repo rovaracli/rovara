@@ -991,6 +991,10 @@ export class ControlPlaneStack extends Stack {
       grantProviderKeySecrets(this, [slackOrchestratorRole.roleName, sessions.instanceRoleName]);
     } else {
       const vpcId = new CfnParameter(this, "VpcId", { type: "String", description: "The foundation's VPC" }).valueAsString;
+      // Ruling R55: the broker binds a cloud org's new project to the same EC2 workers `agentx project add` binds to
+      // (launch template, and one private subnet per availability zone as availabilityZone=subnetId pairs).
+      broker.addEnvironment("EC2_WORKER_LAUNCH_TEMPLATE_ID", sessions.launchTemplateId.valueAsString);
+      broker.addEnvironment("EC2_WORKER_SUBNETS", new CfnParameter(this, "Ec2WorkerSubnets", { type: "String", description: "The foundation's EC2 worker subnets, as availabilityZone=subnetId pairs" }).valueAsString);
       modelProxy = new ModelProxy(this, "ModelProxy", {
         naming,
         vpcId,

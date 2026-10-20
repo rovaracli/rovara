@@ -10,7 +10,7 @@ import { isDeepStrictEqual } from "node:util";
 import YAML from "yaml";
 import { verifyE2ESetupProposal } from "@agentx/broker/e2e/discovery";
 import {
-  AgentXError, AgentXErrorCodeSchema, ProjectDefinitionSchema, RegistrationPreflightSchema, E2EPolicySchema, E2ESetupProposalSchema, agentXError, canonicalJson, environmentStackName,
+  AgentXError, AgentXErrorCodeSchema, DEFAULT_ORCHESTRATOR_INSTRUCTIONS, ProjectDefinitionSchema, RegistrationPreflightSchema, E2EPolicySchema, E2ESetupProposalSchema, agentXError, canonicalJson, environmentStackName,
   type ConnectorPreflight, type Ec2RuntimeBinding, type ProjectDefinition, type E2EPolicy, type E2ESetupProposal,
 } from "@agentx/contracts";
 import { listCredentials } from "../admin/credential.js";
@@ -25,7 +25,7 @@ import {
 } from "./project-files.js";
 import type { AdminSession, SetupServices } from "./services.js";
 
-export const DEFAULT_INSTRUCTIONS = "Delegate every repository read, edit, build, and test to the remote AgentX worker.";
+export const DEFAULT_INSTRUCTIONS = DEFAULT_ORCHESTRATOR_INSTRUCTIONS;
 const LAUNCH_TEMPLATE_OUTPUT = "Ec2WorkerLaunchTemplateId";
 const SUBNETS_OUTPUT = "Ec2WorkerSubnets";
 const VOLUME_SIZE_GIB = "20";

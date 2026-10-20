@@ -3,6 +3,8 @@
 import { agentXError } from "./errors.js";
 import type { ProjectCommand } from "./project.js";
 
+/** The orchestrator instructions of a project registered by `project add` or created by a cloud org. */
+export const DEFAULT_ORCHESTRATOR_INSTRUCTIONS = "Delegate every repository read, edit, build, and test to the remote AgentX worker.";
 /** Seconds a setup command may run (the proposal's and a typed command's alike). */
 export const SETUP_TIMEOUT = 900;
 /** Seconds a test (readiness) command may run. */

@@ -197,6 +197,7 @@ import {
   type ProjectModelOptions,
   GithubOwnerSchema,
   OrgIdSchema,
+  type OrgRecord,
   PROJECT_REVISION_SK_PREFIX,
   orgProjectCatalogKey,
   projectMemberKey,
@@ -264,6 +265,7 @@ import { PLAN_EVIDENCE_PK, attachEvidence, planCitesCode, planEvidenceDueKey, pl
 import { resolvePlanEvidence } from "../developer/plan-evidence.js";
 import { WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
 import { approvedFeedbackFixes, withFeedbackFixes, withStatusLines } from "../developer/pull-request-feedback-section.js";
+import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, requireAllowedGithubOwner, type CloudProjectDefaults, type CreateProjectInput } from "../org/cloud-projects.js";
 import { installEnvironmentName, orgResolverFromEnvironment, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
 import { OrgStore } from "../org/store.js";
 import { requireProject } from "./project-records.js";
@@ -285,7 +287,7 @@ import { aiToolTurn, completedTurn, developerFooter, E2E_PLAN_REFERENCE_INVALID_
 import { readWorkspaceLimits } from "../developer/limits.js";
 import { WORKFLOW_DISPATCH_PK, workflowDispatchItem, type WorkflowDispatchRecord, type WorkflowE2EReadinessMarker, AWS_TEMPORARY_MESSAGE, GATED_TASK_PULL_REQUEST_ACTION_REFUSAL, GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, UNEXPECTED_REQUEST_MESSAGE, hashJson, isConditional, isTemporaryAwsError, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, planDocumentInstructions, workerPrompt } from "./broker-shared.js";
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../e2e/feature-plan-planning-context.js";
-import { developerIdForSlackUser } from "./admin-actions.js";
+import { developerIdForSlackUser, grantProjectAccess } from "./admin-actions.js";
 import { chatGptOwner, chatGptTaskSelection } from "../chatgpt/task-model.js";
 import { answerSlackChatGpt, isSlackChatGptCommandEvent, isSlackChatGptFinishEvent } from "./slack-chatgpt.js";
 import { chatGptConnections, kmsChatGptSealer, type ChatGptConnections } from "../chatgpt/connections.js";
@@ -293,7 +295,7 @@ import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { admitSpend, changeBudgets, keyIdOf, mintCap, mintKeyHealing, recordMintedKey, type OrgBudgetSettings } from "../org/budget.js";
-import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, routeDeveloperRequest, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
+import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import { ADMISSION_REFUSALS, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
@@ -466,6 +468,11 @@ interface AwsBrokerDependencies {
    * install's orgs have a trial lock and a machine-time allowance; a private install's single org is never limited.
    */
   cloud?: boolean;
+  /**
+   * Ruling R55: where, and with which credential, a cloud org's owner or admin creates a project (the foundation's launch template and
+   * subnets, and the built-in GitHub App). Absent, POST /v1/dev/projects answers RUNTIME_UNAVAILABLE.
+   */
+  cloudProjects?: CloudProjectDefaults;
   /** Which org a caller belongs to (ruling R1). Absent means every caller belongs to the install's single org (ruling R3). */
   orgResolver?: OrgResolver;
   /** The install's environment name, which its single org id derives from; defaults to the developer sign-in's, then AGENTX_ENV, then "default". */
@@ -1260,14 +1267,16 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // verifies the developer token, then checks the method and session (FR-009).
       if (url.pathname.startsWith("/v1/dev/")) {
         if (!dependencies.developer) throw agentXError("NOT_FOUND", "developer sign-in is not set up in this deployment");
-        return json(await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
+        const answer = await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
           workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
           registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : url => dependencies.githubPullRequests.getRepositoryIdentity!(url),
-          refreshTaskFeedback: taskId => refreshTaskFeedbackForOwnerDecision(dependencies, taskId) }, request, url), request.requestId);
+          createProject: (caller, input, org) => createCloudProject(dependencies, caller, input, org),
+          refreshTaskFeedback: taskId => refreshTaskFeedbackForOwnerDecision(dependencies, taskId) }, request, url);
+        return answer instanceof StatusReply ? json(answer.body, request.requestId, answer.statusCode) : json(answer, request.requestId);
       }
 
       const claimed = identityFromJwtClaims(request.jwtClaims, {
@@ -1872,7 +1881,7 @@ function parseRegistrationInput(value: unknown): { definition: ProjectDefinition
 }
 
 /** Registration's refusals and preflight, for a new revision; registerProject and a change plan share them. */
-async function registrationChecks(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, definition: ProjectDefinition, wantsPreflight: boolean): Promise<PreflightOutcome | undefined> {
+async function registrationChecks(dependencies: AwsBrokerDependencies, identity: Pick<RegistrationActor, "ownerKey">, definition: ProjectDefinition, wantsPreflight: boolean): Promise<PreflightOutcome | undefined> {
   const budget = toolBudget(approvedToolCount(definition));
   const connectors = () => resolveConnectors(definition, connectorTypeContext(dependencies), dependencies.connectorTypes);
   const nameProblems = presentedNameProblems(definition);
@@ -1893,24 +1902,45 @@ async function registrationChecks(dependencies: AwsBrokerDependencies, identity:
   return { report: result.report, warnings: result.warnings };
 }
 
+type RegistrationResult = { project: Omit<RegisteredProjectRecord, "pk" | "sk">; duplicate: boolean; warnings?: string[]; preflight?: RegistrationPreflight };
+
+/** Who registers a project, and in which org: the org it is written in and the owner key its records name. */
+interface RegistrationActor { orgId: OrgId; ownerKey: string }
+
+/** The admin route's registration: an administrator registers a project in their own org and administers it. */
 async function registerProject(
   dependencies: AwsBrokerDependencies,
   identity: AuthenticatedIdentity,
   value: unknown,
   checked?: { preflight?: PreflightOutcome },
-): Promise<{ project: Omit<RegisteredProjectRecord, "pk" | "sk">; duplicate: boolean; warnings?: string[]; preflight?: RegistrationPreflight }> {
+): Promise<RegistrationResult> {
   if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
-  const orgId = requireOrgId(identity.orgId);
+  return registerProjectFor(dependencies, { orgId: requireOrgId(identity.orgId), ownerKey: identity.ownerKey }, value, { creatorMembership: "administrator", ...(checked === undefined ? {} : { checked }) });
+}
+
+/**
+ * The registration itself, for any actor in any org; the caller has already decided that the actor may register. `creatorMembership`
+ * says what the actor gets on the project: an administrator row (the admin route), or none, when the caller grants access itself
+ * (a cloud org's owner or admin, ruling R55, is granted like any developer).
+ */
+async function registerProjectFor(
+  dependencies: AwsBrokerDependencies,
+  actor: RegistrationActor,
+  value: unknown,
+  options: { creatorMembership: "administrator" | "none"; checked?: { preflight?: PreflightOutcome } },
+): Promise<RegistrationResult> {
+  const checked = options.checked;
+  const orgId = actor.orgId;
   const { definition, runtimeBinding, wantsPreflight, setupApproval } = parseRegistrationInput(value);
   let setupRuntimeAdmission: ReturnType<typeof admitProjectSetupRuntime>;
   let setupExecutionCreated = false;
   let setupApprovalBinding: RegisteredProjectRecord["setupApproval"];
   if (definition.e2e !== undefined || setupApproval !== undefined) {
     if (setupApproval === undefined) throw agentXError("FORBIDDEN", "E2E project registration requires a stored source-backed setup decision");
-    const expectedProposalPrefix = `project-setup-proposals/${identity.ownerKey}/`;
+    const expectedProposalPrefix = `project-setup-proposals/${actor.ownerKey}/`;
     if (!setupApproval.proposalRef.startsWith(expectedProposalPrefix) || setupApproval.proposalRef !== `${expectedProposalPrefix}${setupApproval.proposalSha256}.json`) throw agentXError("FORBIDDEN", "setup approval reference is outside the authenticated administrator scope");
     const approval = await getItem<Record<string, unknown>>(dependencies, projectSetupApprovalKey(orgId, definition.name, setupApproval.proposalSha256));
-    if (!approval || approval.ownerKey !== identity.ownerKey || approval.proposalRef !== setupApproval.proposalRef || approval.decision !== setupApproval.decision) throw agentXError("FORBIDDEN", "setup decision is missing, stale, or belongs to another administrator");
+    if (!approval || approval.ownerKey !== actor.ownerKey || approval.proposalRef !== setupApproval.proposalRef || approval.decision !== setupApproval.decision) throw agentXError("FORBIDDEN", "setup decision is missing, stale, or belongs to another administrator");
     const repository = definition.repositories[0];
     const mapping = approval.identityMapping;
     if (!repository || !mapping || typeof mapping !== "object" || Array.isArray(mapping)
@@ -2015,23 +2045,23 @@ async function registerProject(
     await repairCatalogPointerFromHistory();
     // A revision stored before the static checks existed stays idempotent: report, never refuse.
     const preflight = checked?.preflight
-      ?? (wantsPreflight ? await preflightConnectors(connectors(), definition, identity.ownerKey) : undefined);
+      ?? (wantsPreflight ? await preflightConnectors(connectors(), definition, actor.ownerKey) : undefined);
     return respond(withoutKeys(existing), true, preflight);
   }
-  const preflight = await registrationChecks(dependencies, identity, definition, wantsPreflight);
+  const preflight = await registrationChecks(dependencies, actor, definition, wantsPreflight);
   const now = new Date().toISOString();
   const record: RegisteredProjectRecord = {
     ...key,
     entityType: "PROJECT",
     definition,
     runtimeBinding,
-    registeredBy: identity.ownerKey,
+    registeredBy: actor.ownerKey,
     registeredAt: now,
     ...(setupApprovalBinding === undefined ? {} : { setupApproval: setupApprovalBinding }),
   };
-  const membership = membershipRecord(orgId, identity.ownerKey, definition.name, "administrator");
+  const membership = options.creatorMembership === "administrator" ? membershipRecord(orgId, actor.ownerKey, definition.name, "administrator") : undefined;
   const setupAdmissionRows = setupRuntimeAdmission && setupApprovalBinding?.decision === "approve" && definition.e2e !== undefined
-    ? await createProjectSetupAdmissionRows(dependencies, identity, record, setupApprovalBinding, setupRuntimeAdmission)
+    ? await createProjectSetupAdmissionRows(dependencies, actor, record, setupApprovalBinding, setupRuntimeAdmission)
     : undefined;
   setupExecutionCreated = setupAdmissionRows !== undefined;
   await ensureInstallOrg(dependencies, orgId);
@@ -2043,7 +2073,7 @@ async function registerProject(
     try {
       await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
       { Put: { TableName: dependencies.tableName, Item: record, ConditionExpression: "attribute_not_exists(pk)" } },
-      { Put: { TableName: dependencies.tableName, Item: membership } },
+      ...(membership === undefined ? [] : [{ Put: { TableName: dependencies.tableName, Item: membership } }]),
       // Spec 025 A3: the admin project list reads this row instead of scanning the table.
       ...(updateCatalog ? [{ Update: {
         TableName: dependencies.tableName,
@@ -2083,9 +2113,42 @@ async function registerProject(
   throw agentXError("PROJECT_REVISION_MISMATCH", "project revision registration exceeded its bounded catalog retries");
 }
 
+/**
+ * Ruling R55: `POST /v1/dev/projects`, after the route has checked the install, the caller's role and the requested owner. The
+ * repository must be visible to the install's GitHub App, and GitHub's own spelling of its owner is checked again against the org's
+ * allowed owner. It registers through registerProjectFor, as the admin route does, then grants the creator access like any developer.
+ */
+async function createCloudProject(dependencies: AwsBrokerDependencies, caller: DeveloperCaller, input: CreateProjectInput, org: Pick<OrgRecord, "githubOwner">): Promise<RegistrationResult> {
+  const defaults = dependencies.cloudProjects;
+  const lookUp = dependencies.githubPullRequests.getRepositoryIdentity;
+  if (defaults === undefined || lookUp === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "creating projects is not set up in this deployment; ask Rovara support");
+  const identity = await lookUp.call(dependencies.githubPullRequests, `https://github.com/${input.owner}/${input.repositoryName}.git`);
+  if (identity === undefined) throw agentXError("CONFIG_INVALID", `the GitHub App cannot see ${input.owner}/${input.repositoryName}; check the name, or ask Rovara support to install the GitHub App on it`);
+  const spelledOwner = identity.fullName.split("/")[0];
+  if (spelledOwner === undefined || identity.defaultBranch === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not describe that repository; try again");
+  requireAllowedGithubOwner(org, spelledOwner);
+  const definition = cloudProjectDefinition({ input, repository: { fullName: identity.fullName, defaultBranch: identity.defaultBranch }, githubCredentialRef: defaults.githubCredentialRef });
+  const registered = await registerProjectFor(
+    dependencies,
+    { orgId: caller.orgId, ownerKey: caller.developerId },
+    { definition, runtimeBinding: defaults.runtimeBinding },
+    { creatorMembership: "none" },
+  );
+  // The grant is idempotent, so an identical request after a failed grant repairs it.
+  await grantProjectAccess(
+    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, limitDefaults: { member: 0, organization: 0 }, now: Date.now },
+    caller.orgId,
+    { issuer: dependencies.developer?.issuer ?? dependencies.issuer, subject: caller.developerId },
+    definition.name,
+    caller.developerId,
+  );
+  console.log(JSON.stringify({ component: "broker", event: "developer.project_created", orgId: caller.orgId, project: definition.name, duplicate: registered.duplicate }));
+  return registered;
+}
+
 async function createProjectSetupAdmissionRows(
   dependencies: AwsBrokerDependencies,
-  identity: AuthenticatedIdentity,
+  identity: Pick<AuthenticatedIdentity, "ownerKey" | "orgId">,
   project: RegisteredProjectRecord,
   setupApproval: NonNullable<RegisteredProjectRecord["setupApproval"]>,
   runtime: NonNullable<ReturnType<typeof admitProjectSetupRuntime>>,
@@ -12046,6 +12109,7 @@ function slackRequestQueue(queueUrl: string): SlackRequestQueue {
   };
 }
 const developer = developerConfiguration();
+const cloudProjectDefaults = cloudProjectDefaultsFromEnvironment(process.env);
 const cloudOrgResolver = orgResolverFromEnvironment(process.env, orgStoreOf({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") }));
 
 // Sign in with ChatGPT (#338): set only where the control plane has the connection key.
@@ -12107,6 +12171,8 @@ export const handler = createAwsBrokerHandler({
   ...(chatgpt ? { chatgpt } : {}),
   ...(modelAccess ? { modelAccess } : {}),
   cloud: cloudOrgResolver !== undefined,
+  // Ruling R55: a cloud org's projects run on the foundation's EC2 workers, with the built-in GitHub App.
+  ...(cloudProjectDefaults === undefined ? {} : { cloudProjects: cloudProjectDefaults }),
   // Ruling R6: with the cloud sign-in configured, membership decides who has an org; operators of the admin pool have none.
   ...(cloudOrgResolver === undefined ? {} : { orgResolver: cloudOrgResolver }),
   // Spec 025 A12: set only here, so a test harness without its own `me` never reaches the network.
