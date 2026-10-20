@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { CONTEXT_ENV, CONTEXT_OVERFLOW_LOCATION_ENV } from "aws-cdk-lib/cx-api";
 import type { ContainerImageAssetMetadataEntry } from "@aws-cdk/cloud-assembly-schema";
 import { describe, expect, it } from "vitest";
+import { SUPPORTED_REGIONS } from "../../infra/lib/production-foundation.js";
 import { accumulateAsset, assetSignatureMismatch, buildRelease, type PackageAccumulator } from "../../scripts/release/build.js";
 import { ReleaseManifestSchema } from "../../scripts/release/manifest.js";
 import { readZipEntries } from "../support/zip-entries.js";
@@ -23,10 +24,15 @@ describe("release builder", () => {
       "legal/LICENSE-APACHE",
       "legal/RELICENSED.md",
     ]);
-    expect(manifest.templates.map((t) => t.part)).toEqual(["access", "foundation", "identity", "runtime", "control-plane", "slack"]);
+    // One template per part in every supported region, so the next region added breaks nothing here.
+    const parts = ["access", "foundation", "identity", "runtime", "control-plane", "slack"];
+    expect([...new Set(manifest.templates.map((t) => t.region))].sort()).toEqual([...SUPPORTED_REGIONS]);
+    for (const region of SUPPORTED_REGIONS) {
+      expect(manifest.templates.filter((t) => t.region === region).map((t) => t.part), region).toEqual(parts);
+    }
+    expect(manifest.templates).toHaveLength(parts.length * SUPPORTED_REGIONS.length);
     for (const t of manifest.templates) {
-      expect(t.region).toBe("us-east-1");
-      expect(t.file).toBe(`templates/us-east-1/${t.part}.template.json`);
+      expect(t.file).toBe(`templates/${t.region}/${t.part}.template.json`);
       expect(sha(await readFile(join(out, t.file)))).toBe(t.sha256);
     }
     for (const p of manifest.packages) {

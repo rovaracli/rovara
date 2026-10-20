@@ -2,6 +2,7 @@ import { mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
+import { SUPPORTED_REGIONS } from "../../infra/lib/production-foundation.js";
 import { buildRelease } from "../../scripts/release/build.js";
 import { containedPath, loadRelease } from "../../packages/cli/src/deploy/release.js";
 
@@ -14,7 +15,7 @@ beforeAll(async () => {
 describe("loading a release for install", () => {
   it("renders a part's template for an environment in a covered region", async () => {
     const release = await loadRelease(dir);
-    expect(release.regions()).toEqual(["us-east-1"]);
+    expect(release.regions()).toEqual([...SUPPORTED_REGIONS]);
     const text = release.template("access", "us-east-1", "staging");
     expect(text).toContain("agentx-staging");
     expect(text).not.toContain("qqenv");
