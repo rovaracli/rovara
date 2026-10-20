@@ -276,6 +276,7 @@ write_worker_environment() {
   local region=$1
   install -d -m 0700 "$(dirname "$WORKER_ENV_FILE")"
   install -m 0600 /dev/null "$WORKER_ENV_FILE"
+  # AGENTX_SANDBOX_IMAGE: the task sandbox (R56) starts from the worker's own image, which is already on this host.
   cat >"$WORKER_ENV_FILE" <<EOF
 AWS_REGION=$region
 AGENTX_WORKSPACE_ROOT=$MOUNT_PATH
@@ -287,6 +288,7 @@ PI_CACHE_RETENTION=$PI_CACHE_RETENTION
 AGENTX_INVOKE_PUBLIC_KEY=$AGENTX_INVOKE_PUBLIC_KEY
 AGENTX_WORKSPACE_ID=$AGENTX_WORKSPACE_ID
 AGENTX_SESSION_GENERATION=$AGENTX_SESSION_GENERATION
+AGENTX_SANDBOX_IMAGE=$AGENTX_WORKER_IMAGE
 EOF
   if [[ -n ${AGENTX_MODEL_PROXY_URL:-} ]]; then
     # A model proxy holds the provider keys: the worker gets its address and no secret reference at all.

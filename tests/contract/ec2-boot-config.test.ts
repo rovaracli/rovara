@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -90,6 +90,24 @@ describe("EC2 worker user data", () => {
       expect(written).toContain("AGENTX_OPENROUTER_SECRET_ARN=\n");
       expect(written).not.toContain("AGENTX_MODEL_PROXY_URL");
     });
+  });
+
+  // R56: the task sandbox starts from the worker's own image; the worker learns it from its environment file.
+  it("tells the worker its own image as the task sandbox's, in every deployment", () => {
+    const image = `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-test/worker@sha256:${"c".repeat(64)}`;
+    const directory = mkdtempSync(join(tmpdir(), "boot-env-"));
+    const file = join(directory, "etc", "worker.env");
+    const fn = /^write_worker_environment\(\) \{[\s\S]*?^\}$/m.exec(bootScript)?.[0] ?? "";
+    for (const proxy of [{}, { AGENTX_MODEL_PROXY_URL: "http://proxy.test:4000" }]) {
+      const run = spawnSync("bash", ["-c", `readonly WORKER_ENV_FILE=${file} MOUNT_PATH=/mnt/workspace\n${fn}\nwrite_worker_environment us-east-1`], {
+        encoding: "utf8",
+        env: { PATH: process.env.PATH ?? "", AGENTX_CONTROL_PLANE_URL: "https://c.test", AGENTX_MODEL_PROVIDER: "amazon-bedrock", AGENTX_MODEL_ID: "m", PI_CACHE_RETENTION: "short",
+          AGENTX_INVOKE_PUBLIC_KEY: "k", AGENTX_WORKSPACE_ID: "w", AGENTX_SESSION_GENERATION: "1", AGENTX_WORKER_IMAGE: image, ...proxy },
+      });
+      expect(run.status, run.stderr).toBe(0);
+      expect(readFileSync(file, "utf8")).toContain(`AGENTX_SANDBOX_IMAGE=${image}\n`);
+      rmSync(file);
+    }
   });
 
   it("prepends every boot value to the script as a quoted export", () => {
