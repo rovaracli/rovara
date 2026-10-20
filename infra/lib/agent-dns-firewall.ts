@@ -35,6 +35,17 @@ export const DEFAULT_AGENT_ALLOW_DOMAINS: readonly string[] = [
 /** The CDK context key holding extra allowed domains, comma separated (for example an internal package registry). */
 export const EGRESS_ALLOW_DOMAINS_CONTEXT_KEY = "agentxEgressAllowDomains";
 
+/**
+ * The priority of the rule group's association with the VPC. This is a different scale from the rule
+ * priorities inside the group (100 and 200). Resolver rejects 100 and 9900 as reserved: "[RSLVR-02017]
+ * The priority value you provided is reserved. Provide a number between "100" and "9900"", with both
+ * bounds exclusive, so a valid association priority is 101..9899.
+ */
+export const DNS_FIREWALL_ASSOCIATION_PRIORITY = 101;
+
+/** Resolver accepts a domain specification of 1-255 characters (documented in "Managing your own domain lists"). */
+const MAX_DOMAIN_LENGTH = 255;
+
 const DOMAIN_PATTERN = /^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/i;
 
 /** The extra domains from a context value: trimmed, validated, without blanks or duplicates of `existing`. */
@@ -44,8 +55,8 @@ export function parseExtraAllowDomains(value: unknown, existing: readonly string
   const seen = new Set(existing.map((domain) => domain.toLowerCase()));
   const extra: string[] = [];
   for (const entry of value.split(",").map((part) => part.trim()).filter((part) => part !== "")) {
-    if (!DOMAIN_PATTERN.test(entry)) {
-      throw new Error(`${EGRESS_ALLOW_DOMAINS_CONTEXT_KEY} entry ${JSON.stringify(entry)} is not a domain name; use a name such as artifactory.example.com or *.example.com, without a scheme or path`);
+    if (entry.length > MAX_DOMAIN_LENGTH || !DOMAIN_PATTERN.test(entry)) {
+      throw new Error(`${EGRESS_ALLOW_DOMAINS_CONTEXT_KEY} entry ${JSON.stringify(entry)} is not a domain name of at most ${MAX_DOMAIN_LENGTH} characters; use a name such as artifactory.example.com or *.example.com, without a scheme or path`);
     }
     if (seen.has(entry.toLowerCase())) continue;
     seen.add(entry.toLowerCase());
@@ -105,7 +116,7 @@ export class AgentDnsFirewall extends Construct {
     new resolver.CfnFirewallRuleGroupAssociation(this, "Association", {
       firewallRuleGroupId: this.ruleGroup.attrId,
       vpcId: props.vpcId,
-      priority: 100,
+      priority: DNS_FIREWALL_ASSOCIATION_PRIORITY,
       name: `agentx-${props.env}-agents`,
     });
 
@@ -116,6 +127,8 @@ export class AgentDnsFirewall extends Construct {
     });
     const queryLogging = new resolver.CfnResolverQueryLoggingConfig(this, "QueryLogging", {
       name: `agentx-${props.env}-dns-firewall`,
+      // The log group ARN with its trailing ":*" is the form the Resolver CreateResolverQueryLogConfig
+      // documentation gives for a CloudWatch Logs destination, so it is passed as it comes.
       destinationArn: this.logGroup.logGroupArn,
     });
     new resolver.CfnResolverQueryLoggingConfigAssociation(this, "QueryLoggingAssociation", {

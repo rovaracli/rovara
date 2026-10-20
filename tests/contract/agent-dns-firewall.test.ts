@@ -2,7 +2,7 @@ import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { DEFAULT_AGENT_ALLOW_DOMAINS } from "../../infra/lib/agent-dns-firewall.js";
+import { DEFAULT_AGENT_ALLOW_DOMAINS, DNS_FIREWALL_ASSOCIATION_PRIORITY } from "../../infra/lib/agent-dns-firewall.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -71,6 +71,51 @@ describe("agent DNS firewall (cloud installs)", () => {
     });
   });
 
+  it("associates at a priority Resolver accepts: strictly between 100 and 9900 (RSLVR-02017), exactly 101", () => {
+    const associations = resourcesOf(template, "AWS::Route53Resolver::FirewallRuleGroupAssociation");
+    expect(associations).toHaveLength(1);
+    const priority = associations[0]![1].Properties.Priority as number;
+    expect(priority).toBe(101);
+    expect(priority).toBeGreaterThan(100);
+    expect(priority).toBeLessThan(9900);
+    expect(DNS_FIREWALL_ASSOCIATION_PRIORITY).toBe(101);
+  });
+
+  it("gives the rules unique priorities, and only the BLOCK rule a BlockResponse", () => {
+    const { allow, block } = ruleGroup(template);
+    expect(allow.Priority).not.toBe(block.Priority);
+    expect(allow).not.toHaveProperty("BlockResponse");
+    expect(allow).not.toHaveProperty("BlockOverrideDomain");
+    expect(allow).not.toHaveProperty("BlockOverrideDnsType");
+    expect(allow).not.toHaveProperty("BlockOverrideTtl");
+    expect(block).not.toHaveProperty("BlockOverrideDomain");
+  });
+
+  it("only writes domain specifications Resolver accepts: 1-255 characters, optional leading *, then letters, digits, hyphens and periods", () => {
+    const { allowDomains, blockDomains } = ruleGroup(template);
+    for (const domain of [...allowDomains, ...blockDomains]) {
+      expect(domain.length).toBeGreaterThanOrEqual(1);
+      expect(domain.length).toBeLessThanOrEqual(255);
+      expect(domain).toMatch(/^\*?[A-Za-z0-9.-]*$/);
+    }
+    expect(new Set(allowDomains.map((domain) => domain.toLowerCase())).size).toBe(allowDomains.length);
+  });
+
+  it("keeps every Resolver name within 64 characters and the allowed characters for the longest environment name", () => {
+    const longest = foundation({ agentxEnv: "staging-0123456789a", agentxCloud: true });
+    const names = [
+      ...resourcesOf(longest, "AWS::Route53Resolver::FirewallDomainList"),
+      ...resourcesOf(longest, "AWS::Route53Resolver::FirewallRuleGroup"),
+      ...resourcesOf(longest, "AWS::Route53Resolver::FirewallRuleGroupAssociation"),
+      ...resourcesOf(longest, "AWS::Route53Resolver::ResolverQueryLoggingConfig"),
+    ].map(([, resource]) => resource.Properties.Name as string);
+    expect(names).toHaveLength(5);
+    for (const name of names) {
+      expect(name.length).toBeLessThanOrEqual(64);
+      expect(name).toMatch(/^(?!^[0-9]+$)[a-zA-Z0-9\-_ ']+$/);
+    }
+  });
+
   it("logs every query to /agentx/<env>/dns-firewall, kept 30 days, and attaches the logging to the VPC", () => {
     const groups = resourcesOf(template, "AWS::Logs::LogGroup").filter(([, resource]) => resource.Properties.LogGroupName === "/agentx/staging/dns-firewall");
     expect(groups).toHaveLength(1);
@@ -98,6 +143,12 @@ describe("agent DNS firewall (cloud installs)", () => {
 
   it("rejects an extra domain that is not a domain name", () => {
     expect(() => foundation({ agentxEnv: "staging", agentxCloud: true, agentxEgressAllowDomains: "https://artifactory.acme.dev/path" })).toThrow(/agentxEgressAllowDomains/);
+  });
+
+  it("rejects an extra domain longer than the 255 characters Resolver accepts", () => {
+    const tooLong = `${Array.from({ length: 5 }, () => "a".repeat(60)).join(".")}.example.com`;
+    expect(tooLong.length).toBeGreaterThan(255);
+    expect(() => foundation({ agentxEnv: "staging", agentxCloud: true, agentxEgressAllowDomains: tooLong })).toThrow(/agentxEgressAllowDomains/);
   });
 
   it("creates no firewall resources without agentxCloud, in a named or legacy environment", () => {
