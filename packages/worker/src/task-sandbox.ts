@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { agentXError, type ProjectCommand } from "@agentx/contracts";
-import type { BashOperations } from "@earendil-works/pi-coding-agent";
+import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
 import { containerBashOperations, runContainerCommand, type ContainerExec } from "./devcontainer.js";
 import { DOCKER_DATA_DIRECTORY, RUNTIME_BACKING_DIRECTORY } from "./devcontainer-policy.js";
 import type { CommandResult } from "./readiness.js";
@@ -49,6 +49,20 @@ export function assertLocalTaskExecutionAllowed(environment: NodeJS.ProcessEnv =
   if (isEc2WorkerRuntime(environment)) {
     throw agentXError("RUNTIME_UNAVAILABLE", "AgentX does not run a task's commands inside the worker on an EC2 worker; they run in the task sandbox");
   }
+}
+
+/**
+ * Pi's local shell, which runs a command as a child of this process. Every use asks first, so on the EC2 runtime a
+ * command that reaches it fails with RUNTIME_UNAVAILABLE instead of running in the worker.
+ */
+export function localBashOperations(environment: NodeJS.ProcessEnv = process.env): BashOperations {
+  const local = createLocalBashOperations();
+  return {
+    exec(command, cwd, options) {
+      assertLocalTaskExecutionAllowed(environment);
+      return local.exec(command, cwd, options);
+    },
+  };
 }
 
 export type TaskShellKind = "sandbox" | "local";

@@ -25,6 +25,7 @@ import { createModelRuntimeWithFallback, type ChatGptFallback, type ChatGptFallb
 import { AGENTX_PREAMBLE, AGENTX_WORKER_PROMPT, agentXError, isPipedTestCommand, redactText, ThinkingLevelSchema, type ThinkingLevel } from "@agentx/contracts";
 import { devcontainerContextFile, hostPath, type DevcontainerPaths } from "./devcontainer.js";
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "./git.js";
+import { localBashOperations } from "./task-sandbox.js";
 import {
   appendRepositoryContextFiles,
   loadRepositoryContextFiles,
@@ -422,9 +423,10 @@ export async function createWorkerResources(
 }
 
 export function agentShellTool(cwd: string, operations?: BashOperations): ToolDefinition {
-  // The typed definition's render callbacks are narrower than customTools' generic slot.
+  // The typed definition's render callbacks are narrower than customTools' generic slot. Without operations the shell is
+  // the local one, which a worker on EC2 refuses (R56): its callers pass the sandbox's or the devcontainer's.
   return createBashToolDefinition(cwd, {
-    ...(operations === undefined ? {} : { operations }),
+    operations: operations ?? localBashOperations(),
     spawnHook: agentShellSpawn,
   }) as unknown as ToolDefinition;
 }

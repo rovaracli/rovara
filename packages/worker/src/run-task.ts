@@ -42,6 +42,7 @@ import {
 } from "./usage.js";
 import { assertWorkflowDependencyResumeTree, executeSerialWorkflowDependencies } from "./workflow-dependencies.js";
 import { executeWorkflowE2EChecks } from "./workflow-e2e-checks.js";
+import { taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
 
 export interface TaskInvocationResult {
   /** The broker-issued conversation ID, which stays the same for every turn of one conversation. */
@@ -62,34 +63,56 @@ export interface TaskInvocationResult {
   workflowFeedbackReviewResult?: { taskId: string; workflowRevision: number; candidateDigest: string; outputDigest: string; artifactName: string; status: WorkflowFeedbackReviewReport["status"] };
 }
 
+export interface TaskInvocationDependencies {
+  rootPath: string;
+  model: WorkspaceModelConfiguration;
+  eventSink: EventBatchSink;
+  artifactSink: ArtifactSink;
+  feedbackBundleReader?: FeedbackBundleReader;
+  workflowE2EAdmissionReader?: (reference: E2EWorkflowAdmissionRef, offset: number) => Promise<{ totalBytes: number; chunkBase64: string; sha256: string }>;
+  workflowE2EEvidenceSink?: (bytes: Uint8Array, sha256: string, maxBytes: number, groupRunId?: string) => Promise<{ key: string; sha256: string }>;
+  workflowE2EEvidenceRoot?: string;
+  /** Fixed worker installation root that contains the pinned public E2E CLI package. */
+  workflowE2ERuntimeRoot?: string;
+  /** Trusted host-only hook for observing the exact owned contained process; no invocation data can set it. */
+  workflowE2EOnOwnedContainerRunning?: (receipt: Readonly<{ containerId: string; requestId: string; sourceDigest: string; observedAt: string; inspectBytes: Uint8Array }>) => Promise<void>;
+  authorizeFeedbackApproval?: FeedbackApprovalAuthorizer;
+  piAdapter?: PiSessionAdapter;
+  cancellationController?: WorkerCancellationController;
+  devcontainerCli?: DevcontainerCli;
+  /** The runners AgentX's checks use; tests supply fakes. Default: as preparation and the agent's shell run. */
+  checkRunners?: CheckRunners;
+  /** Each check round's budget; tests supply short ones. Default: CHECK_ROUND_BUDGET_MS (P-3). */
+  checkBudgetMs?: () => number;
+  /** D-16: the original code for before results; tests supply a fake. Default: each repository's preparation commit. */
+  originalCode?: OriginalCode;
+  /** How long a review (each role) and a PR feedback review may take; tests supply short ones. Default: the reviews' own (5 minutes). */
+  timeouts?: { reviewMs?: number; feedbackReviewMs?: number };
+  /**
+   * Where a project without a devcontainer runs the agent's shell, its checks and its commands (R56): the task sandbox,
+   * or the local shell for tests and a developer's machine. Default: chosen from the worker's environment, which is
+   * always the sandbox on EC2.
+   */
+  taskShell?: TaskShellSelection;
+}
+
 export async function runTaskInvocation(
   untrustedInvocation: WorkerInvocation,
-  dependencies: {
-    rootPath: string;
-    model: WorkspaceModelConfiguration;
-    eventSink: EventBatchSink;
-    artifactSink: ArtifactSink;
-    feedbackBundleReader?: FeedbackBundleReader;
-    workflowE2EAdmissionReader?: (reference: E2EWorkflowAdmissionRef, offset: number) => Promise<{ totalBytes: number; chunkBase64: string; sha256: string }>;
-    workflowE2EEvidenceSink?: (bytes: Uint8Array, sha256: string, maxBytes: number, groupRunId?: string) => Promise<{ key: string; sha256: string }>;
-    workflowE2EEvidenceRoot?: string;
-    /** Fixed worker installation root that contains the pinned public E2E CLI package. */
-    workflowE2ERuntimeRoot?: string;
-    /** Trusted host-only hook for observing the exact owned contained process; no invocation data can set it. */
-    workflowE2EOnOwnedContainerRunning?: (receipt: Readonly<{ containerId: string; requestId: string; sourceDigest: string; observedAt: string; inspectBytes: Uint8Array }>) => Promise<void>;
-    authorizeFeedbackApproval?: FeedbackApprovalAuthorizer;
-    piAdapter?: PiSessionAdapter;
-    cancellationController?: WorkerCancellationController;
-    devcontainerCli?: DevcontainerCli;
-    /** The runners AgentX's checks use; tests supply fakes. Default: as preparation and the agent's shell run. */
-    checkRunners?: CheckRunners;
-    /** Each check round's budget; tests supply short ones. Default: CHECK_ROUND_BUDGET_MS (P-3). */
-    checkBudgetMs?: () => number;
-    /** D-16: the original code for before results; tests supply a fake. Default: each repository's preparation commit. */
-    originalCode?: OriginalCode;
-    /** How long a review (each role) and a PR feedback review may take; tests supply short ones. Default: the reviews' own (5 minutes). */
-    timeouts?: { reviewMs?: number; feedbackReviewMs?: number };
-  },
+  dependencies: TaskInvocationDependencies,
+): Promise<TaskInvocationResult> {
+  // The task sandbox, when there is one, is removed when the task ends, whether it succeeded, failed or was cancelled.
+  const sandboxes: TaskSandbox[] = [];
+  try {
+    return await runTask(untrustedInvocation, dependencies, sandboxes);
+  } finally {
+    for (const sandbox of sandboxes) await sandbox.dispose().catch(() => undefined);
+  }
+}
+
+async function runTask(
+  untrustedInvocation: WorkerInvocation,
+  dependencies: TaskInvocationDependencies,
+  sandboxes: TaskSandbox[],
 ): Promise<TaskInvocationResult> {
   const invocation = WorkerInvocationSchema.parse(untrustedInvocation);
   if (invocation.kind !== "task") throw agentXError("CONFIG_INVALID", "runTaskInvocation requires a task");
@@ -178,6 +201,18 @@ export async function runTaskInvocation(
     bashOperations = devcontainerBashOperations(devcontainerCli, devcontainer);
     containerPaths = devcontainerPaths(devcontainer, started);
   }
+  // R56: without a devcontainer the agent's shell, the checks and the project's commands run in the task sandbox, never as
+  // children of the worker. A sandbox that cannot start fails the task here, before the agent runs; it is not a reason to
+  // fall back to the local shell.
+  let sandbox: TaskSandbox | undefined;
+  if (devcontainer === undefined) {
+    sandbox = taskSandboxFor(dependencies.taskShell ?? taskShellSelection(), { rootPath: canonicalRoot, taskId: invocation.operationId });
+    if (sandbox !== undefined) {
+      sandboxes.push(sandbox);
+      await sandbox.start();
+      bashOperations = sandbox.bashOperations();
+    }
+  }
   // Spec 051 Ruling L: the check history as it was before the agent ran. The agent can write to .agentx, so every
   // round plans from this snapshot, and the final round's outcomes are merged over it.
   const checkHistory = await readCheckHistory(canonicalRoot, manifest);
@@ -208,6 +243,7 @@ export async function runTaskInvocation(
         rootPath: canonicalRoot,
         ...(devcontainer === undefined || devcontainerCli === undefined ? {} : { devcontainer: { cli: devcontainerCli, target: devcontainer } }),
         ...(bashOperations === undefined ? {} : { bashOperations }),
+        ...(sandbox === undefined ? {} : { sandbox }),
       });
       const round = await runChecks(plan, runners, { budgetMs: dependencies.checkBudgetMs?.() ?? CHECK_ROUND_BUDGET_MS, signal: stop.signal });
       const status = round.stopped ? "not_verified" : reportStatus(round.entries);
@@ -326,6 +362,7 @@ export async function runTaskInvocation(
   const checkRunners = dependencies.checkRunners ?? createCheckRunners({
     rootPath: canonicalRoot,
     ...(devcontainer === undefined || devcontainerCli === undefined ? {} : { devcontainer: { cli: devcontainerCli, target: devcontainer } }),
+    ...(sandbox === undefined ? {} : { sandbox }),
   });
   const checkBudgetMs = dependencies.checkBudgetMs ?? (() => CHECK_ROUND_BUDGET_MS);
   let checkPlan: CheckPlan | undefined;

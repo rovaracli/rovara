@@ -31,6 +31,7 @@ import { runCollected, type CollectedProcess } from "./collected-process.js";
 import { describeCommandFailure } from "./command-failure.js";
 import { DOCKER_DATA_DIRECTORY, RUNTIME_BACKING_DIRECTORY } from "./devcontainer-policy.js";
 import { evaluateReadiness, type CommandResult } from "./readiness.js";
+import { assertLocalTaskExecutionAllowed, taskSandboxFor, taskShellSelection, type TaskShellSelection } from "./task-sandbox.js";
 import { gitHardenedEnvironment, projectCommandEnvironment } from "./git.js";
 import { CHECK_HISTORY_PATH, projectCheckKey, recordPreparedOutcomes } from "./verification/check-history.js";
 import { assertCredentialFreeRemote, runGitWithCredential } from "./git-auth.js";
@@ -113,6 +114,12 @@ export interface PrepareWorkspaceOptions {
   credentialProvider?: RepositoryCredentialProvider;
   commandRunner?: PreparationCommandRunner;
   devcontainerCli?: DevcontainerCli;
+  /**
+   * Where setup and readiness commands run in a project without a devcontainer: the task sandbox (R56), started when the
+   * first command runs and removed when preparation ends, or the local shell. Default: chosen from the worker's
+   * environment, which is always the sandbox on EC2.
+   */
+  taskShell?: TaskShellSelection;
   /** Where preparation reports what it does not fail on. Messages arrive redacted. Default: the worker's log. */
   onDiagnostic?: (message: string) => void;
   /** Internal worker-only trust anchor for the fixed top-level verifier backing directory. */
@@ -130,11 +137,16 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
     ? undefined
     : resolve(canonicalRoot, RUNTIME_BACKING_DIRECTORY);
   const devcontainerCli = target === undefined ? undefined : options.devcontainerCli ?? createDevcontainerCli();
-  // With a devcontainer, setup and readiness run in it, like the agent's shell.
+  // With a devcontainer, setup and readiness run in it, like the agent's shell; without one, in the task sandbox (R56).
+  const sandbox = options.commandRunner !== undefined || (target !== undefined && devcontainerCli !== undefined)
+    ? undefined
+    : taskSandboxFor(options.taskShell ?? taskShellSelection(), { rootPath: canonicalRoot, taskId: options.creationIdentity ?? "prepare" });
   const commandRunner = options.commandRunner
-    ?? (target === undefined || devcontainerCli === undefined
-      ? runProjectCommand
-      : (command: ProjectCommand) => runDevcontainerCommand(devcontainerCli, target, command));
+    ?? (target !== undefined && devcontainerCli !== undefined
+      ? (command: ProjectCommand) => runDevcontainerCommand(devcontainerCli, target, command)
+      : sandbox !== undefined
+        ? (command: ProjectCommand) => sandbox.runCommand(command)
+        : runProjectCommand);
   let manifest = await loadOrCreateManifest(
     canonicalRoot,
     project,
@@ -241,6 +253,8 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
     // The manifest is on the workspace disk: a clone, Git or devcontainer error can carry a secret (#170).
     await writeManifest(canonicalRoot, { ...manifest, complete: false, failure: redactText(message) });
     throw error;
+  } finally {
+    await sandbox?.dispose();
   }
 }
 
@@ -397,13 +411,15 @@ async function gitHead(directory: string): Promise<string> {
   return result.stdout.trim();
 }
 
-/** A project command (`setup` or `readiness`) on the host. Spec 051: `signal` stops it, as a check rerun needs. */
+/** A project command (`setup` or `readiness`) as a child of the worker: tests and a developer's machine only. Spec 051: `signal` stops it, as a check rerun needs. */
 export async function runProjectCommand(
   command: ProjectCommand,
   _index: number,
   rootPath: string,
   signal?: AbortSignal,
 ): Promise<CommandResult> {
+  // A child of the worker: refused on the EC2 runtime, where project commands run in the task sandbox (R56).
+  assertLocalTaskExecutionAllowed();
   const cwd = containedPath(rootPath, command.cwd);
   // The workspace-relative path only: Node's own error would show the worker's absolute path (#154).
   const cwdStat = await stat(cwd).catch(() => undefined);
