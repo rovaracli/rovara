@@ -13,11 +13,14 @@ import {
 import { Construct } from "constructs";
 import { environmentRolePath } from "@agentx/contracts";
 import type { AgentXNaming } from "./naming.js";
+import { AGENTX_PRODUCTION_WORKER_REPOSITORY } from "./release-pipeline.js";
 
 /** The worker's HTTP port: /ping for health probes, /invocations for signed work (#80). */
 export const EC2_WORKER_PORT = 8080;
 /** Amazon Linux 2023 for arm64, resolved when each instance launches. The boot script installs Docker. */
 export const EC2_WORKER_AMI_PARAMETER = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64";
+/** The repository the release pipeline publishes the worker image to (`public.ecr.aws/<alias>/agentx-worker`, .github/workflows/release.yml). */
+export const EC2_WORKER_IMAGE_REPOSITORY = "agentx-worker";
 /** Holds the OS, Docker and the worker image; the workspace lives on its own volume. */
 export const EC2_WORKER_ROOT_VOLUME_GIB = 30;
 
@@ -83,22 +86,27 @@ export class Ec2WorkerFoundation extends Construct {
       description: `AgentX ${naming.environmentTagValue} EC2 worker instances`,
     });
     this.instanceRole.addToPolicy(new iam.PolicyStatement({
-      sid: "EcrImageAccess",
-      actions: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
-      resources: [`arn:${Aws.PARTITION}:ecr:${Aws.REGION}:${Aws.ACCOUNT_ID}:repository/*`],
-    }));
-    this.instanceRole.addToPolicy(new iam.PolicyStatement({
       sid: "EcrTokenAccess",
       actions: ["ecr:GetAuthorizationToken"],
       resources: ["*"],
     }));
-    // A named environment pulls released images through its ECR pull-through cache; production
-    // pushes its own worker image and has no cache prefix.
+    // The role pulls one image, so it reads one repository, never repository/* (R56: it is the account's every image, the
+    // CDK asset repository included). A named environment pulls the released worker image through its ECR pull-through
+    // cache, which caches public.ecr.aws/<publisher alias>/agentx-worker (release.yml) as <prefix>/<alias>/agentx-worker.
+    // The alias is the publisher's and is not known here, so it is a wildcard; the repository name is not, which also
+    // bounds what ecr:CreateRepository and ecr:BatchImportUpstreamImage can make. Production pushes its own worker image
+    // and has no cache.
     if (naming.env !== undefined) {
       this.instanceRole.addToPolicy(new iam.PolicyStatement({
         sid: "EcrPullThroughCache",
         actions: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchImportUpstreamImage", "ecr:CreateRepository"],
-        resources: [`arn:${Aws.PARTITION}:ecr:${Aws.REGION}:${Aws.ACCOUNT_ID}:repository/${naming.pullThroughPrefix}/*`],
+        resources: [`arn:${Aws.PARTITION}:ecr:${Aws.REGION}:${Aws.ACCOUNT_ID}:repository/${naming.pullThroughPrefix}/*/${EC2_WORKER_IMAGE_REPOSITORY}`],
+      }));
+    } else {
+      this.instanceRole.addToPolicy(new iam.PolicyStatement({
+        sid: "EcrImageAccess",
+        actions: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
+        resources: [`arn:${Aws.PARTITION}:ecr:${Aws.REGION}:${Aws.ACCOUNT_ID}:repository/${AGENTX_PRODUCTION_WORKER_REPOSITORY}`],
       }));
     }
     // A named environment's workers call models through the model proxy, the only principal with Bedrock access
@@ -131,8 +139,9 @@ export class Ec2WorkerFoundation extends Construct {
         instanceType: props.instanceType,
         iamInstanceProfile: { arn: instanceProfile.attrArn },
         securityGroupIds: [this.workerSecurityGroup.attrGroupId],
-        // IMDSv2 only, one hop: the worker container shares the host network, so it still reaches
-        // the instance role; anything behind another network hop does not.
+        // IMDSv2 only, one hop: a container on a Docker bridge is a hop further and cannot reach the instance role. A named
+        // environment's worker runs on a bridge too, and boot.sh also rejects 169.254.169.254 for every container and every
+        // non-root host process (R56); only the legacy worker, which calls Bedrock, still shares the host network.
         metadataOptions: {
           httpEndpoint: "enabled",
           httpTokens: "required",

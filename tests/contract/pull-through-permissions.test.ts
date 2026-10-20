@@ -26,8 +26,11 @@ describe("pulling AgentX images through the cache", () => {
   // The foundation holds the EC2 worker instance role, which pulls the worker image (#117).
   it.each(["agentx-staging-foundation", "agentx-staging-slack"])("%s may import upstream images into its cache prefix", (name) => {
     const stack = stacks.find((s) => s.stackName === name)!;
+    // The worker role (foundation) may import and create only the cached worker repository (task 25, F4); the Slack
+    // service's execution role keeps the whole prefix.
+    const expected = name === "agentx-staging-foundation" ? "repository/agentx-staging/*/agentx-worker\"" : "repository/agentx-staging/*\"";
     for (const action of ["ecr:BatchImportUpstreamImage", "ecr:CreateRepository", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]) {
-      expect(grants(stack, action).some((r) => r.includes("repository/agentx-staging/*")), `${name} ${action}`).toBe(true);
+      expect(grants(stack, action).some((r) => r.includes(expected)), `${name} ${action}`).toBe(true);
     }
   }, 240_000);
 

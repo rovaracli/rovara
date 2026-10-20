@@ -11505,34 +11505,6 @@ exports[`named environment templates > agentx-staging-foundation is unchanged 1`
         "PolicyDocument": {
           "Statement": [
             {
-              "Action": [
-                "ecr:BatchGetImage",
-                "ecr:GetDownloadUrlForLayer",
-              ],
-              "Effect": "Allow",
-              "Resource": {
-                "Fn::Join": [
-                  "",
-                  [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition",
-                    },
-                    ":ecr:",
-                    {
-                      "Ref": "AWS::Region",
-                    },
-                    ":",
-                    {
-                      "Ref": "AWS::AccountId",
-                    },
-                    ":repository/*",
-                  ],
-                ],
-              },
-              "Sid": "EcrImageAccess",
-            },
-            {
               "Action": "ecr:GetAuthorizationToken",
               "Effect": "Allow",
               "Resource": "*",
@@ -11562,7 +11534,7 @@ exports[`named environment templates > agentx-staging-foundation is unchanged 1`
                     {
                       "Ref": "AWS::AccountId",
                     },
-                    ":repository/agentx-staging/*",
+                    ":repository/agentx-staging/*/agentx-worker",
                   ],
                 ],
               },

@@ -100,6 +100,49 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
     expect(JSON.stringify(legacy.map((t) => t.toJSON()))).toContain(WORKSPACE_SESSION_STATE_INDEX.name);
   });
 
+  // Task 25 Part B (F3, F4): the worker role pulls one image, so it reads and creates one repository, not the account's.
+  describe("the worker role's ECR access (R56, F3 and F4)", () => {
+    type Statement = { Sid?: string; Action: string | string[]; Resource: unknown };
+    const statementsOf = (templates: Template[]): Statement[] => templates.flatMap((template) => ofType(template, "AWS::IAM::Policy"))
+      .flatMap(([, resource]) => ((resource.Properties.PolicyDocument as { Statement: Statement[] }).Statement));
+    const ecr = (templates: Template[]) => statementsOf(templates).filter((statement) => [statement.Action].flat().some((action) => action.startsWith("ecr:")));
+    const resources = (statement: Statement) => JSON.stringify(statement.Resource);
+
+    it("gives a named environment no ECR statement on repository/*, only the token (which AWS lets no resource scope)", () => {
+      const statements = ecr([foundation]).filter((statement) => statement.Sid !== undefined);
+      expect(statements.map((statement) => statement.Sid).sort()).toEqual(["EcrPullThroughCache", "EcrTokenAccess"]);
+      for (const statement of statements) {
+        if (statement.Sid === "EcrTokenAccess") continue;
+        expect(resources(statement), statement.Sid).not.toMatch(/repository\/\*"/u);
+      }
+      expect(JSON.stringify(foundation.toJSON())).not.toContain("EcrImageAccess");
+    });
+
+    it("limits a named environment to the cached worker repository: <prefix>/<publisher alias>/agentx-worker", () => {
+      const [cache] = ecr([foundation]).filter((statement) => statement.Sid === "EcrPullThroughCache");
+      expect(cache!.Action).toEqual(["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchImportUpstreamImage", "ecr:CreateRepository"]);
+      expect(resources(cache!)).toContain("repository/agentx-staging/*/agentx-worker\"");
+      expect(resources(cache!)).not.toContain("repository/agentx-staging/*\"");
+    });
+
+    it("limits the legacy deployment to the worker image's own repository, with no cache statement", () => {
+      const statements = ecr(legacy).filter((statement) => ["EcrImageAccess", "EcrTokenAccess", "EcrPullThroughCache"].includes(statement.Sid ?? ""));
+      expect(statements.map((statement) => statement.Sid).sort()).toEqual(["EcrImageAccess", "EcrTokenAccess"]);
+      const access = statements.find((statement) => statement.Sid === "EcrImageAccess")!;
+      expect(access.Action).toEqual(["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]);
+      expect(resources(access)).toContain("repository/agentx-worker-production\"");
+      // No worker statement of the legacy deployment names repository/*, wherever it sits.
+      for (const statement of statements) expect(resources(statement)).not.toMatch(/repository\/\*"/u);
+    });
+
+    it("never grants a worker role ecr:CreateRepository outside the worker's cached repository", () => {
+      for (const statement of ecr([foundation, ...legacy]).filter((entry) => ["EcrImageAccess", "EcrPullThroughCache"].includes(entry.Sid ?? ""))) {
+        if (![statement.Action].flat().includes("ecr:CreateRepository")) continue;
+        expect(resources(statement)).toContain("/agentx-worker");
+      }
+    });
+  });
+
   it("launches arm64 Amazon Linux 2023 m6g.large with IMDSv2 at one hop and an encrypted root volume", () => {
     const [[, template]] = ofType(foundation, "AWS::EC2::LaunchTemplate") as [[string, Resource]];
     const data = (template.Properties.LaunchTemplateData ?? {}) as Record<string, unknown>;

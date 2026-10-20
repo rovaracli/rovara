@@ -6665,6 +6665,12 @@ exports[`legacy production templates > AgentXProductionFoundation is unchanged 1
         "PolicyDocument": {
           "Statement": [
             {
+              "Action": "ecr:GetAuthorizationToken",
+              "Effect": "Allow",
+              "Resource": "*",
+              "Sid": "EcrTokenAccess",
+            },
+            {
               "Action": [
                 "ecr:BatchGetImage",
                 "ecr:GetDownloadUrlForLayer",
@@ -6686,17 +6692,11 @@ exports[`legacy production templates > AgentXProductionFoundation is unchanged 1
                     {
                       "Ref": "AWS::AccountId",
                     },
-                    ":repository/*",
+                    ":repository/agentx-worker-production",
                   ],
                 ],
               },
               "Sid": "EcrImageAccess",
-            },
-            {
-              "Action": "ecr:GetAuthorizationToken",
-              "Effect": "Allow",
-              "Resource": "*",
-              "Sid": "EcrTokenAccess",
             },
             {
               "Action": [
