@@ -28,7 +28,10 @@ export const DEFAULT_AGENT_ALLOW_DOMAINS: readonly string[] = [
   "archive.ubuntu.com", "ports.ubuntu.com", "security.ubuntu.com",
   "dl-cdn.alpinelinux.org",
   // Docker images
-  "registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com",
+  "registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com", "production.cloudfront.docker.com",
+  // Docker Hub's layer storage for anonymous and Personal-plan pulls (Docker's allowlist page; found live on staging).
+  // The exact bucket host only: a *.r2.cloudflarestorage.com wildcard would allow uploads to anyone's bucket.
+  "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com",
   // Dev container base images and the toolchains their common features download (ruling R40)
   "mcr.microsoft.com", "*.data.mcr.microsoft.com", "nodejs.org",
   // AI providers (model proxy, ChatGPT plans)
