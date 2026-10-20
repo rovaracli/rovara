@@ -81,7 +81,11 @@ function parentRemainderDigest(template: TemplateJson): string {
     delete brokerVariables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED;
     delete brokerVariables.Variables.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID;
     delete brokerVariables.Variables.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID;
+    // Task 23 (ruling R55): where a cloud org's projects run. A named environment's control plane only; it is no part of the proof addition.
+    delete brokerVariables.Variables.EC2_WORKER_LAUNCH_TEMPLATE_ID;
+    delete brokerVariables.Variables.EC2_WORKER_SUBNETS;
   }
+  delete remainder.Parameters?.Ec2WorkerSubnets;
   for (const [, resource] of Object.entries(resources).filter(([id, resource]) => id.startsWith("Dispatcher") && resource.Type === "AWS::Lambda::Function")) {
     const dispatcherVariables = resource.Properties!.Environment as { Variables: Record<string, unknown> };
     delete dispatcherVariables.Variables.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID;

@@ -86,7 +86,7 @@ describe("GET /v1/dev/projects (FR-016, FR-013)", () => {
     const response = await call("/v1/dev/projects", claims());
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({
-      developer: { id: developerId, name: "Maya Chen", provider: "slack", slackUserId: "U0MAYA001" },
+      developer: { id: developerId, name: "Maya Chen", provider: "slack", slackUserId: "U0MAYA001", orgRole: "member" },
       projects: [
         { name: "payments-api", latestRevision: 7, access: "channel", channels: [{ channelId: "C0PAY0001" }], tasks: { enabled: true, share: "optional", shareMode: { default: "view", allowContinue: true }, channelMembersMayUse: true } },
         { name: "solo", latestRevision: 1, access: "granted", channels: [], tasks: { enabled: true, share: "optional", shareMode: { default: "view", allowContinue: true }, channelMembersMayUse: true } },
@@ -155,7 +155,7 @@ describe("GET /v1/dev/projects (FR-016, FR-013)", () => {
     db.set({ pk: "SESSION#s-1", sk: "META", sessionId: "s-1", developerId, amr: "oidc", startedAt: new Date(T0).toISOString(), endsAt: T0 / 1000 + 604_800 });
     db.set({ pk: `DEVELOPER#${developerId}`, sk: "META", developerId, provider: "oidc", issuer: "https://login.example.test", subject: "maya", displayName: "Maya Chen", email: "maya@example.test", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
     const body = JSON.parse((await call("/v1/dev/projects", claims({ amr: "oidc" }))).body) as { developer: unknown; projects: Array<{ name: string }>; notices: string[] };
-    expect(body.developer).toEqual({ id: developerId, name: "Maya Chen", provider: "oidc", email: "maya@example.test" });
+    expect(body.developer).toEqual({ id: developerId, name: "Maya Chen", provider: "oidc", email: "maya@example.test", orgRole: "member" });
     expect(body.projects.map((project) => project.name)).toEqual(["solo"]);
     expect(body.notices).toEqual([]);
     expect(channelMembers).not.toHaveBeenCalled();

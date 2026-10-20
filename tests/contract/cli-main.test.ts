@@ -8,8 +8,9 @@ describe("AgentX executable command surface", () => {
     expect(program.commands.map((command) => command.name())).toEqual(["login", "logout", "whoami", "workspaces", "chatgpt", "signin", "config", "loop", "doctor", "upgrade", "destroy", "admin", "project", "channel", "connector", "alerts", "env", "deploy", "init", "mcp"]);
 
     const admin = program.commands.find((command) => command.name() === "admin");
-    expect(admin?.commands.map((command) => command.name())).toEqual(["project", "runtime-installation", "workspace", "budget", "slack", "eval", "credential", "turns", "task", "changes"]);
+    expect(admin?.commands.map((command) => command.name())).toEqual(["project", "runtime-installation", "workspace", "budget", "org", "slack", "eval", "credential", "turns", "task", "changes"]);
     expect(subcommands(admin, "project")).toEqual(["register", "grant", "revoke"]);
+    expect(subcommands(admin, "org")).toEqual(["github-owner"]);
     expect(subcommands(admin, "workspace")).toEqual(["list", "cancel", "stop"]);
     expect(subcommands(admin, "budget")).toEqual(["set"]);
     expect(subcommands(admin, "slack")).toEqual(["bind", "unbind"]);
@@ -24,7 +25,7 @@ describe("AgentX executable command surface", () => {
     expect(subcommands(program, "loop")).toEqual(["init", "add", "enroll", "remove", "start", "stop", "status", "run", "do", "quick", "full", "review", "contribute", "check", "mcp"]);
     expect(subcommands(program, "chatgpt")).toEqual(["connect", "status", "disconnect"]);
     expect(subcommands(program, "mcp")).toEqual(["install"]);
-    expect(subcommands(program, "project")).toEqual(["add"]);
+    expect(subcommands(program, "project")).toEqual(["add", "create"]);
     expect(subcommands(program, "channel")).toEqual(["add"]);
     expect(subcommands(program, "connector")).toEqual(["add"]);
     expect(subcommands(program, "alerts")).toEqual(["test"]);
