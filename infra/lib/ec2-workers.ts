@@ -135,6 +135,8 @@ export class Ec2WorkerFoundation extends Construct {
           httpTokens: "required",
           httpPutResponseHopLimit: 1,
           instanceMetadataTags: "disabled",
+          // Named environments only (ruling R58): boot.sh closes 169.254.169.254, so the IPv6 endpoint stays off.
+          ...(naming.env === undefined ? {} : { httpProtocolIpv6: "disabled" }),
         },
         blockDeviceMappings: [{
           deviceName: "/dev/xvda",

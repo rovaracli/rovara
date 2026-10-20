@@ -132,7 +132,15 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
     expect(data.InstanceType).toBe("m6g.large");
     expect(data.MetadataOptions).toEqual({
       HttpEndpoint: "enabled", HttpTokens: "required", HttpPutResponseHopLimit: 1, InstanceMetadataTags: "disabled",
+      // Pinned off (task 25): boot.sh closes only 169.254.169.254; an IPv6 endpoint would need its own rules.
+      HttpProtocolIpv6: "disabled",
     });
+    // The legacy launch template is untouched (ruling R58).
+    for (const legacyTemplate of legacy) {
+      for (const [, resource] of ofType(legacyTemplate, "AWS::EC2::LaunchTemplate")) {
+        expect((resource.Properties.LaunchTemplateData as { MetadataOptions: object }).MetadataOptions).not.toHaveProperty("HttpProtocolIpv6");
+      }
+    }
     expect(data.BlockDeviceMappings).toEqual([{
       DeviceName: "/dev/xvda",
       Ebs: { VolumeSize: 30, VolumeType: "gp3", Encrypted: true, KmsKeyId: { "Fn::GetAtt": [expect.stringMatching(/^WorkspaceKey/), "Arn"] }, DeleteOnTermination: true },

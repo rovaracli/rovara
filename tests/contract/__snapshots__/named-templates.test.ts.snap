@@ -11585,6 +11585,7 @@ exports[`named environment templates > agentx-staging-foundation is unchanged 1`
           "InstanceType": "m6g.large",
           "MetadataOptions": {
             "HttpEndpoint": "enabled",
+            "HttpProtocolIpv6": "disabled",
             "HttpPutResponseHopLimit": 1,
             "HttpTokens": "required",
             "InstanceMetadataTags": "disabled",
