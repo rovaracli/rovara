@@ -89,4 +89,12 @@ describe("assertModelsServedByProxy", () => {
   it("refuses a region the proxy has no profile for, as CONFIG_INVALID", () => {
     expect(refusal(models, "sa-east-1")).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("region sa-east-1") as string });
   });
+  it("never offers a model Bedrock has retired (found live: Sonnet 4 of 2025-05-14 is end of life)", () => {
+    for (const geography of ["us", "eu", "apac"] as const) {
+      expect(bedrockClaudeModelIds(geography)).not.toContain(`${geography}.anthropic.claude-sonnet-4-20250514-v1:0`);
+    }
+    // The installed Pi catalog has no apac. profiles at all (a separate follow-up); us and eu must keep their models.
+    for (const geography of ["us", "eu"] as const) expect(bedrockClaudeModelIds(geography).length).toBeGreaterThan(0);
+    expect(bedrockClaudeModelIds("us")).toContain("us.anthropic.claude-sonnet-4-6");
+  });
 });

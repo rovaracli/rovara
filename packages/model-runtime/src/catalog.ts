@@ -38,8 +38,15 @@ export function listPricesPerMillion(model: ModelIdentifier): { input: number; o
  */
 export function bedrockClaudeModelIds(geography = "us"): string[] {
   const prefix = `${geography}.anthropic.claude-`;
-  return amazonBedrockProvider().getModels().map((entry) => entry.id).filter((id) => id.startsWith(prefix)).sort();
+  return amazonBedrockProvider().getModels().map((entry) => entry.id)
+    .filter((id) => id.startsWith(prefix) && !RETIRED_BEDROCK_CLAUDE_MODELS.has(id.slice(geography.length + 1))).sort();
 }
+
+/**
+ * Claude models the installed Pi catalog still names but Amazon Bedrock has retired, so the proxy must not offer them.
+ * Found on the 2026-10-20 staging check: the us. profile answered ResourceNotFoundException (end of life).
+ */
+export const RETIRED_BEDROCK_CLAUDE_MODELS: ReadonlySet<string> = new Set(["anthropic.claude-sonnet-4-20250514-v1:0"]);
 
 /** The Bedrock inference-profile geographies the model proxy can serve (ruling R52). */
 export type ProxyGeography = "us" | "eu" | "apac";
