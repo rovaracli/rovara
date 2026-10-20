@@ -234,6 +234,9 @@
       "developerId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       "developerName": "Maya Chen",
       "entityType": "DEVELOPER_TASK",
+      "modelKeyIds": [
+        "48c0bb601ee2711d3370b300628108b90c75d087695f801d2603a7147a2e9f1c"
+      ],
       "orgId": "org_5t5gp58cc1ibgg6e3aoj",
       "ownerKey": "dc64743bfd1885a1249d741b5e6bc996fd12817ff6ad07332800c4960db977d4",
       "pk": "DEVTASK#00000010-0000-4000-8000-000000000006",
@@ -264,7 +267,18 @@
       "title": "Fix the retry bug",
       "updatedAt": "2026-10-20T00:00:00.000Z",
       "workflow": {
-        "artifacts": [],
+        "artifacts": [
+          {
+            "createdAt": "2026-10-20T00:00:00.000Z",
+            "format": "structured",
+            "id": "00000010-0000-4000-8000-000000000015",
+            "objectKey": "private/dc64743bfd1885a1249d741b5e6bc996fd12817ff6ad07332800c4960db977d4/00000010-0000-4000-8000-000000000007/plan-documents/00000010-0000-4000-8000-000000000015.json",
+            "producer": "agentx-worker-untrusted",
+            "sha256": "94a474a3f36e9ad225dc6de5fcee0daa537c740f42ddf5ca2a5e01796e6c1672",
+            "type": "plan",
+            "version": 1
+          }
+        ],
         "checkPolicy": {
           "optional": [],
           "proposed": [],
@@ -277,10 +291,10 @@
         "definitionVersion": "1.0.0",
         "ownerId": "dc64743bfd1885a1249d741b5e6bc996fd12817ff6ad07332800c4960db977d4",
         "path": "QUICK",
-        "revision": 1,
+        "revision": 2,
         "schemaVersion": 1,
-        "stage": "PLAN",
-        "state": "RUNNING",
+        "stage": "PLAN_REVIEW",
+        "state": "WAITING",
         "taskId": "00000010-0000-4000-8000-000000000006",
         "updatedAt": "2026-10-20T00:00:00.000Z"
       },
@@ -300,6 +314,36 @@
       "pk": "DEVTASK#00000010-0000-4000-8000-000000000006",
       "postedTs": "1695500000.000102",
       "sk": "NOTICE#00000010-0000-4000-8000-000000000008:ready"
+    },
+    {
+      "artifactId": "00000010-0000-4000-8000-000000000015",
+      "artifactSha256": "94a474a3f36e9ad225dc6de5fcee0daa537c740f42ddf5ca2a5e01796e6c1672",
+      "attachedAt": "2026-10-20T00:00:00.000Z",
+      "entityType": "PLAN_EVIDENCE_POINTER",
+      "objectKey": "private/dc64743bfd1885a1249d741b5e6bc996fd12817ff6ad07332800c4960db977d4/00000010-0000-4000-8000-000000000007/plan-documents/00000010-0000-4000-8000-000000000015.evidence.2304f5e32dac7606f7c9d8cfa515b2ea801d1ffcc61b650afec89e0e40762783.json",
+      "pk": "DEVTASK#00000010-0000-4000-8000-000000000006",
+      "sha256": "2304f5e32dac7606f7c9d8cfa515b2ea801d1ffcc61b650afec89e0e40762783",
+      "sk": "PLAN_EVIDENCE#00000010-0000-4000-8000-000000000015"
+    },
+    {
+      "deliveredAt": "2026-10-20T00:00:00.000Z",
+      "entityType": "NOTICE",
+      "indexExpiresAt": 1795046400,
+      "pk": "DEVTASK#00000010-0000-4000-8000-000000000006",
+      "sk": "NOTICE#00000010-0000-4000-8000-000000000006:said:revision:2"
+    },
+    {
+      "buttonCard": true,
+      "deliveredAt": "2026-10-20T00:00:00.000Z",
+      "entityType": "NOTICE",
+      "indexExpiresAt": 1795046400,
+      "pk": "DEVTASK#00000010-0000-4000-8000-000000000006",
+      "postedArtifactDigest": "94a474a3f36e9ad225dc6de5fcee0daa537c740f42ddf5ca2a5e01796e6c1672",
+      "postedChannelId": "C0123456789",
+      "postedText": "*Coding plan v1 is ready for your approval.* No code has changed yet.\n> Payments that fail with a timeout are retried.\n> A payment is never charged twice.\nAnd 1 more claim.\nApprove here uses AgentX's answers for 1 decision and includes the open comments (up to 25) from the task page.\nNo automated checks apply. Review only.\nI couldn't link the full coding plan; ask an AgentX admin to check the task page.",
+      "postedTs": "1695500000.000103",
+      "postedWorkflowRevision": 2,
+      "sk": "NOTICE#00000010-0000-4000-8000-000000000006:workflow:2"
     }
   ],
   "workerRun": {

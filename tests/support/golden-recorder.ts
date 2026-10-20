@@ -548,7 +548,8 @@ async function plainTask(broker: DeveloperBroker, extra: Record<string, unknown>
 
 /**
  * A shared workflow task whose planning step ends with a plan: the notifier (over the real stream records, with Slack faked)
- * posts the task's messages, among them "<document> is ready for your approval". The record's operation is the planning step.
+ * posts the task's messages, among them "<document> is ready for your approval". The record's operation is the planning step;
+ * its `taskItems` and `modelAccess.calls` are taken after the plan was announced.
  */
 async function planReady(path: "QUICK" | "FULL"): Promise<Captured> {
   const broker = await developerBroker(true);
@@ -582,7 +583,15 @@ async function planReady(path: "QUICK" | "FULL"): Promise<Captured> {
   const record = await captureOperation(broker.handles, workspaceId, planning, taskId, { end: false });
   await finishPlanning(broker, taskId, workspaceId, planning);
   await pump();
-  return { ...record, notifications: posts };
+  // The task's items and the proxy's calls are those after the plan was made and announced, where the plan-ready message's
+  // estimate (change 4, Task 34's `task.runEstimate`) lands.
+  const { access } = broker;
+  return {
+    ...record,
+    taskItems: broker.harness.db.find((item) => item.pk === `DEVTASK#${taskId}`).map(canonical),
+    ...(access === undefined || record.modelAccess === undefined ? {} : { modelAccess: { ...record.modelAccess, calls: proxyCalls(access) } }),
+    notifications: posts,
+  };
 }
 
 // ---- a task whose candidate is waiting for merge, and the critic that reads the pull request's feedback ----

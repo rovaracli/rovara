@@ -19,7 +19,7 @@ vi.mock("node:crypto", async (importOriginal) => {
 
 // The hash of SHA256SUMS itself, so the list of fixture hashes cannot be edited in the same breath as a fixture. A change
 // to this value is a re-record: it needs the per-path attribution and the Opus review that PF4 requires of a Plan 2 merge.
-const SHA256SUMS_SHA256 = "b006ba1c6be019c8527a175b8afec654d9921f23d0df48609892fdd8a1397737";
+const SHA256SUMS_SHA256 = "3b29f748b9fb372ece9eecd541b80cb97feac4047d09d77cdc39c58cb95667e7";
 
 beforeAll(async () => { await loadSlackBroker(); });
 
