@@ -170,7 +170,7 @@ describe("a task in a project without a devcontainer", () => {
     };
     const inputs: PiSessionInput[] = [];
     await expect(runTaskInvocation(taskInvocation(), dependencies(root, adapterOf(inputs), { taskShell: { ...SANDBOX, docker } })))
-      .rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("pull access denied") });
+      .rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("pull access denied") as unknown });
     expect(inputs).toEqual([]);
   });
 
@@ -180,7 +180,7 @@ describe("a task in a project without a devcontainer", () => {
     vi.stubEnv("AGENTX_SANDBOX_IMAGE", "");
     const inputs: PiSessionInput[] = [];
     await expect(runTaskInvocation(taskInvocation(), dependencies(root, adapterOf(inputs))))
-      .rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("task sandbox image") });
+      .rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("task sandbox image") as unknown });
     expect(inputs).toEqual([]);
   });
 
@@ -251,7 +251,7 @@ describe("readiness checks at publication", () => {
     const { root, checkout } = await workspace();
     const fake = fakeDocker();
     const marker = join(checkout, "ready-locally");
-    const manifest = JSON.parse(await readFile(join(root, ".agentx/preparation-manifest.json"), "utf8"));
+    const manifest = JSON.parse(await readFile(join(root, ".agentx/preparation-manifest.json"), "utf8")) as Parameters<typeof runReadinessChecks>[2];
     const invocation = { operationId: randomUUID(), payload: { project: project({ readiness: [{ cwd: "repo/sample", executable: "touch", args: [marker], timeoutSeconds: 60 }] }) } } as unknown as Parameters<typeof runReadinessChecks>[1];
     const results = await runReadinessChecks(root, invocation, manifest, { taskShell: { ...SANDBOX, docker: fake.docker } });
     expect(results.map((entry) => entry.outcome)).toEqual(["passed"]);
