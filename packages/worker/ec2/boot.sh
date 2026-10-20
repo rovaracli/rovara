@@ -20,8 +20,7 @@ readonly WORKER_GID=1000
 readonly WORKER_ENV_FILE=/etc/agentx/worker.env
 readonly WORKER_UNIT=agentx-worker.service
 readonly WORKER_CONTAINER=agentx-worker
-# Docker's data root, on the workspace volume so that a project's devcontainer images, containers
-# and named volumes survive an idle stop (#121). The worker's walks skip it (DOCKER_DATA_DIRECTORY).
+# Docker's data root, on the workspace volume so devcontainer images and volumes survive an idle stop (#121).
 readonly DOCKER_DATA_ROOT=$MOUNT_PATH/.docker
 readonly DOCKER_SOCKET=/var/run/docker.sock
 # The provisioner attaches the volume after the instance is running, so it may appear late.
@@ -270,14 +269,12 @@ pull_contained_image() {
   return 1
 }
 
-# Root-only, because the worker's environment is its configuration; none of it is secret today, but
-# the file should not become world-readable if that changes.
+# Root-only: the worker's environment is its configuration, and may hold secrets one day.
 write_worker_environment() {
   local region=$1
   install -d -m 0700 "$(dirname "$WORKER_ENV_FILE")"
   install -m 0600 /dev/null "$WORKER_ENV_FILE"
-  # AGENTX_SANDBOX_IMAGE: the task sandbox (R56) starts from the worker's own image, which is already on this host.
-  # AGENTX_RUNTIME=ec2 marks this host, so the worker refuses the local shell here whatever else is set.
+  # R56: the sandbox image is the worker's own; AGENTX_RUNTIME=ec2 makes the worker refuse the local shell.
   cat >"$WORKER_ENV_FILE" <<EOF
 AWS_REGION=$region
 AGENTX_WORKSPACE_ROOT=$MOUNT_PATH
@@ -325,11 +322,23 @@ readonly DOCKER_SOCKET=/var/run/docker.sock
 readonly WORKER_UID=1000
 readonly WORKER_GID=1000
 log() { printf 'agentx-worker-start: %s\n' "$*" >&2; }
+# R56: a named environment (it has a model proxy) runs on a bridge; the legacy worker needs the host network.
+named_environment() { grep -q '^AGENTX_MODEL_PROXY_URL=.' "$WORKER_ENV_FILE"; }
+worker_network_args() {
+  if named_environment; then printf '%s\n' --network bridge --publish 8080:8080; else printf '%s\n' --network host; fi
+}
+block_imds() {
+  local rule rules=("DOCKER-USER -d 169.254.169.254/32 -j REJECT")
+  if named_environment; then rules+=("OUTPUT -d 169.254.169.254/32 -m owner ! --uid-owner 0 -j REJECT"); fi
+  for rule in "${rules[@]}"; do iptables -C $rule 2>/dev/null || iptables -I $rule || return 1; done
+}
 docker=$(cat /etc/agentx/docker-path 2>/dev/null || true)
 worker_image=$(cat /etc/agentx/worker-image 2>/dev/null || true)
 [[ "$docker" == /* && -x "$docker" ]] || { log 'Docker CLI unavailable'; exit 1; }
 [[ "$worker_image" =~ ^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]] || { log 'worker image identity is invalid'; exit 1; }
 docker_gid=$(stat -c %g "$DOCKER_SOCKET") || { log 'Docker socket unavailable'; exit 1; }
+block_imds || { log 'iptables failed'; exit 1; }
+mapfile -t network_args < <(worker_network_args)
 runtime_ready=false
 if [[ -d "$RUNTIME_SOURCE" && ! -L "$RUNTIME_SOURCE" && $(stat -c %u:%g:%a "$RUNTIME_SOURCE" 2>/dev/null) == 0:0:755 ]]; then
   runtime_children_valid=true
@@ -355,7 +364,7 @@ if [[ -d "$RUNTIME_SOURCE" && ! -L "$RUNTIME_SOURCE" && $(stat -c %u:%g:%a "$RUN
     fi
   fi
 fi
-args=(run --rm --name "$WORKER_CONTAINER" --network host --env-file "$WORKER_ENV_FILE" --volume "$MOUNT_PATH:$MOUNT_PATH")
+args=(run --rm --name "$WORKER_CONTAINER" "${network_args[@]}" --env-file "$WORKER_ENV_FILE" --volume "$MOUNT_PATH:$MOUNT_PATH")
 if [[ "$runtime_ready" == true ]]; then
   args+=(--volume "$RUNTIME_ROOT:$RUNTIME_ROOT" --env CONTAINED_FOUNDATION_EVIDENCE_DIR="$RUNTIME_ROOT/evidence" --env TMPDIR="$RUNTIME_ROOT/tmp")
 else

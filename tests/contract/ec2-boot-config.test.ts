@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -186,11 +186,90 @@ describe("EC2 worker user data", () => {
     expect(bootScript).toContain(`printf '{"data-root": "%s"}\\n' "$DOCKER_DATA_ROOT" >/etc/docker/daemon.json`);
     // The daemon starts only after the workspace is mounted, so its data root is on the volume.
     expect(bootScript.indexOf("mount_workspace \"$device\"")).toBeLessThan(bootScript.indexOf("  ensure_docker\n"));
-    expect(workerLauncher).toContain('args=(run --rm --name "$WORKER_CONTAINER" --network host --env-file "$WORKER_ENV_FILE" --volume "$MOUNT_PATH:$MOUNT_PATH")');
+    expect(workerLauncher).toContain('args=(run --rm --name "$WORKER_CONTAINER" "${network_args[@]}" --env-file "$WORKER_ENV_FILE" --volume "$MOUNT_PATH:$MOUNT_PATH")');
     expect(workerLauncher).toContain('args+=(--volume "$RUNTIME_ROOT:$RUNTIME_ROOT" --env CONTAINED_FOUNDATION_EVIDENCE_DIR="$RUNTIME_ROOT/evidence" --env TMPDIR="$RUNTIME_ROOT/tmp")');
     expect(workerLauncher).toContain("args+=(--env TMPDIR=/tmp)");
     expect(bootScript).toContain("ExecStart=/usr/local/libexec/agentx-worker-start");
     expect(bootScript).toContain("RequiresMountsFor=$MOUNT_PATH");
+  });
+
+  // Task 25 Part B (F2): the worker leaves the host network, and the instance metadata service is closed to containers and
+  // to every non-root process on the host.
+  describe("the worker's network and the instance metadata service (R56, F2)", () => {
+    const launcherFunction = (name: string) => new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?^\\}$`, "m").exec(workerLauncher)?.[0] ?? "";
+    const withEnvironment = (lines: string[]) => {
+      const directory = mkdtempSync(join(tmpdir(), "launcher-"));
+      const envFile = join(directory, "worker.env");
+      writeFileSync(envFile, `${lines.join("\n")}\n`);
+      return { directory, envFile };
+    };
+    const NAMED = ["AGENTX_MODEL_PROVIDER=amazon-bedrock", "AGENTX_MODEL_PROXY_URL=http://proxy.test:4000"];
+    const LEGACY = ["AGENTX_MODEL_PROVIDER=amazon-bedrock", "AGENTX_ANTHROPIC_SECRET_ARN=", "AGENTX_OPENAI_SECRET_ARN="];
+
+    const networkArgs = (lines: string[]) => {
+      const { envFile } = withEnvironment(lines);
+      const functions = ["named_environment", "worker_network_args"].map(launcherFunction).join("\n");
+      expect(functions).toContain("worker_network_args()");
+      const run = spawnSync("bash", ["-c", `readonly WORKER_ENV_FILE=${envFile}\n${functions}\nworker_network_args`], { encoding: "utf8" });
+      expect(run.status, run.stderr).toBe(0);
+      return run.stdout.split("\n").filter(Boolean);
+    };
+
+    it("starts a named environment's worker on a bridge network that publishes only its port, never on the host network", () => {
+      expect(networkArgs(NAMED)).toEqual(["--network", "bridge", "--publish", "8080:8080"]);
+      expect(networkArgs(NAMED)).not.toContain("host");
+    });
+
+    it("leaves the legacy deployment's worker on the host network, where its Bedrock calls need the instance role", () => {
+      expect(networkArgs(LEGACY)).toEqual(["--network", "host"]);
+      expect(networkArgs(["AGENTX_MODEL_PROXY_URL="])).toEqual(["--network", "host"]);
+    });
+
+    it("never says --network host outside the legacy branch", () => {
+      const named = launcherFunction("worker_network_args").replace(/else[\s\S]*?fi/u, "fi");
+      expect(named).not.toContain("host");
+      expect(workerLauncher.match(/--network host/gu)).toHaveLength(1);
+    });
+
+    /** Runs block_imds with an iptables shim that records every call and says which rules already exist. */
+    const blockImds = (lines: string[], existing: string[] = []) => {
+      const { directory, envFile } = withEnvironment(lines);
+      const log = join(directory, "iptables.log");
+      writeFileSync(join(directory, "iptables"), `#!/bin/bash
+echo "$*" >> ${log}
+if [[ "$1" == -C ]]; then
+  shift
+  case "$*" in ${existing.map((rule) => `"${rule}") exit 0;;`).join(" ")} *) exit 1;; esac
+fi
+exit 0
+`, { mode: 0o755 });
+      const functions = ["named_environment", "block_imds"].map(launcherFunction).join("\n");
+      expect(functions).toContain("block_imds()");
+      const run = spawnSync("bash", ["-c", `readonly WORKER_ENV_FILE=${envFile}\nPATH=${directory}:$PATH\n${functions}\nblock_imds`], { encoding: "utf8" });
+      expect(run.status, run.stderr).toBe(0);
+      return readFileSync(log, "utf8").split("\n").filter(Boolean);
+    };
+    const DOCKER_USER = "DOCKER-USER -d 169.254.169.254/32 -j REJECT";
+    const OUTPUT = "OUTPUT -d 169.254.169.254/32 -m owner ! --uid-owner 0 -j REJECT";
+
+    it("rejects 169.254.169.254 for bridged containers and for every non-root process on the host, in a named environment", () => {
+      expect(blockImds(NAMED)).toEqual([`-C ${DOCKER_USER}`, `-I ${DOCKER_USER}`, `-C ${OUTPUT}`, `-I ${OUTPUT}`]);
+    });
+
+    it("adds each rule once: nothing is inserted when it is already there (the launcher runs on every restart)", () => {
+      expect(blockImds(NAMED, [DOCKER_USER, OUTPUT])).toEqual([`-C ${DOCKER_USER}`, `-C ${OUTPUT}`]);
+      expect(blockImds(NAMED, [DOCKER_USER])).toEqual([`-C ${DOCKER_USER}`, `-C ${OUTPUT}`, `-I ${OUTPUT}`]);
+    });
+
+    it("in the legacy deployment closes it to bridged containers only, since the worker itself still needs the role", () => {
+      expect(blockImds(LEGACY)).toEqual([`-C ${DOCKER_USER}`, `-I ${DOCKER_USER}`]);
+    });
+
+    it("applies the rules as root before the worker starts, and does not start it when they fail", () => {
+      expect(workerLauncher).toMatch(/block_imds \|\| \{[^}]*exit 1; \}/u);
+      expect(workerLauncher.indexOf("block_imds ||")).toBeLessThan(workerLauncher.indexOf('exec "$docker"'));
+      expect(workerLauncher).toContain('mapfile -t network_args < <(worker_network_args)');
+    });
   });
 
   it("prepares fixed private EBS runtime paths and retries the pinned contained image before starting the worker", () => {

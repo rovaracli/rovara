@@ -65,7 +65,7 @@ describe("the worker image", () => {
     expect(unit).toContain("ExecStart=/usr/local/libexec/agentx-worker-start");
     expect(launcher).not.toBe("");
     expect(launcher).toContain('[[ "$worker_image" =~ ^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]]');
-    expect(launcher).toContain('args=(run --rm --name "$WORKER_CONTAINER" --network host --env-file "$WORKER_ENV_FILE" --volume "$MOUNT_PATH:$MOUNT_PATH")');
+    expect(launcher).toContain('args=(run --rm --name "$WORKER_CONTAINER" "${network_args[@]}" --env-file "$WORKER_ENV_FILE" --volume "$MOUNT_PATH:$MOUNT_PATH")');
     expect(launcher).not.toContain("--entrypoint");
     expect(launcher).not.toContain("--init");
     // The generated launcher uses the pinned image as the final docker run argument and leaves
