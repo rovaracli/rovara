@@ -9,9 +9,17 @@ import { assertNoEmbeddedRepositories, assertNoLfsFiles, gitHardenedEnvironment 
 
 const execFile = promisify(execFileCallback);
 
+/** Leaves a file tool's leftover temporary file (`.agentx-file-ops-*`, from a write the helper was killed in) out of every snapshot. */
+export const CANDIDATE_EXCLUDE_PATHSPEC = ":(exclude,glob)**/.agentx-file-ops-*";
+
 export interface CandidateRepositoryInput {
   repositoryId: string;
   directory: string;
+  /**
+   * Removes the file tools' leftover temporary files in this repository's folder (inside the task's container). Called before
+   * every snapshot; a failure is not one, since the snapshot excludes those files anyway.
+   */
+  sweep?: () => Promise<void>;
   /** The commit the task started from; it must be an ancestor of HEAD. */
   baseCommitSha?: string;
 }
@@ -120,6 +128,7 @@ export async function readCandidateRepositories(
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,199}$/.test(input.repositoryId)
       || (input.baseCommitSha !== undefined && !/^[a-f0-9]{40}$/.test(input.baseCommitSha))) throw new Error("candidate repository identities are invalid");
     const directory = resolve(input.directory);
+    await input.sweep?.().catch(() => undefined);
     const temporary = await mkdtemp(join(tmpdir(), "agentx-candidate-index-"));
     const indexPath = join(temporary, "index");
     try {
@@ -129,7 +138,7 @@ export async function readCandidateRepositories(
       const { stdout: commitSha } = await execFile("git", ["-C", directory, "rev-parse", "--verify", "HEAD^{commit}"], { env, encoding: "utf8" });
       await execFile("git", ["-C", directory, "read-tree", "HEAD"], { env, encoding: "utf8" });
       await assertNoEmbeddedRepositories(directory, env);
-      await execFile("git", ["-C", directory, "add", "--all", "--", "."], { env, encoding: "utf8", maxBuffer: 1024 * 1024 });
+      await execFile("git", ["-C", directory, "add", "--all", "--", ".", CANDIDATE_EXCLUDE_PATHSPEC], { env, encoding: "utf8", maxBuffer: 1024 * 1024 });
       const { stdout: treeSha } = await execFile("git", ["-C", directory, "write-tree"], { env, encoding: "utf8" });
       const commit = commitSha.trim();
       const tree = treeSha.trim();
@@ -175,6 +184,7 @@ export async function commitCandidateWorktree(
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,199}$/.test(input.repositoryId)
       || (input.baseCommitSha !== undefined && !/^[a-f0-9]{40}$/.test(input.baseCommitSha))) throw new Error("candidate repository identities are invalid");
     const directory = resolve(input.directory);
+    await input.sweep?.().catch(() => undefined);
     const temporary = await mkdtemp(join(tmpdir(), "agentx-commit-index-"));
     const indexPath = join(temporary, "index");
     try {
@@ -196,7 +206,7 @@ export async function commitCandidateWorktree(
       await run(["read-tree", oldHead]);
       await assertNoEmbeddedRepositories(directory, env);
       await assertNoLfsFiles(directory, env);
-      await run(["add", "--all", "--", "."]);
+      await run(["add", "--all", "--", ".", CANDIDATE_EXCLUDE_PATHSPEC]);
       const tree = await run(["write-tree"]);
       if (!/^[a-f0-9]{40}$/.test(tree)) throw new Error("candidate tree is invalid");
       const oldTree = await run(["rev-parse", `${oldHead}^{tree}`]);
@@ -254,7 +264,7 @@ export async function commitCandidateWorktree(
         await assertNoEmbeddedRepositories(directory, env);
         await assertNoLfsFiles(directory, env);
         await run(["read-tree", oldHead]);
-        await run(["add", "--all", "--", "."]);
+        await run(["add", "--all", "--", ".", CANDIDATE_EXCLUDE_PATHSPEC]);
         if (await run(["write-tree"]) !== tree) {
           throw agentXError("OPERATION_INTERRUPTED", "the repository files changed while AgentX was saving the implementation candidate");
         }
@@ -276,7 +286,7 @@ export async function commitCandidateWorktree(
         await run(["read-tree", newHead], afterEnv);
         await assertNoEmbeddedRepositories(directory, afterEnv);
         await assertNoLfsFiles(directory, afterEnv);
-        await run(["add", "--all", "--", "."], afterEnv);
+        await run(["add", "--all", "--", ".", CANDIDATE_EXCLUDE_PATHSPEC], afterEnv);
         const worktreeTreeAfter = await run(["write-tree"], afterEnv);
         if (newHead !== commit || newTree !== tree) {
           throw agentXError("OPERATION_INTERRUPTED", "the repository reference changed while AgentX was verifying its implementation snapshot");

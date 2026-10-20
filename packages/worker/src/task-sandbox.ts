@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { agentXError, type ProjectCommand } from "@agentx/contracts";
 import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
 import { containerBashOperations, runContainerCommand, type ContainerExec } from "./devcontainer.js";
+import { fileOpsExec, type FileOpsTarget } from "./file-ops-exec.js";
 import type { CommandResult } from "./readiness.js";
 import { hiddenWorkspaceDirectories } from "./workspace-state.js";
 import { createDockerCli, taskContainerExec, type DockerCli } from "./swebench/containers.js";
@@ -31,6 +32,9 @@ export function workspaceKey(rootPath: string): string {
 }
 /** The `node` user of environments/base/Dockerfile, which the worker also runs as. */
 export const TASK_SANDBOX_USER = "1000:1000";
+/** Where the worker image (which is the sandbox image) keeps Node and the file-tool helper (environments/base/Dockerfile). */
+export const SANDBOX_FILE_OPS_NODE = "/usr/local/bin/node";
+export const SANDBOX_FILE_OPS_HELPER = "/opt/agentx/packages/worker/dist/sandbox-file-ops.js";
 /** The environment variable that names the sandbox image; boot.sh sets it to the worker's own image. */
 export const TASK_SANDBOX_IMAGE_ENVIRONMENT = "AGENTX_SANDBOX_IMAGE";
 /** `local` or `sandbox` (the default): where a project without a devcontainer runs its commands. `local` is for tests and a developer's machine, never EC2. */
@@ -176,6 +180,14 @@ export class TaskSandbox {
     return containerBashOperations(this.exec);
   }
 
+  /** Where the agent's file tools run for this sandbox: as the sandbox's user, with the workspace as the only reachable root. */
+  fileOpsTarget(): FileOpsTarget {
+    return {
+      container: this.name, user: TASK_SANDBOX_USER, node: SANDBOX_FILE_OPS_NODE, helper: SANDBOX_FILE_OPS_HELPER,
+      root: resolve(this.options.rootPath), docker: this.docker,
+    };
+  }
+
   /** A project command (setup, readiness) in the sandbox. */
   runCommand(command: ProjectCommand, signal?: AbortSignal): Promise<CommandResult> {
     return runContainerCommand(this.exec, this.options.rootPath, command, signal);
@@ -219,6 +231,8 @@ export class TaskSandbox {
       const detail = (result.stderr || result.stdout).trim().split("\n").slice(-5).join(" ").slice(0, 800);
       throw agentXError("RUNTIME_UNAVAILABLE", `AgentX could not start the task sandbox${result.timedOut === true ? " (timed out)" : ""}: ${detail || `exit ${String(result.exitCode)}`}`);
     }
+    // A write the file tools' helper was killed in leaves a `.agentx-file-ops-*` file; an earlier task's must not reach this one's snapshots.
+    await fileOpsExec(this.fileOpsTarget(), { root, op: "sweep", path: root }).catch(() => undefined);
   }
 
   /**
