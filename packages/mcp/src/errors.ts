@@ -1,11 +1,13 @@
 // Spec 025 FR-049: every tool error has a stable code, a plain message and a next step.
-import { CLI_PACKAGE_NAME, CHANNEL_PRIVACY_NOT_SET_UP, CHANNEL_PRIVACY_NOT_SET_UP_STEP, PRIVATE_CHANNEL_NOT_A_MEMBER, PRIVATE_CHANNEL_NOT_A_MEMBER_STEP, redactText } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME, TASK_BUDGET_EXCEEDED_PREFIX, CHANNEL_PRIVACY_NOT_SET_UP, CHANNEL_PRIVACY_NOT_SET_UP_STEP, PRIVATE_CHANNEL_NOT_A_MEMBER, PRIVATE_CHANNEL_NOT_A_MEMBER_STEP, redactText } from "@agentx/contracts";
 
 export const TOOL_ERROR_CODES = [
   "SIGN_IN_REQUIRED", "SIGN_IN_REJECTED", "ADMIN_REQUIRED", "PROJECT_NOT_FOUND", "PROJECT_ACCESS_DENIED",
   "PROJECT_TASKS_DISABLED", "TASK_NOT_FOUND", "CHANNEL_REQUIRED", "CHANNEL_AMBIGUOUS", "WORKSPACE_LIMIT", "TASK_BUSY",
   "SLACK_UNAVAILABLE", "CONFIRMATION_UNAVAILABLE", "CONFIRMATION_DECLINED", "CONFIRMATION_EXPIRED", "CHANGE_STALE",
   "UPGRADE_REQUIRED", "CONTROL_PLANE_UNAVAILABLE", "INVALID_REQUEST",
+  // Rovara Cloud: a start refused before any work (the free trial is locked, or a budget is used up).
+  "TRIAL_LOCKED", "BUDGET_REACHED",
 ] as const;
 export type ToolErrorCode = (typeof TOOL_ERROR_CODES)[number];
 
@@ -30,7 +32,17 @@ export const NEXT_STEPS: Record<ToolErrorCode, string> = {
   UPGRADE_REQUIRED: `run npx -y ${CLI_PACKAGE_NAME}@latest mcp install --client <claude-code, codex or cursor>`,
   CONTROL_PLANE_UNAVAILABLE: "check your connection and try again",
   INVALID_REQUEST: "fix the input the message names and try again",
+  // The step needs the session's own sign-in command, so toolErrorFromResponse builds it; this is the generic one.
+  TRIAL_LOCKED: "sign in with GitHub to start your free trial: agentx login <your AgentX URL> and choose GitHub",
+  BUDGET_REACHED: "ask an AgentX admin to raise the monthly AI budget",
 };
+
+/** TRIAL_LOCKED's next step: the sign-in command of this session, then the GitHub choice that unlocks the trial. */
+const trialLockedStep = (signInCommand: string) => `Sign in with GitHub to start your free trial: run ${signInCommand} and choose GitHub`;
+/** BUDGET_REACHED's next steps: whose budget is used up decides who can raise it. */
+const MEMBER_BUDGET_STEP = "ask an AgentX admin to raise your monthly AI budget";
+const ORG_BUDGET_STEP = "ask an AgentX admin to raise the company's monthly AI budget";
+const TASK_BUDGET_STEP = "continue the task with agentx_continue_task to give it a fresh budget";
 
 /**
  * Ruling S1: UPGRADE_REQUIRED's next step when the control plane, not this CLI, is too old
@@ -82,7 +94,7 @@ const INVALID = new Set<string>(["CONFIG_INVALID", "IDEMPOTENCY_CONFLICT"]);
 
 /** True when a control-plane error code is an answer to show, not an outage to try again. */
 export function isMeaningfulCode(code: string | undefined): boolean {
-  return code !== undefined && (PASSED_THROUGH.has(code) || BUSY.has(code) || INVALID.has(code) || code === "AUTH_REQUIRED");
+  return code !== undefined && (PASSED_THROUGH.has(code) || code === "TRIAL_LOCKED" || code === "BUDGET_EXCEEDED" || code === "ORG_BUDGET_EXCEEDED" || BUSY.has(code) || INVALID.has(code) || code === "AUTH_REQUIRED");
 }
 
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -107,6 +119,10 @@ export function toolErrorFromResponse(status: number, value: unknown, signInComm
   const code = typeof error?.code === "string" ? error.code : undefined;
   const message = plainText(error?.message, `AgentX answered HTTP ${status}`, secrets);
   if (status === 401 || code === "AUTH_REQUIRED") return new ToolError("SIGN_IN_REQUIRED", message, `run ${signInCommand}`);
+  // Refused before any work started (Rovara Cloud): the broker's own words are the answer, and so is its next step.
+  if (code === "TRIAL_LOCKED") return new ToolError("TRIAL_LOCKED", message, trialLockedStep(signInCommand));
+  if (code === "ORG_BUDGET_EXCEEDED") return new ToolError("BUDGET_REACHED", message, ORG_BUDGET_STEP);
+  if (code === "BUDGET_EXCEEDED") return new ToolError("BUDGET_REACHED", message, message.startsWith(TASK_BUDGET_EXCEEDED_PREFIX) ? TASK_BUDGET_STEP : MEMBER_BUDGET_STEP);
   if (code !== undefined && PASSED_THROUGH.has(code)) return new ToolError(code as ToolErrorCode, message, OWN_STEPS.get(`${code}:${message}`));
   if (code !== undefined && BUSY.has(code)) return new ToolError("TASK_BUSY", message, busyStep);
   if (code !== undefined && INVALID.has(code)) return new ToolError("INVALID_REQUEST", message);

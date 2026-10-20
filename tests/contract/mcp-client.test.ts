@@ -159,6 +159,28 @@ describe("the control-plane client (FR-027)", () => {
     expect((error as ToolError).nextStep.length).toBeGreaterThan(0);
   });
 
+  it("maps a locked trial to TRIAL_LOCKED, with the broker's words and the GitHub sign-in step", async () => {
+    const locked = vi.fn(async () => reply(403, { error: { code: "TRIAL_LOCKED", message: "Connect GitHub to start your free trial." } }));
+    const error = await client(locked).startTask(start).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ToolError);
+    expect(error).toMatchObject({ code: "TRIAL_LOCKED", message: "Connect GitHub to start your free trial." });
+    expect((error as ToolError).nextStep).toBe("Sign in with GitHub to start your free trial: run npx @preplabsai/rovara-code login https://agentx.example.test and choose GitHub");
+    expect((error as ToolError).nextStep).not.toContain("admin");
+    expect(locked).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["BUDGET_EXCEEDED", "Your monthly AI budget is used up ($29 of $29). Ask an admin to raise it.", /raise your monthly AI budget/],
+    ["ORG_BUDGET_EXCEEDED", "Your company's monthly AI budget is used up. Ask an admin to raise it.", /raise the company's monthly AI budget/],
+    ["BUDGET_EXCEEDED", "This task has used its AI budget ($25 of $25). Choose Continue to resume this task with a fresh budget.", /agentx_continue_task/],
+  ] as const)("maps %s (HTTP 402) to BUDGET_REACHED with the broker's words and its own next step", async (brokerCode, message, step) => {
+    const error = await client(async () => reply(402, { error: { code: brokerCode, message } })).startTask(start).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ToolError);
+    expect(error).toMatchObject({ code: "BUDGET_REACHED", message });
+    expect((error as ToolError).nextStep).toMatch(step);
+    expect((error as ToolError).nextStep).not.toContain("try again later");
+  });
+
   it("stops trying at the deadline when AgentX never answers", async () => {
     vi.useFakeTimers();
     const started = Date.now();
