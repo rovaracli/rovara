@@ -105,7 +105,11 @@ export async function runTaskInvocation(
   try {
     return await runTask(untrustedInvocation, dependencies, sandboxes);
   } finally {
-    for (const sandbox of sandboxes) await sandbox.dispose().catch(() => undefined);
+    for (const sandbox of sandboxes) {
+      await sandbox.dispose().catch((error: unknown) => {
+        console.log(JSON.stringify({ component: "worker", event: "task-sandbox.remove.failed", container: sandbox.name, reason: error instanceof Error ? error.message : String(error) }));
+      });
+    }
   }
 }
 

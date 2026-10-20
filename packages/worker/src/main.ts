@@ -36,7 +36,7 @@ process.env.PI_OFFLINE = "1";
 // so a bad AGENTX_TASK_SHELL, or a request for the local shell on EC2, stops the worker here, not on its first task.
 if (taskShellSelection().kind === "sandbox") {
   // A crash or restart skips a sandbox's removal; none of this process's exists yet, so none found is in use.
-  await removeLeftoverTaskSandboxes().then(
+  await removeLeftoverTaskSandboxes(rootPath).then(
     (removed) => { if (removed > 0) console.log(JSON.stringify({ component: "worker", event: "task-sandbox.leftovers.removed", removed })); },
     (error: unknown) => { console.error(`could not remove leftover task sandboxes: ${error instanceof Error ? error.message : String(error)}`); },
   );

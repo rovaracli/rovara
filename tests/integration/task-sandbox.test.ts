@@ -26,7 +26,7 @@ function fakeDocker(exec: (args: readonly string[]) => { exitCode: number; stdou
   const docker: DockerCli = {
     run: async (args) => {
       calls.push([...args]);
-      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: "", stderr: "" };
+      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: "bridge {} false", stderr: "" };
       if (args[0] === "exec") {
         const answer = exec(args);
         return { exitCode: answer.exitCode, stdout: answer.stdout ?? "", stderr: answer.stderr ?? "" };

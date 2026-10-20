@@ -12,6 +12,7 @@ import {
   taskSandboxRunArgs,
   taskShellFromEnvironment,
   taskShellSelection,
+  workspaceKey,
 } from "../../packages/worker/src/task-sandbox.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 
@@ -20,13 +21,19 @@ const TASK = "0b9f6a1e-6c1e-4c53-9d0a-5d3a1d6f2c11";
 const EC2 = { AGENTX_WORKER_PROCESS_SCOPE: "container" };
 
 /** A fake Docker CLI that records every call and answers like a healthy daemon. */
-function fakeDocker(behaviour: { networkExists?: boolean; stale?: string[]; failRun?: string; failExec?: boolean } = {}) {
+function fakeDocker(behaviour: { networkExists?: boolean; network?: string; stale?: string[]; failRun?: string; failExec?: boolean; failRm?: number } = {}) {
+  let rmFailures = behaviour.failRm ?? 0;
   const calls: string[][] = [];
   const docker: DockerCli = {
     run: async (args) => {
       calls.push([...args]);
       const [verb, noun] = args;
-      if (verb === "network" && noun === "inspect") return { exitCode: behaviour.networkExists === true ? 0 : 1, stdout: "", stderr: "" };
+      if (verb === "network" && noun === "inspect") {
+        return behaviour.networkExists === true || behaviour.network !== undefined
+          ? { exitCode: 0, stdout: behaviour.network ?? "bridge {} false", stderr: "" }
+          : { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (verb === "rm" && rmFailures > 0) { rmFailures -= 1; return { exitCode: 1, stdout: "", stderr: "device or resource busy" }; }
       if (verb === "ps") return { exitCode: 0, stdout: (behaviour.stale ?? []).join("\n"), stderr: "" };
       if (verb === "run" && behaviour.failRun !== undefined) return { exitCode: 125, stdout: "", stderr: behaviour.failRun };
       if (verb === "exec" && behaviour.failExec === true) return { exitCode: 1, stdout: "", stderr: "boom" };
@@ -61,6 +68,7 @@ describe("the task sandbox's docker run arguments (R56)", () => {
 
   it("label the container with the task and start the image's own init with nothing to run", () => {
     expect(args[args.indexOf("--label") + 1]).toBe(`agentx.task=${TASK}`);
+    expect(args).toContain(`agentx.workspace=${workspaceKey("/mnt/workspace")}`);
     expect(args[args.indexOf("--name") + 1]).toBe("agentx-task-x");
     expect(args.slice(args.indexOf(IMAGE) - 2)).toEqual(["--entrypoint", "/usr/bin/tini", IMAGE, "--", "sleep", "infinity"]);
   });
@@ -97,6 +105,30 @@ describe("starting and stopping a sandbox", () => {
     expect(present.verbs("network").map((call) => call[1])).toEqual(["inspect"]);
   });
 
+  it("does not trust a network of that name that is not a plain bridge: it is removed and made again", async () => {
+    const root = await workspace();
+    for (const network of ["overlay {} false", "bridge {\"com.docker.network.bridge.host_binding_ipv4\":\"0.0.0.0\"} false", "bridge {} true"]) {
+      const fake = fakeDocker({ network });
+      await new TaskSandbox({ rootPath: root, taskId: TASK, docker: fake.docker, image: IMAGE }).start();
+      expect(fake.verbs("network").map((call) => call[1])).toEqual(["inspect", "rm", "create"]);
+    }
+  });
+
+  it("fails closed when a network that is not a plain bridge cannot be removed", async () => {
+    const root = await workspace();
+    const calls: string[][] = [];
+    const docker: DockerCli = {
+      run: async (args) => {
+        calls.push([...args]);
+        if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: "macvlan {} false", stderr: "" };
+        if (args[0] === "network" && args[1] === "rm") return { exitCode: 1, stdout: "", stderr: "network has active endpoints" };
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    };
+    await expect(new TaskSandbox({ rootPath: root, taskId: TASK, docker, image: IMAGE }).start()).rejects.toThrow(/not a plain bridge and could not be removed/u);
+    expect(calls.some((args) => args[0] === "run")).toBe(false);
+  });
+
   it("accepts a network that another start created in between", async () => {
     const root = await workspace();
     const calls: string[][] = [];
@@ -104,7 +136,7 @@ describe("starting and stopping a sandbox", () => {
     const docker: DockerCli = {
       run: async (args) => {
         calls.push([...args]);
-        if (args[0] === "network" && args[1] === "inspect") return { exitCode: ++inspections === 1 ? 1 : 0, stdout: "", stderr: "" };
+        if (args[0] === "network" && args[1] === "inspect") return { exitCode: ++inspections === 1 ? 1 : 0, stdout: "bridge {} false", stderr: "" };
         if (args[0] === "network" && args[1] === "create") return { exitCode: 1, stdout: "", stderr: "network with name agentx-task already exists" };
         return { exitCode: 0, stdout: "", stderr: "" };
       },
@@ -125,7 +157,7 @@ describe("starting and stopping a sandbox", () => {
     expect(sandbox.name).toMatch(/^agentx-task-0b9f6a1e-6c1e-4c53-9d0a-5d3a1d6f2c11-[0-9a-f]{8}$/u);
   });
 
-  it("never removes another sandbox when it starts: only the worker's startup sweep does, by label", async () => {
+  it("never removes another sandbox when it starts: only the worker's startup sweep does, and only this workspace's", async () => {
     const root = await workspace();
     const fake = fakeDocker({ stale: ["abc123", "def456"] });
     await new TaskSandbox({ rootPath: root, taskId: TASK, docker: fake.docker, image: IMAGE }).start();
@@ -133,14 +165,15 @@ describe("starting and stopping a sandbox", () => {
     expect(fake.verbs("rm")).toEqual([]);
 
     const sweep = fakeDocker({ stale: ["abc123", "def456"] });
-    await expect(removeLeftoverTaskSandboxes(sweep.docker)).resolves.toBe(2);
+    await expect(removeLeftoverTaskSandboxes(root, sweep.docker)).resolves.toBe(2);
     expect(sweep.calls).toEqual([
-      ["ps", "--all", "--quiet", "--filter", "label=agentx.task"],
+      ["ps", "--all", "--quiet", "--filter", "label=agentx.task", "--filter", `label=agentx.workspace=${workspaceKey(root)}`],
       ["rm", "--force", "abc123", "def456"],
     ]);
     const none = fakeDocker();
-    await expect(removeLeftoverTaskSandboxes(none.docker)).resolves.toBe(0);
+    await expect(removeLeftoverTaskSandboxes(root, none.docker)).resolves.toBe(0);
     expect(none.verbs("rm")).toEqual([]);
+    expect(workspaceKey(root)).not.toBe(workspaceKey(`${root}-other`));
   });
 
   it("hides the worker's own state from the sandbox, creating it first so the task cannot, and the boot script's folders where they exist", async () => {
@@ -172,6 +205,24 @@ describe("starting and stopping a sandbox", () => {
     await sandbox.dispose();
     expect(fake.verbs("rm").filter((call) => call.includes(sandbox.name))).toHaveLength(1);
     await expect(sandbox.exec(["true"], {})).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+
+  it("retries a failed removal once, and logs a container it could not remove", async () => {
+    const root = await workspace();
+    const events: Array<Record<string, unknown>> = [];
+    const retried = fakeDocker({ failRm: 1 });
+    const first = new TaskSandbox({ rootPath: root, taskId: TASK, docker: retried.docker, image: IMAGE, log: (event) => events.push(event) });
+    await first.exec(["true"], {});
+    await first.dispose();
+    expect(retried.verbs("rm").filter((call) => call.includes(first.name))).toHaveLength(2);
+    expect(events).toEqual([]);
+
+    const stuck = fakeDocker({ failRm: 5 });
+    const second = new TaskSandbox({ rootPath: root, taskId: TASK, docker: stuck.docker, image: IMAGE, log: (event) => events.push(event) });
+    await second.exec(["true"], {});
+    await expect(second.dispose()).resolves.toBeUndefined();
+    expect(stuck.verbs("rm").filter((call) => call.includes(second.name))).toHaveLength(2);
+    expect(events).toEqual([{ event: "task-sandbox.remove.failed", container: second.name, taskId: TASK, reason: "device or resource busy" }]);
   });
 
   it("removes the container even when docker run failed part-way, and reports why it failed", async () => {

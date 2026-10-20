@@ -140,7 +140,7 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
   // With a devcontainer, setup and readiness run in it, like the agent's shell; without one, in the task sandbox (R56).
   const sandbox = options.commandRunner !== undefined || (target !== undefined && devcontainerCli !== undefined)
     ? undefined
-    : taskSandboxFor(options.taskShell ?? taskShellSelection(), { rootPath: canonicalRoot, taskId: options.creationIdentity ?? "prepare" });
+    : taskSandboxFor(options.taskShell ?? taskShellSelection(), { rootPath: canonicalRoot, taskId: options.creationIdentity ?? randomUUID() });
   const commandRunner = options.commandRunner
     ?? (target !== undefined && devcontainerCli !== undefined
       ? (command: ProjectCommand) => runDevcontainerCommand(devcontainerCli, target, command)

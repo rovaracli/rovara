@@ -1,11 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { agentXError, type ProjectCommand } from "@agentx/contracts";
 import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
 import { containerBashOperations, runContainerCommand, type ContainerExec } from "./devcontainer.js";
 import type { CommandResult } from "./readiness.js";
 import { hiddenWorkspaceDirectories } from "./workspace-state.js";
-import { createDockerCli, removeContainer, taskContainerExec, type DockerCli } from "./swebench/containers.js";
+import { createDockerCli, taskContainerExec, type DockerCli } from "./swebench/containers.js";
 
 /**
  * Ruling R56: on an EC2 worker, code the task controls (the agent's shell, project setup and readiness commands, project
@@ -22,6 +22,13 @@ import { createDockerCli, removeContainer, taskContainerExec, type DockerCli } f
 export const TASK_SANDBOX_NETWORK = "agentx-task";
 /** The label every sandbox carries, with the ID of the operation it serves. */
 export const TASK_SANDBOX_LABEL = "agentx.task";
+/** The label that says which workspace a sandbox belongs to, so a worker removes only its own. */
+export const TASK_SANDBOX_WORKSPACE_LABEL = "agentx.workspace";
+
+/** A stable key for a workspace root: what marks the sandboxes of one worker's workspace. */
+export function workspaceKey(rootPath: string): string {
+  return createHash("sha256").update(resolve(rootPath)).digest("hex").slice(0, 16);
+}
 /** The `node` user of environments/base/Dockerfile, which the worker also runs as. */
 export const TASK_SANDBOX_USER = "1000:1000";
 /** The environment variable that names the sandbox image; boot.sh sets it to the worker's own image. */
@@ -109,6 +116,7 @@ export function taskSandboxRunArgs(input: TaskSandboxRunInput): string[] {
     "run", "--detach",
     "--name", input.name,
     "--label", `${TASK_SANDBOX_LABEL}=${input.taskId}`,
+    "--label", `${TASK_SANDBOX_WORKSPACE_LABEL}=${workspaceKey(input.rootPath)}`,
     "--network", TASK_SANDBOX_NETWORK,
     "--user", TASK_SANDBOX_USER,
     "--cap-drop", "ALL",
@@ -131,6 +139,8 @@ export interface TaskSandboxOptions {
   /** Default: AGENTX_SANDBOX_IMAGE in `environment`. */
   image?: string;
   environment?: NodeJS.ProcessEnv;
+  /** Where the sandbox reports what it does not fail on; default: one JSON line on the worker's log. */
+  log?: (event: Record<string, unknown>) => void;
 }
 
 /**
@@ -178,7 +188,19 @@ export class TaskSandbox {
     if (this.starting === undefined) return;
     // A start still in flight finishes first, so the removal sees the container it creates.
     await this.starting.catch(() => undefined);
-    await removeContainer(this.docker, this.name);
+    await this.remove();
+  }
+
+  /** `docker rm --force`, once more if it fails; a container that cannot be removed is logged, since it keeps the workspace mounted. */
+  private async remove(): Promise<void> {
+    let failure = "";
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const result = await this.docker.run(["rm", "--force", this.name], { timeoutMs: DOCKER_CALL_TIMEOUT_MS })
+        .catch((error: unknown) => ({ exitCode: -1, stdout: "", stderr: error instanceof Error ? error.message : String(error) }));
+      if (result.exitCode === 0 || /no such container/iu.test(result.stderr)) return;
+      failure = (result.stderr || result.stdout).trim().split("\n").slice(-3).join(" ").slice(0, 400) || `exit ${String(result.exitCode)}`;
+    }
+    (this.options.log ?? logEvent)({ event: "task-sandbox.remove.failed", container: this.name, taskId: this.options.taskId, reason: failure });
   }
 
   private async startContainer(): Promise<void> {
@@ -199,27 +221,44 @@ export class TaskSandbox {
     }
   }
 
-  /** Idempotent: another start may create the network between the check and the create. */
+  /**
+   * Idempotent: another start may create the network between the check and the create. The data root persists on the
+   * workspace volume, so a network of this name is not trusted: it must be a plain bridge, or it is removed and made again.
+   */
   private async ensureNetwork(): Promise<void> {
-    const inspect = ["network", "inspect", TASK_SANDBOX_NETWORK];
-    if ((await this.docker.run(inspect, { timeoutMs: DOCKER_CALL_TIMEOUT_MS })).exitCode === 0) return;
+    const inspect = ["network", "inspect", "--format", "{{.Driver}} {{json .Options}} {{.Internal}}", TASK_SANDBOX_NETWORK];
+    const found = await this.docker.run(inspect, { timeoutMs: DOCKER_CALL_TIMEOUT_MS });
+    if (found.exitCode === 0) {
+      if (/^bridge (\{\}|null) false$/u.test(found.stdout.trim())) return;
+      const removed = await this.docker.run(["network", "rm", TASK_SANDBOX_NETWORK], { timeoutMs: DOCKER_CALL_TIMEOUT_MS });
+      if (removed.exitCode !== 0) {
+        throw agentXError("RUNTIME_UNAVAILABLE", `the ${TASK_SANDBOX_NETWORK} network is not a plain bridge and could not be removed, so AgentX did not start the task sandbox: ${(removed.stderr || removed.stdout).trim().slice(0, 300)}`);
+      }
+    }
     const created = await this.docker.run(["network", "create", "--driver", "bridge", TASK_SANDBOX_NETWORK], { timeoutMs: DOCKER_CALL_TIMEOUT_MS });
     if (created.exitCode === 0) return;
-    if ((await this.docker.run(inspect, { timeoutMs: DOCKER_CALL_TIMEOUT_MS })).exitCode === 0) return;
+    if (/^bridge (\{\}|null) false$/u.test((await this.docker.run(inspect, { timeoutMs: DOCKER_CALL_TIMEOUT_MS })).stdout.trim())) return;
     const detail = (created.stderr || created.stdout).trim().split("\n").slice(-3).join(" ").slice(0, 400);
     throw agentXError("RUNTIME_UNAVAILABLE", `AgentX could not create the ${TASK_SANDBOX_NETWORK} network for the task sandbox: ${detail || `exit ${String(created.exitCode)}`}`);
   }
 }
 
 /**
- * Removes the sandboxes an earlier worker process left (a crash or a restart skips dispose). The worker calls it once at
- * startup, when none of its own exists yet, so it cannot remove one that is in use.
+ * Removes the sandboxes an earlier worker process left for this workspace (a crash or a restart skips dispose), by label.
+ * The worker calls it once at startup, when none of its own exists yet, so it cannot remove one that is in use; the
+ * workspace label keeps it from removing another worker's sandboxes on a shared Docker daemon.
  */
-export async function removeLeftoverTaskSandboxes(docker: DockerCli = createDockerCli()): Promise<number> {
-  const listed = await docker.run(["ps", "--all", "--quiet", "--filter", `label=${TASK_SANDBOX_LABEL}`], { timeoutMs: DOCKER_CALL_TIMEOUT_MS });
+export async function removeLeftoverTaskSandboxes(rootPath: string, docker: DockerCli = createDockerCli()): Promise<number> {
+  const listed = await docker.run([
+    "ps", "--all", "--quiet", "--filter", `label=${TASK_SANDBOX_LABEL}`, "--filter", `label=${TASK_SANDBOX_WORKSPACE_LABEL}=${workspaceKey(rootPath)}`,
+  ], { timeoutMs: DOCKER_CALL_TIMEOUT_MS });
   const ids = listed.exitCode === 0 ? listed.stdout.split("\n").map((line) => line.trim()).filter((line) => line !== "") : [];
   if (ids.length > 0) await docker.run(["rm", "--force", ...ids], { timeoutMs: DOCKER_CALL_TIMEOUT_MS });
   return ids.length;
+}
+
+function logEvent(event: Record<string, unknown>): void {
+  console.log(JSON.stringify({ component: "worker", ...event }));
 }
 
 /** The sandbox for a selection, or undefined for the local shell (refused on the EC2 runtime). */
