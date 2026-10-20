@@ -415,8 +415,21 @@ export async function runDevcontainerCommand(
   command: ProjectCommand,
   signal?: AbortSignal,
 ): Promise<CommandResult> {
-  const cwd = contained(target.rootPath, command.cwd);
-  const run = await runInContainerGroup(devcontainerExec(cli, target), {
+  return runContainerCommand(devcontainerExec(cli, target), target.rootPath, command, signal);
+}
+
+/**
+ * A project command run in any container through `exec`: the devcontainer's, or the task sandbox's (R56). `rootPath` is
+ * the workspace, which the container mounts at the same path.
+ */
+export async function runContainerCommand(
+  exec: ContainerExec,
+  rootPath: string,
+  command: ProjectCommand,
+  signal?: AbortSignal,
+): Promise<CommandResult> {
+  const cwd = contained(rootPath, command.cwd);
+  const run = await runInContainerGroup(exec, {
     groupFilePrefix: "agentx-command",
     // The executable and its arguments stay positional parameters: no shell reads them again.
     body: 'exec "$@"',

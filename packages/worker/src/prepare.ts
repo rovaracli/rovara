@@ -29,7 +29,7 @@ import {
 } from "./devcontainer.js";
 import { runCollected, type CollectedProcess } from "./collected-process.js";
 import { describeCommandFailure } from "./command-failure.js";
-import { DOCKER_DATA_DIRECTORY } from "./devcontainer-policy.js";
+import { DOCKER_DATA_DIRECTORY, RUNTIME_BACKING_DIRECTORY } from "./devcontainer-policy.js";
 import { evaluateReadiness, type CommandResult } from "./readiness.js";
 import { gitHardenedEnvironment, projectCommandEnvironment } from "./git.js";
 import { CHECK_HISTORY_PATH, projectCheckKey, recordPreparedOutcomes } from "./verification/check-history.js";
@@ -41,7 +41,6 @@ import type {
 
 const execFileAsync = promisify(execFile);
 const MANIFEST_PATH = ".agentx/preparation-manifest.json";
-const RUNTIME_BACKING_DIRECTORY = ".agentx-runtime";
 const MAX_COMMAND_OUTPUT_BYTES = 1_048_576;
 /**
  * Docker's data root on an EC2 worker's workspace volume (#121), so images, containers and named
