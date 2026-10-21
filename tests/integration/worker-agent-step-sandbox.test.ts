@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt, getCurrentTools, type FauxResponseStep, type TranscriptContext } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AGENT_WORKER_OUTDATED, AGENTX_WORKER_PROMPT, ProjectDefinitionSchema, type ProjectDefinition, type WorkerInvocation } from "@agentx/contracts";
+import { AGENTX_WORKER_PROMPT, ProjectDefinitionSchema, type ProjectDefinition, type WorkerInvocation } from "@agentx/contracts";
 import type { AgentSkillFile } from "../../packages/worker/src/agent-step.js";
 import { FILE_OPS_NODE_FLAGS, type FileOpsTarget } from "../../packages/worker/src/file-ops-exec.js";
 import { createDefaultPiSessionAdapter, createWorkspacePiSession, type PiSessionAdapter, type PiSessionHandle, type PiSessionInput } from "../../packages/worker/src/pi-session.js";
@@ -363,13 +363,13 @@ describe("run-task with a coding step", () => {
     expect(aborts.count).toBeGreaterThanOrEqual(1);
   });
 
-  it("does not run an agent step, which needs task.agentRun (Task 23)", async () => {
+  it("does not run an agent step as a coding one: without the broker's tools to reach, the worker refuses it and starts nothing", async () => {
     const fake = fakeDocker({});
     const root = await preparedWorkspace(fake.docker);
     const inputs: PiSessionInput[] = [];
     const step = { kind: "agent", agentId: "agt_aaaaaaaaaaaaaaaaaaaa", version: 1, stepId: "triage", instructions: "", workspace: "none", inputs: "hello" };
     await expect(runTaskInvocation(taskInvocation(step), dependencies(root, adapterOf(inputs), fake.docker)))
-      .rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining(AGENT_WORKER_OUTDATED) as unknown });
+      .rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("agent tools") as unknown });
     expect(inputs).toEqual([]);
   });
 });

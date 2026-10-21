@@ -104,7 +104,25 @@ export interface PiSessionInput {
    * repository's and the home directory's never load), and the model reads them through `read_skill`.
    */
   skills?: readonly AgentSkillFile[];
+  /**
+   * One step of a non-coding agent run (Task 23): its own system prompt in place of the coding worker's, no repository
+   * context files (what the workspace holds is information, never instructions) and no AgentX coding preamble, the worker's
+   * own tools beside the read-only file tools `agentTools` names, and never a shell or a write: the session runs as a
+   * planning session whatever `workflowMode` says.
+   */
+  agentRun?: AgentRunSession;
 }
+
+/** What makes a session an agent step's (see PiSessionInput.agentRun). */
+export interface AgentRunSession {
+  /** The system prompt, the preamble and the step's instruction block; the step's skills list follows it. */
+  systemPrompt: string;
+  /** The worker's own tools for the step: the connector bridge and `choose_branch`. They run in the worker, never in the task's container. */
+  tools: readonly ToolDefinition[];
+}
+
+/** The names no worker tool of an agent step may take: Pi's own, the shell and `read_skill`. */
+const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(["bash", "edit", "write", "read", "grep", "find", "ls", "read_skill"]);
 
 export interface PiSessionAdapter {
   create(input: PiSessionInput): Promise<PiSessionHandle>;
@@ -155,6 +173,7 @@ export async function createWorkspacePiSession(
     extensionFactories?: InlineExtension[];
     agentTools?: readonly string[];
     skills?: readonly AgentSkillFile[];
+    agentRun?: AgentRunSession;
   },
   adapter: PiSessionAdapter = defaultPiSessionAdapter,
 ): Promise<PiSessionHandle> {
@@ -166,7 +185,8 @@ export async function createWorkspacePiSession(
     mkdir(sessionDirectory, { recursive: true, mode: 0o700 }),
     mkdir(agentDirectory, { recursive: true, mode: 0o700 }),
   ]);
-  const contextFiles = await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths);
+  // An agent step reads the repository as information: its context files (written by whoever can push) are not loaded.
+  const contextFiles = input.agentRun === undefined ? await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths) : [];
   const handle = await adapter.create({
     cwd: rootPath,
     sessionDirectory,
@@ -183,6 +203,7 @@ export async function createWorkspacePiSession(
     ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
     ...(input.agentTools === undefined ? {} : { agentTools: input.agentTools }),
     ...(input.skills === undefined ? {} : { skills: input.skills }),
+    ...(input.agentRun === undefined ? {} : { agentRun: input.agentRun }),
   });
   assertContained(sessionDirectory, handle.sessionFile);
   return handle;
@@ -356,7 +377,10 @@ async function createDefaultSession(
     // whose skills do not match what the agent was published with never starts.
     const skillFiles = input.skills ?? [];
     const skills = skillFiles.length === 0 ? [] : await materializeSkills(input.agentDirectory, skillFiles);
-    const { resourceLoader, settingsManager } = await createWorkerResources({ ...input, loadedSkills: skills });
+    const runTools = input.agentRun?.tools ?? [];
+    const clash = runTools.find((tool, index) => RESERVED_TOOL_NAMES.has(tool.name) || runTools.findIndex(({ name }) => name === tool.name) !== index);
+    if (clash !== undefined) throw agentXError("CONFIG_INVALID", `an agent step cannot have two tools named ${clash.name}, or one named like a file tool, the shell or read_skill`);
+    const { resourceLoader, settingsManager } = await createWorkerResources({ ...input, loadedSkills: skills, ...(input.agentRun === undefined ? {} : { systemPrompt: input.agentRun.systemPrompt }) });
     // An AgentX extension that failed to load would leave its work silently undone, so the session does not start.
     // It is a deterministic AgentX bug, so not RUNTIME_UNAVAILABLE, which the broker reads as "retry" (M-10).
     const loadErrors = resourceLoader.getExtensions().errors;
@@ -365,9 +389,11 @@ async function createDefaultSession(
         `an AgentX Pi extension failed to load (an AgentX fault; retrying will not help): ${loadErrors.map((error) => `${error.path}: ${error.error}`).join("; ")}`,
       ));
     }
-    const capabilities = piTaskToolCapabilities(input.workflowMode ?? "IMPLEMENT");
+    // An agent step of a non-coding run is a planning session: read-only file tools at most, whatever the caller passed.
+    const mode = input.agentRun === undefined ? input.workflowMode ?? "IMPLEMENT" : "PLAN";
+    const capabilities = piTaskToolCapabilities(mode);
     // A coding step's tool list only narrows the mode's tools (agentStepTools); without one this is the mode's own list.
-    const stepTools = agentStepTools(input.workflowMode ?? "IMPLEMENT", input.agentTools);
+    const stepTools = agentStepTools(mode, input.agentTools);
     // The adapter can be reached without createWorkspacePiSession; the same refusal holds.
     assertFileToolsContained(input);
     const { session } = await createAgentSession({
@@ -377,7 +403,7 @@ async function createDefaultSession(
       model,
       thinkingLevel: requestedLevel ?? (model.reasoning ? "medium" : "off"),
       // read_skill is the worker's own tool, never a file tool: it is there only when the operation has skills.
-      tools: skillFiles.length === 0 ? stepTools.tools : [...stepTools.tools, "read_skill"],
+      tools: [...stepTools.tools, ...(skillFiles.length === 0 ? [] : ["read_skill"]), ...runTools.map(({ name }) => name)],
       // A custom tool with a built-in's name replaces it.
       customTools: [
         ...(stepTools.shell ? [agentShellTool(input.cwd, input.bashOperations)] : []),
@@ -387,6 +413,7 @@ async function createDefaultSession(
           : !capabilities.customFileTools || input.devcontainerPaths === undefined ? []
             : devcontainerFileTools(input.cwd, input.devcontainerPaths).filter((tool) => stepTools.tools.includes(tool.name))),
         ...(skillFiles.length === 0 ? [] : [readSkillTool(skillFiles)]),
+        ...runTools,
       ],
       resourceLoader,
       settingsManager,
@@ -492,6 +519,8 @@ export async function createWorkerResources(
   input: Pick<PiSessionInput, "cwd" | "agentDirectory" | "contextFiles" | "extensionFactories"> & {
     /** This operation's skills, as written by materializeSkills: the only skills the session has. */
     loadedSkills?: readonly Skill[];
+    /** An agent step's system prompt (Task 23), in place of the coding worker's; with it, neither Pi's discovered context files nor AgentX's coding preamble are added. */
+    systemPrompt?: string;
   },
 ): Promise<{ resourceLoader: DefaultResourceLoader; settingsManager: SettingsManager }> {
   const skills = input.loadedSkills ?? [];
@@ -526,13 +555,16 @@ export async function createWorkerResources(
     skillsOverride: () => ({ skills: [...skills], diagnostics: [] }),
     noPromptTemplates: true,
     noThemes: true,
-    agentsFilesOverride: appendRepositoryContextFiles(input.contextFiles),
+    agentsFilesOverride: input.systemPrompt === undefined ? appendRepositoryContextFiles(input.contextFiles) : () => ({ agentsFiles: [] }),
     // AgentX's own prompt in place of Pi's, whatever a SYSTEM.md would have given. Pi then leaves out its tool list,
     // tool rules and documentation pointers; its addendum, project context and cwd sections are unchanged.
     // A step's skills are listed after it, naming read_skill: Pi's own list would point at the file and the read tool.
-    systemPromptOverride: () => (skills.length === 0 ? AGENTX_WORKER_PROMPT : `${AGENTX_WORKER_PROMPT}\n\n${skillsPromptSection(skills)}`),
-    // Spec 051 FR-001/FR-010: the same preamble for coding tasks and eval runs, rendered as Pi's <addendum>.
-    appendSystemPrompt: [AGENTX_PREAMBLE],
+    systemPromptOverride: () => {
+      const base = input.systemPrompt ?? AGENTX_WORKER_PROMPT;
+      return skills.length === 0 ? base : `${base}\n\n${skillsPromptSection(skills)}`;
+    },
+    // Spec 051 FR-001/FR-010: the same preamble for coding tasks and eval runs, rendered as Pi's <addendum>. An agent step writes no code.
+    appendSystemPrompt: input.systemPrompt === undefined ? [AGENTX_PREAMBLE] : [],
   });
   await resourceLoader.reload({ resolveProjectTrust: async () => false });
   return { resourceLoader, settingsManager };

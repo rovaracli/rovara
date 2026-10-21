@@ -100,6 +100,8 @@ const state = createWorkerServerState(
           ...callbacks,
           // The operation's skills snapshot, asked for only when the invocation's agentStep names skills.
           agentSkills: agentSkillsSource({ controlPlaneUrl, capability: invocation.callbackCapability }),
+          // An agent step's connector tools, through the same control plane with the same capability.
+          agentRun: { brokerUrl: controlPlaneUrl },
           ...(invocation.payload.workflowE2EAdmission === undefined ? {} : {
             workflowE2EEvidenceRoot: requiredEnvironment("CONTAINED_FOUNDATION_EVIDENCE_DIR"),
             workflowE2ERuntimeRoot: process.cwd(),

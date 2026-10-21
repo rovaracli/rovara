@@ -117,16 +117,16 @@ describe("worker HTTP contract", () => {
     // Spec 053: what this build parses, so the dispatcher sends the thinking level only to it; spec 051 adds readiness,
     // and publish's reportChecks (P-2), so only this build is asked to publish despite a failing check.
     await expect((await handleWorkerRequest(new Request("http://worker/ping"), state)).json())
-      .resolves.toMatchObject({ invocationFeatures: ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "model.route", "task.agentStep"] });
+      .resolves.toMatchObject({ invocationFeatures: ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "model.route", "task.agentStep", "task.agentRun"] });
   });
 
   it("advertises only the invocation features it implements, not those it merely parses", async () => {
     const root = await mkdtemp(join(tmpdir(), "agentx-features-"));
     const state = createWorkerServerState(new OperationJournal(root), { execute: async () => undefined });
     const body = await (await handleWorkerRequest(new Request("http://worker/ping"), state)).json() as { invocationFeatures: string[] };
-    // Task 16a knows these three; Task 23 adds its own feature here when the worker implements it. Task 18 added "task.agentStep", Task 27 "model.route".
+    // Task 16a knows these three. Task 18 added "task.agentStep", Task 23 "task.agentRun", Task 27 "model.route".
     for (const feature of ["task.agentStep", "task.agentRun", "model.route"]) expect(WORKER_INVOCATION_FEATURES).toContain(feature);
-    expect(body.invocationFeatures).not.toContain("task.agentRun");
+    expect(body.invocationFeatures).toContain("task.agentRun");
     expect(body.invocationFeatures).toContain("task.agentStep");
     expect(body.invocationFeatures).toContain("model.route");
     for (const feature of body.invocationFeatures) expect(WORKER_INVOCATION_FEATURES as readonly string[]).toContain(feature);

@@ -210,9 +210,9 @@ describe("withStepTimeout", () => {
 });
 
 describe("the worker advertises the step feature", () => {
-  it("lists task.agentStep, and not task.agentRun, which Task 23 adds", () => {
+  it("lists task.agentStep and, since Task 23, task.agentRun", () => {
     expect(WORKER_IMPLEMENTED_FEATURES).toContain("task.agentStep");
-    expect(WORKER_IMPLEMENTED_FEATURES).not.toContain("task.agentRun");
+    expect(WORKER_IMPLEMENTED_FEATURES).toContain("task.agentRun");
     for (const feature of WORKER_IMPLEMENTED_FEATURES) expect(WORKER_INVOCATION_FEATURES).toContain(feature);
   });
 });

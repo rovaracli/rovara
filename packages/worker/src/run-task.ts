@@ -1,8 +1,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { AGENT_WORKER_OUTDATED, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, parsePlanDocument, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EWorkflowAdmissionRef } from "@agentx/contracts";
+import { AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, parsePlanDocument, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EWorkflowAdmissionRef } from "@agentx/contracts";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
-import { budgetExhaustedFromMarker } from "@agentx/model-runtime";
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
 import { WorkspaceConversationStore, type ConversationRecord } from "./conversations.js";
 import { checkCodeCitations, sameCitedRanges, withCorrectedRanges } from "./plan-citations.js";
@@ -24,7 +23,9 @@ import { sweepFileOps } from "./sandbox-file-tools.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
 import { EventBatcher, redactCredentials, type EventBatchSink } from "./events.js";
 import { ToolLoopGuard } from "./tool-loop-guard.js";
+import { assistantOutcome, eventType, failedTurn, type AssistantOutcome } from "./session-events.js";
 import { pinnedSkills, withStepTimeout, type AgentSkillFile } from "./agent-step.js";
+import { runAgentStep, type AgentStepResult, type RunAgentStepInput } from "./agent-run/run-agent-step.js";
 import {
   createWorkspacePiSession,
   openRegisteredWorkspacePiSession,
@@ -68,6 +69,8 @@ export interface TaskInvocationResult {
   workflowReviews?: WorkflowReviewReport[];
   workflowDependenciesResult?: WorkflowDependencyResult;
   workflowFeedbackReviewResult?: { taskId: string; workflowRevision: number; candidateDigest: string; outputDigest: string; artifactName: string; status: WorkflowFeedbackReviewReport["status"] };
+  /** An agent step of a non-coding run (Task 23): its report, and the branch it chose when the run has a result contract. */
+  agentStepResult?: AgentStepResult;
 }
 
 export interface TaskInvocationDependencies {
@@ -105,6 +108,11 @@ export interface TaskInvocationDependencies {
   docker?: DockerCli;
   /** This operation's skills snapshot from the control plane (agent-step.ts); asked only when the step names skills. */
   agentSkills?: () => Promise<readonly AgentSkillFile[]>;
+  /**
+   * Where an agent step (Task 23) reaches the broker's connector tools, with the invocation's own capability. Without it the
+   * worker cannot run an agent step. Tests supply fakes for the catalogs and the call.
+   */
+  agentRun?: Pick<RunAgentStepInput, "fetch" | "catalogs" | "call"> & { brokerUrl: string };
 }
 
 export async function runTaskInvocation(
@@ -131,9 +139,12 @@ async function runTask(
 ): Promise<TaskInvocationResult> {
   const invocation = WorkerInvocationSchema.parse(untrustedInvocation);
   if (invocation.kind !== "task") throw agentXError("CONFIG_INVALID", "runTaskInvocation requires a task");
-  // An agent step is Task 23's; this worker does not advertise task.agentRun, so a broker that sends one is refused here too.
-  const agentStep = invocation.payload.agentStep;
-  if (agentStep?.kind === "agent") throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  const step = invocation.payload.agentStep;
+  // What a coding step adds to this task's sessions; an agent step is a run of its own, which takes none of the coding paths below.
+  const agentStep = step?.kind === "coding" ? step : undefined;
+  if (step?.kind === "agent" && dependencies.agentRun === undefined) {
+    throw agentXError("RUNTIME_UNAVAILABLE", "the worker cannot reach the control plane's agent tools");
+  }
   const workflowDependencies = invocation.payload.workflowDependencies;
   if (workflowDependencies !== undefined && invocation.payload.workflowMode !== "IMPLEMENT") {
     throw agentXError("CONFIG_INVALID", "ordered work requires implementation mode");
@@ -151,9 +162,9 @@ async function runTask(
   }
   // A coding step's skills: the broker's snapshot, only those the step was published with. Fetched before any container starts.
   let stepSkills: AgentSkillFile[] | undefined;
-  if (agentStep?.skills !== undefined && agentStep.skills.length > 0) {
+  if (step?.skills !== undefined && step.skills.length > 0) {
     if (dependencies.agentSkills === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the worker cannot read this agent's skills");
-    stepSkills = pinnedSkills(await dependencies.agentSkills(), agentStep.skills);
+    stepSkills = pinnedSkills(await dependencies.agentSkills(), step.skills);
   }
   // What a step adds to every session of the operation, the reviewers' too; nothing without agentStep.
   const stepSession = {
@@ -228,6 +239,22 @@ async function runTask(
     }
   }
   const candidateSweep = fileTools === undefined ? undefined : async (directory: string): Promise<void> => { await sweepFileOps(fileTools, canonicalRoot, directory); };
+
+  if (step?.kind === "agent") {
+    const { brokerUrl, ...hooks } = dependencies.agentRun!;
+    const agentStepResult = await runAgentStep({
+      payload: step, operationId: invocation.operationId, workspaceId: invocation.workspaceId, conversationId: invocation.payload.conversationId,
+      capability: invocation.callbackCapability, brokerUrl,
+      // "read" is the container's read-only file tools; the local ones only when the local shell was chosen explicitly.
+      workspace: { rootPath: dependencies.rootPath, ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}) },
+      modelAccess: { model: dependencies.model, ...(dependencies.piAdapter === undefined ? {} : { piAdapter: dependencies.piAdapter }) },
+      ...(stepSkills === undefined ? {} : { skills: stepSkills }),
+      eventSink: dependencies.eventSink, artifactSink: dependencies.artifactSink,
+      ...(dependencies.cancellationController === undefined ? {} : { cancellationController: dependencies.cancellationController }),
+      ...hooks,
+    });
+    return { conversationId: invocation.payload.conversationId, reopened: false, agentStepResult };
+  }
 
   if (invocation.payload.workflowMode === "FEEDBACK_REVIEW") {
     const binding = invocation.payload.workflowFeedbackReview!;
@@ -1147,40 +1174,6 @@ function toolResultText(result: unknown): string {
   }).join("");
 }
 
-interface AssistantOutcome {
-  stopReason: string;
-  errorMessage?: string;
-}
-
-/** The outcome an assistant message_end event reports, or undefined for any other event. */
-function assistantOutcome(event: unknown): AssistantOutcome | undefined {
-  if (!event || typeof event !== "object") return undefined;
-  const value = event as { type?: unknown; message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown } };
-  if (value.type !== "message_end" || value.message?.role !== "assistant" || typeof value.message.stopReason !== "string") return undefined;
-  return {
-    stopReason: value.message.stopReason,
-    ...(typeof value.message.errorMessage === "string" ? { errorMessage: value.message.errorMessage } : {}),
-  };
-}
-
-/**
- * A turn whose last model call failed or was aborted is not a success. The error message comes
- * from pi or AgentX's OpenRouter transport, which already omit prompts and keys; it is still
- * redacted and bounded before it becomes the task's error.
- */
-function failedTurn(outcome: AssistantOutcome | undefined): Error | undefined {
-  if (outcome?.stopReason === "error") {
-    // A spent AI budget ends the task with its own category and words, and it can be continued once the budget is raised.
-    const exhausted = budgetExhaustedFromMarker(outcome.errorMessage);
-    if (exhausted !== undefined) return exhausted;
-    const detail = String(redactCredentials(outcome.errorMessage ?? "no error message")).slice(0, 1_000);
-    return agentXError("RUNTIME_UNAVAILABLE", `the model call failed: ${detail}`);
-  }
-  // The caller reports it as CANCELLED when a cancellation was requested, and as FAILED otherwise.
-  if (outcome?.stopReason === "aborted") return agentXError("OPERATION_INTERRUPTED", "the model call was aborted");
-  return undefined;
-}
-
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -1203,15 +1196,6 @@ function modelChangeDiagnostics(
     `this conversation was built on ${previous.provider}/${previous.modelId} and continues on ` +
       `${model.provider}/${model.modelId}`,
   ];
-}
-
-function eventType(event: unknown): "progress" | "tool_start" | "tool_end" {
-  if (event && typeof event === "object" && "type" in event) {
-    const type = event.type;
-    if (type === "tool_execution_start") return "tool_start";
-    if (type === "tool_execution_end" || type === "tool_result") return "tool_end";
-  }
-  return "progress";
 }
 
 /**
