@@ -1,5 +1,5 @@
 import { agentXError, type InvocationModelRoute, type ModelSelection } from "@agentx/contracts";
-import { ROUTE_PROVIDER, type ChatGptFallbackReason, type ModelProxyOptions } from "@agentx/model-runtime";
+import { ROUTE_PROVIDER, routedThinkingLevel, type ChatGptFallbackReason, type ModelProxyOptions } from "@agentx/model-runtime";
 import { createChatGptPiSessionAdapter, createProxyPiSessionAdapter, type PiSessionAdapter, type WorkspaceModelConfiguration } from "./pi-session.js";
 import { effectiveCacheRetention } from "./usage.js";
 
@@ -15,12 +15,13 @@ export function resolveTaskModel(
   };
 }
 
-/** Task 27: the model of a task whose broker chose a route: the route's alias on `rovara-route`, with the thinking level asked for. */
+/** Task 27: the model of a task whose broker chose a route: the route's alias on `rovara-route`, with the thinking level asked for (off if that model does not reason). */
 function routedTaskModel(route: InvocationModelRoute, selected: ModelSelection | undefined, environment: NodeJS.ProcessEnv): WorkspaceModelConfiguration {
+  const level = routedThinkingLevel(route, selected?.thinkingLevel);
   return {
     provider: ROUTE_PROVIDER,
     modelId: route.alias,
-    ...(selected?.thinkingLevel === undefined ? {} : { thinkingLevel: selected.thinkingLevel }),
+    ...(level === undefined ? {} : { thinkingLevel: level }),
     cacheRetention: effectiveCacheRetention(environment.PI_CACHE_RETENTION),
   };
 }

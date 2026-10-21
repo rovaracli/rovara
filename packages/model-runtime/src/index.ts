@@ -46,6 +46,19 @@ export interface ModelProxyOptions {
   route?: InvocationModelRoute;
 }
 
+/**
+ * Whether a routed model reasons: the catalog entry it names says so, and a model the catalogs do not know (a company's own) does not.
+ * The thinking level a project chose was chosen for another model, so a routed model without reasoning runs with it off.
+ */
+export function routeSupportsReasoning(route: InvocationModelRoute): boolean {
+  return catalogModelByName(route.catalog)?.model.reasoning ?? UNLISTED_ROUTED_MODEL.reasoning;
+}
+
+/** The thinking level a routed model runs with: the one asked for if the model reasons, else off; absent stays absent. */
+export function routedThinkingLevel<L extends string>(route: InvocationModelRoute, requested: L | undefined): L | "off" | undefined {
+  return requested === undefined || routeSupportsReasoning(route) ? requested : "off";
+}
+
 /** The provider name a routed model is registered under. */
 export const ROUTE_PROVIDER = "rovara-route";
 
@@ -90,7 +103,11 @@ function chatGptRefusal(status: number, body: string): ChatGptFallbackReason | u
 export async function createModelRuntimeWithFallback<T extends ModelIdentifier>(selected: T, role: ModelRole, options: ModelRuntimeOptions = {}) {
   const route = options.apiKey === undefined ? options.proxy?.route : undefined;
   // A routed task runs the route's model whatever was configured, so what it reports is the route's, not the configured model.
-  if (route !== undefined) return { runtime: await createConfiguredModelRuntime(selected, options), model: { ...selected, provider: ROUTE_PROVIDER, modelId: route.alias } };
+  if (route !== undefined) {
+    const { thinkingLevel, ...rest } = selected as T & { thinkingLevel?: string };
+    const level = routedThinkingLevel(route, thinkingLevel);
+    return { runtime: await createConfiguredModelRuntime(selected, options), model: { ...rest, provider: ROUTE_PROVIDER, modelId: route.alias, ...(level === undefined ? {} : { thinkingLevel: level }) } };
+  }
   try {
     return { runtime: await createConfiguredModelRuntime(selected, options), model: selected };
   } catch (error) {
@@ -182,7 +199,6 @@ const UNLISTED_ROUTED_MODEL = { reasoning: false, input: ["text"] as ("text" | "
  */
 async function createRoutedModelRuntime(selected: ModelIdentifier & { thinkingLevel?: string }, options: ModelRuntimeOptions, proxy: ModelProxyOptions, route: InvocationModelRoute): Promise<ModelRuntime> {
   const catalog = catalogModelByName(route.catalog)?.model;
-  if (!(catalog?.reasoning ?? UNLISTED_ROUTED_MODEL.reasoning) && selected.thinkingLevel && selected.thinkingLevel !== "off") throw agentXError("CONFIG_INVALID", "the selected model does not support reasoning; set thinkingLevel to off");
   const runtime = await ModelRuntime.create({ refreshOnCreate: false, modelsPath: null, credentials: new InMemoryCredentialStore() });
   const requestKey = typeof proxy.apiKey === "function" ? proxy.apiKey : undefined;
   const initialKey = requestKey === undefined ? proxy.apiKey as string : await requestKey().catch((error: unknown) => {

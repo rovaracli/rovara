@@ -109,6 +109,31 @@ describe("the model runtime with a route", () => {
     expect(onUsage.mock.calls[0]![0]).toMatchObject({ provider: "openai", requestedModel: "gpt-5.4" });
   });
 
+  it("streams a successful openai-completions route and reports tokens under the catalog provider and id", async () => {
+    const chunk = (delta: Record<string, unknown>, finish: string | null, extra: Record<string, unknown> = {}) =>
+      `data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 1, model: "served", choices: [{ index: 0, delta, finish_reason: finish }], ...extra })}\n\n`;
+    const body = chunk({ role: "assistant", content: "hi" }, null) + chunk({}, "stop", { usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } }) + "data: [DONE]\n\n";
+    const { requests, transport } = recordingTransport(() => new Response(body, { headers: { "Content-Type": "text/event-stream" } }));
+    const onUsage = vi.fn();
+    const runtime = await createConfiguredModelRuntime({ provider: "openai", modelId: "gpt-5.4" }, { fetch: transport, onUsage, proxy: { baseUrl: PROXY_URL, apiKey: PROXY_KEY, route: completionsRoute } });
+    const result = await runtime.streamSimple(runtime.getModel(ROUTE_PROVIDER, completionsRoute.alias)!, context, { maxTokens: 64 }).result();
+    expect(result.stopReason).toBe("stop");
+    expect(requests[0]!.url.pathname).toBe("/v1/chat/completions");
+    expect(onUsage.mock.calls[0]![0]).toMatchObject({ provider: "openai", requestedModel: "gpt-5.4", outcome: "stop", tokens: { input: 10, output: 2 } });
+  });
+
+  it("runs a routed model that does not reason with thinking off, whatever level the project chose", async () => {
+    const unlisted: InvocationModelRoute = { alias: "org_aaaaaaaaaaaaaaaaaaaa.src_eeeeeeeeeeeeeeeeeeee.house-model", api: "openai-completions", catalog: "house-model" };
+    const configured = { provider: "amazon-bedrock", modelId: BEDROCK_MODEL, thinkingLevel: "high" as const };
+    const runtime = await createConfiguredModelRuntime(configured, { proxy: { baseUrl: PROXY_URL, apiKey: PROXY_KEY, route: unlisted } });
+    expect(runtime.getModel(ROUTE_PROVIDER, unlisted.alias)).toBeDefined();
+    const resolved = await createModelRuntimeWithFallback(configured, "worker", { proxy: { baseUrl: PROXY_URL, apiKey: PROXY_KEY, route: unlisted } });
+    expect(resolved.model).toEqual({ provider: ROUTE_PROVIDER, modelId: unlisted.alias, thinkingLevel: "off" });
+    // A model that reasons keeps the level.
+    const reasoning = await createModelRuntimeWithFallback(configured, "worker", { proxy: { baseUrl: PROXY_URL, apiKey: PROXY_KEY, route: anthropicRoute } });
+    expect(reasoning.model).toMatchObject({ thinkingLevel: "high" });
+  });
+
   it("gives a catalog entry the installed catalog does not know a plain model under the catalog name", async () => {
     const route: InvocationModelRoute = { alias: "org_aaaaaaaaaaaaaaaaaaaa.src_eeeeeeeeeeeeeeeeeeee.house-model", api: "openai-completions", catalog: "house-model" };
     expect(routeUsageIdentity(route)).toEqual({ provider: ROUTE_PROVIDER, modelId: "house-model" });
@@ -162,6 +187,18 @@ describe("the worker with a modelRoute", () => {
     }
   });
 
+  it("starts a task routed to a model that does not reason though the project chose a thinking level", async () => {
+    const unlisted: InvocationModelRoute = { alias: "org_aaaaaaaaaaaaaaaaaaaa.src_eeeeeeeeeeeeeeeeeeee.house-model", api: "openai-completions", catalog: "house-model" };
+    const session = await resolveTaskSessionModel({ model: { provider: "amazon-bedrock", modelId: BEDROCK_MODEL, thinkingLevel: "high" }, modelRoute: unlisted }, undefined, environment, undefined, proxy);
+    expect(session.model).toMatchObject({ provider: ROUTE_PROVIDER, modelId: unlisted.alias, thinkingLevel: "off" });
+    const handle = await createWorkspacePiSession({ rootPath: await createFixtureDirectory("agentx-route-"), model: session.model }, session.piAdapter);
+    try {
+      expect(handle.getModel()).toMatchObject({ provider: ROUTE_PROVIDER, modelId: "house-model", thinkingLevel: "off" });
+    } finally {
+      handle.dispose();
+    }
+  });
+
   it("without a route is the task it always was", async () => {
     const session = await resolveTaskSessionModel({ model: { provider: "amazon-bedrock", modelId: BEDROCK_MODEL } }, undefined, environment, undefined, proxy);
     expect(session.model).toMatchObject({ provider: "amazon-bedrock", modelId: BEDROCK_MODEL });
@@ -195,6 +232,28 @@ describe("the orchestrator with a returned route", () => {
     } finally {
       await runtime.dispose();
     }
+  });
+
+  it("starts a turn routed to a model that does not reason though a thinking level was configured", async () => {
+    const unlisted: InvocationModelRoute = { alias: "org_aaaaaaaaaaaaaaaaaaaa.src_eeeeeeeeeeeeeeeeeeee.house-model", api: "openai-completions", catalog: "house-model" };
+    const runtime = await createOrchestratorRuntime({
+      stateDirectory: await createFixtureDirectory("agentx-route-turn-"), projectInstructions: "Delegate.", api: {} as never,
+      context: { workspaceId: randomUUID(), conversationId: randomUUID() }, model: { provider: "amazon-bedrock", modelId: BEDROCK_MODEL, thinkingLevel: "high" },
+      answerOnly: true, proxy: { baseUrl: PROXY_URL, apiKey: PROXY_KEY }, modelRoute: unlisted,
+    });
+    try {
+      expect(runtime.session.model).toMatchObject({ provider: ROUTE_PROVIDER, id: unlisted.alias });
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("refuses a route when there is no proxy to send it through", async () => {
+    await expect(createOrchestratorRuntime({
+      stateDirectory: await createFixtureDirectory("agentx-route-turn-"), projectInstructions: "Delegate.", api: {} as never,
+      context: { workspaceId: randomUUID(), conversationId: randomUUID() }, model: { provider: "amazon-bedrock", modelId: BEDROCK_MODEL },
+      answerOnly: true, modelRoute: anthropicRoute,
+    })).rejects.toMatchObject({ code: "MODEL_PROXY_UNAVAILABLE" });
   });
 
   it("without a route runs the configured model", async () => {
