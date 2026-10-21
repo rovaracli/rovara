@@ -5,6 +5,9 @@ export interface LitellmConfigInput {
   models: ReadonlyArray<{ id: string }>;
 }
 
+/** Spike question 11: key revocation reaches the other replica in about this long; FINALIZE_DELAY_MS (120 s) is derived from it. */
+export const USER_API_KEY_CACHE_TTL_SECONDS = 10;
+
 const SAFE_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 
 /** A double-quoted YAML scalar. JSON strings are valid YAML, so ids with a colon (v1:0) stay text. */
@@ -34,9 +37,14 @@ export function litellmConfig(input: LitellmConfigInput): string {
   return [
     "model_list:",
     ...entries,
+    // rovara_guard.py sits beside this file (the stack writes it at start); it allow-lists request fields and stops redirects.
+    "litellm_settings:",
+    "  callbacks: rovara_guard.proxy_handler_instance",
     "general_settings:",
     "  master_key: os.environ/LITELLM_MASTER_KEY",
     "  database_url: os.environ/DATABASE_URL",
+    // A revoked key stops working on every replica within this many seconds (the stock default is 60).
+    `  user_api_key_cache_ttl: ${String(USER_API_KEY_CACHE_TTL_SECONDS)}`,
     "",
   ].join("\n");
 }

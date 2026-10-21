@@ -104,6 +104,30 @@ describe("model access function infrastructure (named environments)", () => {
     expect(own).toEqual([{ Sid: "ReadMasterKey", Effect: "Allow", Action: "secretsmanager:GetSecretValue", Resource: { Ref: masterKeyId } }]);
   });
 
+  it("may assume roles in other AWS accounts for the Bedrock probe, with the external id condition, and manage no secret", () => {
+    const own = statementsOf(roleOf(accessFunction.Properties.Role!));
+    const assumes = own.filter((statement) => [statement.Action].flat().includes("sts:AssumeRole"));
+    expect(assumes).toEqual([{
+      Sid: "AssumeOrgBedrockRoles",
+      Effect: "Allow",
+      Action: "sts:AssumeRole",
+      Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":iam::*:role/*"]] },
+      Condition: {
+        StringNotEquals: { "aws:ResourceAccount": { Ref: "AWS::AccountId" } },
+        StringLike: { "sts:ExternalId": "rovara-org_*" },
+      },
+    }]);
+    // Company keys live in the proxy's own store, so the function can create, change or delete no secret.
+    expect(own.flatMap((statement) => [statement.Action].flat()).filter((action) => /^secretsmanager:/.test(action))).toEqual(["secretsmanager:GetSecretValue"]);
+    expect(JSON.stringify(own)).not.toContain("org-sources");
+  });
+
+  it("gives the broker nothing for sources: no STS assume, no secret grant, no new environment", () => {
+    const [, broker] = only(resources, "AWS::Lambda::Function", "Broker");
+    expect(statementsOf(roleOf(broker.Properties.Role!)).filter((statement) => [statement.Action].flat().includes("sts:AssumeRole") && JSON.stringify(statement).includes("rovara-org_"))).toEqual([]);
+    expect(JSON.stringify(broker.Properties.Environment)).not.toMatch(/SALT|LITELLM|org-sources/);
+  });
+
   it("is invoked by the broker through a grant on this function's ARN alone, and the broker is told its name", () => {
     const [brokerId, broker] = only(resources, "AWS::Lambda::Function", "Broker");
     expect(broker.Properties.Environment!.Variables!.MODEL_ACCESS_FUNCTION_NAME).toEqual({ Ref: functionId });

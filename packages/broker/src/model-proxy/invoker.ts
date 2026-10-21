@@ -5,8 +5,8 @@
 import { InvokeCommand, type InvokeCommandOutput } from "@aws-sdk/client-lambda";
 import { AgentXErrorCodeSchema, agentXError, type AgentXError, type OrgId } from "@agentx/contracts";
 import { z } from "zod";
-import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess, SpendFigures } from "./access.js";
-import { KeySpendResultSchema, MintedKeyResultSchema, SpendFiguresSchema, SpendResultSchema, type ModelAccessRequest } from "./protocol.js";
+import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "./access.js";
+import { KeySpendResultSchema, MintedKeyResultSchema, SourceCheckResultSchema, SpendFiguresSchema, SpendResultSchema, type ModelAccessRequest } from "./protocol.js";
 
 const DEFAULT_TIMEOUT_MS = 25_000;
 
@@ -47,8 +47,25 @@ export class ModelAccessInvoker implements ModelAccess {
   }
 
   async mintKey(input: MintKeyInput): Promise<MintedKey> {
-    const { orgId, developerId, purpose, refId, maxBudgetUsd, ttlSeconds } = input;
-    return this.parseResult(await this.invoke({ op: "mintKey", args: { orgId, ...(developerId === undefined ? {} : { developerId }), purpose, refId, maxBudgetUsd, ttlSeconds } }), MintedKeyResultSchema);
+    const { orgId, developerId, purpose, refId, maxBudgetUsd, ttlSeconds, models, tags } = input;
+    const args = {
+      orgId, ...(developerId === undefined ? {} : { developerId }), purpose, refId, maxBudgetUsd, ttlSeconds,
+      ...(models === undefined ? {} : { models: [...models] }),
+      ...(tags === undefined ? {} : { tags: Object.fromEntries(Object.entries(tags).filter(([, value]) => value !== undefined)) as typeof tags }),
+    };
+    return this.parseResult(await this.invoke({ op: "mintKey", args }), MintedKeyResultSchema);
+  }
+
+  async upsertSource(input: UpsertSourceInput): Promise<void> {
+    await this.invoke({ op: "upsertSource", args: { orgId: input.orgId, source: input.source, ...(input.apiKey === undefined ? {} : { apiKey: input.apiKey }) } });
+  }
+
+  async removeSource(orgId: OrgId, sourceId: string): Promise<void> {
+    await this.invoke({ op: "removeSource", args: { orgId, sourceId } });
+  }
+
+  async checkSource(orgId: OrgId, sourceId: string): Promise<SourceCheck> {
+    return this.parseResult(await this.invoke({ op: "checkSource", args: { orgId, sourceId } }), SourceCheckResultSchema);
   }
 
   async revokeKey(key: string): Promise<void> {

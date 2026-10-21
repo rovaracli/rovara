@@ -1,5 +1,5 @@
-import { MODEL_PROXY_URL_PARAMETER } from "@agentx/contracts";
-import { litellmConfig } from "@agentx/model-proxy";
+import { INFERENCE_PATHS, MODEL_PROXY_URL_PARAMETER } from "@agentx/contracts";
+import { ROVARA_GUARD_PY, litellmConfig } from "@agentx/model-proxy";
 import {
   Duration,
   RemovalPolicy,
@@ -26,14 +26,42 @@ export const MODEL_PROXY_PORT = 4000;
  * paths are forwarded (ruling R48).
  */
 export const MODEL_PROXY_MANAGEMENT_PORT = 4001;
-/** The only paths the inference listener forwards: Pi's Anthropic client posts to /v1/messages (and its count_tokens), and the health routes need no key. */
-export const INFERENCE_PATH_PATTERNS = ["/v1/messages*", "/health/*"] as const;
+/**
+ * The only requests the inference listener forwards: POST to the exact paths Pi's three transports use (spike, question 2a). No
+ * wildcard, so a pass-through or management route cannot be reached by a path that merely starts the same way; the health check
+ * goes to the target group directly and needs no listener rule.
+ */
+export const INFERENCE_PATH_PATTERNS: readonly string[] = INFERENCE_PATHS.map((entry) => entry.path);
+/**
+ * LiteLLM's per-request timeout in seconds (its own default is 6000). At most the load balancer's idle timeout, so the proxy gives up
+ * on a request before the load balancer cuts the connection under it.
+ */
+export const MODEL_PROXY_REQUEST_TIMEOUT_SECONDS = 900;
 const DATABASE_NAME = "litellm";
 const DATABASE_USER = "litellm";
 /** LiteLLM's unauthenticated liveness route. */
 const HEALTH_CHECK_PATH = "/health/liveliness";
-/** Writes the generated config to a file, then replaces the shell with LiteLLM so it receives the stop signal. */
-const START_COMMAND = `printf "%s" "$LITELLM_CONFIG_YAML" > /tmp/litellm.yaml && exec litellm --config /tmp/litellm.yaml --port ${MODEL_PROXY_PORT}`;
+/**
+ * Writes the generated config and the guard module beside it (LiteLLM loads a callback module from the config's directory), then
+ * replaces the shell with LiteLLM so it receives the stop signal.
+ */
+const START_COMMAND = `printf "%s" "$LITELLM_CONFIG_YAML" > /tmp/litellm.yaml && printf "%s" "$ROVARA_GUARD_PY" > /tmp/rovara_guard.py && exec litellm --config /tmp/litellm.yaml --port ${MODEL_PROXY_PORT}`;
+
+/**
+ * `sts:AssumeRole` into another AWS account's role, for a company's own Bedrock source: never a role in this account, and only with
+ * an external id that starts `rovara-org_` (the account's trust policy must then require this org's exact id; the probe checks that).
+ */
+export function assumeOrgBedrockRoles(stack: Stack): iam.PolicyStatement {
+  return new iam.PolicyStatement({
+    sid: "AssumeOrgBedrockRoles",
+    actions: ["sts:AssumeRole"],
+    resources: [`arn:${stack.partition}:iam::*:role/*`],
+    conditions: {
+      StringNotEquals: { "aws:ResourceAccount": stack.account },
+      StringLike: { "sts:ExternalId": "rovara-org_*" },
+    },
+  });
+}
 
 export interface ModelProxyProps {
   naming: AgentXNaming;
@@ -186,6 +214,14 @@ export class ModelProxy extends Construct {
       secretStringValue: SecretValue.unsafePlainText(`sk-${masterKeySeed.secretValue.unsafeUnwrap()}`),
     });
 
+    // The key LiteLLM encrypts stored credentials with (company AI keys, written through its credentials API). Generated here, read only
+    // by the proxy's execution role (ECS injects it), and kept when the stack goes: without it the stored keys cannot be read.
+    const saltKey = new secretsmanager.Secret(this, "SaltKey", {
+      description: "LITELLM_SALT_KEY of the AgentX model proxy; encrypts the company AI keys stored in its database",
+      generateSecretString: { excludePunctuation: true, passwordLength: 48 },
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
     // Roles. The task role is the only principal in the environment that may call Bedrock for members
     // and read provider keys (the provider-key grants are attached to it by the control plane).
     const taskTrust = new iam.ServicePrincipal("ecs-tasks.amazonaws.com", { conditions: { StringEquals: { "aws:SourceAccount": stack.account } } });
@@ -214,8 +250,11 @@ export class ModelProxy extends Construct {
     executionRole.addToPolicy(new iam.PolicyStatement({
       sid: "ReadInjectedSecrets",
       actions: ["secretsmanager:GetSecretValue"],
-      resources: [this.masterKeySecret.secretArn, databaseUrl.secretArn],
+      resources: [this.masterKeySecret.secretArn, databaseUrl.secretArn, saltKey.secretArn],
     }));
+    // Company Bedrock sources: the task role assumes the customer's role in the customer's own account (never ours), and only with an
+    // external id that names a Rovara org. The ModelAccessFunction has the same statement for its trust-policy probe.
+    this.taskRole.addToPolicy(assumeOrgBedrockRoles(stack));
     const logGroup = new logs.LogGroup(this, "Logs", { retention: logs.RetentionDays.ONE_MONTH, removalPolicy: RemovalPolicy.DESTROY });
     logGroup.grantWrite(executionRole);
 
@@ -245,13 +284,17 @@ export class ModelProxy extends Construct {
         environment: [
           { name: "LITELLM_CONFIG_YAML", value: configYaml },
           { name: "AWS_REGION", value: stack.region },
-          { name: "STORE_MODEL_IN_DB", value: "False" },
+          // Company models are added and removed at run time through the management API, and every replica reads them from the database.
+          { name: "STORE_MODEL_IN_DB", value: "True" },
+          { name: "REQUEST_TIMEOUT", value: String(MODEL_PROXY_REQUEST_TIMEOUT_SECONDS) },
+          { name: "ROVARA_GUARD_PY", value: ROVARA_GUARD_PY },
           // Prices come from the cost map shipped in the pinned image, never fetched at start: a proxy that cannot reach GitHub still starts.
           { name: "LITELLM_LOCAL_MODEL_COST_MAP", value: "True" },
         ],
         secrets: [
           { name: "LITELLM_MASTER_KEY", valueFrom: this.masterKeySecret.secretArn },
           { name: "DATABASE_URL", valueFrom: databaseUrl.secretArn },
+          { name: "LITELLM_SALT_KEY", valueFrom: saltKey.secretArn },
         ],
         logConfiguration: {
           logDriver: "awslogs",
@@ -302,7 +345,10 @@ export class ModelProxy extends Construct {
     new elbv2.CfnListenerRule(this, "InferenceRoutes", {
       listenerArn: listener.ref,
       priority: 10,
-      conditions: [{ field: "path-pattern", pathPatternConfig: { values: [...INFERENCE_PATH_PATTERNS] } }],
+      conditions: [
+        { field: "path-pattern", pathPatternConfig: { values: [...INFERENCE_PATH_PATTERNS] } },
+        { field: "http-request-method", httpRequestMethodConfig: { values: ["POST"] } },
+      ],
       actions: [{ type: "forward", targetGroupArn: targetGroup.ref }],
     });
     // Every path, on a port only the model access function's group may reach.

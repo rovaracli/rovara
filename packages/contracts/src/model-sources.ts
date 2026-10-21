@@ -25,6 +25,16 @@ export const SOURCE_KINDS_AT_LAUNCH: readonly CustomSourceKind[] = [];
 export const TRANSPORTS_AT_LAUNCH = ["anthropic-messages", "openai-responses", "openai-completions"] as const;
 export type Transport = (typeof TRANSPORTS_AT_LAUNCH)[number];
 
+/**
+ * The only requests the model proxy's inference listener forwards (docs/learnings/model-sources-spike.md, question 2a): exact
+ * paths, POST only, one per transport. A path with a wildcard would reach the pass-through and management routes.
+ */
+export const INFERENCE_PATHS = [
+  { method: "POST", path: "/v1/messages", transport: "anthropic-messages" },
+  { method: "POST", path: "/v1/responses", transport: "openai-responses" },
+  { method: "POST", path: "/chat/completions", transport: "openai-completions" },
+] as const satisfies ReadonlyArray<{ method: "POST"; path: string; transport: Transport }>;
+
 export const MAX_MODELS_PER_SOURCE = 20;
 export const MAX_CUSTOM_SOURCES_PER_ORG = 10;
 

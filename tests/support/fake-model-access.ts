@@ -4,7 +4,7 @@
 import { vi, type Mock } from "vitest";
 // The package the broker imports, not its source: an error must be an instance of the class the broker tests for.
 import { agentXError, type OrgId } from "@agentx/contracts";
-import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess, SpendFigures } from "../../packages/broker/src/model-proxy/access.js";
+import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "../../packages/broker/src/model-proxy/access.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 
 export interface FakeModelAccess extends ModelAccess {
@@ -13,6 +13,9 @@ export interface FakeModelAccess extends ModelAccess {
   spend: Mock<(orgId: OrgId, developerId: string) => Promise<MemberSpend>>;
   orgSpend: Mock<(orgId: OrgId) => Promise<SpendFigures>>;
   keySpend: Mock<(keyIds: readonly string[]) => Promise<number>>;
+  upsertSource: Mock<(input: UpsertSourceInput) => Promise<void>>;
+  removeSource: Mock<(orgId: OrgId, sourceId: string) => Promise<void>>;
+  checkSource: Mock<(orgId: OrgId, sourceId: string) => Promise<SourceCheck>>;
   mintKey: Mock<(input: MintKeyInput) => Promise<MintedKey>>;
   revokeKey: Mock<(key: string) => Promise<void>>;
   /** What the org has spent so far this month (its limit is what was last upserted). */
@@ -68,6 +71,9 @@ export function fakeModelAccess(options: { key?: string; mintFailure?: Error } =
       guard();
       return [...new Set(keyIds)].reduce((total, id) => total + (keySpends.get(id) ?? 0), 0);
     }),
+    upsertSource: vi.fn(async () => { guard(); }),
+    removeSource: vi.fn(async () => { guard(); }),
+    checkSource: vi.fn(async () => { guard(); return { ok: true as const, health: "healthy" as const }; }),
     mintKey: vi.fn(async (input) => {
       guard();
       if (options.mintFailure !== undefined) throw options.mintFailure;

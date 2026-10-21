@@ -1,5 +1,5 @@
 // The wire format between ModelAccessInvoker (broker) and the ModelAccessFunction handler (ruling R28).
-import { OrgIdSchema, type AgentXErrorCode } from "@agentx/contracts";
+import { ModelSourceSchema, OrgIdSchema, type AgentXErrorCode } from "@agentx/contracts";
 import { z } from "zod";
 
 const DeveloperIdSchema = z.string().min(1).max(256);
@@ -10,6 +10,23 @@ const KeyIdSchema = z.string().regex(/^[0-9a-f]{64}$/u);
 const MAX_KEY_IDS = 500;
 /** A key lives for at most a week; task keys are minted per task or turn. */
 const MAX_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+/** A source id as the store generates it (`src_` and 20 characters). */
+const SourceIdSchema = z.string().regex(/^src_[0-9a-z]{20}$/u);
+const TagValueSchema = z.string().min(1).max(256);
+const MintTagsSchema = z.object({
+  taskId: TagValueSchema.optional(),
+  operationId: TagValueSchema.optional(),
+  stepId: TagValueSchema.optional(),
+  agentId: TagValueSchema,
+  project: TagValueSchema.optional(),
+  payerKind: z.enum(["member", "project", "agent"]),
+  payerId: TagValueSchema,
+  source: TagValueSchema,
+  origin: TagValueSchema,
+}).strict();
+/** One key never needs more models than an org can have sources times their models, and a handful is the norm. */
+const MAX_KEY_MODELS = 50;
 
 export const ModelAccessRequestSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("upsertOrg"), args: z.object({ orgId: OrgIdSchema, monthlyBudgetUsd: BudgetSchema }).strict() }).strict(),
@@ -26,8 +43,16 @@ export const ModelAccessRequestSchema = z.discriminatedUnion("op", [
       refId: z.string().min(1).max(256),
       maxBudgetUsd: BudgetSchema,
       ttlSeconds: z.number().int().min(1).max(MAX_TTL_SECONDS),
+      models: z.array(z.string().min(1).max(512)).min(1).max(MAX_KEY_MODELS).optional(),
+      tags: MintTagsSchema.optional(),
     }).strict(),
   }).strict(),
+  z.object({
+    op: z.literal("upsertSource"),
+    args: z.object({ orgId: OrgIdSchema, source: ModelSourceSchema, apiKey: z.string().min(1).max(4096).optional() }).strict(),
+  }).strict(),
+  z.object({ op: z.literal("removeSource"), args: z.object({ orgId: OrgIdSchema, sourceId: SourceIdSchema }).strict() }).strict(),
+  z.object({ op: z.literal("checkSource"), args: z.object({ orgId: OrgIdSchema, sourceId: SourceIdSchema }).strict() }).strict(),
   z.object({ op: z.literal("revokeKey"), args: z.object({ key: z.string().min(1).max(512) }).strict() }).strict(),
 ]);
 export type ModelAccessRequest = z.infer<typeof ModelAccessRequestSchema>;
@@ -35,6 +60,10 @@ export type ModelAccessRequest = z.infer<typeof ModelAccessRequestSchema>;
 export const SpendFiguresSchema = z.object({ spentUsd: z.number().finite(), limitUsd: z.number().finite() }).strict();
 export const SpendResultSchema = z.object({ member: SpendFiguresSchema, org: SpendFiguresSchema }).strict();
 export const KeySpendResultSchema = z.number().finite().min(0);
+export const SourceCheckResultSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), health: z.enum(["healthy", "unknown"]) }).strict(),
+  z.object({ ok: z.literal(false), message: z.string().max(500) }).strict(),
+]);
 export const MintedKeyResultSchema = z.object({ key: z.string().min(1), expiresAt: z.number().finite() }).strict();
 
 export type ModelAccessResponse =

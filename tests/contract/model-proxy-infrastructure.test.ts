@@ -2,7 +2,9 @@ import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
+import { INFERENCE_PATHS } from "@agentx/contracts";
 import { litellmConfig } from "../../packages/model-proxy/src/litellm-config.js";
+import { ROVARA_GUARD_PY } from "../../packages/model-proxy/src/rovara-guard.js";
 import { DEFAULT_BEDROCK_MODELS } from "../../packages/model-runtime/src/config.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
@@ -82,7 +84,8 @@ describe("model proxy infrastructure (named environments)", () => {
     const definition = container();
     expect(definition.Image).toBe(LITELLM_IMAGE);
     expect(definition.EntryPoint).toEqual(["sh", "-c"]);
-    expect(definition.Command).toEqual(['printf "%s" "$LITELLM_CONFIG_YAML" > /tmp/litellm.yaml && exec litellm --config /tmp/litellm.yaml --port 4000']);
+    // The guard module is written next to the config, where LiteLLM loads callbacks from (spike, question 8).
+    expect(definition.Command).toEqual(['printf "%s" "$LITELLM_CONFIG_YAML" > /tmp/litellm.yaml && printf "%s" "$ROVARA_GUARD_PY" > /tmp/rovara_guard.py && exec litellm --config /tmp/litellm.yaml --port 4000']);
     const yaml = definition.Environment.find((variable) => variable.Name === "LITELLM_CONFIG_YAML")!.Value as Ref;
     // The region is the one deploy-time value in the text.
     const text = yaml["Fn::Join"]![1].map((part) => (typeof part === "string" ? part : (part as Ref).Ref === "AWS::Region" ? "us-east-1" : "?")).join("");
@@ -92,6 +95,31 @@ describe("model proxy infrastructure (named environments)", () => {
     const served = [...text.matchAll(/model_name: "([^"]+)"/g)].map((match) => ({ id: match[1]! }));
     expect(text).toBe(litellmConfig({ region: "us-east-1", models: served }));
     expect(served.every(({ id }) => id.startsWith("us.anthropic.claude-"))).toBe(true);
+  });
+
+  it("loads the Rovara guard as a callback, caches keys for 10 seconds, and enables no client-side credential or header forwarding", () => {
+    const definition = container();
+    const yaml = definition.Environment.find((variable) => variable.Name === "LITELLM_CONFIG_YAML")!.Value as Ref;
+    const text = yaml["Fn::Join"]![1].map((part) => (typeof part === "string" ? part : "us-east-1")).join("");
+    expect(text).toContain("litellm_settings:\n  callbacks: rovara_guard.proxy_handler_instance\n");
+    expect(text).toContain("  user_api_key_cache_ttl: 10\n");
+    expect(text).not.toMatch(/configurable_clientside_auth_params|allow_client_side_credentials|forward_client_headers_to_llm_api|forward_traceparent/);
+    // The module written next to the config is the one the spike verified.
+    expect(definition.Environment).toContainEqual({ Name: "ROVARA_GUARD_PY", Value: ROVARA_GUARD_PY });
+  });
+
+  it("keeps models in the database, bounds a request's time at the load balancer's idle timeout, and puts no provider or AWS credential in the environment", () => {
+    const environment = container().Environment;
+    expect(environment).toContainEqual({ Name: "STORE_MODEL_IN_DB", Value: "True" });
+    const timeout = environment.find((variable) => variable.Name === "REQUEST_TIMEOUT");
+    expect(timeout).toBeDefined();
+    expect(Number(timeout!.Value)).toBeGreaterThan(0);
+    expect(Number(timeout!.Value)).toBeLessThanOrEqual(900);
+    // The /anthropic/... and /bedrock/... pass-through routes would use any credential found here (spike notes for Task 25).
+    expect(environment.map((variable) => variable.Name).sort()).toEqual([
+      "AWS_REGION", "LITELLM_CONFIG_YAML", "LITELLM_LOCAL_MODEL_COST_MAP", "REQUEST_TIMEOUT", "ROVARA_GUARD_PY", "STORE_MODEL_IN_DB",
+    ]);
+    expect(JSON.stringify(container().Secrets)).not.toMatch(/Anthropic|OpenAI|OpenRouter/);
   });
 
   it("reads LiteLLM's prices from the cost map in the pinned image instead of fetching them at start", () => {
@@ -104,7 +132,9 @@ describe("model proxy infrastructure (named environments)", () => {
     expect(definition.Environment.map((variable) => variable.Name)).not.toContain("DATABASE_URL");
     expect(JSON.stringify(definition.Environment)).not.toMatch(/resolve:secretsmanager/);
     const secrets = Object.fromEntries(definition.Secrets.map((secret) => [secret.Name, secret.ValueFrom]));
-    expect(Object.keys(secrets).sort()).toEqual(["DATABASE_URL", "LITELLM_MASTER_KEY"]);
+    // The salt key encrypts the company keys the proxy stores in its database (Plan 3 Task 25); every replica needs the same one.
+    expect(Object.keys(secrets).sort()).toEqual(["DATABASE_URL", "LITELLM_MASTER_KEY", "LITELLM_SALT_KEY"]);
+    expect(secrets.LITELLM_SALT_KEY).toEqual({ Ref: idOf(resources, "AWS::SecretsManager::Secret", "ModelProxySaltKey") });
     expect(secrets.LITELLM_MASTER_KEY).toEqual({ Ref: idOf(resources, "AWS::SecretsManager::Secret", "ModelProxyMasterKey") });
     expect(secrets.DATABASE_URL).toEqual({ Ref: idOf(resources, "AWS::SecretsManager::Secret", "ModelProxyDatabaseUrl") });
   });
@@ -121,6 +151,28 @@ describe("model proxy infrastructure (named environments)", () => {
       const generated = secret.Properties.GenerateSecretString;
       if (generated !== undefined) expect(generated.ExcludePunctuation).toBe(true);
     }
+  });
+
+  it("generates the salt key, keeps it when the stack goes, and lets only the proxy's execution role read it", () => {
+    const saltId = idOf(resources, "AWS::SecretsManager::Secret", "ModelProxySaltKey");
+    const salt = resources[saltId]! as Resource & { DeletionPolicy?: string };
+    expect(salt.Properties.GenerateSecretString).toMatchObject({ ExcludePunctuation: true });
+    expect(Number((salt.Properties.GenerateSecretString as { PasswordLength: number }).PasswordLength)).toBeGreaterThanOrEqual(32);
+    expect(salt.Properties.SecretString).toBeUndefined();
+    // Losing the salt key would leave every stored company key unreadable.
+    expect(salt.DeletionPolicy).toMatch(/^Retain/);
+    const readers = new Set<string>();
+    for (const [, policy] of ofType(resources, "AWS::IAM::Policy")) {
+      if (!policy.Properties.PolicyDocument!.Statement.some((statement) => JSON.stringify(statement.Resource).includes(`"${saltId}"`))) continue;
+      for (const role of policy.Properties.Roles ?? []) readers.add(role.Ref!);
+    }
+    expect([...readers]).toEqual([roleId(taskDefinition().Properties.ExecutionRoleArn as Ref)]);
+    // Nothing else names it: not a function's environment, not a parameter, not an output.
+    for (const [id, other] of Object.entries(resources)) {
+      if (id === saltId || id.startsWith("ModelProxyTaskDefinition") || other.Type === "AWS::IAM::Policy") continue;
+      expect(JSON.stringify(other.Properties), id).not.toContain(`"${saltId}"`);
+    }
+    expect(JSON.stringify(outputs)).not.toContain(saltId);
   });
 
   it("keeps the proxy task on an Aurora Serverless v2 PostgreSQL cluster of at least 0.5 ACU, encrypted, reachable only from the proxy tasks", () => {
@@ -164,10 +216,18 @@ describe("model proxy infrastructure (named environments)", () => {
     expect(rules).toHaveLength(1);
     expect(rules[0]![1].Properties).toMatchObject({
       ListenerArn: { Ref: inference[0] },
-      Conditions: [{ Field: "path-pattern", PathPatternConfig: { Values: ["/v1/messages*", "/health/*"] } }],
+      // Exact paths and POST only (spike, question 2a): no wildcard reaches a pass-through or management route.
+      Conditions: [
+        { Field: "path-pattern", PathPatternConfig: { Values: ["/v1/messages", "/v1/responses", "/chat/completions"] } },
+        { Field: "http-request-method", HttpRequestMethodConfig: { Values: ["POST"] } },
+      ],
       Actions: [{ Type: "forward", TargetGroupArn: { Ref: groupId } }],
     });
     expect(group.Properties.Port).toBe(4000);
+    // The list is the contract's, one path per verified transport, and none has a wildcard.
+    const pattern = (rules[0]![1].Properties.Conditions as Array<{ PathPatternConfig?: { Values: string[] } }>)[0]!.PathPatternConfig!.Values;
+    expect(pattern).toEqual(INFERENCE_PATHS.map((entry) => entry.path));
+    for (const value of pattern) expect(value).not.toMatch(/[*?]/);
   });
 
   it("forwards every path on port 4001, the management listener", () => {
@@ -229,14 +289,14 @@ describe("model proxy infrastructure (named environments)", () => {
       idOf(resources, "AWS::SecretsManager::Secret", "ModelProxyDatabaseSecret"),
       idOf(resources, "AWS::SecretsManager::Secret", "ModelProxyMasterKey"),
     ]);
-    // Besides those, only the three optional provider-key reads the control plane attaches.
-    const others = statements.filter((statement) => !["ReadProxySecrets", "InvokeClaudeOnBedrock"].includes(statement.Sid ?? ""));
+    // Besides those (and the cross-account assume tested below), only the three optional provider-key reads the control plane attaches.
+    const others = statements.filter((statement) => !["ReadProxySecrets", "InvokeClaudeOnBedrock", "AssumeOrgBedrockRoles"].includes(statement.Sid ?? ""));
     expect(others).toHaveLength(3);
     for (const statement of others) expect(statement).toMatchObject({ Effect: "Allow", Action: "secretsmanager:GetSecretValue" });
     expect(JSON.stringify(bedrock.Resource)).not.toMatch(/foundation-model\/\*"/);
   });
 
-  it("lets the execution role read exactly the two secrets ECS injects", () => {
+  it("lets the execution role read exactly the three secrets ECS injects", () => {
     const executionRole = roleId(taskDefinition().Properties.ExecutionRoleArn as Ref);
     const reads = statementsOf(executionRole).filter((statement) => [statement.Action].flat().includes("secretsmanager:GetSecretValue"));
     expect(reads).toHaveLength(1);
@@ -244,7 +304,8 @@ describe("model proxy infrastructure (named environments)", () => {
     expect(arns.sort()).toEqual([
       idOf(resources, "AWS::SecretsManager::Secret", "ModelProxyDatabaseUrl"),
       idOf(resources, "AWS::SecretsManager::Secret", "ModelProxyMasterKey"),
-    ]);
+      idOf(resources, "AWS::SecretsManager::Secret", "ModelProxySaltKey"),
+    ].sort());
   });
 
   it("publishes the proxy URL as an output and as the environment's model-proxy-url parameter, and the master key secret ARN as an output", () => {
@@ -259,6 +320,44 @@ describe("model proxy infrastructure (named environments)", () => {
   it("takes the VPC and the worker security group as parameters that the foundation's outputs fill", () => {
     const parameters = template.toJSON().Parameters as Record<string, unknown>;
     expect(Object.keys(parameters)).toEqual(expect.arrayContaining(["VpcId", "Ec2WorkerSecurityGroupId"]));
+  });
+
+  it("lets the proxy task role assume roles in other AWS accounts only, and only with an external id that names a Rovara org", () => {
+    const taskRole = roleId(taskDefinition().Properties.TaskRoleArn as Ref);
+    const assumes = statementsOf(taskRole).filter((statement) => [statement.Action].flat().includes("sts:AssumeRole"));
+    expect(assumes).toHaveLength(1);
+    expect(assumes[0]).toEqual({
+      Sid: "AssumeOrgBedrockRoles",
+      Effect: "Allow",
+      Action: "sts:AssumeRole",
+      Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":iam::*:role/*"]] },
+      Condition: {
+        StringNotEquals: { "aws:ResourceAccount": { Ref: "AWS::AccountId" } },
+        StringLike: { "sts:ExternalId": "rovara-org_*" },
+      },
+    });
+  });
+
+  it("stores no company key in Secrets Manager: no org-sources secret path, and no create, put, tag or delete of a secret on any role", () => {
+    expect(JSON.stringify(resources)).not.toContain("org-sources");
+    const mutating = /^secretsmanager:(CreateSecret|PutSecretValue|TagResource|DeleteSecret|UpdateSecret)$/;
+    for (const [id, policy] of ofType(resources, "AWS::IAM::Policy")) {
+      for (const statement of policy.Properties.PolicyDocument!.Statement) {
+        const actions = [statement.Action].flat();
+        if (!/^(ModelProxy|ModelAccess)/.test(id) && !(policy.Properties.Roles ?? []).some((role) => /^(ModelProxy|ModelAccess)/.test(role.Ref ?? ""))) continue;
+        expect(actions.filter((action) => mutating.test(action)), id).toEqual([]);
+      }
+    }
+  });
+
+  it("changes no network path: the tasks reach HTTPS and the database alone, and the database reaches nothing", () => {
+    const service = resources[idOf(resources, "AWS::EC2::SecurityGroup", "ModelProxyServiceSecurityGroup")]!;
+    expect(service.Properties.SecurityGroupEgress).toEqual([expect.objectContaining({ IpProtocol: "tcp", FromPort: 443, ToPort: 443, CidrIp: "0.0.0.0/0" })]);
+    const serviceId = idOf(resources, "AWS::EC2::SecurityGroup", "ModelProxyServiceSecurityGroup");
+    const extra = ofType(resources, "AWS::EC2::SecurityGroupEgress").filter(([, rule]) => (rule.Properties.GroupId as Ref)["Fn::GetAtt"]?.[0] === serviceId);
+    expect(extra.map(([, rule]) => [rule.Properties.FromPort, rule.Properties.ToPort])).toEqual([[5432, 5432]]);
+    const database = resources[idOf(resources, "AWS::EC2::SecurityGroup", "ModelProxyDatabaseSecurityGroup")]!;
+    expect(database.Properties.SecurityGroupEgress).toEqual([expect.objectContaining({ IpProtocol: "-1", CidrIp: "127.0.0.1/32" })]);
   });
 
   it("names nothing with an em dash or the word gateway, in any proxy resource id, name or description", () => {

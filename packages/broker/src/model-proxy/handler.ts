@@ -3,9 +3,11 @@
 // not in the VPC and call it through ModelAccessInvoker. The master key is read once from Secrets
 // Manager and kept in memory. Nothing here logs a key, the master key, or request arguments.
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
 import { AgentXError, agentXError } from "@agentx/contracts";
+import { bedrockClaudeModelIds, listPricesPerMillion, proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
 import type { ModelAccess } from "./access.js";
-import { ModelProxyClient } from "./client.js";
+import { ModelProxyClient, type RoleAssumer } from "./client.js";
 import { ModelAccessRequestSchema, type ModelAccessRequest, type ModelAccessResponse } from "./protocol.js";
 
 /** Reads the secret on first use and keeps it; a failed read is not remembered, so the next call tries again. */
@@ -20,6 +22,25 @@ export function cachedSecret(read: () => Promise<string>): () => Promise<string>
   };
 }
 
+/**
+ * The Bedrock probe's STS call. The session it gets is dropped unread. Only an access denial is an answer (the trust policy refused);
+ * any other failure is not, and the caller reports the probe as unavailable.
+ */
+export function stsRoleAssumer(sts: { send(command: AssumeRoleCommand): Promise<unknown> }): RoleAssumer {
+  return {
+    async assumeRole({ roleArn, sessionName, externalId }) {
+      try {
+        await sts.send(new AssumeRoleCommand({ RoleArn: roleArn, RoleSessionName: sessionName, ExternalId: externalId, DurationSeconds: 900 }));
+        return true;
+      } catch (error) {
+        const name = typeof error === "object" && error !== null && "name" in error ? String((error).name) : "";
+        if (name === "AccessDenied" || name === "AccessDeniedException") return false;
+        throw error;
+      }
+    },
+  };
+}
+
 async function perform(access: ModelAccess, request: ModelAccessRequest): Promise<unknown> {
   switch (request.op) {
     case "upsertOrg": return access.upsertOrg(request.args.orgId, request.args.monthlyBudgetUsd).then(() => null);
@@ -28,6 +49,9 @@ async function perform(access: ModelAccess, request: ModelAccessRequest): Promis
     case "orgSpend": return access.orgSpend(request.args.orgId);
     case "keySpend": return access.keySpend(request.args.keyIds);
     case "mintKey": return access.mintKey(request.args);
+    case "upsertSource": return access.upsertSource(request.args).then(() => null);
+    case "removeSource": return access.removeSource(request.args.orgId, request.args.sourceId).then(() => null);
+    case "checkSource": return access.checkSource(request.args.orgId, request.args.sourceId);
     case "revokeKey": return access.revokeKey(request.args.key).then(() => null);
   }
 }
@@ -76,7 +100,16 @@ function wire() {
     return value.SecretString.trim();
   });
   return createModelAccessHandler({
-    access: new ModelProxyClient({ baseUrl: requiredEnvironment("MODEL_PROXY_URL"), masterKey, fetch, now: Date.now }),
+    access: new ModelProxyClient({
+      baseUrl: requiredEnvironment("MODEL_PROXY_URL"),
+      masterKey,
+      fetch,
+      now: Date.now,
+      prices: listPricesPerMillion,
+      // The models the proxy's own config serves for this region (the control plane builds the config from the same list).
+      catalog: bedrockClaudeModelIds(proxyGeographyForRegion(requiredEnvironment("AWS_REGION"))),
+      roles: stsRoleAssumer(new STSClient({})),
+    }),
   });
 }
 

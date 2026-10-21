@@ -2,9 +2,10 @@ import {
   aws_ec2 as ec2,
   aws_iam as iam,
   type aws_lambda as lambda,
+  Stack,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { MODEL_PROXY_MANAGEMENT_PORT, type ModelProxy } from "./model-proxy.js";
+import { MODEL_PROXY_MANAGEMENT_PORT, assumeOrgBedrockRoles, type ModelProxy } from "./model-proxy.js";
 import type { AgentXNaming } from "./naming.js";
 
 export interface ModelAccessProps {
@@ -67,6 +68,9 @@ export class ModelAccess extends Construct {
       actions: ["secretsmanager:GetSecretValue"],
       resources: [proxy.masterKeySecret.secretArn],
     }));
+    // The Bedrock probe (checkSource) assumes a customer's role to test its trust policy. Company keys are not stored in Secrets
+    // Manager (they live in the proxy's own store), so this function is given no way to create or change a secret.
+    handler.addToRolePolicy(assumeOrgBedrockRoles(Stack.of(this)));
   }
 }
 

@@ -1,7 +1,7 @@
 // What the broker's callers see of the model proxy (ruling R28). ModelProxyClient talks to LiteLLM
 // directly and runs only inside the VPC-attached ModelAccessFunction; ModelAccessInvoker satisfies the
 // same interface from the broker Lambdas, which are not in the VPC and never hold the master key.
-import type { OrgId } from "@agentx/contracts";
+import type { ModelSource, OrgId } from "@agentx/contracts";
 
 export interface SpendFigures {
   spentUsd: number;
@@ -13,6 +13,29 @@ export interface MemberSpend {
   org: SpendFigures;
 }
 
+/** Who pays and what ran, kept with the key (the proxy's spend logs do not carry key metadata, so the ledger reads these from the key record). */
+export interface MintTags {
+  taskId?: string | undefined;
+  operationId?: string | undefined;
+  stepId?: string | undefined;
+  agentId: string;
+  project?: string | undefined;
+  payerKind: "member" | "project" | "agent";
+  payerId: string;
+  source: string;
+  origin: string;
+}
+
+/** The answer to checking a company source: a Bedrock trust policy that is too loose, or a source that did not answer, comes back as `ok: false` with text safe to show. */
+export type SourceCheck = { ok: true; health: "healthy" | "unknown" } | { ok: false; message: string };
+
+export interface UpsertSourceInput {
+  orgId: OrgId;
+  source: ModelSource;
+  /** The vendor key, sent only when it is new or changed. It is stored in the proxy's own credential store and never returned, logged or echoed. */
+  apiKey?: string | undefined;
+}
+
 export interface MintKeyInput {
   orgId: OrgId;
   /** Absent for work no known member started (a Slack requester not linked to a member): the key then answers to the org alone. */
@@ -21,6 +44,9 @@ export interface MintKeyInput {
   refId: string;
   maxBudgetUsd: number;
   ttlSeconds: number;
+  /** The aliases the key may call: the org's own source aliases and Rovara AI catalog ids, never a wildcard or another org's alias. Absent keeps the older, unscoped key. */
+  models?: readonly string[] | undefined;
+  tags?: MintTags | undefined;
 }
 
 export interface MintedKey {
@@ -41,6 +67,15 @@ export interface ModelAccess {
    * never leaves the caller). A key the proxy does not know is MODEL_PROXY_UNAVAILABLE: its spend is unknown, so it is never counted as 0.
    */
   keySpend(keyIds: readonly string[]): Promise<number>;
+  /**
+   * Registers a company source: its key (when given) in the proxy's credential store, one proxy model per source model under
+   * `sourceAlias`, removal of the source's aliases that are no longer listed, and the org team's `models`.
+   */
+  upsertSource(input: UpsertSourceInput): Promise<void>;
+  /** Removes the source's models and key from the proxy, and its aliases from the org's team. Removing a source the proxy does not know is a no-op. */
+  removeSource(orgId: OrgId, sourceId: string): Promise<void>;
+  /** Tests a source: for Bedrock the trust-policy probe first, then a health call per alias. A source the proxy does not know is NOT_FOUND. */
+  checkSource(orgId: OrgId, sourceId: string): Promise<SourceCheck>;
   mintKey(input: MintKeyInput): Promise<MintedKey>;
   revokeKey(key: string): Promise<void>;
 }
