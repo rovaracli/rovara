@@ -21,7 +21,7 @@ import {
 import { auditExportId, isAuditExportId, startAuditExport, type AuditExportClientDeps } from "./export.js";
 import { auditStaffRead } from "./events.js";
 import { recordAuditEventDurably } from "./flush.js";
-import { readAuditRecords } from "./reader.js";
+import { checkReadQuery, readAuditRecords } from "./reader.js";
 import { configInvalid, exportAnswer, exportRequestWithout, isRecord, noParameters, notFound, pageSizeOf, readQueryOf, startedReply, type AuditRouteReply, type AuditRouteRequest } from "./routes.js";
 
 export interface AuditAdminDependencies {
@@ -48,21 +48,32 @@ interface Justification {
   ticket?: string;
 }
 
-/** The reason is required (AUDIT_REASON_REQUIRED); the ticket may be left out, but if it is given it must be 1 to 64 characters. */
+/** Control (Cc) and format (Cf) characters: C0 and C1 controls, ANSI escapes, zero-width and bidi characters. */
+const UNSAFE_TEXT = /[\p{Cc}\p{Cf}]/u;
+/** A ticket is a reference such as `SUP-42`: printable ASCII, no spaces. */
+const TICKET_SHAPE = /^[\x21-\x7e]+$/;
+
+/**
+ * The reason is required (AUDIT_REASON_REQUIRED) and is shown later, in a terminal or a page, to the org's admins from an append-only
+ * record that cannot be corrected: so it may hold no control, format or bidi character (CONFIG_INVALID, checked before trimming).
+ * The ticket may be left out, but if it is given it is 1 to 64 printable ASCII characters.
+ */
 function justification(reason: unknown, ticket: unknown): Justification {
   const why = typeof reason === "string" ? reason.trim() : "";
   if (why.length < 1 || why.length > REASON_MAX) throw agentXError("AUDIT_REASON_REQUIRED", AUDIT_ERROR_MESSAGES.AUDIT_REASON_REQUIRED);
+  if (UNSAFE_TEXT.test(reason as string)) throw configInvalid("The reason holds a character that is not allowed: use plain text.");
   if (ticket === undefined) return { reason: why };
-  const reference = typeof ticket === "string" ? ticket.trim() : "";
-  if (reference.length < 1 || reference.length > TICKET_MAX) throw configInvalid(`ticket: give 1 to ${String(TICKET_MAX)} characters, or leave it out`);
-  return { reason: why, ticket: reference };
+  if (typeof ticket !== "string" || ticket.length < 1 || ticket.length > TICKET_MAX || !TICKET_SHAPE.test(ticket)) {
+    throw configInvalid(`The ticket is 1 to ${String(TICKET_MAX)} printable ASCII characters without spaces, or leave it out.`);
+  }
+  return { reason: why, ticket };
 }
 
 /** The reason and ticket of a GET: each at most once. More than one `reason` is no reason; more than one `ticket` is refused. */
 function justificationOfQuery(params: URLSearchParams): Justification {
   const reasons = params.getAll("reason");
   const tickets = params.getAll("ticket");
-  if (tickets.length > 1) throw configInvalid("ticket: give it once");
+  if (tickets.length > 1) throw configInvalid("A parameter was given more than once.");
   return justification(reasons.length === 1 ? reasons[0] : reasons.length === 0 ? undefined : reasons, tickets[0]);
 }
 
@@ -100,6 +111,8 @@ export async function routeAuditAdminRequest(deps: AuditAdminDependencies, calle
   if (request.method === "GET" && kind === "records" && exportId === undefined) {
     const why = justificationOfQuery(url.searchParams);
     const query = readQueryOf(url.searchParams, STAFF_PARAMETERS);
+    // Every check the reader would make, before the record: a typo must not leave a staff read of a read that never happened.
+    checkReadQuery(query);
     await requireOrg();
     // The record is made before the read, so what the read returns is not known yet: `count` is the page size the request allows.
     await recordFirst(why, { fromSeq: query.fromSeq ?? 0, toSeq: query.toSeq ?? 0, count: pageSizeOf(query) }, "api");

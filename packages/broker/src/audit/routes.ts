@@ -59,6 +59,11 @@ export const configInvalid = (message: string): Error => agentXError("CONFIG_INV
 
 // ---- the request's parts ----------------------------------------------------------------------------------------------
 
+// Fixed text: a message never repeats a parameter or field name the client chose.
+const UNKNOWN_PARAMETER = "This request has a parameter that this route does not take.";
+const REPEATED_PARAMETER = "A parameter was given more than once.";
+const UNKNOWN_FIELD = "This request has a field that this route does not take.";
+
 const QUERY_PARAMETERS = ["fromSeq", "toSeq", "from", "to", "action", "actorId", "cursor", "limit"] as const;
 
 /** One whole number of at most 15 digits (a sequence number or a page size); anything else is a range the route cannot serve. */
@@ -74,8 +79,8 @@ function wholeNumber(text: string): number {
 export function readQueryOf(params: URLSearchParams, extra: readonly string[] = []): AuditReadQuery {
   const known = new Set<string>([...QUERY_PARAMETERS, ...extra]);
   for (const name of new Set(params.keys())) {
-    if (!known.has(name)) throw configInvalid(`${name}: not a parameter of this route`);
-    if (params.getAll(name).length > 1) throw configInvalid(`${name}: give it once`);
+    if (!known.has(name)) throw configInvalid(UNKNOWN_PARAMETER);
+    if (params.getAll(name).length > 1) throw configInvalid(REPEATED_PARAMETER);
   }
   const text = (name: (typeof QUERY_PARAMETERS)[number]): string | undefined => params.get(name) ?? undefined;
   const number = (name: "fromSeq" | "toSeq" | "limit"): number | undefined => {
@@ -114,7 +119,7 @@ const ExportBodySchema = z.object({
 /**
  * The body of an export request. A range that is not whole numbers or not a range of at most 200,000 records is
  * AUDIT_RANGE_INVALID (checked here, so that nothing is recorded or started for it); any other fault is CONFIG_INVALID, naming
- * the field and never repeating what was sent.
+ * the field and never repeating what the client sent.
  */
 export function exportRequestOf(body: unknown): AuditExportRequest {
   const parsed = ExportBodySchema.safeParse(body);
@@ -122,6 +127,8 @@ export function exportRequestOf(body: unknown): AuditExportRequest {
     const issue = parsed.error.issues[0];
     const field = issue?.path[0];
     if (field === "fromSeq" || field === "toSeq") throw rangeInvalid();
+    // The path names a field of this route's own schema; an unrecognized key is the client's word and is never repeated.
+    if (issue?.code === "unrecognized_keys") throw configInvalid(UNKNOWN_FIELD);
     throw configInvalid(`${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
   }
   const { requestId, fromSeq, toSeq, withDetails } = parsed.data;
@@ -202,5 +209,5 @@ export async function routeAuditRequest(ledger: AuditExportClientDeps | undefine
 
 /** A route with no query parameters of its own, besides `allowed`, refuses any other. */
 export function noParameters(params: URLSearchParams, allowed: readonly string[] = []): void {
-  for (const name of params.keys()) if (!allowed.includes(name)) throw configInvalid(`${name}: not a parameter of this route`);
+  for (const name of params.keys()) if (!allowed.includes(name)) throw configInvalid(UNKNOWN_PARAMETER);
 }

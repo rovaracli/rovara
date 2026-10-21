@@ -294,13 +294,20 @@ async function openRecord(deps: AuditReadDeps, orgId: string, item: Item): Promi
   return { record, details: sealed.length === 0 ? [] : await deps.keyring.openDetails(orgId, record.seq, sealed) };
 }
 
+/** What a records query asks, once every check that needs no table has passed (AUDIT_RANGE_INVALID otherwise). */
+export interface CheckedReadQuery {
+  limit: number;
+  fromMs: number | undefined;
+  toMs: number | undefined;
+  /** The sequence number the cursor says the page before ended at (0 without a cursor). */
+  after: number;
+}
+
 /**
- * A page of the org's records, oldest first, with details opened (for owners and admins: the caller decides who may call).
- * The range is the intersection of the sequence range and the time range given; a filter on `action` or `actorId` needs a range
- * of at most AUDIT_FILTER_SCAN_MAX records. `limit` above AUDIT_READ_PAGE_MAX is lowered to it.
+ * Every check on a records query that reads nothing: whole numbers, ranges, times, filters and the cursor. A caller that must
+ * record a read before it happens (the staff path) runs this first, so that a typo leaves no record of a read that never was.
  */
-export async function readAuditRecords(deps: AuditReadDeps, orgId: string, query: AuditReadQuery = {}): Promise<AuditReadResult> {
-  checkedOrgId(orgId);
+export function checkReadQuery(query: AuditReadQuery): CheckedReadQuery {
   const { fromSeq, toSeq, from, to, action, actorId, cursor } = query;
   if (query.limit !== undefined && (!wholeNumber(query.limit) || query.limit < 1)) throw rangeInvalid();
   const limit = Math.min(query.limit ?? AUDIT_READ_PAGE_DEFAULT, AUDIT_READ_PAGE_MAX);
@@ -311,7 +318,18 @@ export async function readAuditRecords(deps: AuditReadDeps, orgId: string, query
   if (fromMs !== undefined && toMs !== undefined && fromMs > toMs) throw rangeInvalid();
   if ((action !== undefined && (action === "" || action.length > 64)) || (actorId !== undefined && (actorId === "" || actorId.length > 200))) throw rangeInvalid();
   const after = cursor === undefined ? 0 : decodeAuditCursor(cursor);
+  return { limit, fromMs, toMs, after };
+}
 
+/**
+ * A page of the org's records, oldest first, with details opened (for owners and admins: the caller decides who may call).
+ * The range is the intersection of the sequence range and the time range given; a filter on `action` or `actorId` needs a range
+ * of at most AUDIT_FILTER_SCAN_MAX records. `limit` above AUDIT_READ_PAGE_MAX is lowered to it.
+ */
+export async function readAuditRecords(deps: AuditReadDeps, orgId: string, query: AuditReadQuery = {}): Promise<AuditReadResult> {
+  checkedOrgId(orgId);
+  const { fromSeq, toSeq, action, actorId } = query;
+  const { limit, fromMs, toMs, after } = checkReadQuery(query);
   const status = await readAuditStatus(deps, orgId);
   const { headSeq } = status;
   let low = fromSeq ?? 1;

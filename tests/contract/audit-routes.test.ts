@@ -608,6 +608,62 @@ describe("staff path: the reason", () => {
     expect(ledgerOperations(b, mark)).toStrictEqual([]);
   });
 
+  it("refuses control, format and bidi characters in the reason (CONFIG_INVALID), on every staff route, before recording", async () => {
+    const b = await world();
+    const mark = b.h.operations.length;
+    const exportId = auditExportId(A, "r");
+    const bad = ["a\u001b[2Jb", "a\u202eb", "a\nb", "a\tb", "\nabc", "abc\n", "a\u0085b", "a\u200bb", "a\ufeffb", "a\u0000b", "a\u007fb"];
+    for (const reason of bad) {
+      const query = `reason=${encodeURIComponent(reason)}&ticket=SUP-1`;
+      await expect(staffCall(b, "GET", `/v1/admin/audit/${A}/records?${query}`), JSON.stringify(reason)).rejects.toMatchObject({ code: "CONFIG_INVALID", statusCode: 400 });
+      await expect(staffCall(b, "GET", `/v1/admin/audit/${A}/exports/${exportId}?${query}`), JSON.stringify(reason)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      await expect(staffCall(b, "POST", `/v1/admin/audit/${A}/exports`, { requestId: "r", fromSeq: 1, toSeq: 2, reason, ticket: "SUP-1" }), JSON.stringify(reason)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    }
+    expect(b.sqs.offered()).toBe(0);
+    expect(pendingItems(b)).toStrictEqual([]);
+    expect(b.invocations).toStrictEqual([]);
+    expect(b.h.operations.slice(mark).filter((operation) => LEDGER_TABLES.has(operation.table) || operation.pk.includes("#AUDIT_EXPORT#"))).toStrictEqual([]);
+    // Ordinary text, accents and punctuation are fine.
+    expect((await staffCall(b, "GET", `/v1/admin/audit/${A}/records?limit=1&reason=${encodeURIComponent("Kundenanfrage: Pr\u00fcfung (Fall #12), 50% done")}`))!.status).toBe(200);
+  });
+
+  it("limits the ticket to printable ASCII without spaces (CONFIG_INVALID), before recording", async () => {
+    const b = await world();
+    for (const ticket of ["SUP 42", "SUP-\u00e9", "SUP-\u202e1", "SUP-\u001b1", "SUP-\n1", "\u0ba4"]) {
+      await expect(staffCall(b, "GET", `/v1/admin/audit/${A}/records?reason=why&ticket=${encodeURIComponent(ticket)}`), JSON.stringify(ticket)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      await expect(staffCall(b, "POST", `/v1/admin/audit/${A}/exports`, { requestId: "r", fromSeq: 1, toSeq: 2, reason: "why", ticket }), JSON.stringify(ticket)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    }
+    expect(b.sqs.offered()).toBe(0);
+    expect(pendingItems(b)).toStrictEqual([]);
+    expect((await staffCall(b, "GET", `/v1/admin/audit/${A}/records?limit=1&reason=why&ticket=JIRA-123_a.b/c`))!.status).toBe(200);
+  });
+
+  it("says nothing the client sent in a CONFIG_INVALID message: fixed text only", async () => {
+    const b = await world();
+    const probe = "zzProbeName";
+    const messages: string[] = [];
+    const collect = async (promise: Promise<unknown>) => {
+      try { await promise; } catch (error) { messages.push((error as Error).message); }
+    };
+    await collect(staffCall(b, "GET", `/v1/admin/audit/${A}/records?reason=why&${probe}=1`));
+    await collect(staffCall(b, "GET", `/v1/admin/audit/${A}/records?reason=why&limit=1&limit=2`));
+    await collect(staffCall(b, "GET", `/v1/admin/audit/${A}/exports/${auditExportId(A, "r")}?reason=why&${probe}=1`));
+    await collect(staffCall(b, "POST", `/v1/admin/audit/${A}/exports`, { requestId: "x", fromSeq: 1, toSeq: 2, reason: "why", [probe]: 1 }));
+    await collect(staffCall(b, "POST", `/v1/admin/audit/${A}/exports?${probe}=1`, { requestId: "x", fromSeq: 1, toSeq: 2, reason: "why" }));
+    await collect(orgCall(b, adminOf(A), "GET", `/v1/app/org/audit/records?${probe}=1`));
+    await collect(orgCall(b, adminOf(A), "GET", `/v1/app/org/audit/records?limit=1&limit=2&${probe}=1`));
+    await collect(orgCall(b, adminOf(A), "GET", `/v1/app/org/audit/status?${probe}=1`));
+    await collect(orgCall(b, adminOf(A), "POST", "/v1/app/org/audit/exports", { requestId: "x", fromSeq: 1, toSeq: 2, [probe]: 1 }));
+    await collect(orgCall(b, adminOf(A), "POST", "/v1/app/org/audit/exports", { requestId: "x", fromSeq: 1, toSeq: 2, orgId: A }));
+    expect(messages).toHaveLength(10);
+    for (const message of messages) {
+      expect(message).toMatch(/^CONFIG_INVALID: /);
+      expect(message).not.toContain(probe);
+      expect(message).not.toContain("orgId");
+      expect(message).not.toContain("limit");
+    }
+  });
+
   it("refuses a parameter that is not part of the route, before recording", async () => {
     const b = await world();
     await expect(staffCall(b, "GET", `/v1/admin/audit/${A}/records?reason=why&orgId=${B}`)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
@@ -707,9 +763,20 @@ describe("staff path: records, recorded before they are read", () => {
     expect(new Set(queued(b).map((event) => event.eventId)).size).toBe(3);
   });
 
-  it("keeps the record when the read itself is refused after it (the read was attempted)", async () => {
+  it("refuses every fault the reader would refuse before it records, so a typo leaves no staff read", async () => {
     const b = await world();
-    await expect(staffCall(b, "GET", `/v1/admin/audit/${A}/records?fromSeq=5&toSeq=2&${STAFF_QUERY}`)).rejects.toMatchObject({ code: "AUDIT_RANGE_INVALID" });
+    const mark = b.h.operations.length;
+    const cursorOf = (value: unknown) => Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+    for (const bad of ["fromSeq=5&toSeq=2", "fromSeq=0", "toSeq=0", "limit=0", "from=not-a-time", "to=yesterday", "from=2026-10-21T00:00:00Z&to=2026-10-20T00:00:00Z",
+      "cursor=%21%21", `cursor=${cursorOf({ seq: -1 })}`, `cursor=${cursorOf({ nope: 1 })}`, "action=", `action=${"a".repeat(65)}`, "actorId=", `actorId=${"a".repeat(201)}`]) {
+      await expect(staffCall(b, "GET", `/v1/admin/audit/${A}/records?${bad}&${STAFF_QUERY}`), bad).rejects.toMatchObject({ code: "AUDIT_RANGE_INVALID", statusCode: 400 });
+    }
+    expect(b.sqs.offered()).toBe(0);
+    expect(pendingItems(b)).toStrictEqual([]);
+    expect(ledgerOperations(b, mark)).toStrictEqual([]);
+    // A good cursor, time range and filter are recorded and served.
+    const ok = await staffCall(b, "GET", `/v1/admin/audit/${A}/records?from=${encodeURIComponent(iso(at(0) - 3_600_000))}&cursor=${cursorOf({ seq: 2 })}&actorId=dev_1&limit=2&${STAFF_QUERY}`);
+    expect(ok!.status).toBe(200);
     expect(queued(b)).toHaveLength(1);
   });
 });
@@ -844,7 +911,7 @@ describe("staff path: exports", () => {
       const b = await world();
       const { exportId } = (await post(b, A, request))!.body as { exportId: string };
       finishExport(b, A, exportId);
-        b.presignFault.error = agentXError("RUNTIME_UNAVAILABLE", "Rovara can't sign a download link just now. Try again in a minute.");
+      b.presignFault.error = agentXError("RUNTIME_UNAVAILABLE", "Rovara can't sign a download link just now. Try again in a minute.");
       await expect(download(b, A, exportId)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", statusCode: 503 });
     });
   });
@@ -947,5 +1014,60 @@ describe("the broker's handler", () => {
     const noReason = await adminCall(handler, { method: "GET", path: `/v1/admin/audit/${A}/records` });
     expect(noReason.status).toBe(400);
     expect(noReason.body.error).toMatchObject({ code: "AUDIT_REASON_REQUIRED" });
+  });
+
+  it("starts a staff export and gives its download through the handler, each recorded before it happens, and 503s with nothing started or signed when it cannot record", async () => {
+    const { b, handler } = await wired("member");
+    const asStaff = (h: typeof handler, options: Omit<Parameters<typeof adminCall>[1], "subject">) => adminCall(h, { subject: "staff-1", ...options });
+    const staffId = auditOperatorId(adminIssuer, "staff-1");
+    const exportPath = `/v1/admin/audit/${A}/exports`;
+    const body = { requestId: "wired-staff-1", fromSeq: 1, toSeq: 12, reason: "Legal hold", ticket: "LEGAL-9" };
+
+    // No administrator claim, no reason, an org that does not exist: nothing recorded, started or read.
+    expect((await asStaff(handler, { method: "POST", path: exportPath, body, admin: false })).status).toBe(403);
+    const noReason = await asStaff(handler, { method: "POST", path: exportPath, body: { ...body, reason: undefined } });
+    expect(noReason.status).toBe(400);
+    expect(noReason.body.error).toMatchObject({ code: "AUDIT_REASON_REQUIRED" });
+    expect((await asStaff(handler, { method: "POST", path: `/v1/admin/audit/${C}/exports`, body })).status).toBe(404);
+    expect(b.sqs.offered()).toBe(0);
+    expect(b.invocations).toStrictEqual([]);
+
+    // Fail-closed start: no pending put, so no export record and no invocation.
+    const mark = b.h.operations.length;
+    b.h.db.injectFault({ command: "PutCommand", error: { name: "InternalServerError" } });
+    const refusedStart = await asStaff(handler, { method: "POST", path: exportPath, body });
+    expect(refusedStart.status).toBe(503);
+    expect(refusedStart.body.error).toMatchObject({ code: "AUDIT_UNAVAILABLE" });
+    expect(b.invocations).toStrictEqual([]);
+    expect(exportItems(b)).toStrictEqual([]);
+    expect(b.h.operations.slice(mark).filter((operation) => LEDGER_TABLES.has(operation.table))).toStrictEqual([]);
+
+    // Started: 202, the export function is invoked for the path's org, and the staff read was recorded first.
+    const started = await asStaff(handler, { method: "POST", path: exportPath, body });
+    const exportId = auditExportId(A, "wired-staff-1");
+    expect(started.status).toBe(202);
+    expect(started.body).toMatchObject({ exportId, status: "running" });
+    expect(b.invocations).toStrictEqual([{ source: "agentx.audit-export", orgId: A, exportId }]);
+    expect(b.h.db.get(exportMetaKey(A, exportId))).toMatchObject({ requestedBy: { kind: "operator", id: staffId } });
+    expect(queued(b)).toMatchObject([{ action: "audit.staff_read", orgId: A, actor: { kind: "operator", id: staffId }, details: [{ subject: "org", fields: { reason: "Legal hold", ticket: "LEGAL-9", exportId } }] }]);
+
+    // The download is a staff read too: it needs a reason, is recorded before the export record is read, and then gives the link.
+    const downloadPath = `/v1/admin/audit/${A}/exports/${exportId}`;
+    const objectKey = finishExport(b, A, exportId);
+    expect((await asStaff(handler, { method: "GET", path: downloadPath })).status).toBe(400);
+    const downloaded = await asStaff(handler, { method: "GET", path: `${downloadPath}?reason=Legal%20hold&ticket=LEGAL-9` });
+    expect(downloaded.status).toBe(200);
+    expect(downloaded.body).toMatchObject({ exportId, status: "ready", download: { url: `https://signed.test/${EXPORTS_BUCKET}/${objectKey}?expires=900` } });
+    expect(queued(b).map((event) => event.action)).toStrictEqual(["audit.staff_read", "audit.staff_read"]);
+
+    // Fail-closed download: nothing recorded, so the export record is not read and nothing is signed.
+    const signedBefore = b.presigned.length;
+    const markDownload = b.h.operations.length;
+    b.h.db.injectFault({ command: "PutCommand", error: { name: "InternalServerError" } });
+    const refusedDownload = await asStaff(handler, { method: "GET", path: `${downloadPath}?reason=Legal%20hold` });
+    expect(refusedDownload.status).toBe(503);
+    expect(refusedDownload.body.error).toMatchObject({ code: "AUDIT_UNAVAILABLE" });
+    expect(b.h.operations.slice(markDownload).filter((operation) => operation.pk.includes("#AUDIT_EXPORT#"))).toStrictEqual([]);
+    expect(b.presigned.length).toBe(signedBefore);
   });
 });
