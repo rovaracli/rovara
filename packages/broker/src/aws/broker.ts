@@ -270,8 +270,8 @@ import { CredentialRegistry, secretsManagerSource, type ConnectorCredentialsConf
 import { developerTokenVerifier } from "../developer/verify-token.js";
 import { DeveloperSignInStore, type DeveloperRecord } from "../developer/store.js";
 import { startGithubConnect, type GithubConnectionDependencies } from "../org/github-connection.js";
-import { bindRequestedInstallation, cancelInstallRequest, listInstallRequests } from "../org/github-install-requests.js";
-import { sendGithubConnectedNotice, type IdentityNoticeDependencies } from "../developer/identity-notice.js";
+import { bindRequestedInstallation, cancelInstallRequest, listInstallRequests, sendInstallRequestReminders } from "../org/github-install-requests.js";
+import { sendGithubConnectedNotice, sendGithubRequestReminder, type IdentityNoticeDependencies } from "../developer/identity-notice.js";
 import { unlockTrial } from "../org/trial.js";
 import { isGithubInstallPath, routeGithubInstall } from "./github-install-web.js";
 import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, readDecisionDetail } from "../developer/owner-answers.js";
@@ -718,7 +718,10 @@ function githubConnectionOf(dependencies: AwsBrokerDependencies): GithubConnecti
       ...(app.organizationMembership === undefined ? {} : { orgMembership: (installationId, org, login) => app.organizationMembership!(installationId, org, login) }),
     },
     identities: signIn, orgs: orgStoreOf(dependencies),
-    ...(dependencies.githubConnectedNotice === undefined ? {} : { notifyGithubConnected: async (notice) => { await sendGithubConnectedNotice(dependencies.githubConnectedNotice!, notice); } }),
+    ...(dependencies.githubConnectedNotice === undefined ? {} : {
+      notifyGithubConnected: async (notice) => { await sendGithubConnectedNotice(dependencies.githubConnectedNotice!, notice); },
+      remindGithubRequester: async (reminder) => { await sendGithubRequestReminder(dependencies.githubConnectedNotice!, reminder); },
+    }),
     unlockTrial: (input) => unlockTrial({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, input),
     ...(dependencies.githubFetch === undefined ? {} : { fetch: dependencies.githubFetch }),
   };
@@ -1050,7 +1053,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   const tasks = developerTaskActions(dependencies);
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
-  return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
+  return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
     // Spec 025 E14: a Slack Confirm or Cancel press, invoked directly by the ingress (never through API Gateway).
     if (isAdminChangePressEvent(event)) {
       if (adminChanges === undefined) return json({ error: { code: "NOT_FOUND", message: "admin changes are not set up in this deployment" } }, "slack-ingress", 404);
@@ -1059,6 +1062,16 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "admin_change.press_failed", changeId: event.changeId, error: error instanceof AgentXError ? error.code : error instanceof Error ? error.name : "unknown" }));
         return json({ outcome: "failed", changeId: event.changeId }, "slack-ingress", 500);
+      }
+    }
+    // Plan 2, Task 14 Step 6: the hourly sweep that reminds a requester once, two days after they asked their GitHub admin.
+    if (isGithubInstallRequestReminderEvent(event)) {
+      try {
+        const connection = githubConnectionOf(dependencies);
+        return json(connection === undefined ? { reminded: 0, cleared: 0 } : await sendInstallRequestReminders(connection), "github-install-request-reminders");
+      } catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "github.install_request_reminders_failed", error: error instanceof Error ? error.name : "unknown" }));
+        return json({ error: "reminders_failed" }, "github-install-request-reminders", 500);
       }
     }
     if (isGithubWebhookRecoveryEvent(event)) {
@@ -9593,6 +9606,10 @@ export async function retryGithubWebhookAsAdministrator(dependencies: AwsBrokerD
     { Put: { TableName: dependencies.tableName, Item: { pk: `GITHUB_DELIVERY#${deliveryId}`, sk: `RETRY#${now}`, entityType: "GITHUB_WEBHOOK_RETRY_AUDIT", deliveryId, actor: identity.subject, at: now }, ConditionExpression: "attribute_not_exists(pk)" } },
   ] }));
   return { deliveryId, status: "RETRY_QUEUED" as const };
+}
+
+function isGithubInstallRequestReminderEvent(event: unknown): event is { kind: "github-install-request-reminders" } {
+  return event !== null && typeof event === "object" && (event as { kind?: unknown }).kind === "github-install-request-reminders";
 }
 
 function isGithubWebhookRecoveryEvent(event: unknown): event is { source: "agentx.github-webhook-recovery" } {

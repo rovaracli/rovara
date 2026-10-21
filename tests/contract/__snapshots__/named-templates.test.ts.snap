@@ -6182,6 +6182,35 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::ApiGatewayV2::Route",
     },
+    "GithubInstallRequestReminderSchedule": {
+      "Properties": {
+        "FlexibleTimeWindow": {
+          "Mode": "OFF",
+        },
+        "ScheduleExpression": "rate(1 hour)",
+        "State": "ENABLED",
+        "Target": {
+          "Arn": {
+            "Fn::GetAtt": [
+              "BrokerE1355FD6",
+              "Arn",
+            ],
+          },
+          "Input": "{"kind":"github-install-request-reminders"}",
+          "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 300,
+            "MaximumRetryAttempts": 2,
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "GithubWebhookRecoveryRoleD4894C8E",
+              "Arn",
+            ],
+          },
+        },
+      },
+      "Type": "AWS::Scheduler::Schedule",
+    },
     "GithubWebhookRecoveryRoleD4894C8E": {
       "Properties": {
         "AssumeRolePolicyDocument": {

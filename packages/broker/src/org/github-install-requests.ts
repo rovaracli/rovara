@@ -12,6 +12,7 @@
 import { randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  GITHUB_INSTALL_REQUEST_QUEUE_PK,
   GITHUB_INSTALL_REQUEST_TTL_MS,
   agentXError,
   githubAuditKey,
@@ -36,7 +37,8 @@ import {
   type GithubConnectionDependencies,
 } from "./github-connect-support.js";
 
-const DELIVERY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DELIVERY_RETENTION_MS = 30 * DAY_MS;
 const REQUEST_PREFIX = "GITHUB_INSTALL_REQUEST#";
 /** GitHub's installation timestamps are whole seconds, so a request's start is compared at that precision. */
 const SECOND_MS = 1000;
@@ -457,4 +459,72 @@ export async function cancelInstallRequest(
   }
   log(deps, { event: "github.install_request_cancelled", orgId: request.orgId });
   return { githubUserId, status: "cancelled" };
+}
+
+/** A request still waiting this long after it was made is reminded, once (Plan 2, Task 14 Step 6). */
+export const INSTALL_REQUEST_REMINDER_AFTER_MS = 2 * DAY_MS;
+const REMINDER_SWEEP_LIMIT = 100;
+
+/**
+ * The hourly sweep. It reads the queue of waiting requests older than two days, and for each: a request that is no longer waiting, or is past
+ * its expiry, only leaves the queue; one with no reminder yet gets `remindedAt` (conditional, so two overlapping sweeps remind once) and then
+ * one email to the requester. The mark comes first, so a failed email is lost rather than repeated every hour: one reminder, at most.
+ */
+export async function sendInstallRequestReminders(deps: GithubConnectionDependencies): Promise<{ reminded: number; cleared: number }> {
+  if (!deps.cloud) return { reminded: 0, cleared: 0 };
+  const now = deps.now();
+  const page = await deps.documentClient.send(new QueryCommand({
+    TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND sk < :cutoff",
+    ExpressionAttributeValues: { ":pk": GITHUB_INSTALL_REQUEST_QUEUE_PK, ":cutoff": String(now - INSTALL_REQUEST_REMINDER_AFTER_MS) },
+    ConsistentRead: true, Limit: REMINDER_SWEEP_LIMIT,
+  })) as { Items?: Array<{ pk: string; sk: string }> };
+  let reminded = 0;
+  let cleared = 0;
+  for (const entry of page.Items ?? []) {
+    const githubUserId = entry.sk.slice(entry.sk.indexOf("#") + 1);
+    const queueKey = { pk: entry.pk, sk: entry.sk };
+    try {
+      const request = await readRequest(deps, githubUserId);
+      const queued = entry.sk === githubInstallRequestQueueKey(request?.requestedAt ?? 0, githubUserId).sk;
+      if (request === undefined || request.status !== "waiting" || request.expiresAt <= now || !queued) {
+        // Left `waiting` (approved, cancelled, replaced, ended) or ran out: nothing to remind, and the entry goes.
+        await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Delete: { TableName: deps.tableName, Key: queueKey } }] }));
+        cleared += 1;
+        continue;
+      }
+      if (request.remindedAt === undefined && await markReminded(deps, request, now)) {
+        reminded += 1;
+        const email = (await deps.identities.getDeveloper(request.developerId))?.email;
+        if (email === undefined || email === "" || deps.remindGithubRequester === undefined) log(deps, { event: "github.install_request_reminder_skipped", orgId: request.orgId, reason: email === undefined || email === "" ? "no_email" : "no_sender" });
+        else await deps.remindGithubRequester({ to: email, expiresAt: request.expiresAt, ...(request.requestedAccountLogin === undefined ? {} : { requestedAccountLogin: request.requestedAccountLogin }) });
+      }
+      // Reminded (now or before): the entry has done its work.
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Delete: { TableName: deps.tableName, Key: queueKey } }] }));
+    } catch (error) {
+      log(deps, { event: "github.install_request_reminder_failed", error: errorName(error) });
+    }
+  }
+  return { reminded, cleared };
+}
+
+/** Sets `remindedAt` on both items of a request that is still waiting and has none. False when another sweep, or a decision, got there first. */
+async function markReminded(deps: GithubConnectionDependencies, request: GithubInstallRequestRecord, now: number): Promise<boolean> {
+  const update = {
+    UpdateExpression: "SET remindedAt = :now",
+    ConditionExpression: "attribute_not_exists(remindedAt) AND #status = :waiting AND requestedAt = :requestedAt",
+    ExpressionAttributeNames: { "#status": "status" },
+    ExpressionAttributeValues: { ":now": now, ":waiting": "waiting", ":requestedAt": request.requestedAt },
+  };
+  try {
+    await deps.documentClient.send(new TransactWriteCommand({
+      TransactItems: [
+        { Update: { TableName: deps.tableName, Key: githubInstallRequestKey(request.githubUserId), ...update } },
+        { Update: { TableName: deps.tableName, Key: orgGithubInstallRequestKey(request.orgId, request.githubUserId), ...update } },
+      ],
+    }));
+    return true;
+  } catch (error) {
+    if (failedIndexes(error) !== undefined) return false;
+    throw error;
+  }
 }

@@ -20,6 +20,15 @@ export interface GithubConnectedNotice {
   approverLogin: string;
 }
 
+/** What the requester is told once, two days after asking, when their GitHub admin has not approved yet. */
+export interface GithubRequestReminder {
+  to: string;
+  /** The GitHub organization the request names, when GitHub's callback said (it is not known today). */
+  requestedAccountLogin?: string;
+  /** When the request expires (epoch milliseconds). */
+  expiresAt: number;
+}
+
 /** What the callback and the confirmation need of the GitHub App provider. */
 export interface GithubConnectApp {
   appSlug(): Promise<string>;
@@ -53,6 +62,8 @@ export interface GithubConnectionDependencies {
    * logs the failure by name and goes on. Absent, nobody is told.
    */
   notifyGithubConnected?: (input: GithubConnectedNotice) => Promise<void>;
+  /** Plan 2, Task 14 Step 6: emails a requester their one reminder. It may throw; the sweep logs it by name and goes on. Absent, nobody is reminded. */
+  remindGithubRequester?: (input: GithubRequestReminder) => Promise<void>;
   /** Plan 1 Task 19: opens the org's trial for this GitHub account; TRIAL_GITHUB_USED when the account already opened another org's. */
   unlockTrial: (input: { orgId: OrgId; githubUserId: string }) => Promise<void>;
   fetch?: typeof fetch;

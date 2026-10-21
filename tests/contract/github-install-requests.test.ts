@@ -16,13 +16,13 @@ import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { GitHubInstallation } from "../../packages/broker/src/github-app.js";
 import { completeGithubConnect, startGithubConnect, type GithubConnectionDependencies } from "../../packages/broker/src/org/github-connection.js";
-import type { GithubConnectedNotice } from "../../packages/broker/src/org/github-connect-support.js";
+import type { GithubConnectedNotice, GithubRequestReminder } from "../../packages/broker/src/org/github-connect-support.js";
 import {
-  bindRequestedInstallation, cancelInstallRequest, listInstallRequests, recordInstallRequest, type InstallationCreatedPayload,
+  bindRequestedInstallation, cancelInstallRequest, listInstallRequests, recordInstallRequest, sendInstallRequestReminders, type InstallationCreatedPayload,
 } from "../../packages/broker/src/org/github-install-requests.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { unlockTrial } from "../../packages/broker/src/org/trial.js";
-import { githubConnectedNoticeText, githubConnectedNoticeSubject } from "../../packages/broker/src/developer/identity-notice.js";
+import { githubConnectedNoticeText, githubConnectedNoticeSubject, githubRequestReminderText, GITHUB_REQUEST_REMINDER_SUBJECT } from "../../packages/broker/src/developer/identity-notice.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { routeFetch } from "../support/developer-fakes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -134,6 +134,7 @@ function world(options: { installs?: Record<number, GitHubInstallation>; members
   const signIn = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now: () => clock });
   const unlock = vi.fn((input: { orgId: OrgId; githubUserId: string }) => unlockTrial({ documentClient: db, tableName: "state", now: () => clock }, input));
   const notices: GithubConnectedNotice[] = [];
+  const reminders: GithubRequestReminder[] = [];
   const membership = vi.fn(async (_installationId: number, org: string, login: string) => memberships[`${org}/${login}`]);
   const deps: GithubConnectionDependencies = {
     documentClient: db, tableName: "state", now: () => clock, cloud: true, origin: CELL,
@@ -145,9 +146,10 @@ function world(options: { installs?: Record<number, GitHubInstallation>; members
     },
     identities: signIn, orgs: new OrgStore({ documentClient: db, tableName: "state", now: () => clock }), unlockTrial: unlock,
     notifyGithubConnected: async (notice) => { notices.push(notice); },
+    remindGithubRequester: async (reminder) => { reminders.push(reminder); },
     fetch, log: (entry) => logs.push(entry),
   };
-  return { db, deps, fetch, github, logs, unlock, notices, membership, memberships, advance: (ms: number) => { clock += ms; }, now: () => clock };
+  return { db, deps, fetch, github, logs, unlock, notices, reminders, membership, memberships, advance: (ms: number) => { clock += ms; }, now: () => clock };
 }
 type World = ReturnType<typeof world>;
 
@@ -663,6 +665,147 @@ describe("naming: telling the Rovara side which org asked", () => {
   });
 });
 
+describe("one reminder after 2 days (Step 6)", () => {
+  const QUEUE = (w: World) => w.db.find((item) => item.pk === "GITHUB_INSTALL_REQUEST_QUEUE");
+
+  it("emails the requester once at 2 days, marks the request on both items, and not again on a second run", async () => {
+    const w = world();
+    await ask(w);
+    w.advance(2 * DAY - 1);
+    expect(await sendInstallRequestReminders(w.deps)).toEqual({ reminded: 0, cleared: 0 });
+    expect(w.reminders).toEqual([]);
+    w.advance(2);
+    expect(await sendInstallRequestReminders(w.deps)).toEqual({ reminded: 1, cleared: 0 });
+    expect(w.reminders).toEqual([{ to: "rhea@acme.test", expiresAt: NOW + 7 * DAY }]);
+    expect(requestOf(w)).toMatchObject({ remindedAt: w.now(), status: "waiting" });
+    expect(orgRequestOf(w)).toMatchObject({ remindedAt: w.now() });
+    expect(QUEUE(w)).toEqual([]);
+    w.advance(HOUR);
+    expect(await sendInstallRequestReminders(w.deps)).toEqual({ reminded: 0, cleared: 0 });
+    w.advance(3 * DAY);
+    expect(await sendInstallRequestReminders(w.deps)).toEqual({ reminded: 0, cleared: 0 });
+    expect(w.reminders).toHaveLength(1);
+  });
+
+  it("two sweeps at once remind once", async () => {
+    const w = world();
+    await ask(w);
+    w.advance(3 * DAY);
+    const [first, second] = await Promise.all([sendInstallRequestReminders(w.deps), sendInstallRequestReminders(w.deps)]);
+    expect(first.reminded + second.reminded).toBe(1);
+    expect(w.reminders).toHaveLength(1);
+  });
+
+  it("sends none for a request that is connected or cancelled, even if its queue entry was left behind", async () => {
+    const connected = world();
+    await ask(connected);
+    connected.advance(HOUR);
+    expect(await bindRequestedInstallation(connected.deps, nextDelivery(), created(connected))).toBe("bound");
+    expect(QUEUE(connected)).toEqual([]);
+    connected.advance(3 * DAY);
+    expect(await sendInstallRequestReminders(connected.deps)).toEqual({ reminded: 0, cleared: 0 });
+
+    for (const status of ["connected", "cancelled"] as const) {
+      const w = world();
+      await ask(w);
+      // A queue entry left behind by a crash between the status change and its removal.
+      for (const item of [requestOf(w)!, orgRequestOf(w)!]) item.status = status;
+      w.advance(3 * DAY);
+      expect(QUEUE(w)).toHaveLength(1);
+      expect(await sendInstallRequestReminders(w.deps)).toEqual({ reminded: 0, cleared: 1 });
+      expect(QUEUE(w)).toEqual([]);
+      expect(w.reminders).toEqual([]);
+    }
+    const cancelled = world();
+    await ask(cancelled);
+    await cancelInstallRequest(cancelled.deps, R_CALLER, String(R_ID));
+    cancelled.advance(3 * DAY);
+    expect(await sendInstallRequestReminders(cancelled.deps)).toEqual({ reminded: 0, cleared: 0 });
+    expect(cancelled.reminders).toEqual([]);
+  });
+
+  it("sends none past expiry, and clears the entry", async () => {
+    const w = world();
+    await ask(w);
+    w.advance(7 * DAY);
+    expect(await sendInstallRequestReminders(w.deps)).toEqual({ reminded: 0, cleared: 1 });
+    expect(w.reminders).toEqual([]);
+    expect(QUEUE(w)).toEqual([]);
+  });
+
+  it("a replaced request is reminded once, for its newest asking only", async () => {
+    const w = world();
+    await ask(w);
+    w.advance(DAY);
+    await ask(w, "codeR2");
+    w.advance(2 * DAY - 1);
+    expect(await sendInstallRequestReminders(w.deps)).toEqual({ reminded: 0, cleared: 0 });
+    w.advance(2);
+    expect(await sendInstallRequestReminders(w.deps)).toEqual({ reminded: 1, cleared: 0 });
+    expect(w.reminders).toEqual([{ to: "rhea@acme.test", expiresAt: NOW + DAY + 7 * DAY }]);
+  });
+
+  it("a requester with no address, or a send that fails, is marked reminded and never retried by the next sweep", async () => {
+    const noEmail = world();
+    await ask(noEmail);
+    noEmail.db.set({ pk: `DEVELOPER#${R}`, sk: "META", developerId: R, provider: "github", displayName: "Rhea Requester", firstSignInAt: "x", lastSignInAt: "x", revoked: false, issuer: "https://github.com", subject: String(R_ID) });
+    noEmail.advance(3 * DAY);
+    expect((await sendInstallRequestReminders(noEmail.deps)).reminded).toBe(1);
+    expect(noEmail.reminders).toEqual([]);
+    expect(requestOf(noEmail)).toHaveProperty("remindedAt");
+
+    const failing = world();
+    await ask(failing);
+    failing.advance(3 * DAY);
+    const sends = vi.fn(async () => { throw Object.assign(new Error("boom"), { name: "MessageRejected" }); });
+    const deps = { ...failing.deps, remindGithubRequester: sends };
+    expect((await sendInstallRequestReminders(deps)).reminded).toBe(1);
+    expect((await sendInstallRequestReminders(deps)).reminded).toBe(0);
+    expect(sends).toHaveBeenCalledTimes(1);
+    expect(failing.logs).toContainEqual({ event: "github.install_request_reminder_failed", error: "MessageRejected" });
+    expect(JSON.stringify(failing.logs)).not.toContain("rhea@acme.test");
+  });
+
+  it("the email says the exact words, naming the GitHub organization when it is known and 'your GitHub organization' when it is not", () => {
+    expect(GITHUB_REQUEST_REMINDER_SUBJECT).toBe("Your GitHub admin hasn't approved Rovara yet");
+    expect(githubRequestReminderText({ to: "x", expiresAt: Date.parse("2026-10-28T12:00:00.000Z") })).toBe(
+      "You asked an admin of your GitHub organization to approve Rovara 2 days ago, and it's still waiting. The request expires on 2026-10-28. Remind them, or ask them to run agentx github connect themselves.",
+    );
+    expect(githubRequestReminderText({ to: "x", requestedAccountLogin: "acme-co", expiresAt: Date.parse("2026-10-28T12:00:00.000Z") })).toContain("You asked an admin of acme-co to approve Rovara 2 days ago");
+  });
+
+  it("through the broker: the scheduled event runs the sweep and sends one SES email to the requester", async () => {
+    const sent: Array<{ input: { Destination?: { ToAddresses?: string[] }; Content?: { Simple?: { Subject?: { Data?: string } } } } }> = [];
+    const harness = await createDeveloperTaskBroker({
+      brokerExtra: {
+        cloud: true,
+        githubConnectedNotice: { ses: { send: async (command: { input: never }) => { sent.push(command); return {}; } }, from: "Rovara <signin@rovara.dev>", log: () => undefined },
+        githubPullRequests: {
+          reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), verifyWebhookRepository: vi.fn(),
+          appSlug: async () => "rovara-cloud", oauthClient: async () => ({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }),
+          installation: async () => install(601),
+        },
+      },
+    });
+    seedMembership(harness.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
+    harness.db.set({ pk: `DEVELOPER#${OMAR.developerId}`, sk: "META", developerId: OMAR.developerId, provider: "oidc", displayName: "Omar", email: "omar@acme.test", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    const requestedAt = Date.now() - 3 * DAY;
+    const record = { entityType: "GITHUB_INSTALL_REQUEST", orgId: TEST_ORG, developerId: OMAR.developerId, githubUserId: "4343", githubLogin: R_LOGIN, requestedAt, expiresAt: requestedAt + 7 * DAY, status: "waiting" };
+    harness.db.set({ ...githubInstallRequestKey("4343"), ...record });
+    harness.db.set({ ...orgGithubInstallRequestKey(TEST_ORG, "4343"), ...record });
+    harness.db.set({ ...githubInstallRequestQueueKey(requestedAt, "4343"), entityType: "GITHUB_INSTALL_REQUEST_QUEUE", orgId: TEST_ORG });
+    const run = () => harness.handler({ kind: "github-install-request-reminders" });
+    const first = await run();
+    expect(first.statusCode).toBe(200);
+    expect(JSON.parse(first.body)).toMatchObject({ reminded: 1 });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.input.Destination!.ToAddresses).toEqual(["omar@acme.test"]);
+    expect(sent[0]!.input.Content!.Simple!.Subject!.Data).toBe("Your GitHub admin hasn't approved Rovara yet");
+    expect(JSON.parse((await run()).body)).toMatchObject({ reminded: 0 });
+    expect(sent).toHaveLength(1);
+  });
+});
+
 describe("the webhook endpoint", () => {
   const SECRET = "whsec-test";
   const sign = (body: string) => `sha256=${createHmac("sha256", SECRET).update(body, "utf8").digest("hex")}`;
@@ -781,5 +924,17 @@ describe("infrastructure", () => {
     expect(holders[0]![1].Condition).toBe("CloudSignInEmailFromSes");
     const env = (Object.values(cloud.Resources).find((resource) => resource.Type === "AWS::Lambda::Function" && "Environment" in resource.Properties && JSON.stringify(resource.Properties.Environment).includes("GITHUB_APP_CREDENTIAL_REF"))!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
     expect(Object.keys(env)).toContain("DEVELOPER_NOTICE_EMAIL_FROM");
+  });
+
+  it("an hourly schedule invokes the broker with the reminder event, on the role the webhook recovery schedule uses (Step 6)", () => {
+    const schedules = Object.entries(cloud.Resources).filter(([, resource]) => resource.Type === "AWS::Scheduler::Schedule");
+    const named = (name: string) => schedules.find(([id]) => id.replace(/[0-9A-F]{8}$/, "") === name)![1].Properties as { ScheduleExpression: string; State: string; Target: { Arn: unknown; Input: string; RoleArn: unknown } };
+    const reminder = named("GithubInstallRequestReminderSchedule");
+    const recovery = named("GithubWebhookRecoverySchedule");
+    expect(reminder.ScheduleExpression).toBe("rate(1 hour)");
+    expect(reminder.State).toBe("ENABLED");
+    expect(JSON.parse(reminder.Target.Input)).toEqual({ kind: "github-install-request-reminders" });
+    expect(reminder.Target.Arn).toEqual(recovery.Target.Arn);
+    expect(reminder.Target.RoleArn).toEqual(recovery.Target.RoleArn);
   });
 });

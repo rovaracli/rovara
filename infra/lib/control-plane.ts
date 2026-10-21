@@ -782,6 +782,19 @@ export class ControlPlaneStack extends Stack {
         retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
       },
     });
+    // Plan 2, Task 14 Step 6: one reminder to a requester whose GitHub admin has not approved after 2 days. Deleting this schedule (and the
+    // handler's branch) removes the feature and nothing else; the 7 day expiry stays either way. Hourly is the finest it needs.
+    new scheduler.CfnSchedule(this, "GithubInstallRequestReminderSchedule", {
+      flexibleTimeWindow: { mode: "OFF" },
+      scheduleExpression: "rate(1 hour)",
+      state: "ENABLED",
+      target: {
+        arn: broker.functionArn,
+        roleArn: githubRecoveryRole.roleArn,
+        input: JSON.stringify({ kind: "github-install-request-reminders" }),
+        retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
+      },
+    });
     new scheduler.CfnSchedule(this, "WorkflowMergeRecoverySchedule", {
       flexibleTimeWindow: { mode: "OFF" },
       scheduleExpression: "rate(1 minute)",

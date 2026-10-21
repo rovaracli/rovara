@@ -4,7 +4,7 @@
 // sender's identity). Nothing here reads or logs a token; the logs carry the provider only, never an address or a login.
 import { SendEmailCommand, type SESv2Client } from "@aws-sdk/client-sesv2";
 import type { DeveloperSignInMethod } from "@agentx/contracts";
-import type { GithubConnectedNotice } from "../org/github-connect-support.js";
+import type { GithubConnectedNotice, GithubRequestReminder } from "../org/github-connect-support.js";
 
 export const IDENTITY_NOTICE_SUBJECT = "A new way to sign in to your Rovara account";
 /** How long a send may take; a sign-in is waiting on it, inside the function's 15 s, so a slow SES call must not use that budget up. */
@@ -106,5 +106,35 @@ export async function sendGithubConnectedNotice(deps: IdentityNoticeDependencies
     } },
   }), { abortSignal: AbortSignal.timeout(NOTICE_SEND_TIMEOUT_MS) });
   deps.log({ event: "github.connected_notice_sent" });
+  return "sent";
+}
+
+// Plan 2, Task 14 Step 6: one reminder to the requester two days after they asked their GitHub admin, if it is still waiting.
+
+export const GITHUB_REQUEST_REMINDER_SUBJECT = "Your GitHub admin hasn't approved Rovara yet";
+
+export function githubRequestReminderText(input: GithubRequestReminder): string {
+  const target = input.requestedAccountLogin !== undefined && GITHUB_ACCOUNT.test(input.requestedAccountLogin) ? input.requestedAccountLogin : "your GitHub organization";
+  const expires = new Date(input.expiresAt).toISOString().slice(0, 10);
+  return `You asked an admin of ${target} to approve Rovara 2 days ago, and it's still waiting. The request expires on ${expires}. `
+    + "Remind them, or ask them to run agentx github connect themselves.";
+}
+
+/** Emails the requester their one reminder. "skipped" when no SES sender is configured; a failed send throws and the sweep logs its name. */
+export async function sendGithubRequestReminder(deps: IdentityNoticeDependencies, input: GithubRequestReminder): Promise<"sent" | "skipped"> {
+  if (deps.ses === undefined || deps.from === undefined || deps.from === "") {
+    deps.log({ event: "github.request_reminder_skipped", reason: "no_sender" });
+    return "skipped";
+  }
+  const text = githubRequestReminderText(input);
+  await deps.ses.send(new SendEmailCommand({
+    FromEmailAddress: deps.from,
+    Destination: { ToAddresses: [input.to] },
+    Content: { Simple: {
+      Subject: { Data: GITHUB_REQUEST_REMINDER_SUBJECT, Charset: "UTF-8" },
+      Body: { Text: { Data: text, Charset: "UTF-8" }, Html: { Data: `<p>${escapeHtml(text)}</p>`, Charset: "UTF-8" } },
+    } },
+  }), { abortSignal: AbortSignal.timeout(NOTICE_SEND_TIMEOUT_MS) });
+  deps.log({ event: "github.request_reminder_sent" });
   return "sent";
 }
