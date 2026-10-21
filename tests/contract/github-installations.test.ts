@@ -23,7 +23,7 @@ import { githubNotConnectedMessage } from "../../packages/broker/src/org/project
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { call } from "../support/slack-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, call, ensureWorkspace } from "../support/slack-broker.js";
 
 const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
 const SECRET = "whsec-installations";
@@ -160,6 +160,20 @@ describe("the installation lifecycle webhooks", () => {
     // No workspace, operation or limit-charge item, and no transaction at all after the webhook's own.
     expect(taskWrites(w)).toHaveLength(before);
     expect(w.db.commandNames().slice(commands).filter((name) => name === "TransactWriteCommand")).toHaveLength(1);
+  });
+
+  it("a new Slack thread is new work too: with the installation removed, ensuring its workspace is refused and writes no workspace", async () => {
+    const w = await world();
+    const thread = (ts: string) => `${SLACK_TEAM}/${SLACK_CHANNEL}/${ts}`;
+    const control = await ensureWorkspace(w.handler, thread("1695500000.000001"), MAYA.slackUserId!);
+    expect(control.status).toBe(200);
+    const workspaces = () => w.db.find((item) => typeof item.pk === "string" && item.pk.startsWith("WORKSPACE#") && item.sk === "META").length;
+    const before = workspaces();
+    expect((await w.lifecycle("deleted")).statusCode).toBe(202);
+    const refused = await ensureWorkspace(w.handler, thread("1695500000.000002"), MAYA.slackUserId!);
+    expect(refused.status).toBe(403);
+    expect(error(refused)).toEqual({ code: "GITHUB_NOT_CONNECTED", message: NOT_CONNECTED });
+    expect(workspaces()).toBe(before);
   });
 
   it("suspend refuses starts the same way, and unsuspend restores them; a removed installation never comes back", async () => {

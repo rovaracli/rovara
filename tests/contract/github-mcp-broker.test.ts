@@ -137,7 +137,7 @@ describe("thread-authenticated GitHub MCP routes", () => {
     expect((await request("POST", thread, { ...input, arguments: { ...input.arguments, owner: "another" } })).statusCode).toBe(403);
     expect((await request("POST", thread, { ...input, token: "caller-controlled" })).statusCode).toBe(400);
     expect(call).toHaveBeenCalledExactlyOnceWith("issue_write", { method: "create", title: "Native tool", owner: "example", repo: "demo" });
-    expect(credentials).toHaveBeenLastCalledWith(repository, "write");
+    expect(credentials).toHaveBeenLastCalledWith(repository, "write", { system: "private-install" });
     expect(resolveCredential).not.toHaveBeenCalled();
     // The invocation records the revision whose policy authorized it, not the workspace's.
     expect(records.get(key(`WORKSPACE#${workspaceId}`, `GITHUB_MCP#${input.requestId}`))).toMatchObject({

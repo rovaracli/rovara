@@ -111,6 +111,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/developer/plan-evidence-jobs.ts",
       // Retired and quarantined recovery rows only; active retries remove the due/lease fields without TTL.
       "packages/broker/src/aws/workflow-merge-recovery.ts",
+      // Plan 2, Tasks 13 to 15: the GitHub connect state, the delivery ids and the notice outbox rows expire on it.
+      "packages/broker/src/org/github-connection.ts", "packages/broker/src/org/github-install-requests.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);
