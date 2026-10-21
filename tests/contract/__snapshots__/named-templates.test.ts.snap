@@ -579,6 +579,29 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
             },
             {
               "Action": [
+                "ses:SendEmail",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ses:*:",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":identity/*",
+                  ],
+                ],
+              },
+              "Sid": "SesSendNotice",
+            },
+            {
+              "Action": [
                 "servicequotas:GetServiceQuota",
               ],
               "Effect": "Allow",
