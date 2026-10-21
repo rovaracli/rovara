@@ -120,7 +120,7 @@ describe("the PlanEvidence job", () => {
     const revisionKey = projectRevisionKey(TEST_ORG, "payments", 1);
     const revision = harness.db.get(revisionKey.pk, revisionKey.sk) as { definition: { repositories: Array<Record<string, unknown>> } };
     harness.db.set({ ...revision, definition: { ...revision.definition, repositories: [...revision.definition.repositories, { name: "web", url: "https://github.com/example/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }] } });
-    harness.db.set({ ...taskRecord(harness, planned.taskId), preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }, { repositoryId: "web", baseCommitSha: "f".repeat(40) }] } as never);
+    harness.db.set({ ...taskRecord(harness, planned.taskId), preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }, { repositoryId: "web", baseCommitSha: "f".repeat(40) }] });
     return { harness, ...planned };
   }
   const NOT_CONNECTED = () => agentXError("GITHUB_NOT_CONNECTED", "Rovara can't reach example/demo through your organization's GitHub connection. Connect it with: agentx github connect");
