@@ -1268,3 +1268,40 @@ describe("GitHub App install flow lookups (Plan 2, Task 12)", () => {
     await expect(provider.oauthClient()).resolves.toBeUndefined();
   });
 });
+
+describe("organizationMembership (Plan 2, Task 14)", () => {
+  function provider(answers: { token?: Response; membership?: Response }) {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      calls.push({ url: target, init });
+      if (target.endsWith("/access_tokens")) return answers.token ?? Response.json({ token: "ghs_installation" });
+      return answers.membership ?? Response.json({ state: "active", role: "member" });
+    });
+    return { calls, github: new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => privateKey.export({ type: "pkcs8", format: "pem" }).toString(), fetchImplementation }) };
+  }
+
+  it("mints a members:read token for that installation and reads the membership with it", async () => {
+    const f = provider({});
+    await expect(f.github.organizationMembership(601, "acme", "rhea")).resolves.toEqual({ state: "active", role: "member" });
+    expect(f.calls[0]!.url).toBe("https://api.github.com/app/installations/601/access_tokens");
+    expect(JSON.parse(f.calls[0]!.init?.body as string)).toEqual({ permissions: { members: "read" } });
+    expect(f.calls[1]!.url).toBe("https://api.github.com/orgs/acme/memberships/rhea");
+    expect((f.calls[1]!.init?.headers as Record<string, string>).authorization).toBe("Bearer ghs_installation");
+  });
+
+  it("answers undefined for a 404, and throws for any other failure so an outage is never read as not a member", async () => {
+    await expect(provider({ membership: new Response("nope", { status: 404 }) }).github.organizationMembership(601, "acme", "rhea")).resolves.toBeUndefined();
+    await expect(provider({ membership: new Response("bad", { status: 502 }) }).github.organizationMembership(601, "acme", "rhea")).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(provider({ token: new Response("bad", { status: 403 }) }).github.organizationMembership(601, "acme", "rhea")).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(provider({ membership: Response.json({ nothing: true }) }).github.organizationMembership(601, "acme", "rhea")).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+
+  it("does not call GitHub for a login that could not be one, so nothing else is read through the path", async () => {
+    const f = provider({});
+    await expect(f.github.organizationMembership(601, "acme", "../../user")).resolves.toBeUndefined();
+    await expect(f.github.organizationMembership(601, "ac/me", "rhea")).resolves.toBeUndefined();
+    expect(f.calls).toEqual([]);
+  });
+});

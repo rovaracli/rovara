@@ -183,7 +183,12 @@ export interface DeveloperRouteDependencies {
    */
   egressSync?: EgressDomainsDependencies["sync"];
   /** Plan 2, Task 13: starts connecting GitHub to the caller's org (the broker's `startGithubConnect`). Without it the route answers NOT_FOUND. */
-  githubConnect?: { start(caller: DeveloperCaller): Promise<{ installUrl: string; expiresAt: string }> };
+  githubConnect?: {
+    start(caller: DeveloperCaller): Promise<{ installUrl: string; expiresAt: string; orgName?: string; ownerName?: string }>;
+    /** Plan 2, Task 14: the org's requests to a GitHub admin (any member), and the cancelling of one that is waiting. */
+    listRequests(caller: DeveloperCaller): Promise<{ requests: unknown[] }>;
+    cancelRequest(caller: DeveloperCaller, githubUserId: string): Promise<{ githubUserId: string; status: "cancelled" }>;
+  };
 }
 
 /** A route's answer with a status other than 200; the broker's handler writes the status and the body. */
@@ -1183,6 +1188,15 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && url.pathname === "/v1/app/github/connect") {
     if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
     return deps.githubConnect.start(caller);
+  }
+  if (request.method === "GET" && url.pathname === "/v1/app/github/requests") {
+    if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
+    return deps.githubConnect.listRequests(caller);
+  }
+  const githubRequestRoute = /^\/v1\/app\/github\/requests\/([0-9]{1,20})$/.exec(url.pathname);
+  if (request.method === "DELETE" && githubRequestRoute !== null) {
+    if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
+    return deps.githubConnect.cancelRequest(caller, githubRequestRoute[1]!);
   }
   if (request.method === "POST" && url.pathname === "/v1/dev/projects") return createProject(deps, caller, jsonBody(request));
   if (request.method === "GET" && url.pathname === "/v1/dev/workspaces") return listWorkspaces(deps, caller);

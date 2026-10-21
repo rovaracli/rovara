@@ -5,7 +5,7 @@
 //
 // Secrets: the state, the confirmation token, the authorization code and the GitHub user token are never logged and never stored raw
 // (the first two as SHA-256 only); the user token lives inside one callback and is revoked before it returns.
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { GetCommand, TransactWriteCommand, UpdateCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import {
   agentXError,
@@ -22,41 +22,20 @@ import {
 } from "@agentx/contracts";
 import type { GitHubInstallation } from "../github-app.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
+import {
+  GITHUB_ISSUER, conditionFailed, consumeState, errorName, exchangeCode, failedIndexes, isOwnerOrAdmin, log, readState, revokeUserToken, sha256Hex, userGet,
+  type ConnectStateItem, type GithubConnectApp, type GithubConnectionDependencies, type PendingBinding,
+} from "./github-connect-support.js";
+import { ownerNameOf, recordInstallRequest } from "./github-install-requests.js";
 
-/** What the callback and the confirmation need of the GitHub App provider. */
-export interface GithubConnectApp {
-  appSlug(): Promise<string>;
-  oauthClient(): Promise<{ clientId: string; clientSecret: string } | undefined>;
-  installation(id: number): Promise<GitHubInstallation>;
-}
+export type { GithubConnectApp, GithubConnectionDependencies };
 
-export interface GithubConnectionDependencies {
-  documentClient: { send(command: unknown): Promise<unknown> };
-  tableName: string;
-  now: () => number;
-  /** A Rovara Cloud install. Anything else connects GitHub through the administrator (agentx init), and these routes refuse. */
-  cloud: boolean;
-  /** This cell's origin (scheme and host), which a confirmation's Origin header must equal. */
-  origin: string;
-  app: GithubConnectApp;
-  /** Which developer a sign-in identity belongs to (an unlinked identity belongs to none), and the identities a developer has. */
-  identities: {
-    developerForIdentity(identityKey: string): Promise<string | undefined>;
-    identitiesOf(developerId: string): Promise<Array<{ provider: string }>>;
-    getDeveloper(developerId: string): Promise<{ provider: string; issuer: string } | undefined>;
-  };
-  orgs: { getOrg(orgId: OrgId): Promise<OrgRecord | undefined> };
-  /** Plan 1 Task 19: opens the org's trial for this GitHub account; TRIAL_GITHUB_USED when the account already opened another org's. */
-  unlockTrial: (input: { orgId: OrgId; githubUserId: string }) => Promise<void>;
-  fetch?: typeof fetch;
-  /** Event names, ids and error names only. */
-  log?: (entry: Record<string, unknown>) => void;
-}
-
-export type ConnectOutcomeName = "confirm" | "requested" | "not_linked" | "not_yours" | "taken" | "expired";
+export type ConnectOutcomeName = "confirm" | "requested" | "not_linked" | "not_yours" | "not_allowed" | "taken" | "expired";
 export interface ConnectOutcome {
   outcome: ConnectOutcomeName;
   orgName?: string;
+  /** With `requested`: the owner's name, for the message to give the GitHub admin. */
+  ownerName?: string;
   accountLogin?: string;
   /** With `confirm`: the connect attempt's id, which the confirm form posts back (the state's SHA-256). */
   connectId?: string;
@@ -76,75 +55,14 @@ const HASH_PATTERN = /^[0-9a-f]{64}$/;
 const COOKIE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const INSTALLATION_ID_PATTERN = /^[1-9][0-9]{0,14}$/;
 const USER_INSTALLATION_PAGES = 10;
-const GITHUB_TIMEOUT_MS = 8_000;
-const GITHUB_ISSUER = "https://github.com";
 const NOT_LINKED_START_MESSAGE = "sign in to Rovara with GitHub once (agentx login, then choose GitHub), then run agentx github connect again";
 
-const sha256Hex = (value: string) => createHash("sha256").update(value).digest("hex");
-const errorName = (error: unknown) => (error instanceof Error ? error.name : "unknown");
 
 /** The Set-Cookie value that carries the confirmation token to the confirm page's form post, and only to this host. */
 export const connectCookie = (token: string) => `${GITHUB_CONNECT_COOKIE}=${token}; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=${CONNECT_COOKIE_MAX_AGE_SECONDS}`;
 /** The Set-Cookie value that removes it. */
 export const clearedConnectCookie = () => `${GITHUB_CONNECT_COOKIE}=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`;
 
-interface PendingBinding {
-  installationId: number;
-  accountLogin: string;
-  accountId: number;
-  accountType: "User" | "Organization";
-  repositorySelection: "all" | "selected";
-  status: "active" | "suspended";
-  githubUserId: string;
-}
-
-interface ConnectStateItem {
-  orgId: OrgId;
-  developerId: string;
-  expiresAt: number;
-  consumedAt?: number;
-  callbackAt?: number;
-  confirmHash?: string;
-  pending?: PendingBinding;
-}
-
-function log(deps: GithubConnectionDependencies, entry: Record<string, unknown>): void {
-  (deps.log ?? ((line) => { console.log(JSON.stringify({ component: "broker", ...line })); }))(entry);
-}
-
-const conditionFailed = (error: unknown) => errorName(error) === "ConditionalCheckFailedException";
-
-function failedIndexes(error: unknown): Set<number> | undefined {
-  if (errorName(error) !== "TransactionCanceledException") return undefined;
-  const reasons = (error as { CancellationReasons?: unknown }).CancellationReasons;
-  if (!Array.isArray(reasons)) return undefined;
-  const failed = new Set<number>();
-  reasons.forEach((reason: { Code?: string } | undefined, index) => { if (reason?.Code === "ConditionalCheckFailed") failed.add(index); });
-  return failed;
-}
-
-async function readState(deps: GithubConnectionDependencies, stateHash: string): Promise<ConnectStateItem | undefined> {
-  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: githubConnectStateKey(stateHash), ConsistentRead: true })) as { Item?: ConnectStateItem };
-  return response.Item;
-}
-
-/** Single use: marks the state consumed. False when it was consumed already (or is gone), which the caller treats as expired. */
-async function consumeState(deps: GithubConnectionDependencies, stateHash: string): Promise<boolean> {
-  try {
-    await deps.documentClient.send(new UpdateCommand({
-      TableName: deps.tableName, Key: githubConnectStateKey(stateHash),
-      UpdateExpression: "SET consumedAt = :now",
-      ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(consumedAt)",
-      ExpressionAttributeValues: { ":now": deps.now() },
-    }));
-    return true;
-  } catch (error) {
-    if (conditionFailed(error)) return false;
-    throw error;
-  }
-}
-
-const isOwnerOrAdmin = (role: OrgRole) => role === "owner" || role === "admin";
 
 /**
  * `POST /v1/app/github/connect`: starts a connect for the caller's org. Only an owner or admin of a cloud org, who has signed in with
@@ -153,7 +71,7 @@ const isOwnerOrAdmin = (role: OrgRole) => role === "owner" || role === "admin";
 export async function startGithubConnect(
   deps: GithubConnectionDependencies,
   caller: { developerId: string; orgId: OrgId; orgRole: OrgRole },
-): Promise<{ installUrl: string; expiresAt: string }> {
+): Promise<{ installUrl: string; expiresAt: string; orgName?: string; ownerName?: string }> {
   if (!deps.cloud) throw agentXError("FORBIDDEN", "on this install, GitHub is connected by the administrator during agentx init");
   if (!isOwnerOrAdmin(caller.orgRole)) throw agentXError("FORBIDDEN", "only an owner or admin can connect GitHub");
   if (!await hasLinkedGithubIdentity(deps, caller.developerId)) throw agentXError("FORBIDDEN", NOT_LINKED_START_MESSAGE);
@@ -172,7 +90,12 @@ export async function startGithubConnect(
     ConditionExpression: "attribute_not_exists(pk)",
   }));
   log(deps, { event: "github.connect_started", orgId: caller.orgId });
-  return { installUrl: `https://github.com/apps/${slug}/installations/new?state=${state}`, expiresAt: new Date(expiresAt).toISOString() };
+  // The names go to the CLI, which prints the message a person gives their GitHub admin if GitHub shows "Request" instead of "Install".
+  const orgName = (await deps.orgs.getOrg(caller.orgId))?.name;
+  return {
+    installUrl: `https://github.com/apps/${slug}/installations/new?state=${state}`, expiresAt: new Date(expiresAt).toISOString(),
+    ...(orgName === undefined ? {} : { orgName, ownerName: await ownerNameOf(deps, caller.orgId) }),
+  };
 }
 
 /** A GitHub identity linked to the developer; a developer from before identity links is recognised by their own record (see developerForIdentity). */
@@ -205,9 +128,16 @@ export async function completeGithubConnect(
     return expired;
   }
   if (query.setup_action === "request") {
-    await consumeState(deps, stateHash);
-    log(deps, { event: "github.connect_requested", orgId: state.orgId });
-    return { outcome: "requested", orgName: org.name };
+    // A non-owner of the GitHub organization asked its admin (Plan 2, Task 14). The request is recorded only for a developer who is still an
+    // owner or admin; the installation binds later, from GitHub's webhook, and never from this callback.
+    try {
+      const recorded = await recordInstallRequest(deps, { stateHash }, { code: query.code });
+      if (recorded === "requested") return { outcome: "requested", orgName: org.name, ownerName: await ownerNameOf(deps, org.orgId) };
+      return { outcome: recorded, orgName: org.name };
+    } catch (error) {
+      if ((error as { code?: unknown }).code === "FORBIDDEN") return { outcome: "not_allowed", orgName: org.name };
+      throw error;
+    }
   }
   const installationId = typeof query.installation_id === "string" && INSTALLATION_ID_PATTERN.test(query.installation_id) ? Number(query.installation_id) : undefined;
   const code = typeof query.code === "string" && query.code !== "" && query.code.length <= 512 ? query.code : undefined;
@@ -252,49 +182,6 @@ export async function completeGithubConnect(
   }
   log(deps, { event: "github.connect_awaiting_confirmation", orgId: state.orgId, installationId });
   return { outcome: "confirm", orgName: org.name, accountLogin: verdict.pending.accountLogin, connectId: stateHash, confirmToken };
-}
-
-const userHeaders = (token: string) => ({
-  accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "user-agent": "rovara-github-connect", "x-github-api-version": "2022-11-28",
-});
-
-function github(deps: GithubConnectionDependencies, url: string, init: RequestInit = {}): Promise<Response> {
-  return (deps.fetch ?? fetch)(url, { redirect: "error", signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS), ...init });
-}
-
-/** The user access token for a code, or undefined when GitHub refused it (it answers a bad or used code with HTTP 200 and an error body). */
-async function exchangeCode(deps: GithubConnectionDependencies, client: { clientId: string; clientSecret: string }, code: string): Promise<string | undefined> {
-  const response = await github(deps, "https://github.com/login/oauth/access_token", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json", "user-agent": "rovara-github-connect" },
-    body: new URLSearchParams({ client_id: client.clientId, client_secret: client.clientSecret, code }).toString(),
-  });
-  if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's token exchange failed with HTTP ${response.status}`);
-  // A GitHub App user token that expires comes with a refresh token (`ghr_`). It is dropped here, never stored or logged. Open question
-  // (check once on staging): whether revoking the access token below also invalidates the paired refresh token.
-  const body = await response.json().catch(() => undefined) as { access_token?: unknown } | undefined;
-  return typeof body?.access_token === "string" && body.access_token !== "" ? body.access_token : undefined;
-}
-
-/** DELETE /applications/{client_id}/token: best effort, once. A failure is logged by name and never stops the answer. */
-async function revokeUserToken(deps: GithubConnectionDependencies, client: { clientId: string; clientSecret: string }, token: string): Promise<void> {
-  try {
-    const response = await github(deps, `https://api.github.com/applications/${encodeURIComponent(client.clientId)}/token`, {
-      method: "DELETE",
-      headers: {
-        accept: "application/vnd.github+json", "content-type": "application/json", "user-agent": "rovara-github-connect", "x-github-api-version": "2022-11-28",
-        authorization: `Basic ${Buffer.from(`${client.clientId}:${client.clientSecret}`).toString("base64")}`,
-      },
-      body: JSON.stringify({ access_token: token }),
-    });
-    if (!response.ok && response.status !== 404) log(deps, { event: "github.connect_token_revoke_failed", status: response.status });
-  } catch (error) {
-    log(deps, { event: "github.connect_token_revoke_failed", error: errorName(error) });
-  }
-}
-
-async function userGet(deps: GithubConnectionDependencies, token: string, path: string): Promise<Response> {
-  return github(deps, `https://api.github.com${path}`, { headers: userHeaders(token) });
 }
 
 async function verify(deps: GithubConnectionDependencies, state: ConnectStateItem, org: OrgRecord, installationId: number, token: string): Promise<Verdict> {

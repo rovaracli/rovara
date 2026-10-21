@@ -574,7 +574,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         ...(options.browser ? { openBrowser: dependencies.login?.openBrowser ?? openSystemBrowser } : {}),
         ...(dependencies.githubConnect ?? {}),
       });
-      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, account: result.account, installationId: result.installationId }, true) : githubConnectText(result));
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, status: result.status, account: result.account, installationId: result.installationId }, true) : githubConnectText(result));
     });
 
   registerSigninCommands(program, {

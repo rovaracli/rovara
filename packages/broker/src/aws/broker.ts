@@ -16,6 +16,7 @@ import {
   type TransactWriteCommandInput,
 } from "@aws-sdk/lib-dynamodb";
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { SESv2Client } from "@aws-sdk/client-sesv2";
 import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
@@ -269,6 +270,8 @@ import { CredentialRegistry, secretsManagerSource, type ConnectorCredentialsConf
 import { developerTokenVerifier } from "../developer/verify-token.js";
 import { DeveloperSignInStore, type DeveloperRecord } from "../developer/store.js";
 import { startGithubConnect, type GithubConnectionDependencies } from "../org/github-connection.js";
+import { bindRequestedInstallation, cancelInstallRequest, listInstallRequests } from "../org/github-install-requests.js";
+import { sendGithubConnectedNotice, type IdentityNoticeDependencies } from "../developer/identity-notice.js";
 import { unlockTrial } from "../org/trial.js";
 import { isGithubInstallPath, routeGithubInstall } from "./github-install-web.js";
 import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, readDecisionDetail } from "../developer/owner-answers.js";
@@ -311,7 +314,7 @@ import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { admitSpend, changeBudgets, keyIdOf, mintCap, mintKeyHealing, recordMintedKey, type OrgBudgetSettings } from "../org/budget.js";
-import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
+import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import { ADMISSION_REFUSALS, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
@@ -458,7 +461,7 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "appSlug" | "oauthClient" | "installation" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
@@ -469,6 +472,8 @@ interface AwsBrokerDependencies {
   githubFetch?: typeof fetch;
   /** Reads the GitHub webhook HMAC key from the configured GitHub App secret; `refresh` asks for a fresh read of the secret. */
   githubWebhookSecret?: (options?: { refresh?: boolean }) => Promise<string>;
+  /** Plan 2, Task 14: how the owners of an org are emailed when a GitHub organization is connected through a request. Absent, nobody is. */
+  githubConnectedNotice?: IdentityNoticeDependencies;
   /** How long a PR description update (D2) may take before it gives up without writing; 5 seconds when absent. */
   descriptionUpdateMaxMs?: number;
   /** Refuses, with CONFIG_INVALID, a repository its credential cannot reach; checked at registration. */
@@ -708,17 +713,27 @@ function githubConnectionOf(dependencies: AwsBrokerDependencies): GithubConnecti
   return {
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, cloud: dependencies.cloud === true,
     origin: new URL(dependencies.developer.issuer).origin,
-    app: { appSlug: () => app.appSlug!(), oauthClient: () => app.oauthClient!(), installation: (id) => app.installation!(id) },
+    app: {
+      appSlug: () => app.appSlug!(), oauthClient: () => app.oauthClient!(), installation: (id) => app.installation!(id),
+      ...(app.organizationMembership === undefined ? {} : { orgMembership: (installationId, org, login) => app.organizationMembership!(installationId, org, login) }),
+    },
     identities: signIn, orgs: orgStoreOf(dependencies),
+    ...(dependencies.githubConnectedNotice === undefined ? {} : { notifyGithubConnected: async (notice) => { await sendGithubConnectedNotice(dependencies.githubConnectedNotice!, notice); } }),
     unlockTrial: (input) => unlockTrial({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, input),
     ...(dependencies.githubFetch === undefined ? {} : { fetch: dependencies.githubFetch }),
   };
 }
 
 /** `POST /v1/app/github/connect`'s dependency for the developer routes; absent where there is no connection to offer. */
-function githubConnectRoute(dependencies: AwsBrokerDependencies): { githubConnect?: { start: (caller: DeveloperCaller) => Promise<{ installUrl: string; expiresAt: string }> } } {
+function githubConnectRoute(dependencies: AwsBrokerDependencies): { githubConnect?: NonNullable<DeveloperRouteDependencies["githubConnect"]> } {
   const connection = githubConnectionOf(dependencies);
-  return connection === undefined ? {} : { githubConnect: { start: (caller) => startGithubConnect(connection, caller) } };
+  return connection === undefined ? {} : {
+    githubConnect: {
+      start: (caller) => startGithubConnect(connection, caller),
+      listRequests: (caller) => listInstallRequests(connection, caller.orgId),
+      cancelRequest: (caller, githubUserId) => cancelInstallRequest(connection, caller, githubUserId),
+    },
+  };
 }
 
 function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">): OrgStore {
@@ -1238,6 +1253,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
               verifyRepository: (repositoryUrl, webhookScope) => dependencies.githubPullRequests.verifyWebhookRepository(repositoryUrl, webhookScope),
             }),
             process: (workflowEvent, deliveryId) => processGithubWorkflowEvent(dependencies, workflowEvent, deliveryId),
+            // Plan 2, Task 14: an approved request to a GitHub admin arrives as `installation.created` naming the requester.
+            installationCreated: async (deliveryId, payload) => {
+              const connection = githubConnectionOf(dependencies);
+              return connection === undefined ? "ignored" : bindRequestedInstallation(connection, deliveryId, payload);
+            },
             now: () => new Date().toISOString(),
           });
           let result;
@@ -12417,6 +12437,8 @@ const modelAccess = modelAccessFunctionName === undefined || modelAccessFunction
 const cloudWatch = new CloudWatchClient(awsClientConfiguration);
 const sqs = new SQSClient(awsClientConfiguration);
 
+const githubNoticeSender = process.env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";
+
 export const handler = createAwsBrokerHandler({
   documentClient,
   s3,
@@ -12436,6 +12458,14 @@ export const handler = createAwsBrokerHandler({
     ? { e2eFeatureRuntimeCatalogId: process.env.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID }
     : {}),
   githubWebhookSecret: github.webhookSecret,
+  // Plan 2, Task 14: the sender and region are the cloud sign-in's SES identity (empty: no sender, no notice).
+  ...(githubNoticeSender === "" ? {} : {
+    githubConnectedNotice: {
+      ses: new SESv2Client(process.env.DEVELOPER_NOTICE_EMAIL_REGION || process.env.AWS_REGION ? { region: process.env.DEVELOPER_NOTICE_EMAIL_REGION || process.env.AWS_REGION as string } : {}),
+      from: githubNoticeSender,
+      log: (entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry })),
+    },
+  }),
   checkRepositoryAccess: (repository) => githubCredentials.checkRepository(repository),
   githubMcp: { credentials: (repository, access) => githubCredentials.issueCredentials(repository, access) },
   connectorCredentials: {

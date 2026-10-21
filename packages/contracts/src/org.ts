@@ -3,6 +3,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { normalizeEmail } from "./email.js";
+import { GITHUB_INSTALLATION_TAKEN_MESSAGE } from "./errors.js";
 
 export const OrgIdSchema = z.string().regex(/^org_[0-9a-z]{20}$/);
 export type OrgId = z.infer<typeof OrgIdSchema>;
@@ -176,6 +177,99 @@ export function githubConnectStateKey(stateHash: string): OrgKey {
  */
 export function githubInstallationEverBoundKey(installationId: number): OrgKey {
   return { pk: `GITHUB_INSTALLATION#${String(installationId)}`, sk: "EVER_BOUND" };
+}
+
+/** How long a request to a GitHub admin stays open (Plan 2, Task 14). A request not approved by then is `expired`. */
+export const GITHUB_INSTALL_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+export type GithubInstallRequestStatus = "waiting" | "connected" | "declined" | "taken" | "reinstall_needed" | "cancelled";
+
+/**
+ * A Rovara owner or admin who is not an admin of their GitHub organization asked that organization's GitHub admin to approve the App
+ * (Plan 2, Task 14). Global, because GitHub's `installation.created` webhook knows only the requesting GitHub user: one request per GitHub
+ * user. A newer request replaces one that is not `waiting`, or a `waiting` one of the same developer.
+ */
+export function githubInstallRequestKey(githubUserId: string): OrgKey {
+  return { pk: `GITHUB_INSTALL_REQUEST#${githubUserId}`, sk: "META" };
+}
+
+/** The same request in the org's own partition, so the org can list its requests. */
+export function orgGithubInstallRequestKey(orgId: OrgId, githubUserId: string): OrgKey {
+  return { pk: orgPk(orgId), sk: `GITHUB_INSTALL_REQUEST#${githubUserId}` };
+}
+
+/** The sweep's index of `waiting` requests (the 2-day reminder), oldest first. Deleted when the request leaves `waiting`. */
+export const GITHUB_INSTALL_REQUEST_QUEUE_PK = "GITHUB_INSTALL_REQUEST_QUEUE";
+export function githubInstallRequestQueueKey(requestedAt: number, githubUserId: string): OrgKey {
+  return { pk: GITHUB_INSTALL_REQUEST_QUEUE_PK, sk: `${String(requestedAt)}#${githubUserId}` };
+}
+
+/** A webhook delivery whose installation request was decided (bound or not); a redelivery of it does nothing. Expires through DynamoDB's time to live. */
+export function githubDeliveryKey(deliveryId: string): OrgKey {
+  return { pk: `GITHUB_DELIVERY#${deliveryId}`, sk: "INSTALL_REQUEST" };
+}
+
+/** One entry of an org's GitHub audit trail, written in the same transaction as what it records. Never expires. */
+export function githubAuditKey(orgId: OrgId, at: string, id: string): OrgKey {
+  return { pk: orgScoped(orgId, "GITHUB_AUDIT"), sk: `${at}#${id}` };
+}
+
+/** What a request is shown as: `expired` is how a `waiting` request past its expiry reads. */
+export type GithubInstallRequestShownStatus = GithubInstallRequestStatus | "expired";
+
+/** The message a person gives their GitHub admin, because GitHub's request names no Rovara org: GitHub documents no place to write one. */
+export const githubAdminMessage = (orgName: string, ownerName: string) => `for Rovara org ${orgName} (owner ${ownerName})`;
+
+/** The words for each state of a request, for the callback page and the CLI. `lines` follow the headline. */
+export function githubInstallRequestCopy(
+  status: GithubInstallRequestShownStatus,
+  names: { account?: string | undefined; orgName?: string | undefined; ownerName?: string | undefined } = {},
+): { title: string; lines: string[] } {
+  const account = names.account ?? "this GitHub organization";
+  const org = names.orgName ?? "your organization";
+  switch (status) {
+    case "waiting":
+      return {
+        title: "Waiting for your GitHub admin",
+        lines: [
+          `You asked an admin of your GitHub organization to approve Rovara. Once they approve it on GitHub, Rovara connects it to ${org} and tells your organization's owners. The request stays open for 7 days.`,
+          `GitHub doesn't show your admin which Rovara organization asked. Tell them: ${githubAdminMessage(org, names.ownerName ?? "an owner")}.`,
+        ],
+      };
+    case "connected":
+      return { title: `Your GitHub admin approved Rovara. ${account} is now connected to ${org}.`, lines: [] };
+    case "declined":
+      return { title: "Your GitHub admin declined the request. Ask them about it, or ask them to run agentx github connect.", lines: [] };
+    case "expired":
+      return { title: "Your request wasn't approved within 7 days, or your GitHub admin declined it. Run agentx github connect to ask again.", lines: [] };
+    case "taken":
+      return { title: GITHUB_INSTALLATION_TAKEN_MESSAGE, lines: [] };
+    case "reinstall_needed":
+      return {
+        title: `${account} was connected to Rovara before, so an approval can't reconnect it on its own. Ask an admin of ${account} on GitHub to uninstall Rovara and approve a new request, or to run agentx github connect themselves.`,
+        lines: [],
+      };
+    case "cancelled":
+      return { title: "This request was cancelled.", lines: [] };
+  }
+}
+
+/** Times are epoch milliseconds. Both items of a request (global and the org's) carry all of it. */
+export interface GithubInstallRequestRecord {
+  orgId: OrgId;
+  developerId: string;
+  githubUserId: string;
+  githubLogin: string;
+  requestedAt: number;
+  /** `requestedAt` plus GITHUB_INSTALL_REQUEST_TTL_MS. A `waiting` record past it reads as `expired`. */
+  expiresAt: number;
+  remindedAt?: number;
+  requestedAccountLogin?: string;
+  status: GithubInstallRequestStatus;
+  installationId?: number;
+  accountLogin?: string;
+  approvedBy?: { githubUserId: string; login: string };
+  decidedAt?: number;
 }
 
 export interface GithubInstallationRecord {

@@ -565,19 +565,19 @@ describe("the notice of a newly linked sign-in method (Plan 2, Task 8, cloud ins
   const identityVariables = (template: TemplateJson) => (template.Resources[functionId(template, "DeveloperSignInFunction")]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
   const conditionsOf = (template: TemplateJson) => (template as unknown as { Conditions: Record<string, unknown> }).Conditions;
 
-  it("gives DeveloperIdentity ses:SendEmail on the sender's identity ARN parameter only, in a policy that exists only under CloudSignInEmailFromSes", () => {
+  it("gives DeveloperIdentity and, for the GitHub request notice (Plan 2, Task 14), the broker ses:SendEmail on the sender's identity ARN parameter only, each in a policy that exists only under CloudSignInEmailFromSes", () => {
     const found = sesGrants(cloud);
-    expect(found).toHaveLength(1);
-    expect(withoutHash(found[0]!.role)).toBe("DeveloperSignInFunctionServiceRole");
-    expect(found[0]!.statement.Effect).toBe("Allow");
-    expect(actionsOf(found[0]!.statement)).toEqual(["ses:SendEmail"]);
-    expect(found[0]!.statement.Resource).toEqual({ Ref: "CloudSignInEmailSourceArn" });
-    expect(found[0]!.statement.Condition).toBeUndefined();
-    // The grant is its own policy, switched by the condition: with no sender the resource would be an empty ARN.
+    expect(found.map(({ role }) => withoutHash(role)).sort()).toEqual(["BrokerServiceRole", "DeveloperSignInFunctionServiceRole"]);
+    for (const grant of found) {
+      expect(grant.statement.Effect).toBe("Allow");
+      expect(actionsOf(grant.statement)).toEqual(["ses:SendEmail"]);
+      expect(grant.statement.Resource).toEqual({ Ref: "CloudSignInEmailSourceArn" });
+      expect(grant.statement.Condition).toBeUndefined();
+    }
+    // Each grant is its own policy, switched by the condition: with no sender the resource would be an empty ARN.
     const policies = ofType(cloud, "AWS::IAM::Policy").filter(([, policy]) => JSON.stringify(policy.Properties.PolicyDocument).includes("ses:SendEmail"));
-    expect(policies).toHaveLength(1);
-    expect(withoutHash(policies[0]![0])).toBe("DeveloperSignInIdentityNoticeSend");
-    expect((policies[0]![1] as unknown as { Condition?: string }).Condition).toBe("CloudSignInEmailFromSes");
+    expect(policies.map(([id]) => withoutHash(id)).sort()).toEqual(["DeveloperSignInBrokerGithubConnectedNoticeSend", "DeveloperSignInIdentityNoticeSend"]);
+    for (const [, policy] of policies) expect((policy as unknown as { Condition?: string }).Condition).toBe("CloudSignInEmailFromSes");
     expect(conditionsOf(cloud).CloudSignInEmailFromSes).toEqual({
       "Fn::And": [
         { "Fn::Not": [{ "Fn::Equals": [{ Ref: "CloudSignInEmailFrom" }, ""] }] },
@@ -592,22 +592,24 @@ describe("the notice of a newly linked sign-in method (Plan 2, Task 8, cloud ins
       expect(allows(statement, "ses:GetAccount")).toBe(false);
       expect(JSON.stringify(statement.Resource)).not.toContain("*");
     }
-    expect(sesGrants(cloud).map(({ role }) => withoutHash(role))).toEqual(["DeveloperSignInFunctionServiceRole"]);
+    expect(sesGrants(cloud).map(({ role }) => withoutHash(role)).sort()).toEqual(["BrokerServiceRole", "DeveloperSignInFunctionServiceRole"]);
   });
 
-  it("hands DeveloperIdentity the sender, its region and the web origin, empty unless both sender parameters are set, and the broker none of them", () => {
+  it("hands DeveloperIdentity and the broker the sender and its region, empty unless both sender parameters are set, and DeveloperIdentity the web origin", () => {
     const variables = identityVariables(cloud);
-    const evaluated = (parameters: Record<string, string>) => ({
-      from: evaluate(variables.DEVELOPER_NOTICE_EMAIL_FROM, { parameters, conditions: conditionsOf(cloud) }),
-      region: evaluate(variables.DEVELOPER_NOTICE_EMAIL_REGION, { parameters, conditions: conditionsOf(cloud) }),
-    });
-    expect(evaluated({ CloudSignInEmailFrom: FROM, CloudSignInEmailSourceArn: SOURCE_ARN })).toEqual({ from: FROM, region: "us-west-2" });
-    for (const parameters of [{ CloudSignInEmailFrom: "", CloudSignInEmailSourceArn: "" }, { CloudSignInEmailFrom: FROM, CloudSignInEmailSourceArn: "" }, { CloudSignInEmailFrom: "", CloudSignInEmailSourceArn: SOURCE_ARN }]) {
-      expect(evaluated(parameters)).toEqual({ from: "", region: "" });
+    const broker = (cloud.Resources[functionId(cloud, "Broker")]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    for (const set of [variables, broker]) {
+      const evaluated = (parameters: Record<string, string>) => ({
+        from: evaluate(set.DEVELOPER_NOTICE_EMAIL_FROM, { parameters, conditions: conditionsOf(cloud) }),
+        region: evaluate(set.DEVELOPER_NOTICE_EMAIL_REGION, { parameters, conditions: conditionsOf(cloud) }),
+      });
+      expect(evaluated({ CloudSignInEmailFrom: FROM, CloudSignInEmailSourceArn: SOURCE_ARN })).toEqual({ from: FROM, region: "us-west-2" });
+      for (const parameters of [{ CloudSignInEmailFrom: "", CloudSignInEmailSourceArn: "" }, { CloudSignInEmailFrom: FROM, CloudSignInEmailSourceArn: "" }, { CloudSignInEmailFrom: "", CloudSignInEmailSourceArn: SOURCE_ARN }]) {
+        expect(evaluated(parameters)).toEqual({ from: "", region: "" });
+      }
     }
     expect(variables.ROVARA_WEB_ORIGIN).toEqual({ Ref: "RovaraWebOrigin" });
-    const broker = (cloud.Resources[functionId(cloud, "Broker")]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
-    expect(Object.keys(broker).filter((name) => name.startsWith("DEVELOPER_NOTICE_"))).toEqual([]);
+    expect(Object.keys(broker).filter((name) => name.startsWith("DEVELOPER_NOTICE_")).sort()).toEqual(["DEVELOPER_NOTICE_EMAIL_FROM", "DEVELOPER_NOTICE_EMAIL_REGION"]);
   });
 
   it("keeps the cloud template's sign-in table statements the same as a named environment's, and the broker's unchanged", () => {

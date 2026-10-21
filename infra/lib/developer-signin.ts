@@ -240,6 +240,17 @@ export class DeveloperSignIn extends Construct {
       });
       noticeSend.attachToRole(fn.role!);
       (noticeSend.node.defaultChild as iam.CfnPolicy).cfnOptions.condition = cloud.emailFromSes;
+      // Plan 2, Task 14: the broker emails an org's owners when a GitHub organization is connected because its GitHub admin approved a request
+      // (sendGithubConnectedNotice). The same sender, so the same grant: ses:SendEmail on the sender's SES identity and nothing else, in a policy
+      // of its own that exists only under the same condition, and the same two settings (the sender and the region of its identity ARN).
+      // Both are empty with no sender, and the broker then sends nothing.
+      const brokerNoticeSend = new iam.Policy(this, "BrokerGithubConnectedNoticeSend", {
+        statements: [new iam.PolicyStatement({ actions: ["ses:SendEmail"], resources: [cloud.emailSourceArn.valueAsString] })],
+      });
+      brokerNoticeSend.attachToRole(props.broker.role!);
+      (brokerNoticeSend.node.defaultChild as iam.CfnPolicy).cfnOptions.condition = cloud.emailFromSes;
+      props.broker.addEnvironment("DEVELOPER_NOTICE_EMAIL_FROM", Token.asString(Fn.conditionIf(cloud.emailFromSes.logicalId, cloud.emailFrom.valueAsString, "")));
+      props.broker.addEnvironment("DEVELOPER_NOTICE_EMAIL_REGION", Token.asString(Fn.conditionIf(cloud.emailFromSes.logicalId, Fn.select(3, Fn.split(":", Fn.join("", [cloud.emailSourceArn.valueAsString, ":::"]))), "")));
     }
 
     const integration = new apigwv2.CfnIntegration(this, "Integration", {

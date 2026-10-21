@@ -4,7 +4,7 @@ import type { SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UnlinkIdentityRequest } from "@agentx/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
-import { IDENTITY_NOTICE_SUBJECT, NOTICE_SEND_TIMEOUT_MS, sendIdentityLinkedNotice } from "../../packages/broker/src/developer/identity-notice.js";
+import { IDENTITY_NOTICE_SUBJECT, NOTICE_SEND_TIMEOUT_MS, sendGithubConnectedNotice, sendIdentityLinkedNotice } from "../../packages/broker/src/developer/identity-notice.js";
 import { UNLINK_FIRST_IDENTITY, UNLINK_ONLY_IDENTITY, DeveloperSignInStore, type DeveloperMarks, developerIdentityKey, endedByUnlink, signInIdentityKey } from "../../packages/broker/src/developer/store.js";
 import { identityHarness, type FakeGithubUser, type FakeOidcUser } from "../support/developer-fakes.js";
 import { brokerCall } from "../support/identity-broker.js";
@@ -143,6 +143,48 @@ describe("the notice of a newly linked sign-in method", () => {
     const log = vi.fn();
     expect(await sendIdentityLinkedNotice({ ses: undefined, from: FROM, log }, { to: "a@b.dev", provider: "cloud", cellUrl: CELL })).toBe("skipped");
     expect(log).toHaveBeenCalledWith({ event: "signin.identity_link_notice_skipped", provider: "cloud", reason: "no_sender" });
+  });
+});
+
+describe("the notice that a GitHub organization was connected (Plan 2, Task 14)", () => {
+  const notice = { to: "olive@acme.dev", orgName: "Acme", accountLogin: "acme-co", approverLogin: "gh-admin", requester: { name: "Rhea Requester", email: "rhea@acme.dev" } };
+
+  it("sendGithubConnectedNotice sends the subject and body from the same sender, with an abort signal, and logs no address or login", async () => {
+    const ses = fakeSes();
+    const log = vi.fn();
+    expect(await sendGithubConnectedNotice({ ses: ses.client, from: FROM, log }, notice)).toBe("sent");
+    const command = emailsSent(ses)[0]!;
+    expect(command.FromEmailAddress).toBe(FROM);
+    expect(command.Destination!.ToAddresses).toEqual(["olive@acme.dev"]);
+    expect(command.Content!.Simple!.Subject!.Data).toBe("GitHub organization acme-co connected to Acme on Rovara");
+    expect(command.Content!.Simple!.Body!.Text!.Data).toBe(
+      "Rhea Requester (rhea@acme.dev) asked to connect the GitHub organization acme-co (https://github.com/acme-co) to your Rovara organization Acme. "
+      + "gh-admin, an admin of acme-co on GitHub, approved it. Rovara can now work in the repositories acme-co gave it access to. "
+      + "If this isn't the GitHub organization you expected, remove it with agentx github disconnect acme-co.",
+    );
+    expect(JSON.stringify(log.mock.calls)).not.toMatch(/olive|rhea|acme-co|gh-admin/);
+    const options = (ses.client as unknown as { send: { mock: { calls: Array<[unknown, { abortSignal?: AbortSignal }]> } } }).send.mock.calls[0]![1];
+    expect(options.abortSignal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("leaves the requester's parentheses out when there is no address on record, and puts a name on one line", async () => {
+    const ses = fakeSes();
+    await sendGithubConnectedNotice({ ses: ses.client, from: FROM, log: vi.fn() }, { ...notice, orgName: "Ac\r\nme", requester: { name: "Rhea\nBcc: x" } });
+    const content = emailsSent(ses)[0]!.Content!.Simple!;
+    expect(content.Subject!.Data).not.toMatch(/[\r\n]/);
+    expect(content.Body!.Text!.Data).toMatch(/^Rhea Bcc: x asked to connect/);
+    expect(content.Body!.Text!.Data).not.toContain("()");
+  });
+
+  it("is skipped with no SES client or sender, and for a login GitHub could not have issued", async () => {
+    const log = vi.fn();
+    expect(await sendGithubConnectedNotice({ ses: undefined, from: FROM, log }, notice)).toBe("skipped");
+    const ses = fakeSes();
+    expect(await sendGithubConnectedNotice({ ses: ses.client, from: "", log }, notice)).toBe("skipped");
+    expect(await sendGithubConnectedNotice({ ses: ses.client, from: FROM, log }, { ...notice, accountLogin: "acme/../evil" })).toBe("skipped");
+    expect(ses.sent).toEqual([]);
+    expect(log).toHaveBeenCalledWith({ event: "github.connected_notice_skipped", reason: "no_sender" });
+    expect(log).toHaveBeenCalledWith({ event: "github.connected_notice_skipped", reason: "invalid_login" });
   });
 });
 

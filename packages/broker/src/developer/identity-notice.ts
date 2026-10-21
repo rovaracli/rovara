@@ -4,6 +4,7 @@
 // sender's identity). Nothing here reads or logs a token; the logs carry the provider only, never an address or a login.
 import { SendEmailCommand, type SESv2Client } from "@aws-sdk/client-sesv2";
 import type { DeveloperSignInMethod } from "@agentx/contracts";
+import type { GithubConnectedNotice } from "../org/github-connect-support.js";
 
 export const IDENTITY_NOTICE_SUBJECT = "A new way to sign in to your Rovara account";
 /** How long a send may take; a sign-in is waiting on it, inside the function's 15 s, so a slow SES call must not use that budget up. */
@@ -56,5 +57,54 @@ export async function sendIdentityLinkedNotice(
     } },
   }), { abortSignal: AbortSignal.timeout(NOTICE_SEND_TIMEOUT_MS) });
   deps.log({ event: "signin.identity_linked", provider: input.provider });
+  return "sent";
+}
+
+// Plan 2, Task 14: when a GitHub organization is connected to a Rovara org because its GitHub admin approved a request, each owner of the org
+// is told, because the GitHub admin who approved never saw which Rovara org asked. Same sender and the same skip rule as the notice above.
+
+/** Letters, digits and hyphens only: a login that GitHub issued, checked again before it is put in a link. */
+const GITHUB_ACCOUNT = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+/** A name a person chose, on one line and no longer than 100 characters: control characters (a line break in a subject, say) are dropped. */
+const oneLine = (text: string) => [...text].map((char) => (char.charCodeAt(0) < 0x20 || char.charCodeAt(0) === 0x7f ? " " : char)).join("").replace(/\s+/g, " ").trim().slice(0, 100);
+
+export const githubConnectedNoticeSubject = (account: string, orgName: string) => `GitHub organization ${account} connected to ${oneLine(orgName)} on Rovara`;
+
+/** The notice's text: the GitHub organization (login and address), the requester, the approver and the Rovara org, then how to undo it. */
+export function githubConnectedNoticeText(input: GithubConnectedNotice): string {
+  const { accountLogin: account } = input;
+  const requester = input.requester.email === undefined ? oneLine(input.requester.name) : `${oneLine(input.requester.name)} (${oneLine(input.requester.email)})`;
+  return `${requester} asked to connect the GitHub organization ${account} (https://github.com/${account}) to your Rovara organization ${oneLine(input.orgName)}. `
+    + `${input.approverLogin}, an admin of ${account} on GitHub, approved it. Rovara can now work in the repositories ${account} gave it access to. `
+    + `If this isn't the GitHub organization you expected, remove it with agentx github disconnect ${account}.`;
+}
+
+/**
+ * Emails one owner that a GitHub organization was connected to their Rovara organization through a request. "skipped" when no SES sender is
+ * configured, or when a login is not one GitHub could have issued (nothing is quoted from it). A refused or timed-out send throws; the caller
+ * logs it by name and the connection stands. The logs carry no address and no login.
+ */
+export async function sendGithubConnectedNotice(deps: IdentityNoticeDependencies, input: GithubConnectedNotice): Promise<"sent" | "skipped"> {
+  if (deps.ses === undefined || deps.from === undefined || deps.from === "") {
+    deps.log({ event: "github.connected_notice_skipped", reason: "no_sender" });
+    return "skipped";
+  }
+  if (!GITHUB_ACCOUNT.test(input.accountLogin) || !GITHUB_ACCOUNT.test(input.approverLogin)) {
+    deps.log({ event: "github.connected_notice_skipped", reason: "invalid_login" });
+    return "skipped";
+  }
+  const text = githubConnectedNoticeText(input);
+  await deps.ses.send(new SendEmailCommand({
+    FromEmailAddress: deps.from,
+    Destination: { ToAddresses: [input.to] },
+    Content: { Simple: {
+      Subject: { Data: githubConnectedNoticeSubject(input.accountLogin, input.orgName), Charset: "UTF-8" },
+      Body: {
+        Text: { Data: text, Charset: "UTF-8" },
+        Html: { Data: `<p>${escapeHtml(text)}</p>`, Charset: "UTF-8" },
+      },
+    } },
+  }), { abortSignal: AbortSignal.timeout(NOTICE_SEND_TIMEOUT_MS) });
+  deps.log({ event: "github.connected_notice_sent" });
   return "sent";
 }

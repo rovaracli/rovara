@@ -4,6 +4,8 @@ import type { RepositoryAccess, RepositoryCredential } from "./repository-access
 import type { GithubMergeReadBudget } from "./aws/workflow-merge-recovery.js";
 
 const GITHUB_APP_ID = /^[1-9][0-9]*$/;
+/** A GitHub user or organization login: letters, digits and single hyphens inside, at most 39 characters. */
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 const FILE_AT_COMMIT_MAX_BYTES = 20_971_520;
 const FILE_AT_COMMIT_TIMEOUT_MS = 8_000;
 const READ_TOKEN_REUSE_MS = 5 * 60_000;
@@ -836,6 +838,34 @@ export class GitHubAppCredentialProvider {
       id, account: { login: account.login, id: account.id as number, type: account.type },
       repositorySelection: selection, suspendedAt: suspendedAt ?? null,
     };
+  }
+
+  /**
+   * Plan 2, Task 14: whether `login` is a member of the GitHub organization `org`, read with a token of the installation `installationId`
+   * (the App's own `members: read`). GitHub answers 404 for a user who is not a member (or not visible to the token), which is `undefined`;
+   * any other failure is thrown, so the caller never mistakes an outage for "not a member".
+   */
+  async organizationMembership(installationId: number, org: string, login: string): Promise<{ state: string; role: string } | undefined> {
+    if (!Number.isSafeInteger(installationId) || installationId < 1) throw agentXError("CONFIG_INVALID", "GitHub installation id must be a positive integer");
+    if (!GITHUB_LOGIN.test(org) || !GITHUB_LOGIN.test(login)) return undefined;
+    const tokenResponse = await this.fetchImplementation(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
+      method: "POST", headers: await this.appHeaders(), body: JSON.stringify({ permissions: { members: "read" } }),
+      signal: AbortSignal.timeout(5_000), redirect: "error",
+    });
+    if (!tokenResponse.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub App installation token request failed with HTTP ${tokenResponse.status}`);
+    const issued: unknown = await tokenResponse.json();
+    const token = issued !== null && typeof issued === "object" && "token" in issued && typeof issued.token === "string" ? issued.token : undefined;
+    if (token === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid installation token response");
+    const response = await this.fetchImplementation(`https://api.github.com/orgs/${encodeURIComponent(org)}/memberships/${encodeURIComponent(login)}`, {
+      headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "user-agent": "agentx-control-plane", "x-github-api-version": "2022-11-28" },
+      signal: AbortSignal.timeout(5_000), redirect: "error",
+    });
+    if (response.status === 404) return undefined;
+    if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's membership lookup failed with HTTP ${response.status}`);
+    const body: unknown = await response.json();
+    const record = body !== null && typeof body === "object" ? body as Record<string, unknown> : {};
+    if (typeof record.state !== "string" || typeof record.role !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid membership response");
+    return { state: record.state, role: record.role };
   }
 
   /** Spec 025 A13: how many accounts the App is installed on (the first 100), for the health route. */

@@ -5,6 +5,7 @@ import { WORKFLOW_BLOCK_REASONS, WorkflowFeedbackBundleSchema, WorkflowFeedbackB
 import { githubWorkflowPullRequestKey, type GithubWorkflowPullRequestRecord } from "../developer/task-records.js";
 import { parseGitHubRepository, type GitHubPullRequestFeedback } from "../github-app.js";
 import { isConditional } from "./broker-shared.js";
+import type { InstallationCreatedPayload } from "../org/github-install-requests.js";
 import { feedbackReopenedMeasure, type FeedbackReviewMeasure } from "../developer/feedback-review-measures.js";
 
 const DELIVERY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -761,6 +762,48 @@ export async function processGithubWebhookDelivery(input: {
   }
 }
 
+/** The part of an `installation` webhook Task 14 reads. `requester` is an object or null (absent counts as null). */
+const InstallationCreatedSchema = z.object({
+  action: z.literal("created"),
+  installation: z.object({
+    id: z.number().int().positive(),
+    created_at: z.union([z.string().min(1).max(64), z.number().positive()]),
+    account: z.object({ login: z.string().min(1).max(100), id: z.number().int().positive(), type: z.string().min(1).max(40) }).passthrough(),
+  }).passthrough(),
+  requester: z.object({ id: z.number().int().positive(), login: z.string().min(1).max(100) }).passthrough().nullish(),
+  sender: z.object({ id: z.number().int().positive(), login: z.string().min(1).max(100) }).passthrough(),
+}).passthrough();
+
+/**
+ * An `installation` event with action `created` (Plan 2, Task 14): verified like any delivery, then handed to the install-request flow,
+ * which does its own deduplication of the delivery id. It has no repository, so it is not reserved or recovered like a pull request event.
+ */
+async function handleInstallationCreated(
+  input: { rawBody: string; headers: Record<string, string | undefined>; secret: string },
+  bind: (deliveryId: string, payload: InstallationCreatedPayload) => Promise<unknown>,
+): Promise<{ status: "ACCEPTED"; deliveryId: string }> {
+  if (Buffer.byteLength(input.rawBody, "utf8") > 1_048_576) throw new GithubWebhookRefusal("GitHub webhook payload exceeds the size limit");
+  const headers = Object.fromEntries(Object.entries(input.headers).map(([key, value]) => [key.toLowerCase(), value]));
+  if (!verifyGithubWebhookSignature(input.rawBody, headers["x-hub-signature-256"], input.secret)) throw new GithubWebhookRefusal(GITHUB_WEBHOOK_SIGNATURE_INVALID);
+  const deliveryId = headers["x-github-delivery"];
+  if (deliveryId === undefined || !DELIVERY_ID.test(deliveryId)) throw new GithubWebhookRefusal("GitHub webhook delivery ID is invalid");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(input.rawBody) as unknown;
+  } catch {
+    throw new GithubWebhookRefusal("GitHub webhook JSON body is invalid");
+  }
+  const parsed = InstallationCreatedSchema.safeParse(raw);
+  if (!parsed.success) throw new GithubWebhookRefusal("GitHub webhook event payload is unsupported or incomplete");
+  const { installation, requester, sender } = parsed.data;
+  await bind(deliveryId, {
+    installation: { id: installation.id, created_at: installation.created_at, account: { login: installation.account.login, id: installation.account.id, type: installation.account.type } },
+    requester: requester === undefined || requester === null ? null : { id: requester.id, login: requester.login },
+    sender: { id: sender.id, login: sender.login },
+  });
+  return { status: "ACCEPTED", deliveryId };
+}
+
 /** Shared endpoint path: verify, durably reserve, claim, process, then record the outcome. */
 export async function handleGithubWebhook(input: {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -770,8 +813,13 @@ export async function handleGithubWebhook(input: {
   secret: string;
   authorizeRepository: ReceiveGithubWebhookInput["authorizeRepository"];
   process(event: ReceivedGithubWebhook["event"], deliveryId: string): Promise<void>;
+  /** Plan 2, Task 14: where an `installation.created` delivery goes, before anything else. Absent, the event is unsupported as before. */
+  installationCreated?: (deliveryId: string, payload: InstallationCreatedPayload) => Promise<unknown>;
   now(): string;
 }): Promise<{ status: "ACCEPTED" | "DUPLICATE" | "IN_PROGRESS"; deliveryId: string }> {
+  if (input.installationCreated !== undefined && Object.entries(input.headers).some(([key, value]) => key.toLowerCase() === "x-github-event" && value === "installation")) {
+    return handleInstallationCreated(input, input.installationCreated);
+  }
   const received = await receiveGithubWebhook({
     rawBody: input.rawBody,
     headers: input.headers,
