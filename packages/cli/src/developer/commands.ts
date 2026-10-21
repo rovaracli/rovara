@@ -1,5 +1,5 @@
 // agentx whoami and agentx logout (FR-011).
-import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AppMeResponseSchema, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerTokenKey, removeDeveloperEnvironment, resolveDeveloperEnvironment } from "./config.js";
 import { developerAccessToken, type DeveloperSessionDeps } from "./session.js";
@@ -61,6 +61,18 @@ export async function fetchDeveloperProjects(deps: DeveloperSessionDeps, env: st
 }
 
 /**
+ * The sign-in methods linked to the signed-in developer, for whoami. Best effort: a server without GET /v1/app/me, or any failure
+ * reading it, leaves whoami as it was (no identities listed).
+ */
+export async function fetchLinkedIdentities(deps: DeveloperSessionDeps, env: string | undefined): Promise<LinkedIdentity[]> {
+  try {
+    return (await developerGet(deps, env, "/v1/app/me", AppMeResponseSchema)).body.identities;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * The broker's own words for a refusal (error.message), without its trailing hint, made safe to
  * show. Every one describes a token that was already verified (a bad token gets one generic line),
  * so it tells a caller only about their own sign-in.
@@ -83,11 +95,18 @@ function refusalMessage(body: unknown): string | undefined {
 /** How a developer signed in, for whoami: "Rovara sign-in" and "GitHub" are Rovara Cloud's. */
 const SIGN_IN_METHOD_TEXT = { slack: "Slack", oidc: "your company sign-in", cloud: "Rovara sign-in", github: "GitHub" } as const;
 
-export function whoamiText(result: { env: string; url: string; projects: DeveloperProjectsResponse }): string {
+export function whoamiText(result: { env: string; url: string; projects: DeveloperProjectsResponse; identities?: LinkedIdentity[] }): string {
   const { developer, projects, notices } = result.projects;
   const method = SIGN_IN_METHOD_TEXT[developer.provider];
   const link = developer.slackUserId === undefined ? "" : ` (${developer.slackUserId})`;
-  const lines = [`Signed in to AgentX environment ${result.env} (${result.url}) as ${sanitizeServerText(developer.name)}, with ${method}${link}.`];
+  // The other sign-in methods of this one person (the signed-in method is already named).
+  const others = (result.identities ?? []).filter((identity) => identity.provider !== developer.provider)
+    .map((identity) => {
+      const detail = identity.login ?? identity.email;
+      return `${SIGN_IN_METHOD_TEXT[identity.provider]}${detail === undefined ? "" : ` (${sanitizeServerText(detail)})`}`;
+    });
+  const alsoLinked = others.length === 0 ? "" : `; also linked: ${others.join(", ")}`;
+  const lines = [`Signed in to AgentX environment ${result.env} (${result.url}) as ${sanitizeServerText(developer.name)}, with ${method}${link}${alsoLinked}.`];
   if (projects.length === 0) {
     // Only Rovara Cloud signs people in with these two. There an owner or admin creates the org's projects; a member asks one.
     if (developer.provider === "cloud" || developer.provider === "github") {

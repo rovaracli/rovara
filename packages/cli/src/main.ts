@@ -40,7 +40,7 @@ import { disableEvalChannel, enableEvalChannel, parseMaxCostUsd, showEvalChannel
 import { exportTurns, parseSince } from "./admin/turns.js";
 import { loginWithPkce, openSystemBrowser, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
-import { createDeveloperProject, createProjectText, developerLogout, fetchDeveloperProjects, logoutText, whoamiText } from "./developer/commands.js";
+import { createDeveloperProject, createProjectText, developerLogout, fetchDeveloperProjects, fetchLinkedIdentities, logoutText, whoamiText } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
 import { developerLogin } from "./developer/login.js";
@@ -323,7 +323,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
           ...(command.getOptionValueSource("callbackPort") === "cli" ? { callbackPort: options.callbackPort } : {}),
         });
         const projects = await fetchDeveloperProjects(developerSession(), result.env);
-        services.stdout.write(globals.json ? formatSuccess({ env: projects.env, url: projects.url, ...projects.projects }, true) : whoamiText(projects));
+        services.stdout.write(globals.json ? formatSuccess({ env: projects.env, url: projects.url, ...projects.projects }, true) : whoamiText({ ...projects, identities: await fetchLinkedIdentities(developerSession(), result.env) }));
         return;
       }
       // A bare login (or --admin) is today's admin login, unchanged.
@@ -365,7 +365,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .action(async (_options: unknown, command: Command) => {
       const globals = globalOptions(command);
       const result = await fetchDeveloperProjects(developerSession(), developerEnv(command));
-      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, ...result.projects }, true) : whoamiText(result));
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, ...result.projects }, true) : whoamiText({ ...result, identities: await fetchLinkedIdentities(developerSession(), developerEnv(command)) }));
     });
 
   program
