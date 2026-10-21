@@ -181,7 +181,9 @@ async function world(options: Parameters<typeof bench>[0] = {}): Promise<Bench> 
 const RANGE_INVALID = { code: "AUDIT_RANGE_INVALID" };
 const bundleText = (bundle: AuditBundleV1): string => JSON.stringify(bundle);
 const requester = (orgId = A) => ({ orgId: orgId as never, actor: { kind: "member" as const, id: "dev_1" } });
-const gunzipped = (b: Bench, orgId: string, exportId: string): AuditBundleV1 => parseBundle(JSON.parse(gunzipSync(b.exportsBucket.objects.get(exportObjectKey(orgId, exportId))!).toString("utf8")));
+/** The file a ready export's record names. */
+const fileKey = (b: Bench, orgId: string, exportId: string): string => String(b.h.db.get(`ORG#${orgId}#AUDIT_EXPORT#${exportId}`, "META")!.objectKey);
+const gunzipped = (b: Bench, orgId: string, exportId: string): AuditBundleV1 => parseBundle(JSON.parse(gunzipSync(b.exportsBucket.objects.get(fileKey(b, orgId, exportId))!).toString("utf8")));
 
 describe("buildAuditBundle", () => {
   it("builds org A's bundle so that the standalone verifier passes it, with no record of org B in it", async () => {
@@ -413,21 +415,24 @@ describe("runAuditExport", () => {
   }
   const pendingItems = (b: Bench) => b.h.db.find((item) => String(item.pk).startsWith("AUDIT_PENDING#"));
 
-  it("writes a gzipped bundle the verifier passes, to <orgId>/<exportId>.rovara-audit.json.gz, and sets ready with the audit.exported pending item in one transaction", async () => {
+  it("writes a gzipped bundle the verifier passes, to <orgId>/<exportId>.<attempt>.rovara-audit.json.gz, and sets ready with the audit.exported pending item in one transaction", async () => {
     const b = await world();
     const exportId = await started(b, { fromSeq: 1, toSeq: 12 });
     b.h.transactions.length = 0;
     expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("ready");
 
-    const key = `${A}/${exportId}.rovara-audit.json.gz`;
-    expect(exportObjectKey(A, exportId)).toBe(key);
-    expect([...b.exportsBucket.objects.keys()]).toStrictEqual([key]);
+    // Each attempt has a key of its own: the export's prefix and a random suffix.
+    const [key] = [...b.exportsBucket.objects.keys()];
+    expect(key).toMatch(new RegExp(`^${A}/${exportId}\\.[0-9a-f]{16}\\.rovara-audit\\.json\\.gz$`));
+    expect(b.exportsBucket.objects.size).toBe(1);
+    expect(exportObjectKey(A, exportId, "0123456789abcdef")).toBe(`${A}/${exportId}.0123456789abcdef.rovara-audit.json.gz`);
     const bundle = gunzipped(b, A, exportId);
     expect(verifyBundle(bundle, { anchors: {} })).toMatchObject({ ok: true, sealedThroughSeq: 10, unsealedCount: 2 });
     expect(bundle.details).toBeUndefined();
 
     const meta = b.h.db.get(`ORG#${A}#AUDIT_EXPORT#${exportId}`, "META")!;
     expect(meta).toMatchObject({ status: "ready", objectKey: key });
+    expect((meta.summary as { bytes: number }).bytes).toBe(b.exportsBucket.objects.get(key!)!.length);
     expect(meta.summary).toMatchObject({ fromSeq: 1, toSeq: 12, records: 12, sealedThroughSeq: 10, unsealedCount: 2, epochsWithoutTimestamp: [E0, E1], coveredEpochs: [], unverifiedAuthorities: [], lockModes: ["COMPLIANCE"] });
     expect((meta.summary as { timestampedThrough?: string }).timestampedThrough).toBeUndefined();
 
@@ -448,7 +453,7 @@ describe("runAuditExport", () => {
     await runAuditExport(b.deps, { orgId: A, exportId });
     const directory = mkdtempSync(join(tmpdir(), "audit-export-"));
     const file = join(directory, `${exportId}.rovara-audit.json.gz`);
-    writeFileSync(file, b.exportsBucket.objects.get(exportObjectKey(A, exportId))!);
+    writeFileSync(file, b.exportsBucket.objects.get(fileKey(b, A, exportId))!);
     let out = "";
     const exit = runCli([file], { stdout: (text) => { out += text; }, stderr: (text) => { out += text; } });
     expect(exit, out).toBe(0);
@@ -469,7 +474,7 @@ describe("runAuditExport", () => {
     const directory = mkdtempSync(join(tmpdir(), "audit-export-"));
     const [older, newer] = [first, second].map((id) => {
       const file = join(directory, `${id}.gz`);
-      writeFileSync(file, b.exportsBucket.objects.get(exportObjectKey(A, id))!);
+      writeFileSync(file, b.exportsBucket.objects.get(fileKey(b, A, id))!);
       return file;
     });
     let out = "";
@@ -599,9 +604,10 @@ describe("runAuditExport: late, retried and ambiguous runs", () => {
   it("the view calls an export failed only after the last attempt the platform can still start has had its whole timeout", async () => {
     const b = await world();
     const exportId = await started(b, "view");
-    // An attempt may start up to AUDIT_EXPORT_MAX_AGE_MS after the request and run 15 minutes: until then the export is running.
+    // An attempt may start up to AUDIT_EXPORT_MAX_AGE_MS after the request and run 15 minutes, with a minute to spare: until then the export is running.
     b.h.clock.now += AUDIT_EXPORT_STALE_MS;
-    expect(AUDIT_EXPORT_STALE_MS).toBe(AUDIT_EXPORT_MAX_AGE_MS + 15 * 60_000);
+    // Plus a minute's margin for the start-up and the clocks of the machines involved.
+    expect(AUDIT_EXPORT_STALE_MS).toBe(AUDIT_EXPORT_MAX_AGE_MS + 15 * 60_000 + 60_000);
     expect(await getAuditExport(b.deps, A, exportId)).toMatchObject({ status: "running" });
     b.h.clock.now += 1;
     expect(await getAuditExport(b.deps, A, exportId)).toMatchObject({ status: "failed", failure: { code: "TIMED_OUT" } });
@@ -629,37 +635,63 @@ describe("runAuditExport: late, retried and ambiguous runs", () => {
     } } as never;
     expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("ready");
     expect(metaOf2(b, exportId)).toMatchObject({ status: "ready" });
-    expect(b.exportsBucket.objects.has(exportObjectKey(A, exportId))).toBe(true);
+    expect(b.exportsBucket.objects.has(fileKey(b, A, exportId))).toBe(true);
     expect(b.exportsBucket.calls.map((call) => call.command)).toStrictEqual(["PutObject"]);
     expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("already_ready");
     await expect(exportDownloadUrl(b.deps, A, exportId)).resolves.toMatchObject({ expiresInSeconds: 900 });
     expect(gunzipped(b, A, exportId).orgId).toBe(A);
   });
 
-  it("writes the file only if none is there, so a second run cannot replace a finished export's file", async () => {
+  it("two runs at once each write a file of their own, the first to commit wins, and the loser deletes only its own file", async () => {
     const b = await world();
     const exportId = await started(b, "twice");
-    const key = exportObjectKey(A, exportId);
-    // Between this run's start and its put, another run builds the same export and commits it.
+    const winnerKey = `${A}/${exportId}.aaaaaaaaaaaaaaaa.rovara-audit.json.gz`;
+    // Between this run's build and its commit, another run commits the same export with its own file.
     b.exportsBucket.beforePut = async () => {
       b.exportsBucket.beforePut = undefined;
-      b.exportsBucket.objects.set(key, Buffer.from("the other run's file"));
-      b.h.db.set({ ...metaOf2(b, exportId), status: "ready", objectKey: key });
+      b.exportsBucket.objects.set(winnerKey, Buffer.from("the winner's file"));
+      b.h.db.set({ ...metaOf2(b, exportId), status: "ready", objectKey: winnerKey, summary: { bytes: 17 } });
     };
     expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("already_ready");
-    expect(b.exportsBucket.objects.get(key)!.toString()).toBe("the other run's file");
-    expect(b.exportsBucket.calls.map((call) => call.command)).toStrictEqual(["PutObject"]);
+    expect(b.exportsBucket.objects.get(winnerKey)!.toString()).toBe("the winner's file");
+    expect([...b.exportsBucket.objects.keys()]).toStrictEqual([winnerKey]);
+    const calls = b.exportsBucket.calls;
+    expect(calls.map((call) => call.command)).toStrictEqual(["PutObject", "DeleteObject"]);
+    expect(calls[1]!.key).toBe(calls[0]!.key);
+    expect(calls[0]!.key).not.toBe(winnerKey);
+    // The download is of the file the record names.
+    expect((await exportDownloadUrl(b.deps, A, exportId)).url).toContain(winnerKey);
   });
 
-  it("replaces the leftover file of an earlier attempt that died before it committed", async () => {
+  it("never deletes a file it did not write: an earlier attempt's leftover stays where it is, and this run uses its own key", async () => {
     const b = await world();
     const exportId = await started(b, "leftover");
-    const key = exportObjectKey(A, exportId);
-    b.exportsBucket.objects.set(key, Buffer.from("half a file"));
+    const leftover = `${A}/${exportId}.bbbbbbbbbbbbbbbb.rovara-audit.json.gz`;
+    b.exportsBucket.objects.set(leftover, Buffer.from("half a file"));
     expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("ready");
+    expect(b.exportsBucket.calls.map((call) => call.command)).toStrictEqual(["PutObject"]);
+    expect(b.exportsBucket.objects.get(leftover)!.toString()).toBe("half a file");
+    expect(fileKey(b, A, exportId)).not.toBe(leftover);
     expect(gunzipped(b, A, exportId).orgId).toBe(A);
-    expect(b.exportsBucket.calls.map((call) => call.command)).toStrictEqual(["PutObject", "DeleteObject", "PutObject"]);
-    expect((metaOf2(b, exportId).summary as { bytes: number }).bytes).toBe(b.exportsBucket.objects.get(key)!.length);
+    expect((metaOf2(b, exportId).summary as { bytes: number }).bytes).toBe(b.exportsBucket.objects.get(fileKey(b, A, exportId))!.length);
+  });
+
+  it("retries a put that S3 answers with 409 ConditionalRequestConflict, and leaves the export running when it keeps doing so", async () => {
+    const conflict = () => Object.assign(new Error("conflicting conditional operation"), { name: "ConditionalRequestConflict", $metadata: { httpStatusCode: 409 } });
+    const b = await world();
+    const exportId = await started(b, "conflict");
+    let refusals = 2;
+    b.exportsBucket.beforePut = () => { if (refusals > 0) { refusals -= 1; throw conflict(); } };
+    expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("ready");
+    expect(b.exportsBucket.calls.map((call) => call.command)).toStrictEqual(["PutObject", "PutObject", "PutObject"]);
+    // Past the retries it throws, so the platform retries the invoke; the export stays running and nothing is left.
+    const c = await world();
+    const second = await started(c, "conflict2");
+    c.exportsBucket.beforePut = () => { throw conflict(); };
+    await expect(runAuditExport(c.deps, { orgId: A, exportId: second })).rejects.toMatchObject({ name: "ConditionalRequestConflict" });
+    expect(metaOf2(c, second)).toMatchObject({ status: "running" });
+    expect(c.exportsBucket.objects.size).toBe(0);
+    expect(c.exportsBucket.calls.every((call) => call.command === "PutObject")).toBe(true);
   });
 
   it("an export that was failed while this run built it is reported failed, and this run's file does not stay behind", async () => {
@@ -684,9 +716,25 @@ describe("exportDownloadUrl", () => {
     await expect(exportDownloadUrl(b.deps, A, exportId)).rejects.toMatchObject({ code: "NOT_FOUND" });
     await runAuditExport(b.deps, { orgId: A, exportId });
     expect(AUDIT_EXPORT_URL_SECONDS).toBe(900);
-    expect(await exportDownloadUrl(b.deps, A, exportId)).toStrictEqual({ url: `https://signed.test/${EXPORTS_BUCKET}/${A}/${exportId}.rovara-audit.json.gz?expires=900`, expiresInSeconds: 900 });
+    expect(await exportDownloadUrl(b.deps, A, exportId)).toStrictEqual({ url: `https://signed.test/${EXPORTS_BUCKET}/${fileKey(b, A, exportId)}?expires=900`, expiresInSeconds: 900 });
     await expect(exportDownloadUrl(b.deps, B, exportId)).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(exportDownloadUrl(b.deps, A, "aex_../../x")).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("signs the file the record names, and only when that key is under this org's export prefix", async () => {
+    const b = await world();
+    const { exportId } = await startAuditExport(b.deps, requester(), { requestId: "prefix", fromSeq: 1, toSeq: 4 });
+    await runAuditExport(b.deps, { orgId: A, exportId });
+    const meta = b.h.db.get(`ORG#${A}#AUDIT_EXPORT#${exportId}`, "META")!;
+    let signed = 0;
+    b.deps.presign = async (input) => { signed += 1; return { url: `https://signed.test/${input.key}`, expiresInSeconds: input.expiresInSeconds }; };
+    for (const bad of [`${B}/${exportId}.0123456789abcdef.rovara-audit.json.gz`, `${A}/aex_other.0123456789abcdef.rovara-audit.json.gz`, `${A}/${exportId}/../x`, "", undefined]) {
+      b.h.db.set({ ...meta, objectKey: bad });
+      await expect(exportDownloadUrl(b.deps, A, exportId), String(bad)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    }
+    expect(signed).toBe(0);
+    b.h.db.set(meta);
+    expect((await exportDownloadUrl(b.deps, A, exportId)).url).toBe(`https://signed.test/${String(meta.objectKey)}`);
   });
 });
 
@@ -713,7 +761,13 @@ describe("the broker's wiring: the download link and the start of an export", ()
     expect(new URL(link.url).searchParams.get("X-Amz-Expires")).toBe("300");
     // Credentials with more than the link asks for leave it alone; credentials that are over refuse to sign.
     expect((await exportLinkSigner(clientWith(new Date(NOW + 3_600_000)), () => NOW)({ bucket: EXPORTS_BUCKET, key: "k", expiresInSeconds: 900 })).expiresInSeconds).toBe(900);
-    await expect(exportLinkSigner(clientWith(new Date(NOW - 1000)), () => NOW)({ bucket: EXPORTS_BUCKET, key: "k", expiresInSeconds: 900 })).rejects.toThrow(/credentials/);
+    for (const left of [-1000, 0, 1000, 59_000]) {
+      await expect(exportLinkSigner(clientWith(new Date(NOW + left)), () => NOW)({ bucket: EXPORTS_BUCKET, key: "k", expiresInSeconds: 900 }), String(left)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", statusCode: 503 });
+    }
+    // A link needs a minute of life: exactly a minute is signed.
+    expect((await exportLinkSigner(clientWith(new Date(NOW + 60_000)), () => NOW)({ bucket: EXPORTS_BUCKET, key: "k", expiresInSeconds: 900 })).expiresInSeconds).toBe(60);
+    // An expiration that is not a date is no reason to hand out a link either.
+    await expect(exportLinkSigner(clientWith(new Date(Number.NaN)), () => NOW)({ bucket: EXPORTS_BUCKET, key: "k", expiresInSeconds: 900 })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", statusCode: 503 });
   });
 
   it("downloads report the lifetime the link really has", async () => {

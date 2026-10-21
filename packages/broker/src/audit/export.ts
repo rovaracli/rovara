@@ -11,7 +11,7 @@
 //
 // Every key is built from the `orgId` argument: the seal index only supplies version ids, and its recorded keys must equal the
 // keys derived here, so a changed index item cannot make one org's export read another org's objects.
-import { createHash, type X509Certificate } from "node:crypto";
+import { createHash, randomBytes, type X509Certificate } from "node:crypto";
 import { promisify } from "node:util";
 import { gzip } from "node:zlib";
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
@@ -71,8 +71,13 @@ export interface AuditExportEvent {
 
 /** The platform starts no attempt of an export older than this (the function's event age), and the worker refuses one that is. */
 export const AUDIT_EXPORT_MAX_AGE_MS = AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS * 1000;
-/** A `running` export older than the last start the platform allows plus one full run has lost its worker: it is reported as failed, and that is final. */
-export const AUDIT_EXPORT_STALE_MS = AUDIT_EXPORT_MAX_AGE_MS + AUDIT_EXPORT_TIMEOUT_SECONDS * 1000;
+/**
+ * A `running` export older than the last start the platform allows plus one full run has lost its worker: it is reported as failed,
+ * and that is final. A minute is added for start-up time and the clocks of the machines involved.
+ */
+export const AUDIT_EXPORT_STALE_MS = AUDIT_EXPORT_MAX_AGE_MS + AUDIT_EXPORT_TIMEOUT_SECONDS * 1000 + 60_000;
+/** A put that S3 answers with a conflicting conditional operation is tried again this many times before the run gives up (and the platform retries it). */
+const PUT_CONFLICT_RETRIES = 3;
 /** Seal objects are read this many at a time. */
 const SEAL_READ_CONCURRENCY = 4;
 /** How far back a covering chain is followed (a few epochs a day: this is years). */
@@ -123,7 +128,10 @@ const rangeInvalid = (): Error => agentXError("AUDIT_RANGE_INVALID", AUDIT_ERROR
 const pad12 = (seq: number): string => String(seq).padStart(12, "0");
 const inconsistent = (what: string): AuditExportBuildError => new AuditExportBuildError("SEAL_INDEX_INCONSISTENT", what);
 
-export const exportObjectKey = (orgId: string, exportId: string): string => `${orgId}/${exportId}.rovara-audit.json.gz`;
+/** Where an export's files live: every attempt writes one under this prefix, with a key of its own. */
+export const exportObjectPrefix = (orgId: string, exportId: string): string => `${orgId}/${exportId}.`;
+/** The file of one attempt. The attempt's suffix is random, so no run can write, replace or delete another run's file. */
+export const exportObjectKey = (orgId: string, exportId: string, attempt: string): string => `${exportObjectPrefix(orgId, exportId)}${attempt}.rovara-audit.json.gz`;
 
 // ---- reading sealed objects ---------------------------------------------------------------------------------------
 
@@ -531,13 +539,8 @@ async function failExport(deps: AuditExportBase, orgId: string, exportId: string
   }
 }
 
-function isPreconditionFailed(error: unknown): boolean {
-  return error instanceof Error && (error.name === "PreconditionFailed" || (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 412);
-}
-
-function conditionFailedOnFirstItem(error: unknown): boolean {
-  if (!(error instanceof Error) || error.name !== "TransactionCanceledException") return false;
-  return (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons?.[0]?.Code === "ConditionalCheckFailed";
+function isRequestConflict(error: unknown): boolean {
+  return error instanceof Error && (error.name === "ConditionalRequestConflict" || (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 409);
 }
 
 export type AuditExportOutcome = "ready" | "failed" | "unknown" | "already_ready" | "already_failed";
@@ -593,19 +596,18 @@ export async function runAuditExport(deps: AuditExportDeps, event: { orgId: stri
   }
 
   const body = await gzipAsync(Buffer.from(JSON.stringify(bundle), "utf8"));
-  const key = exportObjectKey(orgId, exportId);
-  // The file is written only where none is, so a second run cannot replace the file of an export another run finished.
-  const put = (): Promise<unknown> => deps.s3.send(new PutObjectCommand({ Bucket: deps.exportsBucket, Key: key, Body: body, ContentType: "application/gzip", IfNoneMatch: "*" }));
-  try {
-    await put();
-  } catch (error) {
-    if (!isPreconditionFailed(error)) throw error;
-    const current = await readMeta(deps, orgId, exportId);
-    if (current?.status === "ready") return "already_ready";
-    if (current?.status === "failed") return "already_failed";
-    // Still running: the file is what an earlier attempt left when it died before it committed. Replace it.
-    await deps.s3.send(new DeleteObjectCommand({ Bucket: deps.exportsBucket, Key: key }));
-    await put();
+  // This attempt's file has a key of its own, so a run never writes over, or deletes, a file it did not write.
+  const key = exportObjectKey(orgId, exportId, randomBytes(8).toString("hex"));
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await deps.s3.send(new PutObjectCommand({ Bucket: deps.exportsBucket, Key: key, Body: body, ContentType: "application/gzip", IfNoneMatch: "*" }));
+      break;
+    } catch (error) {
+      // 409 ConditionalRequestConflict: another conditional write was in flight; try again a moment later, and past the retries
+      // throw, so that the platform retries the run.
+      if (!isRequestConflict(error) || attempt >= PUT_CONFLICT_RETRIES) throw error;
+      await new Promise<void>((resolve) => { setTimeout(resolve, 50 * 2 ** attempt); });
+    }
   }
 
   const all = [...bundle.records, ...bundle.unsealed];
@@ -652,19 +654,21 @@ export async function runAuditExport(deps: AuditExportDeps, event: { orgId: stri
       ],
     }));
   } catch (error) {
-    // The answer may have been lost after the commit, so look at the record before touching the file: a ready export's file stays.
+    // The answer may have been lost after the commit, so look at the record before touching the file.
     const current = await readMeta(deps, orgId, exportId);
-    if (current?.status === "ready") {
-      if (conditionFailedOnFirstItem(error)) return "already_ready";
+    if (current?.status === "ready" && current.objectKey === key) {
+      // This run's own commit went through.
       await flushAuditEvents(deps, [exported]);
       return "ready";
     }
-    // Not ready: the file is this run's own and is removed. (The lifecycle removes it in seven days if this fails.)
+    // Another run's file is the export's (or the export is failed, or the commit really did not happen): this run's file is the
+    // one it wrote and the only one it removes. (The lifecycle removes it in seven days if this fails.)
     try {
       await deps.s3.send(new DeleteObjectCommand({ Bucket: deps.exportsBucket, Key: key }));
     } catch {
       // see above
     }
+    if (current?.status === "ready") return "already_ready";
     if (current?.status === "failed") return "already_failed";
     throw error;
   }
@@ -677,5 +681,11 @@ export async function exportDownloadUrl(deps: AuditExportClientDeps, orgId: stri
   checkedOrgId(orgId);
   const item = await readMeta(deps, orgId, exportId);
   if (item === undefined || item.status !== "ready") throw agentXError("NOT_FOUND", "That export was not found, or it is not ready yet.");
-  return deps.presign({ bucket: deps.exportsBucket, key: exportObjectKey(orgId, exportId), expiresInSeconds: AUDIT_EXPORT_URL_SECONDS });
+  // The file is the one the ready record names, and only if it is under this export's prefix in this org.
+  const key = item.objectKey;
+  if (typeof key !== "string" || !key.startsWith(exportObjectPrefix(orgId, exportId)) || key.includes("..") || !key.endsWith(".rovara-audit.json.gz")) {
+    deps.log({ event: "audit.export_file_unnamed", level: "error", orgId, exportId });
+    throw agentXError("NOT_FOUND", "That export was not found, or it is not ready yet.");
+  }
+  return deps.presign({ bucket: deps.exportsBucket, key, expiresInSeconds: AUDIT_EXPORT_URL_SECONDS });
 }

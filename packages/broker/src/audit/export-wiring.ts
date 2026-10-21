@@ -6,7 +6,11 @@
 import { InvokeCommand, type LambdaClient } from "@aws-sdk/client-lambda";
 import { GetObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { agentXError } from "@agentx/contracts";
 import type { AuditExportClientDeps, AuditExportEvent } from "./export.js";
+
+/** A link with less than this left of the signing credentials is not handed out: it would be dead before it could be used. */
+export const AUDIT_LINK_MIN_SECONDS = 60;
 
 export function exportInvoker(lambda: Pick<LambdaClient, "send">, functionName: string): (event: AuditExportEvent) => Promise<void> {
   return async (event) => {
@@ -21,7 +25,8 @@ export function exportLinkSigner(s3: S3Client, now: () => number = Date.now): Au
     let lifetime = expiresInSeconds;
     if (expiration !== undefined) {
       const left = Math.floor((expiration.getTime() - now()) / 1000);
-      if (left < 1) throw new Error("the credentials that sign the download link have expired");
+      // Credentials that are over, about to be, or with an expiration that is no date: the provider renews them for the next call.
+      if (!Number.isFinite(left) || left < AUDIT_LINK_MIN_SECONDS) throw agentXError("RUNTIME_UNAVAILABLE", "Rovara can't sign a download link just now. Try again in a minute.");
       lifetime = Math.min(lifetime, left);
     }
     return { url: await getSignedUrl(s3, new GetObjectCommand({ Bucket: bucket, Key: key }), { expiresIn: lifetime }), expiresInSeconds: lifetime };
