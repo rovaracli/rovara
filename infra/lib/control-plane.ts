@@ -1170,6 +1170,14 @@ export class ControlPlaneStack extends Stack {
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     }).addAlarmAction(notifyOperator);
+    // Plan 2, Task 14: a failed owners' notice after an approved GitHub request binds (the item stays for the hourly sweep, which retries it).
+    // The broker logs it as a JSON line; this filter turns it into a metric an alarm can watch.
+    broker.logGroup.addMetricFilter("GithubInstallRequestNoticeFailedMetric", {
+      filterPattern: logs.FilterPattern.stringValue("$.event", "=", "github.install_request_notice_failed"),
+      metricNamespace: naming.metricsNamespace,
+      metricName: "GithubInstallRequestNoticeFailed",
+      metricValue: "1",
+    });
 
     new CfnOutput(this, "ApiEndpoint", { value: api.attrApiEndpoint });
     new CfnOutput(this, "StateTableName", { value: state.tableName });

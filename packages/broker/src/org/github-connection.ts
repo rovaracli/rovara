@@ -30,7 +30,7 @@ import { ownerNameOf, recordInstallRequest } from "./github-install-requests.js"
 
 export type { GithubConnectApp, GithubConnectionDependencies };
 
-export type ConnectOutcomeName = "confirm" | "requested" | "not_linked" | "not_yours" | "not_allowed" | "taken" | "expired";
+export type ConnectOutcomeName = "confirm" | "requested" | "not_linked" | "not_yours" | "not_allowed" | "unattributed" | "taken" | "expired";
 export interface ConnectOutcome {
   outcome: ConnectOutcomeName;
   orgName?: string;

@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { GITHUB_INSTALLATION_TAKEN_MESSAGE, githubInstallRequestCopy } from "@agentx/contracts";
 import { escapeHtml, safeResponse, type WebResponse } from "../aws/web-session.js";
 
-export type ConnectPageKind = "confirm" | "connected" | "connected_trial_used" | "cancelled" | "requested" | "not_linked" | "not_yours" | "not_allowed" | "taken" | "expired";
+export type ConnectPageKind = "confirm" | "connected" | "connected_trial_used" | "cancelled" | "requested" | "not_linked" | "not_yours" | "not_allowed" | "unattributed" | "taken" | "expired";
 
 export interface ConnectPageData {
   /** The GitHub account (login) the installation is on. */
@@ -62,6 +62,12 @@ function copyFor(kind: ConnectPageKind, data: ConnectPageData): PageCopy {
       return {
         status: 403, title: "Nothing was connected",
         body: [`The Rovara organization ${org} was closed, or you are no longer its owner or admin. Ask an owner or admin of ${org} to run agentx github connect.`],
+      };
+    case "unattributed":
+      // GitHub's "request" callback came back with no user authorization code, so Rovara cannot say who asked and records nothing.
+      return {
+        status: 403, title: "Rovara couldn't confirm who asked",
+        body: ["GitHub did not tell Rovara who sent the request, so Rovara recorded nothing and will not connect anything when it is approved. Ask your GitHub admin to run agentx github connect."],
       };
     case "expired":
       return { status: 410, title: "This connect link has expired. Run agentx github connect again.", body: [] };

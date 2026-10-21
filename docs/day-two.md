@@ -294,6 +294,10 @@ Developers need no AWS credentials: they run `npx @preplabsai/rovara-code login 
 To hand tasks to Rovara from Claude Code, Codex or Cursor, and to share them to Slack, they follow
 [docs/mcp-install.md](mcp-install.md).
 
+## GitHub connection requests (Rovara Cloud)
+
+Only the Rovara operator can redeliver an `installation.created` webhook, from the GitHub App's settings (Advanced, Recent Deliveries), and only within about 3 days of the delivery: use it when an approved "ask my GitHub admin" request was not bound because GitHub or the control plane was down (the request stays waiting and a redelivery retries it).
+
 ## Shared tasks
 
 A developer can share a task from their AI tool into a project's Slack channel, view only or open

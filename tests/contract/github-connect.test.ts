@@ -470,11 +470,11 @@ describe("the callback and the confirmation", () => {
     expect(revokes(w)).toBe(1);
   });
 
-  it("setup_action=request with no code attributes nothing: expired, no token exchange, nothing recorded or written but the used state", async () => {
+  it("setup_action=request with no code attributes nothing: its own outcome (not expired), no token exchange, nothing recorded or written but the used state", async () => {
     const w = standard();
     const started = await start(w);
     const result = await completeGithubConnect(w.deps, { setup_action: "request", state: started.state, installation_id: "501" });
-    expect(result.outcome).toBe("expired");
+    expect(result.outcome).toBe("unattributed");
     expect(w.fetch.calls).toEqual([]);
     expect(installationItems(w.db)).toEqual([]);
     expect(w.db.find((item) => String(item.pk).startsWith("GITHUB_INSTALL_REQUEST"))).toEqual([]);
@@ -889,6 +889,19 @@ describe("agentx github connect", () => {
     expect(await h.run(["github", "connect"])).toBe(0);
     expect(h.out.join("")).toBe("Connected acme.\n");
     expect(h.err.join("")).not.toContain("approved Rovara");
+  });
+
+  it("polls no requests when /v1/app/me fails, so another member's request never ends this person's wait", async () => {
+    const h = await cli((method, path, installations) => {
+      if (method === "POST") return startedNamed();
+      if (path === "/v1/app/me") return Response.json({ error: { code: "RUNTIME_UNAVAILABLE", message: "down" } }, { status: 503 });
+      if (path === "/v1/app/github/requests") return request("connected", { accountLogin: "other", requestedBy: { developerId: "someone-else", name: "Else" } });
+      return installations < 4 ? noInstallations() : listed([{ installationId: 501, accountLogin: "acme" }]);
+    });
+    expect(await h.run(["github", "connect"])).toBe(0);
+    expect(h.out.join("")).toBe("Connected acme.\n");
+    expect(h.err.join("")).not.toContain("approved Rovara");
+    expect(h.calls.filter((call) => call.path === "/v1/app/github/requests")).toEqual([]);
   });
 
   it("prints the link and opens nothing with --no-browser", async () => {

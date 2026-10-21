@@ -9,14 +9,19 @@
 //   - this delivery was not processed before.
 // When GitHub names no requester, or one with no open request, nothing is attributed (github.install_request_unattributed): Rovara never
 // guesses a requester from timing or from an account name. Nothing here logs a token, a code or an email address.
+// What must follow a bind (the owners' notice and the trial unlock) is not left to chance after the commit: a notice outbox item is written in the
+// bind's own transaction, sent from after the commit and deleted when done, and the hourly sweep drains what is left (a send that failed, or a
+// Lambda that died after the commit).
 import { randomUUID } from "node:crypto";
-import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  GITHUB_INSTALL_NOTICE_OUTBOX_PK,
   GITHUB_INSTALL_REQUEST_QUEUE_PK,
   GITHUB_INSTALL_REQUEST_TTL_MS,
   agentXError,
   githubAuditKey,
   githubDeliveryKey,
+  githubInstallNoticeOutboxKey,
   githubInstallRequestKey,
   githubInstallRequestQueueKey,
   githubInstallationEverBoundKey,
@@ -26,6 +31,7 @@ import {
   orgMemberKey,
   orgMetaKey,
   orgPk,
+  type GithubInstallNoticeOutboxRecord,
   type GithubInstallRequestRecord,
   type GithubInstallationRecord,
   type OrgId,
@@ -93,14 +99,15 @@ export async function ownerNameOf(deps: GithubConnectionDependencies, orgId: Org
  * The request callback (`setup_action=request`): a non-admin member of a GitHub organization asked its admin. The state must be open, and
  * is consumed. The code is exchanged and `GET /user` names the GitHub user, who must be linked to the developer who started this, who must
  * still be an owner or admin of the org right now. Only then is the request recorded. A callback with no `code` attributes nothing
- * (GitHub's `request` callback was not probed to carry one): `expired`, nothing recorded, logged `github.install_request_unattributed`.
+ * (GitHub's `request` callback was not probed to carry one): `unattributed`, its own outcome and page, nothing recorded, no GitHub call, logged
+ * `github.install_request_unattributed`.
  * The GitHub user token is revoked before this returns.
  */
 export async function recordInstallRequest(
   deps: GithubConnectionDependencies,
   state: { stateHash: string },
   query: { code?: string | undefined },
-): Promise<"requested" | "not_linked" | "expired"> {
+): Promise<"requested" | "not_linked" | "unattributed" | "expired"> {
   const item = await readState(deps, state.stateHash);
   // A state that reached the confirm page (callbackAt) is used: a second callback with it is a replay.
   if (item === undefined || item.consumedAt !== undefined || item.callbackAt !== undefined || item.expiresAt <= deps.now()) return "expired";
@@ -109,7 +116,8 @@ export async function recordInstallRequest(
   const client = code === undefined ? undefined : await deps.app.oauthClient();
   if (code === undefined || client === undefined) {
     log(deps, { event: "github.install_request_unattributed", orgId: item.orgId, reason: code === undefined ? "no_code" : "no_oauth_client" });
-    return "expired";
+    // No code: Rovara cannot say who asked, so it records nothing (an approval will arrive unattributed). The person is told so, not "expired".
+    return code === undefined ? "unattributed" : "expired";
   }
 
   let token: string | undefined;
@@ -159,6 +167,8 @@ async function putRequest(
     }
     replacedOther = existing;
   }
+  // A re-ask by the same GitHub user overwrites the org's copy of the request (and deletes it when the org changed), so `GET /v1/app/github/requests`
+  // shows only the latest asking. The history is not lost: every decision on a request is written to the org's GitHub audit trail, which never expires.
   const record: GithubInstallRequestRecord = {
     orgId: who.orgId, developerId: who.developerId, githubUserId: who.githubUserId, githubLogin: who.githubLogin,
     requestedAt: now, expiresAt: now + GITHUB_INSTALL_REQUEST_TTL_MS, status: "waiting",
@@ -271,11 +281,11 @@ export async function bindRequestedInstallation(
   };
   const decided = (status: "connected") => ({
     UpdateExpression: "SET #status = :decided, installationId = :installationId, accountLogin = :accountLogin, approvedBy = :approvedBy, decidedAt = :now",
-    ConditionExpression: "#status = :waiting AND expiresAt > :now AND developerId = :developerId AND orgId = :orgId",
+    ConditionExpression: "#status = :waiting AND expiresAt > :now AND developerId = :developerId AND orgId = :orgId AND requestedAt = :requestedAt",
     ExpressionAttributeNames: { "#status": "status" },
     ExpressionAttributeValues: {
       ":decided": status, ":installationId": installation.id, ":accountLogin": current.account.login, ":approvedBy": { githubUserId: String(sender.id), login: sender.login },
-      ":now": now, ":waiting": "waiting", ":developerId": request.developerId, ":orgId": request.orgId,
+      ":now": now, ":waiting": "waiting", ":developerId": request.developerId, ":orgId": request.orgId, ":requestedAt": request.requestedAt,
     },
   });
   const audit = auditItem(deps.tableName, request.orgId, now, {
@@ -284,6 +294,11 @@ export async function bindRequestedInstallation(
     approver: { githubUserId: String(sender.id), login: sender.login },
     installationId: installation.id, accountLogin: current.account.login, deliveryId,
   });
+  // What must follow the bind, written with it: a commit without this item cannot happen, so the notice and the unlock are never lost.
+  const outbox: GithubInstallNoticeOutboxRecord = {
+    orgId: request.orgId, requesterDeveloperId: request.developerId, requesterGithubUserId: requesterId, requesterLogin: requester.login,
+    accountLogin: current.account.login, approverLogin: sender.login, createdAt: now, attempts: 0, trialPending: true,
+  };
   try {
     await deps.documentClient.send(new TransactWriteCommand({
       TransactItems: [
@@ -311,6 +326,7 @@ export async function bindRequestedInstallation(
           ConditionExpression: "attribute_exists(pk) AND (#role = :owner OR #role = :admin)",
           ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":owner": "owner", ":admin": "admin" },
         } },
+        { Put: { TableName: deps.tableName, Item: { ...githubInstallNoticeOutboxKey(deliveryId), entityType: "GITHUB_INSTALL_NOTICE_OUTBOX", ...outbox }, ConditionExpression: "attribute_not_exists(pk)" } },
       ],
     }));
   } catch (error) {
@@ -324,13 +340,98 @@ export async function bindRequestedInstallation(
   }
   log(deps, { event: "github.install_request_bound", orgId: request.orgId, installationId: installation.id });
 
+  // After the commit: send now. Whatever fails here is not lost: the item stays, and the hourly sweep retries it. This never throws.
   try {
-    await deps.unlockTrial({ orgId: request.orgId, githubUserId: requesterId });
+    await deliverOutboxItem(deps, deliveryId, outbox);
   } catch (error) {
-    if ((error as { code?: unknown }).code !== "TRIAL_GITHUB_USED") log(deps, { event: "github.install_request_trial_unlock_failed", orgId: request.orgId, error: errorName(error) });
+    log(deps, { event: "github.install_request_notice_failed", orgId: request.orgId, error: errorName(error) });
   }
-  await tellOwners(deps, request, { accountLogin: current.account.login, approverLogin: sender.login });
   return "bound";
+}
+
+/** A claim older than this is taken over: the worker that made it died (a Lambda lives far less). */
+const OUTBOX_LEASE_MS = 15 * 60_000;
+/** After this many tries an item is dropped (and logged), so one address that always bounces is not retried forever. */
+const OUTBOX_MAX_ATTEMPTS = 5;
+const OUTBOX_SWEEP_LIMIT = 100;
+
+/**
+ * Does what an outbox item says, at most once for each step that succeeds: the item is claimed first (conditional, so two workers never both
+ * send), then the trial is unlocked and each owner still to be told is emailed. A step that failed stays on the item for the next try; when
+ * nothing is left, or after OUTBOX_MAX_ATTEMPTS tries, the item is deleted. False when another worker holds the claim. Throws only when
+ * DynamoDB does, before anything was sent.
+ */
+async function deliverOutboxItem(deps: GithubConnectionDependencies, deliveryId: string, item: GithubInstallNoticeOutboxRecord): Promise<boolean> {
+  const key = githubInstallNoticeOutboxKey(deliveryId);
+  const claimedAt = deps.now();
+  const attempts = item.attempts + 1;
+  try {
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: key,
+      UpdateExpression: "SET claimedAt = :claimedAt, attempts = :attempts",
+      ConditionExpression: "attempts = :seen AND (attribute_not_exists(claimedAt) OR claimedAt < :stale)",
+      ExpressionAttributeValues: { ":claimedAt": claimedAt, ":attempts": attempts, ":seen": item.attempts, ":stale": claimedAt - OUTBOX_LEASE_MS },
+    }));
+  } catch (error) {
+    if (conditionFailed(error)) return false;
+    throw error;
+  }
+
+  let trialPending = item.trialPending;
+  if (trialPending) {
+    try {
+      await deps.unlockTrial({ orgId: item.orgId, githubUserId: item.requesterGithubUserId });
+      trialPending = false;
+    } catch (error) {
+      // An account that already opened another org's trial will not change its answer; anything else is tried again.
+      if ((error as { code?: unknown }).code === "TRIAL_GITHUB_USED") trialPending = false;
+      else log(deps, { event: "github.install_request_trial_unlock_failed", orgId: item.orgId, error: errorName(error) });
+    }
+  }
+  const pendingOwners = await tellOwners(deps, item);
+  const done = !trialPending && pendingOwners?.length === 0;
+  const gaveUp = !done && attempts >= OUTBOX_MAX_ATTEMPTS;
+  if (gaveUp) log(deps, { event: "github.install_request_notice_failed", orgId: item.orgId, reason: "gave_up", attempts, trialPending });
+  try {
+    if (done || gaveUp) {
+      await deps.documentClient.send(new DeleteCommand({
+        TableName: deps.tableName, Key: key, ConditionExpression: "claimedAt = :claimedAt", ExpressionAttributeValues: { ":claimedAt": claimedAt },
+      }));
+      return true;
+    }
+    // What is still to do stays on the item, and the claim is released so the next sweep may take it.
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: key,
+      UpdateExpression: `SET trialPending = :trialPending${pendingOwners === undefined ? "" : ", pendingOwners = :pendingOwners"} REMOVE claimedAt`,
+      ConditionExpression: "claimedAt = :claimedAt",
+      ExpressionAttributeValues: { ":trialPending": trialPending, ":claimedAt": claimedAt, ...(pendingOwners === undefined ? {} : { ":pendingOwners": pendingOwners }) },
+    }));
+  } catch (error) {
+    // The claim was taken over meanwhile (this worker ran past the lease): the other worker owns the item now.
+    if (!conditionFailed(error)) throw error;
+  }
+  return false;
+}
+
+/**
+ * The hourly sweep's second job: runs every outbox item that is left (a send that failed, or a Lambda that died after the bind committed).
+ * An item claimed by a live worker is skipped. `drained` counts items finished (sent, or given up on).
+ */
+export async function drainInstallNoticeOutbox(deps: GithubConnectionDependencies): Promise<{ drained: number }> {
+  if (!deps.cloud) return { drained: 0 };
+  const page = await deps.documentClient.send(new QueryCommand({
+    TableName: deps.tableName, KeyConditionExpression: "pk = :pk",
+    ExpressionAttributeValues: { ":pk": GITHUB_INSTALL_NOTICE_OUTBOX_PK }, ConsistentRead: true, Limit: OUTBOX_SWEEP_LIMIT,
+  })) as { Items?: Array<GithubInstallNoticeOutboxRecord & { sk: string }> };
+  let drained = 0;
+  for (const entry of page.Items ?? []) {
+    try {
+      if (await deliverOutboxItem(deps, entry.sk, entry)) drained += 1;
+    } catch (error) {
+      log(deps, { event: "github.install_request_notice_failed", orgId: entry.orgId, error: errorName(error) });
+    }
+  }
+  return { drained };
 }
 
 /** Ends a `waiting` request as `taken` or `reinstall_needed` (conditional on it still waiting), audits it, and drops its queue item. */
@@ -368,28 +469,35 @@ async function endRequest(
   return "ignored";
 }
 
-/** One email to each owner who has an address on record; a failed send is logged by name and never undoes the bind. */
-async function tellOwners(deps: GithubConnectionDependencies, request: GithubInstallRequestRecord, details: { accountLogin: string; approverLogin: string }): Promise<void> {
-  if (deps.notifyGithubConnected === undefined || deps.orgs.listMembers === undefined) return;
+/**
+ * One email to each owner (of `item.pendingOwners`, else every owner) who has an address on record. A failed send is logged by name. Returns the
+ * owners still to be told: the ones whose send failed, or what it was before when the owners could not even be read (undefined means all).
+ */
+async function tellOwners(deps: GithubConnectionDependencies, item: GithubInstallNoticeOutboxRecord): Promise<string[] | undefined> {
+  if (deps.notifyGithubConnected === undefined || deps.orgs.listMembers === undefined) return [];
+  const stillToTell: string[] = [];
   try {
-    const org = await deps.orgs.getOrg(request.orgId);
-    const requester = await deps.identities.getDeveloper(request.developerId);
-    const owners = (await deps.orgs.listMembers(request.orgId)).filter((member) => member.role === "owner");
+    const org = await deps.orgs.getOrg(item.orgId);
+    const requester = await deps.identities.getDeveloper(item.requesterDeveloperId);
+    const owners = (await deps.orgs.listMembers(item.orgId)).filter((member) => member.role === "owner" && (item.pendingOwners === undefined || item.pendingOwners.includes(member.developerId)));
     for (const owner of owners) {
       try {
         const email = (await deps.identities.getDeveloper(owner.developerId))?.email;
         if (email === undefined || email === "") continue;
         await deps.notifyGithubConnected({
-          to: email, orgName: org?.name ?? "your organization", accountLogin: details.accountLogin, approverLogin: details.approverLogin,
-          requester: { name: requester?.displayName ?? request.githubLogin, ...(requester?.email === undefined || requester.email === "" ? {} : { email: requester.email }) },
+          to: email, orgName: org?.name ?? "your organization", accountLogin: item.accountLogin, approverLogin: item.approverLogin,
+          requester: { name: requester?.displayName ?? item.requesterLogin, ...(requester?.email === undefined || requester.email === "" ? {} : { email: requester.email }) },
         });
       } catch (error) {
-        log(deps, { event: "github.install_request_notice_failed", orgId: request.orgId, error: errorName(error) });
+        stillToTell.push(owner.developerId);
+        log(deps, { event: "github.install_request_notice_failed", orgId: item.orgId, error: errorName(error) });
       }
     }
   } catch (error) {
-    log(deps, { event: "github.install_request_notice_failed", orgId: request.orgId, error: errorName(error) });
+    log(deps, { event: "github.install_request_notice_failed", orgId: item.orgId, error: errorName(error) });
+    return item.pendingOwners;
   }
+  return stillToTell;
 }
 
 /** `GET /v1/app/github/requests`: the org's requests, newest first. A `waiting` one past its expiry shows as `expired`. */
@@ -492,6 +600,13 @@ export async function sendInstallRequestReminders(deps: GithubConnectionDependen
         cleared += 1;
         continue;
       }
+      // Still an owner or admin of an open org? A requester who was removed or demoted, or whose org closed, is not nudged toward an approval
+      // that would be ignored: the entry goes and nothing is sent or marked.
+      if (request.remindedAt === undefined && !await stillOwnerOrAdminOfOpenOrg(deps, request)) {
+        await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Delete: { TableName: deps.tableName, Key: queueKey } }] }));
+        cleared += 1;
+        continue;
+      }
       if (request.remindedAt === undefined && await markReminded(deps, request, now)) {
         reminded += 1;
         const email = (await deps.identities.getDeveloper(request.developerId))?.email;
@@ -505,6 +620,14 @@ export async function sendInstallRequestReminders(deps: GithubConnectionDependen
     }
   }
   return { reminded, cleared };
+}
+
+/** The same two reads the bind makes: the requester's live role in the request's org, and that the org is open. */
+async function stillOwnerOrAdminOfOpenOrg(deps: GithubConnectionDependencies, request: GithubInstallRequestRecord): Promise<boolean> {
+  const role = await liveRole(deps, request.orgId, request.developerId);
+  if (role === undefined || !isOwnerOrAdmin(role)) return false;
+  const org = await deps.orgs.getOrg(request.orgId);
+  return org !== undefined && org.closedAt === undefined && org.closingAt === undefined;
 }
 
 /** Sets `remindedAt` on both items of a request that is still waiting and has none. False when another sweep, or a decision, got there first. */

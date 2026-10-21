@@ -214,6 +214,34 @@ export function githubAuditKey(orgId: OrgId, at: string, id: string): OrgKey {
   return { pk: orgScoped(orgId, "GITHUB_AUDIT"), sk: `${at}#${id}` };
 }
 
+/**
+ * The outbox of what must follow a request's bind (Plan 2, Task 14): the owners' notice and the trial unlock. The item is written in the same
+ * transaction as the bind, sent from after the commit, and deleted when done; the hourly sweep drains what is left. One item per delivery.
+ */
+export const GITHUB_INSTALL_NOTICE_OUTBOX_PK = "GITHUB_INSTALL_NOTICE_OUTBOX";
+export function githubInstallNoticeOutboxKey(deliveryId: string): OrgKey {
+  return { pk: GITHUB_INSTALL_NOTICE_OUTBOX_PK, sk: deliveryId };
+}
+
+/** What an outbox item carries: ids and logins only, never an address (the sender reads the owners' addresses when it sends). Times are epoch milliseconds. */
+export interface GithubInstallNoticeOutboxRecord {
+  orgId: OrgId;
+  requesterDeveloperId: string;
+  requesterGithubUserId: string;
+  requesterLogin: string;
+  accountLogin: string;
+  approverLogin: string;
+  createdAt: number;
+  /** Tries made so far (each claim counts one). */
+  attempts: number;
+  /** The trial unlock is still to do. */
+  trialPending: boolean;
+  /** The owners (developer ids) still to be told; absent means every owner of the org. Empty means all were told. */
+  pendingOwners?: string[];
+  /** Set while one worker sends; a claim older than the lease is taken over. */
+  claimedAt?: number;
+}
+
 /** What a request is shown as: `expired` is how a `waiting` request past its expiry reads. */
 export type GithubInstallRequestShownStatus = GithubInstallRequestStatus | "expired";
 

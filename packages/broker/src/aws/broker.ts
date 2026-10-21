@@ -270,7 +270,7 @@ import { CredentialRegistry, secretsManagerSource, type ConnectorCredentialsConf
 import { developerTokenVerifier } from "../developer/verify-token.js";
 import { DeveloperSignInStore, type DeveloperRecord } from "../developer/store.js";
 import { startGithubConnect, type GithubConnectionDependencies } from "../org/github-connection.js";
-import { bindRequestedInstallation, cancelInstallRequest, listInstallRequests, sendInstallRequestReminders } from "../org/github-install-requests.js";
+import { bindRequestedInstallation, cancelInstallRequest, drainInstallNoticeOutbox, listInstallRequests, sendInstallRequestReminders } from "../org/github-install-requests.js";
 import { sendGithubConnectedNotice, sendGithubRequestReminder, type IdentityNoticeDependencies } from "../developer/identity-notice.js";
 import { unlockTrial } from "../org/trial.js";
 import { isGithubInstallPath, routeGithubInstall } from "./github-install-web.js";
@@ -1068,7 +1068,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     if (isGithubInstallRequestReminderEvent(event)) {
       try {
         const connection = githubConnectionOf(dependencies);
-        return json(connection === undefined ? { reminded: 0, cleared: 0 } : await sendInstallRequestReminders(connection), "github-install-request-reminders");
+        if (connection === undefined) return json({ reminded: 0, cleared: 0, notices: 0 }, "github-install-request-reminders");
+        // The same hourly run also drains the owners' notices and trial unlocks that a bind left behind. Each is tried even if the other fails.
+        const reminders = await sendInstallRequestReminders(connection).then((result) => ({ ok: true as const, result }), (error: unknown) => ({ ok: false as const, error }));
+        const outbox = await drainInstallNoticeOutbox(connection).then((result) => ({ ok: true as const, result }), (error: unknown) => ({ ok: false as const, error }));
+        if (!reminders.ok) throw reminders.error;
+        if (!outbox.ok) throw outbox.error;
+        return json({ ...reminders.result, notices: outbox.result.drained }, "github-install-request-reminders");
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "github.install_request_reminders_failed", error: error instanceof Error ? error.name : "unknown" }));
         return json({ error: "reminders_failed" }, "github-install-request-reminders", 500);

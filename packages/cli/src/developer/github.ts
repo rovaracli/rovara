@@ -56,11 +56,11 @@ async function installedIds(deps: DeveloperSessionDeps, env: string | undefined)
 type RequestEntry = z.infer<typeof RequestsResponseSchema>["requests"][number];
 const requestKey = (entry: RequestEntry) => `${entry.status}|${entry.requestedAt}`;
 
-/** The org's requests keyed by the GitHub login, and which of them are this developer's own; empty when the server cannot say. */
-async function requestsNow(deps: DeveloperSessionDeps, env: string | undefined, mine: string | undefined): Promise<{ env: string; url: string; requests: Map<string, RequestEntry> }> {
+/** The org's requests keyed by the GitHub login, and which of them are this developer's own. `mine` is who this developer is; never all of the org's. */
+async function requestsNow(deps: DeveloperSessionDeps, env: string | undefined, mine: string): Promise<{ env: string; url: string; requests: Map<string, RequestEntry> }> {
   const { env: resolved, url, body } = await developerRequest(deps, env, "/v1/app/github/requests", RequestsResponseSchema, { explain: true });
   const requests = new Map<string, RequestEntry>();
-  for (const entry of body.requests) if (mine === undefined || entry.requestedBy.developerId === mine) requests.set(entry.githubLogin, entry);
+  for (const entry of body.requests) if (entry.requestedBy.developerId === mine) requests.set(entry.githubLogin, entry);
   return { env: resolved, url, requests };
 }
 
@@ -71,7 +71,8 @@ export async function githubConnect(deps: DeveloperSessionDeps, env: string | un
   const before = new Set<number>(await installedIds(deps, env).then((listed) => listed.installations.map((entry) => entry.installationId), () => []));
   // The same for requests to a GitHub admin: only this developer's own, and only a change from now on is reported. Best effort.
   const mine = await developerRequest(deps, env, "/v1/app/me", MeResponseSchema, { explain: true }).then((reply) => reply.body.developer.id, () => undefined);
-  const seenRequests = new Map<string, string>(await requestsNow(deps, env, mine).then((found) => [...found.requests].map(([login, entry]) => [login, requestKey(entry)] as [string, string]), () => []));
+  // When /v1/app/me fails, `mine` is unknown and requests are not polled at all: another member's request must never end this person's wait.
+  const seenRequests = new Map<string, string>(mine === undefined ? [] : await requestsNow(deps, env, mine).then((found) => [...found.requests].map(([login, entry]) => [login, requestKey(entry)] as [string, string]), () => []));
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
   options.write("Install the Rovara GitHub App on the account you want to connect, and approve it on GitHub:");
@@ -90,7 +91,7 @@ export async function githubConnect(deps: DeveloperSessionDeps, env: string | un
     await sleep(options.pollMs ?? GITHUB_CONNECT_POLL_MS);
     try {
       // A request to a GitHub admin: print each state change once; an approval is a connection, and any other end is the answer.
-      const asked = await requestsNow(deps, env, mine).catch((error: unknown) => {
+      const asked = mine === undefined ? undefined : await requestsNow(deps, env, mine).catch((error: unknown) => {
         const code = (error as { code?: unknown }).code;
         if (code === "AUTH_REQUIRED" || code === "FORBIDDEN") throw error;
         return undefined;

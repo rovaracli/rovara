@@ -6,7 +6,7 @@ import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  GITHUB_INSTALL_REQUEST_TTL_MS, agentXError, githubAuditKey, githubDeliveryKey, githubInstallRequestKey, githubInstallRequestQueueKey, githubInstallationEverBoundKey,
+  GITHUB_INSTALL_NOTICE_OUTBOX_PK, GITHUB_INSTALL_REQUEST_TTL_MS, agentXError, githubAuditKey, githubDeliveryKey, githubInstallNoticeOutboxKey, githubInstallRequestKey, githubInstallRequestQueueKey, githubInstallationEverBoundKey,
   githubInstallationKey, githubInstallRequestCopy, orgGithubInstallRequestKey, orgGithubInstallationKey, orgMemberKey, orgMetaKey, trialGithubKey, type OrgId,
 } from "@agentx/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
@@ -18,7 +18,7 @@ import type { GitHubInstallation } from "../../packages/broker/src/github-app.js
 import { completeGithubConnect, startGithubConnect, type GithubConnectionDependencies } from "../../packages/broker/src/org/github-connection.js";
 import type { GithubConnectedNotice, GithubRequestReminder } from "../../packages/broker/src/org/github-connect-support.js";
 import {
-  bindRequestedInstallation, cancelInstallRequest, listInstallRequests, recordInstallRequest, sendInstallRequestReminders, type InstallationCreatedPayload,
+  bindRequestedInstallation, cancelInstallRequest, drainInstallNoticeOutbox, listInstallRequests, recordInstallRequest, sendInstallRequestReminders, type InstallationCreatedPayload,
 } from "../../packages/broker/src/org/github-install-requests.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { unlockTrial } from "../../packages/broker/src/org/trial.js";
@@ -170,6 +170,7 @@ async function ask(w: World, code = "codeR", caller = R_CALLER) {
   return { ...started, outcome };
 }
 
+const OUTBOX = (w: World) => w.db.find((item) => item.pk === GITHUB_INSTALL_NOTICE_OUTBOX_PK);
 const isoAt = (ms: number) => new Date(ms).toISOString();
 /** An `installation.created` payload as GitHub sends it for an approved request. */
 const created = (w: World, over: { id?: number; createdAtMs?: number | string; requester?: InstallationCreatedPayload["requester"]; sender?: InstallationCreatedPayload["sender"]; account?: InstallationCreatedPayload["installation"]["account"] } = {}): InstallationCreatedPayload => ({
@@ -262,20 +263,32 @@ describe("the request callback (recordInstallRequest)", () => {
     expect(w.github.revoked).toEqual(["ghu_stranger", "ghu_owner"]);
   });
 
-  it("a callback with no code attributes nothing: expired, nothing recorded, no token exchange, logged github.install_request_unattributed", async () => {
+  it("a callback with no code attributes nothing and says so: unattributed, nothing recorded, no token exchange, logged github.install_request_unattributed", async () => {
     const w = world();
     const started = await start(w);
-    expect(await recordInstallRequest(w.deps, { stateHash: started.stateHash }, {})).toBe("expired");
+    expect(await recordInstallRequest(w.deps, { stateHash: started.stateHash }, {})).toBe("unattributed");
     expect(w.db.find((item) => String(item.pk).startsWith("GITHUB_INSTALL_REQUEST"))).toEqual([]);
     expect(w.fetch.calls).toEqual([]);
     expect(w.logs).toContainEqual(expect.objectContaining({ event: "github.install_request_unattributed", orgId: TEST_ORG, reason: "no_code" }));
-    // And through the callback: the state is used up, the page is the expired one, and a later delivery has no request to match.
+    // And through the callback: the state is used up, the outcome is its own (not "expired"), and a later delivery has no request to match.
     const second = await start(w);
-    expect((await completeGithubConnect(w.deps, { setup_action: "request", state: second.state })).outcome).toBe("expired");
+    expect((await completeGithubConnect(w.deps, { setup_action: "request", state: second.state })).outcome).toBe("unattributed");
+    expect(w.db.get({ pk: `GITHUB_CONNECT#${second.stateHash}`, sk: "META" })).toHaveProperty("consumedAt");
+    expect(w.fetch.calls).toEqual([]);
     expect(requestOf(w)).toBeUndefined();
     const delivery = await bindRequestedInstallation(w.deps, nextDelivery(), created(w));
     expect(delivery).toBe("ignored");
     expect(boundTo(w, 601)).toBeUndefined();
+  });
+
+  it("the unattributed page says Rovara couldn't confirm who asked, tells them to ask their GitHub admin to run agentx github connect, and is not the expired page", async () => {
+    const { githubConnectPage } = await import("../../packages/broker/src/org/github-connect-page.js");
+    const page = githubConnectPage("unattributed", { orgName: "Acme" });
+    const text = page.body.replace(/<style[^>]*>.*?<\/style>/, "");
+    expect(page.statusCode).toBe(403);
+    expect(text).toContain("<h1>Rovara couldn&#39;t confirm who asked</h1>");
+    expect(text).toContain("Ask your GitHub admin to run agentx github connect.");
+    expect(text).not.toContain("expired");
   });
 
   it("a code GitHub refuses, or a state that is used or expired, records nothing", async () => {
@@ -346,6 +359,25 @@ describe("the installation.created delivery (bindRequestedInstallation)", () => 
     expect(w.notices.map((notice) => notice.to).sort()).toEqual(["olive@acme.test", "sam@acme.test"]);
     expect(w.notices[0]).toMatchObject({ orgName: "Acme <Corp>", accountLogin: "acme", approverLogin: "gh-admin", requester: { name: "Rhea Requester", email: "rhea@acme.test" } });
     expect(w.db.refusals).toEqual([]);
+  });
+
+  it("a request asked again between the bind's read and its write binds nothing: the bind pins the request it read (requestedAt)", async () => {
+    const w = world();
+    await ask(w);
+    w.advance(HOUR);
+    // The same developer asks again while the bind is checking GitHub's side: the global item and the org's copy get a new requestedAt.
+    const reAsk = async (installationId: number, org: string, login: string) => {
+      const reply = await w.membership(installationId, org, login);
+      for (const item of [requestOf(w)!, orgRequestOf(w)!]) item.requestedAt = w.now();
+      return reply;
+    };
+    const deps = { ...w.deps, app: { ...w.deps.app, orgMembership: reAsk } };
+    expect(await bindRequestedInstallation(deps, nextDelivery(), created(w))).toBe("ignored");
+    expect(boundTo(w, 601)).toBeUndefined();
+    expect(w.db.get(githubInstallationEverBoundKey(601))).toBeUndefined();
+    expect(requestOf(w)).toMatchObject({ status: "waiting", requestedAt: w.now() });
+    expect(OUTBOX(w)).toEqual([]);
+    expect(w.notices).toEqual([]);
   });
 
   it("accepts created_at as epoch seconds as well as an ISO string", async () => {
@@ -594,6 +626,185 @@ describe("the installation.created delivery (bindRequestedInstallation)", () => 
   });
 });
 
+describe("the notice outbox: the owners' notice and the trial unlock survive a failed send", () => {
+  /** A documentClient that fails the claim of an outbox item, as a Lambda that died right after the bind committed. */
+  const dieBeforeSending = (w: World): GithubConnectionDependencies => ({
+    ...w.deps,
+    documentClient: { send: async (command: unknown) => {
+      const { constructor, input } = command as { constructor: { name: string }; input: { Key?: { pk?: string } } };
+      if (constructor.name === "UpdateCommand" && input.Key?.pk === GITHUB_INSTALL_NOTICE_OUTBOX_PK) throw new Error("the Lambda died");
+      return w.db.send(command as never);
+    } },
+  });
+  const bindWith = async (w: World, deps: GithubConnectionDependencies = w.deps) => {
+    await ask(w);
+    w.advance(HOUR);
+    const delivery = nextDelivery();
+    return { delivery, result: await bindRequestedInstallation(deps, delivery, created(w)) };
+  };
+  const failing = (w: World, failFor: string[]): GithubConnectionDependencies => ({
+    ...w.deps,
+    notifyGithubConnected: async (notice: GithubConnectedNotice) => {
+      if (failFor.includes(notice.to)) throw Object.assign(new Error("boom"), { name: "MessageRejected" });
+      w.notices.push(notice);
+    },
+  });
+
+  it("is written inside the bind transaction, names no address, and is gone once the notice was sent", async () => {
+    const w = world();
+    const { delivery, result } = await bindWith(w, dieBeforeSending(w));
+    expect(result).toBe("bound");
+    // The bind committed, the Lambda died before sending: the item is what is left, and holds ids and logins only.
+    expect(OUTBOX(w)).toHaveLength(1);
+    expect(w.db.get(githubInstallNoticeOutboxKey(delivery))).toMatchObject({
+      orgId: TEST_ORG, requesterDeveloperId: R, requesterGithubUserId: String(R_ID), requesterLogin: R_LOGIN, accountLogin: "acme", approverLogin: APPROVER.login,
+      createdAt: w.now(), attempts: 0, trialPending: true,
+    });
+    expect(JSON.stringify(OUTBOX(w))).not.toContain("@");
+    expect(w.notices).toEqual([]);
+    expect(w.unlock).not.toHaveBeenCalled();
+    // A bind that does not commit leaves no item.
+    const refused = world();
+    await ask(refused);
+    refused.advance(HOUR);
+    expect(await bindRequestedInstallation(refused.deps, nextDelivery(), created(refused, { sender: { id: 1, login: "not-an-admin" } }))).toBe("ignored");
+    expect(OUTBOX(refused)).toEqual([]);
+    // The normal path sends right away and leaves nothing behind.
+    const healthy = world();
+    await bindWith(healthy);
+    expect(healthy.notices).toHaveLength(2);
+    expect(OUTBOX(healthy)).toEqual([]);
+  });
+
+  it("the hourly sweep sends the notice and unlocks the trial that never ran, then deletes the item", async () => {
+    const w = world();
+    await bindWith(w, dieBeforeSending(w));
+    w.advance(HOUR);
+    expect(await drainInstallNoticeOutbox(w.deps)).toEqual({ drained: 1 });
+    expect(w.notices.map((notice) => notice.to).sort()).toEqual(["olive@acme.test", "sam@acme.test"]);
+    expect(w.notices[0]).toMatchObject({ orgName: "Acme <Corp>", accountLogin: "acme", approverLogin: APPROVER.login, requester: { name: "Rhea Requester", email: "rhea@acme.test" } });
+    expect(w.unlock).toHaveBeenCalledExactlyOnceWith({ orgId: TEST_ORG, githubUserId: String(R_ID) });
+    expect(w.db.get(trialGithubKey(String(R_ID)))).toMatchObject({ orgId: TEST_ORG });
+    expect(OUTBOX(w)).toEqual([]);
+    expect(await drainInstallNoticeOutbox(w.deps)).toEqual({ drained: 0 });
+    expect(w.notices).toHaveLength(2);
+  });
+
+  it("a failed send is logged as github.install_request_notice_failed (which the metric filter counts), kept for the sweep, and retried for the owner it failed for only", async () => {
+    const w = world();
+    const { result } = await bindWith(w, failing(w, ["sam@acme.test"]));
+    expect(result).toBe("bound");
+    expect(w.notices.map((notice) => notice.to)).toEqual(["olive@acme.test"]);
+    expect(w.logs).toContainEqual({ event: "github.install_request_notice_failed", orgId: TEST_ORG, error: "MessageRejected" });
+    expect(JSON.stringify(w.logs)).not.toContain("sam@acme.test");
+    const [item] = OUTBOX(w);
+    expect(item).toMatchObject({ attempts: 1, pendingOwners: [OWNER2], trialPending: false });
+    expect(item).not.toHaveProperty("claimedAt");
+    w.advance(HOUR);
+    expect(await drainInstallNoticeOutbox(w.deps)).toEqual({ drained: 1 });
+    expect(w.notices.map((notice) => notice.to)).toEqual(["olive@acme.test", "sam@acme.test"]);
+    expect(OUTBOX(w)).toEqual([]);
+  });
+
+  it("a trial unlock that failed is retried without sending the notices again; an account that already used its trial is not retried", async () => {
+    const w = world();
+    w.unlock.mockRejectedValueOnce(new Error("ddb down"));
+    await bindWith(w);
+    expect(w.logs).toContainEqual({ event: "github.install_request_trial_unlock_failed", orgId: TEST_ORG, error: "Error" });
+    expect(w.notices).toHaveLength(2);
+    expect(OUTBOX(w)).toEqual([expect.objectContaining({ trialPending: true, pendingOwners: [], attempts: 1 })]);
+    expect(w.db.get(trialGithubKey(String(R_ID)))).toBeUndefined();
+    w.advance(HOUR);
+    expect(await drainInstallNoticeOutbox(w.deps)).toEqual({ drained: 1 });
+    expect(w.unlock).toHaveBeenCalledTimes(2);
+    expect(w.db.get(trialGithubKey(String(R_ID)))).toMatchObject({ orgId: TEST_ORG });
+    expect(w.notices).toHaveLength(2);
+    expect(OUTBOX(w)).toEqual([]);
+
+    const used = world();
+    used.unlock.mockRejectedValue(agentXError("TRIAL_GITHUB_USED", "this GitHub account already opened another organization's trial"));
+    await bindWith(used);
+    expect(OUTBOX(used)).toEqual([]);
+    expect(used.unlock).toHaveBeenCalledTimes(1);
+    expect(used.logs.filter((entry) => entry.event === "github.install_request_trial_unlock_failed")).toEqual([]);
+  });
+
+  it("two sweeps at once send once: the item is claimed before anything is sent", async () => {
+    const w = world();
+    await bindWith(w, dieBeforeSending(w));
+    w.advance(HOUR);
+    const [first, second] = await Promise.all([drainInstallNoticeOutbox(w.deps), drainInstallNoticeOutbox(w.deps)]);
+    expect(first.drained + second.drained).toBe(1);
+    expect(w.notices).toHaveLength(2);
+    expect(w.unlock).toHaveBeenCalledTimes(1);
+  });
+
+  it("an item claimed a moment ago is left to its claimer; one whose claimer died is taken over after 15 minutes", async () => {
+    const w = world();
+    const { delivery } = await bindWith(w, dieBeforeSending(w));
+    (w.db.get(githubInstallNoticeOutboxKey(delivery)) as Record<string, unknown>).claimedAt = w.now();
+    w.advance(14 * 60_000);
+    expect(await drainInstallNoticeOutbox(w.deps)).toEqual({ drained: 0 });
+    expect(w.notices).toEqual([]);
+    w.advance(2 * 60_000);
+    expect(await drainInstallNoticeOutbox(w.deps)).toEqual({ drained: 1 });
+    expect(w.notices).toHaveLength(2);
+  });
+
+  it("gives up after 5 tries: the item is deleted and the failure logged, so one bad address is not retried forever", async () => {
+    const w = world();
+    const deps = failing(w, ["sam@acme.test"]);
+    await bindWith(w, deps);
+    for (let sweep = 0; sweep < 3; sweep += 1) {
+      w.advance(HOUR);
+      expect(await drainInstallNoticeOutbox(deps)).toEqual({ drained: 0 });
+      expect(OUTBOX(w)).toHaveLength(1);
+    }
+    w.advance(HOUR);
+    expect(await drainInstallNoticeOutbox(deps)).toEqual({ drained: 1 });
+    expect(OUTBOX(w)).toEqual([]);
+    expect(w.logs).toContainEqual(expect.objectContaining({ event: "github.install_request_notice_failed", orgId: TEST_ORG, reason: "gave_up", attempts: 5 }));
+    expect(w.notices.map((notice) => notice.to)).toEqual(["olive@acme.test"]);
+  });
+
+  it("an org with no owners left still ends the item: nothing to send is not a failure", async () => {
+    const w = world();
+    await bindWith(w, dieBeforeSending(w));
+    for (const owner of [OWNER, OWNER2, OWNER_NO_EMAIL]) w.db.delete(orgMemberKey(TEST_ORG, owner));
+    w.advance(HOUR);
+    expect(await drainInstallNoticeOutbox(w.deps)).toEqual({ drained: 1 });
+    expect(OUTBOX(w)).toEqual([]);
+    expect(w.notices).toEqual([]);
+  });
+
+  it("through the broker: the scheduled event also drains the outbox, and the answer says how many", async () => {
+    const sent: Array<{ input: { Destination?: { ToAddresses?: string[] } } }> = [];
+    const harness = await createDeveloperTaskBroker({
+      brokerExtra: {
+        cloud: true,
+        githubConnectedNotice: { ses: { send: async (command: { input: never }) => { sent.push(command); return {}; } }, from: "Rovara <signin@rovara.dev>", log: () => undefined },
+        githubPullRequests: {
+          reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), verifyWebhookRepository: vi.fn(),
+          appSlug: async () => "rovara-cloud", oauthClient: async () => ({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }),
+          installation: async () => install(601),
+        },
+      },
+    });
+    seedMembership(harness.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
+    harness.db.set({ pk: `DEVELOPER#${OMAR.developerId}`, sk: "META", developerId: OMAR.developerId, provider: "oidc", displayName: "Omar", email: "omar@acme.test", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    harness.db.set({
+      ...githubInstallNoticeOutboxKey("d-left-behind"), entityType: "GITHUB_INSTALL_NOTICE_OUTBOX", orgId: TEST_ORG, requesterDeveloperId: OMAR.developerId, requesterGithubUserId: "4343",
+      requesterLogin: R_LOGIN, accountLogin: "acme", approverLogin: APPROVER.login, createdAt: Date.now() - HOUR, attempts: 0, trialPending: false,
+    });
+    const first = await harness.handler({ kind: "github-install-request-reminders" });
+    expect(first.statusCode).toBe(200);
+    expect(JSON.parse(first.body)).toMatchObject({ reminded: 0, cleared: 0, notices: 1 });
+    expect(sent.map((command) => command.input.Destination!.ToAddresses)).toEqual([["omar@acme.test"]]);
+    expect(JSON.parse((await harness.handler({ kind: "github-install-request-reminders" })).body)).toMatchObject({ notices: 0 });
+    expect(sent).toHaveLength(1);
+  });
+});
+
 describe("cancel and list", () => {
   it("the requester and an org owner may cancel; another member gets FORBIDDEN; another org's request is NOT_FOUND; a cancelled request is audited and leaves the queue", async () => {
     const w = world();
@@ -722,6 +933,26 @@ describe("one reminder after 2 days (Step 6)", () => {
     cancelled.advance(3 * DAY);
     expect(await sendInstallRequestReminders(cancelled.deps)).toEqual({ reminded: 0, cleared: 0 });
     expect(cancelled.reminders).toEqual([]);
+  });
+
+  it("a requester who is no longer an owner or admin, or whose org is closed, is not reminded: the entry is cleared and nothing is sent or marked", async () => {
+    const cases: Array<[string, (w: World) => void]> = [
+      ["demoted to member", (w) => w.db.set({ ...orgMemberKey(TEST_ORG, R), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: R, role: "member", joinedAt: "x" })],
+      ["removed from the org", (w) => w.db.delete(orgMemberKey(TEST_ORG, R))],
+      ["the org is closed", (w) => { (w.db.get(orgMetaKey(TEST_ORG)) as Record<string, unknown>).closedAt = "2026-10-22T00:00:00.000Z"; }],
+      ["the org is closing", (w) => { (w.db.get(orgMetaKey(TEST_ORG)) as Record<string, unknown>).closingAt = "2026-10-22T00:00:00.000Z"; }],
+      ["the org has no record", (w) => w.db.delete(orgMetaKey(TEST_ORG))],
+    ];
+    for (const [name, change] of cases) {
+      const w = world();
+      await ask(w);
+      change(w);
+      w.advance(3 * DAY);
+      expect(await sendInstallRequestReminders(w.deps), name).toEqual({ reminded: 0, cleared: 1 });
+      expect(w.reminders, name).toEqual([]);
+      expect(requestOf(w), name).not.toHaveProperty("remindedAt");
+      expect(QUEUE(w), name).toEqual([]);
+    }
   });
 
   it("sends none past expiry, and clears the entry", async () => {
@@ -936,5 +1167,13 @@ describe("infrastructure", () => {
     expect(JSON.parse(reminder.Target.Input)).toEqual({ kind: "github-install-request-reminders" });
     expect(reminder.Target.Arn).toEqual(recovery.Target.Arn);
     expect(reminder.Target.RoleArn).toEqual(recovery.Target.RoleArn);
+  });
+  it("a metric filter on the broker's log group counts github.install_request_notice_failed", () => {
+    const filters = Object.values(cloud.Resources).filter((resource) => resource.Type === "AWS::Logs::MetricFilter");
+    const filter = filters.find((resource) => String(resource.Properties.FilterPattern).includes("github.install_request_notice_failed"));
+    expect(filter?.Properties).toMatchObject({
+      FilterPattern: '{ $.event = "github.install_request_notice_failed" }',
+      MetricTransformations: [{ MetricName: "GithubInstallRequestNoticeFailed", MetricValue: "1" }],
+    });
   });
 });
