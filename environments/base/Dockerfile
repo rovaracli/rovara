@@ -22,6 +22,7 @@ COPY infra/package.json infra/package.json
 RUN npm ci --ignore-scripts
 
 COPY packages/model-runtime packages/model-runtime
+COPY packages/audit-verifier packages/audit-verifier
 COPY packages/contracts packages/contracts
 COPY packages/verifier packages/verifier
 COPY packages/worker packages/worker
@@ -84,6 +85,7 @@ WORKDIR /opt/agentx
 COPY --from=build /opt/agentx/package-lock.json ./package-lock.json
 COPY --from=build /opt/agentx/node_modules ./node_modules
 COPY --from=build /opt/agentx/packages/model-runtime ./packages/model-runtime
+COPY --from=build /opt/agentx/packages/audit-verifier ./packages/audit-verifier
 COPY --from=build /opt/agentx/packages/contracts ./packages/contracts
 COPY --from=build /opt/agentx/packages/verifier ./packages/verifier
 COPY --from=build /opt/agentx/packages/worker ./packages/worker

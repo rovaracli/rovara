@@ -1,0 +1,277 @@
+// The audit ledger's event catalog: every action it records, the shape of a record before the appender
+// seals it, and the limits and error codes the writers and readers share. A record holds ids, pseudonyms
+// and a few fixed-vocabulary or numeric facts; names, emails and reasons belong in `details` only.
+import { sha256Hex } from "@rovara/audit-verifier";
+import { z } from "zod";
+import { OrgIdSchema } from "./org.js";
+
+export { AUDIT_LIMITS_COPY, type AuditBundleV1, type AuditRecordV1 } from "@rovara/audit-verifier";
+
+export const AUDIT_SEAL_INTERVAL_MINUTES = 15;
+export const AUDIT_RETENTION_DAYS_DEFAULT = 1096;
+export const AUDIT_RETENTION_DAYS_MIN_COMPLIANCE = 365;
+export const AUDIT_GOVERNANCE_RETENTION_DAYS = 1;
+
+export const AUDIT_MAX_RELATED = 8;
+export const AUDIT_MAX_FACTS = 12;
+export const AUDIT_FACT_MAX_CHARS = 128;
+export const AUDIT_DETAIL_PARTS_MAX = 4;
+export const AUDIT_DETAIL_FIELDS_MAX = 10;
+export const AUDIT_DETAIL_FIELD_MAX_CHARS = 500;
+
+export const AUDIT_FLUSH_DEADLINE_MS = 1500;
+export const AUDIT_SDK_REQUEST_TIMEOUT_MS = 800;
+export const AUDIT_PENDING_SHARDS = 10;
+export const AUDIT_PENDING_TTL_DAYS = 14;
+export const AUDIT_PENDING_FAIL_AFTER_DAYS = 13;
+export const AUDIT_INTAKE_MAX_RECEIVES = 5;
+
+export const AUDIT_MAX_RECORDS_PER_ORG_EPOCH = 10000;
+export const AUDIT_BACKSTOP_SEAL_AGE_MINUTES = 60;
+export const AUDIT_VERSION_SWEEP_KEYS_PER_RUN = 200;
+
+export const AUDIT_TSA_TIMEOUT_MS = 10000;
+export const AUDIT_TSA_SPACING_MS = 15000;
+export const AUDIT_TSA_ENDPOINTS = {
+  digicert: "http://timestamp.digicert.com",
+  sectigo: "http://timestamp.sectigo.com",
+} as const;
+
+export const AUDIT_EXPORT_MAX_RECORDS = 200000;
+export const AUDIT_EXPORT_URL_SECONDS = 900;
+export const AUDIT_FILTER_SCAN_MAX = 20000;
+
+export const AUDIT_DETAILS_SHRED_AFTER_CLOSE_DAYS = 30;
+export const AUDIT_TRANSIENT_COPY_DAYS = 35;
+
+/** The ledger's error codes (also members of `AgentXErrorCodeSchema`) and the text each one shows. */
+export const AUDIT_ERROR_MESSAGES = {
+  AUDIT_RANGE_INVALID: "Choose a range of at most 200,000 records, with from before to.",
+  AUDIT_REASON_REQUIRED: "Say why you are reading this company's audit log (1 to 300 characters).",
+  AUDIT_UNAVAILABLE: "Rovara couldn't record this read, so it didn't read anything. Try again in a minute.",
+  AUDIT_FILTER_TOO_WIDE: "That filter covers too many records. Narrow the time range to under 20,000 records.",
+} as const;
+
+export const AUDIT_ACTIONS = [
+  "approval.decided",
+  "approval.expired",
+  "write.executed",
+  "spend_request.created",
+  "spend_request.decided",
+  "spend_request.expired",
+  "budget.changed",
+  "spend_policy.changed",
+  "pull_request.opened",
+  "pull_request.merged",
+  "member.joined",
+  "member.role_changed",
+  "member.removed",
+  "member.left",
+  "org.closed",
+  "project_member.changed",
+  "project_member.removed",
+  "identity.linked",
+  "identity.unlinked",
+  "agent.owner_changed",
+  "chain.owner_changed",
+  "connection.saved",
+  "connection.removed",
+  "project_connector.changed",
+  "guardrails.changed",
+  "comment_trigger_opt_out.applied",
+  "comment_trigger_opt_out.lapsed",
+  "egress_domain.decided",
+  "agent.published",
+  "agent.rolled_back",
+  "builtin.adopted",
+  "chain.published",
+  "chain.rolled_back",
+  "trigger.enabled",
+  "trigger.disabled",
+  "github.connected",
+  "github.disconnected",
+  "github.installation_changed",
+  "audit.read",
+  "audit.exported",
+  "audit.staff_read",
+  "audit.subject_erased",
+  "audit.org_shred_scheduled",
+] as const;
+
+export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
+export type AuditAction = z.infer<typeof AuditActionSchema>;
+
+export const AUDIT_TARGET_KINDS = [
+  "approval",
+  "spend_request",
+  "task",
+  "pull_request",
+  "org",
+  "member",
+  "project",
+  "agent",
+  "chain",
+  "trigger",
+  "connection",
+  "connector",
+  "guardrails",
+  "repository",
+  "domain",
+  "github_installation",
+  "budget",
+  "audit",
+  "spend_policy",
+] as const;
+
+export const AuditTargetKindSchema = z.enum(AUDIT_TARGET_KINDS);
+export type AuditTargetKind = z.infer<typeof AuditTargetKindSchema>;
+
+const SPEND_REQUEST_FACTS = ["kind", "scopeKind", "amountCents", "newLimitCents", "decision"] as const;
+
+/**
+ * The facts each action may carry. Every value is a fixed-vocabulary word, a count, a sequence number, an amount
+ * in cents or a flag: never a name, an email, a login, a repository or project name, a domain or a reason.
+ * Where a key is a version, `from` and `to` are integers (a spend threshold in cents, the multiplier in hundredths).
+ */
+export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
+  "approval.decided": ["kind", "decision", "subjectKind", "class"],
+  "approval.expired": ["kind", "subjectKind"],
+  "write.executed": ["connectorType", "tool", "status", "argumentsHash"],
+  "spend_request.created": SPEND_REQUEST_FACTS,
+  "spend_request.decided": SPEND_REQUEST_FACTS,
+  "spend_request.expired": SPEND_REQUEST_FACTS,
+  "budget.changed": ["scopeKind", "field", "fromCents", "toCents"],
+  "spend_policy.changed": ["field", "from", "to"],
+  "pull_request.opened": ["number"],
+  "pull_request.merged": ["number"],
+  "member.joined": ["role", "via"],
+  "member.role_changed": ["fromRole", "toRole"],
+  "member.removed": ["role"],
+  "member.left": ["role"],
+  "org.closed": ["plan"],
+  "project_member.changed": ["fromRole", "toRole"],
+  "project_member.removed": ["role"],
+  "identity.linked": ["provider"],
+  "identity.unlinked": ["provider"],
+  "agent.owner_changed": ["field"],
+  "chain.owner_changed": ["field"],
+  "connection.saved": ["connectorType"],
+  "connection.removed": ["connectorType"],
+  "project_connector.changed": ["connectorType", "revision", "change"],
+  "guardrails.changed": ["revision", "widened"],
+  "comment_trigger_opt_out.applied": ["scope"],
+  "comment_trigger_opt_out.lapsed": ["scope"],
+  "egress_domain.decided": ["decision"],
+  "agent.published": ["version", "safety"],
+  "agent.rolled_back": ["fromVersion", "toVersion"],
+  "builtin.adopted": ["version"],
+  "chain.published": ["version", "safety"],
+  "chain.rolled_back": ["fromVersion", "toVersion"],
+  "trigger.enabled": ["source", "type", "targetKind"],
+  "trigger.disabled": ["cause", "source", "type", "targetKind"],
+  "github.connected": ["accountType", "result"],
+  "github.disconnected": ["accountType"],
+  "github.installation_changed": ["status", "accountType"],
+  "audit.read": ["fromSeq", "toSeq", "count", "via"],
+  "audit.exported": ["fromSeq", "toSeq", "withDetails"],
+  "audit.staff_read": ["fromSeq", "toSeq", "count", "via"],
+  "audit.subject_erased": [],
+  "audit.org_shred_scheduled": ["shredAfterDays"],
+};
+
+/** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */
+export function auditOperatorId(issuer: string, subject: string): string {
+  return `op_${sha256Hex(`${issuer}\n${subject}`).slice(0, 24)}`;
+}
+
+const ActorId = z.string().min(1).max(100);
+
+export const AuditActorSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("member"), id: ActorId }).strict(),
+  z.object({ kind: z.literal("operator"), id: z.string().regex(/^op_[0-9a-f]{24}$/) }).strict(),
+  z.object({ kind: z.literal("system"), id: z.literal("rovara") }).strict(),
+  z.object({ kind: z.literal("github"), id: z.string().regex(/^[0-9]{1,20}$/) }).strict(),
+]);
+export type AuditActor = z.infer<typeof AuditActorSchema>;
+
+export const AuditTargetSchema = z.union([
+  z.object({ kind: AuditTargetKindSchema, id: z.string().min(1).max(100) }).strict(),
+  z.object({ kind: AuditTargetKindSchema, name: z.string().min(1).max(200) }).strict(),
+]);
+export type AuditTarget = z.infer<typeof AuditTargetSchema>;
+
+export const AuditProofSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("fresh_sign_in"),
+    method: z.literal("email_code"),
+    authTime: z.string().datetime(),
+    /** sha256 hex of the decide session's key. */
+    sessionRef: z.string().regex(/^[0-9a-f]{64}$/),
+  }).strict(),
+  z.object({ kind: z.literal("button"), via: z.literal("slack") }).strict(),
+  z.object({ kind: z.literal("none") }).strict(),
+]);
+export type AuditProof = z.infer<typeof AuditProofSchema>;
+
+/** One subject's personal details for an event: `org` or a developer id. Encrypted per subject; never in the chain. */
+export const AuditDetailPartSchema = z.object({
+  subject: z.string().min(1).max(100),
+  fields: z.record(z.string().min(1).max(64), z.string().max(AUDIT_DETAIL_FIELD_MAX_CHARS)).refine(
+    (fields) => Object.keys(fields).length <= AUDIT_DETAIL_FIELDS_MAX,
+    { message: `at most ${AUDIT_DETAIL_FIELDS_MAX} fields` },
+  ),
+}).strict();
+export type AuditDetailPart = z.infer<typeof AuditDetailPartSchema>;
+
+export const AuditEventIdSchema = z.string().regex(/^aev_[0-9a-f]{40}$/);
+
+/** The shape of an email address, checked on every fact string as a second guard behind the per-action allowlist. */
+const EMAIL_SHAPED = /[^\s@]+@[^\s@]+\.[^\s@]+/;
+const PRINTABLE_ASCII = /^[\x20-\x7e]*$/;
+
+const AuditFactValueSchema = z.union([
+  z.string().max(AUDIT_FACT_MAX_CHARS).regex(PRINTABLE_ASCII, "printable ASCII only").refine((text) => !EMAIL_SHAPED.test(text), {
+    message: "looks like an email address",
+  }),
+  z.number().refine(Number.isSafeInteger, { message: "integers only" }),
+  z.boolean(),
+]);
+
+export const AuditEventInputSchema = z.object({
+  eventId: AuditEventIdSchema,
+  orgId: OrgIdSchema,
+  action: AuditActionSchema,
+  actor: AuditActorSchema,
+  target: AuditTargetSchema,
+  occurredAt: z.string().datetime(),
+  related: z.array(z.string().min(1).max(100)).max(AUDIT_MAX_RELATED).optional(),
+  facts: z.record(z.string(), AuditFactValueSchema).optional(),
+  proof: AuditProofSchema.optional(),
+  details: z.array(AuditDetailPartSchema).max(AUDIT_DETAIL_PARTS_MAX).optional(),
+}).strict().superRefine((event, context) => {
+  if (event.facts === undefined) return;
+  const keys = Object.keys(event.facts);
+  if (keys.length > AUDIT_MAX_FACTS) {
+    context.addIssue({ code: "custom", path: ["facts"], message: `at most ${AUDIT_MAX_FACTS} facts` });
+  }
+  const allowed = AUDIT_FACT_KEYS[event.action];
+  for (const key of keys) {
+    if (!allowed.includes(key)) {
+      context.addIssue({ code: "custom", path: ["facts", key], message: `not a fact of ${event.action}` });
+    }
+  }
+});
+export type AuditEventInput = z.infer<typeof AuditEventInputSchema>;
+
+/**
+ * The id of one occurrence of an action: `"aev_" + sha256Hex([action, occurrence, ...parts].join("\n")).slice(0, 40)`.
+ * `occurrence` changes with every real occurrence (a request, delivery, approval or revision id), so the same
+ * facts recorded twice get different ids while a retry of one occurrence gets the same id. A part holding a
+ * newline is refused, because it could move the boundary between two parts.
+ */
+export function auditEventId(action: AuditAction, occurrence: string, ...parts: string[]): string {
+  if (occurrence === "") throw new RangeError("auditEventId needs a non-empty occurrence");
+  const all = [action, occurrence, ...parts];
+  if (all.some((part) => part.includes("\n"))) throw new RangeError("auditEventId parts must not contain a newline");
+  return `aev_${sha256Hex(all.join("\n")).slice(0, 40)}`;
+}

@@ -22,6 +22,7 @@ COPY infra/package.json infra/package.json
 RUN npm ci --ignore-scripts
 
 COPY packages/model-runtime packages/model-runtime
+COPY packages/audit-verifier packages/audit-verifier
 COPY packages/contracts packages/contracts
 COPY packages/orchestrator packages/orchestrator
 COPY packages/slack-service packages/slack-service
@@ -36,6 +37,7 @@ RUN apt-get update \
 WORKDIR /opt/agentx
 COPY --from=build /opt/agentx/node_modules ./node_modules
 COPY --from=build /opt/agentx/packages/model-runtime ./packages/model-runtime
+COPY --from=build /opt/agentx/packages/audit-verifier ./packages/audit-verifier
 COPY --from=build /opt/agentx/packages/contracts ./packages/contracts
 COPY --from=build /opt/agentx/packages/orchestrator ./packages/orchestrator
 COPY --from=build /opt/agentx/packages/slack-service ./packages/slack-service
