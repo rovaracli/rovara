@@ -436,11 +436,41 @@ describe("the project's META item at registration", () => {
     expect(h.db.get(projectRevisionKey(TEST_ORG, "old", 1))).toBeUndefined();
   });
 
-  it("answers PROJECT_NAME_TAKEN when the name is taken between the read and the commit", async () => {
+  // The transaction's items are the revision, META, the catalog update, then any setup rows (no grant here: creatorMembership "none").
+  const cancelled = (...codes: string[]) => ({ name: "TransactionCanceledException", cancellationReasons: codes.map((Code) => ({ Code })) });
+  const createWeb = (h: Awaited<ReturnType<typeof createDeveloperTaskBroker>>) =>
+    registerProjectFor(h.brokerInput, actor, { definition: definition("web"), runtimeBinding: BINDING }, { creatorMembership: "none", requireNewName: true });
+
+  it("answers PROJECT_NAME_TAKEN when the META or the catalog condition fails between the read and the commit", async () => {
+    for (const codes of [["None", "ConditionalCheckFailed", "None"], ["None", "None", "ConditionalCheckFailed"], ["ConditionalCheckFailed", "ConditionalCheckFailed", "ConditionalCheckFailed"]]) {
+      const h = await createDeveloperTaskBroker({ register: false });
+      h.db.injectFault({ command: "TransactWriteCommand", error: cancelled(...codes) });
+      await expect(createWeb(h), codes.join()).rejects.toMatchObject({ code: "PROJECT_NAME_TAKEN" });
+    }
+  });
+
+  it("finds the META item behind the creator's grant when there is one", async () => {
     const h = await createDeveloperTaskBroker({ register: false });
-    h.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }] } });
-    await expect(registerProjectFor(h.brokerInput as never, actor, { definition: definition("web"), runtimeBinding: BINDING }, { creatorMembership: "none", requireNewName: true }))
+    h.db.injectFault({ command: "TransactWriteCommand", error: cancelled("None", "None", "ConditionalCheckFailed", "None") });
+    await expect(registerProjectFor(h.brokerInput as never, actor, { definition: definition("web"), runtimeBinding: BINDING }, { creatorMembership: "developer", requireNewName: true }))
       .rejects.toMatchObject({ code: "PROJECT_NAME_TAKEN" });
+  });
+
+  it("answers a retryable conflict, not PROJECT_NAME_TAKEN, when the transaction only met another in flight", async () => {
+    const h = await createDeveloperTaskBroker({ register: false });
+    h.db.injectFault({ command: "TransactWriteCommand", error: cancelled("None", "TransactionConflict", "None") });
+    const error = await createWeb(h).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "RUNTIME_UNAVAILABLE", statusCode: 503 });
+    // Nothing was registered, so the same request works once the conflict is gone.
+    await expect(createWeb(h)).resolves.toMatchObject({ duplicate: false });
+  });
+
+  it("does not call a failed setup-row condition a taken name: it is the admission's own error", async () => {
+    const h = await createDeveloperTaskBroker({ register: false });
+    h.db.injectFault({ command: "TransactWriteCommand", error: cancelled("None", "None", "None", "ConditionalCheckFailed") });
+    const error = await createWeb(h).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "PROJECT_REVISION_MISMATCH" });
+    expect(error).not.toMatchObject({ code: "PROJECT_NAME_TAKEN" });
   });
 
   it("keeps the same name in another org separate: it is not taken there", async () => {

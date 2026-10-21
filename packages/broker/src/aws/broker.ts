@@ -1952,7 +1952,8 @@ async function registerProject(
  *
  * Plan 2, Task 11: a project's META item (status, description, who created it and when) is written in the transaction that registers its
  * first revision. With `requireNewName` the name must be new in the org: a catalog entry already there (an archived project, or one from
- * before META existed) is PROJECT_NAME_TAKEN, and so is a transaction that finds the name taken. Without it, registration stays
+ * before META existed) is PROJECT_NAME_TAKEN, and so is a transaction whose revision, META or catalog condition fails (a TransactionConflict, or a failed setup row, is not: those
+ * answer as a retryable conflict and as the admission's own error). Without it, registration stays
  * idempotent and writes META only for a project new to the org, leaving a project that predates META without one (it reads as active,
  * created by "unknown").
  */
@@ -2145,10 +2146,27 @@ export async function registerProjectFor(
     } catch (error) {
       if (!isConditional(error)) throw error;
       // Another request took the name between the read above and this commit.
-      if (options.requireNewName === true) throw agentXError("PROJECT_NAME_TAKEN", `a project named ${definition.name} already exists in this organization; choose another name`);
+      if (options.requireNewName === true) {
+        const reasons = (error as { CancellationReasons?: Array<{ Code?: string } | undefined> }).CancellationReasons;
+        const failed = (index: number) => reasons?.[index]?.Code === "ConditionalCheckFailed";
+        // The name is taken only when the revision, META or catalog item's own condition failed. Items sit in this order: revision,
+        // the grant (if any), META, the catalog update (if any), then the setup rows.
+        const metaIndex = membership === undefined ? 1 : 2;
+        if (failed(0) || failed(metaIndex) || (updateCatalog && failed(metaIndex + 1))) {
+          throw agentXError("PROJECT_NAME_TAKEN", `a project named ${definition.name} already exists in this organization; choose another name`);
+        }
+        // A transaction that only met another in flight says nothing about the name: the caller tries again.
+        if (reasons?.some((reason) => reason?.Code === "TransactionConflict")) {
+          throw agentXError("RUNTIME_UNAVAILABLE", "another change to this organization's projects was in progress; try again in a moment");
+        }
+        // Anything else (a setup row's condition) is handled as it is without requireNewName, below.
+      }
       // A same-revision registration may have won concurrently. Validate the immutable record and
       // catalog before returning duplicate success; otherwise retry only a catalog/history advance.
       const winner = await getItem<RegisteredProjectRecord>(dependencies, key);
+      if (winner !== undefined && options.requireNewName === true) {
+        throw agentXError("PROJECT_NAME_TAKEN", `a project named ${definition.name} already exists in this organization; choose another name`);
+      }
       if (winner !== undefined) {
         if (!sameJsonContent(winner.definition, definition) || !sameJsonContent(winner.runtimeBinding, runtimeBinding)
           || !sameJsonContent(winner.setupApproval, setupApprovalBinding)) {
@@ -11748,8 +11766,9 @@ async function requireMembership(
 /**
  * What authorizes work on a project's task paths (`acceptTask`, both pull-request accepts, `getAuthorizedOperation` and the workspace
  * connectors): a `MEMBERSHIP` grant (today's behavior), or else a live org owner or admin, who maintains every project in their org
- * (Plan 2, Task 11, I4). The org role is read consistently from the member record on every call, so a demotion applies at the next
- * one. `taskCreator` names the developer whose task this workspace runs, when it runs one: the record read is theirs, and only for
+ * (Plan 2, Task 11, I4). The org role is read consistently from the member record on every call, but that branch answers only when no
+ * grant row exists: a task identity always has its per-task MEMBERSHIP row (newWorkspacePreparation), so a demotion does not stop a
+ * running task here. New work (checkProjectAccess) and each required-E2E round (the org-role proof) are where a demotion bites. `taskCreator` names the developer whose task this workspace runs, when it runs one: the record read is theirs, and only for
  * them does a cloud install answer a missing record with the removal's words. Anything else with no grant is NOT_FOUND "project not
  * found", exactly as before, on every install.
  */
