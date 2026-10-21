@@ -15,7 +15,7 @@ import { lockParameterName, withEnvironmentLock, type LockRecord } from "../envi
 import type { ParameterStore } from "../environments/parameter-store.js";
 import { readEnvironmentSettings, settingsParameterName, type EnvironmentSettings } from "../environments/settings.js";
 import { isOperatorRole } from "../init/commands.js";
-import { removeCdkPassRole } from "../init/pass-role.js";
+import { CDK_PASS_ROLE_POLICY_NAME, cdkDeployRoleName, removeCdkPassRole } from "../init/pass-role.js";
 import { installAnswersParameterName, installProgressParameterName, readInstallAnswers, readInstallProgress } from "../init/install-state.js";
 import type { TokenStore } from "../token-store.js";
 import type { DestroyApi, DestroyStack } from "./aws.js";
@@ -242,7 +242,7 @@ export async function runDestroy(options: { env: string; keepData: boolean }, de
       try {
         await removeCdkPassRole({ ...deps.passRole, write: deps.write, env, account: caller.account, region: deps.region });
       } catch (error) {
-        passRoleStep = `Remove the inline policy named AgentXPassCloudFormationRole from the role cdk-hnb659fds-deploy-role-${caller.account}-${deps.region} by hand (agentx destroy could not: ${error instanceof Error ? error.message : String(error)}), unless another environment in ${deps.region} still uses it.`;
+        passRoleStep = `Remove the inline policy named ${CDK_PASS_ROLE_POLICY_NAME} from the role ${cdkDeployRoleName({ account: caller.account, region: deps.region })} by hand (agentx destroy could not: ${error instanceof Error ? error.message : String(error)}), unless another environment in ${deps.region} still uses it.`;
       }
     }
 

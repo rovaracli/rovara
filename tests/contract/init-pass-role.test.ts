@@ -33,14 +33,17 @@ const awsError = (name: string) => Object.assign(new Error(name), { name });
 interface IamCall { kind: string; input: Record<string, unknown> }
 
 /** An IAM client in memory: GetRolePolicy returns `existing` (URL-encoded, as IAM does) or NoSuchEntity. */
-function fakeIam(options: { existing?: string; getError?: string; putError?: string; deleteError?: string } = {}) {
+function fakeIam(options: { existing?: string; getError?: string; putError?: string; deleteError?: string; log?: string[] } = {}) {
   const calls: IamCall[] = [];
   const events: string[] = [];
+  /** Every IAM call is also recorded, in order, in the shared log a test passes (the account's calls, for destroy). */
+  const record = (command: { input: unknown }, kind: string) => { options.log?.push(`iam ${kind} ${JSON.stringify(command.input)}`); };
   return {
     calls, events,
     client: {
       async send(command: unknown): Promise<unknown> {
         if (command instanceof GetRolePolicyCommand) {
+          record(command, "get");
           calls.push({ kind: "get", input: command.input as never });
           events.push("get");
           if (options.getError !== undefined) throw awsError(options.getError);
@@ -48,12 +51,14 @@ function fakeIam(options: { existing?: string; getError?: string; putError?: str
           return { PolicyDocument: encodeURIComponent(options.existing), PolicyName: CDK_PASS_ROLE_POLICY_NAME, RoleName: ROLE };
         }
         if (command instanceof PutRolePolicyCommand) {
+          record(command, "put");
           calls.push({ kind: "put", input: command.input as never });
           events.push("put");
           if (options.putError !== undefined) throw awsError(options.putError);
           return {};
         }
         if (command instanceof DeleteRolePolicyCommand) {
+          record(command, "delete");
           calls.push({ kind: "delete", input: command.input as never });
           events.push("delete");
           if (options.deleteError !== undefined) throw awsError(options.deleteError);
@@ -182,9 +187,23 @@ describe("init: the cdk engine adds the permission, the templates engine never t
     const checks = passingChecks({
       ensurePassRole: (input) => ensureCdkPassRole({ iam: iam.client, account: ACCOUNT, region: REGION, partition: input.partition, write: input.write }),
     });
-    await expect(checkPrerequisites({ answers: sampleAnswers({ engine: "cdk" }), release: fakeRelease(), caller, checks, prompter: prompter(), write: () => undefined }))
-      .rejects.toThrow(`--policy-document '${FIXTURE}'`);
+    // What init does next: the first CloudFormation call of the deploy. It is reached only when the checks pass.
+    const initUpToTheFirstStack = async () => {
+      await checkPrerequisites({ answers: sampleAnswers({ engine: "cdk" }), release: fakeRelease(), caller, checks, prompter: prompter(), write: () => undefined });
+      await cloudFormation.client.send(new ListStacksCommand({}));
+    };
+    await expect(initUpToTheFirstStack()).rejects.toThrow(`--policy-document '${FIXTURE}'`);
+    expect(iam.calls.map((call) => call.kind)).toEqual(["get", "put"]);
     expect(cloudFormation.calls).toEqual([]);
+
+    // The recorder is wired in: when the permission is added, the very same path does reach CloudFormation.
+    const added = fakeIam();
+    const reaching = passingChecks({
+      ensurePassRole: (input) => ensureCdkPassRole({ iam: added.client, account: ACCOUNT, region: REGION, partition: input.partition, write: input.write }),
+    });
+    await checkPrerequisites({ answers: sampleAnswers({ engine: "cdk" }), release: fakeRelease(), caller, checks: reaching, prompter: prompter(), write: () => undefined });
+    await cloudFormation.client.send(new ListStacksCommand({}));
+    expect(cloudFormation.calls).toHaveLength(1);
   });
 
   it("the real checks use the injected IAM client", async () => {
@@ -256,7 +275,7 @@ describe("destroy removes the permission last, and keeps it while another enviro
     let time = 0;
     const clock = { now: () => time, sleep: async (ms: number) => { time += ms; } };
     const lines: string[] = [];
-    const iam = fakeIam({ ...(options.deleteError === undefined ? {} : { deleteError: options.deleteError }) });
+    const iam = fakeIam({ log: account.calls, ...(options.deleteError === undefined ? {} : { deleteError: options.deleteError }) });
     const cloudFormation = fakeCloudFormation([{ name: `agentx-${env}-access` }, ...(options.others ?? [])]);
     const run = () => runDestroy({ env, keepData: false }, {
       store, api: fakeDestroyApi(account, clock), identity: { get: async () => ({ account: ACCOUNT, arn: `arn:aws:sts::${ACCOUNT}:assumed-role/Admin/alice` }) },
@@ -271,8 +290,21 @@ describe("destroy removes the permission last, and keeps it while another enviro
     const h = await harness();
     await h.run();
     expect(h.iam.calls).toEqual([{ kind: "delete", input: { RoleName: ROLE, PolicyName: "AgentXPassCloudFormationRole" } }]);
-    expect(h.account.calls.at(-1)).not.toBeUndefined();
-    expect(h.account.stacks.has("agentx-staging-access")).toBe(false);
+    const deleteAt = h.account.calls.findIndex((call) => call.startsWith("iam delete "));
+    expect(h.account.calls[deleteAt]).toBe(`iam delete ${JSON.stringify({ RoleName: ROLE, PolicyName: "AgentXPassCloudFormationRole" })}`);
+    // Only after every stack is gone (in the recorded order), never before one.
+    const stackDeletes = h.account.calls.flatMap((call, index) => (call.startsWith("delete stack ") ? [index] : []));
+    expect(stackDeletes).toHaveLength(6);
+    expect(Math.max(...stackDeletes)).toBeLessThan(deleteAt);
+    expect(h.account.calls[stackDeletes.at(-1)!]).toBe("delete stack agentx-staging-access");
+    expect(h.account.stacks.size).toBe(0);
+  });
+
+  it("names the role and policy in the manual step when destroy cannot remove it", async () => {
+    const h = await harness({ deleteError: "AccessDenied" });
+    const result = await h.run();
+    expect(result.manualSteps).toContainEqual(expect.stringContaining(`from the role ${ROLE} by hand`));
+    expect(result.manualSteps.join("\n")).toContain("inline policy named AgentXPassCloudFormationRole");
   });
 
   it("keeps it while agentx-other-access is still there, and says so", async () => {
