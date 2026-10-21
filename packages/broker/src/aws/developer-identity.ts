@@ -6,9 +6,10 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
 import { LambdaClient } from "@aws-sdk/client-lambda";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+import { SESv2Client } from "@aws-sdk/client-sesv2";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { createRemoteJWKSet, type JWTVerifyGetKey } from "jose";
-import { singleOrgIdForEnv, type OrgId, type ChannelByNameRequest, type ChannelInfoRequest, type ChannelMembersRequest, type DeveloperSignInMethod, type EndDeveloperSessionsRequest, type SlackAuthCheckRequest, type SlackUserByEmailRequest, type TaskChannelPeopleRequest, type TaskPersonProofRequest } from "@agentx/contracts";
+import { singleOrgIdForEnv, type OrgId, type ChannelByNameRequest, type ChannelInfoRequest, type ChannelMembersRequest, type DeveloperSignInMethod, type EndDeveloperSessionsRequest, type SlackAuthCheckRequest, type SlackUserByEmailRequest, type TaskChannelPeopleRequest, type TaskPersonProofRequest, type UnlinkIdentityRequest } from "@agentx/contracts";
 import { ProviderNotConfiguredError, githubSignInProvider, oidcSignInProvider, slackSignInProvider, type SignInProvider } from "../developer/providers.js";
 import { createDeveloperIdentityHandler, type DeveloperIdentityConfig } from "../developer/server.js";
 import { slackDirectory } from "../developer/slack-directory.js";
@@ -232,9 +233,19 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
   const modelAccess = modelAccessFunction === "" ? undefined : new ModelAccessInvoker({ functionName: modelAccessFunction, lambda: new LambdaClient(region) });
   const singleOrg = singleOrgIdFor(config);
   const store = new DeveloperSignInStore({ documentClient, tableName: required(env, "DEVELOPER_SIGNIN_TABLE_NAME"), now });
+  // Plan 2, Task 8: the notice of a newly linked sign-in method goes out through the cloud sign-in's SES sender (empty: no sender, no notice).
+  // SES identities are regional, so the client sends in the region of the sender's identity ARN when the stack names one.
+  const noticeFrom = env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";
+  const noticeRegion = env.DEVELOPER_NOTICE_EMAIL_REGION || env.AWS_REGION;
+  const notice = {
+    ses: noticeFrom === "" ? undefined : new SESv2Client(noticeRegion === undefined ? {} : { region: noticeRegion }),
+    from: noticeFrom === "" ? undefined : noticeFrom,
+    cellUrl: env.ROVARA_WEB_ORIGIN || new URL(config.issuer).origin,
+  };
   return createDeveloperIdentityHandler({
     config,
     store,
+    notice,
     // A duplicate member of one person (from before identity links) is merged into the member their email names, in one transaction over both tables.
     ...duplicateMerger({
       documentClient, tableName: stateTableName, signInStore: store, now,
@@ -264,7 +275,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
   });
 }
 
-export const handler = async (event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | ChannelByNameRequest) => {
+export const handler = async (event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | ChannelByNameRequest) => {
   built ??= build(process.env);
   return built(event);
 };

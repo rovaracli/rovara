@@ -357,6 +357,8 @@ export function identityHarness(options: {
    * (mergeDuplicateMember writes both tables in one transaction, which two separate fakes cannot show whole).
    */
   sharedTable?: boolean;
+  /** Plan 2, Task 8: the notice of a newly linked sign-in method. Absent: the sign-in has no notice dependencies, as an install with no SES sender. */
+  notice?: DeveloperIdentityDependencies["notice"];
 } = {}) {
   let clock = T0;
   const now = () => clock;
@@ -398,6 +400,7 @@ export function identityHarness(options: {
     store,
     ...(options.sharedTable === true ? duplicateMerger({ documentClient: state, tableName: "state", signInStore: store, now }) : {}),
     orgs,
+    ...(options.notice === undefined ? {} : { notice: options.notice }),
     ...(options.singleOrg === false ? {} : { singleOrgId: TEST_ORG }),
     ...(options.github === undefined ? {} : { onGithubSignIn: (input: { orgId: OrgId; githubUserId: string }) => unlockTrial({ documentClient: state, tableName: "state", now }, input) }),
     signer,

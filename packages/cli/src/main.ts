@@ -41,7 +41,7 @@ import { disableEvalChannel, enableEvalChannel, parseMaxCostUsd, showEvalChannel
 import { exportTurns, parseSince } from "./admin/turns.js";
 import { loginWithPkce, openSystemBrowser, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
-import { createDeveloperProject, createProjectText, developerLogout, fetchDeveloperProjects, fetchLinkedIdentities, logoutText, whoamiText } from "./developer/commands.js";
+import { createDeveloperProject, createProjectText, developerLogout, fetchDeveloperProjects, fetchLinkedIdentities, logoutText, unlinkSignInMethod, unlinkText, whoamiText } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
 import { orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
@@ -531,6 +531,19 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     ...(dependencies.signin === undefined ? {} : { overrides: dependencies.signin }),
     parameterStore, fetch: services.fetchImplementation, stdout: services.stdout, stderr: services.stderr,
   });
+  // Plan 2, Task 8: a person removes a sign-in method they did not add, or no longer wants, with their own sign-in (the other `signin`
+  // commands are the operator's).
+  const signinCommand = program.commands.find((candidate) => candidate.name() === "signin");
+  if (signinCommand === undefined) throw new Error("the signin command is registered by registerSigninCommands");
+  signinCommand
+    .command("unlink")
+    .description("remove a sign-in method (cloud or github) from your own Rovara account; sessions signed in that way end")
+    .argument("<method>", "cloud or github")
+    .action(async (method: string, _options: Record<string, never>, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await unlinkSignInMethod(developerSession(), developerEnv(command), method);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, removed: result.provider, identities: result.identities }, true) : unlinkText(result));
+    });
   registerConfigCommands(program, {
     ...(dependencies.config === undefined ? {} : { overrides: dependencies.config }), parameterStore, fetch: services.fetchImplementation, stdout: services.stdout, stderr: services.stderr,
     stdin: dependencies.stdin ?? process.stdin,

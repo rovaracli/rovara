@@ -40,6 +40,10 @@ import {
   type DeveloperWorkspacesResponse,
   type EndDeveloperSessionsRequest,
   type EndDeveloperSessionsResponse,
+  type UnlinkIdentityRequest,
+  type UnlinkIdentityResponse,
+  UnlinkableSignInMethodSchema,
+  type LinkedIdentity,
   type OrgId,
   type OrgRecord,
   type OrgRole,
@@ -66,7 +70,7 @@ import type { ModelAccess } from "../model-proxy/access.js";
 import type { OrgStore } from "../org/store.js";
 import { checkTaskPersonIdentity, registerTaskChannelPeople, resolveTaskPickerPersonWithId, type ProjectAccessSubject, type TaskPersonIdentityDependencies } from "../developer/task-person-identity.js";
 import { taskPeopleDisplayAdmission, type TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
-import { DeveloperSignInStore, META, endedByAdmin, methodSince, startedBeforeMethodOn, type DeveloperRecord, type SessionRecord } from "../developer/store.js";
+import { DeveloperSignInStore, META, endedByAdmin, endedByUnlink, methodSince, startedBeforeMethodOn, type DeveloperRecord, type SessionRecord } from "../developer/store.js";
 import type { ChatGptConnections } from "../chatgpt/connections.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import type { DeveloperTaskActions } from "./developer-task-actions.js";
@@ -109,6 +113,8 @@ export interface DeveloperApiConfiguration {
   slackAuthCheck?: () => Promise<SlackAuthCheckResponse>;
   /** Spec 025 E9: an admin ends a developer's sign-in sessions, through DeveloperIdentity (the broker only reads the sign-in table). */
   endDeveloperSessions?: (request: EndDeveloperSessionsRequest) => Promise<EndDeveloperSessionsResponse>;
+  /** Plan 2, Task 8: a person unlinks one of their own sign-in methods, through DeveloperIdentity (the broker only reads the sign-in table). */
+  unlinkIdentity?: (request: UnlinkIdentityRequest) => Promise<UnlinkIdentityResponse>;
   /** Spec 025 E12: a public channel by its name, through DeveloperIdentity. */
   channelByName?: (request: ChannelByNameRequest) => Promise<ChannelByNameResponse>;
   /** Verifies the Authorization header's developer access token (D17; verify-token.ts) and returns its claims. */
@@ -179,7 +185,7 @@ type IdentityRefusal = typeof SLACK_UNAVAILABLE | { ok: false; error: "invalid_r
  */
 async function identityInvoke<T>(
   invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>,
-  request: ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | ChannelByNameRequest,
+  request: ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | ChannelByNameRequest,
   readReply: (reply: Record<string, unknown>) => T | undefined,
   event: string,
 ): Promise<T | IdentityRefusal> {
@@ -333,6 +339,25 @@ export function endDeveloperSessionsThroughLambda(invoke: (payload: Uint8Array) 
   };
 }
 
+/**
+ * Plan 2, Task 8: unlinks a sign-in method through DeveloperIdentity. A refusal (the only way in, or the first sign-in) and a method that
+ * is not linked are answers, passed on in the person's words; every other failure is unavailable.
+ */
+export function unlinkIdentityThroughLambda(invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>): (request: UnlinkIdentityRequest) => Promise<UnlinkIdentityResponse> {
+  return async (request) => {
+    const answer = await identityInvoke(invoke, request, (reply): UnlinkIdentityResponse | undefined => {
+      if (reply.ok === true) return { ok: true };
+      if (reply.ok === false && reply.error === "not_found") return { ok: false, error: "not_found" };
+      if (reply.ok === false && reply.error === "refused" && typeof reply.message === "string" && reply.message.length > 0 && reply.message.length <= 200) {
+        return { ok: false, error: "refused", message: reply.message };
+      }
+      return undefined;
+    }, "developer.unlink_identity");
+    if (answer.ok || answer.error === "not_found" || answer.error === "refused" || answer.error === "invalid_request") return answer;
+    return { ok: false, error: "unavailable" };
+  };
+}
+
 /** E12 (Q8): a public channel by name through DeveloperIdentity; fails closed as slack_unavailable. */
 export function channelByNameThroughLambda(invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>): (request: ChannelByNameRequest) => Promise<ChannelByNameResponse> {
   return (request) => identityInvoke(invoke, request, (reply) => {
@@ -420,7 +445,7 @@ export async function authenticateDeveloper(deps: DeveloperRouteDependencies, cl
 
 /** A session's identity; `orgId` is present when a token named the org it was issued for, which must still be the developer's. */
 async function authenticateSession(deps: DeveloperRouteDependencies, token: { developerId: string; sessionId: string; amr: DeveloperSignInMethod; orgId?: OrgId }): Promise<DeveloperCaller> {
-  const session = await getSignIn<Pick<SessionRecord, "developerId" | "amr" | "endsAt" | "revokedAt" | "startedAt" | "slackUserId">>(deps, `SESSION#${token.sessionId}`);
+  const session = await getSignIn<Pick<SessionRecord, "developerId" | "amr" | "endsAt" | "revokedAt" | "startedAt" | "slackUserId" | "identityKey">>(deps, `SESSION#${token.sessionId}`);
   if (session === undefined || session.developerId !== token.developerId || session.revokedAt !== undefined || session.endsAt <= Math.floor(deps.now() / 1000)) {
     throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   }
@@ -435,6 +460,10 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
   if (endedByAdmin(session.startedAt, developer.sessionsEndedAt)) {
     // E9: D16's per-request check ends the session at once; the token endpoint revokes it at its next refresh.
     throw agentXError("AUTH_REQUIRED", "an AgentX admin ended your sign-in; run agentx login <url> again");
+  }
+  // Plan 2, Task 8: the person removed this session's sign-in method from their account (the others' sessions go on).
+  if (endedByUnlink(session, developer)) {
+    throw agentXError("AUTH_REQUIRED", "this sign-in method was removed from your account; run agentx login <url> again");
   }
   // The org is the developer's membership now: a person removed from the org, or moved to another, is refused even
   // while their token is still valid. The role is the current one, so a demotion applies at once.
@@ -930,6 +959,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && (url.pathname === "/v1/dev/org/invites" || url.pathname === "/v1/app/org/invites")) return createOrganizationInvite(deps, caller, jsonBody(request));
   if (request.method === "GET" && url.pathname === "/v1/app/org/members") return listOrganizationMembers(deps, caller);
   if (request.method === "POST" && url.pathname === "/v1/app/org/leave") return leaveOrganization(deps, caller, jsonBody(request));
+  const identityRoute = /^\/v1\/app\/me\/identities\/([a-z]{1,16})$/.exec(url.pathname);
+  if (identityRoute !== null && request.method === "DELETE") return unlinkAppIdentity(deps, caller, identityRoute[1]!);
   const memberRoute = /^\/v1\/app\/org\/members\/([a-f0-9]{64})(\/role)?$/.exec(url.pathname);
   if (memberRoute !== null && request.method === "PUT" && memberRoute[2] !== undefined) return changeMemberRole(deps, caller, memberRoute[1]!, jsonBody(request));
   if (memberRoute !== null && request.method === "DELETE" && memberRoute[2] === undefined) return removeOrganizationMember(deps, caller, memberRoute[1]!);
@@ -972,6 +1003,24 @@ async function getAppMe(deps: DeveloperRouteDependencies, caller: DeveloperCalle
     org: { orgId: org.orgId, name: org.name, plan: org.plan },
     identities: await store.identitiesOf(caller.developerId),
   };
+}
+
+/**
+ * `DELETE /v1/app/me/identities/{provider}`: removes one of the caller's own sign-in methods. The developer is the verified token's
+ * (`caller.developerId`), never anything the request carries. Its sessions end, the others' go on; the answer lists what is left.
+ */
+async function unlinkAppIdentity(deps: DeveloperRouteDependencies, caller: DeveloperCaller, provider: string): Promise<{ identities: LinkedIdentity[] }> {
+  const method = UnlinkableSignInMethodSchema.safeParse(provider);
+  if (!method.success) throw agentXError("CONFIG_INVALID", "name the sign-in method to remove: cloud or github");
+  if (deps.developer.unlinkIdentity === undefined) throw agentXError("NOT_FOUND", "removing a sign-in method is not set up in this deployment");
+  const answer = await deps.developer.unlinkIdentity({ kind: "unlink-identity", developerId: caller.developerId, provider: method.data });
+  if (!answer.ok) {
+    if (answer.error === "refused") throw agentXError("CONFIG_INVALID", answer.message);
+    if (answer.error === "not_found") throw agentXError("NOT_FOUND", "that sign-in method is not linked to your account");
+    throw agentXError("RUNTIME_UNAVAILABLE", "removing the sign-in method did not complete; try again");
+  }
+  logDeveloperEvent({ event: "developer.identity_unlinked", provider: method.data });
+  return { identities: await signInStoreOf(deps).identitiesOf(caller.developerId) };
 }
 
 /** The caller's own org and their role in it. */

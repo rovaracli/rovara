@@ -16,6 +16,9 @@ import {
   ADMIN_API_VERSION,
   DEVELOPER_API_VERSION,
   EndDeveloperSessionsRequestSchema,
+  UnlinkIdentityRequestSchema,
+  type UnlinkIdentityRequest,
+  type UnlinkIdentityResponse,
   SlackAuthCheckRequestSchema,
   SlackUserByEmailRequestSchema,
   isLoopbackRedirectUri,
@@ -52,7 +55,8 @@ import {
 } from "./join-page.js";
 import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderResult, type SignInProvider } from "./providers.js";
 import type { SlackDirectory } from "./slack-directory.js";
-import { endedByAdmin, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
+import { endedByAdmin, endedByUnlink, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
+import { sendIdentityLinkedNotice, type IdentityNoticeDependencies } from "./identity-notice.js";
 import { issueAccessToken, pkceChallengeMatches, type TokenSigner } from "./tokens.js";
 
 /** `since` (epoch seconds, FR-045): when the method was last turned on. A session started before it
@@ -81,6 +85,11 @@ export interface DeveloperIdentityDependencies {
   mergeDuplicate?: ResolveSignInDeveloperDependencies["mergeDuplicate"];
   /** Says whether the duplicate's own org is a disposable leftover of the first-sign-in race, which a merge may close; bound with `mergeDuplicate`. */
   raceOrgBlocker?: ResolveSignInDeveloperDependencies["raceOrgBlocker"];
+  /**
+   * Plan 2, Task 8: tells an account's address when a new sign-in method was linked to it. `from` is the SES sender (empty: no notice is
+   * sent) and `cellUrl` the page where the person removes a method. Absent in tests that do not send.
+   */
+  notice?: { ses: IdentityNoticeDependencies["ses"]; from: string | undefined; cellUrl: string };
   now: () => number;
   log: (entry: Record<string, unknown>) => void;
 }
@@ -513,6 +522,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     }
     // A link written just now already carries this sign-in's time.
     if (resolved.link === "existing") await store.touchIdentity(identityKey);
+    // A method newly linked to an existing account tells that account's address, so a person who did not do it can remove it at once.
+    if (resolved.link === "new-linked") await noticeNewMethod(method, identity, existing?.email);
     // A first sign-in puts the person in an org (ruling R2); the tokens and the browser session carry it from here. A join read the
     // invite first (it is used up if the person joins), to have the names its page shows.
     const described = join && request.inviteTokenHash !== undefined ? await deps.orgs.describeInviteByHash(request.inviteTokenHash) : undefined;
@@ -558,6 +569,27 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     return client({ code: agentxCode, ...(org.inviteError === undefined ? {} : { inviteError: org.inviteError }) });
   }
 
+  /**
+   * Emails the account's address that `method` can now sign in to it (Plan 2, Task 8): the developer record's address, else this
+   * sign-in's own verified one (the link was made by that address). A send that fails is logged by provider and error name, never by
+   * address, and never fails the sign-in.
+   */
+  async function noticeNewMethod(method: DeveloperSignInMethod, identity: { email?: string; login?: string }, accountEmail: string | undefined): Promise<void> {
+    const to = accountEmail ?? identity.email;
+    if (to === undefined) {
+      deps.log({ event: "signin.identity_link_notice_skipped", provider: method, reason: "no_address" });
+      return;
+    }
+    try {
+      await sendIdentityLinkedNotice(
+        { ses: deps.notice?.ses, from: deps.notice?.from, log: deps.log },
+        { to, provider: method, cellUrl: deps.notice?.cellUrl ?? new URL(config.issuer).origin, ...(identity.login === undefined ? {} : { login: identity.login }) },
+      );
+    } catch (error) {
+      deps.log({ event: "signin.identity_link_notice_failed", provider: method, error: errorName(error) });
+    }
+  }
+
   /** A trial org opens when a GitHub account connects (unlockTrial is a no-op for any other plan or an already open org); a failure never fails the sign-in. */
   async function unlockTrialBestEffort(orgId: OrgId, githubUserId: string): Promise<void> {
     try {
@@ -576,6 +608,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (!methods.includes(redeemed.amr)) return oauthError(400, "invalid_grant", `${methodLabel(redeemed.amr)} sign-in was turned off in this environment; run agentx login again`);
     const developer = await store.getDeveloper(redeemed.developerId);
     if (developer === undefined || developer.revoked) return oauthError(400, "invalid_grant", "your AgentX sign-in was turned off by an admin; contact an admin");
+    // A code issued just before the person unlinked its identity must not start a session afterwards.
+    if (redeemed.identityKey !== undefined && !await store.identityBelongsTo(redeemed.identityKey, redeemed.developerId)) return oauthError(400, ...SIGN_IN_ENDED);
     const { session, refreshToken } = await store.createSession(redeemed);
     deps.log({ event: "signin.session_started", method: redeemed.amr, developerId: redeemed.developerId, sessionId: session.sessionId });
     const access = await accessToken(session);
@@ -612,6 +646,10 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (endedByAdmin(session.startedAt, developer.sessionsEndedAt)) {
       await revoke(session.sessionId, "ended_by_admin");
       return oauthError(400, "invalid_grant", "an AgentX admin ended your sign-in; sign in again with agentx login");
+    }
+    if (endedByUnlink(session, developer as unknown as Record<string, unknown>)) {
+      await revoke(session.sessionId, "identity_unlinked");
+      return oauthError(400, "invalid_grant", "this sign-in method was removed from your account; sign in again with agentx login");
     }
     if (session.amr === "slack" && session.slackUserId !== undefined) {
       const status = await deps.directory.userStatus(session.slackUserId);
@@ -735,11 +773,34 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     return jsonResult(404, { error: "not_found" });
   }
 
+  /**
+   * Plan 2, Task 8: unlinks one method from the caller's own developer, which the broker names from its verified token. The refusals
+   * are the store's fixed words; nothing else about the account leaves this function.
+   */
+  async function unlinkIdentity(event: unknown): Promise<UnlinkIdentityResponse> {
+    const parsed = UnlinkIdentityRequestSchema.safeParse(event);
+    if (!parsed.success) return { ok: false, error: "invalid_request" };
+    const { developerId, provider } = parsed.data;
+    try {
+      await store.unlinkIdentity({ developerId, provider });
+    } catch (error) {
+      const code = (error as { code?: unknown } | null)?.code;
+      if (code === "NOT_FOUND") return { ok: false, error: "not_found" };
+      if (code === "CONFIG_INVALID") {
+        deps.log({ event: "signin.identity_unlink_refused", developerId, provider });
+        return { ok: false, error: "refused", message: (error as Error).message.replace(/^CONFIG_INVALID: /, "") };
+      }
+      throw error;
+    }
+    deps.log({ event: "signin.identity_unlinked", developerId, provider });
+    return { ok: true };
+  }
+
   const isPage = (pathname: string) => pathname === "/v1/auth/authorize" || pathname === "/v1/auth/browser/authorize" || pathname.startsWith("/v1/auth/callback/") || pathname.startsWith("/v1/auth/join");
 
   return async (
-    event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | TaskPeopleDisplayReadRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | ChannelByNameRequest,
-  ): Promise<HttpResult | ChannelMembersResult | TaskPersonProofResponse | TaskChannelPeopleResponse | TaskPeopleDisplayReadResponse | ChannelInfoResponse | SlackUserByEmailResponse | SlackAuthCheckResponse | EndDeveloperSessionsResponse | ChannelByNameResponse> => {
+    event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | TaskPeopleDisplayReadRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | ChannelByNameRequest,
+  ): Promise<HttpResult | ChannelMembersResult | TaskPersonProofResponse | TaskChannelPeopleResponse | TaskPeopleDisplayReadResponse | ChannelInfoResponse | SlackUserByEmailResponse | SlackAuthCheckResponse | EndDeveloperSessionsResponse | UnlinkIdentityResponse | ChannelByNameResponse> => {
     if ("kind" in event) {
       if (event.kind === "end-developer-sessions") {
         const parsed = EndDeveloperSessionsRequestSchema.safeParse(event);
@@ -748,6 +809,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
         deps.log({ event: "signin.sessions_ended_by_admin", developerId: parsed.data.developerId, result });
         return result === "ended" ? { ok: true } : { ok: false, error: "not_found" };
       }
+      if (event.kind === "unlink-identity") return unlinkIdentity(event);
       if (event.kind === "channel-by-name") {
         const parsed = ChannelByNameRequestSchema.safeParse(event);
         if (!parsed.success) return { ok: false, error: "invalid_request" };

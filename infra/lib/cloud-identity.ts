@@ -43,6 +43,10 @@ export class CloudIdentity extends Construct {
   readonly githubClientSecretArn: CfnParameter;
   /** True only when both GitHub parameters are set. The sign-in function's grant on the secret exists only under it. */
   readonly githubEnabled: CfnCondition;
+  /** The sign-in code email's SES sender (Task 7), and the notice of a new sign-in method (Task 8) sent from it: the sender, the identity's ARN, and the condition that both are set. */
+  readonly emailFrom: CfnParameter;
+  readonly emailSourceArn: CfnParameter;
+  readonly emailFromSes: CfnCondition;
 
   constructor(scope: Construct, id: string, props: CloudIdentityProps) {
     super(scope, id);
@@ -83,15 +87,15 @@ export class CloudIdentity extends Construct {
       expression: Fn.conditionNot(Fn.conditionEquals(googleClientId.valueAsString, "")),
     });
     // Sign-in codes from a branded Amazon SES sender (Task 7). Both empty keeps Cognito's built-in sender.
-    const emailFrom = new CfnParameter(stack, "CloudSignInEmailFrom", {
+    const emailFrom = this.emailFrom = new CfnParameter(stack, "CloudSignInEmailFrom", {
       type: "String", default: "", maxLength: 320,
       description: "Sender of the sign-in code email, for example Rovara <signin@rovara.dev>; needs CloudSignInEmailSourceArn. Leave empty to use Amazon Cognito's default sender",
     });
-    const emailSourceArn = new CfnParameter(stack, "CloudSignInEmailSourceArn", {
+    const emailSourceArn = this.emailSourceArn = new CfnParameter(stack, "CloudSignInEmailSourceArn", {
       type: "String", default: "", allowedPattern: "^(arn:aws[a-z-]*:ses:[a-z0-9-]+:[0-9]{12}:identity/\\S+)?$",
       description: "ARN of the Amazon SES identity (the verified domain) that sends the sign-in code email, for example arn:aws:ses:us-west-2:123456789012:identity/rovara.dev; needs CloudSignInEmailFrom",
     });
-    const emailFromSes = new CfnCondition(stack, "CloudSignInEmailFromSes", {
+    const emailFromSes = this.emailFromSes = new CfnCondition(stack, "CloudSignInEmailFromSes", {
       expression: Fn.conditionAnd(
         Fn.conditionNot(Fn.conditionEquals(emailFrom.valueAsString, "")),
         Fn.conditionNot(Fn.conditionEquals(emailSourceArn.valueAsString, "")),

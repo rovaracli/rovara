@@ -100,6 +100,23 @@ export function developerIdentityKey(developerId: string, identityKey: string): 
 /** A link reads as no link once it was unlinked, unless the identity then re-linked to its own developer (its own key). */
 const isActiveLink = (link: Pick<IdentityLinkRecord, "developerId" | "unlinkedFrom">, identityKey: string): boolean =>
   link.unlinkedFrom === undefined || link.developerId === identityKey;
+/**
+ * Plan 2, Task 8: unlinking a sign-in method ends that method's sessions without touching the person's others. The sessions are not
+ * listed (the table has no index of them); the unlink marks the developer's record instead, and every session check compares its start
+ * with the mark: a session of the unlinked identity (`sessionsEndedByIdentity#<identityKey>`), or a session from before sessions
+ * recorded their identity, by method (`sessionsEndedByMethod#<provider>`). The marks are separate attributes, so one unlink is one
+ * atomic update beside the unlink itself, and no new kind of access to the table.
+ */
+export const identitySessionsEndedAttribute = (identityKey: string): string => `sessionsEndedByIdentity#${identityKey}`;
+export const methodSessionsEndedAttribute = (provider: DeveloperSignInMethod): string => `sessionsEndedByMethod#${provider}`;
+/** Whether the person unlinked this session's sign-in method after the session started. `developer` is the developer record as stored. */
+export function endedByUnlink(session: Pick<SessionRecord, "startedAt" | "amr" | "identityKey">, developer: Record<string, unknown>): boolean {
+  const mark = developer[session.identityKey === undefined ? methodSessionsEndedAttribute(session.amr) : identitySessionsEndedAttribute(session.identityKey)];
+  return typeof mark === "string" && endedByAdmin(session.startedAt, mark);
+}
+/** Refusals of an unlink, in the person's words. */
+export const UNLINK_ONLY_IDENTITY = "this is your only way to sign in, so it can't be removed";
+export const UNLINK_FIRST_IDENTITY = "this is the sign-in your account was created with, so it can't be removed";
 const conditionFailed = (error: unknown) =>
   error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException");
 
@@ -344,8 +361,17 @@ export class DeveloperSignInStore {
     ];
   }
 
-  /** The identities linked to a developer, oldest link first. Issuer and subject never leave the store. */
-  async identitiesOf(developerId: string): Promise<LinkedIdentity[]> {
+  /**
+   * Whether the identity is still linked to this developer. A link that was unlinked, or moved to another developer, is not. An identity
+   * with no link item (a developer from before identity links) is its own developer's.
+   */
+  async identityBelongsTo(identityKey: string, developerId: string): Promise<boolean> {
+    const link = await this.getIdentityLink(identityKey);
+    return link === undefined || (isActiveLink(link, identityKey) && link.developerId === developerId);
+  }
+
+  /** Every reverse item in the developer's partition, as stored (some may be unlinked or moved), following LastEvaluatedKey through each page. */
+  private async identityItems(developerId: string): Promise<Array<IdentityLinkRecord & { sk: string }>> {
     const links: Array<IdentityLinkRecord & { sk: string }> = [];
     let start: Record<string, unknown> | undefined;
     do {
@@ -359,15 +385,72 @@ export class DeveloperSignInStore {
       links.push(...(response.Items ?? []));
       start = response.LastEvaluatedKey;
     } while (start !== undefined);
-    return links
+    return links;
+  }
+
+  /** The identities linked to a developer, oldest link first, as stored. */
+  private async activeIdentityItems(developerId: string): Promise<Array<IdentityLinkRecord & { sk: string }>> {
+    return (await this.identityItems(developerId))
       .filter((link) => link.developerId === developerId && isActiveLink(link, link.sk.slice("IDENTITY#".length)))
-      .sort((left, right) => left.linkedAt.localeCompare(right.linkedAt) || left.sk.localeCompare(right.sk))
-      .map((link) => ({
-        provider: link.provider,
-        ...(link.email === undefined ? {} : { email: link.email }),
-        ...(link.login === undefined ? {} : { login: link.login }),
-        linkedAt: link.linkedAt, lastSignInAt: link.lastSignInAt,
-      }));
+      .sort((left, right) => left.linkedAt.localeCompare(right.linkedAt) || left.sk.localeCompare(right.sk));
+  }
+
+  /** The identities linked to a developer, oldest link first. Issuer and subject never leave the store. */
+  async identitiesOf(developerId: string): Promise<LinkedIdentity[]> {
+    return (await this.activeIdentityItems(developerId)).map((link) => ({
+      provider: link.provider,
+      ...(link.email === undefined ? {} : { email: link.email }),
+      ...(link.login === undefined ? {} : { login: link.login }),
+      linkedAt: link.linkedAt, lastSignInAt: link.lastSignInAt,
+    }));
+  }
+
+  /**
+   * Removes a sign-in method from a developer (Plan 2, Task 8). It must leave the developer another active identity, and never the one the
+   * account was created with (the identity whose key is the developer's). Per identity of that method, one transaction: the reverse item is
+   * deleted, the forward item keeps its fields and gains `unlinkedFrom` and `unlinkedAt` (rule 2 never relinks it: its next sign-in starts
+   * its own developer), and the developer's record is marked so that identity's sessions end (see `endedByUnlink`), the others' not.
+   * Only the caller's own developer is ever touched. Returns the (first) identity key removed.
+   */
+  async unlinkIdentity(input: { developerId: string; provider: DeveloperSignInMethod; now?: number }): Promise<{ identityKey: string }> {
+    const { developerId, provider } = input;
+    const active = await this.activeIdentityItems(developerId);
+    const targets = active.filter((link) => link.provider === provider);
+    if (targets.length === 0) throw agentXError("NOT_FOUND", "that sign-in method is not linked to your account");
+    if (active.length - targets.length < 1) throw agentXError("CONFIG_INVALID", UNLINK_ONLY_IDENTITY);
+    const keys = targets.map((link) => link.sk.slice("IDENTITY#".length));
+    if (keys.includes(developerId)) throw agentXError("CONFIG_INVALID", UNLINK_FIRST_IDENTITY);
+    const at = new Date(input.now ?? this.input.now()).toISOString();
+    const TableName = this.input.tableName;
+    for (const [index, link] of targets.entries()) {
+      const identityKey = keys[index]!;
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the reverse item's keys
+      const { pk: _pk, sk: _sk, entityType: _type, ...fields } = link as typeof link & { pk: string; entityType?: string };
+      try {
+        await this.input.documentClient.send(new TransactWriteCommand({
+          TransactItems: [
+            { Delete: {
+              TableName, Key: developerIdentityKey(developerId, identityKey),
+              ConditionExpression: "attribute_exists(pk) AND developerId = :d AND attribute_not_exists(unlinkedFrom)", ExpressionAttributeValues: { ":d": developerId },
+            } },
+            { Put: {
+              TableName, Item: { ...fields, ...signInIdentityKey(identityKey), entityType: "IDENTITY_LINK", unlinkedFrom: developerId, unlinkedAt: at },
+              ConditionExpression: "attribute_exists(pk) AND developerId = :d AND attribute_not_exists(unlinkedFrom)", ExpressionAttributeValues: { ":d": developerId },
+            } },
+            { Update: {
+              TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #identity = :at, #method = :at",
+              ConditionExpression: "attribute_exists(pk)",
+              ExpressionAttributeNames: { "#identity": identitySessionsEndedAttribute(identityKey), "#method": methodSessionsEndedAttribute(link.provider) },
+              ExpressionAttributeValues: { ":at": at },
+            } },
+          ],
+        }));
+      } catch (error) {
+        if (!conditionFailed(error)) throw error;
+        throw agentXError("CONFIG_INVALID", "your sign-in methods changed while this ran; check them with agentx whoami and try again");
+      }
+    }
+    return { identityKey: keys[0]! };
   }
 
   /** Records a sign-in on the identity's link, on both items. Nothing happens for an identity with no active link. */

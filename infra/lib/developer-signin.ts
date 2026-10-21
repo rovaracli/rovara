@@ -1,6 +1,6 @@
 // Spec 025 phase 25a: the control plane as the developers' sign-in server. Named environments only
 // (R3): the legacy deployment must not change.
-import { ArnFormat, CfnOutput, CfnParameter, Duration, RemovalPolicy, Stack, aws_apigatewayv2 as apigwv2, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms, type aws_lambda_nodejs as lambdaNodejs, type aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
+import { ArnFormat, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, Token, aws_apigatewayv2 as apigwv2, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms, type aws_lambda_nodejs as lambdaNodejs, type aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import type { AgentXNaming } from "./naming.js";
 import { packagedFunction } from "./control-plane.js";
@@ -130,13 +130,32 @@ export class DeveloperSignIn extends Construct {
         // Empty unless the GitHub OAuth app is configured (GitHubClientId); the function then reads its secret by id.
         DEVELOPER_GITHUB_CLIENT_ID: cloud.githubClientId.valueAsString,
         DEVELOPER_GITHUB_SECRET_ID: cloud.githubClientSecretArn.valueAsString,
+        // Plan 2, Task 8: the email that tells an account a new sign-in method was linked to it goes out from the cloud sign-in's SES sender.
+        // All three are empty unless both CloudSignInEmailFrom and CloudSignInEmailSourceArn are set (no sender: no notice). SES identities are
+        // regional, so the function sends in the region of the sender's identity ARN (arn:aws:ses:<region>:...). The ":::" keeps Fn::Select in range
+        // even for the empty default, so nothing depends on how CloudFormation orders the evaluation of Fn::If's branches.
+        DEVELOPER_NOTICE_EMAIL_FROM: Token.asString(Fn.conditionIf(cloud.emailFromSes.logicalId, cloud.emailFrom.valueAsString, "")),
+        DEVELOPER_NOTICE_EMAIL_REGION: Token.asString(Fn.conditionIf(cloud.emailFromSes.logicalId, Fn.select(3, Fn.split(":", Fn.join("", [cloud.emailSourceArn.valueAsString, ":::"]))), "")),
+        ROVARA_WEB_ORIGIN: cloud.webOrigin.valueAsString,
       }),
     }, Duration.seconds(15));
-    // Exactly what DeveloperSignInStore sends: GetItem, PutItem, UpdateItem, and TransactWriteItems
+    // What DeveloperSignInStore sends on every sign-in: GetItem, PutItem, UpdateItem, and TransactWriteItems
     // made of Put and Update items (IAM authorizes each item as PutItem or UpdateItem).
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
       resources: [table.tableArn],
+    }));
+    // Plan 2, Task 8: unlinking a sign-in method (unlinkIdentity, the `unlink-identity` invoke). It lists the developer's own IDENTITY# items
+    // (Query on `DEVELOPER#<id>`) and, in one transaction, deletes the one it removes (a transaction's Delete is authorized as DeleteItem; the
+    // same transaction's Put and Update are the table-wide grants above). Both stay inside the developer partitions; nothing else is deleted
+    // or listed, and the broker gets neither (its sign-in table policy stays reads and the developer-partition Query).
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:DeleteItem"], resources: [table.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVELOPER#*"] } },
+    }));
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:Query"], resources: [table.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVELOPER#*"] } },
     }));
     // Orgs and membership (OrgStore): the bare org partition (the org record and its member rows), the developer's org
     // pointer, the verified-email pointers that link one person's cloud sign-ins, the invites a sign-in accepts, and the
@@ -211,6 +230,14 @@ export class DeveloperSignIn extends Construct {
       });
       githubSecretRead.attachToRole(fn.role!);
       (githubSecretRead.node.defaultChild as iam.CfnPolicy).cfnOptions.condition = cloud.githubEnabled;
+      // The notice of a newly linked sign-in method (Plan 2, Task 8): ses:SendEmail on the sender's SES identity and nothing else (the Simple
+      // content of SESv2 SendEmail needs no ses:SendRawEmail, and no configuration set is used), and only when that sender is configured:
+      // an empty ARN is not a valid resource, so the policy itself is conditional, as with the GitHub secret above.
+      const noticeSend = new iam.Policy(this, "IdentityNoticeSend", {
+        statements: [new iam.PolicyStatement({ actions: ["ses:SendEmail"], resources: [cloud.emailSourceArn.valueAsString] })],
+      });
+      noticeSend.attachToRole(fn.role!);
+      (noticeSend.node.defaultChild as iam.CfnPolicy).cfnOptions.condition = cloud.emailFromSes;
     }
 
     const integration = new apigwv2.CfnIntegration(this, "Integration", {

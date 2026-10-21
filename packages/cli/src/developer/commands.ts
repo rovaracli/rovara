@@ -1,5 +1,5 @@
 // agentx whoami and agentx logout (FR-011).
-import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, UnlinkIdentityAppResponseSchema, UnlinkableSignInMethodSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerTokenKey, removeDeveloperEnvironment, resolveDeveloperEnvironment } from "./config.js";
 import { developerAccessToken, type DeveloperSessionDeps } from "./session.js";
@@ -128,6 +128,27 @@ export function whoamiText(result: { env: string; url: string; projects: Develop
   }
   if (notices.includes("slack_unavailable")) lines.push("Slack could not be reached, so projects you use through a Slack channel are not listed; try again later.");
   return `${lines.join("\n")}\n`;
+}
+
+/** What `agentx signin unlink` calls each method, for its output. */
+const UNLINK_METHOD_TEXT = { cloud: "Rovara sign-in (email code)", github: "GitHub" } as const;
+
+/**
+ * `agentx signin unlink <cloud|github>` (Plan 2, Task 8): removes one sign-in method from the signed-in developer's own account. Sessions
+ * made with that method end; the others go on. The server refuses the account's only sign-in method and the one it was created with,
+ * in its own words.
+ */
+export async function unlinkSignInMethod(deps: DeveloperSessionDeps, env: string | undefined, provider: string): Promise<{ env: string; url: string; provider: "cloud" | "github"; identities: LinkedIdentity[] }> {
+  const method = UnlinkableSignInMethodSchema.safeParse(provider);
+  if (!method.success) throw agentXError("CONFIG_INVALID", `unknown sign-in method ${JSON.stringify(sanitizeServerText(provider))}; use cloud or github`);
+  const { env: resolved, url, body } = await developerRequest(deps, env, `/v1/app/me/identities/${method.data}`, UnlinkIdentityAppResponseSchema, { method: "DELETE", explain: true });
+  return { env: resolved, url, provider: method.data, identities: body.identities };
+}
+
+export function unlinkText(result: { provider: "cloud" | "github"; identities: LinkedIdentity[] }): string {
+  const left = result.identities.map((identity) => SIGN_IN_METHOD_TEXT[identity.provider]);
+  return `Removed ${UNLINK_METHOD_TEXT[result.provider]} from your account. Sessions signed in that way have ended.\n`
+    + `${left.length === 0 ? "No sign-in methods are linked." : `You can still sign in with ${left.join(", ")}.`}\n`;
 }
 
 /** `agentx project create` (ruling R55): the signed-in owner or admin of a cloud org creates a project from a repository. */

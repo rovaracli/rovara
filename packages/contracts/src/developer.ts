@@ -107,6 +107,10 @@ export const AppMeResponseSchema = z.object({
 });
 export type AppMeResponse = z.infer<typeof AppMeResponseSchema>;
 
+/** `DELETE /v1/app/me/identities/{provider}`: the sign-in methods still linked after one was removed (Plan 2, Task 8). */
+export const UnlinkIdentityAppResponseSchema = z.object({ identities: z.array(LinkedIdentitySchema) });
+export type UnlinkIdentityAppResponse = z.infer<typeof UnlinkIdentityAppResponseSchema>;
+
 /**
  * F6: a non-strict copy of `DeveloperTaskPolicySchema` (`project.ts`), used only to parse a
  * project's task policy inside this response. A strict schema embedded here would make an old MCP
@@ -396,6 +400,18 @@ export type SlackAuthCheckResponse = { ok: true; teamId: string } | { ok: false;
 export const EndDeveloperSessionsRequestSchema = z.object({ kind: z.literal("end-developer-sessions"), developerId: z.string().regex(/^[a-f0-9]{64}$/), at: z.string().datetime() }).strict();
 export type EndDeveloperSessionsRequest = z.infer<typeof EndDeveloperSessionsRequestSchema>;
 export type EndDeveloperSessionsResponse = { ok: true } | { ok: false; error: "not_found" | "invalid_request" | "unavailable" };
+
+/** The sign-in methods a person may unlink from their account (Plan 2, Task 8): the two that cloud installs link by verified email. */
+export const UnlinkableSignInMethodSchema = z.enum(["cloud", "github"]);
+export type UnlinkableSignInMethod = z.infer<typeof UnlinkableSignInMethodSchema>;
+/**
+ * Plan 2, Task 8: unlinks one sign-in method from the caller's own developer, through DeveloperIdentity (the broker may not write the
+ * sign-in table). `developerId` is the caller's verified developer, never a body value of the public route.
+ */
+export const UnlinkIdentityRequestSchema = z.object({ kind: z.literal("unlink-identity"), developerId: z.string().regex(/^[a-f0-9]{64}$/), provider: UnlinkableSignInMethodSchema }).strict();
+export type UnlinkIdentityRequest = z.infer<typeof UnlinkIdentityRequestSchema>;
+/** `refused` carries the person's words (the store's fixed refusal text); `not_found` is a method that is not linked. */
+export type UnlinkIdentityResponse = { ok: true } | { ok: false; error: "refused"; message: string } | { ok: false; error: "not_found" | "invalid_request" | "unavailable" };
 
 /** Spec 025 E12 (Q8): a public channel of the environment's team, by its name. */
 export const ChannelByNameRequestSchema = z.object({ kind: z.literal("channel-by-name"), name: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,79}$/) }).strict();
