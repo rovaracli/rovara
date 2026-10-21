@@ -23,12 +23,13 @@ function harness(options: { cacheMs?: number } = {}) {
   const clock = { now: START };
   /** Every command the keyring sent, and a hook that can run between a read and the write that follows it. */
   const sent: Command[] = [];
-  const hooks: { afterGet?: (command: Command) => void } = {};
+  const hooks: { afterGet?: (command: Command) => void; afterPut?: (command: Command) => void } = {};
   const documentClient = {
     send: async (command: Command) => {
       sent.push(command);
       const result = await db.send(command);
       if (command.constructor.name === "GetCommand") hooks.afterGet?.(command);
+      if (command.constructor.name === "PutCommand") hooks.afterPut?.(command);
       return result;
     },
   } as unknown as DynamoDBDocumentClient;
@@ -305,6 +306,109 @@ describe("sealing and opening details", () => {
     expect(h.db.find((item) => item.sk === "SUBJECT#dev_1")).toHaveLength(1);
     expect(await h.keyring.openDetails(ORG, 1, first.sealed)).toHaveLength(1);
     expect(await other.openDetails(ORG, 2, second.sealed)).toHaveLength(1);
+  });
+});
+
+describe("a key is never used when the org is shredded while it is being created", () => {
+  const SHRED = { pk: `ORG#${ORG}`, sk: "SHREDDED", at: "2026-10-19T00:00:00.000Z" };
+  const part = { subject: "dev_1", fields: { login: "ada-lovelace" } };
+  const NONE = { commits: [], sealed: [] };
+
+  /** Runs `hook` once, the first time a Get (or Put) of the item `sk` has finished. */
+  function once(h: ReturnType<typeof harness>, when: "afterGet" | "afterPut", sk: string, hook: () => void): () => boolean {
+    let fired = false;
+    h.hooks[when] = (command) => {
+      const key = (command.input.Key ?? command.input.Item) as { sk?: string };
+      if (fired || key.sk !== sk) return;
+      fired = true;
+      hook();
+    };
+    return () => fired;
+  }
+
+  for (const [label, sk] of [["a subject key", "SUBJECT#dev_1"], ["the pseudonym key", "PSEUDONYM_KEY"]] as const) {
+    const run = (h: ReturnType<typeof harness>) => (sk === "PSEUDONYM_KEY" ? h.keyring.pseudonym(ORG, "project", "web") : h.keyring.sealDetails(ORG, 1, [part]));
+    const omitted = sk === "PSEUDONYM_KEY" ? "n_shredded" : NONE;
+
+    it(`${label}: SHREDDED written between the cache read and the put leaves nothing sealed under the new key`, async () => {
+      const h = harness();
+      await h.keyring.dataKey(ORG, true); // warm: the data key is cached, so no table read comes before the put
+      const fired = once(h, "afterGet", sk, () => h.db.set(SHRED));
+      expect(await run(h)).toStrictEqual(omitted);
+      expect(fired()).toBe(true);
+    });
+
+    it(`${label}: SHREDDED written between the put and the seal leaves nothing sealed under the new key`, async () => {
+      const h = harness();
+      await h.keyring.dataKey(ORG, true);
+      const fired = once(h, "afterPut", sk, () => h.db.set(SHRED));
+      expect(await run(h)).toStrictEqual(omitted);
+      expect(fired()).toBe(true);
+    });
+
+    it(`${label}: SHREDDED written while a lost race is settled leaves nothing sealed`, async () => {
+      const h = harness();
+      // Another writer's key, made by a second keyring and then removed, so that this keyring's read finds nothing and its put loses.
+      await h.make().dataKey(ORG, true);
+      if (sk === "PSEUDONYM_KEY") await h.make().pseudonym(ORG, "project", "web");
+      else await h.make().sealDetails(ORG, 1, [part]);
+      const theirs = h.db.get(`ORG#${ORG}`, sk)!;
+      h.db.delete(`ORG#${ORG}`, sk);
+      await h.keyring.dataKey(ORG, true);
+      const fired = once(h, "afterGet", sk, () => { h.db.set(theirs); h.db.set(SHRED); });
+      expect(await run(h)).toStrictEqual(omitted);
+      expect(fired()).toBe(true);
+    });
+  }
+
+  it("a subject key: a tombstone that replaces the new key before the seal is honoured", async () => {
+    const h = harness();
+    await h.keyring.dataKey(ORG, true);
+    once(h, "afterPut", "SUBJECT#dev_1", () => h.db.set({ pk: `ORG#${ORG}`, sk: "SUBJECT#dev_1", erasedAt: "2026-10-19T00:00:00.000Z" }));
+    expect(await h.keyring.sealDetails(ORG, 1, [part])).toStrictEqual(NONE);
+  });
+
+  it("the data key: SHREDDED written between its put and its use leaves nothing sealed", async () => {
+    const h = harness();
+    once(h, "afterPut", "DATA_KEY", () => h.db.set(SHRED));
+    expect(await h.keyring.sealDetails(ORG, 1, [part])).toStrictEqual(NONE);
+    expect(await h.keyring.pseudonym(ORG, "project", "web")).toBe("n_shredded");
+    expect(h.db.find((item) => String(item.sk).startsWith("SUBJECT#"))).toStrictEqual([]);
+  });
+
+  it("the data key: SHREDDED written while a lost race is settled is not used", async () => {
+    const h = harness();
+    await h.make().dataKey(ORG, true);
+    const theirs = h.db.get(`ORG#${ORG}`, "DATA_KEY")!;
+    h.db.delete(`ORG#${ORG}`, "DATA_KEY");
+    once(h, "afterGet", "DATA_KEY", () => { h.db.set(theirs); h.db.set(SHRED); });
+    expect(await h.keyring.sealDetails(ORG, 1, [part])).toStrictEqual(NONE);
+    expect(h.db.find((item) => String(item.sk).startsWith("SUBJECT#"))).toStrictEqual([]);
+  });
+
+  it("a stored pseudonym key that reads as a tombstone is a fault, not a silent n_shredded", async () => {
+    const h = harness();
+    h.db.set({ pk: `ORG#${ORG}`, sk: "PSEUDONYM_KEY", erasedAt: "2026-10-19T00:00:00.000Z" });
+    await expect(h.keyring.pseudonym(ORG, "project", "web")).rejects.toThrow(/pseudonym key/);
+  });
+
+  it("refuses a stored key whose IV is not 12 bytes", async () => {
+    const h = harness();
+    const sealed = await h.keyring.sealDetails(ORG, 1, [part]);
+    const stored = h.db.get(`ORG#${ORG}`, "SUBJECT#dev_1")!;
+    h.db.set({ ...stored, iv: Buffer.alloc(16).toString("base64") });
+    await expect(h.make().openDetails(ORG, 1, sealed.sealed)).rejects.toThrow(/IV/);
+    const own = { ...sealed.sealed[0]!, iv: Buffer.alloc(16).toString("base64") };
+    h.db.set(stored);
+    await expect(h.make().openDetails(ORG, 1, [own])).rejects.toThrow(/IV/);
+  });
+
+  it("drops expired data keys from memory when another org's key is remembered", async () => {
+    const h = harness({ cacheMs: 1000 });
+    await h.keyring.dataKey(ORG, true);
+    h.clock.now += 5000;
+    await h.keyring.dataKey(OTHER_ORG, true);
+    expect((h.keyring as unknown as { cache: Map<string, unknown> }).cache.has(ORG)).toBe(false);
   });
 });
 
