@@ -915,6 +915,11 @@ describe("the audit ledger in templates", () => {
             "AuditLedgerAuditAppenderPolicy/KeysTable",
             "AuditLedgerAuditAppenderPolicy/LedgerTable",
             "AuditLedgerAuditBrokerOutboxPolicy/SendAuditEvents",
+            "AuditLedgerAuditBrokerReadPolicy/ExportObjects",
+            "AuditLedgerAuditBrokerReadPolicy/ListExports",
+            "AuditLedgerAuditBrokerReadPolicy/ReadKeys",
+            "AuditLedgerAuditBrokerReadPolicy/ReadLedgerAndSeals",
+            "AuditLedgerAuditBrokerReadPolicy/ReadSealedObjects",
           ]);
           for (const [, role] of ofType(synthesis.template, "AWS::IAM::Role")) {
             expect(JSON.stringify(role.Properties.Policies ?? [])).not.toMatch(/AuditLedger(Audit)?(IntakeQueue|LedgerTable|SealsTable|KeysTable|LedgerBucket)/);
@@ -1064,8 +1069,8 @@ describe("the audit ledger in templates", () => {
           expect(JSON.stringify(variables)).not.toContain("alias/");
         });
 
-        it("is the only function given the keys table's name or the vault key, and only it and the anchor are given the ledger table", () => {
-          const others = ofType(synthesis.template, "AWS::Lambda::Function").filter(([id]) => !["AuditLedgerAuditAppender", "AuditLedgerAuditAnchor"].includes(withoutHash(id)));
+        it("is, with the broker (which only reads, pinned in \"the broker reads the ledger\"), the only function given the keys table's name or the vault key, and only it, the anchor and the broker are given the ledger table", () => {
+          const others = ofType(synthesis.template, "AWS::Lambda::Function").filter(([id]) => !["AuditLedgerAuditAppender", "AuditLedgerAuditAnchor", "Broker"].includes(withoutHash(id)));
           for (const [id, fn] of others) {
             const variables = JSON.stringify((fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables ?? {});
             expect(variables, id).not.toMatch(/AuditLedgerAudit(LedgerTable|KeysTable|SealsTable|VaultKey|LedgerBucket)/);
@@ -1327,11 +1332,11 @@ describe("the audit ledger in templates", () => {
           expect(JSON.stringify(variables)).not.toMatch(/alias\/|KeysTable|VaultKey/);
         });
 
-        it("is the only function given the seals table or the ledger bucket", () => {
+        it("is, with the broker (which only reads), the only function given the seals table or the ledger bucket", () => {
           const withSeals = ofType(synthesis.template, "AWS::Lambda::Function").filter(([, fn]) => JSON.stringify((fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables ?? {}).includes("AuditLedgerAuditSealsTable"));
-          expect(withSeals.map(([id]) => withoutHash(id))).toStrictEqual(["AuditLedgerAuditAnchor"]);
+          expect(withSeals.map(([id]) => withoutHash(id)).sort()).toStrictEqual(["AuditLedgerAuditAnchor", "Broker"]);
           const withBucket = ofType(synthesis.template, "AWS::Lambda::Function").filter(([, fn]) => JSON.stringify((fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables ?? {}).includes("AuditLedgerAuditLedgerBucket"));
-          expect(withBucket.map(([id]) => withoutHash(id))).toStrictEqual(["AuditLedgerAuditAnchor"]);
+          expect(withBucket.map(([id]) => withoutHash(id)).sort()).toStrictEqual(["AuditLedgerAuditAnchor", "Broker"]);
         });
 
         it("has exactly the pinned statements, in a policy of its own, and the log group's write actions", () => {
@@ -1658,6 +1663,134 @@ describe("the audit ledger in templates", () => {
     it("a legacy template has no anchor", () => {
       const legacy = Template.fromStack(buildAgentXApp().node.children.filter((child): child is Stack => Stack.isStack(child)).find((stack) => stack.stackName === "AgentXControlPlane")!).toJSON();
       expect(JSON.stringify(legacy)).not.toMatch(/AuditAnchor|AUDIT_SEALS_TABLE_NAME|agentx\.audit-epoch|AuditSealOverdue/);
+    });
+  });
+
+  describe("the broker reads the ledger (Task 11)", () => {
+    const BROKER_ROLE = "BrokerServiceRole";
+    const LEDGER = "AuditLedgerAuditLedgerTable.Arn";
+    const KEYS = "AuditLedgerAuditKeysTable.Arn";
+    const SEALS = "AuditLedgerAuditSealsTable.Arn";
+    const LEDGER_BUCKET = "AuditLedgerAuditLedgerBucket.Arn";
+    const EXPORTS_BUCKET = "AuditLedgerAuditExportsBucket.Arn";
+    const VAULT_KEY = "AuditLedgerAuditVaultKey.Arn";
+    const ownPolicy = (synthesis: Synth) => {
+      const own = ofType(synthesis.template, "AWS::IAM::Policy").filter(([id]) => withoutHash(id) === "AuditLedgerAuditBrokerReadPolicy");
+      expect(own).toHaveLength(1);
+      return own[0]![1].Properties;
+    };
+    const ownStatements = (synthesis: Synth): Statement[] => ((ownPolicy(synthesis).PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => concreteAws(statement) as Statement);
+    /** Everything the broker's role is allowed, from every policy that lists the role: the broker has many other grants, and none of them may reach the ledger. */
+    const identity = (synthesis: Synth): IamStatement[] => {
+      const roleId = one(synthesis.template, "AWS::IAM::Role", BROKER_ROLE)[0];
+      return ofType(synthesis.template, "AWS::IAM::Policy")
+        .filter(([, policy]) => (policy.Properties.Roles as unknown[]).some((role) => JSON.stringify(role) === JSON.stringify({ Ref: roleId })))
+        .flatMap(([, policy]) => [(policy.Properties.PolicyDocument as { Statement: Statement | Statement[] }).Statement].flat().map((statement) => concreteAws(statement) as IamStatement));
+    };
+
+    for (const env of ["production", "staging", "acme"]) {
+      describe(env, () => {
+        const synthesis = named(env);
+
+        it("has exactly the pinned read statements, in a policy of its own on the broker's role", () => {
+          const roleId = one(synthesis.template, "AWS::IAM::Role", BROKER_ROLE)[0];
+          expect(ownPolicy(synthesis).Roles).toStrictEqual([{ Ref: roleId }]);
+          expect(ownStatements(synthesis)).toStrictEqual([
+            { Sid: "ReadLedgerAndSeals", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query"], Resource: [LEDGER, SEALS] },
+            { Sid: "ReadKeys", Effect: "Allow", Action: "dynamodb:GetItem", Resource: KEYS },
+            { Sid: "ReadSealedObjects", Effect: "Allow", Action: ["s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectRetention"], Resource: `${LEDGER_BUCKET}/*` },
+            { Sid: "ExportObjects", Effect: "Allow", Action: ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"], Resource: `${EXPORTS_BUCKET}/*` },
+            { Sid: "ListExports", Effect: "Allow", Action: "s3:ListBucket", Resource: EXPORTS_BUCKET },
+            { Sid: "StartExports", Effect: "Allow", Action: "lambda:InvokeFunction", Resource: "Broker.Arn" },
+          ]);
+        });
+
+        it("gives the broker the names it reads the ledger by, and the vault key by ARN, and no other function but the appender and anchor their own", () => {
+          const [, broker] = one(synthesis.template, "AWS::Lambda::Function", "Broker");
+          const variables = (broker.Properties.Environment as { Variables: Json }).Variables;
+          const audit = Object.fromEntries(Object.entries(variables).filter(([name]) => name.startsWith("AUDIT_")).map(([name, value]) => [name, concreteAws(value)]));
+          expect(audit).toStrictEqual({
+            AUDIT_INTAKE_QUEUE_URL: "Ref:AuditLedgerAuditIntakeQueue",
+            AUDIT_LEDGER_TABLE_NAME: "Ref:AuditLedgerAuditLedgerTable",
+            AUDIT_SEALS_TABLE_NAME: "Ref:AuditLedgerAuditSealsTable",
+            AUDIT_KEYS_TABLE_NAME: "Ref:AuditLedgerAuditKeysTable",
+            AUDIT_LEDGER_BUCKET_NAME: "Ref:AuditLedgerAuditLedgerBucket",
+            AUDIT_EXPORTS_BUCKET_NAME: "Ref:AuditLedgerAuditExportsBucket",
+            AUDIT_VAULT_KEY_ARN: "AuditLedgerAuditVaultKey.Arn",
+          });
+          // Only the broker has the exports bucket; the key policy, not IAM, is what lets it decrypt.
+          const withExports = ofType(synthesis.template, "AWS::Lambda::Function").filter(([, fn]) => JSON.stringify((fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables ?? {}).includes("AuditLedgerAuditExportsBucket"));
+          expect(withExports.map(([id]) => withoutHash(id))).toStrictEqual(["Broker"]);
+        });
+
+        describe("what IAM lets the broker do on the ledger (all of its policies simulated)", () => {
+          const request = (action: string, resource: string) => simulateIam(identity(synthesis), { action, resource });
+          const LEDGER_OBJECT = `${LEDGER_BUCKET}/orgs/org_aaaaaaaaaaaaaaaaaaaa/seals/000000000001.json`;
+          const EXPORT_OBJECT = `${EXPORTS_BUCKET}/org_aaaaaaaaaaaaaaaaaaaa/aex_1.rovara-audit.json.gz`;
+
+          it("reads the ledger and seals tables with GetItem and Query, and the keys table with GetItem only", () => {
+            for (const table of [LEDGER, SEALS]) for (const action of ["dynamodb:GetItem", "dynamodb:Query"]) expect(request(action, table).allowed, `${action} ${table}`).toBe(true);
+            expect(request("dynamodb:GetItem", KEYS).allowed).toBe(true);
+            expect(request("dynamodb:Query", KEYS).allowed).toBe(false);
+          });
+
+          it("writes nothing to the ledger, seals or keys tables, and scans, batches and administers none of them", () => {
+            for (const table of [LEDGER, SEALS, KEYS]) {
+              for (const action of ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:ConditionCheckItem", "dynamodb:BatchWriteItem", "dynamodb:Scan", "dynamodb:BatchGetItem", "dynamodb:DeleteTable", "dynamodb:UpdateTable", "dynamodb:*"]) {
+                expect(request(action, table).allowed, `${action} ${table}`).toBe(false);
+              }
+            }
+          });
+
+          it("reads the ledger bucket's objects, by version, with their retention, and cannot write, delete, relock or list it", () => {
+            for (const action of ["s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectRetention"]) expect(request(action, LEDGER_OBJECT).allowed, action).toBe(true);
+            for (const action of ["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:PutObjectRetention", "s3:PutObjectLegalHold", "s3:BypassGovernanceRetention", "s3:*"]) {
+              expect(request(action, LEDGER_OBJECT).allowed, action).toBe(false);
+            }
+            for (const action of ["s3:ListBucket", "s3:ListBucketVersions", "s3:PutBucketPolicy", "s3:PutBucketObjectLockConfiguration", "s3:PutBucketVersioning", "s3:DeleteBucket", "s3:PutLifecycleConfiguration"]) {
+              expect(request(action, LEDGER_BUCKET).allowed, action).toBe(false);
+            }
+          });
+
+          it("puts, gets and deletes the exports bucket's objects and lists the bucket, and changes nothing about it", () => {
+            for (const action of ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"]) expect(request(action, EXPORT_OBJECT).allowed, action).toBe(true);
+            expect(request("s3:ListBucket", EXPORTS_BUCKET).allowed).toBe(true);
+            expect(request("s3:ListBucket", EXPORT_OBJECT).allowed).toBe(false);
+            for (const action of ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]) expect(request(action, EXPORTS_BUCKET).allowed, `${action} on the bucket itself`).toBe(false);
+            for (const action of ["s3:PutObjectRetention", "s3:DeleteObjectVersion", "s3:PutObjectAcl", "s3:*"]) expect(request(action, EXPORT_OBJECT).allowed, action).toBe(false);
+            for (const action of ["s3:PutBucketPolicy", "s3:DeleteBucket", "s3:PutLifecycleConfiguration", "s3:PutBucketPublicAccessBlock"]) expect(request(action, EXPORTS_BUCKET).allowed, action).toBe(false);
+          });
+
+          it("has no KMS permission of its own: the key policy is what lets it decrypt a person's details", () => {
+            for (const action of ["kms:Decrypt", "kms:GenerateDataKey", "kms:Encrypt", "kms:CreateGrant"]) expect(request(action, VAULT_KEY).allowed, action).toBe(false);
+          });
+
+          it("may invoke itself (an export is built by the broker invoking itself) and neither the anchor nor the appender", () => {
+            expect(request("lambda:InvokeFunction", "Broker.Arn").allowed).toBe(true);
+            for (const other of ["AuditLedgerAuditAnchor.Arn", "AuditLedgerAuditAppender.Arn"]) expect(request("lambda:InvokeFunction", other).allowed, other).toBe(false);
+          });
+
+          it("the simulator sees the resource lists: with the ledger table dropped, its reads would be denied", () => {
+            const narrowed = identity(synthesis).map((statement) => (statement.Sid === "ReadLedgerAndSeals" ? { ...statement, Resource: SEALS } : statement));
+            expect(simulateIam(narrowed, { action: "dynamodb:GetItem", resource: LEDGER }).allowed).toBe(false);
+            expect(request("dynamodb:GetItem", LEDGER).allowed).toBe(true);
+          });
+        });
+      });
+    }
+
+    it("a scratch stack with the ledger alone builds the same policy, so the checks above read the construct and not the control plane", () => {
+      const stack = new Stack(new App(), "Scratch");
+      new AuditLedger(stack, "AuditLedger", { ...scratchProps(stack), appenderRole: new iam.Role(stack, "AppenderRole", { assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com") }) });
+      const template = Template.fromStack(stack).toJSON() as TemplateJson;
+      const own = ofType(template, "AWS::IAM::Policy").filter(([id]) => id.startsWith("AuditLedgerAuditBrokerReadPolicy"));
+      expect(own).toHaveLength(1);
+      expect(((own[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => statement.Sid)).toStrictEqual(["ReadLedgerAndSeals", "ReadKeys", "ReadSealedObjects", "ExportObjects", "ListExports", "StartExports"]);
+    });
+
+    it("a legacy template has none of it", () => {
+      const legacy = Template.fromStack(buildAgentXApp().node.children.filter((child): child is Stack => Stack.isStack(child)).find((stack) => stack.stackName === "AgentXControlPlane")!).toJSON();
+      expect(JSON.stringify(legacy)).not.toMatch(/AUDIT_EXPORTS_BUCKET_NAME|AUDIT_LEDGER_TABLE_NAME|AuditBrokerReadPolicy/);
     });
   });
 

@@ -14,6 +14,23 @@ describe("simulateIam", () => {
     expect(simulateIam([allow({})], { action: "dynamodb:PutItem", resource: "other" }).allowed).toBe(false);
   });
 
+  it("keeps a bucket's ARN and its objects' ARNs apart: ListBucket is for the bucket and GetObject for the objects", () => {
+    const bucket = "arn:aws:s3:::exports";
+    const grants: IamStatement[] = [
+      { Effect: "Allow", Action: "s3:ListBucket", Resource: bucket },
+      { Effect: "Allow", Action: ["s3:GetObject", "s3:PutObject"], Resource: `${bucket}/*` },
+    ];
+    expect(simulateIam(grants, { action: "s3:ListBucket", resource: bucket }).allowed).toBe(true);
+    expect(simulateIam(grants, { action: "s3:ListBucket", resource: `${bucket}/org/key.gz` }).allowed).toBe(false);
+    expect(simulateIam(grants, { action: "s3:GetObject", resource: `${bucket}/org/key.gz` }).allowed).toBe(true);
+    expect(simulateIam(grants, { action: "s3:GetObject", resource: bucket }).allowed).toBe(false);
+    // A statement listing several resources covers each of them, and only them.
+    const tables: IamStatement[] = [{ Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query"], Resource: ["arn:t:ledger", "arn:t:seals"] }];
+    expect(simulateIam(tables, { action: "dynamodb:Query", resource: "arn:t:seals" }).allowed).toBe(true);
+    expect(simulateIam(tables, { action: "dynamodb:Query", resource: "arn:t:keys" }).allowed).toBe(false);
+    expect(simulateIam(tables, { action: "dynamodb:PutItem", resource: "arn:t:ledger" }).allowed).toBe(false);
+  });
+
   it("lets an explicit Deny beat an Allow", () => {
     const result = simulateIam([allow({ Action: "dynamodb:*", Sid: "A" }), { Sid: "D", Effect: "Deny", Action: "dynamodb:DeleteItem", Resource: "*" }], { action: "dynamodb:DeleteItem", resource: "table" });
     expect(result).toStrictEqual({ allowed: false, reason: "explicit-deny", matched: ["D"] });

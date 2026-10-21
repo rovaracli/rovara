@@ -468,6 +468,7 @@ export class AuditLedger extends Construct {
     });
 
     this.addBrokerOutbox(props, brokerRole);
+    this.addBrokerReader(props, brokerRole);
     this.appender = this.addAppender(props);
     this.anchor = this.addAnchor(props);
 
@@ -586,6 +587,66 @@ export class AuditLedger extends Construct {
       "An audit event has waited more than 10 minutes in the outbox, or the drain could not read the outbox at all: events are not being delivered. Check the intake queue, the State table and the broker logs for audit.pending_stuck and audit.drain_failed.",
       counted("AuditPendingStuck", "AuditPendingStuck", AUDIT_PENDING_STUCK_EVENTS),
     );
+  }
+
+  /**
+   * The broker's side of reading and exporting the ledger (Task 11). It reads; it writes none of the ledger's tables or its
+   * locked bucket. Every grant goes to the broker's role in a policy of its own:
+   *  - `dynamodb:GetItem` and `Query` on the ledger and seals tables, for any key (the code builds every key from the org
+   *    it is asked about; the broker is not a writer there, so there is no leading-key restriction to pin);
+   *  - `dynamodb:GetItem` on the keys table, to open a person's details (the KMS decrypt itself is allowed by the key policy
+   *    alone, under the encryption context, so there is no KMS statement here);
+   *  - `s3:GetObject`, `s3:GetObjectVersion` and `s3:GetObjectRetention` on the ledger bucket's objects: the sealed objects are
+   *    read by the version id the anchor recorded;
+   *  - `s3:PutObject`, `s3:GetObject` and `s3:DeleteObject` on the exports bucket's objects, and `s3:ListBucket` on the bucket
+   *    itself (a presigned download is signed with this role's GetObject; the lifecycle keeps a file seven days);
+   *  - `lambda:InvokeFunction` on the broker itself: an export is built by the broker invoking itself asynchronously.
+   * The policy is a separate resource so that its reference to the function's ARN is not a cycle with the function's role.
+   */
+  private addBrokerReader(props: AuditLedgerProps, brokerRole: iam.IRole): void {
+    const { broker } = props;
+    broker.addEnvironment("AUDIT_LEDGER_TABLE_NAME", this.ledgerTable.tableName);
+    broker.addEnvironment("AUDIT_SEALS_TABLE_NAME", this.sealsTable.tableName);
+    broker.addEnvironment("AUDIT_KEYS_TABLE_NAME", this.keysTable.tableName);
+    broker.addEnvironment("AUDIT_LEDGER_BUCKET_NAME", this.ledgerBucket.bucketName);
+    broker.addEnvironment("AUDIT_EXPORTS_BUCKET_NAME", this.exportsBucket.bucketName);
+    // The key's ARN, never the alias: kms:Update* and kms:CreateAlias let an administrator repoint the alias.
+    broker.addEnvironment("AUDIT_VAULT_KEY_ARN", this.vaultKey.keyArn);
+    new iam.Policy(this, "AuditBrokerReadPolicy", {
+      roles: [brokerRole],
+      statements: [
+        new iam.PolicyStatement({
+          sid: "ReadLedgerAndSeals",
+          actions: ["dynamodb:GetItem", "dynamodb:Query"],
+          resources: [this.ledgerTable.tableArn, this.sealsTable.tableArn],
+        }),
+        new iam.PolicyStatement({
+          sid: "ReadKeys",
+          actions: ["dynamodb:GetItem"],
+          resources: [this.keysTable.tableArn],
+        }),
+        new iam.PolicyStatement({
+          sid: "ReadSealedObjects",
+          actions: ["s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectRetention"],
+          resources: [this.ledgerBucket.arnForObjects("*")],
+        }),
+        new iam.PolicyStatement({
+          sid: "ExportObjects",
+          actions: ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+          resources: [this.exportsBucket.arnForObjects("*")],
+        }),
+        new iam.PolicyStatement({
+          sid: "ListExports",
+          actions: ["s3:ListBucket"],
+          resources: [this.exportsBucket.bucketArn],
+        }),
+        new iam.PolicyStatement({
+          sid: "StartExports",
+          actions: ["lambda:InvokeFunction"],
+          resources: [broker.functionArn],
+        }),
+      ],
+    });
   }
 
   /** A metric that counts the log events whose `$.event` is one of `events`, in the group (one metric filter, `<id>Metric`). */

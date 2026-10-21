@@ -7,8 +7,8 @@ export const hasAuditLedger = (template: unknown): boolean => Object.keys((templ
 
 /**
  * The Audit Ledger adds, to a named control plane, one construct's resources (AuditLedger*, the appender function among
- * them) and the appender's role with the policy CDK attaches to it (AuditAppenderRole*), and nothing else but one environment variable on the broker (Task 6: the intake queue's
- * URL; its grants are a policy of their own, inside the construct) and, since Task 5b, the AuditLockProfile parameter
+ * them) and the appender's role with the policy CDK attaches to it (AuditAppenderRole*), and nothing else but the environment variables the broker is given (Task 6: the intake queue's
+ * URL; Task 11: the names it reads the ledger by; the grants are policies of their own, inside the construct) and, since Task 5b, the AuditLockProfile parameter
  * with its AuditLockIsTrial condition (nothing outside the ledger uses them). No other parameter, output or grant on an existing
  * resource. The inventory is checked here to be exactly this, then taken out, so the rest of the template must still
  * match the recorded snapshot or digest. audit-ledger-infrastructure.test.ts checks the resources themselves.
@@ -34,6 +34,7 @@ export function withoutAuditLedger(template: unknown): unknown {
     "AWS::IAM::Policy AuditLedgerAuditAnchorRoleDefaultPolicy",
     "AWS::IAM::Policy AuditLedgerAuditAppenderPolicy",
     "AWS::IAM::Policy AuditLedgerAuditBrokerOutboxPolicy",
+    "AWS::IAM::Policy AuditLedgerAuditBrokerReadPolicy",
     "AWS::IAM::Role AuditAppenderRole",
     "AWS::IAM::Role AuditLedgerAuditAnchorRole",
     "AWS::IAM::Role AuditLedgerAuditDrainSchedulerRole",
@@ -71,11 +72,13 @@ export function withoutAuditLedger(template: unknown): unknown {
   delete parameters!.AuditLockProfile;
   delete conditions!.AuditLockIsTrial;
   expect(JSON.stringify(template)).not.toMatch(/AuditLockIsTrial|AuditLockProfile/);
-  // Task 6: the one change to an existing resource, the broker's intake queue URL.
+  // Task 6 and Task 11: the changes to an existing resource, all on the broker: the intake queue URL, and the names the reader and
+  // the export builder are given (the ledger, seals and keys tables, the two buckets and the vault key's ARN).
   const brokers = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::Lambda::Function" && /^Broker[0-9A-F]{8}$/.test(id));
   expect(brokers).toHaveLength(1);
   const variables = (brokers[0]![1].Properties as { Environment: { Variables: Record<string, unknown> } }).Environment.Variables;
-  expect(variables.AUDIT_INTAKE_QUEUE_URL).toBeDefined();
-  delete variables.AUDIT_INTAKE_QUEUE_URL;
+  const added = ["AUDIT_INTAKE_QUEUE_URL", "AUDIT_LEDGER_TABLE_NAME", "AUDIT_SEALS_TABLE_NAME", "AUDIT_KEYS_TABLE_NAME", "AUDIT_LEDGER_BUCKET_NAME", "AUDIT_EXPORTS_BUCKET_NAME", "AUDIT_VAULT_KEY_ARN"];
+  expect(Object.keys(variables).filter((name) => name.startsWith("AUDIT_")).sort()).toStrictEqual([...added].sort());
+  for (const name of added) delete variables[name];
   return template;
 }
