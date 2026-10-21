@@ -757,12 +757,12 @@ describe("the audit ledger in templates", () => {
           expect((alarm.Properties.AlarmActions as unknown[])).toHaveLength(1);
         });
 
-        it("counts audit.pending_stuck and alarms at one", () => {
+        it("counts audit.pending_stuck and audit.drain_failed (a drain that cannot read the outbox) and alarms at one", () => {
           const logGroupId = one(synthesis.template, "AWS::Logs::LogGroup", "BrokerLogs")[0];
           const [, filter] = one(synthesis.template, "AWS::Logs::MetricFilter", "AuditLedgerAuditPendingStuckMetric");
           expect(filter.Properties).toStrictEqual({
             LogGroupName: { Ref: logGroupId },
-            FilterPattern: '{ $.event = "audit.pending_stuck" }',
+            FilterPattern: '{ ($.event = "audit.pending_stuck") || ($.event = "audit.drain_failed") }',
             MetricTransformations: [{ MetricName: "AuditPendingStuck", MetricNamespace: environmentNaming(env).metricsNamespace, MetricValue: "1" }],
           });
           const [, alarm] = one(synthesis.template, "AWS::CloudWatch::Alarm", "AuditLedgerAuditPendingStuckAlarm");

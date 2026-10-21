@@ -119,11 +119,18 @@ export function describeInvalidAuditEvent(event: unknown): Record<string, unknow
   };
 }
 
-/** The event with its personal details left out: what a failure log may carry. */
-export function auditEventWithoutDetails(event: AuditEventInput): Omit<AuditEventInput, "details"> {
-  const rest: Partial<AuditEventInput> = { ...event };
-  delete rest.details;
-  return rest as Omit<AuditEventInput, "details">;
+/** An event as a failure log may show it: no personal data. */
+export type LogSafeAuditEvent = Omit<AuditEventInput, "details" | "target"> & { target: { kind: string; id: string } | { kind: string } };
+
+/**
+ * The event as a failure log may carry it. Logs cannot be erased or shredded, so the event keeps only its ids, action,
+ * times, facts (non-personal by the per-action allowlist) and proof. `details` is dropped, and a name-keyed target
+ * (a repository, project or domain name, which the appender pseudonymizes) becomes `{ kind }`.
+ */
+export function auditEventWithoutDetails(event: AuditEventInput): LogSafeAuditEvent {
+  const { details: _details, target, ...rest } = event;
+  void _details;
+  return { ...rest, target: "id" in target ? { kind: target.kind, id: target.id } : { kind: target.kind } };
 }
 
 /**

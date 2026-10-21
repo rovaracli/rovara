@@ -20,6 +20,7 @@ import {
   auditPending,
   auditPendingItem,
   auditPendingKey,
+  auditEventWithoutDetails,
   auditPendingShard,
   auditTransact,
   type AuditDeps,
@@ -578,6 +579,86 @@ describe("the drain", () => {
     await drainAuditPending(h.deps, START);
     expect(h.sqs.offered()).toBe(0);
     expect(h.logs.map((entry) => entry.event)).toContain("audit.record_invalid");
+  });
+});
+
+describe("failure logs hold no personal data", () => {
+  const NAME = "Acme Secret Project";
+  const NOTE = "Jane Roe asked for it";
+  const personal = (occurredAt = "2026-10-20T11:59:00.000Z"): AuditEventInput => builders.auditProjectMemberChanged({
+    orgId: ORG,
+    actor: { kind: "member", id: "dev_1" },
+    occurredAt,
+    occurrence: "req-1",
+    projectName: NAME,
+    memberId: "dev_2",
+    toRole: "admin",
+    details: [{ subject: "org", fields: { note: NOTE } }],
+  });
+  const expectClean = (h: Harness): void => {
+    expect(h.logs.length).toBeGreaterThan(0);
+    const text = JSON.stringify(h.logs);
+    for (const secret of [NAME, "Secret", "Acme", NOTE, "Jane"]) expect(text).not.toContain(secret);
+  };
+
+  it("the log-safe event keeps the ids, action and facts, drops details, and turns a name-keyed target into its kind", () => {
+    const event = personal();
+    expect(event.target).toStrictEqual({ kind: "project", name: NAME });
+    const safe = auditEventWithoutDetails(event);
+    expect(safe).toStrictEqual({ eventId: event.eventId, orgId: ORG, action: "project_member.changed", actor: { kind: "member", id: "dev_1" }, target: { kind: "project" }, occurredAt: event.occurredAt, related: ["dev_2"], facts: { toRole: "admin" } });
+    expect(auditEventWithoutDetails(pullRequest("a")).target).toStrictEqual({ kind: "pull_request", id: "pr_1" });
+  });
+
+  it("audit.record_failed from a read that could not be recorded", async () => {
+    const h = harness();
+    h.sqs.mode = "throw";
+    h.db.injectFault({ command: "PutCommand", error: { name: "InternalServerError" } });
+    await recordAuditRead(h.deps, personal());
+    expect(h.logs.map((entry) => entry.event)).toStrictEqual(["audit.record_failed"]);
+    expect((h.logs[0]!.record as AuditEventInput).target).toStrictEqual({ kind: "project" });
+    expectClean(h);
+  });
+
+  it("audit.record_failed and audit.pending_stuck from the drain, for an item at day 13", async () => {
+    const h = harness();
+    const event = personal(new Date(START - 13 * DAY).toISOString());
+    h.db.set(auditPendingItem(event, START - 13 * DAY) as unknown as Record<string, unknown>);
+    h.sqs.mode = "throw";
+    await drainAuditPending(h.deps, START);
+    expect(h.logs.map((entry) => entry.event)).toEqual(expect.arrayContaining(["audit.record_failed", "audit.pending_stuck"]));
+    for (const entry of h.logs.filter((line) => line.record !== undefined)) expect((entry.record as AuditEventInput).target).toStrictEqual({ kind: "project" });
+    expectClean(h);
+  });
+
+  it("audit.pending_stuck from the drain, for an item over 10 minutes", async () => {
+    const h = harness();
+    h.db.set(auditPendingItem(personal(new Date(START - 20 * 60_000).toISOString()), START - 20 * 60_000) as unknown as Record<string, unknown>);
+    h.sqs.mode = "throw";
+    await drainAuditPending(h.deps, START);
+    expect(h.logs.map((entry) => entry.event)).toContain("audit.pending_stuck");
+    expectClean(h);
+  });
+
+  it("the durable put, the flush, a failed drain query and a failed attempt count", async () => {
+    const h = harness();
+    h.db.injectFault({ command: "PutCommand", error: { name: "InternalServerError" } });
+    await expect(recordAuditEventDurably(h.deps, personal())).rejects.toMatchObject({ code: "AUDIT_UNAVAILABLE" });
+    h.sqs.mode = "throw";
+    await flushAuditEvents(h.deps, [personal()]);
+    h.db.set(auditPendingItem(personal(), START - 60_000) as unknown as Record<string, unknown>);
+    h.db.injectFault({ command: "UpdateCommand", error: { name: "InternalServerError" } });
+    await drainAuditPending(h.deps, START);
+    h.db.injectFault({ command: "QueryCommand", error: { name: "InternalServerError" } });
+    await drainAuditPending(h.deps, START);
+    expect(h.logs.map((entry) => entry.event)).toEqual(expect.arrayContaining(["audit.durable_put_failed", "audit.drain_failed"]));
+    expectClean(h);
+  });
+
+  it("audit.record_invalid for an invalid event with a name-keyed target", () => {
+    const h = harness();
+    expect(auditPending(h.deps, { ...personal(), facts: { toRole: "admin", [NOTE]: NAME } })).toStrictEqual([]);
+    expect(h.logs.map((entry) => entry.event)).toStrictEqual(["audit.record_invalid"]);
+    expectClean(h);
   });
 });
 

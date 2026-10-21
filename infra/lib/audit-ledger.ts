@@ -127,7 +127,11 @@ export function auditBucketPolicyStatements(inputs: AuditBucketPolicyInputs): Po
 
 /** The log events the outbox writes that need a person: an event that could not be recorded, or a pending item the drain cannot deliver. */
 export const AUDIT_RECORD_FAILED_EVENTS = ["audit.record_failed", "audit.record_invalid"] as const;
-export const AUDIT_PENDING_STUCK_EVENT = "audit.pending_stuck";
+/**
+ * `audit.pending_stuck`: a pending item the drain has failed to deliver for 10 minutes. `audit.drain_failed`: the drain
+ * could not even read the outbox, so nothing can be stuck-logged and undelivered items would otherwise reach their TTL unseen.
+ */
+export const AUDIT_PENDING_STUCK_EVENTS = ["audit.pending_stuck", "audit.drain_failed"] as const;
 
 export interface AuditLedgerProps {
   readonly naming: AgentXNaming;
@@ -471,8 +475,8 @@ export class AuditLedger extends Construct {
     alarm(
       "AuditPendingStuckAlarm",
       "AuditPendingStuck",
-      "An audit event has waited more than 10 minutes in the outbox: the drain cannot deliver it. Check the intake queue and the broker logs for audit.pending_stuck and audit.drain_failed.",
-      counted("AuditPendingStuck", "AuditPendingStuck", [AUDIT_PENDING_STUCK_EVENT]),
+      "An audit event has waited more than 10 minutes in the outbox, or the drain could not read the outbox at all: events are not being delivered. Check the intake queue, the State table and the broker logs for audit.pending_stuck and audit.drain_failed.",
+      counted("AuditPendingStuck", "AuditPendingStuck", AUDIT_PENDING_STUCK_EVENTS),
     );
   }
 }
