@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
+  AgentGuardrailsSchema,
   AgentIdSchema,
   AgentPrincipalSchema,
   ApprovalIdSchema,
@@ -19,11 +20,13 @@ import {
   canonicalJson,
   newPrefixedId,
   openApprovalKey,
+  type AgentGuardrails,
   type AgentId,
   type ApprovalId,
   type OrgId,
 } from "@agentx/contracts";
 import type { AgentAccessDeps, AgentCaller, AgentShare } from "./access.js";
+import type { ServableModels } from "./guardrails.js";
 import type { ResolveOptions } from "./store.js";
 
 /** What an agent's routes and the approvals that act on agents need: access checks, the store and where the page lives. */
@@ -33,6 +36,8 @@ export interface ApprovalDependencies extends AgentAccessDeps {
   confirmOrigin: string;
   /** Looks up an added skill's name and digest (Task 9); without it, a recipe that adds a skill can't be resolved. */
   resolveSkill?: ResolveOptions["resolveSkill"];
+  /** The models some source the company can use serves (Task 26); without it, the models Rovara's own AI serves. */
+  servableModels?: ServableModels;
 }
 
 /** The part of the dependencies the record's own writes need. */
@@ -54,10 +59,12 @@ export type AgentChangeSubject =
   /** Move the org's pin of a built-in to `version`, while it is still `expectedPinnedVersion`. */
   | { kind: "builtin_adopt"; agentId: AgentId; version: number; digest: string; expectedPinnedVersion: number }
   /** Make `shares` the agent's share set (it includes a company-wide share), while it is still at `expectedSharesRevision`. */
-  | { kind: "agent_share"; agentId: AgentId; shares: AgentShare[]; expectedSharesRevision: number };
+  | { kind: "agent_share"; agentId: AgentId; shares: AgentShare[]; expectedSharesRevision: number }
+  /** Make `next` the company's agent guardrails, while they are still at `expectedRevision`. */
+  | { kind: "guardrails"; next: AgentGuardrails; expectedRevision: number };
 
-/** The other kinds of change (guardrails, connector widenings, opt-outs) carry their own details, typed by the task that makes them. */
-export type OtherChangeSubject = { kind: "guardrails" | "connector_widen" | "opt_out" } & Record<string, unknown>;
+/** The other kinds of change (connector widenings, opt-outs) carry their own details, typed by the task that makes them. */
+export type OtherChangeSubject = { kind: "connector_widen" | "opt_out" } & Record<string, unknown>;
 export type ChangeSubject = AgentChangeSubject | OtherChangeSubject;
 
 export interface ChangeApprovalRecord {
@@ -127,8 +134,9 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
     kind: z.literal("agent_share"), agentId: AgentIdSchema, expectedSharesRevision: z.number().int(),
     shares: z.array(z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]) }).strict()),
   }).strict(),
+  z.object({ kind: z.literal("guardrails"), next: AgentGuardrailsSchema, expectedRevision: z.number().int().min(0) }).strict(),
   // The other kinds carry details their own tasks type; only the kind is checked here.
-  z.object({ kind: z.enum(["guardrails", "connector_widen", "opt_out"]) }).passthrough(),
+  z.object({ kind: z.enum(["connector_widen", "opt_out"]) }).passthrough(),
 ]);
 /** What a stored change record must look like to be read; `passthrough`, so a field a later task adds is kept. */
 const ChangeApprovalRecordSchema = z.object({

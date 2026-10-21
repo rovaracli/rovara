@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
+  AgentGuardrailsSchema,
   AgentIdSchema,
   AgentOwnerSchema,
   AgentXNameSchema,
@@ -40,8 +41,9 @@ import {
   type AgentCaller,
   type AgentScope,
 } from "./access.js";
-import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, type ChangeResult } from "./changes.js";
+import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, updateGuardrails, type ChangeResult } from "./changes.js";
 import type { ApprovalDependencies } from "./approvals.js";
+import { readGuardrails, readGuardrailsWithRevision, requireAgentEnabled } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
 import { updateAvailable, type AgentDraft, type AgentRecord, type AgentVersion, type BuiltinSettings, type RequestMark } from "./store.js";
 
@@ -96,6 +98,7 @@ const OwnerBodySchema = z.object({ requestId: RequestIdSchema, owner: AgentOwner
 const AccountableBodySchema = z.object({ requestId: RequestIdSchema, accountable: DeveloperRefSchema }).strict();
 const UpdateBaseBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(1) }).strict();
 const AdoptBodySchema = z.object({ requestId: RequestIdSchema, version: z.number().int().min(1) }).strict();
+const GuardrailsBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(0), guardrails: AgentGuardrailsSchema }).strict();
 
 function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> {
   const parsed = schema.safeParse(body);
@@ -138,7 +141,7 @@ function customView(agent: AgentRecord, access: AgentAccessLevel): Shown {
   };
 }
 
-async function builtinView(deps: AgentRouteDependencies, orgId: OrgId, agentId: AgentId, access: AgentAccessLevel): Promise<Shown> {
+async function builtinView(deps: AgentRouteDependencies, orgId: OrgId, agentId: AgentId, access: AgentAccessLevel, disabled: boolean): Promise<Shown> {
   const template = BUILTIN_AGENTS[agentId as keyof typeof BUILTIN_AGENTS];
   const settings = await deps.store.getBuiltinSettings(orgId, agentId);
   return {
@@ -147,6 +150,7 @@ async function builtinView(deps: AgentRouteDependencies, orgId: OrgId, agentId: 
     description: template.description,
     builtin: true,
     status: "active",
+    ...(disabled ? { disabled: true } : {}),
     pinnedVersion: settings?.pinnedVersion ?? deps.store.builtinLatestVersion(agentId),
     latestVersion: deps.store.builtinLatestVersion(agentId),
     ...(template.needsLaterConnectors === undefined ? {} : { needsLaterConnectors: template.needsLaterConnectors }),
@@ -157,9 +161,10 @@ async function builtinView(deps: AgentRouteDependencies, orgId: OrgId, agentId: 
   };
 }
 
-async function view(deps: AgentRouteDependencies, caller: AgentCaller, agent: AccessibleAgent, access?: AgentAccessLevel): Promise<Shown> {
+async function view(deps: AgentRouteDependencies, caller: AgentCaller, agent: AccessibleAgent, access?: AgentAccessLevel, disabled?: boolean): Promise<Shown> {
   const level = access ?? await agentAccess(deps, caller, agent);
-  return "owner" in agent ? customView(agent, level) : builtinView(deps, caller.orgId, agent.agentId, level);
+  if ("owner" in agent) return customView(agent, level);
+  return builtinView(deps, caller.orgId, agent.agentId, level, disabled ?? (await readGuardrails(deps, caller.orgId)).disabledBuiltins.some((id) => id === agent.agentId));
 }
 
 /** The most one run of an agent may be limited to by default, shown beside the agent. Display only. */
@@ -187,7 +192,7 @@ function scopeOf(url: URL): AgentScope {
 async function listAgents(deps: AgentRouteDependencies, caller: AgentCaller, url: URL): Promise<{ agents: Shown[] }> {
   const agents: Shown[] = [];
   for (const visible of await listVisibleAgents(deps, caller, scopeOf(url))) {
-    const summary = await view(deps, caller, visible.record ?? { agentId: visible.agentId } as AccessibleAgent, visible.access);
+    const summary = await view(deps, caller, visible.record ?? { agentId: visible.agentId } as AccessibleAgent, visible.access, visible.disabled === true);
     if (visible.record !== undefined) {
       // Only those who can change the agent see the base it builds on and that it has an update.
       const draft = atLeast(visible.access, "edit") ? await deps.store.getDraft(caller.orgId, visible.agentId) : undefined;
@@ -336,7 +341,10 @@ async function createAgent(deps: AgentRouteDependencies, caller: AgentCaller, bo
   const stored = await requireOwnerAllowed(deps, caller, owner);
   // A project's accountable maintainer must be able to manage its agents; a member's agent has none (the store refuses one).
   const accountable = input.accountable === undefined ? undefined : stored.kind === "project" ? await requireAccountable(deps, caller.orgId, stored.project, input.accountable.developerId) : input.accountable;
-  if (input.extends !== undefined) await requireAgentAccess(deps, caller, input.extends, "use");
+  if (input.extends !== undefined) {
+    await requireAgentAccess(deps, caller, input.extends, "use");
+    await requireAgentEnabled(deps, caller.orgId, input.extends);
+  }
   const agent = await deps.store.create({
     orgId: caller.orgId, name: input.name, owner: stored, createdBy: caller.developerId,
     ...(input.description === undefined ? {} : { description: input.description }),
@@ -377,6 +385,7 @@ async function putDraft(deps: AgentRouteDependencies, caller: AgentCaller, agent
   // Building on another agent needs `use` on it; keeping the base it already has does not.
   if (typeof input.extends === "string" && input.extends !== (await deps.store.getDraft(caller.orgId, agentId))?.extends?.agentId) {
     await requireAgentAccess(deps, caller, input.extends, "use");
+    await requireAgentEnabled(deps, caller.orgId, input.extends);
   }
   const draft = await deps.store.saveDraft({
     orgId: caller.orgId, agentId, overlay: input.overlay, expectedRevision: input.expectedRevision, by: caller.developerId, request: mark,
@@ -495,6 +504,20 @@ async function adopt(deps: AgentRouteDependencies, caller: AgentCaller, agentId:
   return result.applied ? result.value : waiting(result);
 }
 
+// ---- guardrails
+
+const GUARDRAILS_PATH = "/v1/app/org/agent-guardrails";
+
+async function putGuardrails(deps: AgentRouteDependencies, caller: AgentCaller, body: unknown): Promise<unknown> {
+  // The caller's role was read from the membership for this request, not carried in the token.
+  if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "Only an org owner or admin can change the company's agent guardrails.");
+  const input = parseBody(GuardrailsBodySchema, body);
+  const { mark, replay } = await markRequest(deps, caller, "guardrails", "", input);
+  if (replay !== undefined) return replay.result;
+  const result = await updateGuardrails(deps, caller, { ...input, request: mark });
+  return result.applied ? result.value : waiting(result);
+}
+
 // ---- routing
 
 const AGENT_PATH = /^\/v1\/app\/agents(?:\/([^/]+)(?:\/([a-z-]+)(?:\/([0-9]{1,6}))?)?)?$/;
@@ -513,6 +536,11 @@ function jsonBody(request: AdaptedHttpRequest): unknown {
  * answers 404 `"that isn't available yet"`, so it is not mistaken for a route Plan 2 owns.
  */
 export async function routeAgentRequest(deps: AgentRouteDependencies, caller: AgentCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
+  if (url.pathname === GUARDRAILS_PATH) {
+    if (request.method === "GET") return readGuardrailsWithRevision(deps, caller.orgId);
+    if (request.method === "PUT") return putGuardrails(deps, caller, jsonBody(request));
+    throw agentXError("NOT_FOUND", "route not found");
+  }
   const matched = AGENT_PATH.exec(url.pathname);
   if (matched === null) throw agentXError("NOT_FOUND", "that isn't available yet");
   const [, rawId, sub, rawVersion] = matched;

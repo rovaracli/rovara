@@ -8,16 +8,18 @@ import {
   EMPTY_RECIPE,
   agentXError,
   atLeast,
+  canonicalJson,
   diffRecipes,
   orgPk,
   projectAllows,
   recipeDigest,
+  type AgentGuardrails,
   type AgentId,
   type BaseRef,
   type OrgId,
   type ResolvedRecipe,
 } from "@agentx/contracts";
-import { agentAccess, checkShares, resolveSurvivor, saveShares, type AgentCaller, type AgentShare } from "./access.js";
+import { agentAccess, checkShares, orgRoleOf, resolveSurvivor, saveShares, type AgentCaller, type AgentShare } from "./access.js";
 import {
   confirmUrlFor,
   createPendingChange,
@@ -28,8 +30,9 @@ import {
   type ApprovalRecord,
   type ApproverSpec,
 } from "./approvals.js";
+import { lessSafeGuardrailChanges, readGuardrailsWithRevision, validateRecipeForOrg, writeGuardrails, type StoredGuardrails } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
-import { resolveAgent, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
+import { GUARDRAILS_CONFLICT_TEXT, resolveAgent, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
 
 /** What a route answers for a change: done, or waiting on the page. */
 export type ChangeResult<T> =
@@ -57,6 +60,12 @@ export async function resolveBase(deps: ApprovalDependencies, orgId: OrgId, base
 /** What runs now: the published version, or before any is published the base the agent builds on. */
 async function runningNow(deps: ApprovalDependencies, agent: AgentRecord, fallbackBase: BaseRef | undefined): Promise<ResolvedRecipe> {
   return agent.currentVersion === undefined ? resolveBase(deps, agent.orgId, fallbackBase) : resolveRecipe(deps, agent.orgId, agent.agentId, agent.currentVersion);
+}
+
+/** Refuses a recipe the company's guardrails forbid, by its first problem, `<path>: <message>`. */
+async function requireWithinGuardrails(deps: ApprovalDependencies, orgId: OrgId, recipe: ResolvedRecipe): Promise<void> {
+  const [first] = await validateRecipeForOrg(deps, orgId, recipe);
+  if (first !== undefined) throw agentXError("CONFIG_INVALID", `${first.path}: ${first.message}`);
 }
 
 // ---- who is asked
@@ -129,6 +138,7 @@ export async function publishDraft(
   // A draft that is what already runs publishes nothing: a retry after the page confirmed this very draft is answered with that version.
   const running = agent.currentVersion === undefined ? undefined : await deps.store.getVersion(agent.orgId, agent.agentId, agent.currentVersion);
   if (running !== undefined && running.digest === digest && running.name === agent.name && running.description === agent.description) return { applied: true, value: running };
+  await requireWithinGuardrails(deps, agent.orgId, next);
   const changes = lessSafeChanges(await runningNow(deps, agent, draft.extends), next);
   if (changes.length === 0) {
     // Only while what was compared against is still what runs: a rollback that lands in between changes the baseline.
@@ -156,6 +166,7 @@ export async function rollbackAgent(
   if (await deps.store.getVersion(agent.orgId, agent.agentId, input.version) === undefined) throw agentXError("NOT_FOUND", `${agent.name} has no version ${String(input.version)}`);
   const current = await resolveRecipe(deps, agent.orgId, agent.agentId, agent.currentVersion);
   const target = await resolveRecipe(deps, agent.orgId, agent.agentId, input.version);
+  await requireWithinGuardrails(deps, agent.orgId, target);
   const changes = lessSafeChanges(current, target);
   if (changes.length === 0) {
     return { applied: true, value: await deps.store.rollback({ orgId: agent.orgId, agentId: agent.agentId, version: input.version, expectedCurrentVersion: agent.currentVersion, by: caller.developerId, ...(input.request === undefined ? {} : { request: input.request }) }) };
@@ -205,6 +216,27 @@ export async function shareAgent(
   return waitForPerson(deps, caller, input.requestId, subject, [`Shares ${agent.name} with everyone in your company, who can then ${can} it`], await agentApprovers(deps, agent, "agent_manager"));
 }
 
+// ---- guardrails
+
+/**
+ * Makes `input.guardrails` the company's guardrails (the caller is an org owner or admin; the route checks), while they are still at
+ * `input.expectedRevision`. A change that makes nothing less safe applies at once; any other waits for an org owner or admin on the
+ * page (R9-3, R69), stored exactly as asked and bound to that revision.
+ */
+export async function updateGuardrails(
+  deps: ApprovalDependencies, caller: AgentCaller, input: { requestId: string; expectedRevision: number; guardrails: AgentGuardrails; request?: RequestMark },
+): Promise<ChangeResult<StoredGuardrails>> {
+  const current = await readGuardrailsWithRevision(deps, caller.orgId);
+  if (current.revision !== input.expectedRevision) throw agentXError("AGENT_REVISION_CONFLICT", GUARDRAILS_CONFLICT_TEXT);
+  const changes = lessSafeGuardrailChanges(current.guardrails, input.guardrails);
+  if (changes.length === 0) {
+    if (canonicalJson(current.guardrails) === canonicalJson(input.guardrails)) return { applied: true, value: current };
+    return { applied: true, value: await writeGuardrails(deps, caller.orgId, input.guardrails, caller.developerId, { expectedRevision: current.revision, ...(input.request === undefined ? {} : { request: input.request }) }) };
+  }
+  const subject: AgentChangeSubject = { kind: "guardrails", next: input.guardrails, expectedRevision: current.revision };
+  return waitForPerson(deps, caller, input.requestId, subject, changes, await orgAdminApprovers(deps, caller.orgId));
+}
+
 // ---- what confirming does
 
 const STALE_DRAFT = "The draft changed after this was asked. Publish again.";
@@ -231,7 +263,10 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   if (draft === undefined || draft.revision !== subject.draftRevision || agent.draftRevision !== subject.draftRevision) throw stale(STALE_DRAFT);
   if (agent.currentVersion !== subject.expectedCurrentVersion) throw stale("The published version changed after this was asked. Publish again.");
   // The draft's base is pinned, so its content can't move under the same revision; the digest still catches a changed skill.
-  if (recipeDigest(await resolveRecipe(deps, record.orgId, subject.agentId, "draft")) !== subject.digest) throw stale(STALE_DRAFT);
+  const draftRecipe = await resolveRecipe(deps, record.orgId, subject.agentId, "draft");
+  if (recipeDigest(draftRecipe) !== subject.digest) throw stale(STALE_DRAFT);
+  // The guardrails may have tightened since this was asked.
+  await requireWithinGuardrails(deps, record.orgId, draftRecipe);
   await deps.store.publish({
     orgId: record.orgId, agentId: subject.agentId, expectedDraftRevision: subject.draftRevision, digest: subject.digest, by, expectedCurrentVersion: subject.expectedCurrentVersion ?? null,
     ...(subject.note === undefined ? {} : { note: subject.note }),
@@ -243,7 +278,9 @@ async function confirmRollback(deps: ApprovalDependencies, record: ApprovalRecor
   const subject = record.subject as Extract<AgentChangeSubject, { kind: "agent_rollback" }>;
   const agent = await liveAgent(deps, record, subject.agentId);
   if (agent.currentVersion !== subject.expectedCurrentVersion) throw stale("The published version changed after this was asked. Roll back again.");
-  if (recipeDigest(await resolveRecipe(deps, record.orgId, subject.agentId, subject.version)) !== subject.digest) throw stale("That version changed after this was asked. Roll back again.");
+  const target = await resolveRecipe(deps, record.orgId, subject.agentId, subject.version);
+  if (recipeDigest(target) !== subject.digest) throw stale("That version changed after this was asked. Roll back again.");
+  await requireWithinGuardrails(deps, record.orgId, target);
   await deps.store.rollback({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedCurrentVersion: subject.expectedCurrentVersion, by });
 }
 
@@ -264,6 +301,14 @@ async function confirmShare(deps: ApprovalDependencies, record: ApprovalRecord):
   await saveShares(deps, record.orgId, by, agent, subject.shares);
 }
 
+async function confirmGuardrails(deps: ApprovalDependencies, record: ApprovalRecord): Promise<void> {
+  const by = decider(record);
+  const subject = record.subject as Extract<AgentChangeSubject, { kind: "guardrails" }>;
+  const current = await readGuardrailsWithRevision(deps, record.orgId);
+  if (current.revision !== subject.expectedRevision) throw stale("The company's agent guardrails changed after this was asked. Ask again.");
+  await writeGuardrails(deps, record.orgId, subject.next, by, { expectedRevision: subject.expectedRevision });
+}
+
 /** The owner, an accountable or managing maintainer of the owning project, or an org owner or admin: whoever holds `manage` on the agent now (R68). */
 async function managesAgent(deps: ApprovalDependencies, record: ApprovalRecord, caller: AgentCaller): Promise<boolean> {
   const agentId = (record.subject as { agentId?: unknown }).agentId;
@@ -275,14 +320,20 @@ async function managesAgent(deps: ApprovalDependencies, record: ApprovalRecord, 
 /**
  * Registers what Task 7 makes confirmable: the `agent_publish` rule (publish and rollback; the agent's owner or an org owner or admin,
  * evaluated live), the `agent_manager` rule for sharing company-wide, the `org_admin` rule (adopting a built-in's version, and the
- * guardrail relaxations Task 8 makes), and the handlers for each subject kind. Safe to call more than once.
+ * guardrail relaxations), and the handlers for each subject kind. Safe to call more than once.
  */
 export function registerAgentApprovals(): void {
   registerApproverRule("agent_publish", managesAgent);
   registerApproverRule("agent_manager", managesAgent);
-  registerApproverRule("org_admin", async (_deps, record, caller) => caller.orgId === record.orgId && isOrgAdmin(caller.orgRole));
+  // Read now, never from the caller's session: a person demoted since they signed in can't decide (R68).
+  registerApproverRule("org_admin", async (deps, record, caller) => {
+    if (caller.orgId !== record.orgId) return false;
+    const role = await orgRoleOf(deps, record.orgId, caller.developerId);
+    return role !== undefined && isOrgAdmin(role);
+  });
   registerApprovalSubjectHandler("agent_publish", confirmPublish);
   registerApprovalSubjectHandler("agent_rollback", confirmRollback);
   registerApprovalSubjectHandler("builtin_adopt", confirmAdopt);
   registerApprovalSubjectHandler("agent_share", confirmShare);
+  registerApprovalSubjectHandler("guardrails", confirmGuardrails);
 }

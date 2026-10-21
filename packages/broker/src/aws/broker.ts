@@ -514,7 +514,7 @@ interface AwsBrokerDependencies {
    * Task 21's `createProjectMembers`). Absent, those routes answer NOT_FOUND. The store, access checks and approvals are built from the
    * broker's State table and sign-in table.
    */
-  agents?: { projectMembers: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"] } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { projectMembers: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"] } & Pick<AgentStoreInput, "newId" | "builtins">;
   /** The install's environment name, which its single org id derives from; defaults to the developer sign-in's, then AGENTX_ENV, then "default". */
   environmentName?: string;
   githubMcp?: GitHubMcpDependencies;
@@ -737,6 +737,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies): AgentRoute
     // The confirmation page is served by the cell, at the origin its access tokens are issued from.
     confirmOrigin: new URL(developer.issuer).origin,
     ...(agents.resolveSkill === undefined ? {} : { resolveSkill: agents.resolveSkill }),
+    ...(agents.servableModels === undefined ? {} : { servableModels: agents.servableModels }),
   };
 }
 

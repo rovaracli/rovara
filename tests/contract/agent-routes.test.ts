@@ -9,10 +9,11 @@ import { isAgentRoute } from "../../packages/broker/src/agents/routes.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent.js";
+import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
 import { recipeDigest, type RecipeOverlay, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
-import { approvalKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
 // The broker runs on the built package, so an error a fake throws into it must come from there too.
 import { agentXError } from "@agentx/contracts";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
@@ -58,6 +59,11 @@ async function setup(options: { builtins?: ConstructorParameters<typeof AgentSto
   await enroll(DANA, "admin");
   for (const who of [MAX, CARL, EVE, VIV]) await enroll(who, "member");
   h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "web"), entityType: "PROJECT_CATALOG", name: "web" });
+  // These tests are about which changes wait for a person, and some raise autonomy to run; the guardrails (Task 8) allow that only once an admin has said so.
+  h.db.set({
+    ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, updatedBy: DANA.developerId, updatedAt: "2026-10-21T00:00:00.000Z",
+    guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxAutonomy: "run" },
+  });
   members.grant(TEST_ORG, "web", MAX.developerId, "maintainer");
   members.grant(TEST_ORG, "web", CARL.developerId, "contributor");
   members.grant(TEST_ORG, "web", VIV.developerId, "viewer");
@@ -686,13 +692,12 @@ describe("adopting a built-in's version", () => {
     expect((await store.getBuiltinSettings(TEST_ORG, "ticket-triage"))?.pinnedVersion).toBe(2);
   });
 
-  it("registers org_admin for owners and admins only", async () => {
-    await setup();
+  it("registers org_admin for owners and admins only, by the role they hold now", async () => {
+    const { deps } = await setup();
     const rule = getApproverRule("org_admin")!;
     const record = { orgId: TEST_ORG } as ApprovalRecord;
-    const deps = {} as ApprovalDependencies;
     expect(await rule(deps, record, { orgId: TEST_ORG, developerId: DANA.developerId, orgRole: "admin" })).toBe(true);
-    expect(await rule(deps, record, { orgId: TEST_ORG, developerId: DANA.developerId, orgRole: "owner" })).toBe(true);
+    expect(await rule(deps, record, { orgId: TEST_ORG, developerId: CARL.developerId, orgRole: "admin" })).toBe(false);
     expect(await rule(deps, record, { orgId: TEST_ORG, developerId: MAYA.developerId, orgRole: "member" })).toBe(false);
     expect(await rule(deps, record, { orgId: ORG_B, developerId: DANA.developerId, orgRole: "admin" })).toBe(false);
   });

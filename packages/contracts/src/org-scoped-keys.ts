@@ -263,3 +263,8 @@ export function approverIndexKey(orgId: OrgId, developerId: string, approvalId: 
 export function agentRequestKey(orgId: OrgId, developerId: string, requestId: string): OrgKey {
   return { pk: orgScoped(orgId, `AGENT_REQUEST#${developerId}`), sk: requestId };
 }
+
+/** An org's agent guardrails: one item holding the document and its revision. */
+export function agentGuardrailsKey(orgId: OrgId): OrgKey {
+  return { pk: orgScoped(orgId, "AGENT_GUARDRAILS"), sk: "META" };
+}

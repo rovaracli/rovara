@@ -26,6 +26,7 @@ import {
   type ProjectRole,
 } from "@agentx/contracts";
 import type { DeveloperSignInStore } from "../developer/store.js";
+import { readGuardrails } from "./guardrails.js";
 import type { AgentRecord, AgentShareLevel, AgentStore, RequestMark } from "./store.js";
 
 /** The A3 interface Plan 2 Task 21 builds (`createProjectMembers`); until it lands, tests use `tests/support/fake-project-members.ts`. */
@@ -70,6 +71,8 @@ export interface VisibleAgent {
   access: AgentAccessLevel;
   /** Absent for a built-in. */
   record?: AgentRecord;
+  /** A built-in the company's admins turned off; only the admins who can turn it back on are shown it (absent otherwise). */
+  disabled?: true;
 }
 
 export type AgentScope = "all" | "mine" | "shared" | "builtin" | { project: string };
@@ -257,8 +260,12 @@ export async function listVisibleAgents(deps: AgentAccessDeps, caller: AgentCall
   const visible: VisibleAgent[] = [];
   const wantsBuiltins = scope === "all" || scope === "builtin";
   if (wantsBuiltins) {
+    const turnedOff = new Set<string>((await readGuardrails(deps, caller.orgId)).disabledBuiltins);
     for (const agentId of BUILTIN_AGENT_IDS) {
-      visible.push({ agentId, name: deps.store.builtinName(agentId), builtin: true, access: (await evaluate(lookups, { agentId })).access });
+      const off = turnedOff.has(agentId);
+      // Members don't see a built-in that is off; owners and admins do, marked, so they can turn it back on.
+      if (off && !isOrgAdmin(caller.orgRole)) continue;
+      visible.push({ agentId, name: deps.store.builtinName(agentId), builtin: true, access: (await evaluate(lookups, { agentId })).access, ...(off ? { disabled: true as const } : {}) });
     }
   }
   if (scope === "builtin") return visible;

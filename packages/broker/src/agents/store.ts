@@ -14,6 +14,7 @@ import {
   EMPTY_RECIPE,
   RecipeOverlaySchema,
   agentDirectoryKey,
+  agentGuardrailsKey,
   agentKey,
   agentNameKey,
   agentRequestKey,
@@ -31,6 +32,7 @@ import {
   principalKey,
   principalSharesKey,
   recipeProblems,
+  type AgentGuardrails,
   type AgentId,
   type AgentOwner,
   type AgentPrincipal,
@@ -173,6 +175,9 @@ const coded = (code: AgentXErrorCode, message: string) => agentXError(code, mess
 const notFound = () => coded("NOT_FOUND", "no agent has that ID");
 const conflict = () => coded("AGENT_REVISION_CONFLICT", "Someone else changed this agent's draft. Reload it and make your change again.");
 const sharesConflict = () => coded("AGENT_REVISION_CONFLICT", "Someone else changed who this agent is shared with. Reload it and make your change again.");
+/** What a write to the guardrails answers when their revision has moved since the writer read them. */
+export const GUARDRAILS_CONFLICT_TEXT = "Someone else changed the company's agent guardrails. Reload them and make your change again.";
+const guardrailsConflict = () => coded("AGENT_REVISION_CONFLICT", GUARDRAILS_CONFLICT_TEXT);
 const nameTaken = (name: string) => coded("CONFIG_INVALID", `name: another agent in your company is called ${name}`);
 
 const errorName = (error: unknown) => (error instanceof Error ? error.name : undefined);
@@ -821,6 +826,27 @@ export class AgentStore {
       unshared: input.remove.map((principal) => principalKey(principal)),
     }));
     await this.commit(items, () => sharesConflict(), input.request, input.upsert);
+  }
+
+  /**
+   * Makes `guardrails` the org's agent guardrails (the caller has checked who may, and what is less safe). It applies only while the
+   * document is still at `expectedRevision` (0 before the first write), so of two concurrent writes one wins and the other conflicts.
+   * Returns the document as stored, with its new revision; that is also what a repeat of the request is answered with.
+   */
+  async putGuardrails(input: { orgId: OrgId; guardrails: AgentGuardrails; expectedRevision: number; by: string; request?: RequestMark }): Promise<{ guardrails: AgentGuardrails; revision: number }> {
+    const expected = input.expectedRevision;
+    const stored = { guardrails: input.guardrails, revision: expected + 1 };
+    const aliases = new Aliases();
+    const item: TransactItem = {
+      Put: {
+        TableName: this.input.tableName,
+        Item: { ...agentGuardrailsKey(input.orgId), entityType: "AGENT_GUARDRAILS", revision: stored.revision, guardrails: withoutUndefined(input.guardrails as unknown as Item), updatedBy: input.by, updatedAt: this.iso() },
+        ConditionExpression: expected === 0 ? NOT_EXISTS : `${aliases.name("revision")} = ${aliases.value(expected)}`,
+        ...(expected === 0 ? {} : { ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values }),
+      },
+    };
+    await this.commit([item], () => guardrailsConflict(), input.request, stored);
+    return stored;
   }
 }
 
