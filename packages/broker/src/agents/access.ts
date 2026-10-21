@@ -44,6 +44,8 @@ export interface AgentAccessDeps {
   signInStore: Pick<DeveloperSignInStore, "getDeveloper">;
   /** Overrides how a developer id reads as its survivor; by default it follows `mergedInto` through `signInStore`. */
   resolveDeveloper?: (orgId: OrgId, developerId: string) => Promise<string>;
+  /** Where a stored record that can't be read is reported; by default one JSON line on stderr. */
+  log?: (event: string, fields: Record<string, unknown>) => void;
 }
 
 export interface AgentCaller {
@@ -83,6 +85,8 @@ const rank = (level: AgentAccessLevel) => AGENT_ACCESS_LEVELS.indexOf(level);
 const higher = (left: AgentAccessLevel, right: AgentAccessLevel) => (rank(left) >= rank(right) ? left : right);
 const lower = (left: AgentAccessLevel, right: AgentAccessLevel) => (rank(left) <= rank(right) ? left : right);
 const isCustom = (agent: AccessibleAgent): agent is AgentRecord => "owner" in agent;
+const report = (deps: AgentAccessDeps, event: string, fields: Record<string, unknown>) =>
+  (deps.log ?? ((name, detail) => console.error(JSON.stringify({ component: "broker", level: "error", event: name, ...detail }))))(event, fields);
 
 /** The developer a record names, read as whoever they were merged into (following a chain of merges, stopping at a loop). */
 async function followMerges(signInStore: Pick<DeveloperSignInStore, "getDeveloper">, developerId: string): Promise<string> {
@@ -145,8 +149,9 @@ interface Evaluation {
 async function evaluate(lookups: Lookups, agent: AccessibleAgent, withShares = false): Promise<Evaluation> {
   const { caller, deps } = lookups;
   const admin = isOrgAdmin(caller.orgRole);
-  if (!isCustom(agent)) return { access: admin ? "manage" : "use", owns: false, viaShares: "none", sharedProjects: [] };
-  if (agent.orgId !== caller.orgId) return { access: "none", owns: false, viaShares: "none", sharedProjects: [] };
+  if (isBuiltinAgentId(agent.agentId)) return { access: admin ? "manage" : "use", owns: false, viaShares: "none", sharedProjects: [] };
+  // Anything else needs a record of its own; an id with none gives nothing, to an org admin too.
+  if (!isCustom(agent) || agent.orgId !== caller.orgId) return { access: "none", owns: false, viaShares: "none", sharedProjects: [] };
 
   let access: AgentAccessLevel = admin ? "manage" : "none";
   let owns = false;
@@ -164,14 +169,18 @@ async function evaluate(lookups: Lookups, agent: AccessibleAgent, withShares = f
   const sharedProjects: string[] = [];
   if (withShares || access !== "manage") {
     for (const share of await deps.store.listShares(agent.orgId, agent.agentId)) {
-      if (!ShareLevelSchema.safeParse(share.level).success) continue;
-      const { principal } = share;
+      const parsed = AgentPrincipalSchema.safeParse(share.principal);
+      if (!parsed.success || !ShareLevelSchema.safeParse(share.level).success) {
+        report(deps, "agent_share_skipped", { orgId: agent.orgId, agentId: agent.agentId, reason: "the stored share is not a valid principal and level" });
+        continue;
+      }
+      const stored = parsed.data;
       let given: AgentAccessLevel | undefined;
-      if (principal.kind === "org") given = share.level;
-      else if (principal.kind === "member") given = (await lookups.survivor(principal.developerId)) === caller.developerId ? share.level : undefined;
+      if (stored.kind === "org") given = share.level;
+      else if (stored.kind === "member") given = (await lookups.survivor(stored.developerId)) === caller.developerId ? share.level : undefined;
       else {
-        sharedProjects.push(principal.project);
-        const role = await lookups.role(principal.project);
+        sharedProjects.push(stored.project);
+        const role = await lookups.role(stored.project);
         // A viewer of the project sees what is shared with it; they don't run or change it.
         if (role !== undefined) given = role === "viewer" ? lower(share.level, "view") : share.level;
       }
@@ -194,8 +203,9 @@ export async function agentAccess(deps: AgentAccessDeps, caller: AgentCaller, ag
 }
 
 function whoNeeds(agent: AgentRecord, wanted: AgentAccessLevel): string {
-  if (agent.status === "archived" && wanted !== "manage") return "its owner or an org admin to unarchive it";
-  if (wanted === "manage") return agent.owner.kind === "project" ? `a maintainer of ${agent.owner.project} or an org admin` : "its owner or an org admin";
+  const owners = agent.owner.kind === "project" ? `a maintainer of ${agent.owner.project} or an org admin` : "its owner or an org admin";
+  if (agent.status === "archived" && wanted !== "manage") return `${owners} to unarchive it`;
+  if (wanted === "manage") return owners;
   if (wanted === "edit") return "its owner or an org admin to give you edit access";
   return "its owner or an org admin to share it with you";
 }
@@ -287,6 +297,23 @@ function parseShares(shares: unknown): AgentShare[] {
 }
 
 /**
+ * Names each member by the developer they were merged into, so a share and its index item are kept under the survivor, and
+ * refuses a person who is then in the list twice (`[old id, survivor]`).
+ */
+async function withSurvivors(lookups: Lookups, shares: AgentShare[]): Promise<AgentShare[]> {
+  const seen = new Set<string>();
+  const resolved: AgentShare[] = [];
+  for (const [index, share] of shares.entries()) {
+    const principal: AgentPrincipal = share.principal.kind === "member" ? { kind: "member", developerId: await lookups.survivor(share.principal.developerId) } : share.principal;
+    const key = principalKey(principal);
+    if (seen.has(key)) throw invalid(`shares.${String(index)}: that person or group is already in the list`);
+    seen.add(key);
+    resolved.push({ principal, level: share.level });
+  }
+  return resolved;
+}
+
+/**
  * Makes `shares` the agent's whole share set, in one transaction with the share-index items and a `shared` event. The caller needs
  * `manage`; an unknown member or project is `CONFIG_INVALID`. A set that is already the agent's writes nothing. One save changes
  * at most 49 shares (a transaction's size), so replacing a full set of 50 takes two.
@@ -295,8 +322,8 @@ export async function setShares(deps: AgentAccessDeps, caller: AgentCaller, agen
   if (isBuiltinAgentId(agentId)) throw invalid("Built-in agents belong to the whole company and can't be shared.");
   const { agent } = await requireAgentAccess(deps, caller, agentId, "manage");
   if (!isCustom(agent)) throw notFound();
-  const wanted = parseShares(shares);
   const lookups = new Lookups(deps, caller);
+  const wanted = await withSurvivors(lookups, parseShares(shares));
   for (const [index, share] of wanted.entries()) await requirePrincipalExists(deps, lookups, caller.orgId, `shares.${String(index)}`, share.principal);
 
   // The revision is read before the shares: a save that lands in between leaves this one's revision stale, and it conflicts.
@@ -312,24 +339,30 @@ export async function setShares(deps: AgentAccessDeps, caller: AgentCaller, agen
 }
 
 /**
- * Refuses an owner the caller may not name, for a new agent or a change of owner (`current` is the owner it has now).
- * A member owner must be the caller unless the caller is an org owner or admin, and handing an agent to another member takes
- * an org owner or admin; a project owner needs `manage_agents` on that project. The owner must be in the org.
+ * Refuses an owner the caller may not name, for a new agent or a change of owner (`current` is the owner it has now), and
+ * returns the owner to store (a merged member named by their survivor).
+ * A member owner must be the caller unless the caller is an org owner or admin; handing an agent to another member, or moving a
+ * project's agent to any member (the caller too: the project's other maintainers lose it), takes an org owner or admin; a
+ * project owner needs `manage_agents` on that project. The owner must be in the org.
  */
-export async function requireOwnerAllowed(deps: AgentAccessDeps, caller: AgentCaller, owner: AgentOwner, current?: AgentOwner): Promise<void> {
+export async function requireOwnerAllowed(deps: AgentAccessDeps, caller: AgentCaller, owner: AgentOwner, current?: AgentOwner): Promise<AgentOwner> {
   const lookups = new Lookups(deps, caller);
   const admin = isOrgAdmin(caller.orgRole);
   if (owner.kind === "member") {
-    const self = await lookups.isCaller(owner.developerId);
-    if (!self && !admin) {
+    const survivor = await lookups.survivor(owner.developerId);
+    const self = survivor === caller.developerId;
+    const handOver = current !== undefined && (!self || current.kind === "project");
+    if (!admin && (!self || handOver)) {
       throw agentXError("FORBIDDEN", current === undefined ? "Only an org owner or admin can make someone else an agent's owner." : "Only an org owner or admin can hand an agent to another member.");
     }
-    if (!self) await requirePrincipalExists(deps, lookups, caller.orgId, "owner", owner);
-    return;
+    const stored: AgentOwner = { kind: "member", developerId: survivor };
+    if (!self) await requirePrincipalExists(deps, lookups, caller.orgId, "owner", stored);
+    return stored;
   }
   if (!admin) {
     const role = await lookups.role(owner.project);
     if (role === undefined || !projectAllows(role, "manage_agents")) throw agentXError("FORBIDDEN", `Only a maintainer of ${owner.project} can make it an agent's owner.`);
   }
   await requirePrincipalExists(deps, lookups, caller.orgId, "owner", owner);
+  return owner;
 }

@@ -209,6 +209,33 @@ describe("agentAccess", () => {
     expect(await access(CAROL, agent)).toBe("none");
   });
 
+  it("gives nothing for an id that is not a built-in and has no record, whoever asks", async () => {
+    const { access } = setup();
+    const unknown = { agentId: "agt_99999999999999999999" } as unknown as AgentRecord;
+    expect(await access(ALICE, unknown)).toBe("none");
+    expect(await access(DAN, unknown)).toBe("none");
+    expect(await access(OWEN, unknown)).toBe("none");
+  });
+
+  it("skips a stored share whose principal is malformed, logs it, and never asks for a project role it has no name for", async () => {
+    const { db, deps, projectMembers, memberAgent, access, share } = setup();
+    const logged: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    deps.log = (event, fields) => logged.push({ event, fields });
+    const agent = await memberAgent("Odd shares");
+    await share(agent, [{ principal: { kind: "member", developerId: CAROL }, level: "use" }]);
+    const base = { entityType: "AGENT_SHARE", orgId: ORG_A, agentId: agent.agentId, level: "edit", grantedBy: ALICE, grantedAt: "x" };
+    const pk = agentKey(ORG_A, agent.agentId, "META").pk;
+    db.set({ pk, sk: "SHARE#PROJECT#", ...base, principal: { kind: "project" } });
+    db.set({ pk, sk: "SHARE#TEAM#x", ...base, principal: { kind: "team", id: "x" } });
+    db.set({ pk, sk: "SHARE#NOPE", ...base });
+    projectMembers.calls.length = 0;
+    expect(await access(CAROL, agent)).toBe("use");
+    expect(await access(BOB, agent)).toBe("none");
+    expect(projectMembers.calls.filter((call) => call.includes("undefined"))).toEqual([]);
+    expect(logged.length).toBeGreaterThanOrEqual(3);
+    expect(logged[0]).toMatchObject({ event: "agent_share_skipped", fields: { agentId: agent.agentId } });
+  });
+
   it("gives nothing across orgs", async () => {
     const { access, memberAgent, share } = setup();
     const agent = await memberAgent("Org A only");
@@ -255,6 +282,16 @@ describe("requireAgentAccess", () => {
     await store.archive(ORG_A, agent.agentId, ALICE);
     expect(await code(requireAgentAccess(deps, caller(BOB), agent.agentId, "use"))).toEqual({ code: "FORBIDDEN", message: "You can view Retired; use needs its owner or an org admin to unarchive it." });
     expect((await requireAgentAccess(deps, caller(BOB), agent.agentId, "view")).access).toBe("view");
+  });
+
+  it("names a project's maintainers too when an archived project agent needs unarchiving", async () => {
+    const { deps, projectAgent, store } = setup();
+    const agent = await projectAgent("Retired web helper");
+    await store.archive(ORG_A, agent.agentId, BOB);
+    expect(await code(requireAgentAccess(deps, caller(CAROL), agent.agentId, "use"))).toEqual({
+      code: "FORBIDDEN",
+      message: "You can view Retired web helper; use needs a maintainer of web or an org admin to unarchive it.",
+    });
   });
 
   it("answers for built-in agents: use for members, manage for admins, and no edit for anyone", async () => {
@@ -317,6 +354,40 @@ describe("setShares", () => {
     expect(await code(share(agent, [{ principal: { kind: "member", developerId: STRANGER }, level: "use" }]))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(await code(share(agent, [{ principal: { kind: "project", project: "nope" }, level: "use" }]))).toEqual({ code: "CONFIG_INVALID", message: "shares.0: no project called nope in your company" });
     expect(db.items.size).toBe(items);
+  });
+
+  it("stores a merged member's survivor, in the share and in its index item, and replaces a share stored under the old id", async () => {
+    const { db, store, memberAgent, share, markMerged } = setup();
+    markMerged(OLD_BOB, BOB);
+    const agent = await memberAgent("Shared with merged");
+    const saved = await share(agent, [{ principal: { kind: "member", developerId: OLD_BOB }, level: "view" }]);
+    expect(saved).toEqual([BOB_VIEW]);
+    expect((await store.listShares(ORG_A, agent.agentId)).map((entry) => entry.principal)).toEqual([BOB_VIEW.principal]);
+    expect(db.get(principalSharesKey(ORG_A, BOB_VIEW.principal, agent.agentId))).toMatchObject({ level: "view" });
+    expect(db.get(principalSharesKey(ORG_A, { kind: "member", developerId: OLD_BOB }, agent.agentId))).toBeUndefined();
+    // A share written before the merge, under the old id, is dropped and re-made under the survivor.
+    const legacy = await memberAgent("Legacy share");
+    db.set({ ...agentKey(ORG_A, legacy.agentId, `SHARE#MEMBER#${OLD_BOB}`), entityType: "AGENT_SHARE", orgId: ORG_A, agentId: legacy.agentId, principal: { kind: "member", developerId: OLD_BOB }, level: "view", grantedBy: ALICE, grantedAt: "x" });
+    db.set({ ...principalSharesKey(ORG_A, { kind: "member", developerId: OLD_BOB }, legacy.agentId), entityType: "AGENT_SHARE_INDEX", agentId: legacy.agentId, level: "view" });
+    await share(legacy, [BOB_VIEW]);
+    expect((await store.listShares(ORG_A, legacy.agentId)).map((entry) => entry.principal)).toEqual([BOB_VIEW.principal]);
+    expect(db.get(principalSharesKey(ORG_A, { kind: "member", developerId: OLD_BOB }, legacy.agentId))).toBeUndefined();
+  });
+
+  it("refuses a member named twice once merged ids are resolved, so there is one share per person", async () => {
+    const { memberAgent, share, markMerged, store } = setup();
+    markMerged(OLD_BOB, BOB);
+    const agent = await memberAgent("Twice");
+    expect(await code(share(agent, [{ principal: { kind: "member", developerId: OLD_BOB }, level: "view" }, BOB_VIEW]))).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("shares.1") as string });
+    expect(await store.listShares(ORG_A, agent.agentId)).toEqual([]);
+  });
+
+  it("refuses a project that is only in another org's catalog", async () => {
+    const { db, memberAgent, share } = setup();
+    db.set({ ...orgProjectCatalogKey(ORG_B, "ghost"), entityType: "PROJECT_CATALOG", name: "ghost" });
+    const agent = await memberAgent("Ghost share");
+    expect(await code(share(agent, [{ principal: { kind: "project", project: "ghost" }, level: "use" }]))).toEqual({ code: "CONFIG_INVALID", message: "shares.0: no project called ghost in your company" });
+    expect(db.find((item) => String(item.sk).startsWith("SHARE#"))).toEqual([]);
   });
 
   it("refuses more than 50 shares, a repeated principal and a level that is not view, use or edit", async () => {
@@ -426,6 +497,14 @@ describe("listVisibleAgents", () => {
     expect(await w.names(DAN, "mine")).toEqual([]);
   });
 
+  it("reads a merged accountable id as the survivor for scope mine", async () => {
+    const w = await world();
+    w.markMerged(OLD_BOB, BOB);
+    await w.store.create({ orgId: ORG_A, name: "Old accountable", owner: { kind: "project", project: "web" }, accountable: { developerId: OLD_BOB }, overlay: SCRATCH, createdBy: DAN });
+    expect(await w.names(BOB, "mine")).toContain("Old accountable");
+    expect(await w.names(CAROL, "mine")).not.toContain("Old accountable");
+  });
+
   it("lists, for scope shared, the agents others shared with the caller", async () => {
     const w = await world();
     expect(await w.names(CAROL, "shared")).toEqual(["Company wide", "Shared to Carol", "Shared to web"]);
@@ -495,8 +574,16 @@ describe("requireOwnerAllowed", () => {
       message: "Only an org owner or admin can hand an agent to another member.",
     });
     await requireOwnerAllowed(deps, caller(DAN), member(BOB), member(ALICE));
-    // Taking an agent over from a project is the same person, so it is not a hand-over.
-    await requireOwnerAllowed(deps, caller(BOB), member(BOB), project("web"));
+  });
+
+  it("treats moving a project's agent to any member, the caller included, as a hand-over that needs an org owner or admin", async () => {
+    const { deps } = setup();
+    const refusal = { code: "FORBIDDEN", message: "Only an org owner or admin can hand an agent to another member." };
+    expect(await code(requireOwnerAllowed(deps, caller(BOB), member(BOB), project("web")))).toEqual(refusal);
+    expect(await code(requireOwnerAllowed(deps, caller(BOB), member(CAROL), project("web")))).toEqual(refusal);
+    await requireOwnerAllowed(deps, caller(DAN), member(BOB), project("web"));
+    // A member keeping their own agent is no transfer.
+    await requireOwnerAllowed(deps, caller(ALICE), member(ALICE), member(ALICE));
   });
 
   it("refuses an owner who is not in the org or a project that does not exist, with CONFIG_INVALID", async () => {
@@ -506,9 +593,12 @@ describe("requireOwnerAllowed", () => {
     expect(await code(requireOwnerAllowed(deps, caller(DAN), project("nope")))).toMatchObject({ code: "CONFIG_INVALID" });
   });
 
-  it("reads a merged owner as the survivor, so the survivor passes the same-person check", async () => {
+  it("reads a merged owner as the survivor, so the survivor passes the same-person check, and returns the survivor to store", async () => {
     const { deps, markMerged } = setup();
     markMerged(OLD_ALICE, ALICE);
-    await requireOwnerAllowed(deps, caller(ALICE), member(OLD_ALICE));
+    expect(await requireOwnerAllowed(deps, caller(ALICE), member(OLD_ALICE))).toEqual(member(ALICE));
+    markMerged(OLD_BOB, BOB);
+    expect(await requireOwnerAllowed(deps, caller(DAN), member(OLD_BOB))).toEqual(member(BOB));
+    expect(await requireOwnerAllowed(deps, caller(BOB), project("web"))).toEqual(project("web"));
   });
 });
