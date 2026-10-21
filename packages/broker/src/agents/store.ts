@@ -360,8 +360,11 @@ export class AgentStore {
     if (!isBuiltinAgentId(agentId)) throw coded("CONFIG_INVALID", "that agent is not a built-in agent");
   }
 
-  /** Moves the org's pin of a built-in to a released version (the route limits this to org owners and admins). */
-  async adoptBuiltinVersion(input: { orgId: OrgId; agentId: AgentId; version: number; by: string }): Promise<BuiltinSettings> {
+  /**
+   * Moves the org's pin of a built-in to a released version (the route limits this to org owners and admins). It applies
+   * only while the pin is still `expectedPinnedVersion`, so an approval given against an older pin can't overwrite a newer one.
+   */
+  async adoptBuiltinVersion(input: { orgId: OrgId; agentId: AgentId; version: number; expectedPinnedVersion: number; by: string }): Promise<BuiltinSettings> {
     this.requireBuiltin(input.agentId);
     if (!Number.isInteger(input.version) || input.version < 1 || input.version > this.builtins.currentVersion(input.agentId)) {
       throw coded("NOT_FOUND", `${this.builtins.name(input.agentId)} has no version ${String(input.version)}`);
@@ -369,9 +372,12 @@ export class AgentStore {
     const before = await this.ensureBuiltinSettings(input.orgId, input.agentId, input.by);
     const updatedAt = this.iso();
     await this.transact([
-      this.update(builtinSettingsKey(input.orgId, input.agentId), { set: { pinnedVersion: input.version, updatedBy: input.by, updatedAt } }),
-      this.event(input.orgId, input.agentId, "base_updated", input.by, { from: before.pinnedVersion, to: input.version }),
-    ], () => undefined);
+      this.update(builtinSettingsKey(input.orgId, input.agentId), {
+        set: { pinnedVersion: input.version, updatedBy: input.by, updatedAt },
+        when: (a) => `${a.name("pinnedVersion")} = ${a.value(input.expectedPinnedVersion)}`,
+      }),
+      this.event(input.orgId, input.agentId, "base_updated", input.by, { from: input.expectedPinnedVersion, to: input.version }),
+    ], () => conflict());
     return { ...before, pinnedVersion: input.version, updatedBy: input.by, updatedAt };
   }
 
@@ -547,15 +553,21 @@ export class AgentStore {
     return published;
   }
 
-  /** Makes an earlier published version the current one. Later versions stay, and the next publish still numbers after them. */
-  async rollback(input: { orgId: OrgId; agentId: AgentId; version: number; by: string }): Promise<AgentRecord> {
+  /**
+   * Makes an earlier published version the current one. Later versions stay, and the next publish still numbers after them.
+   * It applies only while the current version is still `expectedCurrentVersion`, so a publish that landed since can't be undone unseen.
+   */
+  async rollback(input: { orgId: OrgId; agentId: AgentId; version: number; expectedCurrentVersion: number; by: string }): Promise<AgentRecord> {
     const agent = await this.require(input.orgId, input.agentId);
     if (await this.getVersion(input.orgId, input.agentId, input.version) === undefined) throw coded("NOT_FOUND", `${agent.name} has no version ${String(input.version)}`);
     const updatedAt = this.iso();
     await this.transact([
-      this.update(agentKey(input.orgId, input.agentId, "META"), { set: { currentVersion: input.version, updatedAt } }),
-      this.event(input.orgId, input.agentId, "rolled_back", input.by, { from: agent.currentVersion, to: input.version }),
-    ], () => undefined);
+      this.update(agentKey(input.orgId, input.agentId, "META"), {
+        set: { currentVersion: input.version, updatedAt },
+        when: (a) => `${a.name("currentVersion")} = ${a.value(input.expectedCurrentVersion)}`,
+      }),
+      this.event(input.orgId, input.agentId, "rolled_back", input.by, { from: input.expectedCurrentVersion, to: input.version }),
+    ], () => conflict());
     return { ...agent, currentVersion: input.version, updatedAt };
   }
 
@@ -707,7 +719,8 @@ export async function resolveAgent(
 
   async function layer(id: AgentId, wanted: number | "current" | "draft", trail: Array<{ agentId: AgentId; name: string }>): Promise<ResolvedRecipe> {
     if (isBuiltinAgentId(id)) {
-      return store.builtinRecipe(id, typeof wanted === "number" ? wanted : await store.pinnedBuiltinVersion(orgId, id));
+      // First use pins the org to the release of the day, so a later release needs adoptBuiltinVersion.
+      return store.builtinRecipe(id, typeof wanted === "number" ? wanted : (await store.ensureBuiltinSettings(orgId, id)).pinnedVersion);
     }
     if (trail.some((above) => above.agentId === id)) throw coded("CONFIG_INVALID", "agents can't build on each other in a loop");
     if (trail.length >= MAX_CUSTOM_LAYERS) throw coded("CONFIG_INVALID", "agents can build on at most 3 layers");
@@ -744,7 +757,7 @@ export async function resolveAgent(
   return recipe;
 }
 
-/** Whether the base the agent's draft builds on has moved past the version it pinned: a custom base's current version, or a built-in's newest release. */
+/** Whether the base the agent's draft builds on has moved past the version it pinned: a custom base's current version, or the org's pin of a built-in (what `updateBase` would move to). */
 export async function updateAvailable(store: AgentStore, orgId: OrgId, agentId: AgentId): Promise<{ from: number; to: number } | undefined> {
   if (isBuiltinAgentId(agentId)) return undefined;
   const agent = await store.get(orgId, agentId);
@@ -753,7 +766,7 @@ export async function updateAvailable(store: AgentStore, orgId: OrgId, agentId: 
   if (base === undefined) return undefined;
   let latest: number | undefined;
   if (isBuiltinAgentId(base.agentId)) {
-    latest = store.builtinLatestVersion(base.agentId);
+    latest = await store.pinnedBuiltinVersion(orgId, base.agentId);
   } else {
     const record = await store.get(orgId, base.agentId);
     latest = record?.status === "active" ? record.currentVersion : undefined;

@@ -187,7 +187,7 @@ describe("AgentStore versions", () => {
       ConditionExpression: "attribute_not_exists(pk)",
     }))).rejects.toMatchObject({ name: "ConditionalCheckFailedException" });
 
-    await store.rollback({ orgId: ORG_A, agentId: agent.agentId, version: 1, by: BOB });
+    await store.rollback({ orgId: ORG_A, agentId: agent.agentId, version: 1, expectedCurrentVersion: 2, by: BOB });
     expect(instructionsOf(await resolveAgent(store, ORG_A, agent.agentId, "current"))).toEqual(["v1 text"]);
     expect(instructionsOf(await resolveAgent(store, ORG_A, agent.agentId, 2))).toEqual(["v2 text"]);
     expect(instructionsOf(await resolveAgent(store, ORG_A, agent.agentId, "draft"))).toEqual(["v2 text"]);
@@ -195,7 +195,10 @@ describe("AgentStore versions", () => {
     const v3 = await publish(agent.agentId);
     expect(v3.version).toBe(3);
     expect(await store.get(ORG_A, agent.agentId)).toMatchObject({ currentVersion: 3, latestVersion: 3 });
-    expect(await code(store.rollback({ orgId: ORG_A, agentId: agent.agentId, version: 9, by: ALICE }))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await code(store.rollback({ orgId: ORG_A, agentId: agent.agentId, version: 9, expectedCurrentVersion: 3, by: ALICE }))).toMatchObject({ code: "NOT_FOUND" });
+    // An undo approved when version 2 was current does not apply once version 3 is.
+    expect(await code(store.rollback({ orgId: ORG_A, agentId: agent.agentId, version: 1, expectedCurrentVersion: 2, by: ALICE }))).toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+    expect((await store.get(ORG_A, agent.agentId))?.currentVersion).toBe(3);
     expect(events(ORG_A, agent.agentId).map((event) => event.kind)).toEqual(["created", "published", "published", "rolled_back", "published"]);
   });
 
@@ -279,12 +282,14 @@ describe("pinned bases", () => {
     expect(instructionsOf(await resolveAgent(store, ORG_A, onTriage.agentId, "current")).at(-1)).toBe("mine");
     expect((await resolveAgent(store, ORG_A, onTriage.agentId, "current")).chain[0]).toMatchObject({ agentId: "ticket-triage", version: 1, builtin: true });
     expect((await resolveAgent(store, ORG_A, "ticket-triage", "current")).chain[0]).toMatchObject({ version: 1 });
-    expect(await updateAvailable(store, ORG_A, onTriage.agentId)).toEqual({ from: 1, to: 2 });
+    // The release is not offered until the org adopts it: updateAvailable and updateBase agree.
+    expect(await updateAvailable(store, ORG_A, onTriage.agentId)).toBeUndefined();
     expect(await store.updateBase({ orgId: ORG_A, agentId: onTriage.agentId, expectedRevision: 1, by: ALICE })).toMatchObject({ revision: 1, extends: { version: 1 } });
 
-    expect(await code(store.adoptBuiltinVersion({ orgId: ORG_A, agentId: "ticket-triage", version: 3, by: ALICE }))).toMatchObject({ code: "NOT_FOUND" });
-    expect(await code(store.adoptBuiltinVersion({ orgId: ORG_A, agentId: onTriage.agentId, version: 1, by: ALICE }))).toMatchObject({ code: "CONFIG_INVALID" });
-    await store.adoptBuiltinVersion({ orgId: ORG_A, agentId: "ticket-triage", version: 2, by: BOB });
+    expect(await code(store.adoptBuiltinVersion({ orgId: ORG_A, agentId: "ticket-triage", version: 3, expectedPinnedVersion: 1, by: ALICE }))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await code(store.adoptBuiltinVersion({ orgId: ORG_A, agentId: onTriage.agentId, version: 1, expectedPinnedVersion: 1, by: ALICE }))).toMatchObject({ code: "CONFIG_INVALID" });
+    await store.adoptBuiltinVersion({ orgId: ORG_A, agentId: "ticket-triage", version: 2, expectedPinnedVersion: 1, by: BOB });
+    expect(await updateAvailable(store, ORG_A, onTriage.agentId)).toEqual({ from: 1, to: 2 });
     expect(instructionsOf(await resolveAgent(store, ORG_A, "ticket-triage", "current"))).toEqual(["release 2"]);
     expect(instructionsOf(await resolveAgent(store, ORG_A, onTriage.agentId, "current")).at(-1)).toBe("mine");
     expect((await resolveAgent(store, ORG_A, onTriage.agentId, "current")).chain[0]).toMatchObject({ version: 1 });
@@ -292,9 +297,37 @@ describe("pinned bases", () => {
     await store.updateBase({ orgId: ORG_A, agentId: onTriage.agentId, expectedRevision: 1, by: ALICE });
     await publish(onTriage.agentId);
     expect((await resolveAgent(store, ORG_A, onTriage.agentId, "current")).chain[0]).toMatchObject({ version: 2 });
-    // Another org keeps its own pin.
-    expect((await resolveAgent(store, ORG_B, "ticket-triage", "current")).chain[0]).toMatchObject({ version: 2 });
+    // Another org that first uses the built-in after the release is pinned to it then.
     expect(await store.getBuiltinSettings(ORG_B, "ticket-triage")).toBeUndefined();
+    expect((await resolveAgent(store, ORG_B, "ticket-triage", "current")).chain[0]).toMatchObject({ version: 2 });
+    expect(await store.getBuiltinSettings(ORG_B, "ticket-triage")).toMatchObject({ pinnedVersion: 2 });
+  });
+
+  it("pins an org to the release of its first use, so a later release needs an adopt", async () => {
+    const { db, store, release } = setup();
+    expect(db.get(builtinSettingsKey(ORG_A, "ticket-triage"))).toBeUndefined();
+    expect((await resolveAgent(store, ORG_A, "ticket-triage", "current")).chain[0]).toMatchObject({ version: 1 });
+    expect(db.get(builtinSettingsKey(ORG_A, "ticket-triage"))).toMatchObject({ pinnedVersion: 1 });
+    release.ticketTriage = 2;
+    expect((await resolveAgent(store, ORG_A, "ticket-triage", "current")).chain[0]).toMatchObject({ version: 1 });
+    expect((await resolveAgent(store, ORG_A, "ticket-triage", "draft")).chain[0]).toMatchObject({ version: 1 });
+    await store.adoptBuiltinVersion({ orgId: ORG_A, agentId: "ticket-triage", version: 2, expectedPinnedVersion: 1, by: ALICE });
+    expect((await resolveAgent(store, ORG_A, "ticket-triage", "current")).chain[0]).toMatchObject({ version: 2 });
+    // Two first reads at once agree on one pin.
+    const both = await Promise.all([resolveAgent(store, ORG_B, "ticket-triage", "current"), resolveAgent(store, ORG_B, "ticket-triage", "current")]);
+    expect(both.map((recipe) => recipe.chain[0]?.version)).toEqual([2, 2]);
+  });
+
+  it("applies an adopt only while the pin is the one it was approved against", async () => {
+    const { store, release } = setup();
+    await store.ensureBuiltinSettings(ORG_A, "ticket-triage");
+    release.ticketTriage = 3;
+    await store.adoptBuiltinVersion({ orgId: ORG_A, agentId: "ticket-triage", version: 2, expectedPinnedVersion: 1, by: ALICE });
+    const stale = await code(store.adoptBuiltinVersion({ orgId: ORG_A, agentId: "ticket-triage", version: 3, expectedPinnedVersion: 1, by: BOB }));
+    expect(stale).toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+    expect((await store.getBuiltinSettings(ORG_A, "ticket-triage"))?.pinnedVersion).toBe(2);
+    await store.adoptBuiltinVersion({ orgId: ORG_A, agentId: "ticket-triage", version: 3, expectedPinnedVersion: 2, by: BOB });
+    expect((await store.getBuiltinSettings(ORG_A, "ticket-triage"))?.pinnedVersion).toBe(3);
   });
 
   it("builds on Rovara Code with the shipped built-ins", async () => {
@@ -447,8 +480,9 @@ describe("archive, budget, owner, accountable and events", () => {
     await store.saveDraft({ orgId: ORG_A, agentId: b.agentId, overlay: scratch("B2"), expectedRevision: 1, by: ALICE });
     await publish(b.agentId);
     await store.updateBase({ orgId: ORG_A, agentId: c.agentId, expectedRevision: 1, by: ALICE });
+    await store.ensureBuiltinSettings(ORG_A, "ticket-triage");
     release.ticketTriage = 2;
-    await store.adoptBuiltinVersion({ orgId: ORG_A, agentId: "ticket-triage", version: 2, by: ALICE });
+    await store.adoptBuiltinVersion({ orgId: ORG_A, agentId: "ticket-triage", version: 2, expectedPinnedVersion: 1, by: ALICE });
     await store.setBudget(ORG_A, "ticket-triage", { monthlyUsd: 10 }, ALICE);
 
     expect(events(ORG_A, c.agentId).map((event) => event.kind)).toEqual(["created", "archived", "unarchived", "budget_changed", "owner_changed", "owner_changed", "base_updated"]);
@@ -465,7 +499,7 @@ describe("archive, budget, owner, accountable and events", () => {
     const before = [...db.items.keys()].sort();
     await code(store.saveDraft({ orgId: ORG_A, agentId: agent.agentId, overlay: scratch("b"), expectedRevision: 9, by: ALICE }));
     await code(store.publish({ orgId: ORG_A, agentId: agent.agentId, expectedDraftRevision: 9, digest: DIGEST, by: ALICE }));
-    await code(store.rollback({ orgId: ORG_A, agentId: agent.agentId, version: 1, by: ALICE }));
+    await code(store.rollback({ orgId: ORG_A, agentId: agent.agentId, version: 1, expectedCurrentVersion: 1, by: ALICE }));
     expect([...db.items.keys()].sort()).toEqual(before);
     await publish(agent.agentId);
   });
