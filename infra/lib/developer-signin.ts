@@ -165,6 +165,12 @@ export class DeveloperSignIn extends Construct {
       actions: ["dynamodb:GetItem", "dynamodb:PutItem"], resources: [props.state.tableArn],
       conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#SETTINGS`] } },
     }));
+    // Accepting an invite checks, in the same transaction, that the org is not closed or closing (a ConditionCheck on the org record, which
+    // IAM authorizes as ConditionCheckItem). That action on that one key; the function never reads or writes anything else through it.
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:ConditionCheckItem"], resources: [props.state.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}`] } },
+    }));
     // A removed member's ban on a single-org install (`ORG#<id>#BAN`): read by a sign-in that would join the install's org (GetItem) and
     // cleared when an invite is accepted (DeleteItem, below). The function never writes a ban; only the broker's removal does.
     fn.addToRolePolicy(new iam.PolicyStatement({

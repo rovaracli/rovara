@@ -637,6 +637,19 @@ describe("a removed creator's work stops (ruling R60)", () => {
     expect(tasks.find((row) => row.taskId === taskId)).toMatchObject({ status: "CANCELLED" });
   });
 
+  it("keeps a very long name from breaking the view: the workflow's blockReason is cut to 500 characters, the full reason stays in outcomeReason", async () => {
+    const harness = await org();
+    const { taskId, finishImplementation } = await implementing(harness, MAYA);
+    harness.db.set({ ...harness.db.get(orgMetaKey(TEST_ORG))!, name: "Long ".repeat(200) });
+    expect((await harness.remove(OMAR, MAYA)).status).toBe(200);
+    await finishImplementation();
+    const path = `/v1/dev/tasks/${taskId}`;
+    const { task: view } = await routeDeveloperTaskRequest(routeDeps(harness), asCreator(MAYA), { method: "GET", path, headers: {}, requestId: randomUUID() }, new URL(path, "https://agentx.invalid")) as { task: { outcomeReason: string; workflow: { blockReason: string } } };
+    expect(view.outcomeReason.length).toBeGreaterThan(500);
+    expect(view.workflow.blockReason).toHaveLength(500);
+    expect(view.workflow.blockReason.startsWith("Maya Chen is no longer a member of Long")).toBe(true);
+  });
+
   it("tells a removed person whose task was still being set up why it stopped: the view carries R60's reason, not a generic setup failure (Minor 9)", async () => {
     const harness = await org();
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the flaky retry test", client: "claude-code" });

@@ -280,6 +280,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
     const ORG = "ORG#org_????????????????????";
     expect(grantsOf).toEqual([
       // Deleting: the duplicate's member row (bare partition; IAM cannot tell it from the org record) and grants, and its org pointer.
+      // Plan 2, Task 4: accepting an invite checks the org is open (ConditionCheckItem on the org record, nothing wider).
+      ["dynamodb:ConditionCheckItem", [ORG]],
       // Plan 2, Task 4: it also names the ban key, which accepting an invite deletes.
       ["dynamodb:DeleteItem", [`${ORG}#MEMBER#*`, ORG, `${ORG}#BAN`, "DEVELOPER_ORG#*"]],
       // Plan 2, Task 4: a sign-in reads the ban (a removed member of a single-org install is refused); nothing else, and never a write.

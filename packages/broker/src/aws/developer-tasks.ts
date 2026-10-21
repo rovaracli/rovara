@@ -145,6 +145,7 @@ import {
   resolveWorkflowReviewFindings,
   workflowFindingAccepted,
   workflowFindingProblem,
+  capText,
 } from "@agentx/contracts";
 import { z } from "zod";
 import { channelLabel, decideMode, decideShare, type BoundChannel, type ShareDecision } from "../developer/share.js";
@@ -1274,7 +1275,8 @@ export async function taskView(
   // Ruling R60: a task whose creator was removed has ended. The view says so, with the reason, instead of the step it was waiting on.
   const removedReason = removedReasonOf(task);
   if (removedReason !== undefined && workflow !== undefined && workflow.stage !== "MERGED" && workflow.stage !== "CLOSED") {
-    workflow = { ...workflow, state: "BLOCKED", blockReason: removedReason };
+    // The view's blockReason holds 500 characters; a long name must not make the whole view unreadable.
+    workflow = { ...workflow, state: "BLOCKED", blockReason: capText(removedReason, 500).text };
   }
   if (removedReason === undefined && options.details && workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING") {
     const activeArtifactType = workflow.path === "FULL" && workflow.reviewPhase === "REQUIREMENTS" ? "requirements"
@@ -1306,7 +1308,7 @@ export async function taskView(
     ...(workflow === undefined ? {} : { workflow }),
     ...(e2ePresentation === undefined ? {} : { e2ePresentation }),
     ...(derived.failure === undefined ? {} : { failure: derived.failure }),
-    ...(removedReason === undefined ? {} : { outcome: "creator_removed" as const, outcomeReason: removedReason }),
+    ...(removedReason === undefined ? {} : { outcome: "creator_removed" as const, outcomeReason: capText(removedReason, 1000).text }),
     startingRevision: task.startingRevision,
     client: task.client,
     shared: task.shared,
