@@ -7,7 +7,7 @@
 // is shown as `[U+XXXX]`, the markers the audit page uses, so a stored value cannot move the cursor, recolor the terminal or
 // reorder a line. The same goes for `--json` output, which is read in a terminal too.
 import { X509Certificate } from "node:crypto";
-import { open, readFile, rm, stat } from "node:fs/promises";
+import { lstat, open, readFile, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { AUDIT_ERROR_MESSAGES, AUDIT_EXPORT_MAX_RECORDS, AgentXError, agentXError } from "@agentx/contracts";
@@ -25,16 +25,35 @@ import { z } from "zod";
 import { ReportedFailure } from "../output.js";
 import { developerRequest } from "./commands.js";
 import { resolveDeveloperEnvironment } from "./config.js";
-import type { DeveloperSessionDeps } from "./session.js";
+import { developerAccessToken, type DeveloperSessionDeps } from "./session.js";
 
 // ---- showing untrusted text -------------------------------------------------------------------------------------------
 
-const UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/gu;
+// Control, format, line and paragraph separators, surrogates, private use, and the invisible fillers that take up room without showing
+// anything (combining grapheme joiner, Hangul fillers, braille blank).
+const UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}\p{Co}\u034f\u115f\u1160\u2800\u3164\uffa0]/gu;
 const marker = (character: string): string => `[U+${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}]`;
+/** The most characters of one value a terminal line shows. A detail field is at most 500 characters, so nothing the ledger holds is cut. */
+const MAX_SHOWN = 500;
 
-/** One line of text for a terminal: line breaks become spaces and every unsafe character becomes its `[U+XXXX]` marker. */
+/** One line of text for a terminal: line breaks become spaces, every unsafe character becomes its `[U+XXXX]` marker, and a very long value is cut. */
 export function terminalSafe(value: unknown): string {
-  return String(value).replace(/[\r\n\t]+/g, " ").replace(UNSAFE, marker);
+  const characters = [...String(value).replace(/[\r\n\t]+/g, " ")];
+  const shown = characters.length > MAX_SHOWN ? characters.slice(0, MAX_SHOWN) : characters;
+  return shown.join("").replace(UNSAFE, marker) + (characters.length > MAX_SHOWN ? "...[truncated]" : "");
+}
+
+/**
+ * Runs a call to the control plane and makes the words of any error it raises safe to print: the control plane's messages are text
+ * from outside this computer (the member path only strips C0 controls from them; the staff path not even that).
+ */
+export async function neutralised<T>(work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    if (!(error instanceof AgentXError)) throw error;
+    throw agentXError(error.code, terminalSafe(error.message.slice(error.code.length + 2)));
+  }
 }
 
 /** A value for `--json` output: every string (and key) has its unsafe characters marked; JSON itself escapes the line breaks and tabs. */
@@ -181,7 +200,7 @@ const queryText = (params: URLSearchParams): string => (params.size === 0 ? "" :
 const DEV_AUDIT_PATH = "/v1/dev/org/audit";
 
 export async function fetchAuditRecords(deps: DeveloperSessionDeps, env: string | undefined, params: URLSearchParams): Promise<{ env: string; url: string; records: AuditRecords }> {
-  const { env: resolved, url, body } = await developerRequest(deps, env, `${DEV_AUDIT_PATH}/records${queryText(params)}`, AuditRecordsSchema, { explain: true });
+  const { env: resolved, url, body } = await neutralised(() => developerRequest(deps, env, `${DEV_AUDIT_PATH}/records${queryText(params)}`, AuditRecordsSchema, { explain: true }));
   return { env: resolved, url, records: body };
 }
 
@@ -246,6 +265,10 @@ export interface AuditExportTransport {
   poll(exportId: string): Promise<AuditExportView>;
   /** How long to wait between polls. A staff poll is itself a recorded read, so theirs is longer. */
   pollMs: number;
+  /** Poll less often once the export has taken this long. */
+  backoff?: { afterMs: number; pollMs: number };
+  /** The organization the export must be of, when the sign-in names it; `verify` fails an export of another. */
+  orgId?(): Promise<string | undefined>;
 }
 
 export interface AuditRuntime {
@@ -266,8 +289,9 @@ const MAX_EXPORT_BYTES = AUDIT_EXPORT_MAX_RECORDS * 2048 + 16 * 1024 * 1024;
 export function developerExportTransport(deps: DeveloperSessionDeps, env: string | undefined): AuditExportTransport {
   return {
     pollMs: 3000,
-    start: async (request) => (await developerRequest(deps, env, `${DEV_AUDIT_PATH}/exports`, AuditExportStartSchema, { method: "POST", body: request, explain: true })).body,
-    poll: async (exportId) => (await developerRequest(deps, env, `${DEV_AUDIT_PATH}/exports/${exportId}`, AuditExportViewSchema, { explain: true })).body,
+    start: async (request) => (await neutralised(() => developerRequest(deps, env, `${DEV_AUDIT_PATH}/exports`, AuditExportStartSchema, { method: "POST", body: request, explain: true }))).body,
+    poll: async (exportId) => (await neutralised(() => developerRequest(deps, env, `${DEV_AUDIT_PATH}/exports/${exportId}`, AuditExportViewSchema, { explain: true }))).body,
+    orgId: async () => orgOfToken((await neutralised(() => developerAccessToken(deps, env))).accessToken),
   };
 }
 
@@ -281,22 +305,44 @@ function failureMessage(view: AuditExportView): string {
   return `The export could not be built (${terminalSafe(view.failure?.code ?? "unknown")}${checks === undefined || checks.length === 0 ? "" : `; failed checks: ${checks.map(terminalSafe).join(", ")}`}). Start a new one.`;
 }
 
-async function download(runtime: AuditRuntime, link: string): Promise<Buffer> {
+/**
+ * Downloads the signed link as it is: no sign-in token, https only, and no redirect followed (a redirect could lead to a link
+ * that is not https or to another host, and a signed link never needs one). The body is counted as it arrives and stops past `maxBytes`.
+ */
+export async function downloadExport(runtime: AuditRuntime, link: string, maxBytes = MAX_EXPORT_BYTES): Promise<Buffer> {
   if (!/^https:\/\//i.test(link)) throw agentXError("RUNTIME_UNAVAILABLE", "AgentX gave a download link that is not secure, so nothing was downloaded; try again");
+  const tooBig = () => agentXError("RUNTIME_UNAVAILABLE", "the export is larger than an export can be, so it was not downloaded");
+  const cutOff = () => agentXError("RUNTIME_UNAVAILABLE", "the download was cut off before it finished; run the command again");
   let response: Response;
   try {
-    // The signed link carries its own permission: the sign-in token goes to the control plane only, never here.
-    response = await runtime.fetch(link, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+    response = await runtime.fetch(link, { redirect: "manual", signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
   } catch {
     throw agentXError("RUNTIME_UNAVAILABLE", "could not download the export; check your connection and run the command again");
   }
+  if (response.status >= 300 && response.status < 400) {
+    throw agentXError("RUNTIME_UNAVAILABLE", "the download link redirected, and this CLI follows no redirects; run the command again to get a new link");
+  }
   if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `the download link did not work (HTTP ${String(response.status)}); run the command again`);
   const declared = Number(response.headers.get("content-length"));
-  const tooBig = () => agentXError("RUNTIME_UNAVAILABLE", "the export is larger than an export can be, so it was not downloaded");
-  if (Number.isFinite(declared) && declared > MAX_EXPORT_BYTES) throw tooBig();
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length > MAX_EXPORT_BYTES) throw tooBig();
-  return bytes;
+  if (Number.isFinite(declared) && declared > maxBytes) throw tooBig();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    const reader = response.body?.getReader() as ReadableStreamDefaultReader<Uint8Array> | undefined;
+    for (;;) {
+      const next = await reader?.read();
+      if (next === undefined || next.done) break;
+      total += next.value.length;
+      if (total > maxBytes) {
+        await reader?.cancel().catch(() => undefined);
+        throw tooBig();
+      }
+      chunks.push(next.value);
+    }
+  } catch (error) {
+    throw error instanceof AgentXError ? error : cutOff();
+  }
+  return Buffer.concat(chunks);
 }
 
 /**
@@ -321,8 +367,9 @@ export async function fetchAuditExport(
   for (;;) {
     if (status === "running") {
       if (waited >= MAX_WAIT_MS) throw agentXError("RUNTIME_UNAVAILABLE", "the export is still being prepared after a long wait; run the command again later");
-      await runtime.sleep(transport.pollMs);
-      waited += transport.pollMs;
+      const wait = transport.backoff !== undefined && waited >= transport.backoff.afterMs ? transport.backoff.pollMs : transport.pollMs;
+      await runtime.sleep(wait);
+      waited += wait;
     }
     let view: AuditExportView;
     try {
@@ -334,12 +381,17 @@ export async function fetchAuditExport(
       status = "running";
       continue;
     }
+    if (view.exportId !== started.exportId) throw agentXError("RUNTIME_UNAVAILABLE", "AgentX answered for another export than the one started; try again");
     status = view.status;
     if (view.status === "running") continue;
     if (view.status === "failed") throw agentXError("RUNTIME_UNAVAILABLE", failureMessage(view));
     if (view.status === "expired") throw agentXError("NOT_FOUND", "That export has expired. Start a new one.");
     if (view.download === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "AgentX said the export is ready but gave no download link; try again");
-    return { view, bytes: await download(runtime, view.download.url) };
+    const bytes = await downloadExport(runtime, view.download.url);
+    if (view.summary !== undefined && bytes.length !== view.summary.bytes) {
+      throw agentXError("RUNTIME_UNAVAILABLE", `the download was ${String(bytes.length)} bytes but the export is ${String(view.summary.bytes)} bytes, so it was cut short or replaced; run the command again`);
+    }
+    return { view, bytes };
   }
 }
 
@@ -354,7 +406,8 @@ export function exportRange(from: string | undefined, to: string | undefined): {
 
 /** Before anything is requested: an export file is never written over, and its folder must be there. */
 export async function assertNewFile(path: string): Promise<void> {
-  const exists = await stat(path).then(() => true, () => false);
+  // lstat: a symlink at the path (even a dangling one) counts as a file that is there, and is never followed.
+  const exists = await lstat(path).then(() => true, () => false);
   if (exists) throw agentXError("CONFIG_INVALID", `${path} already exists; choose another --out, so an export you kept is never overwritten`);
   const folder = await stat(dirname(path)).then((info) => info, () => undefined);
   if (folder === undefined || !folder.isDirectory()) throw agentXError("CONFIG_INVALID", `the folder for ${path} does not exist`);
@@ -406,15 +459,18 @@ export async function exportAuditFile(
 ): Promise<string> {
   await assertNewFile(input.out);
   const { view, bytes } = await fetchAuditExport(transport, runtime, input);
+  // Only a file that reads as an audit export is saved and called saved.
+  const parsed = parseExportBytes(bytes);
+  if ("problem" in parsed) throw agentXError("RUNTIME_UNAVAILABLE", `the downloaded file is not a readable audit export (${parsed.problem}), so it was not saved; run the command again`);
   await saveExportFile(input.out, bytes);
   if (input.json) {
     return `${JSON.stringify({ ok: true, data: jsonSafe({ file: input.out, bytes: bytes.length, exportId: view.exportId, range: view.range, withDetails: view.withDetails, summary: view.summary, limits: AUDIT_LIMITS_COPY }) })}\n`;
   }
   const lines = [
-    `Saved the export to ${input.out} (${String(bytes.length)} bytes, readable only by you).`,
+    `Saved the export to ${terminalSafe(input.out)} (${String(bytes.length)} bytes, readable only by you).`,
     ...(view.summary === undefined ? [] : summaryLines(view.summary)),
     "",
-    `To check it without trusting this CLI, run: rovara-audit-verify ${input.out}`,
+    `To check it without trusting this CLI, run: rovara-audit-verify ${terminalSafe(input.out)}`,
     "Keep every export you take: a later export checked with --extends shows if history was rewritten in between.",
     "",
     AUDIT_LIMITS_COPY,
@@ -452,14 +508,25 @@ export async function loadAnchors(trust: readonly string[]): Promise<Record<stri
   return Object.fromEntries(merged);
 }
 
-/** An export file's bundle, plain or gzipped; `undefined` when it is not a version 1 audit export. */
-export function bundleOf(bytes: Buffer): AuditBundleV1 | undefined {
+/** An export file's bundle, plain or gzipped, or why it is not one. `maxBytes` bounds the unpacked JSON. */
+export function parseExportBytes(bytes: Buffer, maxBytes = MAX_EXPORT_BYTES): { bundle: AuditBundleV1 } | { problem: string } {
+  let json: Buffer;
   try {
-    const json = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b ? gunzipSync(bytes, { maxOutputLength: MAX_EXPORT_BYTES }) : bytes;
-    return parseBundle(JSON.parse(json.toString("utf8")));
+    json = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b ? gunzipSync(bytes, { maxOutputLength: maxBytes }) : bytes;
+  } catch (error) {
+    const tooBig = (error as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE";
+    return { problem: tooBig ? "it is larger than an export can be when unpacked" : "it is not a readable gzip file" };
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(json.toString("utf8"));
   } catch {
-    // Not gzip, not JSON, or not a version 1 bundle: all the same to the person.
-    return undefined;
+    return { problem: "it is not JSON" };
+  }
+  try {
+    return { bundle: parseBundle(value) };
+  } catch {
+    return { problem: "it is not a version 1 audit export" };
   }
 }
 
@@ -469,11 +536,11 @@ async function olderBundle(path: string): Promise<AuditBundleV1> {
     throw agentXError("CONFIG_INVALID", `cannot read ${path}`);
   });
   if (size > MAX_EXPORT_BYTES) throw agentXError("CONFIG_INVALID", `${path} is larger than an export can be`);
-  const bundle = bundleOf(await readFile(path).catch(() => {
+  const parsed = parseExportBytes(await readFile(path).catch(() => {
     throw agentXError("CONFIG_INVALID", `cannot read ${path}`);
   }));
-  if (bundle === undefined) throw agentXError("CONFIG_INVALID", `${path} is not a readable version 1 audit export`);
-  return bundle;
+  if ("problem" in parsed) throw agentXError("CONFIG_INVALID", `${path} is not a readable version 1 audit export (${parsed.problem})`);
+  return parsed.bundle;
 }
 
 function checkLine(entry: BundleCheck): string {
@@ -492,6 +559,58 @@ function reportLines(report: BundleReport, ok: boolean, checks: readonly BundleC
     if (mode === "GOVERNANCE") lines.push(GOVERNANCE_SENTENCE);
   }
   return lines;
+}
+
+/**
+ * Does the export cover the records that were asked for? The control plane widens a range to whole seals, so it may start earlier
+ * or end later than asked; it may not start later, end earlier, or hold nothing. (An export asked to go past the end of a log that
+ * is not that long yet ends at its last record and fails here, which the detail says.)
+ */
+function rangeCheck(bundle: AuditBundleV1, fromSeq: number, toSeq: number): BundleCheck {
+  const first = bundle.records[0] ?? bundle.unsealed[0];
+  const last = bundle.unsealed.at(-1) ?? bundle.records.at(-1);
+  const asked = `${String(fromSeq)} to ${String(toSeq)}`;
+  if (first === undefined || last === undefined) return { name: "range", ok: false, detail: `the export holds no records, but records ${asked} were asked for` };
+  if (first.seq > fromSeq) return { name: "range", ok: false, detail: `the export starts at record ${String(first.seq)}, after the first record asked for (${String(fromSeq)})` };
+  if (last.seq < toSeq) {
+    return { name: "range", ok: false, detail: `the export ends at record ${String(last.seq)}, before the last record asked for (${String(toSeq)}); the log may not be that long yet` };
+  }
+  return { name: "range", ok: true, detail: `the export holds records ${String(first.seq)} to ${String(last.seq)}, which cover the ${asked} asked for` };
+}
+
+/** Authority labels that have a token in these exports. */
+function tokenLabels(bundles: readonly AuditBundleV1[]): Set<string> {
+  const labels = new Set<string>();
+  for (const bundle of bundles) {
+    for (const entry of bundle.seals) {
+      for (const stamp of entry.timestamps) labels.add(stamp.tsa);
+      for (const stamp of entry.coveredBy?.timestamps ?? []) labels.add(stamp.tsa);
+    }
+  }
+  return labels;
+}
+
+/** A `--trust` label that no token in the export (or the older one) carries trusts nothing: most likely a typo, so it fails. */
+function trustLabelCheck(trust: readonly string[], bundles: readonly AuditBundleV1[]): BundleCheck | undefined {
+  const used = tokenLabels(bundles);
+  const unused = trust.map((spec) => spec.slice(0, spec.indexOf("="))).filter((label) => !used.has(label));
+  if (unused.length === 0) return undefined;
+  const present = [...used].map(terminalSafe).join(", ");
+  return {
+    name: "trust",
+    ok: false,
+    detail: `--trust ${[...new Set(unused)].map(terminalSafe).join(", ")} matches no timestamp in the export (it has tokens from: ${present === "" ? "no authority" : present})`,
+  };
+}
+
+/** The `org` claim of a developer access token: the person's own token, read here only to compare an export with their organization. */
+function orgOfToken(accessToken: string): string | undefined {
+  try {
+    const payload = JSON.parse(Buffer.from(accessToken.split(".")[1] ?? "", "base64url").toString("utf8")) as { org?: unknown };
+    return typeof payload.org === "string" ? payload.org : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface AuditVerifyResult {
@@ -515,12 +634,21 @@ export async function verifyAuditExport(
   if (input.out !== undefined) await assertNewFile(input.out);
   const { bytes } = await fetchAuditExport(transport, runtime, { fromSeq: input.fromSeq, toSeq: input.toSeq, withDetails: false });
   if (input.out !== undefined) await saveExportFile(input.out, bytes);
-  const bundle = bundleOf(bytes);
-  if (bundle === undefined) {
-    throw new ReportedFailure("VERIFICATION_FAILED", `The downloaded file is not a readable audit export, so nothing was verified.${input.out === undefined ? "" : ` It was saved to ${input.out}.`}`);
+  const parsed = parseExportBytes(bytes);
+  if ("problem" in parsed) {
+    throw new ReportedFailure("VERIFICATION_FAILED", `The downloaded file is not a readable audit export (${parsed.problem}), so nothing was verified.${input.out === undefined ? "" : ` It was saved to ${terminalSafe(input.out)}.`}`);
   }
+  const bundle = parsed.bundle;
   const report = verifyBundle(bundle, { anchors });
-  const checks: BundleCheck[] = [...report.checks];
+  const checks: BundleCheck[] = [...report.checks, rangeCheck(bundle, input.fromSeq, input.toSeq)];
+  const expectedOrg = await transport.orgId?.().catch(() => undefined);
+  if (expectedOrg !== undefined) {
+    checks.push({
+      name: "organization",
+      ok: bundle.orgId === expectedOrg,
+      detail: bundle.orgId === expectedOrg ? "the export is of your organization" : "the export is of another organization than the one you are signed in to",
+    });
+  }
   if (older !== undefined) {
     const olderReport = verifyBundle(older, { anchors });
     checks.push({
@@ -533,6 +661,8 @@ export async function verifyAuditExport(
     const result = verifyExtends(bundle, older);
     checks.push({ name: "extends", ok: result.ok, detail: result.detail });
   }
+  const unusedLabel = trustLabelCheck(input.trust, older === undefined ? [bundle] : [bundle, older]);
+  if (unusedLabel !== undefined) checks.push(unusedLabel);
   const ok = checks.every((entry) => entry.ok);
   if (input.json) {
     return { ok, text: `${JSON.stringify({ ok, data: jsonSafe({ ...report, ok, checks, limits: AUDIT_LIMITS_COPY }) })}\n` };
@@ -543,7 +673,7 @@ export async function verifyAuditExport(
   }
   lines.push("", input.out === undefined
     ? "Add --out <file> to keep the export you checked: you need it to check a later export with --extends."
-    : `Saved the export to ${input.out}.`);
+    : `Saved the export to ${terminalSafe(input.out)}.`);
   lines.push("For a check that doesn't trust this CLI, run rovara-audit-verify on the exported file.", "", AUDIT_LIMITS_COPY);
   return { ok, text: `${lines.join("\n")}\n` };
 }

@@ -11,6 +11,7 @@ import {
   AuditExportViewSchema,
   AuditRecordsSchema,
   auditLogQuery,
+  neutralised,
   type AuditExportTransport,
   type AuditLogFlags,
   type AuditRecords,
@@ -25,6 +26,8 @@ const UNSAFE_TEXT = /[\p{Cc}\p{Cf}]/u;
 const TICKET_SHAPE = /^[\x21-\x7e]+$/;
 /** The staff export poll: each one is a recorded read, so no more often than this. */
 export const STAFF_POLL_MS = 10_000;
+/** After this long the staff poll slows down, so one long export does not fill the customer's log with reads. */
+const STAFF_BACKOFF = { afterMs: 2 * 60 * 1000, pollMs: 30_000 } as const;
 const REQUEST_TIMEOUT_MS = 30_000;
 
 export interface StaffJustification {
@@ -72,6 +75,15 @@ async function staffRequest<T>(
   schema: { safeParse: (value: unknown) => { success: true; data: T } | { success: false } },
   options: { method?: "GET" | "POST"; body?: unknown } = {},
 ): Promise<T> {
+  return neutralised(() => staffCall(context, path, schema, options));
+}
+
+async function staffCall<T>(
+  context: StaffAuditContext,
+  path: string,
+  schema: { safeParse: (value: unknown) => { success: true; data: T } | { success: false } },
+  options: { method?: "GET" | "POST"; body?: unknown },
+): Promise<T> {
   let response: Response;
   try {
     response = await context.fetch(`${context.controlPlaneUrl.replace(/\/$/, "")}${path}`, {
@@ -98,6 +110,8 @@ export function staffExportTransport(context: StaffAuditContext, orgId: OrgId, w
   const base = `/v1/admin/audit/${orgId}/exports`;
   return {
     pollMs: STAFF_POLL_MS,
+    backoff: STAFF_BACKOFF,
+    orgId: async () => orgId,
     start: (request) => staffRequest(context, base, AuditExportStartSchema, { method: "POST", body: { ...request, reason: why.reason, ...(why.ticket === undefined ? {} : { ticket: why.ticket }) } }),
     poll: (exportId) => staffRequest(context, `${base}/${exportId}?${justificationParams(new URLSearchParams(), why).toString()}`, AuditExportViewSchema),
   };
