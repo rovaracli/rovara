@@ -1,5 +1,6 @@
 import { connectorSecretsPolicyStatements, connectorSecretsTrustPolicy } from "./connector-secrets-policy.js";
 import { grantProviderKeySecrets } from "./model-keys.js";
+import { mergeRoleStatementsOnSynth } from "./merge-role-statements.js";
 import { EgressAlarms } from "./egress-alarms.js";
 import { ModelAccess } from "./model-access.js";
 import { ModelProxy } from "./model-proxy.js";
@@ -68,6 +69,11 @@ export interface ControlPlaneStackProps extends StackProps {
    * itself is region-agnostic, so the model proxy's inference-profile geography is derived from this (ruling R52).
    */
   deploymentRegion?: string;
+  /**
+   * Whether the broker role's statements that differ only in resources or only in actions are merged (default true in a named
+   * environment; a legacy install keeps its recorded template). Only a test turns it off, to compare the permissions before and after.
+   */
+  mergeBrokerStatements?: boolean;
 }
 
 /**
@@ -188,6 +194,9 @@ export class ControlPlaneStack extends Stack {
       GITHUB_APP_ID: githubAppId.valueAsString,
       GITHUB_APP_PRIVATE_KEY_SECRET_ARN: githubAppPrivateKeySecretArn.valueAsString,
     });
+    // The merged control plane's broker policy is past CDK's 10,000-character inline limit, and CDK would move the overflow into a
+    // managed policy, which the deploy's CloudFormation role may not create (R53). Merge same-shaped statements instead.
+    if (naming.env !== undefined && props?.mergeBrokerStatements !== false) mergeRoleStatementsOnSynth(broker.role!);
     state.grantReadWriteData(broker);
     artifacts.grantReadWrite(broker);
     broker.addToRolePolicy(new iam.PolicyStatement({

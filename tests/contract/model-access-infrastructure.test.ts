@@ -133,10 +133,15 @@ describe("model access function infrastructure (named environments)", () => {
     expect(broker.Properties.Environment!.Variables!.MODEL_ACCESS_FUNCTION_NAME).toEqual({ Ref: functionId });
     const brokerRole = roleOf(broker.Properties.Role!);
     const invokes = statementsOf(brokerRole).filter((statement) => [statement.Action].flat().includes("lambda:InvokeFunction") && mentions(statement.Resource, functionId));
+    // The broker's statements that share an action are merged into one resource list (the policy must stay under CDK's inline limit),
+    // so that statement also names the broker's other functions; this function's part of it is checked below.
     expect(invokes).toHaveLength(1);
+    expect(invokes[0]!.Action).toBe("lambda:InvokeFunction");
     // The function's ARN, and its versions and aliases (ARN:*): never a wildcard that reaches another function.
     const arn = { "Fn::GetAtt": [functionId, "Arn"] };
-    expect([invokes[0]!.Resource].flat()).toEqual([arn, { "Fn::Join": ["", [arn, ":*"]] }]);
+    const resourcesOfInvokes = [invokes[0]!.Resource].flat();
+    expect(resourcesOfInvokes.filter((resource) => mentions(resource, functionId))).toEqual([arn, { "Fn::Join": ["", [arn, ":*"]] }]);
+    expect(resourcesOfInvokes.every((resource) => typeof resource === "object" && resource !== null)).toBe(true);
     // No other role may invoke it, and no other function is given its name.
     for (const [, policy] of ofType(resources, "AWS::IAM::Policy")) {
       if ((policy.Properties.Roles ?? []).some((role) => role.Ref === brokerRole)) continue;
