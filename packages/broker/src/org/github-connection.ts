@@ -549,8 +549,10 @@ export async function applyInstallationLifecycle(
     const orgId = bound.orgId;
     const was = bound.status;
     // GitHub's own timestamp orders deliveries: one older than what is already applied (a replay under another delivery id, or one that
-    // arrived late) says nothing about the installation now.
-    if (event.eventAt !== undefined && typeof bound.githubUpdatedAt === "number" && bound.githubUpdatedAt > event.eventAt) {
+    // arrived late) says nothing about the installation now. `deleted` is terminal and is applied whatever its stamp (it is also not
+    // allowed to wind the stored stamp back).
+    const eventAt = event.kind === "installation" && event.action === "deleted" ? undefined : event.eventAt;
+    if (eventAt !== undefined && typeof bound.githubUpdatedAt === "number" && bound.githubUpdatedAt > eventAt) {
       log(full, { event: "github.installation_event_stale", orgId, installationId: event.installationId, kind: event.kind === "installation" ? event.action : "repositories" });
       return "ignored";
     }
@@ -565,8 +567,8 @@ export async function applyInstallationLifecycle(
     }
     const now = deps.now();
     const at = new Date(now).toISOString();
-    const expression = `SET updatedAt = :at${event.eventAt === undefined ? "" : ", githubUpdatedAt = :eventAt"}${next.status === undefined ? "" : ", #status = :status"}${next.repositorySelection === undefined ? "" : ", repositorySelection = :selection"}`;
-    const values = { ":at": at, ...(event.eventAt === undefined ? {} : { ":eventAt": event.eventAt }), ...(next.status === undefined ? {} : { ":status": next.status }), ...(next.repositorySelection === undefined ? {} : { ":selection": next.repositorySelection }) };
+    const expression = `SET updatedAt = :at${eventAt === undefined ? "" : ", githubUpdatedAt = :eventAt"}${next.status === undefined ? "" : ", #status = :status"}${next.repositorySelection === undefined ? "" : ", repositorySelection = :selection"}`;
+    const values = { ":at": at, ...(eventAt === undefined ? {} : { ":eventAt": eventAt }), ...(next.status === undefined ? {} : { ":status": next.status }), ...(next.repositorySelection === undefined ? {} : { ":selection": next.repositorySelection }) };
     // DynamoDB refuses a name or a value that no expression uses: the org's copy has no condition on the status, so it declares #status only when it sets it.
     const copyUpdate = {
       UpdateExpression: expression, ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: values,
@@ -574,7 +576,7 @@ export async function applyInstallationLifecycle(
     };
     const globalUpdate = {
       // `<=`: GitHub stamps whole seconds, and two real changes in one second (a suspend, then an unsuspend) must both apply.
-      UpdateExpression: expression, ConditionExpression: `orgId = :org AND #status = :was${event.eventAt === undefined ? "" : " AND (attribute_not_exists(githubUpdatedAt) OR githubUpdatedAt <= :eventAt)"}`,
+      UpdateExpression: expression, ConditionExpression: `orgId = :org AND #status = :was${eventAt === undefined ? "" : " AND (attribute_not_exists(githubUpdatedAt) OR githubUpdatedAt <= :eventAt)"}`,
       ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ...values, ":org": orgId, ":was": was },
     };
     const items = (withOrgCopy: boolean) => [

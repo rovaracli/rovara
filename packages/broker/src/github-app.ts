@@ -156,10 +156,15 @@ export class GitHubAppCredentialProvider {
     return { username: "x-access-token", password: token };
   }
 
-  /** Refuses, with CONFIG_INVALID, a repository of this App's credential that the App cannot reach. */
+  /**
+   * Refuses, with CONFIG_INVALID, a repository of this App's credential that the App cannot reach. For an org on a cloud install GitHub is
+   * asked afresh (as the gates do), so a repository the installation no longer covers is not accepted from the per-owner cache.
+   */
   async checkRepository(repository: { credentialRef: string; url: string }, scope: GitHubTokenScope): Promise<void> {
     if (repository.credentialRef !== this.options.credentialRef) return;
-    await this.installed(parseGitHubRepository(repository.url), scope);
+    const parsed = parseGitHubRepository(repository.url);
+    if ("orgId" in scope && this.options.requireInstallationBound !== undefined) await this.lookedUp(parsed, true);
+    await this.installed(parsed, scope);
   }
 
   /** Confirms a signed webhook's repository identity against the App's current installation and GitHub API. */

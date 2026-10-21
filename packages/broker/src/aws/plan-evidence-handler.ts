@@ -141,25 +141,26 @@ export async function runPlanEvidenceJob(deps: PlanEvidenceRunDependencies, even
     // The task's org: on a cloud install the code is read only while that org's GitHub connection holds the installation.
     const scope: GitHubTokenScope = deps.cloud === true ? { orgId } : { system: "private-install" };
     const deadline = deps.now() + RESOLVE_DEADLINE_MS;
-    let closed = false;
+    // Repositories (by URL) whose installation the org's GitHub connection no longer holds: no later read of them will succeed, so they
+    // are not tried again. Other repositories, on installations still connected, are read as before.
+    const notConnected = new Set<string>();
     const bundle = await resolvePlanEvidence(plan, {
       ...planEvidenceSources(project, task),
       readFile: async (url, path, commit, options) => {
-        // The org's GitHub connection no longer holds the installation: no later read or retry will, so the rest are not tried.
-        if (closed) throw agentXError("GITHUB_NOT_CONNECTED", "the organization's GitHub connection no longer reaches this repository");
+        if (notConnected.has(url)) throw agentXError("GITHUB_NOT_CONNECTED", "the organization's GitHub connection no longer reaches this repository");
         try {
           return await deps.github.getFileAtCommit(url, path, commit, scope, { ...options, timeoutMs: Math.max(1, Math.min(READ_TIMEOUT_MAX_MS, deadline - deps.now())) });
         } catch (error) {
-          if ((error as { code?: unknown }).code === "GITHUB_NOT_CONNECTED") closed = true;
+          if ((error as { code?: unknown }).code === "GITHUB_NOT_CONNECTED") notConnected.add(url);
           throw error;
         }
       },
       deadlineMs: RESOLVE_DEADLINE_MS,
       now: deps.now,
     });
-    // Retrying cannot help an org that has disconnected GitHub: attach the places as unavailable and end the job.
-    if (closed) return finish("github_not_connected", plan);
-    if (bundle.excerpts.some((excerpt) => excerpt.status === "unavailable") && attempt < PLAN_EVIDENCE_MAX_ATTEMPTS) {
+    // Retrying cannot help a repository the org has disconnected: its places stay `unavailable`, the excerpts read are kept, and the job ends here.
+    if (notConnected.size > 0) log({ event: "plan_evidence.github_not_connected", taskId, artifactId, attempt, repositories: notConnected.size });
+    else if (bundle.excerpts.some((excerpt) => excerpt.status === "unavailable") && attempt < PLAN_EVIDENCE_MAX_ATTEMPTS) {
       await reschedule(deps.now() + RETRY_MINUTES[attempt - 1]! * MS_PER_MINUTE);
       log({ event: "plan_evidence.retry", taskId, artifactId, attempt, reason: "unavailable" });
       return "retry";

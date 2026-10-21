@@ -60,6 +60,8 @@ function fakeGithub(options: { installationOf?: Record<string, number>; reposito
   const tokenInstallation = new Map<string, number>();
   /** Repositories (`owner/name`) the installation no longer reaches: GitHub answers 404 for their installation and 422 to a token asked for them. */
   const uncovered = new Set<string>();
+  /** How the repository-installation lookup fails, when it does: GitHub answering 502, or the request timing out as `fetch` reports it. */
+  const lookupFault: { current?: "http-502" | "timeout" } = {};
   const minted = () => requests.filter((request) => /^POST \/app\/installations\/\d+\/access_tokens/.test(request));
   const fetchImplementation = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
@@ -67,6 +69,8 @@ function fakeGithub(options: { installationOf?: Record<string, number>; reposito
     requests.push(`${method} ${url.pathname}${url.search}`);
     let match = /^\/repos\/([^/]+)\/([^/]+)\/installation$/.exec(url.pathname);
     if (match !== null) {
+      if (lookupFault.current === "http-502") return Response.json({ message: "Bad Gateway" }, { status: 502 });
+      if (lookupFault.current === "timeout") throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
       const id = uncovered.has(`${match[1]}/${match[2]}`) ? undefined : installationOf[match[1]!];
       return id === undefined ? Response.json({ message: "Not Found" }, { status: 404 }) : Response.json({ id, account: { login: match[1] } });
     }
@@ -90,7 +94,7 @@ function fakeGithub(options: { installationOf?: Record<string, number>; reposito
     if (match !== null) return Response.json({ id: 9001, full_name: `${match[1]}/${match[2]}`, default_branch: "main" });
     return Response.json({ message: "unexpected" }, { status: 500 });
   }) as typeof fetch;
-  return { fetchImplementation, requests, minted, installationOf, uncovered };
+  return { fetchImplementation, requests, minted, installationOf, uncovered, lookupFault };
 }
 
 type World = Awaited<ReturnType<typeof world>>;
@@ -752,5 +756,86 @@ describe("agentx github list | disconnect", () => {
     const entry = (listed.body.installations as Array<Record<string, unknown>>)[0]!;
     expect(Object.keys(entry).sort()).toEqual(["accountLogin", "accountType", "installationId", "repositorySelection", "status"]);
     expect(typeof entry.installationId).toBe("number");
+  });
+});
+
+describe("Task 16 fold-ins from the Task 15 re-check: lifecycle ordering", () => {
+  const at = (seconds: number) => new Date(NOW + seconds * 1000).toISOString();
+
+  it("installation.deleted is terminal: it applies whatever its timestamp, even older than a stored suspend", async () => {
+    const w = await world();
+    expect((await w.lifecycle("suspend", 55, undefined, { updated_at: at(10), suspended_at: at(10) })).statusCode).toBe(202);
+    expect(w.bindingOf()).toMatchObject({ status: "suspended", githubUpdatedAt: NOW + 10_000 });
+    expect((await w.lifecycle("deleted", 55, undefined, { updated_at: at(5) })).statusCode).toBe(202);
+    expect(w.bindingOf()).toMatchObject({ status: "removed" });
+    expect(w.copyOf()).toMatchObject({ status: "removed" });
+    // The stored stamp is not wound back by a late terminal event.
+    expect(w.bindingOf()).toMatchObject({ githubUpdatedAt: NOW + 10_000 });
+  });
+
+  it("an equal stamp is not stale: an unsuspend stamped in the same second as the suspend before it still applies", async () => {
+    const w = await world();
+    expect((await w.lifecycle("suspend", 55, undefined, { updated_at: at(10), suspended_at: at(10) })).statusCode).toBe(202);
+    expect(w.bindingOf()).toMatchObject({ status: "suspended" });
+    expect((await w.lifecycle("unsuspend", 55, undefined, { updated_at: at(10), suspended_at: null })).statusCode).toBe(202);
+    expect(w.bindingOf()).toMatchObject({ status: "active" });
+    expect(w.copyOf()).toMatchObject({ status: "active" });
+  });
+});
+
+describe("Task 16 fold-ins: the registration check asks GitHub afresh on cloud", () => {
+  const demo = "https://github.com/example/demo.git";
+  const reference = { credentialRef: "github-app", url: demo };
+
+  it("a repository removed from the installation is refused at registration even on a warm Lambda", async () => {
+    const w = await world();
+    expect(await w.provider.getFileAtCommit(demo, "src/a.ts", "a".repeat(40), SCOPE_A)).toBe("file text");
+    await expect(w.provider.checkRepository(reference, SCOPE_A)).resolves.toBeUndefined();
+    w.github.uncovered.add("example/demo");
+    await expect(w.provider.checkRepository(reference, SCOPE_A)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
+  it("a private install keeps the cached lookup: no extra GitHub call per check", async () => {
+    const w = await world({ cloud: false });
+    await w.provider.checkRepository(reference, { system: "private-install" });
+    const lookups = () => w.github.requests.filter((request) => request.endsWith("/installation")).length;
+    const before = lookups();
+    await w.provider.checkRepository(reference, { system: "private-install" });
+    expect(lookups()).toBe(before);
+  });
+});
+
+describe("Task 16 fold-ins: a fresh lookup that fails at the start gate never lets work through", () => {
+  for (const fault of ["http-502", "timeout"] as const) {
+    it(`a ${fault === "timeout" ? "timeout" : "5xx"} from GitHub at the start gate is 503 and writes nothing`, async () => {
+      const w = await world();
+      w.github.lookupFault.current = fault;
+      const writes = taskWrites(w).length;
+      const commands = w.db.commandNames().length;
+      const refused = await w.start();
+      expect(refused.status).toBe(503);
+      expect(error(refused).code).toBe("RUNTIME_UNAVAILABLE");
+      expect(taskWrites(w)).toHaveLength(writes);
+      expect(w.db.commandNames().slice(commands)).not.toContain("TransactWriteCommand");
+      expect(w.github.minted()).toHaveLength(0);
+    });
+  }
+});
+
+describe("Task 16 fold-ins: scopes", () => {
+  const demo = "https://github.com/example/demo.git";
+
+  it("GitHub's 422 on a token for a system scope stays an outage (RUNTIME_UNAVAILABLE), not GITHUB_NOT_CONNECTED", async () => {
+    const w = await world();
+    expect(await w.provider.getFileAtCommit(demo, "src/a.ts", "a".repeat(40), { system: "webhook" })).toBe("file text");
+    w.github.uncovered.add("example/demo");
+    expect(await refusal(w.provider.getPullRequest(demo, 1, { system: "webhook" }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE", statusCode: 503 });
+  });
+
+  it("organizationMembership refuses an org scope before anything is minted", async () => {
+    const w = await world();
+    const asked = await refusal((w.provider.organizationMembership as unknown as (id: number, org: string, login: string, scope: unknown) => Promise<unknown>).call(w.provider, 55, "example", "maya", { orgId: TEST_ORG }));
+    expect(asked.code).toBe("CONFIG_INVALID");
+    expect(w.github.minted()).toHaveLength(0);
   });
 });
