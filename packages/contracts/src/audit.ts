@@ -72,6 +72,14 @@ export const AUDIT_TSA_ENDPOINTS = {
 
 export const AUDIT_EXPORT_MAX_RECORDS = 200000;
 export const AUDIT_EXPORT_URL_SECONDS = 900;
+/**
+ * The export function's asynchronous-invoke limits and timeout. The platform may start an attempt up to the event age after the
+ * request and let it run the timeout, so an export still `running` after both is lost: its view says failed and no later attempt
+ * is allowed to make it ready (the worker refuses an attempt older than the event age).
+ */
+export const AUDIT_EXPORT_RETRY_ATTEMPTS = 1;
+export const AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS = 1800;
+export const AUDIT_EXPORT_TIMEOUT_SECONDS = 900;
 export const AUDIT_FILTER_SCAN_MAX = 20000;
 
 export const AUDIT_DETAILS_SHRED_AFTER_CLOSE_DAYS = 30;

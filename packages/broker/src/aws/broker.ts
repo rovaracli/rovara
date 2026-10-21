@@ -16,7 +16,6 @@ import {
   type TransactWriteCommandInput,
 } from "@aws-sdk/lib-dynamodb";
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
@@ -244,6 +243,7 @@ import { ZodError, z } from "zod";
 import { healthProbes } from "./health-probes.js";
 import { runAuditDrain } from "../audit/drain.js";
 import type { AuditExportClientDeps } from "../audit/export.js";
+import { exportInvoker, exportLinkSigner } from "../audit/export-wiring.js";
 import { AuditKeyring } from "../audit/keyring.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
@@ -12213,11 +12213,8 @@ const auditLedger: AuditExportClientDeps | undefined = auditLedgerTable === unde
   ...(audit === undefined ? {} : { audit }),
   now: Date.now,
   log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
-  invokeExport: async (event) => {
-    const response = await lambdaClient.send(new InvokeCommand({ FunctionName: requiredEnvironment("AUDIT_EXPORT_FUNCTION_NAME"), InvocationType: "Event", Payload: Buffer.from(JSON.stringify(event)) }));
-    if (response.StatusCode !== 202) throw new Error(`audit export start answered ${String(response.StatusCode)}`);
-  },
-  presign: ({ bucket, key, expiresInSeconds }) => getSignedUrl(s3, new GetObjectCommand({ Bucket: bucket, Key: key }), { expiresIn: expiresInSeconds }),
+  invokeExport: exportInvoker(lambdaClient, requiredEnvironment("AUDIT_EXPORT_FUNCTION_NAME")),
+  presign: exportLinkSigner(s3),
 };
 
 export const handler = createAwsBrokerHandler({

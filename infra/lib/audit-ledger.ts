@@ -29,7 +29,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_INTAKE_MAX_RECEIVES, AUDIT_RETENTION_DAYS_DEFAULT, AUDIT_SEAL_INTERVAL_MINUTES, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS, canonicalJson } from "@agentx/contracts";
+import { AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS, AUDIT_EXPORT_RETRY_ATTEMPTS, AUDIT_EXPORT_TIMEOUT_SECONDS, AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_INTAKE_MAX_RECEIVES, AUDIT_RETENTION_DAYS_DEFAULT, AUDIT_SEAL_INTERVAL_MINUTES, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS, canonicalJson } from "@agentx/contracts";
 import type { AgentXNaming } from "./naming.js";
 import {
   auditLockSettings,
@@ -673,7 +673,7 @@ export class AuditLedger extends Construct {
       runtime: lambda.Runtime.NODEJS_22_X,
       entry: resolve(process.cwd(), "packages/broker/src/audit/export-handler.ts"),
       handler: "handler",
-      timeout: Duration.minutes(15),
+      timeout: Duration.seconds(AUDIT_EXPORT_TIMEOUT_SECONDS),
       memorySize: 1024,
       reservedConcurrentExecutions: 5,
       role,
@@ -692,6 +692,10 @@ export class AuditLedger extends Construct {
       bundling: { externalModules: [], minify: true, sourceMap: true, target: "node22" },
     });
     logGroup.grantWrite(role);
+    // The platform's own limits on an export's start: one retry, and no attempt of an event older than 30 minutes. With the timeout,
+    // they bound how long an export can be `running`; the worker refuses a late attempt, and the status view derives its own
+    // "lost" point from the same constants (export.ts), so a failed export is final.
+    fn.configureAsyncInvoke({ retryAttempts: AUDIT_EXPORT_RETRY_ATTEMPTS, maxEventAge: Duration.seconds(AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS) });
     new iam.Policy(this, "AuditExportPolicy", {
       roles: [role],
       statements: [

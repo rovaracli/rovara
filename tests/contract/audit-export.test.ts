@@ -8,8 +8,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
+import { InvokeCommand } from "@aws-sdk/client-lambda";
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { describe, expect, it } from "vitest";
 import { parseBundle, verifyBundle, type AuditBundleV1, type AuditRecordV1 } from "@rovara/audit-verifier";
 import { runCli } from "../../packages/audit-verifier/src/cli.js";
@@ -25,6 +25,7 @@ import { appendEvent, type AppenderDeps } from "../../packages/broker/src/audit/
 import {
   AUDIT_EXPORT_SOURCE,
   AUDIT_EXPORT_STALE_MS,
+  AUDIT_EXPORT_MAX_AGE_MS,
   AuditExportBuildError,
   auditExportId,
   buildAuditBundle,
@@ -38,6 +39,7 @@ import {
   type AuditExportEvent,
 } from "../../packages/broker/src/audit/export.js";
 import { AuditKeyring } from "../../packages/broker/src/audit/keyring.js";
+import { exportInvoker, exportLinkSigner } from "../../packages/broker/src/audit/export-wiring.js";
 import { handleAuditExportEvent } from "../../packages/broker/src/audit/export-handler.js";
 import { decodeAuditCursor, readAuditRecords, readAuditStatus, type AuditReadDeps } from "../../packages/broker/src/audit/reader.js";
 import { leavesObjectKey, recordsObjectKey, sealObjectKey, statementObjectKey } from "../../packages/broker/src/audit/anchor.js";
@@ -65,12 +67,17 @@ const PLAINTEXT = "Alice Example";
 class FakeExportsBucket {
   readonly objects = new Map<string, Buffer>();
   readonly calls: Array<{ command: string; key: string | undefined }> = [];
+  /** Runs inside a put, before it takes effect: a concurrent run's commit, say. */
+  beforePut: ((key: string) => void | Promise<void>) | undefined;
   async send(command: unknown): Promise<unknown> {
     await Promise.resolve();
     const input = (command as { input: Record<string, unknown> }).input;
     const key = String(input.Key);
     if (command instanceof PutObjectCommand) {
       this.calls.push({ command: "PutObject", key });
+      await this.beforePut?.(key);
+      // `If-None-Match: *` fails with 412 when the key exists, as S3 does.
+      if (input.IfNoneMatch === "*" && this.objects.has(key)) throw Object.assign(new Error("precondition failed"), { name: "PreconditionFailed", $metadata: { httpStatusCode: 412 } });
       this.objects.set(key, Buffer.from(input.Body as Uint8Array));
       return { $metadata: { httpStatusCode: 200 } };
     }
@@ -128,7 +135,7 @@ function bench(options: { anchors?: Record<string, readonly X509Certificate[]>; 
     now: () => h.clock.now,
     log: (entry) => logs.push(entry),
     invokeExport: async (event) => { invocations.push(event); },
-    presign: async (input) => `https://signed.test/${input.bucket}/${input.key}?expires=${String(input.expiresInSeconds)}`,
+    presign: async (input) => ({ url: `https://signed.test/${input.bucket}/${input.key}?expires=${String(input.expiresInSeconds)}`, expiresInSeconds: input.expiresInSeconds }),
   };
   const counters = new Map<string, number>();
   const append = async (orgId: string, count: number, appendOptions: { details?: boolean } = {}): Promise<void> => {
@@ -370,8 +377,9 @@ describe("startAuditExport", () => {
       { requestId: "r", fromSeq: 0, toSeq: 3 },
       { requestId: "", fromSeq: 1, toSeq: 3 },
     ]) {
-      await expect(startAuditExport(b.deps, requester(), request)).rejects.toMatchObject(RANGE_INVALID);
+      await expect(startAuditExport(b.deps, requester(), request)).rejects.toMatchObject(request.requestId === "" ? { code: "CONFIG_INVALID" } : RANGE_INVALID);
     }
+    await expect(startAuditExport(b.deps, requester(), { requestId: "x".repeat(201), fromSeq: 1, toSeq: 3 })).rejects.toMatchObject({ code: "CONFIG_INVALID", statusCode: 400 });
     expect(b.h.db.find((item) => String(item.pk).includes("AUDIT_EXPORT#"))).toStrictEqual([]);
     expect(b.invocations).toStrictEqual([]);
   });
@@ -566,6 +574,109 @@ describe("runAuditExport", () => {
   });
 });
 
+describe("runAuditExport: late, retried and ambiguous runs", () => {
+  const started = async (b: Bench, id = "late") => (await startAuditExport(b.deps, requester(), { requestId: id, fromSeq: 1, toSeq: 12 })).exportId;
+  const metaOf2 = (b: Bench, exportId: string) => b.h.db.get(`ORG#${A}#AUDIT_EXPORT#${exportId}`, "META")!;
+  const pendingItems = (b: Bench) => b.h.db.find((item) => String(item.pk).startsWith("AUDIT_PENDING#"));
+
+  it("an attempt that starts after the platform's event age has passed is failed as timed out, builds nothing, and can never become ready later", async () => {
+    const b = await world();
+    const exportId = await started(b);
+    b.h.clock.now += AUDIT_EXPORT_MAX_AGE_MS + 1000;
+    b.h.s3.calls.length = 0;
+    expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("failed");
+    expect(metaOf2(b, exportId)).toMatchObject({ status: "failed", failure: { code: "TIMED_OUT" } });
+    expect(b.h.s3.calls).toStrictEqual([]);
+    expect(b.exportsBucket.calls).toStrictEqual([]);
+    expect(pendingItems(b)).toStrictEqual([]);
+    // The retry that the platform may still deliver finds it failed, and the view agrees.
+    b.h.clock.now -= AUDIT_EXPORT_MAX_AGE_MS;
+    expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("already_failed");
+    expect(await getAuditExport(b.deps, A, exportId)).toMatchObject({ status: "failed", failure: { code: "TIMED_OUT" } });
+    expect(b.exportsBucket.objects.size).toBe(0);
+  });
+
+  it("the view calls an export failed only after the last attempt the platform can still start has had its whole timeout", async () => {
+    const b = await world();
+    const exportId = await started(b, "view");
+    // An attempt may start up to AUDIT_EXPORT_MAX_AGE_MS after the request and run 15 minutes: until then the export is running.
+    b.h.clock.now += AUDIT_EXPORT_STALE_MS;
+    expect(AUDIT_EXPORT_STALE_MS).toBe(AUDIT_EXPORT_MAX_AGE_MS + 15 * 60_000);
+    expect(await getAuditExport(b.deps, A, exportId)).toMatchObject({ status: "running" });
+    b.h.clock.now += 1;
+    expect(await getAuditExport(b.deps, A, exportId)).toMatchObject({ status: "failed", failure: { code: "TIMED_OUT" } });
+  });
+
+  it("an attempt that starts just inside the event age still builds and commits", async () => {
+    const b = await world();
+    const exportId = await started(b, "inside");
+    b.h.clock.now += AUDIT_EXPORT_MAX_AGE_MS - 1000;
+    expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("ready");
+  });
+
+  it("a commit that went through but answered with an error keeps the file: the export is ready, and the retry finds it so", async () => {
+    const b = await world();
+    const exportId = await started(b, "ambiguous");
+    const real = b.deps.documentClient;
+    let lost = true;
+    b.deps.documentClient = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+      const out = await (real as unknown as { send: (c: unknown) => Promise<unknown> }).send(command);
+      if (lost && command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes("AUDIT_EXPORT#")) {
+        lost = false;
+        throw Object.assign(new Error("socket hang up"), { name: "TimeoutError" });
+      }
+      return out;
+    } } as never;
+    expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("ready");
+    expect(metaOf2(b, exportId)).toMatchObject({ status: "ready" });
+    expect(b.exportsBucket.objects.has(exportObjectKey(A, exportId))).toBe(true);
+    expect(b.exportsBucket.calls.map((call) => call.command)).toStrictEqual(["PutObject"]);
+    expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("already_ready");
+    await expect(exportDownloadUrl(b.deps, A, exportId)).resolves.toMatchObject({ expiresInSeconds: 900 });
+    expect(gunzipped(b, A, exportId).orgId).toBe(A);
+  });
+
+  it("writes the file only if none is there, so a second run cannot replace a finished export's file", async () => {
+    const b = await world();
+    const exportId = await started(b, "twice");
+    const key = exportObjectKey(A, exportId);
+    // Between this run's start and its put, another run builds the same export and commits it.
+    b.exportsBucket.beforePut = async () => {
+      b.exportsBucket.beforePut = undefined;
+      b.exportsBucket.objects.set(key, Buffer.from("the other run's file"));
+      b.h.db.set({ ...metaOf2(b, exportId), status: "ready", objectKey: key });
+    };
+    expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("already_ready");
+    expect(b.exportsBucket.objects.get(key)!.toString()).toBe("the other run's file");
+    expect(b.exportsBucket.calls.map((call) => call.command)).toStrictEqual(["PutObject"]);
+  });
+
+  it("replaces the leftover file of an earlier attempt that died before it committed", async () => {
+    const b = await world();
+    const exportId = await started(b, "leftover");
+    const key = exportObjectKey(A, exportId);
+    b.exportsBucket.objects.set(key, Buffer.from("half a file"));
+    expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("ready");
+    expect(gunzipped(b, A, exportId).orgId).toBe(A);
+    expect(b.exportsBucket.calls.map((call) => call.command)).toStrictEqual(["PutObject", "DeleteObject", "PutObject"]);
+    expect((metaOf2(b, exportId).summary as { bytes: number }).bytes).toBe(b.exportsBucket.objects.get(key)!.length);
+  });
+
+  it("an export that was failed while this run built it is reported failed, and this run's file does not stay behind", async () => {
+    const b = await world();
+    const exportId = await started(b, "failedmeanwhile");
+    b.exportsBucket.beforePut = async () => {
+      b.exportsBucket.beforePut = undefined;
+      b.h.db.set({ ...metaOf2(b, exportId), status: "failed", failure: { code: "TIMED_OUT" } });
+    };
+    expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("already_failed");
+    expect(b.exportsBucket.objects.size).toBe(0);
+    expect(b.exportsBucket.calls.map((call) => call.command)).toStrictEqual(["PutObject", "DeleteObject"]);
+    expect(metaOf2(b, exportId)).toMatchObject({ status: "failed" });
+    expect(pendingItems(b)).toStrictEqual([]);
+  });
+});
+
 describe("exportDownloadUrl", () => {
   it("presigns the export's file for 900 seconds, for a ready export of this org only", async () => {
     const b = await world();
@@ -579,20 +690,61 @@ describe("exportDownloadUrl", () => {
   });
 });
 
-describe("the download link", () => {
-  it("is the SDK's presigned GET for the export's object, for the lifetime the export asks", async () => {
-    // What the broker passes as `presign`: the SDK's presigner over its S3 client (no request is made).
-    const client = new S3Client({ region: "us-east-1", credentials: { accessKeyId: "AKIAIOSFODNN7EXAMPLE", secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", sessionToken: "token" } });
-    const b = await world();
-    b.deps.presign = ({ bucket, key, expiresInSeconds }) => getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), { expiresIn: expiresInSeconds });
-    const { exportId } = await startAuditExport(b.deps, requester(), { requestId: "link", fromSeq: 1, toSeq: 4 });
-    await runAuditExport(b.deps, { orgId: A, exportId });
-    const { url } = await exportDownloadUrl(b.deps, A, exportId);
-    const parsed = new URL(url);
+describe("the broker's wiring: the download link and the start of an export", () => {
+  const credentials = (expiration?: Date) => ({ accessKeyId: "AKIAIOSFODNN7EXAMPLE", secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", sessionToken: "token", ...(expiration === undefined ? {} : { expiration }) });
+  const clientWith = (expiration?: Date) => new S3Client({ region: "us-east-1", credentials: credentials(expiration) });
+  const NOW = Date.parse("2026-10-20T12:00:00Z");
+
+  it("signs the export's object with the SDK's presigner for the lifetime asked, and says what it signed", async () => {
+    const sign = exportLinkSigner(clientWith(), () => NOW);
+    const link = await sign({ bucket: EXPORTS_BUCKET, key: `${A}/aex_1.rovara-audit.json.gz`, expiresInSeconds: AUDIT_EXPORT_URL_SECONDS });
+    const parsed = new URL(link.url);
     expect(parsed.hostname).toBe(`${EXPORTS_BUCKET}.s3.us-east-1.amazonaws.com`);
-    expect(parsed.pathname).toBe(`/${A}/${exportId}.rovara-audit.json.gz`);
+    expect(parsed.pathname).toBe(`/${A}/aex_1.rovara-audit.json.gz`);
     expect(parsed.searchParams.get("X-Amz-Expires")).toBe("900");
     expect(parsed.searchParams.get("X-Amz-Signature")).toMatch(/^[0-9a-f]{64}$/);
+    expect(link.expiresInSeconds).toBe(900);
+  });
+
+  it("never lets a link outlive the credentials that sign it: the lifetime is cut to what they have left, and the answer says so", async () => {
+    const sign = exportLinkSigner(clientWith(new Date(NOW + 300_000)), () => NOW);
+    const link = await sign({ bucket: EXPORTS_BUCKET, key: "k", expiresInSeconds: 900 });
+    expect(link.expiresInSeconds).toBe(300);
+    expect(new URL(link.url).searchParams.get("X-Amz-Expires")).toBe("300");
+    // Credentials with more than the link asks for leave it alone; credentials that are over refuse to sign.
+    expect((await exportLinkSigner(clientWith(new Date(NOW + 3_600_000)), () => NOW)({ bucket: EXPORTS_BUCKET, key: "k", expiresInSeconds: 900 })).expiresInSeconds).toBe(900);
+    await expect(exportLinkSigner(clientWith(new Date(NOW - 1000)), () => NOW)({ bucket: EXPORTS_BUCKET, key: "k", expiresInSeconds: 900 })).rejects.toThrow(/credentials/);
+  });
+
+  it("downloads report the lifetime the link really has", async () => {
+    const b = await world();
+    b.deps.presign = exportLinkSigner(clientWith(new Date(b.h.clock.now + 120_000)), () => b.h.clock.now);
+    const { exportId } = await startAuditExport(b.deps, requester(), { requestId: "link", fromSeq: 1, toSeq: 4 });
+    await runAuditExport(b.deps, { orgId: A, exportId });
+    const link = await exportDownloadUrl(b.deps, A, exportId);
+    expect(link.expiresInSeconds).toBe(120);
+    expect(new URL(link.url).searchParams.get("X-Amz-Expires")).toBe("120");
+  });
+
+  it("starts an export by an asynchronous invoke of the export function, with the event as the payload, and insists on the 202", async () => {
+    const sent: Array<{ input: Record<string, unknown> }> = [];
+    let status = 202;
+    const lambda = { send: async (command: unknown) => { sent.push(command as { input: Record<string, unknown> }); return { StatusCode: status }; } };
+    const invoke = exportInvoker(lambda as never, "agentx-acme-AuditExport");
+    const event = { source: AUDIT_EXPORT_SOURCE, orgId: A, exportId: "aex_1" } as const;
+    await invoke(event);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toBeInstanceOf(InvokeCommand);
+    expect(sent[0]!.input).toMatchObject({ FunctionName: "agentx-acme-AuditExport", InvocationType: "Event" });
+    expect(JSON.parse(Buffer.from(sent[0]!.input.Payload as Uint8Array).toString("utf8"))).toStrictEqual(event);
+    status = 200;
+    await expect(invoke(event)).rejects.toThrow(/answered 200/);
+  });
+
+  it("is what a failed start marks as failed: a start the platform refuses leaves a failed export", async () => {
+    const b = await world();
+    b.deps.invokeExport = exportInvoker({ send: async () => ({ StatusCode: 500 }) } as never, "fn");
+    expect(await startAuditExport(b.deps, requester(), { requestId: "refused", fromSeq: 1, toSeq: 4 })).toMatchObject({ status: "failed" });
   });
 });
 

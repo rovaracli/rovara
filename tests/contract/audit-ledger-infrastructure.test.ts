@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { App, ArnFormat, Stack, aws_cloudwatch_actions as cloudwatchActions, aws_dynamodb as dynamodb, aws_iam as iam, aws_lambda as lambda, aws_sns as sns } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { AUDIT_INTAKE_MAX_RECEIVES, HEALTH_ALARM_SUFFIXES, canonicalJson } from "@agentx/contracts";
+import { AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS, AUDIT_EXPORT_RETRY_ATTEMPTS, AUDIT_EXPORT_TIMEOUT_SECONDS, AUDIT_INTAKE_MAX_RECEIVES, HEALTH_ALARM_SUFFIXES, canonicalJson } from "@agentx/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { AuditLedger } from "../../infra/lib/audit-ledger.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
@@ -1936,6 +1936,16 @@ describe("the audit ledger in templates", () => {
             expect(asExport("kms:Decrypt", { ...good, "kms:EncryptionContext:rovara:purpose": "other" }).allowed).toBe(false);
             expect(asExport("kms:Decrypt", { "kms:EncryptionContext:rovara:purpose": "audit-details", "kms:EncryptionContextKeys": ["other"] }).allowed).toBe(false);
           });
+        });
+
+        it("limits its asynchronous invokes to one retry and an event age of 30 minutes, so a queued or retried build cannot start long after its export was reported failed", () => {
+          const configs = ofType(synthesis.template, "AWS::Lambda::EventInvokeConfig").filter(([id]) => id.startsWith("AuditLedgerAuditExport"));
+          expect(configs).toHaveLength(1);
+          expect(configs[0]![1].Properties).toMatchObject({ MaximumRetryAttempts: 1, MaximumEventAgeInSeconds: 1800, Qualifier: "$LATEST" });
+          expect(concreteAws(configs[0]![1].Properties.FunctionName)).toBe("Ref:AuditLedgerAuditExport");
+          expect(AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS).toBe(1800);
+          expect(AUDIT_EXPORT_RETRY_ATTEMPTS).toBe(1);
+          expect(AUDIT_EXPORT_TIMEOUT_SECONDS).toBe(900);
         });
 
         it("keeps its log group a month", () => {

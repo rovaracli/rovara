@@ -44,6 +44,7 @@ export function withoutAuditLedger(template: unknown): unknown {
     "AWS::IAM::Role AuditLedgerAuditExportRole",
     "AWS::KMS::Alias AuditLedgerAuditVaultKeyAlias",
     "AWS::KMS::Key AuditLedgerAuditVaultKey",
+    "AWS::Lambda::EventInvokeConfig AuditLedgerAuditExportEventInvokeConfig",
     "AWS::Lambda::EventSourceMapping AuditLedgerAuditAppenderSqsEventSource",
     "AWS::Lambda::Function AuditLedgerAuditAnchor",
     "AWS::Lambda::Function AuditLedgerAuditAppender",

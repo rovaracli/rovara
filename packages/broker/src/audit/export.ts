@@ -19,6 +19,8 @@ import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateComma
 import {
   AUDIT_ERROR_MESSAGES,
   AUDIT_EXPORT_MAX_RECORDS,
+  AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS,
+  AUDIT_EXPORT_TIMEOUT_SECONDS,
   AUDIT_EXPORT_URL_SECONDS,
   AgentXError,
   agentXError,
@@ -59,7 +61,7 @@ import {
 
 const gzipAsync = promisify(gzip);
 
-/** The event the broker sends itself to build an export. */
+/** The event the broker sends the export function (an asynchronous invoke) to build an export. */
 export const AUDIT_EXPORT_SOURCE = "agentx.audit-export";
 export interface AuditExportEvent {
   source: typeof AUDIT_EXPORT_SOURCE;
@@ -67,8 +69,10 @@ export interface AuditExportEvent {
   exportId: string;
 }
 
-/** A `running` export older than this has lost its worker (the function timed out): it is reported as failed. */
-export const AUDIT_EXPORT_STALE_MS = 15 * 60_000;
+/** The platform starts no attempt of an export older than this (the function's event age), and the worker refuses one that is. */
+export const AUDIT_EXPORT_MAX_AGE_MS = AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS * 1000;
+/** A `running` export older than the last start the platform allows plus one full run has lost its worker: it is reported as failed, and that is final. */
+export const AUDIT_EXPORT_STALE_MS = AUDIT_EXPORT_MAX_AGE_MS + AUDIT_EXPORT_TIMEOUT_SECONDS * 1000;
 /** Seal objects are read this many at a time. */
 const SEAL_READ_CONCURRENCY = 4;
 /** How far back a covering chain is followed (a few epochs a day: this is years). */
@@ -87,8 +91,8 @@ export interface AuditExportClientDeps extends AuditExportBase {
   exportsBucket: string;
   /** Starts `runAuditExport` in the export function (an asynchronous invoke of it). */
   invokeExport: (event: AuditExportEvent) => Promise<void>;
-  /** A presigned GET URL for one object of the exports bucket. */
-  presign: (input: { bucket: string; key: string; expiresInSeconds: number }) => Promise<string>;
+  /** A presigned GET URL for one object of the exports bucket, and the lifetime it really has (never longer than the signing credentials). */
+  presign: (input: { bucket: string; key: string; expiresInSeconds: number }) => Promise<{ url: string; expiresInSeconds: number }>;
 }
 
 /** The export function's side: build, verify and store. */
@@ -475,7 +479,7 @@ export async function startAuditExport(deps: AuditExportClientDeps, requester: A
   const { fromSeq, toSeq } = request;
   const wholeNumber = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
   if (!wholeNumber(fromSeq) || !wholeNumber(toSeq) || fromSeq < 1 || fromSeq > toSeq || toSeq - fromSeq + 1 > AUDIT_EXPORT_MAX_RECORDS) throw rangeInvalid();
-  if (typeof request.requestId !== "string" || request.requestId === "" || request.requestId.length > 200) throw rangeInvalid();
+  if (typeof request.requestId !== "string" || request.requestId === "" || request.requestId.length > 200) throw agentXError("CONFIG_INVALID", "Give each export request an id of 1 to 200 characters.");
   const exportId = auditExportId(orgId, request.requestId);
   const now = new Date(deps.now()).toISOString();
   try {
@@ -527,6 +531,10 @@ async function failExport(deps: AuditExportBase, orgId: string, exportId: string
   }
 }
 
+function isPreconditionFailed(error: unknown): boolean {
+  return error instanceof Error && (error.name === "PreconditionFailed" || (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 412);
+}
+
 function conditionFailedOnFirstItem(error: unknown): boolean {
   if (!(error instanceof Error) || error.name !== "TransactionCanceledException") return false;
   return (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons?.[0]?.Code === "ConditionalCheckFailed";
@@ -551,6 +559,12 @@ export async function runAuditExport(deps: AuditExportDeps, event: { orgId: stri
   }
   if (item.status === "ready") return "already_ready";
   if (item.status === "failed") return "already_failed";
+  // The platform starts no attempt older than the event age; one that is delivered late anyway is refused, so an export that was
+  // reported failed (or is about to be) can never become ready.
+  if (deps.now() - Date.parse(String(item.createdAt)) > AUDIT_EXPORT_MAX_AGE_MS) {
+    await failExport(deps, orgId, exportId, { code: "TIMED_OUT" });
+    return "failed";
+  }
   const range = item.range as { fromSeq: number; toSeq: number };
   const withDetails = item.withDetails === true;
 
@@ -580,7 +594,19 @@ export async function runAuditExport(deps: AuditExportDeps, event: { orgId: stri
 
   const body = await gzipAsync(Buffer.from(JSON.stringify(bundle), "utf8"));
   const key = exportObjectKey(orgId, exportId);
-  await deps.s3.send(new PutObjectCommand({ Bucket: deps.exportsBucket, Key: key, Body: body, ContentType: "application/gzip" }));
+  // The file is written only where none is, so a second run cannot replace the file of an export another run finished.
+  const put = (): Promise<unknown> => deps.s3.send(new PutObjectCommand({ Bucket: deps.exportsBucket, Key: key, Body: body, ContentType: "application/gzip", IfNoneMatch: "*" }));
+  try {
+    await put();
+  } catch (error) {
+    if (!isPreconditionFailed(error)) throw error;
+    const current = await readMeta(deps, orgId, exportId);
+    if (current?.status === "ready") return "already_ready";
+    if (current?.status === "failed") return "already_failed";
+    // Still running: the file is what an earlier attempt left when it died before it committed. Replace it.
+    await deps.s3.send(new DeleteObjectCommand({ Bucket: deps.exportsBucket, Key: key }));
+    await put();
+  }
 
   const all = [...bundle.records, ...bundle.unsealed];
   const first = all[0];
@@ -626,24 +652,30 @@ export async function runAuditExport(deps: AuditExportDeps, event: { orgId: stri
       ],
     }));
   } catch (error) {
-    // Another run finished first and wrote the same file: leave it. Any other failure leaves no file behind.
-    if (conditionFailedOnFirstItem(error)) return "already_ready";
+    // The answer may have been lost after the commit, so look at the record before touching the file: a ready export's file stays.
+    const current = await readMeta(deps, orgId, exportId);
+    if (current?.status === "ready") {
+      if (conditionFailedOnFirstItem(error)) return "already_ready";
+      await flushAuditEvents(deps, [exported]);
+      return "ready";
+    }
+    // Not ready: the file is this run's own and is removed. (The lifecycle removes it in seven days if this fails.)
     try {
       await deps.s3.send(new DeleteObjectCommand({ Bucket: deps.exportsBucket, Key: key }));
     } catch {
-      // The exports bucket's lifecycle removes it in seven days.
+      // see above
     }
+    if (current?.status === "failed") return "already_failed";
     throw error;
   }
   await flushAuditEvents(deps, [exported]);
   return "ready";
 }
 
-/** A link to download a finished export, valid for AUDIT_EXPORT_URL_SECONDS. NOT_FOUND for an export this org does not have or one that is not ready. */
+/** A link to download a finished export, valid for at most AUDIT_EXPORT_URL_SECONDS (less when the signing credentials end sooner: the answer says how long). NOT_FOUND for an export this org does not have or one that is not ready. */
 export async function exportDownloadUrl(deps: AuditExportClientDeps, orgId: string, exportId: string): Promise<{ url: string; expiresInSeconds: number }> {
   checkedOrgId(orgId);
   const item = await readMeta(deps, orgId, exportId);
   if (item === undefined || item.status !== "ready") throw agentXError("NOT_FOUND", "That export was not found, or it is not ready yet.");
-  const url = await deps.presign({ bucket: deps.exportsBucket, key: exportObjectKey(orgId, exportId), expiresInSeconds: AUDIT_EXPORT_URL_SECONDS });
-  return { url, expiresInSeconds: AUDIT_EXPORT_URL_SECONDS };
+  return deps.presign({ bucket: deps.exportsBucket, key: exportObjectKey(orgId, exportId), expiresInSeconds: AUDIT_EXPORT_URL_SECONDS });
 }
