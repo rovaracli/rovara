@@ -15,6 +15,7 @@ import {
   EnvironmentNameSchema,
   WorkspaceDeploymentModeSchema,
   MODEL_PROVIDERS,
+  OrgRoleSchema,
   agentXError,
   type ProjectDefinition,
 } from "@agentx/contracts";
@@ -40,10 +41,12 @@ import { disableEvalChannel, enableEvalChannel, parseMaxCostUsd, showEvalChannel
 import { exportTurns, parseSince } from "./admin/turns.js";
 import { loginWithPkce, openSystemBrowser, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
-import { createDeveloperProject, createProjectText, developerLogout, fetchDeveloperProjects, logoutText, whoamiText } from "./developer/commands.js";
+import { createDeveloperProject, createProjectText, developerLogout, fetchDeveloperProjects, fetchLinkedIdentities, logoutText, unlinkSignInMethod, unlinkText, whoamiText } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
+import { orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
-import { developerLogin } from "./developer/login.js";
+import { LOOPBACK_HOSTS, developerLogin } from "./developer/login.js";
+import { INVITE_QUESTION, INVITE_QUESTION_NO_BROWSER, askYesByDefault, fetchCurrentOrg, fetchInviteSummary, inviteConfirmationLine, inviteOutcomeText, parseInviteLink, resolveInviteCell } from "./developer/invite-link.js";
 import { fetchDeveloperWorkspaces, type DeveloperWorkspacesResult } from "./developer/workspaces.js";
 import { runWorkspacesCommand } from "./workspaces-ui/index.js";
 import { listAdminWorkspaces } from "./admin/workspaces.js";
@@ -150,6 +153,8 @@ export interface CliDependencies {
     isInteractive?: () => boolean;
     port?: number;
   };
+  /** `agentx login` overrides, for tests: never open a browser. */
+  login?: { openBrowser?: (url: string) => Promise<void> };
   /** `chatgpt connect` overrides, for tests: another port, no browser, and no terminal check. */
   chatgpt?: { port?: number; openBrowser?: (url: string) => Promise<void>; isInteractive?: () => boolean };
   /** `rovara loop` overrides, for tests: every outside program (gh, git, tmux, claude) and how to run this CLI. */
@@ -305,11 +310,35 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .argument("[url]", "your AgentX URL, for developer sign-in")
     .option("--admin", "sign in as an administrator with the admin identity provider (the default when no URL is given)", false)
     .option("--no-browser", "developer sign-in: print the sign-in link instead of opening a browser")
+    .option("--invite <link>", "join an organization with an invite link (or its code, with the URL): shows what you are joining and asks before opening the browser")
+    .option("--yes", "with --invite: open the browser without asking", false)
     .option("--callback-port <port>", "fixed loopback callback port registered with the OIDC client", parsePort, DEFAULT_CALLBACK_PORT)
-    .action(async (url: string | undefined, options: { admin: boolean; browser: boolean; callbackPort: number }, command: Command) => {
+    .action(async (explicitUrl: string | undefined, options: { admin: boolean; browser: boolean; invite?: string; yes: boolean; callbackPort: number }, command: Command) => {
       const globals = globalOptions(command);
-      if (url !== undefined && options.admin) {
-        throw agentXError("CONFIG_INVALID", "use either agentx login <url> (developer sign-in) or agentx login --admin, not both");
+      if ((explicitUrl !== undefined || options.invite !== undefined) && options.admin) {
+        throw agentXError("CONFIG_INVALID", options.invite !== undefined ? "use either agentx login --invite <link> (joining an organization) or agentx login --admin, not both" : "use either agentx login <url> (developer sign-in) or agentx login --admin, not both");
+      }
+      // An invite link names the cell to sign in to (an explicit URL wins), and the person is told what they are joining before a browser opens (ruling R19).
+      let url = explicitUrl;
+      let invite: string | undefined;
+      if (options.invite !== undefined) {
+        const parsed = parseInviteLink(options.invite);
+        invite = parsed.token;
+        const chosen = explicitUrl ?? await resolveInviteCell(parsed, services.fetchImplementation);
+        let base: URL;
+        try {
+          base = new URL(chosen);
+        } catch {
+          throw agentXError("CONFIG_INVALID", `${chosen} is not a URL; pass your Rovara URL, for example https://abc123.execute-api.us-west-2.amazonaws.com`);
+        }
+        if (base.protocol !== "https:" && !(globals.allowLoopback && base.protocol === "http:" && LOOPBACK_HOSTS.has(base.hostname))) {
+          throw agentXError("CONFIG_INVALID", "your Rovara URL must use https; plain http is allowed only for 127.0.0.1, localhost or ::1 with --allow-loopback");
+        }
+        const cell = base.origin + base.pathname.replace(/\/+$/, "");
+        const summary = await fetchInviteSummary(cell, invite, services.fetchImplementation);
+        services.stderr.write(`${inviteConfirmationLine(summary, cell)}\n`);
+        if (!options.yes && !await inviteConfirmer()(options.browser ? INVITE_QUESTION : INVITE_QUESTION_NO_BROWSER)) throw agentXError("CONFIRMATION_DECLINED", "you chose not to join; nothing changed");
+        url = cell;
       }
       if (url !== undefined) {
         const result = await developerLogin({
@@ -320,10 +349,24 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
           tokenStore: services.tokenStore,
           fetch: services.fetchImplementation,
           write: (line) => { services.stderr.write(`${line}\n`); },
+          ...(dependencies.login?.openBrowser === undefined ? {} : { openBrowser: dependencies.login.openBrowser }),
+          ...(invite === undefined ? {} : { invite }),
           ...(command.getOptionValueSource("callbackPort") === "cli" ? { callbackPort: options.callbackPort } : {}),
         });
+        // What happened to the invite. The sign-in itself succeeded and its session is kept, but a join that did not happen is a failure:
+        // the exact words for why go out as the error (exit 1, and ok: false with the code under --json).
+        if (invite !== undefined && result.inviteError !== undefined) {
+          const org = result.inviteError === "ALREADY_IN_ORG" ? await fetchCurrentOrg(developerSession(), result.env) : undefined;
+          throw agentXError(result.inviteError, inviteOutcomeText(result.inviteError, org));
+        }
+        const joined = invite === undefined ? undefined : { outcome: "joined", message: inviteOutcomeText("joined", await fetchCurrentOrg(developerSession(), result.env)) };
         const projects = await fetchDeveloperProjects(developerSession(), result.env);
-        services.stdout.write(globals.json ? formatSuccess({ env: projects.env, url: projects.url, ...projects.projects }, true) : whoamiText(projects));
+        if (globals.json) {
+          services.stdout.write(formatSuccess({ env: projects.env, url: projects.url, ...projects.projects, ...(joined === undefined ? {} : { invite: joined }) }, true));
+        } else {
+          if (joined !== undefined) services.stdout.write(`${joined.message}\n`);
+          services.stdout.write(whoamiText({ ...projects, identities: await fetchLinkedIdentities(developerSession(), result.env) }));
+        }
         return;
       }
       // A bare login (or --admin) is today's admin login, unchanged.
@@ -365,7 +408,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .action(async (_options: unknown, command: Command) => {
       const globals = globalOptions(command);
       const result = await fetchDeveloperProjects(developerSession(), developerEnv(command));
-      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, ...result.projects }, true) : whoamiText(result));
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, ...result.projects }, true) : whoamiText({ ...result, identities: await fetchLinkedIdentities(developerSession(), developerEnv(command)) }));
     });
 
   program
@@ -439,10 +482,68 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, ...result.connection }, true) : chatGptDisconnectText(result));
     });
 
+  // Plan 2, Task 4: the people in your organization.
+  const org = program.command("org").description("the people in your organization");
+  org
+    .command("members")
+    .description("list the members of your organization, with their roles")
+    .action(async (_options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await orgMembers(developerSession(), developerEnv(command));
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, members: result.members }, true) : orgMembersText(result));
+    });
+  org
+    .command("role")
+    .description("change a member's role (owners only)")
+    .argument("<email-or-id>", "the member's email or developer ID, from agentx org members")
+    .argument("<role>", "owner, admin or member")
+    .action(async (who: string, role: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const parsed = OrgRoleSchema.safeParse(role);
+      if (!parsed.success) throw agentXError("CONFIG_INVALID", "the role must be owner, admin or member");
+      const result = await orgSetRole(developerSession(), developerEnv(command), who, parsed.data);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, developerId: result.member.developerId, role: result.role }, true) : orgRoleText(result));
+    });
+  org
+    .command("remove")
+    .description("remove a member from your organization: their sessions end and their running tasks stop after their current step")
+    .argument("<email-or-id>", "the member's email or developer ID, from agentx org members")
+    .action(async (who: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await orgRemove(developerSession(), developerEnv(command), who);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, developerId: result.member.developerId, message: result.message }, true) : orgRemoveText(result));
+    });
+  org
+    .command("leave")
+    .description("leave your organization; as its only member this closes it and releases its GitHub connection")
+    .option("--yes", "leave without asking", false)
+    .action(async (options: { yes: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const env = developerEnv(command);
+      const confirm = changeConfirmer(options.yes);
+      const { question } = await orgLeaveQuestion(developerSession(), env);
+      if (!await confirm(question)) throw agentXError("CONFIRMATION_DECLINED", "you did not leave the organization; nothing changed");
+      const result = await orgLeave(developerSession(), env);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, orgClosed: result.orgClosed, message: result.message }, true) : orgLeaveText(result));
+    });
+
   registerSigninCommands(program, {
     ...(dependencies.signin === undefined ? {} : { overrides: dependencies.signin }),
     parameterStore, fetch: services.fetchImplementation, stdout: services.stdout, stderr: services.stderr,
   });
+  // Plan 2, Task 8: a person removes a sign-in method they did not add, or no longer wants, with their own sign-in (the other `signin`
+  // commands are the operator's).
+  const signinCommand = program.commands.find((candidate) => candidate.name() === "signin");
+  if (signinCommand === undefined) throw new Error("the signin command is registered by registerSigninCommands");
+  signinCommand
+    .command("unlink")
+    .description("remove a sign-in method (cloud or github) from your own Rovara account; sessions signed in that way end")
+    .argument("<method>", "cloud or github")
+    .action(async (method: string, _options: Record<string, never>, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await unlinkSignInMethod(developerSession(), developerEnv(command), method);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, removed: result.provider, identities: result.identities }, true) : unlinkText(result));
+    });
   registerConfigCommands(program, {
     ...(dependencies.config === undefined ? {} : { overrides: dependencies.config }), parameterStore, fetch: services.fetchImplementation, stdout: services.stdout, stderr: services.stderr,
     stdin: dependencies.stdin ?? process.stdin,
@@ -554,6 +655,15 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const result = await submitRuntimeInstallProposal({ controlPlaneUrl: settings.controlPlaneUrl, accessToken: session.accessToken, proposalFile: options.proposalFile }, services.fetchImplementation);
       services.stdout.write(formatSuccess(result, globals.json));
     });
+
+  /** The question before an invite's browser opens: (Y/n), so a plain Enter joins. It needs a terminal, or --yes. */
+  const inviteConfirmer = (): ((question: string) => Promise<boolean>) => {
+    if (dependencies.confirm !== undefined) return (question) => dependencies.confirm!(question);
+    const stdin: NodeJS.ReadableStream & { isTTY?: boolean } = dependencies.stdin ?? process.stdin;
+    if (stdin.isTTY !== true) throw agentXError("CONFIRMATION_UNAVAILABLE", "this needs a yes before the browser opens: run the command in a terminal to answer, or pass --yes; nothing changed");
+    const output = new NodeWritable({ write(chunk: Buffer | string, _encoding, done) { services.stderr.write(chunk.toString()); done(); } });
+    return (question) => askYesByDefault(question, { input: stdin, output, signals: process });
+  };
 
   // Spec 025 E17 (Q6): a person typing the command is the confirmation; --yes answers for them.
   // Without --yes the prompt needs a terminal, checked before anything is planned.

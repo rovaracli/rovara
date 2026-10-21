@@ -483,7 +483,7 @@ async function currentStatus(deps: NotifierDependencies, task: DeveloperTaskReco
     getItem<DeveloperTaskPointerRecord>(deps, taskPointerKey(task.workspaceId)),
     operationsOf(deps, task.workspaceId),
   ]);
-  return deriveTaskStatus({ closedAt: task.closedAt, workspaceStatus: workspace?.status ?? "PREPARING", pointer, operations: operations as unknown as OperationFacts[] }).status;
+  return deriveTaskStatus({ closedAt: task.closedAt, outcome: task.outcome, workspaceStatus: workspace?.status ?? "PREPARING", pointer, operations: operations as unknown as OperationFacts[] }).status;
 }
 
 /**
@@ -864,7 +864,8 @@ async function replyText(deps: NotifierDependencies, task: DeveloperTaskRecord &
       const published = PullRequestResultSchema.safeParse((await operation())?.result);
       return published.success ? said(pullRequestReply(published.data.url)) : undefined;
     }
-    case "workflow": return task.workflow === undefined ? undefined : workflowReply(deps, task, task.workflow, notice.pullRequestReopened === true ? reopenedOf(notice.reopenedPullRequests) : undefined);
+    // Ruling R60: a task whose creator was removed says why it stopped, in place of the step it was waiting on.
+    case "workflow": return task.outcome === "creator_removed" && task.closedAt === undefined && task.outcomeReason !== undefined ? said(task.outcomeReason) : task.workflow === undefined ? undefined : workflowReply(deps, task, task.workflow, notice.pullRequestReopened === true ? reopenedOf(notice.reopenedPullRequests) : undefined);
     case "ended": {
       const ended = await operation();
       if (ended === undefined || !ENDED_STATUSES.has(ended.status)) return undefined;

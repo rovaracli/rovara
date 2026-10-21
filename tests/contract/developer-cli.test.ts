@@ -25,7 +25,7 @@ const formOf = (init: RequestInit | undefined) => new URLSearchParams(typeof ini
 const dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 
-async function signedIn(options: { revoke?: () => Promise<Response>; name?: string; projects?: () => Response } = {}) {
+async function signedIn(options: { revoke?: () => Promise<Response>; name?: string; projects?: () => Response; me?: () => Response } = {}) {
   const home = await mkdtemp(join(tmpdir(), "agentx-dev-cli-"));
   dirs.push(home);
   await saveDeveloperEnvironment(home, "staging", entry);
@@ -39,6 +39,10 @@ async function signedIn(options: { revoke?: () => Promise<Response>; name?: stri
       expect(new Headers(init?.headers).get("authorization")).toBe("Bearer access");
       if (options.projects !== undefined) return options.projects();
       return Response.json(options.name === undefined ? projects : { ...projects, developer: { ...projects.developer, name: options.name } });
+    }
+    if (url === `${URL_}/v1/app/me` && options.me !== undefined) {
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer access");
+      return options.me();
     }
     if (url === `${ISSUER}/revoke`) return options.revoke?.() ?? Response.json({});
     throw new Error(`unexpected ${url}`);
@@ -58,6 +62,31 @@ describe("agentx whoami and logout (FR-011)", () => {
       "  solo  (an admin granted you access)",
       "",
     ].join("\n"));
+  });
+
+  it("whoami names the other sign-in methods linked to the same person (Plan 2, Task 2)", async () => {
+    const me = {
+      developer: { id: "a".repeat(64), name: "Maya Chen", orgRole: "owner" },
+      org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Maya's team", plan: "trial" },
+      identities: [
+        { provider: "cloud", email: "maya@example.com", linkedAt: "2026-10-01T00:00:00.000Z", lastSignInAt: "2026-10-02T00:00:00.000Z" },
+        { provider: "github", login: "maya-dev", email: "maya@example.com", linkedAt: "2026-10-03T00:00:00.000Z", lastSignInAt: "2026-10-03T00:00:00.000Z" },
+      ],
+    };
+    const h = await signedIn({ me: () => Response.json(me), projects: () => Response.json({ ...projects, developer: { ...projects.developer, provider: "cloud", slackUserId: undefined }, projects: [] }) });
+    expect(await h.run(["whoami"])).toBe(0);
+    const text = h.out.join("");
+    expect(text).toContain("as Maya Chen, with Rovara sign-in; also linked: GitHub (maya-dev).");
+    expect(text).not.toContain("also linked: Rovara sign-in");
+  });
+
+  it("whoami says nothing of linked sign-ins when the server has no /v1/app/me or only the one method", async () => {
+    const only = await signedIn({ me: () => Response.json({ developer: { id: "a".repeat(64), name: "Maya Chen", orgRole: "member" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "x", plan: "team" }, identities: [{ provider: "slack", linkedAt: "x", lastSignInAt: "x" }] }) });
+    expect(await only.run(["whoami"])).toBe(0);
+    expect(only.out.join("")).not.toContain("also linked");
+    const missing = await signedIn({ me: () => new Response("{}", { status: 404 }) });
+    expect(await missing.run(["whoami"])).toBe(0);
+    expect(missing.out.join("")).not.toContain("also linked");
   });
 
   it("whoami --json prints the projects response", async () => {

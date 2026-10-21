@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
+import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import { agentXError, type ProjectCommand } from "@agentx/contracts";
 import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
 import { containerBashOperations, runContainerCommand, type ContainerExec } from "./devcontainer.js";
+import { fileOpsExec, type FileOpsTarget } from "./file-ops-exec.js";
 import type { CommandResult } from "./readiness.js";
 import { hiddenWorkspaceDirectories } from "./workspace-state.js";
 import { createDockerCli, taskContainerExec, type DockerCli } from "./swebench/containers.js";
@@ -31,6 +33,22 @@ export function workspaceKey(rootPath: string): string {
 }
 /** The `node` user of environments/base/Dockerfile, which the worker also runs as. */
 export const TASK_SANDBOX_USER = "1000:1000";
+/** Where the worker image (which is the sandbox image) keeps Node and the file-tool helper (environments/base/Dockerfile). */
+export const SANDBOX_FILE_OPS_NODE = "/usr/local/bin/node";
+export const SANDBOX_FILE_OPS_HELPER = "/opt/agentx/packages/worker/dist/sandbox-file-ops.js";
+/**
+ * The most processes and threads one sandbox may use (the limit counts threads, so a JVM or browser build needs room; it
+ * still stops a fork bomb).
+ */
+export const TASK_SANDBOX_PIDS_LIMIT = "4096";
+
+/**
+ * The CPU limit of a sandbox on a host with `hostCpus`: all but one, so the worker and Docker keep a core. The Docker daemon
+ * refuses a limit above the host's CPU count, so a one-CPU host gets no limit rather than a sandbox that cannot start.
+ */
+export function sandboxCpuLimit(hostCpus: number): string | undefined {
+  return Number.isInteger(hostCpus) && hostCpus > 1 ? String(hostCpus - 1) : undefined;
+}
 /** The environment variable that names the sandbox image; boot.sh sets it to the worker's own image. */
 export const TASK_SANDBOX_IMAGE_ENVIRONMENT = "AGENTX_SANDBOX_IMAGE";
 /** `local` or `sandbox` (the default): where a project without a devcontainer runs its commands. `local` is for tests and a developer's machine, never EC2. */
@@ -108,6 +126,8 @@ export interface TaskSandboxRunInput {
   rootPath: string;
   /** Folders of the workspace volume that are the worker's, not the project's (workspace-state.ts): each gets an empty read-only tmpfs over it. */
   maskedPaths: readonly string[];
+  /** The host's CPU count, which sets the sandbox's CPU limit (sandboxCpuLimit). Default: this machine's, which is the host's. */
+  hostCpus?: number;
 }
 
 /** The `docker run` arguments of a sandbox (R56). The workspace is the only mount, at its own path. */
@@ -119,6 +139,9 @@ export function taskSandboxRunArgs(input: TaskSandboxRunInput): string[] {
     "--label", `${TASK_SANDBOX_WORKSPACE_LABEL}=${workspaceKey(input.rootPath)}`,
     "--network", TASK_SANDBOX_NETWORK,
     "--user", TASK_SANDBOX_USER,
+    // A sandbox shares the instance with the worker: a runaway command (or a file-tool search) must not take every core or process.
+    ...(sandboxCpuLimit(input.hostCpus ?? availableParallelism()) === undefined ? [] : ["--cpus", sandboxCpuLimit(input.hostCpus ?? availableParallelism())!]),
+    "--pids-limit", TASK_SANDBOX_PIDS_LIMIT,
     "--cap-drop", "ALL",
     "--security-opt", "no-new-privileges",
     "--volume", `${input.rootPath}:${input.rootPath}`,
@@ -176,6 +199,14 @@ export class TaskSandbox {
     return containerBashOperations(this.exec);
   }
 
+  /** Where the agent's file tools run for this sandbox: as the sandbox's user, with the workspace as the only reachable root. */
+  fileOpsTarget(): FileOpsTarget {
+    return {
+      container: this.name, user: TASK_SANDBOX_USER, node: SANDBOX_FILE_OPS_NODE, helper: SANDBOX_FILE_OPS_HELPER,
+      root: resolve(this.options.rootPath), docker: this.docker,
+    };
+  }
+
   /** A project command (setup, readiness) in the sandbox. */
   runCommand(command: ProjectCommand, signal?: AbortSignal): Promise<CommandResult> {
     return runContainerCommand(this.exec, this.options.rootPath, command, signal);
@@ -219,6 +250,8 @@ export class TaskSandbox {
       const detail = (result.stderr || result.stdout).trim().split("\n").slice(-5).join(" ").slice(0, 800);
       throw agentXError("RUNTIME_UNAVAILABLE", `AgentX could not start the task sandbox${result.timedOut === true ? " (timed out)" : ""}: ${detail || `exit ${String(result.exitCode)}`}`);
     }
+    // A write the file tools' helper was killed in leaves a `.agentx-file-ops-*` file; an earlier task's must not reach this one's snapshots.
+    await fileOpsExec(this.fileOpsTarget(), { root, op: "sweep", path: root }).catch(() => undefined);
   }
 
   /**

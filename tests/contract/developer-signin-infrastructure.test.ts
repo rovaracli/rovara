@@ -3,6 +3,7 @@ import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
+import { evaluate } from "../support/cfn-evaluate.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -196,11 +197,16 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(JSON.stringify(permissions[0]!.SourceArn)).toContain("/*/*/v1/auth/*");
   });
 
-  it("gives the broker only session, developer and email-index reads on the sign-in table", () => {
+  it("gives the broker only session, developer and email-index reads, and a developer-partition Query, on the sign-in table", () => {
     const [tableId] = ofType(named, "AWS::DynamoDB::Table").find(([logicalId]) => logicalId.startsWith("DeveloperSignInTable"))!;
     const tableStatements = statementsOfRole(named, "BrokerServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(named, statement, tableId, SAMPLE_TABLE_ARN));
-    expect(tableStatements).toHaveLength(2);
+    expect(tableStatements).toHaveLength(3);
     const reads = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:GetItem"));
+    // GET /v1/app/me lists a developer's linked identities: a Query, and only inside the developer's own partition.
+    const queries = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:Query"));
+    expect(queries).toHaveLength(1);
+    expect(actionsOf(queries[0]!)).toEqual(["dynamodb:Query"]);
+    expect(queries[0]!.Condition).toEqual({ "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVELOPER#*"] } });
     const creatorChecks = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:ConditionCheckItem"));
     expect(reads).toHaveLength(1);
     expect(reads[0]!.Action).toBe("dynamodb:GetItem");
@@ -213,22 +219,54 @@ describe("developer sign-in infrastructure (named environments)", () => {
     });
   });
 
-  it("gives DeveloperIdentity exactly the item operations its store uses on the sign-in table, nothing table-wide", () => {
+  it("gives DeveloperIdentity exactly the item operations its store uses on the sign-in table", () => {
     const [tableId] = ofType(named, "AWS::DynamoDB::Table").find(([logicalId]) => logicalId.startsWith("DeveloperSignInTable"))!;
     const tableStatements = statementsOfRole(named, "DeveloperSignInFunctionServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(named, statement, tableId, SAMPLE_TABLE_ARN));
-    expect(tableStatements).toHaveLength(1);
-    // TransactWriteItems is authorized per item as PutItem and UpdateItem; the store never deletes or condition-checks.
-    expect(actionsOf(tableStatements[0]!).sort()).toEqual(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]);
-    expect(tableStatements[0]!.Resource).toEqual({ "Fn::GetAtt": [tableId, "Arn"] });
+    // Three statements, each naming only the table: what every sign-in uses, and (Plan 2, Task 8) the two an unlink adds.
+    expect(tableStatements).toHaveLength(3);
+    for (const statement of tableStatements) {
+      expect(statement.Effect).toBe("Allow");
+      expect(statement.Resource).toEqual({ "Fn::GetAtt": [tableId, "Arn"] });
+    }
+    // TransactWriteItems is authorized per item as PutItem and UpdateItem; no condition-check, no scan, no batch.
+    const everySignIn = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:GetItem"));
+    expect(everySignIn).toHaveLength(1);
+    expect(actionsOf(everySignIn[0]!).sort()).toEqual(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]);
+    expect(everySignIn[0]!.Condition).toBeUndefined();
+    // Unlinking a sign-in method (unlinkIdentity): the transaction's Delete of the developer's IDENTITY# item is authorized as DeleteItem, and the
+    // developer's own identities are listed with a Query. Both only in the developer partitions, DEVELOPER#<id>; never SESSION#, SIGNIN_IDENTITY# or EMAIL#.
+    const deletes = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:DeleteItem"));
+    expect(deletes).toHaveLength(1);
+    expect(actionsOf(deletes[0]!)).toEqual(["dynamodb:DeleteItem"]);
+    expect(leadingKeysOf(deletes[0]!)).toEqual(["DEVELOPER#*"]);
+    const queries = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:Query"));
+    expect(queries).toHaveLength(1);
+    expect(actionsOf(queries[0]!)).toEqual(["dynamodb:Query"]);
+    expect(leadingKeysOf(queries[0]!)).toEqual(["DEVELOPER#*"]);
+    // No other action reaches the table (a wildcard would show up here).
+    expect(tableStatements.flatMap(actionsOf).sort()).toEqual(["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
   });
 
-  it("throttles the public /v1/auth/*, /v1/dev/*, and /review/* routes on the default stage (burst 50, 20 requests a second)", () => {
+  it("gives the broker no write on the sign-in table: unlinking runs in DeveloperIdentity", () => {
+    const [tableId] = ofType(named, "AWS::DynamoDB::Table").find(([logicalId]) => logicalId.startsWith("DeveloperSignInTable"))!;
+    const actions = statementsOfRole(named, "BrokerServiceRole")
+      .filter((statement) => touches(statement, "dynamodb") && reaches(named, statement, tableId, SAMPLE_TABLE_ARN))
+      .flatMap(actionsOf).sort();
+    expect(actions).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:Query"]);
+    for (const write of ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem"]) {
+      expect(rolesThatMay(named, write, tableId, SAMPLE_TABLE_ARN)).not.toContain("BrokerServiceRole");
+    }
+    expect(rolesThatMay(named, "dynamodb:DeleteItem", tableId, SAMPLE_TABLE_ARN)).toEqual(["DeveloperSignInFunctionServiceRole"]);
+  });
+
+  it("throttles the public /v1/auth/*, /v1/dev/*, /v1/app/*, and /review/* routes on the default stage (burst 50, 20 requests a second)", () => {
     const stages = ofType(named, "AWS::ApiGatewayV2::Stage");
     expect(stages).toHaveLength(1);
     const [, stage] = stages[0]!;
     expect(stage.Properties.RouteSettings).toEqual({
       "ANY /v1/auth/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "ANY /v1/dev/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
+      "ANY /v1/app/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "ANY /review/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
     });
     // A stage's route settings name routes that must already exist.
@@ -236,7 +274,12 @@ describe("developer sign-in infrastructure (named environments)", () => {
     const dependsOn = [(stage as Resource & { DependsOn?: string | string[] }).DependsOn].flat();
     expect(dependsOn).toContain(routeId("ANY /v1/auth/{proxy+}"));
     expect(dependsOn).toContain(routeId("ANY /v1/dev/{proxy+}"));
+    expect(dependsOn).toContain(routeId("ANY /v1/app/{proxy+}"));
     expect(dependsOn).toContain(routeId("ANY /review/{proxy+}"));
+    // The app route is served by the broker, which verifies the developer token itself: no API Gateway authorizer.
+    const appRoute = ofType(named, "AWS::ApiGatewayV2::Route").find(([, r]) => r.Properties.RouteKey === "ANY /v1/app/{proxy+}")![1];
+    expect(appRoute.Properties.AuthorizationType).toBe("NONE");
+    expect(appRoute.Properties.Target).toEqual(ofType(named, "AWS::ApiGatewayV2::Route").find(([, r]) => r.Properties.RouteKey === "ANY /v1/dev/{proxy+}")![1].Properties.Target);
   });
 
   it("keeps sign-in records in a retained, point-in-time recoverable table with a TTL", () => {
@@ -260,17 +303,36 @@ describe("developer sign-in infrastructure (named environments)", () => {
       "DEVELOPER_SIGNIN_SLACK", "DEVELOPER_OIDC_ISSUER", "DEVELOPER_OIDC_CLIENT_ID", "DEVELOPER_OIDC_REQUIRED_CLAIM", "DEVELOPER_OIDC_REQUIRED_VALUES",
       "DEVELOPER_OIDC_DISPLAY_NAME", "DEVELOPER_OIDC_SECRET_ID", "STATE_TABLE_NAME",
     ]));
-    // A sign-in puts the developer in an org, which lives in the State table: DeveloperIdentity reads and writes only the org partition and the developer pointer there.
+    // A sign-in puts the developer in an org, which lives in the State table. DeveloperIdentity gets the statement every sign-in needs, plus
+    // one statement per action for each further key that healing a duplicate member (Plan 2, Task 3) uses: exactly those keys, no more.
     const stateGrants = ofType(named, "AWS::IAM::Policy").flatMap(([, policy]) => (policy.Properties.PolicyDocument as { Statement: Array<Record<string, unknown>> }).Statement)
-      .filter((statement) => JSON.stringify(statement.Condition ?? {}).includes("DEVELOPER_ORG#*"));
-    expect(stateGrants).toHaveLength(1);
-    expect(stateGrants[0]).toMatchObject({
-      Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], Effect: "Allow",
-    });
-    // Exactly the bare org partition (20 characters, an org ID's), the developer's org pointer, and the email and invite rows a sign-in reads: no org-scoped or Slack team row.
-    expect((stateGrants[0]!.Condition as Record<string, Record<string, unknown>>)["ForAllValues:StringLike"]).toEqual({
-      "dynamodb:LeadingKeys": ["ORG#org_????????????????????", "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*"],
-    });
+      .filter((statement) => /ORG#org_|DEVELOPER_ORG#/.test(JSON.stringify(statement.Condition ?? {})));
+    const keysOf = (statement: Record<string, unknown>) => (statement.Condition as Record<string, Record<string, unknown>>)["ForAllValues:StringLike"]!["dynamodb:LeadingKeys"];
+    const grantsOf = stateGrants.map((statement) => [[statement.Action].flat().join(","), keysOf(statement)] as const).sort((a, b) => a[0].localeCompare(b[0]));
+    const ORG = "ORG#org_????????????????????";
+    expect(grantsOf).toEqual([
+      // Deleting: the duplicate's member row (bare partition; IAM cannot tell it from the org record) and grants, and its org pointer.
+      // Plan 2, Task 4: accepting an invite checks the org is open (ConditionCheckItem on the org record, nothing wider).
+      ["dynamodb:ConditionCheckItem", [ORG]],
+      // Plan 2, Task 4: it also names the ban key, which accepting an invite deletes.
+      ["dynamodb:DeleteItem", [`${ORG}#MEMBER#*`, ORG, `${ORG}#BAN`, "DEVELOPER_ORG#*"]],
+      // Plan 2, Task 4: a sign-in reads the ban (a removed member of a single-org install is refused); nothing else, and never a write.
+      ["dynamodb:GetItem", [`${ORG}#BAN`]],
+      // The org's budget settings, read and written back.
+      ["dynamodb:GetItem,dynamodb:PutItem", [`${ORG}#SETTINGS`]],
+      // What every sign-in uses: the bare org partition (20 characters, an org ID's), the developer's org pointer, and the email and invite rows.
+      ["dynamodb:GetItem,dynamodb:PutItem,dynamodb:UpdateItem", [ORG, "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*"]],
+      // Listing: a member's grants, a race org's whole partition, and its project catalog.
+      ["dynamodb:Query", [`${ORG}#MEMBER#*`, ORG, `${ORG}#PROJECT_CATALOG`]],
+      // A member's grants copied to the survivor.
+      ["dynamodb:PutItem", [`${ORG}#MEMBER#*`]],
+    ].sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+    for (const statement of stateGrants) {
+      expect(statement.Effect).toBe("Allow");
+      expect(JSON.stringify(keysOf(statement))).not.toMatch(/"ORG#\*"|SLACK_TEAM|PROJECT#/);
+    }
+    // Nothing is queried under the developer pointers.
+    expect(grantsOf.filter(([action, keys]) => action === "dynamodb:Query" && JSON.stringify(keys).includes("DEVELOPER_ORG#"))).toEqual([]);
     // FR-045: both functions get each method's enabled-since cutoff straight from its parameter.
     const variables = (prefix: string) => (named.Resources[functionId(named, prefix)]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
     expect(variables("Broker")).toMatchObject({
@@ -463,5 +525,79 @@ describe("the developer task notifier (spec 025 phase 25c, named environments)",
     expect(streamMappings(legacy)).toHaveLength(1);
     const [, ingress] = ofType(legacy, "AWS::Lambda::Function").find(([id]) => withoutHash(id) === "SlackIngress")!;
     expect((ingress.Properties.Environment as { Variables: Record<string, unknown> }).Variables).not.toHaveProperty("SHARED_TASKS");
+  });
+});
+
+describe("the notice of a newly linked sign-in method (Plan 2, Task 8, cloud installs)", () => {
+  let cloud: TemplateJson;
+  const FROM = "Rovara <signin@rovara.dev>";
+  const SOURCE_ARN = "arn:aws:ses:us-west-2:123456789012:identity/rovara.dev";
+  beforeAll(() => { cloud = controlPlane(buildAgentXApp({ agentxEnv: "staging", agentxCloud: true }), "agentx-staging-control-plane"); }, 300_000);
+  const sesGrants = (template: TemplateJson) => grants(template).filter(({ statement }) => touches(statement, "ses"));
+  const identityVariables = (template: TemplateJson) => (template.Resources[functionId(template, "DeveloperSignInFunction")]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+  const conditionsOf = (template: TemplateJson) => (template as unknown as { Conditions: Record<string, unknown> }).Conditions;
+
+  it("gives DeveloperIdentity ses:SendEmail on the sender's identity ARN parameter only, in a policy that exists only under CloudSignInEmailFromSes", () => {
+    const found = sesGrants(cloud);
+    expect(found).toHaveLength(1);
+    expect(withoutHash(found[0]!.role)).toBe("DeveloperSignInFunctionServiceRole");
+    expect(found[0]!.statement.Effect).toBe("Allow");
+    expect(actionsOf(found[0]!.statement)).toEqual(["ses:SendEmail"]);
+    expect(found[0]!.statement.Resource).toEqual({ Ref: "CloudSignInEmailSourceArn" });
+    expect(found[0]!.statement.Condition).toBeUndefined();
+    // The grant is its own policy, switched by the condition: with no sender the resource would be an empty ARN.
+    const policies = ofType(cloud, "AWS::IAM::Policy").filter(([, policy]) => JSON.stringify(policy.Properties.PolicyDocument).includes("ses:SendEmail"));
+    expect(policies).toHaveLength(1);
+    expect(withoutHash(policies[0]![0])).toBe("DeveloperSignInIdentityNoticeSend");
+    expect((policies[0]![1] as unknown as { Condition?: string }).Condition).toBe("CloudSignInEmailFromSes");
+    expect(conditionsOf(cloud).CloudSignInEmailFromSes).toEqual({
+      "Fn::And": [
+        { "Fn::Not": [{ "Fn::Equals": [{ Ref: "CloudSignInEmailFrom" }, ""] }] },
+        { "Fn::Not": [{ "Fn::Equals": [{ Ref: "CloudSignInEmailSourceArn" }, ""] }] },
+      ],
+    });
+  });
+
+  it("grants no ses:SendRawEmail, no wildcard, and nothing to any other role", () => {
+    for (const { statement } of sesGrants(cloud)) {
+      expect(allows(statement, "ses:SendRawEmail")).toBe(false);
+      expect(allows(statement, "ses:GetAccount")).toBe(false);
+      expect(JSON.stringify(statement.Resource)).not.toContain("*");
+    }
+    expect(sesGrants(cloud).map(({ role }) => withoutHash(role))).toEqual(["DeveloperSignInFunctionServiceRole"]);
+  });
+
+  it("hands DeveloperIdentity the sender, its region and the web origin, empty unless both sender parameters are set, and the broker none of them", () => {
+    const variables = identityVariables(cloud);
+    const evaluated = (parameters: Record<string, string>) => ({
+      from: evaluate(variables.DEVELOPER_NOTICE_EMAIL_FROM, { parameters, conditions: conditionsOf(cloud) }),
+      region: evaluate(variables.DEVELOPER_NOTICE_EMAIL_REGION, { parameters, conditions: conditionsOf(cloud) }),
+    });
+    expect(evaluated({ CloudSignInEmailFrom: FROM, CloudSignInEmailSourceArn: SOURCE_ARN })).toEqual({ from: FROM, region: "us-west-2" });
+    for (const parameters of [{ CloudSignInEmailFrom: "", CloudSignInEmailSourceArn: "" }, { CloudSignInEmailFrom: FROM, CloudSignInEmailSourceArn: "" }, { CloudSignInEmailFrom: "", CloudSignInEmailSourceArn: SOURCE_ARN }]) {
+      expect(evaluated(parameters)).toEqual({ from: "", region: "" });
+    }
+    expect(variables.ROVARA_WEB_ORIGIN).toEqual({ Ref: "RovaraWebOrigin" });
+    const broker = (cloud.Resources[functionId(cloud, "Broker")]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    expect(Object.keys(broker).filter((name) => name.startsWith("DEVELOPER_NOTICE_"))).toEqual([]);
+  });
+
+  it("keeps the cloud template's sign-in table statements the same as a named environment's, and the broker's unchanged", () => {
+    const [tableId] = ofType(cloud, "AWS::DynamoDB::Table").find(([logicalId]) => logicalId.startsWith("DeveloperSignInTable"))!;
+    const functionActions = statementsOfRole(cloud, "DeveloperSignInFunctionServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(cloud, statement, tableId, SAMPLE_TABLE_ARN)).flatMap(actionsOf).sort();
+    expect(functionActions).toEqual(["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
+    const brokerActions = statementsOfRole(cloud, "BrokerServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(cloud, statement, tableId, SAMPLE_TABLE_ARN)).flatMap(actionsOf).sort();
+    expect(brokerActions).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:Query"]);
+  });
+
+  it("adds none of it to a named environment without the cloud, or to the legacy deployment", () => {
+    expect(sesGrants(named)).toEqual([]);
+    expect(sesGrants(legacy)).toEqual([]);
+    expect(Object.keys(identityVariables(named)).filter((name) => name.startsWith("DEVELOPER_NOTICE_"))).toEqual([]);
+    expect(JSON.stringify(legacy)).not.toContain("DEVELOPER_NOTICE_EMAIL");
+  });
+
+  it("puts no em dash in any name or description", () => {
+    expect(JSON.stringify(cloud)).not.toContain(String.fromCharCode(0x2014));
   });
 });

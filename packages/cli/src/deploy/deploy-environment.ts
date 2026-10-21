@@ -46,6 +46,10 @@ export interface DeployEnvironmentInput {
    * release does: the cdk engine's synth of its source (issue 152, prepareDeployment). Omitted, they
    * are read from the release's own templates (templateParameterNames), as the templates engine does. */
   declaredParameters?: (part: DeployPart) => ReadonlySet<string>;
+  /** The cdk engine only: makes sure the CDK deploy role may hand the AgentX CloudFormation role to
+   * CloudFormation (init/pass-role.ts). Called once, just before the first stack deployed through that
+   * role (any part but access); a throw stops the deploy there. The templates engine never calls it. */
+  ensurePassRole?: () => Promise<unknown>;
 }
 
 export interface DeployEnvironmentResult {
@@ -283,9 +287,14 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
       }
     }
 
+    let passRoleChecked = false;
     for (const part of fullOrder) {
       if (!deploySet.has(part)) continue;
       const stackName = environmentStackName(env, part);
+      if (part !== "access" && engine === "cdk" && !passRoleChecked && input.ensurePassRole !== undefined) {
+        passRoleChecked = true;
+        await input.ensurePassRole();
+      }
       const rawParameters = stackParameters(part, fullAnswers, outputs, { packages: engine === "templates" });
       // F24: only when this deploy is actually sending a stored sign-in choice to the control plane
       // are the declared parameters even consulted (every other deploy never calls `release.template`).

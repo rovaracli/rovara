@@ -245,6 +245,9 @@ function cloudSignInParameters(signIn: CloudSignInAnswers | undefined): Record<s
     // GitHub sign-in (Task 22): the template turns it on only when both are non-empty.
     ...(signIn?.githubClientId === undefined ? {} : { GitHubClientId: signIn.githubClientId }),
     ...(signIn?.githubClientSecretArn === undefined ? {} : { GitHubClientSecretArn: signIn.githubClientSecretArn }),
+    // Sign-in codes from a branded Amazon SES sender (Task 7): the template sends with SES only when both are non-empty.
+    ...(signIn?.emailFrom === undefined ? {} : { CloudSignInEmailFrom: signIn.emailFrom }),
+    ...(signIn?.emailSourceArn === undefined ? {} : { CloudSignInEmailSourceArn: signIn.emailSourceArn }),
   };
 }
 

@@ -1,5 +1,5 @@
 // agentx whoami and agentx logout (FR-011).
-import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, UnlinkIdentityAppResponseSchema, UnlinkableSignInMethodSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerTokenKey, removeDeveloperEnvironment, resolveDeveloperEnvironment } from "./config.js";
 import { developerAccessToken, type DeveloperSessionDeps } from "./session.js";
@@ -27,7 +27,7 @@ export async function developerRequest<T>(
   env: string | undefined,
   path: string,
   schema: { safeParse: (value: unknown) => { success: true; data: T } | { success: false } },
-  options: { method?: "GET" | "POST" | "DELETE"; body?: unknown; explain?: boolean } = {},
+  options: { method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown; explain?: boolean } = {},
 ): Promise<{ env: string; url: string; body: T }> {
   const session = await developerAccessToken(deps, env);
   let response: Response;
@@ -45,9 +45,12 @@ export async function developerRequest<T>(
     const reason = refusalReason(await response.json().catch(() => undefined));
     throw agentXError("AUTH_REQUIRED", `your AgentX sign-in for ${session.env} has ended${reason === undefined ? "" : ` (${reason})`}; run npx ${CLI_PACKAGE_NAME} login ${session.entry.url}`);
   }
-  if (options.explain === true && (response.status === 400 || response.status === 403 || response.status === 404)) {
-    const reason = refusalMessage(await response.json().catch(() => undefined));
-    if (reason !== undefined) throw agentXError(response.status === 400 ? "CONFIG_INVALID" : response.status === 403 ? "FORBIDDEN" : "NOT_FOUND", reason);
+  if (options.explain === true && (response.status === 400 || response.status === 403 || response.status === 404 || response.status === 409)) {
+    const refusal = await response.json().catch(() => undefined);
+    const reason = refusalMessage(refusal);
+    // A 409 is a refusal the person can act on (such as LAST_OWNER), shown as the server worded it, under the code it named.
+    const named = AgentXErrorCodeSchema.safeParse((refusal as { error?: { code?: unknown } } | undefined)?.error?.code);
+    if (reason !== undefined) throw agentXError(response.status === 400 ? "CONFIG_INVALID" : response.status === 403 ? "FORBIDDEN" : response.status === 409 ? (named.success ? named.data : "CONFIG_INVALID") : "NOT_FOUND", reason);
   }
   if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `AgentX answered HTTP ${response.status}; try again`);
   const parsed = schema.safeParse(await response.json().catch(() => undefined));
@@ -58,6 +61,18 @@ export async function developerRequest<T>(
 export async function fetchDeveloperProjects(deps: DeveloperSessionDeps, env: string | undefined): Promise<{ env: string; url: string; projects: DeveloperProjectsResponse }> {
   const { env: resolved, url, body } = await developerGet(deps, env, "/v1/dev/projects", DeveloperProjectsResponseSchema);
   return { env: resolved, url, projects: body };
+}
+
+/**
+ * The sign-in methods linked to the signed-in developer, for whoami. Best effort: a server without GET /v1/app/me, or any failure
+ * reading it, leaves whoami as it was (no identities listed).
+ */
+export async function fetchLinkedIdentities(deps: DeveloperSessionDeps, env: string | undefined): Promise<LinkedIdentity[]> {
+  try {
+    return (await developerGet(deps, env, "/v1/app/me", AppMeResponseSchema)).body.identities;
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -83,11 +98,18 @@ function refusalMessage(body: unknown): string | undefined {
 /** How a developer signed in, for whoami: "Rovara sign-in" and "GitHub" are Rovara Cloud's. */
 const SIGN_IN_METHOD_TEXT = { slack: "Slack", oidc: "your company sign-in", cloud: "Rovara sign-in", github: "GitHub" } as const;
 
-export function whoamiText(result: { env: string; url: string; projects: DeveloperProjectsResponse }): string {
+export function whoamiText(result: { env: string; url: string; projects: DeveloperProjectsResponse; identities?: LinkedIdentity[] }): string {
   const { developer, projects, notices } = result.projects;
   const method = SIGN_IN_METHOD_TEXT[developer.provider];
   const link = developer.slackUserId === undefined ? "" : ` (${developer.slackUserId})`;
-  const lines = [`Signed in to AgentX environment ${result.env} (${result.url}) as ${sanitizeServerText(developer.name)}, with ${method}${link}.`];
+  // The other sign-in methods of this one person (the signed-in method is already named).
+  const others = (result.identities ?? []).filter((identity) => identity.provider !== developer.provider)
+    .map((identity) => {
+      const detail = identity.login ?? identity.email;
+      return `${SIGN_IN_METHOD_TEXT[identity.provider]}${detail === undefined ? "" : ` (${sanitizeServerText(detail)})`}`;
+    });
+  const alsoLinked = others.length === 0 ? "" : `; also linked: ${others.join(", ")}`;
+  const lines = [`Signed in to AgentX environment ${result.env} (${result.url}) as ${sanitizeServerText(developer.name)}, with ${method}${link}${alsoLinked}.`];
   if (projects.length === 0) {
     // Only Rovara Cloud signs people in with these two. There an owner or admin creates the org's projects; a member asks one.
     if (developer.provider === "cloud" || developer.provider === "github") {
@@ -106,6 +128,27 @@ export function whoamiText(result: { env: string; url: string; projects: Develop
   }
   if (notices.includes("slack_unavailable")) lines.push("Slack could not be reached, so projects you use through a Slack channel are not listed; try again later.");
   return `${lines.join("\n")}\n`;
+}
+
+/** What `agentx signin unlink` calls each method, for its output. */
+const UNLINK_METHOD_TEXT = { cloud: "Rovara sign-in (email code)", github: "GitHub" } as const;
+
+/**
+ * `agentx signin unlink <cloud|github>` (Plan 2, Task 8): removes one sign-in method from the signed-in developer's own account. Sessions
+ * made with that method end; the others go on. The server refuses the account's only sign-in method and the one it was created with,
+ * in its own words.
+ */
+export async function unlinkSignInMethod(deps: DeveloperSessionDeps, env: string | undefined, provider: string): Promise<{ env: string; url: string; provider: "cloud" | "github"; identities: LinkedIdentity[] }> {
+  const method = UnlinkableSignInMethodSchema.safeParse(provider);
+  if (!method.success) throw agentXError("CONFIG_INVALID", `unknown sign-in method ${JSON.stringify(sanitizeServerText(provider))}; use cloud or github`);
+  const { env: resolved, url, body } = await developerRequest(deps, env, `/v1/app/me/identities/${method.data}`, UnlinkIdentityAppResponseSchema, { method: "DELETE", explain: true });
+  return { env: resolved, url, provider: method.data, identities: body.identities };
+}
+
+export function unlinkText(result: { provider: "cloud" | "github"; identities: LinkedIdentity[] }): string {
+  const left = result.identities.map((identity) => SIGN_IN_METHOD_TEXT[identity.provider]);
+  return `Removed ${UNLINK_METHOD_TEXT[result.provider]} from your account. Sessions signed in that way have ended.\n`
+    + `${left.length === 0 ? "No sign-in methods are linked." : `You can still sign in with ${left.join(", ")}.`}\n`;
 }
 
 /** `agentx project create` (ruling R55): the signed-in owner or admin of a cloud org creates a project from a repository. */

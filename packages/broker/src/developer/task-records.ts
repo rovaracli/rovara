@@ -78,6 +78,11 @@ export interface DeveloperTaskRecord {
   createdAt: string;
   updatedAt: string;
   closedAt?: string;
+  /** Ruling R60: set when the task's creator was removed from the org; the task dispatches and publishes nothing more. */
+  outcome?: "creator_removed";
+  /** The sentence the task ended with (`<name> is no longer a member of <org>, so Rovara stopped this task.`) and when. */
+  outcomeReason?: string;
+  outcomeAt?: string;
   /**
    * When a finished workflow task (all its pull requests merged, or its workflow closed) gave back its workspace slot and
    * its workspace. A closed task gives them back with its close instead, and has none.
@@ -281,11 +286,14 @@ export function deriveTaskStatus(input: {
   workspaceStatus: string;
   pointer?: { pendingPrompt?: string | undefined; cancelledAt?: string | undefined } | undefined;
   operations: readonly OperationFacts[];
+  /** Ruling R60: a task whose creator was removed has ended, whatever its last operation was. */
+  outcome?: DeveloperTaskRecord["outcome"] | undefined;
 }): DerivedStatus {
   const closing = input.workspaceStatus === "CLOSING" || input.operations.some((operation) => operation.kind === "close" && LIVE.has(operation.status));
   const current = currentOperation(input.operations);
   const withCurrent = current === undefined ? {} : { current };
   if (input.closedAt !== undefined || input.workspaceStatus === "CLOSED") return { status: "CLOSED", closing: false, ...withCurrent };
+  if (input.outcome === "creator_removed") return { status: "CANCELLED", closing, ...withCurrent };
   if (input.pointer?.cancelledAt !== undefined && current === undefined) return { status: "CANCELLED", closing };
   if (input.workspaceStatus === "PREPARATION_FAILED") {
     const prepare = input.operations.filter((operation) => operation.kind === "prepare").sort(byCreated).at(-1);

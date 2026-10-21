@@ -2,6 +2,7 @@
 // responses with the non-strict schemas here, so a newer control plane can add fields.
 import { z } from "zod";
 import { EnvironmentNameSchema } from "./environments.js";
+export { normalizeEmail } from "./email.js";
 import { looseCopy } from "./loose.js";
 import { OrgRoleSchema } from "./org.js";
 import { DeveloperTaskPolicySchema } from "./project.js";
@@ -79,6 +80,36 @@ export const DeveloperSummarySchema = z.object({
   orgRole: OrgRoleSchema.optional(),
 });
 export type DeveloperSummary = z.infer<typeof DeveloperSummarySchema>;
+
+/**
+ * One sign-in method linked to a developer (`GET /v1/app/me`). It names the method and what the person recognises it by, never the
+ * provider's issuer or subject.
+ */
+export const LinkedIdentitySchema = z.object({
+  provider: DeveloperSignInMethodSchema,
+  email: z.string().optional(),
+  login: z.string().optional(),
+  linkedAt: z.string(),
+  lastSignInAt: z.string(),
+});
+export type LinkedIdentity = z.infer<typeof LinkedIdentitySchema>;
+
+/** `GET /v1/app/me`: who the signed-in developer is, their org, and every sign-in method linked to them. */
+export const AppMeResponseSchema = z.object({
+  developer: z.object({
+    id: z.string().regex(/^[a-f0-9]{64}$/),
+    name: z.string().min(1).max(200),
+    email: z.string().optional(),
+    orgRole: OrgRoleSchema,
+  }),
+  org: z.object({ orgId: z.string(), name: z.string(), plan: z.string() }),
+  identities: z.array(LinkedIdentitySchema),
+});
+export type AppMeResponse = z.infer<typeof AppMeResponseSchema>;
+
+/** `DELETE /v1/app/me/identities/{provider}`: the sign-in methods still linked after one was removed (Plan 2, Task 8). */
+export const UnlinkIdentityAppResponseSchema = z.object({ identities: z.array(LinkedIdentitySchema) });
+export type UnlinkIdentityAppResponse = z.infer<typeof UnlinkIdentityAppResponseSchema>;
 
 /**
  * F6: a non-strict copy of `DeveloperTaskPolicySchema` (`project.ts`), used only to parse a
@@ -369,6 +400,18 @@ export type SlackAuthCheckResponse = { ok: true; teamId: string } | { ok: false;
 export const EndDeveloperSessionsRequestSchema = z.object({ kind: z.literal("end-developer-sessions"), developerId: z.string().regex(/^[a-f0-9]{64}$/), at: z.string().datetime() }).strict();
 export type EndDeveloperSessionsRequest = z.infer<typeof EndDeveloperSessionsRequestSchema>;
 export type EndDeveloperSessionsResponse = { ok: true } | { ok: false; error: "not_found" | "invalid_request" | "unavailable" };
+
+/** The sign-in methods a person may unlink from their account (Plan 2, Task 8): the two that cloud installs link by verified email. */
+export const UnlinkableSignInMethodSchema = z.enum(["cloud", "github"]);
+export type UnlinkableSignInMethod = z.infer<typeof UnlinkableSignInMethodSchema>;
+/**
+ * Plan 2, Task 8: unlinks one sign-in method from the caller's own developer, through DeveloperIdentity (the broker may not write the
+ * sign-in table). `developerId` is the caller's verified developer, never a body value of the public route.
+ */
+export const UnlinkIdentityRequestSchema = z.object({ kind: z.literal("unlink-identity"), developerId: z.string().regex(/^[a-f0-9]{64}$/), provider: UnlinkableSignInMethodSchema }).strict();
+export type UnlinkIdentityRequest = z.infer<typeof UnlinkIdentityRequestSchema>;
+/** `refused` carries the person's words (the store's fixed refusal text); `not_found` is a method that is not linked. */
+export type UnlinkIdentityResponse = { ok: true } | { ok: false; error: "refused"; message: string } | { ok: false; error: "not_found" | "invalid_request" | "unavailable" };
 
 /** Spec 025 E12 (Q8): a public channel of the environment's team, by its name. */
 export const ChannelByNameRequestSchema = z.object({ kind: z.literal("channel-by-name"), name: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,79}$/) }).strict();

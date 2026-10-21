@@ -79,6 +79,30 @@ export const BOUNDARY_SERVICES: readonly string[] = [...SERVICE_ROLE_SERVICES, "
  */
 export const SERVICE_LINKED_ROLE_SERVICES: readonly string[] = ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com", "route53resolver.amazonaws.com"];
 
+/**
+ * Cognito's email service-linked role (Task 7). A user pool that sends with Amazon SES (EmailSendingAccount DEVELOPER) makes Cognito
+ * create AWSServiceRoleForAmazonCognitoIdpEmailService on first use, and the caller must hold iam:CreateServiceLinkedRole
+ * (https://docs.aws.amazon.com/cognito/latest/developerguide/using-service-linked-roles.html). Named exactly, apart from the wider
+ * SERVICE_LINKED_ROLE_SERVICES statement, so nothing else under aws-service-role/ comes with it.
+ */
+const COGNITO_EMAIL_SERVICE = "email.cognito-idp.amazonaws.com";
+const cognitoEmailServiceLinkedRole = (partition: string, account: string): PolicyStatementJson => ({
+  Sid: "CognitoEmailServiceLinkedRole",
+  Effect: "Allow",
+  Action: ["iam:CreateServiceLinkedRole"],
+  Resource: `arn:${partition}:iam::${account}:role/aws-service-role/${COGNITO_EMAIL_SERVICE}/AWSServiceRoleForAmazonCognitoIdpEmailService`,
+  Condition: { StringEquals: { "iam:AWSServiceName": COGNITO_EMAIL_SERVICE } },
+});
+
+/**
+ * What `agentx signin cloud --email-from` reads from Amazon SES (SESv2 GetEmailIdentity and GetAccount): the sending domain is verified,
+ * and whether the account is out of the sandbox. Reads only; no send. GetAccount supports no resource, so "*" with the region condition.
+ */
+const sesChecks = (scope: Pick<PolicyScope, "partition" | "region" | "account">): PolicyStatementJson[] => [
+  { Sid: "SesIdentityCheck", Effect: "Allow", Action: ["ses:GetEmailIdentity"], Resource: `arn:${scope.partition}:ses:${scope.region}:${scope.account}:identity/*` },
+  { Sid: "SesAccountCheck", Effect: "Allow", Action: ["ses:GetAccount"], Resource: "*", Condition: { StringEquals: { "aws:RequestedRegion": scope.region } } },
+];
+
 /** Role management the service role needs on this environment's roles. */
 const ROLE_ACTIONS = [
   "iam:CreateRole",
@@ -200,6 +224,7 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
       Resource: `arn:${scope.partition}:iam::${scope.account}:role/aws-service-role/*`,
       Condition: { StringLike: { "iam:AWSServiceName": [...SERVICE_LINKED_ROLE_SERVICES] } },
     },
+    cognitoEmailServiceLinkedRole(scope.partition, scope.account),
     // FR-047: the control-plane stack's monthly budget, and only that one, never budgets:* on *.
     { Sid: "Budget", Effect: "Allow", Action: [...BUDGET_ACTIONS], Resource: `arn:${scope.partition}:budgets::${scope.account}:budget/agentx-${scope.env}-monthly` },
   ];
@@ -247,6 +272,8 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
       Resource: `arn:${partition}:iam::${account}:role/aws-service-role/*`,
       Condition: { StringLike: { "iam:AWSServiceName": [...SERVICE_LINKED_ROLE_SERVICES] } },
     },
+    cognitoEmailServiceLinkedRole(partition, account),
+    ...sesChecks(scope),
     { Sid: "DenyAccountChanges", Effect: "Deny", Action: ["organizations:*", "account:*"], Resource: "*" },
     { Sid: "DenyUsersAndGroups", Effect: "Deny", Action: ["iam:*User*", "iam:*Group*"], Resource: "*" },
     {
@@ -405,6 +432,7 @@ export function operatorRoleStatements(scope: PolicyScope): PolicyStatementJson[
     // The Elastic IP check counts the region's allocated addresses. ec2:DescribeAddresses has no
     // resource-level permissions, so "*" is its only Resource; it reads, and changes nothing.
     { Sid: "Addresses", Effect: "Allow", Action: ["ec2:DescribeAddresses"], Resource: "*", Condition: { StringEquals: { "aws:RequestedRegion": region } } },
+    ...sesChecks(scope),
     { Sid: "Identity", Effect: "Allow", Action: ["sts:GetCallerIdentity"], Resource: "*" },
     {
       Sid: "Logs",

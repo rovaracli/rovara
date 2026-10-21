@@ -2,6 +2,7 @@
 // store builds on. `orgScoped` is the prefix for every collision-prone key.
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
+import { normalizeEmail } from "./email.js";
 
 export const OrgIdSchema = z.string().regex(/^org_[0-9a-z]{20}$/);
 export type OrgId = z.infer<typeof OrgIdSchema>;
@@ -25,6 +26,10 @@ export interface OrgRecord {
    * register as projects. Only an operator sets it; absent, the org cannot create projects.
    */
   githubOwner?: string;
+  /** When the org was closed (its sole owner left, or the race org of a duplicate sign-in was retired); a closed org takes no new members. */
+  closedAt?: string;
+  /** Set while the sole owner's leave closes the org: from then on no invite is accepted into it. A stopped close is run again by the owner. */
+  closingAt?: string;
 }
 
 /** A GitHub account or organization login, stored lower case: 1 to 39 letters, digits and single hyphens, never starting or ending with one. */
@@ -125,5 +130,47 @@ export function trialGithubKey(githubUserId: string): OrgKey {
 }
 
 export function orgEmailKey(email: string): OrgKey {
-  return { pk: `ORG_EMAIL#${email.trim().toLowerCase()}`, sk: "DEVELOPER" };
+  return { pk: `ORG_EMAIL#${normalizeEmail(email).email}`, sk: "DEVELOPER" };
+}
+
+/** A developer removed from a single-org install, who may not rejoin it by signing in again until an invite clears this item. */
+export function orgBanKey(orgId: OrgId, developerId: string): OrgKey {
+  return { pk: orgScoped(orgId, "BAN"), sk: developerId };
+}
+
+/**
+ * Written when a person is removed from an org or leaves it, and never deleted. A task's creator who is not a member is refused (ruling
+ * R60) only when this says they once were: a Slack user who has not signed in yet has no member record and is not removed.
+ */
+export function orgRemovedKey(orgId: OrgId, developerId: string): OrgKey {
+  return { pk: orgScoped(orgId, "REMOVED"), sk: developerId };
+}
+
+/** The reverse of `slackTeamOrgKey`, in the org's own partition, so closing the org finds the Slack teams it bound. */
+export function orgSlackTeamKey(orgId: OrgId, teamId: string): OrgKey {
+  return { pk: orgPk(orgId), sk: `SLACK_TEAM#${teamId}` };
+}
+
+/** A GitHub App installation bound to an org. Global, so a second org finds it. */
+export function githubInstallationKey(installationId: number): OrgKey {
+  return { pk: `GITHUB_INSTALLATION#${String(installationId)}`, sk: "ORG" };
+}
+
+/** The same binding in the org's own partition, so closing the org finds its installations. */
+export function orgGithubInstallationKey(orgId: OrgId, installationId: number): OrgKey {
+  return { pk: orgPk(orgId), sk: `GITHUB_INSTALLATION#${String(installationId)}` };
+}
+
+export interface GithubInstallationRecord {
+  installationId: number;
+  orgId: OrgId;
+  accountLogin: string;
+  accountId: number;
+  accountType: "User" | "Organization";
+  repositorySelection: "all" | "selected";
+  installedByGithubUserId: string;
+  boundByDeveloperId: string;
+  status: "active" | "suspended" | "removed";
+  boundAt: string;
+  updatedAt: string;
 }

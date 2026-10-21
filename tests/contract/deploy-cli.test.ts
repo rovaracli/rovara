@@ -18,6 +18,8 @@ import { assertReleaseCoversRegion, releaseRegionProblem } from "../../packages/
 import type { TemplatesEngineClients } from "../../packages/cli/src/deploy/templates-engine.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { writeEnvironmentSettings } from "../../packages/cli/src/environments/settings.js";
+import type { IAMClient } from "@aws-sdk/client-iam";
+import { passRolePolicyDocument } from "../../packages/cli/src/init/pass-role.js";
 import { allStackOutputs } from "../support/init-fakes.js";
 import { MemoryParameterStore } from "../support/memory-parameter-store.js";
 
@@ -188,11 +190,19 @@ function safeDeployDeps(overrides: DeployCliDependencies = {}): DeployCliDepende
     },
     stackOutputs: () => unexpectedAwsCall(),
     stackParameters: () => unexpectedAwsCall(),
+    iam: { send: () => unexpectedAwsCall() },
     templatesClients: {
       cloudFormation: { send: () => unexpectedAwsCall() } as unknown as TemplatesEngineClients["cloudFormation"],
       s3: { send: () => unexpectedAwsCall() } as unknown as TemplatesEngineClients["s3"],
     },
     ...overrides,
+  };
+}
+
+/** An IAM client whose CDK deploy role already carries the PassRole policy (init/pass-role.ts): the cdk engine reads it and writes nothing. */
+function passRolePresentIam(): Pick<IAMClient, "send"> {
+  return {
+    send: async () => ({ PolicyDocument: encodeURIComponent(JSON.stringify(passRolePolicyDocument({ partition: "aws", account: ACCOUNT }))) }),
   };
 }
 
@@ -667,7 +677,7 @@ describe("agentx deploy", () => {
 
     const code = await executeCli(
       ["deploy", "--mode", "install", "--engine", "cdk", "--release", releaseDir, "--answers", answersPath, "--source", "/some/source", "--yes"],
-      { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner }) },
+      { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner, iam: passRolePresentIam() }) },
     );
 
     expect(code).toBe(0);
@@ -692,7 +702,7 @@ describe("agentx deploy", () => {
 
     const code = await executeCli(
       ["deploy", "--mode", "install", "--engine", "cdk", "--release", releaseDir, "--answers", answersPath, "--source", "/some/source", "--yes"],
-      { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner }) },
+      { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner, iam: passRolePresentIam() }) },
     );
 
     expect(code).toBe(0);
@@ -731,7 +741,7 @@ describe("agentx deploy", () => {
 
     const code = await executeCli(
       ["deploy", "--mode", "install", "--engine", "cdk", "--release", releaseDir, "--answers", answersPath, "--source", "/some/source", "--yes"],
-      { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner }) },
+      { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner, iam: passRolePresentIam() }) },
     );
 
     expect(code).toBe(0);

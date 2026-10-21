@@ -4,6 +4,7 @@ import type { DirectProvider, ModelsAnswers } from "../deploy/answer-schemas.js"
 // reported together, with what to change; cdk bootstrap (which creates the CDKToolkit stack) is
 // offered only when every other check has passed.
 import { DescribeAddressesCommand, EC2Client } from "@aws-sdk/client-ec2";
+import { IAMClient } from "@aws-sdk/client-iam";
 import { ServiceQuotasClient, GetServiceQuotaCommand } from "@aws-sdk/client-service-quotas";
 import { BedrockRuntimeClient, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
@@ -11,6 +12,7 @@ import { agentXError, AgentXError, KEYED_MODEL_PROVIDERS } from "@agentx/contrac
 import { assertCdkBootstrapped, type CommandRunner } from "../deploy/cdk-engine.js";
 import { releaseRegionProblem, type ReleaseCoverage } from "../deploy/release.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
+import { ensureCdkPassRole } from "./pass-role.js";
 import type { InitAnswers } from "./install-state.js";
 import type { Prompter } from "./prompts.js";
 
@@ -32,6 +34,10 @@ export interface PrerequisiteChecks {
   commandVersion(command: string): Promise<string | undefined>;
   cdkBootstrapped(): Promise<boolean>;
   runCdkBootstrap(): Promise<void>;
+  /** The cdk engine only: lets the CDK deploy role hand the AgentX CloudFormation role to CloudFormation
+   * (pass-role.ts). Optional: a checks object without it skips the step. Throws CONFIG_INVALID when the
+   * credentials cannot add the permission. */
+  ensurePassRole?(input: { write: (line: string) => void; partition: string }): Promise<unknown>;
   oidcDiscovery(issuer: string): Promise<unknown>;
   sleep(ms: number): Promise<void>;
   /** Spec 048 FR-018: false when Amazon Bedrock has no endpoint in the region. Optional: a checks
@@ -475,6 +481,20 @@ export async function checkPrerequisites(input: {
   if (problems.length > 0) {
     throw agentXError("CONFIG_INVALID", `init cannot start; nothing was created:\n${problems.map((problem) => `- ${problem}`).join("\n")}`);
   }
+
+  // Once CDK is bootstrapped (it already was, or it just ran) and nothing else is wrong: the one IAM
+  // permission the cdk engine's deploys need. Added here, before any stack deploys, so a credential
+  // that cannot add it stops init with the policy to hand to a cloud team (pass-role.ts).
+  if (answers.engine === "cdk" && checks.ensurePassRole !== undefined) {
+    await checks.ensurePassRole({ write, partition: partitionOf(input.caller.arn) });
+  }
+}
+
+/** The partition segment of a caller ARN (`arn:<partition>:...`). */
+function partitionOf(arn: string): string {
+  const match = /^arn:([^:]+):/.exec(arn);
+  if (match?.[1] === undefined) throw agentXError("CONFIG_INVALID", `caller identity ARN ${arn} is not a valid ARN`);
+  return match[1];
 }
 
 // Item 2: `maxAttempts: 1` turns off the SDK's own retry loop (checkPrerequisites already retries
@@ -509,7 +529,7 @@ export async function withDeadline<T>(run: (signal: AbortSignal) => Promise<T>, 
   }
 }
 
-export function awsPrerequisiteChecks(input: { region: string; account: string; store: ParameterStore; runner: CommandRunner; fetch: typeof fetch }): PrerequisiteChecks {
+export function awsPrerequisiteChecks(input: { region: string; account: string; store: ParameterStore; runner: CommandRunner; fetch: typeof fetch; /** Tests: a fake IAM client. */ iam?: Pick<IAMClient, "send"> }): PrerequisiteChecks {
   const bedrock = new BedrockRuntimeClient({
     region: input.region,
     maxAttempts: CONVERSE_CLIENT_MAX_ATTEMPTS,
@@ -599,6 +619,9 @@ export function awsPrerequisiteChecks(input: { region: string; account: string; 
     async runCdkBootstrap() {
       const target = `aws://${input.account}/${input.region}`;
       await input.runner.run("npx", ["cdk", "bootstrap", target], { cwd: process.cwd(), display: `npx cdk bootstrap ${target}` });
+    },
+    async ensurePassRole({ write, partition }) {
+      return ensureCdkPassRole({ iam: input.iam ?? new IAMClient({ region: input.region }), write, account: input.account, region: input.region, partition });
     },
     async oidcDiscovery(issuer) {
       // Item 3: bounded with its own deadline, parses the body itself (rather than trusting

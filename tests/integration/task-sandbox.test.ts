@@ -126,7 +126,7 @@ describe("a task in a project without a devcontainer", () => {
     const joined = args.join(" ");
     expect(args).toEqual(expect.arrayContaining(["--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "1000:1000", "--network", "agentx-task", IMAGE]));
     expect(args[args.indexOf("--volume") + 1]).toBe(`${root}:${root}`);
-    expect(joined).not.toMatch(/docker\.sock|--privileged|--network[ =]host|--pid|--cap-add/u);
+    expect(joined).not.toMatch(/docker\.sock|--privileged|--network[ =]host|--pid(?!s-limit)|--cap-add/u);
   });
 
   it("labels the sandbox with the operation and removes it when the task ends", async () => {

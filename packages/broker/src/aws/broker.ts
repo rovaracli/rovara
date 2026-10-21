@@ -284,6 +284,7 @@ import {
   TERMINAL, getItem, issueCapability, operationKey, operationOrg, operationRecord, outboxRecord, publicOperation, requestCancellation, requireOperation,
   type CallbackClaims, type OperationRecord,
 } from "./cancellation.js";
+import { requireCreatorStillMember, requireWorkspaceCreatorStillMember, type CreatorCheckDependencies } from "../developer/creator-member.js";
 import { aiToolTurn, completedTurn, developerFooter, E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON, githubWorkflowPullRequestKey, inertName, OUTCOME, partyOfTask, taskKey, taskOwnerKey, taskOwnerSubject, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type GithubWorkflowPullRequestRecord, type StoredEvent } from "../developer/task-records.js";
 import { readWorkspaceLimits } from "../developer/limits.js";
 import { WORKFLOW_DISPATCH_PK, workflowDispatchItem, type WorkflowDispatchRecord, type WorkflowE2EReadinessMarker, AWS_TEMPORARY_MESSAGE, GATED_TASK_PULL_REQUEST_ACTION_REFUSAL, GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, UNEXPECTED_REQUEST_MESSAGE, hashJson, isConditional, isTemporaryAwsError, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, planDocumentInstructions, workerPrompt } from "./broker-shared.js";
@@ -299,7 +300,7 @@ import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { admitSpend, changeBudgets, keyIdOf, mintCap, mintKeyHealing, recordMintedKey, type OrgBudgetSettings } from "../org/budget.js";
-import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
+import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import { ADMISSION_REFUSALS, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
@@ -528,6 +529,8 @@ interface SlackServiceConfiguration {
 /** A "." or ".." path segment, also percent-encoded (%2e in any case). */
 const DOT_SEGMENT = /(?:^|\/)(?:\.|%2e){1,2}(?:\/|$)/i;
 const DEVELOPER_ROUTE_KEY = "ANY /v1/dev/{proxy+}";
+/** The hosted app's routes (Plan 2): authorizer-free like /v1/dev, the broker verifies the same developer token itself. */
+const APP_ROUTE_KEY = "ANY /v1/app/{proxy+}";
 const FEEDBACK_REVIEW_ROUTE_KEY = "ANY /review/{proxy+}";
 
 /** The install's environment name: what its single org (ruling R3) and the default org resolver derive from. */
@@ -558,6 +561,24 @@ async function orgOfRecord(
     ...(typeof record.ownerKey === "string" ? { ownerKey: record.ownerKey } : {}),
     ...(typeof record.developerId === "string" ? { developerId: record.developerId } : {}),
   }));
+}
+
+/**
+ * Ruling R60: what the removed-creator check reads with. A task that names no org is placed by the org resolver; one whose owner has
+ * no org at all is a legacy task and the check skips it.
+ */
+function creatorCheckOf(dependencies: AwsBrokerDependencies): CreatorCheckDependencies {
+  return {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName,
+    orgOf: async (task) => {
+      try {
+        return await orgOfRecord(dependencies, task);
+      } catch (error) {
+        if (error instanceof AgentXError) return undefined;
+        throw error;
+      }
+    },
+  };
 }
 
 /**
@@ -1104,6 +1125,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       }
       // The /v1/dev route has no API Gateway authorizer, so what it carries goes to the developer API or nowhere.
       if (event.routeKey === DEVELOPER_ROUTE_KEY && !url.pathname.startsWith("/v1/dev/")) throw agentXError("NOT_FOUND", "route not found");
+      if (event.routeKey === APP_ROUTE_KEY && !url.pathname.startsWith("/v1/app/")) throw agentXError("NOT_FOUND", "route not found");
       if (url.pathname === "/v1/github/webhooks") {
         if (request.method !== "POST") return json({ error: { code: "NOT_FOUND", message: "route not found" } }, request.requestId, 404);
         if (request.body === undefined || dependencies.githubWebhookSecret === undefined) {
@@ -1275,7 +1297,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
 
       // Spec 025: the developer API. /v1/dev/* has no API Gateway authorizer (D17): the broker
       // verifies the developer token, then checks the method and session (FR-009).
-      if (url.pathname.startsWith("/v1/dev/")) {
+      if (url.pathname.startsWith("/v1/dev/") || url.pathname.startsWith("/v1/app/")) {
         if (!dependencies.developer) throw agentXError("NOT_FOUND", "developer sign-in is not set up in this deployment");
         const answer = await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
@@ -4266,6 +4288,8 @@ async function taskOperationParts(
   input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; legacyTask?: boolean; workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; retiredClaimIds?: readonly string[]; slackThread?: SlackThread },
   now: string,
 ): Promise<{ operation: OperationRecord; outbox: ReturnType<typeof outboxRecord>; fence: number }> {
+  // Ruling R60, as a backstop for any launch path that did not check first: a task whose creator was removed starts nothing.
+  await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspace.id);
   // The caller's org when there is one (a Slack thread's is its team's); a background writer reads it from the record.
   const orgId = input.orgId ?? await orgOfRecord(dependencies, workspace);
   const settings = await requireLatestProject(dependencies, orgId, workspace.projectName);
@@ -4771,6 +4795,8 @@ async function acceptPullRequest(
   options: { workflowCandidate?: { repositoryId: string; treeSha: string; commitSha?: string; candidateDigest: string; baseCommitSha?: string; publicationMode: "COMMITTED_HEAD" | "CHECKED_TREE"; admittedPinnedRevision: number; admittedLatestRevision: number; admittedMaterialDigest: string; admittedWorkflowRevision: number; admittedPlanArtifact: { id: string; type: string; version: number; objectKey: string; sha256: string; format: "markdown" | "structured" }; admittedOwnerApproval: { requestId: string; workflowRevision: number; actorId: string; actorRole: "TASK_OWNER" | "PROJECT_ADMIN"; artifactDigest: string; workBreakdownDigest: string | null; at: string }; admittedWorkflowAuthorityDigest: string } } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   const request = PullRequestRequestSchema.parse(value);
+  // Ruling R60: before any access check, so a removed creator's task says why instead of "project not found".
+  await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspaceId);
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
   await requireMembership(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName);
   const candidate = options.workflowCandidate;
@@ -4961,6 +4987,8 @@ async function acceptPullRequestLifecycle(
   options: { workflowCandidate?: { candidateDigest: string; treeSha: string; baseCommitSha: string; expectedHeadCommit: string } } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   const request = PullRequestLifecycleRequestSchema.parse(value);
+  // Ruling R60: before any access check, as for acceptPullRequest.
+  await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspaceId);
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
   await requireMembership(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName);
   const candidate = options.workflowCandidate;
@@ -5882,6 +5910,9 @@ export function isSlackWorkflowPublishRetryEvent(event: unknown): event is Slack
 
 /** Task 12: the owner's Retry opening the pull request, from the task's own thread. */
 async function retrySlackWorkflowPublication(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, event: SlackWorkflowPublishRetryEvent) {
+  // Ruling R60: a removed creator's task publishes nothing, so this refuses before the Slack checks and before any token is minted.
+  const stored = await getItem<DeveloperTaskRecord>(dependencies, taskKey(event.taskId));
+  if (stored !== undefined) await requireCreatorStillMember(creatorCheckOf(dependencies), stored);
   // The same checks as every other Slack press: this Slack workspace, the task's owner, and the task's own thread.
   const { taskId, requestId, caller, developer } = await ownedSlackWorkflowTask(dependencies, event, "retry opening the pull request");
   const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks }, caller);
@@ -6236,10 +6267,14 @@ async function handleCallback(
     return json({ authorized: true }, request.requestId);
   }
   if (action === "pull-request") {
+    // Ruling R60: a publish step that began before the removal still opens no pull request, and mints no installation token.
+    await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), operation.workspaceId);
     const pullRequest = await logCallbackRefusal(action, operation, () => reconcilePullRequest(dependencies, operation, body));
     return json(pullRequest, request.requestId);
   }
   if (action === "pull-request-update") {
+    // Ruling R60, as for the pull request callback above.
+    await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), operation.workspaceId);
     const pullRequest = await logCallbackRefusal(action, operation, () => reconcilePullRequestUpdate(dependencies, operation, body));
     return json(pullRequest, request.requestId);
   }
@@ -11920,6 +11955,9 @@ async function exchangeRepositoryCredential(
   if (typeof input.repositoryUrl !== "string" || input.repositoryUrl.length > 2_048) {
     throw agentXError("CONFIG_INVALID", "repositoryUrl is invalid");
   }
+  // Ruling R60: a removed creator's task pushes nothing, so the token that would let a worker push is never minted. A clone is not
+  // refused: the step that needs one is already running and finishes.
+  if (access === "push") await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspaceId);
   const operation = await requireOperation(dependencies, workspaceId, operationId);
   if (operation.kind === "publish") await assertCurrentWorkflowPublication(dependencies, operation);
   return dependencies.repositoryGrants.exchange(grant, {
@@ -12157,6 +12195,7 @@ function developerConfiguration(inviteTaskPerson?: DeveloperApiConfiguration["in
     slackUserByEmail: slackUserByEmailThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     slackAuthCheck: slackAuthCheckThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     endDeveloperSessions: endDeveloperSessionsThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
+    unlinkIdentity: unlinkIdentityThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     channelByName: channelByNameThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     // D17: kept for the Lambda's lifetime; an unknown kid refetches at most once a minute.
     verifyAccessToken: developerTokenVerifier({

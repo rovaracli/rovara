@@ -449,6 +449,34 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 },
                 {
                   "Action": [
+                    "iam:CreateServiceLinkedRole",
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "iam:AWSServiceName": "email.cognito-idp.amazonaws.com",
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":iam::",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":role/aws-service-role/email.cognito-idp.amazonaws.com/AWSServiceRoleForAmazonCognitoIdpEmailService",
+                      ],
+                    ],
+                  },
+                  "Sid": "CognitoEmailServiceLinkedRole",
+                },
+                {
+                  "Action": [
                     "budgets:ModifyBudget",
                     "budgets:ViewBudget",
                     "budgets:TagResource",
@@ -721,6 +749,76 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 ],
               },
               "Sid": "ServiceLinkedRoles",
+            },
+            {
+              "Action": [
+                "iam:CreateServiceLinkedRole",
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "iam:AWSServiceName": "email.cognito-idp.amazonaws.com",
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":iam::",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":role/aws-service-role/email.cognito-idp.amazonaws.com/AWSServiceRoleForAmazonCognitoIdpEmailService",
+                  ],
+                ],
+              },
+              "Sid": "CognitoEmailServiceLinkedRole",
+            },
+            {
+              "Action": [
+                "ses:GetEmailIdentity",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ses:",
+                    {
+                      "Ref": "AWS::Region",
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":identity/*",
+                  ],
+                ],
+              },
+              "Sid": "SesIdentityCheck",
+            },
+            {
+              "Action": [
+                "ses:GetAccount",
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "aws:RequestedRegion": {
+                    "Ref": "AWS::Region",
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Resource": "*",
+              "Sid": "SesAccountCheck",
             },
             {
               "Action": [
@@ -1523,6 +1621,48 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 },
                 {
                   "Action": [
+                    "ses:GetEmailIdentity",
+                  ],
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":ses:",
+                        {
+                          "Ref": "AWS::Region",
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":identity/*",
+                      ],
+                    ],
+                  },
+                  "Sid": "SesIdentityCheck",
+                },
+                {
+                  "Action": [
+                    "ses:GetAccount",
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "aws:RequestedRegion": {
+                        "Ref": "AWS::Region",
+                      },
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": "*",
+                  "Sid": "SesAccountCheck",
+                },
+                {
+                  "Action": [
                     "sts:GetCallerIdentity",
                   ],
                   "Effect": "Allow",
@@ -2290,6 +2430,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
     "BrokerE1355FD6": {
       "DependsOn": [
         "BrokerServiceRoleDefaultPolicyDDFD9E7E",
+        "BrokerServiceRoleOverflowPolicy143E16825",
         "BrokerServiceRole1938BCC9",
       ],
       "Properties": {
@@ -3205,6 +3346,23 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               },
             },
             {
+              "Action": "dynamodb:Query",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "DEVELOPER#*",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "DeveloperSignInTable26CE739E",
+                  "Arn",
+                ],
+              },
+            },
+            {
               "Action": "dynamodb:ConditionCheckItem",
               "Condition": {
                 "ForAllValues:StringLike": {
@@ -3360,13 +3518,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 ],
               },
             },
-            {
-              "Action": "states:StartExecution",
-              "Effect": "Allow",
-              "Resource": {
-                "Ref": "SessionsDeleterB48741EA",
-              },
-            },
           ],
           "Version": "2012-10-17",
         },
@@ -3378,6 +3529,30 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         ],
       },
       "Type": "AWS::IAM::Policy",
+    },
+    "BrokerServiceRoleOverflowPolicy143E16825": {
+      "Properties": {
+        "Description": "Part of the policies for AgentXControlPlane/Broker/ServiceRole",
+        "Path": "/",
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "states:StartExecution",
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SessionsDeleterB48741EA",
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Roles": [
+          {
+            "Ref": "BrokerServiceRole1938BCC9",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::ManagedPolicy",
     },
     "ChatGptConnectionKey03C49F9D": {
       "DeletionPolicy": "Delete",
@@ -3763,6 +3938,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
     },
     "DefaultStage": {
       "DependsOn": [
+        "DeveloperSignInAppRouteBAD38FAA",
         "DeveloperSignInAuthRoute98555360",
         "DeveloperSignInDevRoute4BB932E2",
         "DeveloperSignInFeedbackReviewRoute881C7CFE",
@@ -3774,6 +3950,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "AutoDeploy": true,
         "RouteSettings": {
           "ANY /review/{proxy+}": {
+            "ThrottlingBurstLimit": 50,
+            "ThrottlingRateLimit": 20,
+          },
+          "ANY /v1/app/{proxy+}": {
             "ThrottlingBurstLimit": 50,
             "ThrottlingRateLimit": 20,
           },
@@ -3792,6 +3972,27 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         },
       },
       "Type": "AWS::ApiGatewayV2::Stage",
+    },
+    "DeveloperSignInAppRouteBAD38FAA": {
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApi",
+        },
+        "AuthorizationType": "NONE",
+        "RouteKey": "ANY /v1/app/{proxy+}",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "BrokerIntegration",
+              },
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::ApiGatewayV2::Route",
     },
     "DeveloperSignInAuthRoute98555360": {
       "Properties": {
@@ -4100,6 +4301,40 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               },
             },
             {
+              "Action": "dynamodb:DeleteItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "DEVELOPER#*",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "DeveloperSignInTable26CE739E",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": "dynamodb:Query",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "DEVELOPER#*",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "DeveloperSignInTable26CE739E",
+                  "Arn",
+                ],
+              },
+            },
+            {
               "Action": [
                 "dynamodb:GetItem",
                 "dynamodb:PutItem",
@@ -4112,6 +4347,116 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                     "DEVELOPER_ORG#*",
                     "ORG_EMAIL#*",
                     "ORG_INVITE#*",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": "dynamodb:PutItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "ORG#org_????????????????????#MEMBER#*",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:PutItem",
+              ],
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "ORG#org_????????????????????#SETTINGS",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": "dynamodb:ConditionCheckItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "ORG#org_????????????????????",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": "dynamodb:GetItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "ORG#org_????????????????????#BAN",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": "dynamodb:Query",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "ORG#org_????????????????????#MEMBER#*",
+                    "ORG#org_????????????????????",
+                    "ORG#org_????????????????????#PROJECT_CATALOG",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": "dynamodb:DeleteItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "ORG#org_????????????????????#MEMBER#*",
+                    "ORG#org_????????????????????",
+                    "ORG#org_????????????????????#BAN",
+                    "DEVELOPER_ORG#*",
                   ],
                 },
               },
