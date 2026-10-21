@@ -3161,6 +3161,23 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               },
             },
             {
+              "Action": "dynamodb:Query",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "DEVELOPER#*",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "DeveloperSignInTable26CE739E",
+                  "Arn",
+                ],
+              },
+            },
+            {
               "Action": "dynamodb:ConditionCheckItem",
               "Condition": {
                 "ForAllValues:StringLike": {
@@ -3461,6 +3478,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
     },
     "DefaultStage": {
       "DependsOn": [
+        "DeveloperSignInAppRouteBAD38FAA",
         "DeveloperSignInAuthRoute98555360",
         "DeveloperSignInDevRoute4BB932E2",
         "DeveloperSignInFeedbackReviewRoute881C7CFE",
@@ -3472,6 +3490,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "AutoDeploy": true,
         "RouteSettings": {
           "ANY /review/{proxy+}": {
+            "ThrottlingBurstLimit": 50,
+            "ThrottlingRateLimit": 20,
+          },
+          "ANY /v1/app/{proxy+}": {
             "ThrottlingBurstLimit": 50,
             "ThrottlingRateLimit": 20,
           },
@@ -3490,6 +3512,27 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         },
       },
       "Type": "AWS::ApiGatewayV2::Stage",
+    },
+    "DeveloperSignInAppRouteBAD38FAA": {
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApi",
+        },
+        "AuthorizationType": "NONE",
+        "RouteKey": "ANY /v1/app/{proxy+}",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "BrokerIntegration",
+              },
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::ApiGatewayV2::Route",
     },
     "DeveloperSignInAuthRoute98555360": {
       "Properties": {
