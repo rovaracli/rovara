@@ -940,9 +940,9 @@ describe("the broker's handler", () => {
     expect(refusedStart.status).toBe(503);
     expect(refusedStart.body.error).toMatchObject({ code: "AUDIT_UNAVAILABLE" });
     expect(b.invocations).toStrictEqual([]);
-    // Not counted: the one read of the keys table's SHREDDED marker (task 15), made before the record so that a request that cannot happen is not recorded. It reads no record and no detail.
+    // Not counted: the one read of the org's SHREDDED marker in the keys table (task 15), made before the record so that a request that cannot happen is not recorded. It reads no record and no detail. Any other keys-table read (a DATA_KEY, say) would fail this test.
     expect(exportItems(b)).toStrictEqual([]);
-    expect(b.h.operations.slice(mark).filter((operation) => LEDGER_TABLES.has(operation.table) && !(operation.table === KEYS && operation.action === "GetItem"))).toStrictEqual([]);
+    expect(b.h.operations.slice(mark).filter((operation) => LEDGER_TABLES.has(operation.table) && !(operation.table === KEYS && operation.action === "GetItem" && operation.pk === `ORG#${A}` && operation.sk === "SHREDDED"))).toStrictEqual([]);
 
     // Started: 202, the export function is invoked for the path's org, and the staff read was recorded first.
     const started = await asStaff(handler, { method: "POST", path: exportPath, body });

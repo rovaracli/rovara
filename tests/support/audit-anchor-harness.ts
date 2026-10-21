@@ -28,7 +28,8 @@ export const E2 = "e20261020T1230Z";
 export type Command = { constructor: { name: string }; input: Record<string, unknown> };
 export type Log = Record<string, unknown>;
 
-export interface Operation { action: string; table: string; pk: string }
+/** What a DynamoDB command touched. `sk` is recorded for commands that carry a key or an item (not for a Query). */
+export interface Operation { action: string; table: string; pk: string; sk?: string }
 
 export const ENV_NAME = "acme";
 export const PARTITION = "aws";
@@ -73,6 +74,10 @@ export function harness(options: HarnessOptions = {}) {
   /** Runs before a DynamoDB command is sent; throw to make it fail before it touches anything. */
   const hooks: { before?: ((command: Command) => void | Promise<void>) | undefined } = {};
   const keyOf = (entry: Record<string, unknown>): string => String(((entry.Key ?? entry.Item) as { pk: string }).pk);
+  const sortOf = (entry: Record<string, unknown>): { sk?: string } => {
+    const sk = ((entry.Key ?? entry.Item) as { sk?: unknown } | undefined)?.sk;
+    return sk === undefined ? {} : { sk: String(sk) };
+  };
   const documentClient = {
     send: async (command: Command) => {
       await hooks.before?.(command);
@@ -82,14 +87,14 @@ export function harness(options: HarnessOptions = {}) {
         const flattened: Operation[] = [];
         for (const entry of input.TransactItems as Array<Record<string, Record<string, unknown>>>) {
           const [kind, action] = Object.entries(entry)[0] as [string, Record<string, unknown>];
-          flattened.push({ action: `${kind}Item`, table: String(action.TableName), pk: keyOf(action) });
+          flattened.push({ action: `${kind}Item`, table: String(action.TableName), pk: keyOf(action), ...sortOf(action) });
         }
         transactions.push({ items: flattened.length, operations: flattened });
         operations.push(...flattened);
       } else if (name === "QueryCommand") {
         operations.push({ action: "Query", table: String(input.TableName), pk: String((input.ExpressionAttributeValues as Record<string, unknown>)[":pk"]) });
       } else {
-        operations.push({ action: name.replace("Command", "Item"), table: String(input.TableName), pk: keyOf(input) });
+        operations.push({ action: name.replace("Command", "Item"), table: String(input.TableName), pk: keyOf(input), ...sortOf(input) });
       }
       return db.send(command);
     },

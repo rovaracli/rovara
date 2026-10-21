@@ -33,10 +33,11 @@ import { auditPending, type AuditDeps, type TransactItem } from "./outbox.js";
 /** The State-table partition of the due items: one per closed company, with the time it is due in the sort key. */
 export const AUDIT_SHRED_DUE_PARTITION = "AUDIT_SHRED_DUE";
 /**
- * How long a shred waits after writing SHREDDED before it deletes anything: the appender's timeout (30 s) plus margin is what a key
- * creation already in flight can take to land, and the sweep must come after it (the keyring cannot condition a create on SHREDDED).
+ * How long a shred waits after writing SHREDDED before it deletes anything: the appender's timeout (30 s) plus 5 s of margin, so that a
+ * key creation which started just before SHREDDED was written still lands inside the wait, and the sweep comes after it (the keyring
+ * cannot condition a create on SHREDDED). With the sweep's own margin it fits the anchor's 300 s timeout.
  */
-export const AUDIT_SHRED_SETTLE_MS = 30_000;
+export const AUDIT_SHRED_SETTLE_MS = 35_000;
 /** The event the broker sends the export function to delete an org's export files (an erasure does this). */
 export const AUDIT_EXPORT_PURGE_SOURCE = "agentx.audit-export-purge";
 
@@ -239,7 +240,7 @@ export interface AuditShredDeps {
   log: (entry: Record<string, unknown>) => void;
   /** Pauses (the wait after SHREDDED). Defaults to a timer. */
   sleep?: (ms: number) => Promise<void>;
-  /** The clock SHREDDED is stamped with, and the 30 seconds are counted on. Defaults to the real one. */
+  /** The clock SHREDDED is stamped with, and the settle wait is counted on. Defaults to the real one. */
   now?: () => number;
   /** How much time the function has left (Lambda's `getRemainingTimeInMillis`). Absent: no limit. A step that would not fit is deferred. */
   remainingMs?: () => number;
@@ -377,7 +378,7 @@ export async function processDueShreds(deps: AuditShredDeps, now: number): Promi
       outcome.failed.push(orgId);
     }
   }
-  // 2. One wait for all of them: until 30 s after the latest marker was written.
+  // 2. One wait for all of them: until AUDIT_SHRED_SETTLE_MS after the latest marker was written.
   let wait = 0;
   for (const marker of markers.values()) {
     const at = Date.parse(marker);

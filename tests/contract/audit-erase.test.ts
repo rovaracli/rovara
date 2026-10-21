@@ -23,6 +23,7 @@ import {
   AUDIT_DETAIL_STORES,
   AUDIT_EXPORT_PURGE_SOURCE,
   AUDIT_SHRED_DUE_PARTITION,
+  AUDIT_SHRED_MARGIN_MS,
   AUDIT_SHRED_SETTLE_MS,
   auditErasedMessage,
   eraseAuditSubject,
@@ -471,14 +472,17 @@ describe("processDueShreds", () => {
     expect(b.bucket.calls.every((call) => call.command === "ListObjectsV2" || call.command === "DeleteObject")).toBe(true);
   });
 
-  it("writes SHREDDED first, then waits at least 30 seconds, and only then deletes: nothing is deleted while a create may be in flight", async () => {
+  it("writes SHREDDED first, then waits at least 35 seconds (the appender's 30 plus 5 of margin), and only then deletes: nothing is deleted while a create may be in flight", async () => {
     const b = await world();
     b.clock.now = START + 30 * DAY;
     const seen: Array<{ marker: unknown; keys: string[]; files: number }> = [];
     b.hooks.onSleep = () => { seen.push({ marker: b.db.get(KEYS, `ORG#${A}`, "SHREDDED"), keys: b.sorts(A), files: b.bucket.keysUnder(`${A}/`).length }); };
     await processDueShreds(b.shred, b.clock.now);
     expect(b.sleeps).toStrictEqual([AUDIT_SHRED_SETTLE_MS]);
-    expect(AUDIT_SHRED_SETTLE_MS).toBeGreaterThanOrEqual(30_000);
+    // The appender can take 30 s to land a key creation that started just before SHREDDED was written; the margin covers the rest.
+    expect(AUDIT_SHRED_SETTLE_MS).toBeGreaterThanOrEqual(35_000);
+    // And the wait still fits, with the sweep's own margin, in the anchor's 300 s timeout.
+    expect(AUDIT_SHRED_SETTLE_MS + AUDIT_SHRED_MARGIN_MS).toBeLessThan(300_000);
     expect(seen).toHaveLength(1);
     expect(seen[0]!.marker).toMatchObject({ at: iso(START + 30 * DAY) });
     expect(seen[0]!.keys).toContain("DATA_KEY");
@@ -537,13 +541,13 @@ describe("processDueShreds", () => {
     expect(b.dueItems().map((item) => item.orgId)).toStrictEqual([B]);
   });
 
-  it("waits only what is left of the 30 seconds when an earlier run wrote SHREDDED and stopped", async () => {
+  it("waits only what is left of the 35 seconds when an earlier run wrote SHREDDED and stopped", async () => {
     const b = await world();
-    b.db.set(KEYS, { pk: `ORG#${A}`, sk: "SHREDDED", at: iso(START + 30 * DAY - 20_000) });
+    b.db.set(KEYS, { pk: `ORG#${A}`, sk: "SHREDDED", at: iso(START + 30 * DAY - 25_000) });
     b.clock.now = START + 30 * DAY;
     await processDueShreds(b.shred, b.clock.now);
     expect(b.sleeps).toStrictEqual([10_000]);
-    expect(b.db.get(KEYS, `ORG#${A}`, "SHREDDED")).toMatchObject({ at: iso(START + 30 * DAY - 20_000) });
+    expect(b.db.get(KEYS, `ORG#${A}`, "SHREDDED")).toMatchObject({ at: iso(START + 30 * DAY - 25_000) });
     expect(b.sorts(A)).toStrictEqual(["SHREDDED"]);
   });
 
@@ -629,7 +633,7 @@ describe("processDueShreds: the fix round", () => {
     expect(b.sorts(B)).toStrictEqual([]);
   });
 
-  it("stamps SHREDDED with the time it is written, not the time the run began, and waits 30 seconds from that", async () => {
+  it("stamps SHREDDED with the time it is written, not the time the run began, and waits 35 seconds from that", async () => {
     const b = bench();
     await b.seedKeys(A);
     await b.scheduleShred(A, START);
@@ -645,8 +649,8 @@ describe("processDueShreds: the fix round", () => {
     await b.seedKeys(A);
     await b.scheduleShred(A, START);
     b.operations.length = 0;
-    // 89 s left: the marker fits, the 30 s wait plus the 60 s margin does not.
-    const outcome = await processDueShreds({ ...b.shred, remainingMs: () => 89_000 }, START + 30 * DAY);
+    // 94 s left: the marker fits, the 35 s wait plus the 60 s margin does not.
+    const outcome = await processDueShreds({ ...b.shred, remainingMs: () => 94_000 }, START + 30 * DAY);
     expect(outcome).toStrictEqual({ shredded: [], failed: [] });
     expect(b.logs).toContainEqual(expect.objectContaining({ event: "audit.shred_deferred", level: "error", orgs: 1 }));
     expect(b.sleeps).toStrictEqual([]);
@@ -654,7 +658,7 @@ describe("processDueShreds: the fix round", () => {
     expect(b.operations.filter((operation) => operation.command === "DeleteCommand")).toStrictEqual([]);
     expect(b.sorts(A)).toHaveLength(6);
     expect(b.dueItems()).toHaveLength(1);
-    // The next run, with time, finds the marker (older than 30 s by then) and sweeps without waiting.
+    // The next run, with time, finds the marker (older than 35 s by then) and sweeps without waiting.
     b.clock.now += 900_000;
     b.logs.length = 0;
     expect(await processDueShreds(b.shred, START + 30 * DAY + 900_000)).toStrictEqual({ shredded: [A], failed: [] });
