@@ -6,7 +6,6 @@
 // beyond them.
 import { createHash } from "node:crypto";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import {
   checkChain,
@@ -33,131 +32,15 @@ import {
   leavesObjectKey,
   lockedPutInput,
   recordsObjectKey,
-  runAuditEpoch,
   sealObjectKey,
   statementObjectKey,
-  type AnchorDeps,
-  type AnchorRunResult,
 } from "../../packages/broker/src/audit/anchor.js";
 import { handleAuditEpochEvent } from "../../packages/broker/src/audit/anchor-handler.js";
-import { FakeDynamoDb } from "../support/fake-dynamodb.js";
-import { FakeLockedS3 } from "../support/fake-locked-s3.js";
 
-const LEDGER = "ledger";
-const SEALS = "seals";
-const BUCKET = "audit-ledger-bucket";
-const SLOT_MS = 15 * 60 * 1000;
-const START = Date.parse("2026-10-20T12:00:05.000Z");
-/** The time of the run in slot `n` after the first (12:00:05, 12:15:05, ...). */
-const at = (n: number) => START + n * SLOT_MS;
-const orgOf = (name: string) => `org_${name.repeat(20)}`.slice(0, 24);
-const A = orgOf("a");
-const B = orgOf("b");
-const C = orgOf("c");
-const pad12 = (seq: number) => String(seq).padStart(12, "0");
-const E0 = "e20261020T1200Z";
-const E1 = "e20261020T1215Z";
-const E2 = "e20261020T1230Z";
-
-type Command = { constructor: { name: string }; input: Record<string, unknown> };
-type Log = Record<string, unknown>;
-
-interface Operation { action: string; table: string; pk: string }
-
-function harness(options: { retention?: { mode: "COMPLIANCE" | "GOVERNANCE"; days: number } } = {}) {
-  const db = new FakeDynamoDb();
-  const clock = { now: START };
-  const s3 = new FakeLockedS3({ now: () => clock.now, ...(options.retention === undefined ? {} : { retention: options.retention }) });
-  const logs: Log[] = [];
-  const operations: Operation[] = [];
-  const transactions: Array<{ items: number; operations: Operation[] }> = [];
-  /** Runs before a DynamoDB command is sent; throw to make it fail before it touches anything. */
-  const hooks: { before?: ((command: Command) => void | Promise<void>) | undefined } = {};
-  const keyOf = (entry: Record<string, unknown>): string => String(((entry.Key ?? entry.Item) as { pk: string }).pk);
-  const documentClient = {
-    send: async (command: Command) => {
-      await hooks.before?.(command);
-      const name = command.constructor.name;
-      const input = command.input;
-      if (name === "TransactWriteCommand") {
-        const flattened: Operation[] = [];
-        for (const entry of input.TransactItems as Array<Record<string, Record<string, unknown>>>) {
-          const [kind, action] = Object.entries(entry)[0] as [string, Record<string, unknown>];
-          flattened.push({ action: `${kind}Item`, table: String(action.TableName), pk: keyOf(action) });
-        }
-        transactions.push({ items: flattened.length, operations: flattened });
-        operations.push(...flattened);
-      } else if (name === "QueryCommand") {
-        operations.push({ action: "Query", table: String(input.TableName), pk: String((input.ExpressionAttributeValues as Record<string, unknown>)[":pk"]) });
-      } else {
-        operations.push({ action: name.replace("Command", "Item"), table: String(input.TableName), pk: keyOf(input) });
-      }
-      return db.send(command);
-    },
-  } as unknown as DynamoDBDocumentClient;
-  const deps: AnchorDeps = {
-    documentClient,
-    ledgerTable: LEDGER,
-    sealsTable: SEALS,
-    s3: s3.client,
-    bucket: BUCKET,
-    log: (entry) => logs.push(entry),
-    sleep: async () => undefined,
-  };
-  return { db, s3, clock, logs, operations, transactions, hooks, deps };
-}
-type Harness = ReturnType<typeof harness>;
-
-const iso = (ms: number) => new Date(ms).toISOString();
-
-/** Appends `count` records to an org's chain the way the appender does: record, head, org list, and the dirty marker. */
-function appendRecords(h: Harness, orgId: string, count: number): void {
-  const head = h.db.get(`AUDIT#${orgId}`, "HEAD");
-  let seq = head === undefined ? 0 : (head.seq as number);
-  let prevHash = head === undefined ? genesisHash(orgId) : (head.hash as string);
-  const firstNew = seq + 1;
-  for (let index = 0; index < count; index += 1) {
-    seq += 1;
-    const unhashed = {
-      v: 1 as const, orgId, seq,
-      eventId: `aev_${createHash("sha256").update(`${orgId}:${String(seq)}`).digest("hex").slice(0, 40)}`,
-      action: "pull_request.opened", actor: { kind: "member", id: "dev_1" }, target: { kind: "pull_request", id: "pr_1" },
-      occurredAt: iso(h.clock.now - 1000), recordedAt: iso(h.clock.now), related: [], facts: { n: seq }, details: [], prevHash,
-    };
-    const hash = recordHash(unhashed);
-    h.db.set({ pk: `AUDIT#${orgId}`, sk: `SEQ#${pad12(seq)}`, ...unhashed, hash, sealedDetails: [{ subject: "org", iv: "x", ciphertext: "y" }] });
-    prevHash = hash;
-  }
-  h.db.set({ pk: `AUDIT#${orgId}`, sk: "HEAD", seq, hash: prevHash, updatedAt: iso(h.clock.now) });
-  if (head === undefined) h.db.set({ pk: "AUDIT_ORGS", sk: orgId, createdAt: iso(h.clock.now) });
-  const marker = h.db.get("AUDIT_DIRTY", orgId);
-  h.db.set({ pk: "AUDIT_DIRTY", sk: orgId, since: marker === undefined ? firstNew : marker.since, lastSeq: seq });
-}
-
-const run = (h: Harness, ms: number): Promise<AnchorRunResult> => runAuditEpoch(h.deps, ms);
-const eventsOf = (h: Harness, name: string) => h.logs.filter((entry) => entry.event === name);
-
-const stateOf = (h: Harness, orgId: string) => h.db.get(`SEALED#${orgId}`, "STATE");
-const metaOf = (h: Harness, epochId: string) => h.db.get(`EPOCH#${epochId}`, "META");
-const intentOf = (h: Harness, epochId: string, orgId: string) => h.db.get(`EPOCH#${epochId}`, `ORG#${orgId}`);
-const epochHead = (h: Harness) => h.db.get("EPOCH_HEAD", "HEAD");
-const markerOf = (h: Harness, orgId: string) => h.db.get("AUDIT_DIRTY", orgId);
-const storedRecords = (h: Harness, orgId: string): AuditRecordV1[] =>
-  h.db.find((entry) => entry.pk === `AUDIT#${orgId}` && String(entry.sk).startsWith("SEQ#"))
-    .sort((left, right) => String(left.sk).localeCompare(String(right.sk)))
-    .map((entry) => {
-      const { pk: _pk, sk: _sk, sealedDetails: _sealed, ...record } = entry;
-      void _pk; void _sk; void _sealed;
-      return record as unknown as AuditRecordV1;
-    });
-
-const crash = () => Object.assign(new Error("the process died"), { name: "ProcessDied" });
-
-/** Every (version of every) object in the bucket, as key -> versionId -> text, to prove nothing was rewritten. */
-function snapshot(h: Harness): Record<string, string[]> {
-  return Object.fromEntries([...h.s3.entries.keys()].sort().map((key) => [key, h.s3.versionsOf(key).map((version) => `${version.versionId}:${version.body.toString("utf8")}`)]));
-}
-
+import {
+  A, B, C, E0, E1, E2, LEDGER, SEALS, BUCKET, START, at, orgOf, pad12, iso, harness, appendRecords, run, eventsOf, stateOf, metaOf, intentOf, epochHead, markerOf, storedRecords, crash, snapshot,
+  type Harness,
+} from "../support/audit-anchor-harness.js";
 
 describe("the object keys and the epoch id", () => {
   it("keys records and seals by org and first sequence number, and epochs by date", () => {
@@ -240,7 +123,8 @@ describe("sealing one org", () => {
     const h = harness();
     expect(await run(h, at(0))).toMatchObject({ status: "idle", reason: "nothing_to_seal" });
     expect(h.db.find((item) => String(item.pk).startsWith("EPOCH"))).toHaveLength(0);
-    expect(h.s3.calls).toHaveLength(0);
+    // Only the lock checks' three reads of the bucket's configuration: no object is touched.
+    expect(h.s3.calls.map((call) => call.command).sort()).toStrictEqual(["GetBucketPolicy", "GetBucketVersioning", "GetObjectLockConfiguration"]);
     expect(eventsOf(h, "audit.epoch_sealed")).toStrictEqual([expect.objectContaining({ status: "idle", reason: "nothing_to_seal" })]);
   });
 
@@ -482,7 +366,13 @@ describe("C2: the dirty marker and the backstop", () => {
     it("pages through the org list once per hour, not at every run", async () => {
       const h = harness();
       appendRecords(h, A, 1);
-      const orgListReads = () => h.operations.filter((operation) => operation.action === "Query" && operation.pk === "AUDIT_ORGS").length;
+      // The backstop pages through the whole list; the version sweep (Task 9) reads a bounded slice of it, with a Limit, every run.
+      let reads = 0;
+      h.hooks.before = (command) => {
+        const values = command.input.ExpressionAttributeValues as Record<string, unknown> | undefined;
+        if (command.constructor.name === "QueryCommand" && values?.[":pk"] === "AUDIT_ORGS" && command.input.Limit === undefined) reads += 1;
+      };
+      const orgListReads = () => reads;
       await run(h, at(0));
       expect(orgListReads()).toBe(1);
       for (const slot of [1, 2, 3]) {
@@ -1237,7 +1127,7 @@ describe("the anchor's use of DynamoDB stays inside its grants", () => {
     }
     // Only the seals table's own partitions are ever written there, and only with actions the pinned policy names.
     expect(new Set(onSeals.map((operation) => operation.action))).toStrictEqual(new Set(["GetItem", "Query", "PutItem", "UpdateItem"]));
-    for (const operation of onSeals) expect(operation.pk, operation.pk).toMatch(/^(EPOCH#|EPOCH_HEAD$|SEALED#|SEALS#|BACKSTOP$)/);
+    for (const operation of onSeals) expect(operation.pk, operation.pk).toMatch(/^(EPOCH#|EPOCH_HEAD$|SEALED#|SEALS#|BACKSTOP$|AUDIT_LOCK$)/);
     expect(h.operations.every((operation) => [LEDGER, SEALS].includes(operation.table))).toBe(true);
     // The appender's partitions are only ever read.
     for (const operation of onLedger.filter((entry) => entry.pk.startsWith("AUDIT#") || entry.pk === "AUDIT_ORGS")) expect(["GetItem", "Query"]).toContain(operation.action);
@@ -1266,5 +1156,43 @@ describe("what the run logs carries ids and counts, never record content", () =>
     expect(text).not.toContain("pull_request");
     expect(text).not.toContain("dev_1");
     expect(eventsOf(h, "audit.epoch_sealed")[0]).toMatchObject({ epochId: E0, status: "sealed", orgs: 1, skipped: 0, blocked: 0, records: 3, resumed: false });
+  });
+});
+
+describe("a 409 from S3 (another write to the key is in flight) is retried with a backoff (Task 8 carry-over)", () => {
+  const conflict = () => Object.assign(new Error("A conflicting operation is in progress"), { name: "ConditionalRequestConflict", $metadata: { httpStatusCode: 409 } });
+
+  it("waits 25, 50 and 100 ms between the attempts and then writes the object once", async () => {
+    const h = harness();
+    appendRecords(h, A, 2);
+    const waits: number[] = [];
+    h.deps.sleep = async (ms) => { waits.push(ms); };
+    let refused = 0;
+    h.s3.before = (call) => {
+      if (call.command === "PutObject" && call.key === sealObjectKey(A, 1) && refused < 3) {
+        refused += 1;
+        throw conflict();
+      }
+    };
+    expect(await run(h, at(0))).toMatchObject({ status: "sealed" });
+    expect(refused).toBe(3);
+    expect(waits).toStrictEqual([25, 50, 100]);
+    expect(h.s3.versionsOf(sealObjectKey(A, 1))).toHaveLength(1);
+    expect(stateOf(h, A)).toMatchObject({ sealedSeq: 2 });
+  });
+
+  it("gives up after five retries and lets the error out (the run fails and the next one resumes)", async () => {
+    const h = harness();
+    appendRecords(h, A, 2);
+    const waits: number[] = [];
+    h.deps.sleep = async (ms) => { waits.push(ms); };
+    h.s3.before = (call) => {
+      if (call.command === "PutObject" && call.key === sealObjectKey(A, 1)) throw conflict();
+    };
+    await expect(run(h, at(0))).rejects.toMatchObject({ name: "ConditionalRequestConflict" });
+    expect(waits).toStrictEqual([25, 50, 100, 200, 400]);
+    h.s3.before = undefined;
+    expect(await run(h, at(1))).toMatchObject({ status: "sealed" });
+    expect(stateOf(h, A)).toMatchObject({ sealedSeq: 2 });
   });
 });

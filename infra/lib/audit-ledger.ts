@@ -144,9 +144,16 @@ export const AUDIT_PENDING_STUCK_EVENTS = ["audit.pending_stuck", "audit.drain_f
 /**
  * The anchor's log events that mean an org cannot be sealed until a person looks: its records or sealed state do not fit
  * the locked seal, or a sealed key was tampered with (a delete marker, a second version, other bytes: `audit.version_drift`,
- * which Task 9's lock-drift alarm will cover as well).
+ * which the lock-drift alarm of Task 9 covers as well).
  */
 export const AUDIT_CHAIN_MISMATCH_EVENTS = ["audit.chain_mismatch", "audit.version_drift"] as const;
+
+/**
+ * The anchor's log events that mean the bucket's Object Lock, versioning or policy is not what it should be, or a sealed key
+ * was changed (Task 9: `audit.lock_config_mismatch` from the drift check and the object check, `audit.version_drift` from the
+ * sweep and from the checks before a write).
+ */
+export const AUDIT_LOCK_DRIFT_EVENTS = ["audit.lock_config_mismatch", "audit.version_drift"] as const;
 
 /** A string that is a CDK token (a template value resolved at deploy time), not the text it will become. */
 export type TemplateTokenString = string & { readonly __templateToken: true };
@@ -220,9 +227,9 @@ export class AuditLedger extends Construct {
   /** True when `AuditLockProfile` is `trial`. */
   readonly trialCondition: CfnCondition;
   /**
-   * SHA-256 (hex) of the canonical JSON of the bucket policy document with `{{partition}}`, `{{account}}` and `{{region}}`
-   * in place of the deployment's values, for each lock profile: the policy differs between them (operator exceptions,
-   * retention days), so there is one hash per profile.
+   * SHA-256 (hex) of the canonical JSON of the bucket policy document with `{{partition}}`, `{{account}}`, `{{region}}` and
+   * `agentx-{{env}}-` in place of the deployment's values, for each lock profile: the policy differs between them (operator
+   * exceptions, retention days), so there is one hash per profile. It does not depend on the environment's name.
    */
   readonly bucketPolicySha256ByProfile: Readonly<Record<AuditLockProfile, string>>;
   /**
@@ -438,9 +445,11 @@ export class AuditLedger extends Construct {
     }));
 
     // The same documents with placeholders where the deployment's values go; resolving them through CDK gives the
-    // serialization CloudFormation receives, so the anchor can compare against what the bucket reports.
+    // serialization CloudFormation receives, so the anchor can compare against what the bucket reports. The environment's
+    // name is a placeholder too (`agentx-{{env}}-`): a published template is synthesized for a placeholder name and rendered
+    // by text replacement, which cannot recompute a hash, so the hash must not depend on the name.
     const hashOf = (profile: AuditLockProfileSettings): string => createHash("sha256")
-      .update(canonicalJson(stack.resolve(documentOf({ partition: "{{partition}}", account: "{{account}}", region: "{{region}}" }, profile).toJSON())))
+      .update(canonicalJson(stack.resolve(documentOf({ partition: "{{partition}}", account: "{{account}}", region: "{{region}}" }, profile).toJSON())).replaceAll(`agentx-${env}-`, "agentx-{{env}}-"))
       .digest("hex");
     this.bucketPolicySha256ByProfile = { production: hashOf(this.lockProfiles.production), trial: hashOf(this.lockProfiles.trial) };
     this.bucketPolicySha256 = Fn.conditionIf(this.trialCondition.logicalId, this.bucketPolicySha256ByProfile.trial, this.bucketPolicySha256ByProfile.production).toString() as TemplateTokenString;
@@ -604,20 +613,24 @@ export class AuditLedger extends Construct {
    * chains the epoch to the one before it. It is the only writer of the seals table. Its role is made here (nothing else
    * names it) and holds exactly these statements, plus the log group's write actions:
    *  - the seals table: `GetItem`, `PutItem`, `UpdateItem` and `Query`, for the partitions it keeps (`EPOCH#`, `EPOCH_HEAD`,
-   *    `SEALED#`, `SEALS#`, `BACKSTOP`). A transaction authorizes each item by its own action, so these four cover the
-   *    finalize. No `DeleteItem` (it never deletes seal state), no `ConditionCheckItem`, no batch or scan action;
+   *    `SEALED#`, `SEALS#`, `BACKSTOP`, and since Task 9 `AUDIT_LOCK`: the one-way lock ratchet and the sweep's cursor). A
+   *    transaction authorizes each item by its own action, so these four cover the finalize. No `DeleteItem` (it never deletes
+   *    seal state or the ratchet), no `ConditionCheckItem`, no batch or scan action;
    *  - the ledger table: `GetItem` and `Query` (the chain and the lists it reads), and `PutItem` and `DeleteItem` only for the
    *    dirty markers (`AUDIT_DIRTY`): the finalize deletes a marker, the hourly backstop puts one back. It cannot write a
    *    record, a head or a claim;
    *  - the ledger bucket: `PutObject` (create-only, by the bucket policy), `GetObject`, `GetObjectVersion` and
-   *    `GetObjectRetention` on its objects, and `ListBucketVersions` on the bucket (it lists a key's versions before it
-   *    writes). Never a delete, `PutObjectRetention`, `PutObjectLegalHold`, `BypassGovernanceRetention`, a bucket-level write
+   *    `GetObjectRetention` on its objects, `ListBucketVersions` on the bucket (it lists a key's versions before it
+   *    writes, and sweeps the sealed keys), and, on the bucket, the three reads of its own configuration that the drift check
+   *    makes each run: `GetBucketObjectLockConfiguration`, `GetBucketVersioning` and `GetBucketPolicy`. Never a delete, `PutObjectRetention`, `PutObjectLegalHold`, `BypassGovernanceRetention`, a bucket-level write
    *    or anything of KMS (the bucket uses S3-managed encryption).
    * Reserved concurrency 1: two runs never overlap. The conditional writes in the code make an overlap harmless as well. Lambda's
    * own two retries of a failed asynchronous run stay at their defaults: a run is idempotent, so a retry only resumes.
    */
   private addAnchor(props: AuditLedgerProps): lambda.Function {
     const { naming } = props;
+    const env = naming.env;
+    if (env === undefined) throw new Error("audit ledger: the ledger exists for named environments only");
     const role = new iam.Role(this, "AuditAnchorRole", {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
       description: "The Rovara audit ledger anchor: seals each org's records into the locked bucket and is the only writer of the seals table",
@@ -637,6 +650,16 @@ export class AuditLedger extends Construct {
         AUDIT_LEDGER_TABLE_NAME: this.ledgerTable.tableName,
         AUDIT_SEALS_TABLE_NAME: this.sealsTable.tableName,
         AUDIT_LEDGER_BUCKET_NAME: this.ledgerBucket.bucketName,
+        // Task 9. The floor is in code (lockFloor): from the name, this profile and the ratchet. The mode and days are what the
+        // stack deployed, which the drift check compares the bucket with; the hash is the synthesized policy's, per profile.
+        AUDIT_ENV_NAME: env,
+        AUDIT_LOCK_PROFILE: this.lockProfileParameter.valueAsString,
+        AUDIT_LOCK_MODE: Fn.conditionIf(this.trialCondition.logicalId, this.lockProfiles.trial.mode, this.lockProfiles.production.mode).toString(),
+        AUDIT_RETENTION_DAYS: Fn.conditionIf(this.trialCondition.logicalId, String(this.lockProfiles.trial.retentionDays), String(this.lockProfiles.production.retentionDays)).toString(),
+        AUDIT_BUCKET_POLICY_SHA256: this.bucketPolicySha256,
+        // What the bucket policy is normalized with before it is hashed: this deployment's own partition, account and region.
+        AUDIT_PARTITION: Aws.PARTITION,
+        AUDIT_ACCOUNT_ID: Aws.ACCOUNT_ID,
       },
       bundling: { externalModules: [], minify: true, sourceMap: true, target: "node22" },
     });
@@ -649,7 +672,7 @@ export class AuditLedger extends Construct {
           sid: "SealsTable",
           actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"],
           resources: [this.sealsTable.tableArn],
-          conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["EPOCH#*", "EPOCH_HEAD", "SEALED#*", "SEALS#*", "BACKSTOP"] } },
+          conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["EPOCH#*", "EPOCH_HEAD", "SEALED#*", "SEALS#*", "BACKSTOP", "AUDIT_LOCK"] } },
         }),
         new iam.PolicyStatement({
           sid: "LedgerRead",
@@ -670,6 +693,12 @@ export class AuditLedger extends Construct {
         new iam.PolicyStatement({
           sid: "LedgerBucketVersions",
           actions: ["s3:ListBucketVersions"],
+          resources: [this.ledgerBucket.bucketArn],
+        }),
+        // Task 9: the three reads of the bucket's own configuration that the drift check makes each run.
+        new iam.PolicyStatement({
+          sid: "LedgerBucketConfiguration",
+          actions: ["s3:GetBucketObjectLockConfiguration", "s3:GetBucketVersioning", "s3:GetBucketPolicy"],
           resources: [this.ledgerBucket.bucketArn],
         }),
       ],
@@ -733,8 +762,13 @@ export class AuditLedger extends Construct {
     );
     this.alarmOnAtLeastOne(
       naming, props.notifyOperator, "AuditObjectConflictAlarm", "AuditObjectConflict",
-      "A create-only write found different bytes already at its key. Sealing is stopped for every org until a person resolves it: see docs/runbooks/audit-object-conflict.md.",
+      "A create-only write found different bytes already at its key. That run stopped and the epoch stays open; the next run resumes it, skips the org whose key holds other bytes (audit.version_drift) and seals the others. A person must look: see docs/runbooks/audit-object-conflict.md.",
       this.countedLogEvents(naming, logGroup, "AuditObjectConflict", "AuditObjectConflict", ["audit.object_conflict"]),
+    );
+    this.alarmOnAtLeastOne(
+      naming, props.notifyOperator, "AuditLockDriftAlarm", "AuditLockDrift",
+      "The ledger bucket's Object Lock no longer meets the floor, or its versioning, its default retention or its policy differs from what was deployed, an object came back with a weaker lock than the floor, or a sealed key holds a delete marker, a second version or another version. Sealing stops (or the affected org is not finalized) until a person looks. See the anchor's logs for audit.lock_config_mismatch and audit.version_drift, and docs/runbooks/audit-object-conflict.md.",
+      this.countedLogEvents(naming, logGroup, "AuditLockDrift", "AuditLockDrift", AUDIT_LOCK_DRIFT_EVENTS),
     );
     return anchor;
   }

@@ -1,12 +1,14 @@
-# Runbook: the audit anchor reports an object conflict, a chain mismatch or a version drift
+# Runbook: the audit anchor reports an object conflict, a chain mismatch, a version drift or a lock mismatch
 
 Applies to the audit ledger's anchor (the function that seals each org's new records every 15 minutes) and to these alarms, named `agentx-<env>-<suffix>`:
 
 | Alarm suffix | Log event | Meaning |
 |---|---|---|
-| `AuditObjectConflict` | `audit.object_conflict` | A create-only write got `412 Precondition Failed` and the bytes already stored at that key are not the bytes the anchor meant to write. The run stopped. |
+| `AuditObjectConflict` | `audit.object_conflict` | A create-only write got `412 Precondition Failed` and the bytes already stored at that key are not the bytes the anchor meant to write. That run stopped; see below for what the next run does. |
 | `AuditChainMismatch` | `audit.chain_mismatch` | An org's records or its sealed state do not fit the locked seal. That org was left unsealed in this epoch. |
 | `AuditChainMismatch` | `audit.version_drift` | A key the anchor was about to create holds a delete marker, a second version, or one version with other bytes. That org was left unsealed in this epoch. |
+| `AuditLockDrift` | `audit.version_drift` | Same event as above, also found by the sweep that looks at a slice of the sealed keys every run: a sealed key holds a delete marker, a second version, another version than the one recorded, or no version. `reason` says which. |
+| `AuditLockDrift` | `audit.lock_config_mismatch` | The ledger bucket is not what it must be. `check` says what: `default_retention_floor` (the default retention is below the floor: the run stops, nothing is written or finalized), `versioning` (not `Enabled`: the run stops), `default_retention_deployed` (differs from the deployed mode and days but meets the floor: alarm only), `bucket_policy` (the policy's hash differs from the synthesized one: alarm only), `object` (a sealed object came back with a weaker lock than the floor, or is gone). `expected` and `actual` carry both values. |
 | `AuditSealOverdue` | (no `audit.epoch_sealed` for 45 minutes) | The anchor is stopped, failing or not running. Usually the next step after one of the events above. |
 
 Nothing here is a reason to delete anything. The sealed objects are locked on purpose, and the anchor never rewrites or removes a sealed object.
@@ -15,8 +17,11 @@ Nothing here is a reason to delete anything. The sealed objects are locked on pu
 
 - Every sealed object is created with `If-None-Match: *`. A second, different seal for the same records is refused by S3 itself.
 - When a key already holds one version with the same bytes (a crash between the write and the bookkeeping), the anchor treats it as written and carries on. That is not an event.
-- `audit.object_conflict` stops the whole run on purpose: sealing pauses for every org until a person has looked. The epoch stays open, no new epoch is opened, and the next run resumes the same epoch.
-- On the next run the same key is met by the check that comes before every write. That check reports `audit.version_drift` for the one org and skips it; the other orgs seal normally. The skipped org is tried again in every epoch and alarms in each, until its records and sealed state fit the locked seals again.
+- `audit.object_conflict` stops that one run: the epoch stays open, no new epoch is opened, and nothing is finalized in that run. It does not keep the anchor stopped.
+- The next run resumes the same epoch. It meets the same key in the check that comes before every write, which reports `audit.version_drift` for the one org and skips it; the other orgs seal normally and the epoch is closed. (If the conflicting key is the epoch's own statement or leaves object, the next run stops again with `audit.version_drift`, and sealing stays stopped for every org until a person has looked.) The skipped org is tried again in every epoch and alarms in each, until its records and sealed state fit the locked seals again.
+- The anchor retries a `409` from S3 (another write to the key is in flight) up to five times, waiting 25 ms and doubling each time, before it gives up and the run fails.
+- Every run starts by checking the bucket: its default retention against the floor, its versioning, its policy hash. A default retention below the floor or versioning that is not `Enabled` stops the run before anything is written (`audit.lock_config_mismatch`, `check` = `default_retention_floor` or `versioning`). Before an org is finalized, each of its objects and the epoch's two objects are read back by version id and must carry the floor's lock.
+- The floor is in the anchor's code: a production-kind environment name is `COMPLIANCE` for 365 days; `staging`, `test` and `dev*` are `GOVERNANCE` for one day; a trial install (the `AuditLockProfile` stack parameter is `trial`) is `GOVERNANCE` for one day. It is a one-way ratchet: the first time the bucket's default retention is seen in `COMPLIANCE` mode the anchor writes `AUDIT_LOCK / RATCHET` in the seals table, and from then on the floor is `COMPLIANCE` whatever the parameter says. Do not delete that item.
 - Records appended while an org is skipped are not lost. They stay in the ledger table and are sealed once the org can be sealed.
 
 ## First look (read-only)
@@ -33,6 +38,15 @@ Nothing here is a reason to delete anything. The sealed objects are locked on pu
 3. Compare the bytes with what the anchor would write. Fetch the stored version with `aws s3api get-object --bucket <ledger bucket> --key <key> --version-id <id> <file>` and compare it with the seal named in `SEALS#<org>` (the index item for that first sequence number) and with the epoch's statement and leaves objects under `epochs/<yyyy>/<mm>/<dd>/`.
 4. Check the org's state: the item `SEALED#<org> / STATE` in the seals table, the intents `EPOCH#<epochId> / ORG#<org>`, and the org's `HEAD` in the ledger table.
 5. Check who changed what: CloudTrail data events for the ledger bucket and the two tables around the time of the first event.
+
+## Lock mismatches (`audit.lock_config_mismatch`)
+
+1. Read `check`, `expected` and `actual` in the entry.
+2. `default_retention_floor` or `versioning`: someone changed the bucket (a stack update to the trial profile, a console edit, a restore). The anchor is stopped until the bucket is back at or above the floor: restore the stack's lock profile and default retention, and versioning. Do not lower the floor; there is no setting for it. Objects written while the bucket was weak were locked weakly; they cannot be strengthened. If the entry carries `key`, those are the objects (see below).
+3. `object` with an `orgId`: that org's records or seal object was written with a weaker lock than the floor (the bucket was weak at that moment). The org is not finalized and its intent is marked blocked; the other orgs go on. The org stays unsealed from that sequence number and a person has to decide (engineering) how to continue; do not delete the object (it cannot be, in compliance mode).
+4. `object` with only an `epochId`: the epoch's statement or leaves object has a weak lock. No org is finalized and the epoch stays open; the anchor stops in every run until engineering resolves it.
+5. `bucket_policy`: compare `GetBucketPolicy` with the policy in the stack (CloudFormation drift detection on the bucket policy shows it). The check normalizes S3's serialization, but a first deployment is where a false positive would show: if the document is the stack's own, report the `actual` hash to engineering. This check never stops sealing.
+6. `audit.version_drift` with a `reason` comes from the sweep (or from the check before a write): list the key's versions as in "First look".
 
 ## Reading the result
 

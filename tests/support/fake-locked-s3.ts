@@ -11,11 +11,16 @@
 //   - DenyShortRetention (bucket policy): a PutObject that states a retain-until date with fewer than the floor's days left
 //     is refused with 403. A request that states none is not refused: the key is absent, and the default retention applies.
 //   - Object Lock buckets need an integrity header: a PutObject with neither Content-MD5 nor a checksum is refused with 400.
+//   - Bucket configuration (Task 9): GetObjectLockConfiguration, GetBucketVersioning and GetBucketPolicy answer from fields a
+//     test can change (`setDefaultRetention`, `versioning`, `policy`), the way a raw CloudFormation update or a console edit would.
 // Errors carry the SDK's shape: `name` and `$metadata.httpStatusCode`.
 import { createHash } from "node:crypto";
 import {
   DeleteObjectCommand,
+  GetBucketPolicyCommand,
+  GetBucketVersioningCommand,
   GetObjectCommand,
+  GetObjectLockConfigurationCommand,
   HeadObjectCommand,
   ListObjectVersionsCommand,
   PutObjectCommand,
@@ -28,6 +33,8 @@ export interface FakeLockedS3Options {
   now: () => number;
   /** The bucket's default retention. Default: compliance for 1,096 days (the production profile). */
   retention?: { mode: "COMPLIANCE" | "GOVERNANCE"; days: number };
+  /** The bucket policy document GetBucketPolicy returns (text). Default: none (S3 answers NoSuchBucketPolicy). */
+  policy?: string;
 }
 
 interface StoredVersion {
@@ -59,16 +66,34 @@ export class FakeLockedS3 {
   after: ((call: S3Call) => void | Promise<void>) | undefined;
   readonly client: S3Client;
   private counter = 0;
-  private readonly retention: { mode: "COMPLIANCE" | "GOVERNANCE"; days: number };
+  private retention: { mode: "COMPLIANCE" | "GOVERNANCE"; days: number };
+  /** The bucket's versioning status, as GetBucketVersioning reports it. */
+  versioning: "Enabled" | "Suspended" | undefined = "Enabled";
+  /** The bucket policy text GetBucketPolicy returns; undefined means the bucket has none. */
+  policy: string | undefined;
 
   constructor(private readonly options: FakeLockedS3Options) {
     this.retention = options.retention ?? { mode: "COMPLIANCE", days: 1096 };
+    this.policy = options.policy;
     this.client = { send: (command: unknown) => this.send(command) } as unknown as S3Client;
   }
 
   /** The bucket's default retention days, which is also the floor DenyShortRetention enforces. */
   get floorDays(): number {
     return this.retention.days;
+  }
+
+  /** Changes the bucket's default retention, which applies to the objects written from now on (as a CloudFormation update does). */
+  setDefaultRetention(mode: "COMPLIANCE" | "GOVERNANCE", days: number): void {
+    this.retention = { mode, days };
+  }
+
+  /** Test setup: rewrites the lock of one stored version (what a bucket that was weaker when it was written would show). */
+  setObjectLock(key: string, versionId: string, lock: { mode?: "COMPLIANCE" | "GOVERNANCE"; retainUntil?: number }): void {
+    const found = this.versionsOf(key).find((version) => version.versionId === versionId);
+    if (found === undefined) throw new Error(`no version ${versionId} of ${key}`);
+    if (lock.mode !== undefined) found.lockMode = lock.mode;
+    if (lock.retainUntil !== undefined) found.retainUntil = lock.retainUntil;
   }
 
   /** The real versions of `key`, oldest first. */
@@ -142,6 +167,9 @@ export class FakeLockedS3 {
     else if (command instanceof HeadObjectCommand) result = this.head(input);
     else if (command instanceof ListObjectVersionsCommand) result = this.list(input);
     else if (command instanceof DeleteObjectCommand) result = this.remove(input);
+    else if (command instanceof GetObjectLockConfigurationCommand) result = this.lockConfiguration();
+    else if (command instanceof GetBucketVersioningCommand) result = { ...(this.versioning === undefined ? {} : { Status: this.versioning }), $metadata: { httpStatusCode: 200 } };
+    else if (command instanceof GetBucketPolicyCommand) result = this.bucketPolicy();
     else throw new Error(`FakeLockedS3 does not support ${name}`);
     await this.after?.(call);
     return result;
@@ -170,6 +198,18 @@ export class FakeLockedS3 {
     if (latest?.kind === "version") throw failure("PreconditionFailed", 412, "At least one of the pre-conditions you specified did not hold");
     const versionId = this.addVersion(key, body, retainUntilDate?.getTime());
     return { VersionId: versionId, ETag: `"${createHash("md5").update(body).digest("hex")}"`, $metadata: { httpStatusCode: 200 } };
+  }
+
+  private lockConfiguration(): unknown {
+    return {
+      ObjectLockConfiguration: { ObjectLockEnabled: "Enabled", Rule: { DefaultRetention: { Mode: this.retention.mode, Days: this.retention.days } } },
+      $metadata: { httpStatusCode: 200 },
+    };
+  }
+
+  private bucketPolicy(): unknown {
+    if (this.policy === undefined) throw failure("NoSuchBucketPolicy", 404, "The bucket policy does not exist");
+    return { Policy: this.policy, $metadata: { httpStatusCode: 200 } };
   }
 
   private select(input: Record<string, unknown>): StoredVersion {

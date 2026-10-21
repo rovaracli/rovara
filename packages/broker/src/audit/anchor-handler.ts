@@ -6,6 +6,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { requiredEnvironment } from "../aws/lambda.js";
 import { AUDIT_EPOCH_SOURCE, auditS3ClientConfig, runAuditEpoch, type AnchorDeps, type AnchorRunResult } from "./anchor.js";
+import { lockSettingsFromEnvironment } from "./lock-check.js";
 
 export interface AuditEpochEvent {
   source?: unknown;
@@ -28,6 +29,8 @@ function productionDependencies(): AnchorDeps {
     sealsTable: requiredEnvironment("AUDIT_SEALS_TABLE_NAME"),
     s3: new S3Client(auditS3ClientConfig(region)),
     bucket: requiredEnvironment("AUDIT_LEDGER_BUCKET_NAME"),
+    // The deployed profile, mode, days and policy hash, and the identity the bucket policy is normalized with. The floor itself is in code.
+    lock: lockSettingsFromEnvironment(process.env),
     log: (entry) => { console.log(JSON.stringify({ component: "audit-anchor", ...entry })); },
   };
   return production;

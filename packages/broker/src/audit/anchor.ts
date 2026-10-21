@@ -22,8 +22,8 @@
 //    written create-only and a resume rewrites the same bytes.
 //  - The epoch is closed by one transaction that marks META `sealed` and moves HEAD on (and clears `openEpochId`).
 import { createHash } from "node:crypto";
-import { GetObjectCommand, HeadObjectCommand, ListObjectVersionsCommand, PutObjectCommand, type PutObjectCommandInput, type S3Client, type S3ClientConfig } from "@aws-sdk/client-s3";
-import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand, type DynamoDBDocumentClient, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
+import { GetObjectCommand, HeadObjectCommand, ListObjectVersionsCommand, PutObjectCommand, type PutObjectCommandInput, type S3ClientConfig } from "@aws-sdk/client-s3";
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import {
   AUDIT_BACKSTOP_SEAL_AGE_MINUTES,
   AUDIT_MAX_RECORDS_PER_ORG_EPOCH,
@@ -42,6 +42,7 @@ import {
   type LockedObjectV1,
   type OrgSealV1,
 } from "@agentx/contracts";
+import { currentFloor, enforceObjectLock, runLockChecks, type LockCheckDeps } from "./lock-check.js";
 
 /** The event the schedule sends (EventBridge Scheduler, every 15 minutes). */
 export const AUDIT_EPOCH_SOURCE = "agentx.audit-epoch";
@@ -56,16 +57,13 @@ const CONFLICT_BACKOFF_MS = 25;
 const MARKER_INDEX = 3;
 const INTENT_INDEX = 2;
 
-export interface AnchorDeps {
-  /** The anchor's own client: it is granted the seals table, and on the ledger table only reads and the dirty marker. */
-  documentClient: DynamoDBDocumentClient;
-  ledgerTable: string;
-  sealsTable: string;
-  /** Built with `auditS3ClientConfig`. */
-  s3: Pick<S3Client, "send">;
-  bucket: string;
-  log: (entry: Record<string, unknown>) => void;
-  /** Pauses before a retry after a TransactionConflict. Defaults to a timer. */
+/**
+ * What the anchor runs with. `documentClient` is its own client: it is granted the seals table, and on the ledger table only
+ * reads and the dirty marker. `s3` is built with `auditS3ClientConfig`. `lock` is what the stack deployed (the Object Lock
+ * floor itself is in code: lock-check.ts).
+ */
+export interface AnchorDeps extends LockCheckDeps {
+  /** Pauses before a retry (a TransactionConflict, a 409 from S3). Defaults to a timer. */
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -135,7 +133,8 @@ type Item = Record<string, unknown>;
 
 /** The run must stop here: sealing pauses until a person looks. Its entry is logged. */
 class StopRun extends Error {
-  constructor(readonly reason: string, readonly entry: Record<string, unknown>) {
+  /** `entry` is logged when the run stops; undefined when the cause was already logged where it was found. */
+  constructor(readonly reason: string, readonly entry: Record<string, unknown> | undefined) {
     super(`audit anchor stopped: ${reason}`);
     this.name = "AuditAnchorStop";
   }
@@ -205,6 +204,8 @@ interface SealedState {
   lastEpochId: string;
   sealedAt: string;
 }
+
+const timerSleep = (ms: number): Promise<void> => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
 
 function errorName(error: unknown): string {
   return error instanceof Error ? error.name : "unknown";
@@ -393,8 +394,11 @@ async function createObject(ctx: Context, item: ObjectToWrite): Promise<string> 
       return versionIdOf(out.VersionId);
     } catch (error) {
       const status = httpStatus(error);
-      // 409: another write to the key is in flight. Look again.
-      if (status === 409 && attempt < CONFLICT_RETRIES) continue;
+      // 409: another write to the key is in flight. Wait a moment (25 ms, doubling) and try again.
+      if (status === 409 && attempt < CONFLICT_RETRIES) {
+        await (ctx.deps.sleep ?? timerSleep)(CONFLICT_BACKOFF_MS * 2 ** attempt);
+        continue;
+      }
       if (status !== 412 && errorName(error) !== "PreconditionFailed") throw error;
       let stored;
       try {
@@ -680,6 +684,25 @@ async function writeEpochObjects(ctx: Context, meta: EpochMeta, statement: Epoch
   }));
 }
 
+/**
+ * Step 7, Task 9. HeadObject every object of the epoch that is not finalized yet, by its version id (lock-check.ts). An epoch
+ * object (the statement, the leaves) with a lock below the floor stops the run before any org is finalized: the epoch stays open
+ * and nothing is finalized. An org whose records or seal object is below the floor is not finalized: it is marked blocked (its
+ * seal is in the statement already, so the epoch cannot drop it) and the other orgs go on. Each failure is logged by the check
+ * as `audit.lock_config_mismatch` with the object.
+ */
+async function enforceEpochLocks(ctx: Context, meta: EpochMeta): Promise<void> {
+  const floor = await currentFloor(ctx.deps);
+  const epochObjects = meta.objects === undefined ? [] : [meta.objects.statement, meta.objects.leaves];
+  const epoch = await enforceObjectLock(ctx.deps, epochObjects, ctx.now, { floor, context: { epochId: meta.epochId } });
+  if (!epoch.ok) throw new StopRun("lock_config_mismatch", undefined);
+  const pending = (await readIntents(ctx, meta.epochId)).filter((intent) => intent.seal !== undefined && intent.objects !== undefined && !intent.finalized && intent.skipped === undefined && intent.blocked === undefined);
+  await eachPage(pending, async (intent) => {
+    const checked = await enforceObjectLock(ctx.deps, [intent.objects!.records, intent.objects!.seal], ctx.now, { floor, context: { orgId: intent.orgId, epochId: meta.epochId } });
+    if (!checked.ok) await blockIntent(ctx, meta, intent, "lock_config_mismatch");
+  });
+}
+
 /** Marks an intent whose finalize the table refused (its sealed state was changed): the seal stays in the statement, the org waits for a person. */
 async function blockIntent(ctx: Context, meta: EpochMeta, intent: Intent, reason: string): Promise<void> {
   await ctx.deps.documentClient.send(new UpdateCommand({
@@ -701,7 +724,7 @@ async function finalizeOne(ctx: Context, meta: EpochMeta, intent: Intent): Promi
   const seal = intent.seal!;
   const objects = intent.objects!;
   const { sealsTable, ledgerTable } = ctx.deps;
-  const sleep = ctx.deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
+  const sleep = ctx.deps.sleep ?? timerSleep;
   let withMarker = true;
   for (let attempt = 0; ; attempt += 1) {
     const items: TransactWriteCommandInput["TransactItems"] = [
@@ -828,7 +851,10 @@ async function driveEpoch(ctx: Context, epochId: string, resumed: boolean): Prom
   const { statement, leaves } = await settleStatement(ctx, meta);
   meta = await readMeta(ctx, epochId);
   await writeEpochObjects(ctx, meta, statement, leaves);
-  // Step 7 (Task 9: lock checks on every object written; Task 10: the timestamps) goes here, before anything is finalized.
+  meta = await readMeta(ctx, epochId);
+  // Step 7 (Task 10: the timestamps goes here too), before anything is finalized. Task 9: every object is read back, by its
+  // version id, and must carry the floor's lock.
+  await enforceEpochLocks(ctx, meta);
   await finalizeOrgs(ctx, meta);
   await completeEpoch(ctx, meta, statement);
 
@@ -945,6 +971,12 @@ export async function runAuditEpoch(deps: AnchorDeps, now: number): Promise<Anch
     return { status, ...(reason === undefined ? {} : { reason }), epochs };
   };
   try {
+    // 0. Task 9: the bucket must still be what the floor says (default retention, versioning), and the next slice of the sealed
+    // keys is swept for delete markers and extra versions. A bucket below the floor stops the run before anything is written or
+    // finalized; the mismatch is logged by the check.
+    const lock = await runLockChecks(deps, now);
+    if (!lock.ok) throw new StopRun("lock_config_mismatch", undefined);
+
     // 1. Resume first.
     const head = await getItem(ctx, deps.sealsTable, "EPOCH_HEAD", "HEAD");
     if (typeof head?.openEpochId === "string") {
@@ -973,7 +1005,7 @@ export async function runAuditEpoch(deps: AnchorDeps, now: number): Promise<Anch
     return finish(idle);
   } catch (error) {
     if (error instanceof StopRun) {
-      deps.log(error.entry);
+      if (error.entry !== undefined) deps.log(error.entry);
       deps.log({ event: "audit.epoch_stopped", level: "error", reason: error.reason });
       return { status: "stopped", reason: error.reason, epochs };
     }
