@@ -1,11 +1,14 @@
 // Plan 2, Task 3: one person who signed in two ways before identity links is two members of the same org. The duplicate's next
 // sign-in merges it into the member the verified email names: grants, budget override and role move over, and the duplicate retires.
 import { describe, expect, it } from "vitest";
-import { developerOrgKey, memberGrantsPk, orgMemberKey, orgPk, orgSettingsKey, projectMemberKey, type OrgId, type OrgRole } from "@agentx/contracts";
+import { developerOrgKey, memberGrantsPk, orgEmailKey, orgMemberKey, orgPk, orgSettingsKey, projectMemberKey, type OrgId, type OrgRole } from "@agentx/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
-import { DeveloperSignInStore, endedByAdmin } from "../../packages/broker/src/developer/store.js";
+import { resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from "../../packages/broker/src/developer/identities.js";
+import type { ProviderIdentity } from "../../packages/broker/src/developer/providers.js";
+import { DeveloperSignInStore, endedByAdmin, signInIdentityKey } from "../../packages/broker/src/developer/store.js";
 import { mergeDuplicateMember } from "../../packages/broker/src/org/merge-members.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
+import { identityHarness, type FakeGithubUser, type FakeOidcUser } from "../support/developer-fakes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const GITHUB_ISSUER = "https://github.com";
@@ -14,6 +17,7 @@ const T0 = Date.parse("2026-10-20T12:00:00.000Z");
 const D1 = ownerKeyForSubject(OIDC_ISSUER, "priya-cloud-1");
 const D2 = ownerKeyForSubject(GITHUB_ISSUER, "4711");
 const EMAIL = "priya@acme.dev";
+const githubIdentity: ProviderIdentity = { issuer: GITHUB_ISSUER, subject: "4711", displayName: "Priya R.", email: EMAIL, emailVerified: true, login: "priya-dev" };
 
 const developerRecord = (developerId: string, provider: "cloud" | "github", issuer: string, subject: string) =>
   ({ pk: `DEVELOPER#${developerId}`, sk: "META", entityType: "DEVELOPER", developerId, provider, issuer, subject, displayName: "Priya", email: EMAIL, firstSignInAt: "2026-09-01T00:00:00.000Z", lastSignInAt: "2026-09-02T00:00:00.000Z", revoked: false });
@@ -38,8 +42,12 @@ async function world(options: { survivorRole?: OrgRole; duplicateRole?: OrgRole 
   const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now: () => clock });
   const orgs = new OrgStore({ documentClient: db, tableName: "state", now: () => clock });
   const merge = (orgId: OrgId, survivorId = D1, duplicateId = D2) => mergeDuplicateMember({ documentClient: db, tableName: "state", signInStore: store, now: () => clock }, { orgId, survivorId, duplicateId, duplicateIdentityKey: duplicateId });
+  const deps: ResolveSignInDeveloperDependencies = {
+    store, orgs, log: (entry) => logs.push(entry),
+    mergeDuplicate: (input) => mergeDuplicateMember({ documentClient: db, tableName: "state", signInStore: store, now: () => clock }, input),
+  };
   const orgId = await seed(db, orgs, options);
-  return { db, store, orgs, logs, merge, orgId, tick: (ms: number) => { clock += ms; } };
+  return { db, store, orgs, logs, merge, deps, orgId, tick: (ms: number) => { clock += ms; } };
 }
 
 const grant = (orgId: OrgId, developerId: string, project: string, grantId: string) =>
@@ -184,5 +192,93 @@ describe("mergeDuplicateMember", () => {
     await w.merge(orgId);
     expect(w.db.get(task.pk, task.sk)).toEqual(task);
     expect(w.db.get(workspace.pk, workspace.sk)).toEqual(workspace);
+  });
+});
+
+describe("rule 1b of resolveSignInDeveloper", () => {
+  it("heals the staging shape on the duplicate's next sign-in: it resolves to the email's member, as new-linked", async () => {
+    const w = await world();
+    const { orgId } = w;
+    w.db.set(grant(orgId, D2, "api", "grant-api"));
+    w.db.set(grant(orgId, D1, "web", "grant-web"));
+    expect(w.db.get(signInIdentityKey(D2))).toBeUndefined();
+
+    expect(await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity })).toEqual({ developerId: D1, identityKey: D2, link: "new-linked" });
+
+    expect(grantsOf(w.db, orgId, D1).map((item) => item.projectName).sort()).toEqual(["api", "web"]);
+    expect(memberItems(w.db, orgId)).toHaveLength(1);
+    expect(await w.store.getDeveloper(D2)).toMatchObject({ mergedInto: D1 });
+    // The login the sign-in carries is kept on the link.
+    expect(await w.store.getIdentityLink(D2)).toMatchObject({ developerId: D1, login: "priya-dev", email: EMAIL });
+    // The next sign-in is an ordinary linked one.
+    expect(await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity })).toEqual({ developerId: D1, identityKey: D2, link: "existing" });
+  });
+
+  it("does not merge a duplicate whose org is another org than the email's member's, and says so (I1)", async () => {
+    const w = await world();
+    const { orgId } = w;
+    // The first-sign-in race of Task 2 leaves a person here: D2 owns an org of its own, and the email pointer stayed with D1.
+    w.db.delete(orgMemberKey(orgId, D2));
+    w.db.delete(developerOrgKey(D2));
+    const elsewhere = await w.orgs.createOrgWithOwner({ name: "Priya R.'s team", developerId: D2 });
+
+    expect(await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity })).toEqual({ developerId: D2, identityKey: D2, link: "new-self" });
+
+    expect(w.logs).toContainEqual({ event: "signin.duplicate_other_org", developerId: D2, orgId: elsewhere, otherDeveloperId: D1, otherOrgId: orgId });
+    expect(w.db.get(developerOrgKey(D2))).toMatchObject({ orgId: elsewhere });
+    expect(w.db.get(developerOrgKey(D1))).toMatchObject({ orgId });
+    expect(memberItems(w.db, orgId).map((item) => item.developerId)).toEqual([D1]);
+    expect(await w.store.getDeveloper(D2)).not.toHaveProperty("mergedInto");
+  });
+
+  it("does not merge for a method that does not link by email, an unverified email, or a duplicate an admin revoked", async () => {
+    for (const [method, identity, revoked] of [
+      ["oidc", githubIdentity, false],
+      ["github", { ...githubIdentity, emailVerified: false }, false],
+      ["github", githubIdentity, true],
+    ] as const) {
+      const w = await world();
+      if (revoked) w.db.set({ ...w.db.get(`DEVELOPER#${D2}`, "META")!, revoked: true });
+      expect(await resolveSignInDeveloper(w.deps, { method, identity })).toMatchObject({ developerId: D2, link: "new-self" });
+      expect(memberItems(w.db, w.orgId)).toHaveLength(2);
+    }
+  });
+
+  it("does nothing when the email names no one else", async () => {
+    const w = await world();
+    w.db.delete(orgEmailKey(EMAIL));
+    expect(await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity })).toMatchObject({ developerId: D2, link: "new-self" });
+    expect(memberItems(w.db, w.orgId)).toHaveLength(2);
+    w.db.set({ ...orgEmailKey(EMAIL), entityType: "ORG_EMAIL", developerId: D2, orgId: w.orgId });
+    expect((await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity })).developerId).toBe(D2);
+  });
+
+  it("is off where the merge is not wired", async () => {
+    const w = await world();
+    const { store, orgs } = w.deps;
+    expect(await resolveSignInDeveloper({ store, orgs }, { method: "github", identity: githubIdentity })).toMatchObject({ developerId: D2, link: "new-self" });
+    expect(memberItems(w.db, w.orgId)).toHaveLength(2);
+  });
+});
+
+describe("the duplicate's real GitHub sign-in", () => {
+  const priya: FakeOidcUser = { sub: "priya-cloud-1", name: "Priya Rao", email: EMAIL, email_verified: true };
+  const priyaGithub: FakeGithubUser = { id: 4711, login: "priya-dev", name: "Priya R.", emails: [{ email: EMAIL, primary: true, verified: true }] };
+  const claimsOf = (accessToken: unknown) => JSON.parse(Buffer.from(String(accessToken).split(".")[1]!, "base64url").toString("utf8")) as Record<string, unknown>;
+
+  it("signs in as the email's member, with one member item left and the duplicate retired", async () => {
+    const h = identityHarness({ cloud: {}, oidcUsers: [priya], github: { users: [priyaGithub] }, sharedTable: true });
+    const orgId = await seed(h.db, h.orgs);
+    h.db.set(grant(orgId, D2, "api", "grant-api"));
+    h.db.set(grant(orgId, D1, "web", "grant-web"));
+
+    const location = await h.signIn("github", "4711");
+    const exchanged = await h.exchange(location.searchParams.get("code")!);
+    expect(exchanged.status).toBe(200);
+    expect(claimsOf(exchanged.body.access_token)).toMatchObject({ sub: D1, org: orgId, amr: "github" });
+    expect(memberItems(h.db, orgId).map((item) => item.developerId)).toEqual([D1]);
+    expect(grantsOf(h.db, orgId, D1).map((item) => item.ownerKey)).toEqual([D1, D1]);
+    expect(h.db.get(`DEVELOPER#${D2}`, "META")).toMatchObject({ mergedInto: D1 });
+    expect(h.db.find((item) => item.entityType === "SESSION").map((session) => session.developerId)).toEqual([D1]);
   });
 });

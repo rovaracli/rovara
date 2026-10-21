@@ -16,6 +16,7 @@ import { DeveloperSignInStore, methodSince } from "../developer/store.js";
 import { kmsTokenSigner } from "../developer/tokens.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import { syncBudgets } from "../org/budget.js";
+import { mergeDuplicateMember } from "../org/merge-members.js";
 import { OrgStore } from "../org/store.js";
 import { unlockTrial } from "../org/trial.js";
 import type { HttpApiV2Event } from "./lambda.js";
@@ -230,13 +231,12 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
   const modelAccessFunction = env.MODEL_ACCESS_FUNCTION_NAME ?? "";
   const modelAccess = modelAccessFunction === "" ? undefined : new ModelAccessInvoker({ functionName: modelAccessFunction, lambda: new LambdaClient(region) });
   const singleOrg = singleOrgIdFor(config);
+  const store = new DeveloperSignInStore({ documentClient, tableName: required(env, "DEVELOPER_SIGNIN_TABLE_NAME"), now });
   return createDeveloperIdentityHandler({
     config,
-    store: new DeveloperSignInStore({
-      documentClient,
-      tableName: required(env, "DEVELOPER_SIGNIN_TABLE_NAME"),
-      now,
-    }),
+    store,
+    // A duplicate member of one person (from before identity links) is merged into the member their email names, in one transaction over both tables.
+    mergeDuplicate: (input) => mergeDuplicateMember({ documentClient, tableName: stateTableName, signInStore: store, now }, input),
     // Orgs and membership live in the State table, beside the records they scope; the sign-in table holds identities only.
     orgs,
     ...(singleOrg === undefined ? {} : { singleOrgId: singleOrg }),

@@ -46,7 +46,7 @@ import { SESSION_MAX_AGE_SECONDS } from "../aws/web-session.js";
 import { INVITE_TOKEN_PATTERN } from "../org/invite-url.js";
 import type { OrgStore } from "../org/store.js";
 import { resolveOrgOnSignIn, type ResolveOrgOnSignInDependencies } from "../org/sign-in.js";
-import { resolveSignInDeveloper } from "./identities.js";
+import { resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from "./identities.js";
 import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderResult, type SignInProvider } from "./providers.js";
 import type { SlackDirectory } from "./slack-directory.js";
 import { endedByAdmin, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type SessionRecord } from "./store.js";
@@ -74,6 +74,8 @@ export interface DeveloperIdentityDependencies {
    * Best effort: TRIAL_GITHUB_USED (that account already unlocked another org) and any other failure are logged and never fail the sign-in.
    */
   onGithubSignIn?: (input: { orgId: OrgId; githubUserId: string }) => Promise<void>;
+  /** Merges a duplicate member of the same person into the member their verified email names, on the duplicate's next sign-in (see resolveSignInDeveloper, rule 1b). Without it duplicates are left alone. */
+  mergeDuplicate?: ResolveSignInDeveloperDependencies["mergeDuplicate"];
   now: () => number;
   log: (entry: Record<string, unknown>) => void;
 }
@@ -338,7 +340,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     }
     const identity = result.identity;
     // One developer per person: a second sign-in route for the same verified email is linked to the first route's developer.
-    const resolved = await resolveSignInDeveloper({ store, orgs: deps.orgs }, { method, identity });
+    const resolved = await resolveSignInDeveloper({ store, orgs: deps.orgs, log: deps.log, ...(deps.mergeDuplicate === undefined ? {} : { mergeDuplicate: deps.mergeDuplicate }) }, { method, identity });
     const { developerId, identityKey } = resolved;
     const existing = await store.getDeveloper(developerId);
     if (existing?.revoked === true) {
