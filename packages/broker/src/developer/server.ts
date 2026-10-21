@@ -17,8 +17,11 @@ import {
   DEVELOPER_API_VERSION,
   EndDeveloperSessionsRequestSchema,
   UnlinkIdentityRequestSchema,
+  StartIdentityLinkRequestSchema,
   type UnlinkIdentityRequest,
   type UnlinkIdentityResponse,
+  type StartIdentityLinkRequest,
+  type StartIdentityLinkResponse,
   SlackAuthCheckRequestSchema,
   SlackUserByEmailRequestSchema,
   isLoopbackRedirectUri,
@@ -44,7 +47,7 @@ import {
   type SlackUserByEmailRequest,
   type SlackUserByEmailResponse,
 } from "@agentx/contracts";
-import { adaptHttpApiEvent, type HttpApiV2Event } from "../aws/lambda.js";
+import { adaptHttpApiEvent, ownerKeyForSubject, type HttpApiV2Event } from "../aws/lambda.js";
 import { SESSION_MAX_AGE_SECONDS } from "../aws/web-session.js";
 import { INVITE_TOKEN_PATTERN, inviteTokenHash } from "../org/invite-url.js";
 import type { OrgStore } from "../org/store.js";
@@ -55,7 +58,7 @@ import {
 } from "./join-page.js";
 import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderResult, type SignInProvider } from "./providers.js";
 import type { SlackDirectory } from "./slack-directory.js";
-import { endedByAdmin, endedByUnlink, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
+import { endedByAdmin, endedByUnlink, isFreshSignIn, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
 import { sendIdentityLinkedNotice, type IdentityNoticeDependencies } from "./identity-notice.js";
 import { issueAccessToken, pkceChallengeMatches, type TokenSigner } from "./tokens.js";
 
@@ -153,6 +156,10 @@ const publicJson = (body: unknown): HttpResult =>
 const redirect = (location: string): HttpResult => ({ statusCode: 302, headers: { location, "cache-control": "no-store", "referrer-policy": "no-referrer" }, body: "" });
 const oauthError = (status: number, error: string, description: string) => jsonResult(status, { error, error_description: description });
 const errorName = (error: unknown) => (error instanceof Error ? error.name : "unknown");
+const isCode = (error: unknown, code: string) => (error as { code?: unknown } | null)?.code === code;
+/** An AgentXError's own words, without its `CODE: ` prefix. */
+const refusalWords = (error: unknown) => (error instanceof Error ? error.message : "").replace(/^[A-Z_]+: /, "");
+const capitalized = (text: string) => text.charAt(0).toUpperCase() + text.slice(1) + (text.endsWith(".") ? "" : ".");
 
 function isRetryableAwsError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
@@ -206,11 +213,15 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       const chosen = query.get("method");
       const method = methods.find((enabled) => enabled === chosen);
       if (method === undefined) return page(400, "Sign-in method not available", ["Run agentx login again."]);
+      // A request that adds a removed sign-in method back is for that one method, whatever the link in the browser says.
+      const pending = await store.getAuthRequest(requestId);
+      if (pending?.linkMethod !== undefined && pending.linkMethod !== method) return page(400, "Sign-in method not available", ["This link is for a different sign-in method. Run agentx signin link again."]);
       const request = await store.chooseMethod(requestId, method);
       if (request === undefined) return expired();
       if (request.purpose === "join") return joinToProvider(request.id, request.nonce, method);
+      if (request.linkDeveloperId !== undefined) return linkToProvider(request.id, request.nonce, method);
       try {
-        return await toProvider(request.id, request.nonce, method, request.clientRedirectUri, request.clientState);
+        return await toProvider(request.id, request.nonce, method, request.clientRedirectUri, request.clientState, request.fresh === true);
       } catch (error) {
         return serverError(error, "/v1/auth/authorize", request.clientRedirectUri, request.clientState);
       }
@@ -231,18 +242,23 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (methods.length === 0) {
       return toClient(redirectUri, { error: "access_denied", state: clientState, error_description: "developer sign-in is not enabled in this AgentX environment; ask an admin to run agentx signin enable slack" });
     }
+    // Plan 2, Task 8b: the CLI's fresh sign-in for removing a method leaves that method out of the choices (the server refuses it as proof anyway).
+    const excluded = query.get("exclude_method");
+    const fresh = query.get("fresh") === "1";
+    const offered = methods.filter((method) => method !== excluded);
+    const choices = offered.length > 0 ? offered : methods;
     let request: AuthRequestRecord;
     try {
-      request = await store.createAuthRequest({ clientRedirectUri: redirectUri, clientState, codeChallenge: challenge, nonce: randomBytes(32).toString("base64url"), ...(invite === null ? {} : { inviteTokenHash: inviteTokenHash(invite) }) });
-      if (methods.length === 1) {
-        const method = methods[0]!;
+      request = await store.createAuthRequest({ clientRedirectUri: redirectUri, clientState, codeChallenge: challenge, nonce: randomBytes(32).toString("base64url"), ...(invite === null ? {} : { inviteTokenHash: inviteTokenHash(invite) }), ...(fresh ? { fresh } : {}) });
+      if (choices.length === 1) {
+        const method = choices[0]!;
         if (await store.chooseMethod(request.id, method) === undefined) return expired();
-        return await toProvider(request.id, request.nonce, method, redirectUri, clientState);
+        return await toProvider(request.id, request.nonce, method, redirectUri, clientState, fresh);
       }
     } catch (error) {
       return serverError(error, "/v1/auth/authorize", redirectUri, clientState);
     }
-    return page(200, "Sign in to AgentX", [`Environment: ${config.env}`], methods.map((method) => ({
+    return page(200, "Sign in to AgentX", [`Environment: ${config.env}`], choices.map((method) => ({
       href: `${endpoint("/authorize")}?request=${encodeURIComponent(request.id)}&method=${method}`,
       label: `Sign in with ${methodLabel(method)}`,
     })));
@@ -411,9 +427,9 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     return toClient(clientRedirect, { error: "server_error", error_description: "sign-in failed on the AgentX server; run agentx login again", state: clientState });
   }
 
-  async function toProvider(requestId: string, nonce: string, method: DeveloperSignInMethod, clientRedirect: string, clientState: string): Promise<HttpResult> {
+  async function toProvider(requestId: string, nonce: string, method: DeveloperSignInMethod, clientRedirect: string, clientState: string, fresh = false): Promise<HttpResult> {
     try {
-      return redirect(await provider(method).authorizeUrl({ state: requestId, nonce, redirectUri: endpoint(`/callback/${method}`) }));
+      return redirect(await provider(method).authorizeUrl({ state: requestId, nonce, redirectUri: endpoint(`/callback/${method}`), ...(fresh ? { freshSignIn: true } : {}) }));
     } catch (error) {
       return providerFailure(error, method, clientRedirect, clientState);
     }
@@ -451,6 +467,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     const request = await store.consumeAuthRequest(state, method);
     if (request === undefined) return page(400, "This sign-in link was already used", ["Run agentx login again."]);
     if (request.purpose === "join") return joinCallback(method, request, query.get("code"), headers);
+    if (request.linkDeveloperId !== undefined) return linkCallback(method, request, query.get("code"));
     if (request.browserReturnTo !== undefined) {
       const verifier = (headers.cookie ?? "").split(";").map(part => part.trim()).find(part => part.startsWith(`${REVIEW_PKCE_COOKIE}=`))?.slice(REVIEW_PKCE_COOKIE.length + 1);
       if (!REVIEW_RETURN_TO.test(request.browserReturnTo) || verifier === undefined || !pkceChallengeMatches(verifier, request.codeChallenge)) {
@@ -553,20 +570,102 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     // Only a join answers without an org; this sign-in created or joined one.
     if (org.orgId === undefined) throw new Error("sign-in resolved no organization");
     if (method === "github" && identity.githubUserId !== undefined && deps.onGithubSignIn !== undefined) await unlockTrialBestEffort(org.orgId, identity.githubUserId);
+    // When the person signed in: the callback's time, or the provider's own `auth_time` when that is earlier (a provider that reused its browser
+    // session says so here). A stale one makes the session not fresh, so it cannot be used to change sign-in methods.
+    const authTime = signInTime(identity.authTime);
+    if (request.fresh === true && !isFreshSignIn({ authTime }, deps.now())) deps.log({ event: "signin.fresh_sign_in_not_fresh", method });
     if (request.browserReturnTo !== undefined) {
       // A fixed 30 days from sign-in, with no renewal: the session record ends then, whatever the cookie says.
       const endsAt = Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS;
-      const { session } = await store.createSession({ developerId, amr: method, identityKey,
+      const { session } = await store.createSession({ developerId, amr: method, identityKey, authTime,
         ...(slackUserId === undefined ? {} : { slackUserId }),
         reviewExpiresAt: endsAt, endsAt,
       });
       deps.log({ event: "signin.browser_succeeded", method, developerId });
       return browserReturn(request.browserReturnTo, true, session.sessionId);
     }
-    const agentxCode = await store.issueCode({ developerId, amr: method, identityKey, ...(slackUserId === undefined ? {} : { slackUserId }), codeChallenge: request.codeChallenge, redirectUri: request.clientRedirectUri });
+    const agentxCode = await store.issueCode({ developerId, amr: method, identityKey, authTime, ...(slackUserId === undefined ? {} : { slackUserId }), codeChallenge: request.codeChallenge, redirectUri: request.clientRedirectUri });
     deps.log({ event: "signin.succeeded", method, developerId, linkedToSlack: slackUserId !== undefined });
     // An invite that was not used (the person is already in an org, or it is unknown, used, expired or for another email) is reported, not hidden.
     return client({ code: agentxCode, ...(org.inviteError === undefined ? {} : { inviteError: org.inviteError }) });
+  }
+
+  /** Off to the provider for adding a removed method back; a provider that cannot be reached is a page, not a redirect to the CLI. */
+  async function linkToProvider(requestId: string, nonce: string, method: DeveloperSignInMethod): Promise<HttpResult> {
+    try {
+      return redirect(await provider(method).authorizeUrl({ state: requestId, nonce, redirectUri: endpoint(`/callback/${method}`), chooseAccount: true }));
+    } catch (error) {
+      deps.log({ event: "signin.link_authorize_failed", method, error: errorName(error) });
+      return page(503, "Sign-in is unavailable", ["Nothing was added. Try again in a moment."]);
+    }
+  }
+
+  /**
+   * The end of the flow that adds a removed sign-in method back (Plan 2, Task 8b). The identity that signed in at the provider is linked to
+   * the one developer the request names, and only when it was unlinked from them and nobody has linked it since (`relinkIdentity`); the
+   * developer's session must still be fresh. It never starts a developer, a session or a code, and it never looks for another account by
+   * email: an identity signing in on its own is not this flow. The answer is a page.
+   */
+  async function linkCallback(method: DeveloperSignInMethod, request: AuthRequestRecord, code: string | null): Promise<HttpResult> {
+    const developerId = request.linkDeveloperId!;
+    const again = `Run agentx signin link ${method} again.`;
+    if (request.linkSessionId === undefined || request.linkMethod !== method) return page(400, "This link is not valid", [again]);
+    if (code === null) return page(400, "Sign-in was cancelled", ["Nothing was added.", again]);
+    let result: ProviderResult;
+    try {
+      result = await provider(method).complete({ code, nonce: request.nonce, redirectUri: endpoint(`/callback/${method}`) });
+    } catch (error) {
+      deps.log({ event: "signin.link_error", method, error: errorName(error) });
+      return page(503, "Sign-in is unavailable", ["Nothing was added. Try again in a moment."]);
+    }
+    if (!result.ok) {
+      deps.log({ event: "signin.refused", method, reason: result.reason });
+      return page(403, "Sign-in was refused", [result.reason, again]);
+    }
+    const identity = result.identity;
+    let session: SessionRecord;
+    try {
+      session = await store.freshSessionFor({ developerId, sessionId: request.linkSessionId });
+    } catch (error) {
+      if (!isCode(error, "REAUTH_REQUIRED")) throw error;
+      deps.log({ event: "signin.identity_link_needs_fresh_sign_in", developerId, provider: method });
+      return page(403, "Sign in again first", [`Your last sign-in is too old to change your sign-in methods, so nothing was added. ${again} If it asks, sign in again first.`]);
+    }
+    try {
+      await store.relinkIdentity({
+        identityKey: ownerKeyForSubject(identity.issuer, identity.subject), developerId, provider: method, issuer: identity.issuer, subject: identity.subject,
+        ...(identity.email === undefined ? {} : { email: identity.email }),
+        ...(identity.login === undefined ? {} : { login: identity.login }),
+        by: { method: session.amr },
+      });
+    } catch (error) {
+      if (!isCode(error, "CONFIG_INVALID")) throw error;
+      deps.log({ event: "signin.identity_relink_refused", developerId, provider: method });
+      return page(403, "That sign-in was not added", [capitalized(refusalWords(error)), "Nothing was changed."]);
+    }
+    deps.log({ event: "signin.identity_relinked", developerId, provider: method });
+    // The same notice as for any new method: if the person did not do this, they can remove it at once. The method is already added, so
+    // nothing here may turn the page into an error: the account's address is read twice, then the sign-in's own verified one is used.
+    await noticeNewMethod(method, identity, await accountEmail(developerId));
+    return page(200, "Sign-in method added back", [`${methodLabel(method)} can sign in to your Rovara account again.`, "You can close this tab and go back to your terminal."]);
+  }
+
+  /** The developer record's address; a read that fails twice answers nothing (the notice then goes to the sign-in's own verified address). */
+  async function accountEmail(developerId: string): Promise<string | undefined> {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        return (await store.getDeveloper(developerId))?.email;
+      } catch (error) {
+        deps.log({ event: "signin.identity_link_account_read_failed", attempt, error: errorName(error) });
+      }
+    }
+    return undefined;
+  }
+
+  /** An ISO time for a sign-in whose provider may say it happened earlier (`auth_time`, in seconds). Never later than now. */
+  function signInTime(providerAuthTime: number | undefined): string {
+    const now = deps.now();
+    return new Date(providerAuthTime === undefined ? now : Math.min(now, Math.round(providerAuthTime * 1000))).toISOString();
   }
 
   /**
@@ -780,15 +879,18 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   async function unlinkIdentity(event: unknown): Promise<UnlinkIdentityResponse> {
     const parsed = UnlinkIdentityRequestSchema.safeParse(event);
     if (!parsed.success) return { ok: false, error: "invalid_request" };
-    const { developerId, provider } = parsed.data;
+    const { developerId, sessionId, provider } = parsed.data;
     try {
-      await store.unlinkIdentity({ developerId, provider });
+      await store.unlinkIdentity({ developerId, sessionId, provider });
     } catch (error) {
-      const code = (error as { code?: unknown } | null)?.code;
-      if (code === "NOT_FOUND") return { ok: false, error: "not_found" };
-      if (code === "CONFIG_INVALID") {
+      if (isCode(error, "NOT_FOUND")) return { ok: false, error: "not_found" };
+      if (isCode(error, "REAUTH_REQUIRED")) {
+        deps.log({ event: "signin.identity_unlink_needs_fresh_sign_in", developerId, provider });
+        return { ok: false, error: "reauth", message: refusalWords(error) };
+      }
+      if (isCode(error, "CONFIG_INVALID")) {
         deps.log({ event: "signin.identity_unlink_refused", developerId, provider });
-        return { ok: false, error: "refused", message: (error as Error).message.replace(/^CONFIG_INVALID: /, "") };
+        return { ok: false, error: "refused", message: refusalWords(error) };
       }
       throw error;
     }
@@ -796,11 +898,37 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     return { ok: true };
   }
 
+  /**
+   * Plan 2, Task 8b: starts adding a removed sign-in method back to the caller's own developer, whom and whose session the broker names from
+   * its verified token. The caller's session must be fresh now (and is checked again when the person finishes at the provider). The
+   * answer is the sign-in link to open; the request it makes can link only to this developer, and only the one method.
+   */
+  async function startIdentityLink(event: unknown): Promise<StartIdentityLinkResponse> {
+    const parsed = StartIdentityLinkRequestSchema.safeParse(event);
+    if (!parsed.success) return { ok: false, error: "invalid_request" };
+    const { developerId, sessionId, provider: method } = parsed.data;
+    try {
+      await store.freshSessionFor({ developerId, sessionId });
+    } catch (error) {
+      if (!isCode(error, "REAUTH_REQUIRED")) throw error;
+      deps.log({ event: "signin.identity_link_needs_fresh_sign_in", developerId, provider: method });
+      return { ok: false, error: "reauth", message: refusalWords(error) };
+    }
+    if (!enabledMethods(deps).includes(method)) return { ok: false, error: "refused", message: "that sign-in method is not available here" };
+    const request = await store.createAuthRequest({
+      clientRedirectUri: endpoint("/link/done"), clientState: randomBytes(24).toString("base64url"), codeChallenge: randomBytes(32).toString("base64url"),
+      nonce: randomBytes(32).toString("base64url"), linkDeveloperId: developerId, linkSessionId: sessionId, linkMethod: method,
+    });
+    if (await store.chooseMethod(request.id, method) === undefined) return { ok: false, error: "unavailable" };
+    deps.log({ event: "signin.identity_link_started", developerId, provider: method });
+    return { ok: true, authorizeUrl: `${endpoint("/authorize")}?request=${encodeURIComponent(request.id)}&method=${method}` };
+  }
+
   const isPage = (pathname: string) => pathname === "/v1/auth/authorize" || pathname === "/v1/auth/browser/authorize" || pathname.startsWith("/v1/auth/callback/") || pathname.startsWith("/v1/auth/join");
 
   return async (
-    event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | TaskPeopleDisplayReadRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | ChannelByNameRequest,
-  ): Promise<HttpResult | ChannelMembersResult | TaskPersonProofResponse | TaskChannelPeopleResponse | TaskPeopleDisplayReadResponse | ChannelInfoResponse | SlackUserByEmailResponse | SlackAuthCheckResponse | EndDeveloperSessionsResponse | UnlinkIdentityResponse | ChannelByNameResponse> => {
+    event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | TaskPeopleDisplayReadRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest,
+  ): Promise<HttpResult | ChannelMembersResult | TaskPersonProofResponse | TaskChannelPeopleResponse | TaskPeopleDisplayReadResponse | ChannelInfoResponse | SlackUserByEmailResponse | SlackAuthCheckResponse | EndDeveloperSessionsResponse | UnlinkIdentityResponse | StartIdentityLinkResponse | ChannelByNameResponse> => {
     if ("kind" in event) {
       if (event.kind === "end-developer-sessions") {
         const parsed = EndDeveloperSessionsRequestSchema.safeParse(event);
@@ -810,6 +938,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
         return result === "ended" ? { ok: true } : { ok: false, error: "not_found" };
       }
       if (event.kind === "unlink-identity") return unlinkIdentity(event);
+      if (event.kind === "start-identity-link") return startIdentityLink(event);
       if (event.kind === "channel-by-name") {
         const parsed = ChannelByNameRequestSchema.safeParse(event);
         if (!parsed.success) return { ok: false, error: "invalid_request" };

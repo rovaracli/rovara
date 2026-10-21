@@ -70,6 +70,8 @@ export function createGitHubAppCredentials(secretsManager: Pick<SecretsManagerCl
     credentialRef: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF"),
     appId: appIdSetting !== "" ? appIdSetting : async () => (await loadApp()).appId,
     getPrivateKey: () => loadSecret().then(privateKeyFromSecret),
+    // The slug and the OAuth client come from the same secret; a forced read is spaced out like the webhook secret's.
+    getAppSecret: (options) => (options?.refresh === true ? reread() : loadSecret()),
   });
   const webhookSecret = async (options?: { refresh?: boolean }): Promise<string> => {
     if (options?.refresh === true) return webhookSecretFromSecret(await reread());

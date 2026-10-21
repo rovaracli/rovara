@@ -8,7 +8,11 @@ import { serverReason } from "./session.js";
 
 export interface DeveloperLoginOptions { url: string; allowLoopback: boolean; browser: boolean; home: string; tokenStore: TokenStore; fetch: typeof fetch; openBrowser?: (url: string) => Promise<void>; write: (line: string) => void; timeoutMs?: number; callbackPort?: number;
   /** An invite token (Plan 2, Task 6): it rides the authorize URL, and the sign-in joins the organization it is for. */
-  invite?: string }
+  invite?: string;
+  /** A sign-in method the link leaves out of the choices (Plan 2, Task 8b: the fresh sign-in for removing that method). */
+  excludeMethod?: string;
+  /** Plan 2, Task 8b: this sign-in must be fresh, so the provider is asked to have the person sign in again where it can. */
+  fresh?: boolean }
 
 /** The only hosts --allow-loopback lets use plain http (URL.hostname keeps the brackets on IPv6). */
 export const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
@@ -61,6 +65,8 @@ export async function developerLogin(options: DeveloperLoginOptions): Promise<{ 
       code_challenge: pkce.challenge, code_challenge_method: "S256",
     })) authorize.searchParams.set(key, value);
     if (options.invite !== undefined) authorize.searchParams.set("invite", options.invite);
+    if (options.excludeMethod !== undefined) authorize.searchParams.set("exclude_method", options.excludeMethod);
+    if (options.fresh === true) authorize.searchParams.set("fresh", "1");
     if (options.browser) {
       options.write(`Opening your browser to sign in to AgentX environment ${configuration.env}. If it does not open, open this link: ${authorize.toString()}`);
       await (options.openBrowser ?? openSystemBrowser)(authorize.toString()).catch(() => undefined);

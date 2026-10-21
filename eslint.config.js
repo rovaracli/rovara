@@ -40,4 +40,14 @@ export default tseslint.config(
       globals: { document: "readonly", fetch: "readonly", history: "readonly", location: "readonly", URL: "readonly", URLSearchParams: "readonly" },
     },
   },
+  {
+    // Plain Node scripts outside the TypeScript projects (Plan 2, Task 17: the Public Suffix List generator).
+    files: ["scripts/**/*.mjs"],
+    ...tseslint.configs.disableTypeChecked,
+    languageOptions: {
+      sourceType: "module",
+      parserOptions: { project: false },
+      globals: { console: "readonly", fetch: "readonly", process: "readonly", URL: "readonly" },
+    },
+  },
 );

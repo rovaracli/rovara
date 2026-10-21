@@ -274,7 +274,9 @@ describe("rule 1b of resolveSignInDeveloper", () => {
     expect(await w.store.getDeveloper(D2)).toMatchObject({ mergedInto: D1 });
 
     w.tick(1000);
-    expect(await w.store.unlinkIdentity({ developerId: D1, provider: "github" })).toEqual({ identityKey: D2 });
+    // The survivor removes it with a fresh cloud sign-in, a method that stays on the account.
+    const fresh = await w.store.createSession({ developerId: D1, amr: "cloud", identityKey: D1, authTime: new Date(T0 + 2000).toISOString() });
+    expect(await w.store.unlinkIdentity({ developerId: D1, sessionId: fresh.session.sessionId, provider: "github" })).toEqual({ identityKey: D2 });
 
     // The survivor lost the identity and ends its sessions; the merged-away developer is a plain developer again.
     expect((await w.store.identitiesOf(D1)).map((identity) => identity.provider)).toEqual(["cloud"]);

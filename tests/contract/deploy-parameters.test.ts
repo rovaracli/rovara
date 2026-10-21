@@ -269,9 +269,37 @@ describe("deploy parameters", () => {
   });
 
   it("uses image overrides as-is, and only by digest", () => {
-    const withOverrides = { ...answers(), images: { worker: `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-worker-production@sha256:${d("e")}` } };
+    const withOverrides = { ...answers(), images: { worker: `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-worker-production@sha256:${d("e")}`, bootStage2Sha256: d("5") } };
     expect(stackParameters("runtime", withOverrides, outputs, { packages: true }).WorkerImageUri).toBe(withOverrides.images.worker);
-    expect(() => stackParameters("runtime", { ...answers(), images: { worker: "x/y:latest" } }, outputs, { packages: true })).toThrow("image override for worker must be referenced by digest");
+    expect(() => stackParameters("runtime", { ...answers(), images: { worker: "x/y:latest", bootStage2Sha256: d("5") } }, outputs, { packages: true })).toThrow("image override for worker must be referenced by digest");
+  });
+
+  // Task 10: the worker image and the SHA-256 of the stage 2 boot script it carries are one setting pair, written by the same runtime stack
+  // deploy from the same release, so a control plane never boots a worker with an image and a hash from different releases.
+  it("writes the stage 2 boot hash beside the worker image, in the same runtime parameters, from the same release", () => {
+    const hash = d("5");
+    const params = stackParameters("runtime", { ...answers(), release: { ...release, bootStage2Sha256: hash } }, outputs, { packages: true });
+    expect(params.WorkerImageUri).toBe(`123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-staging/agentx/agentx-worker@sha256:${d("b")}`);
+    expect(params.BootStage2Sha256).toBe(hash);
+    for (const part of ["control-plane", "slack"] as const) expect(stackParameters(part, { ...answers(), release: { ...release, bootStage2Sha256: hash } }, outputs, { packages: true })).not.toHaveProperty("BootStage2Sha256");
+    // A release from before the boot split carries none, and the runtime template's default ("none") stands.
+    expect(stackParameters("runtime", answers(), outputs, { packages: true })).not.toHaveProperty("BootStage2Sha256");
+    const declared = templates.get("runtime")?.Parameters?.BootStage2Sha256 as { Default?: unknown; AllowedPattern?: string } | undefined;
+    expect(declared?.Default).toBe("none");
+    expect(new RegExp(declared?.AllowedPattern ?? "(?!)", "u").test(hash)).toBe(true);
+    expect(new RegExp(declared?.AllowedPattern ?? "(?!)", "u").test("not-a-hash")).toBe(false);
+  });
+
+  it("takes the hash with a hand-supplied worker image, and refuses the image without it", () => {
+    const image = `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-worker-production@sha256:${d("e")}`;
+    // The override's hash wins over the release's: the image is not the release's.
+    const params = stackParameters("runtime", { ...answers(), release: { ...release, bootStage2Sha256: d("4") }, images: { worker: image, bootStage2Sha256: d("6") } }, outputs, { packages: true });
+    expect(params).toMatchObject({ WorkerImageUri: image, BootStage2Sha256: d("6") });
+    expect(() => stackParameters("runtime", { ...answers(), release: { ...release, bootStage2Sha256: d("4") }, images: { worker: image } }, outputs, { packages: true }))
+      .toThrow("--worker-image needs --boot-stage2-sha256");
+    expect(() => stackParameters("runtime", { ...answers(), images: { worker: image, bootStage2Sha256: "not-a-hash" } }, outputs, { packages: true })).toThrow("--boot-stage2-sha256 must be 64 lower-case hex digits");
+    // A slack-only override leaves the worker pair alone.
+    expect(stackParameters("runtime", { ...answers(), release: { ...release, bootStage2Sha256: d("4") }, images: { slack: image } }, outputs, { packages: true }).BootStage2Sha256).toBe(d("4"));
   });
 
   it("uses a slack image override as-is, and only by digest", () => {
@@ -293,7 +321,7 @@ describe("deploy parameters", () => {
   it("a worker image override does not require the access stack's PullThroughPrefix output", () => {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the key
     const { PullThroughPrefix: _prefixGone, ...accessNoPrefix } = outputs.access;
-    const withOverride = { ...answers(), images: { worker: `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-worker-production@sha256:${d("e")}` } };
+    const withOverride = { ...answers(), images: { worker: `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-worker-production@sha256:${d("e")}`, bootStage2Sha256: d("5") } };
     expect(() => stackParameters("runtime", withOverride, { ...outputs, access: accessNoPrefix }, { packages: true })).not.toThrow();
   });
 

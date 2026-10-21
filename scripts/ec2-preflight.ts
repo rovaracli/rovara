@@ -14,7 +14,7 @@ import { GetAccountSettingsCommand, LambdaClient } from "@aws-sdk/client-lambda"
 import { GetServiceQuotaCommand, ServiceQuotasClient } from "@aws-sdk/client-service-quotas";
 import { DescribeStateMachineCommand, SFNClient } from "@aws-sdk/client-sfn";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
-import { WORKER_SETTING_PARAMETERS, environmentSettingsPrefix, environmentStackName } from "../packages/contracts/src/index.js";
+import { BOOT_STAGE2_SHA256_PARAMETER, WORKER_SETTING_PARAMETERS, environmentSettingsPrefix, environmentStackName } from "../packages/contracts/src/index.js";
 
 /** The worker instance type's vCPUs: one session needs this much On-Demand Standard headroom. */
 const WORKER_VCPUS = 1;
@@ -36,6 +36,10 @@ export interface Ec2PreflightFacts {
   signingKey?: { enabled: boolean; keySpec?: string; keyUsage?: string };
   workspaceKey?: { enabled: boolean };
   workerSettings: Record<keyof typeof WORKER_SETTING_PARAMETERS, string | undefined>;
+  /** A named environment: its workers boot stage 2 from the worker image and need the hash that checks it (Task 10). The legacy deployment does not. */
+  namedEnvironment?: boolean;
+  /** The `worker-boot-stage2-sha256` setting, read for a named environment. */
+  bootStage2Sha256?: string | undefined;
   stateMachines: Array<{ name: string; status?: string }>;
   vcpuQuota?: number;
   runningStandardVcpus: number;
@@ -74,6 +78,13 @@ export function evaluateEc2Preflight(facts: Ec2PreflightFacts): PreflightCheck[]
   const image = facts.workerSettings.workerImage;
   checks.push(check("worker settings", missingSettings.length === 0 && image !== undefined && /@sha256:[0-9a-f]{64}$/.test(image),
     missingSettings.length > 0 ? `missing ${missingSettings.join(", ")}` : `worker image ${image}`));
+  if (facts.namedEnvironment === true) {
+    const hash = facts.bootStage2Sha256;
+    const valid = hash !== undefined && /^[a-f0-9]{64}$/.test(hash);
+    checks.push(check("boot stage 2 hash", valid, valid
+      ? `boot hash ${hash} comes with the worker image`
+      : `the worker image has no boot hash (${hash === undefined || hash === "" ? "missing" : hash === "none" ? "none" : "not 64 lower-case hex digits"}), so workers cannot launch; run agentx upgrade`));
+  }
   checks.push(check("session state machines", facts.stateMachines.length === 2 && facts.stateMachines.every((machine) => machine.status === "ACTIVE"),
     facts.stateMachines.map((machine) => `${machine.name} ${machine.status ?? "missing"}`).join(", ") || "not found"));
   const headroom = facts.vcpuQuota === undefined ? undefined : facts.vcpuQuota - facts.runningStandardVcpus;
@@ -123,7 +134,8 @@ export async function gatherEc2Facts(options: { region: string; env?: string }):
 
   const prefix = options.env === undefined ? "/agentx/production/" : environmentSettingsPrefix(options.env);
   const settingNames = Object.fromEntries(Object.entries(WORKER_SETTING_PARAMETERS).map(([setting, name]) => [setting, `${prefix}${name}`]));
-  const settingValues = new Map(((await ssm.send(new GetParametersCommand({ Names: Object.values(settingNames) }))).Parameters ?? []).map((parameter) => [parameter.Name, parameter.Value]));
+  const bootHashName = options.env === undefined ? undefined : `${prefix}${BOOT_STAGE2_SHA256_PARAMETER}`;
+  const settingValues = new Map(((await ssm.send(new GetParametersCommand({ Names: [...Object.values(settingNames), ...(bootHashName === undefined ? [] : [bootHashName])] }))).Parameters ?? []).map((parameter) => [parameter.Name, parameter.Value]));
 
   const sfn = new SFNClient(config);
   const stateMachines: Ec2PreflightFacts["stateMachines"] = [];
@@ -165,6 +177,7 @@ export async function gatherEc2Facts(options: { region: string; env?: string }):
     ...(signing === undefined ? {} : { signingKey: { enabled: signing.Enabled === true, ...(signing.KeySpec ? { keySpec: signing.KeySpec } : {}), ...(signing.KeyUsage ? { keyUsage: signing.KeyUsage } : {}) } }),
     ...(workspace === undefined ? {} : { workspaceKey: { enabled: workspace.Enabled === true } }),
     workerSettings: Object.fromEntries(Object.entries(settingNames).map(([setting, name]) => [setting, settingValues.get(name)])) as Ec2PreflightFacts["workerSettings"],
+    ...(bootHashName === undefined ? {} : { namedEnvironment: true, bootStage2Sha256: settingValues.get(bootHashName) }),
     stateMachines,
     ...(quota === undefined ? {} : { vcpuQuota: quota }),
     runningStandardVcpus,

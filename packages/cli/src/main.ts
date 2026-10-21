@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { open, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -27,6 +28,7 @@ import { STSClient } from "@aws-sdk/client-sts";
 import { Command, Option } from "commander";
 import { authorizeCredential, expectedAccountEmail, secretsManagerAuthorizeSecrets, type AuthorizeSecrets } from "./admin/authorize.js";
 import { budgetText, parseBudgetUsd, setOrgBudget } from "./admin/budget.js";
+import { decideEgress, decisionText, listPendingEgress, parseOwnerArgument, pendingText } from "./admin/egress.js";
 import { githubOwnerText, setOrgGithubOwner } from "./admin/github-owner.js";
 import { listCredentials, registerCredential } from "./admin/credential.js";
 import { requestRuntimeInstallChallenge, submitRuntimeInstallProposal } from "./admin/runtime-installation.js";
@@ -41,7 +43,7 @@ import { disableEvalChannel, enableEvalChannel, parseMaxCostUsd, showEvalChannel
 import { exportTurns, parseSince } from "./admin/turns.js";
 import { loginWithPkce, openSystemBrowser, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
-import { createDeveloperProject, createProjectText, developerLogout, fetchDeveloperProjects, fetchLinkedIdentities, logoutText, unlinkSignInMethod, unlinkText, whoamiText } from "./developer/commands.js";
+import { changeDeveloperProjectSettings, createDeveloperProject, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
 import { orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
@@ -61,7 +63,11 @@ import { DEFAULT_CLASSIFIER_MODEL, DEFAULT_ORCHESTRATOR_MODEL, DEFAULT_WORKER_MO
 import { runInit, type InitCliDependencies, type InitOptions } from "./init/commands.js";
 import { cliCommandLine, currentCliInvocation, type CliInvocation } from "./init/cli-command.js";
 import { StoppedByOperator, isCtrlCAtPrompt } from "./stopped.js";
-import type { FinishFlags, SecretFlags } from "./init/context.js";
+import { runGithubOauthSet, type GithubOauthServices } from "./github/oauth.js";
+import { githubConnect, githubConnectText } from "./developer/github.js";
+import { secretsManagerInitSecrets, type FinishFlags, type SecretFlags } from "./init/context.js";
+import { githubRestApi } from "./init/github-app.js";
+import { processPrompter } from "./init/prompts.js";
 import { INIT_STEP_IDS, type InitStepId } from "./init/install-state.js";
 import { parseConnectorsFlag } from "./init/finish-steps.js";
 import { runEnvAdopt, runEnvList, runEnvUse } from "./environments/commands.js";
@@ -141,6 +147,10 @@ export interface CliDependencies {
   config?: Partial<ConfigServices>;
   /** `agentx doctor` overrides, for tests: never touch AWS or a vendor. */
   doctor?: { store?: ParameterStore; services?: (settings: EnvironmentSettings) => DoctorServices };
+  /** `agentx github oauth set` overrides, for tests: never touch AWS or GitHub. */
+  githubOauth?: Partial<GithubOauthServices>;
+  /** `agentx github connect` polling, for tests. */
+  githubConnect?: { pollMs?: number; waitMs?: number };
   /** `agentx upgrade` overrides, for tests: never touch AWS or GitHub. */
   upgrade?: Partial<UpgradeDependencies>;
   /** `agentx destroy` overrides, for tests: never touch AWS. */
@@ -527,6 +537,46 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, orgClosed: result.orgClosed, message: result.message }, true) : orgLeaveText(result));
     });
 
+  const githubCommand = program.command("github").description("the GitHub App of a Rovara Cloud install");
+  githubCommand
+    .command("oauth")
+    .description("the GitHub App's OAuth client, which the per-organization install flow uses")
+    .command("set")
+    .description("store the GitHub App's client id and client secret on a Rovara Cloud install (operator role); prints what to change in the App's settings")
+    .requiredOption("--client-id <id>", "the GitHub App's Client ID (General, About, Client ID)")
+    .option("--client-secret-stdin", "read the client secret from standard input instead of asking for it", false)
+    .option("--region <region>", "AWS region of the environment; defaults to your AWS configuration")
+    .action(async (options: { clientId: string; clientSecretStdin: boolean; region?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const overrides = dependencies.githubOauth ?? {};
+      const awsConfig = options.region === undefined ? {} : { region: options.region };
+      const result = await runGithubOauthSet({
+        store: overrides.store ?? parameterStore(options.region),
+        secrets: overrides.secrets ?? secretsManagerInitSecrets(new SecretsManagerClient(awsConfig)),
+        github: overrides.github ?? githubRestApi(services.fetchImplementation),
+        prompter: overrides.prompter ?? processPrompter(services.stderr),
+        processEnv: overrides.processEnv ?? process.env,
+        write: overrides.write ?? ((line) => { services.stderr.write(`${line}\n`); }),
+        now: overrides.now ?? Date.now,
+        readStdin: overrides.readStdin ?? (async () => { const chunks: Buffer[] = []; for await (const chunk of dependencies.stdin ?? process.stdin) chunks.push(Buffer.from(chunk as Uint8Array)); return Buffer.concat(chunks).toString("utf8"); }),
+      }, globals.env, { clientId: options.clientId, clientSecretStdin: options.clientSecretStdin });
+      services.stdout.write(globals.json ? formatSuccess(result, true) : `GitHub App client id and secret saved for ${result.env}.\n`);
+    });
+
+  githubCommand
+    .command("connect")
+    .description("connect your organization's GitHub account to Rovara (owners and admins, Rovara Cloud): opens GitHub's install page and waits until it is done")
+    .option("--no-browser", "print the install link instead of opening a browser")
+    .action(async (options: { browser: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await githubConnect(developerSession(), developerEnv(command), {
+        write: (line) => { services.stderr.write(`${line}\n`); },
+        ...(options.browser ? { openBrowser: dependencies.login?.openBrowser ?? openSystemBrowser } : {}),
+        ...(dependencies.githubConnect ?? {}),
+      });
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, account: result.account, installationId: result.installationId }, true) : githubConnectText(result));
+    });
+
   registerSigninCommands(program, {
     ...(dependencies.signin === undefined ? {} : { overrides: dependencies.signin }),
     parameterStore, fetch: services.fetchImplementation, stdout: services.stdout, stderr: services.stderr,
@@ -535,14 +585,41 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   // commands are the operator's).
   const signinCommand = program.commands.find((candidate) => candidate.name() === "signin");
   if (signinCommand === undefined) throw new Error("the signin command is registered by registerSigninCommands");
+  /** The fresh sign-in `signin unlink` and `signin link` run when the server asks for one: today's developer login, then the request again. */
+  const freshSignInFor = (command: Command, browser: boolean): FreshSignIn => async ({ url, exclude, reason }) => {
+    services.stderr.write(`This needs a fresh sign-in (${reason}). Signing in again now.\n`);
+    await developerLogin({
+      url, allowLoopback: globalOptions(command).allowLoopback, browser, home, tokenStore: services.tokenStore, fetch: services.fetchImplementation,
+      write: (line) => { services.stderr.write(`${line}\n`); },
+      ...(dependencies.login?.openBrowser === undefined ? {} : { openBrowser: dependencies.login.openBrowser }),
+      ...(exclude === undefined ? {} : { excludeMethod: exclude }),
+      fresh: true,
+    });
+  };
   signinCommand
     .command("unlink")
-    .description("remove a sign-in method (cloud or github) from your own Rovara account; sessions signed in that way end")
+    .description("remove a sign-in method (cloud or github) from your own Rovara account; sessions signed in that way end. Needs a sign-in from the last 10 minutes with another method")
     .argument("<method>", "cloud or github")
-    .action(async (method: string, _options: Record<string, never>, command: Command) => {
+    .option("--no-browser", "if a fresh sign-in is needed, print the sign-in link instead of opening a browser")
+    .action(async (method: string, options: { browser: boolean }, command: Command) => {
       const globals = globalOptions(command);
-      const result = await unlinkSignInMethod(developerSession(), developerEnv(command), method);
+      const result = await unlinkSignInMethod(developerSession(), developerEnv(command), method, freshSignInFor(command, options.browser));
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, removed: result.provider, identities: result.identities }, true) : unlinkText(result));
+    });
+  signinCommand
+    .command("link")
+    .description("add a sign-in method (cloud or github) you removed earlier back to your own Rovara account. Needs a sign-in from the last 10 minutes")
+    .argument("<method>", "cloud or github")
+    .option("--no-browser", "print the sign-in link instead of opening a browser")
+    .action(async (method: string, options: { browser: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await linkSignInMethod(developerSession(), developerEnv(command), method, freshSignInFor(command, options.browser));
+      if (globals.json) {
+        services.stdout.write(formatSuccess({ env: result.env, url: result.url, provider: result.provider, authorizeUrl: result.authorizeUrl }, true));
+        return;
+      }
+      services.stdout.write(linkText(result, options.browser));
+      if (options.browser) await (dependencies.login?.openBrowser ?? openSystemBrowser)(result.authorizeUrl).catch(() => undefined);
     });
   registerConfigCommands(program, {
     ...(dependencies.config === undefined ? {} : { overrides: dependencies.config }), parameterStore, fetch: services.fetchImplementation, stdout: services.stdout, stderr: services.stderr,
@@ -793,6 +870,45 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const { settings, accessToken } = await authenticate(globals, services.tokenStore);
       const result = await setOrgGithubOwner({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, orgId: options.org, githubOwner: options.owner }, services.fetchImplementation);
       services.stdout.write(globals.json ? formatSuccess(result, true) : githubOwnerText(result.org));
+    });
+
+  const adminEgress = admin.command("egress").description("domains projects ask to reach; on Rovara Cloud a new one is served only after Rovara staff approve it");
+  adminEgress
+    .command("pending")
+    .description("list the domains waiting for approval, from every organization (Rovara Cloud operators only)")
+    .action(async (_options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await listPendingEgress({ controlPlaneUrl: settings.controlPlaneUrl, accessToken }, services.fetchImplementation);
+      services.stdout.write(globals.json ? formatSuccess(result, true) : pendingText(result));
+    });
+  adminEgress
+    .command("approve")
+    .description("approve a pending domain: it joins the DNS allowlist of the cell")
+    .argument("<org>", "the organization's ID")
+    .argument("<owner>", "project:<name> or model-source:<id>, as `agentx admin egress pending` prints it")
+    .argument("<domain>", "the domain")
+    .action(async (org: string, owner: string, domain: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const parsedOwner = parseOwnerArgument(owner);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await decideEgress({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, decision: "approve", orgId: org, owner: parsedOwner, domain }, services.fetchImplementation);
+      services.stdout.write(globals.json ? formatSuccess(result, true) : decisionText(result));
+    });
+  adminEgress
+    .command("reject")
+    .description("reject a pending domain; the project's maintainers are told why")
+    .argument("<org>", "the organization's ID")
+    .argument("<owner>", "project:<name> or model-source:<id>, as `agentx admin egress pending` prints it")
+    .argument("<domain>", "the domain")
+    .option("--reason <text>", "why, 1 to 200 characters; shown to the project's maintainers")
+    .action(async (org: string, owner: string, domain: string, options: { reason?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const parsedOwner = parseOwnerArgument(owner);
+      if (options.reason === undefined || options.reason.trim() === "") throw agentXError("CONFIG_INVALID", "say why with --reason <text>");
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await decideEgress({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, decision: "reject", orgId: org, owner: parsedOwner, domain, reason: options.reason }, services.fetchImplementation);
+      services.stdout.write(globals.json ? formatSuccess(result, true) : decisionText(result));
     });
 
   const adminSlack = admin.command("slack").description("bind Slack channels to this project for the hosted orchestrator");
@@ -1127,6 +1243,61 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         : createProjectText(result));
     });
 
+  // Plan 2, Task 17: a project's settings, with the signed-in developer's own sign-in. A maintainer changes them; anyone with access reads them.
+  projectCommand
+    .command("show")
+    .description("show a project's settings: commands, devcontainer, repositories and allowed domains, on Rovara Cloud")
+    .argument("<name>", "the project's name")
+    .action(async (name: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await showDeveloperProject(developerSession(), developerEnv(command), name);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project }, true) : projectShowText(result.project));
+    });
+  const collect = (value: string, previous: string[]) => [...previous, value];
+  projectCommand
+    .command("settings")
+    .description("change a project's settings, on Rovara Cloud (a maintainer of the project); only the settings you give change")
+    .argument("<name>", "the project's name")
+    .option("--setup-command <command>", "a setup command; give it again for each one, in order (replaces the project's setup commands)", collect, [] as string[])
+    .option("--clear-setup-commands", "remove every setup command")
+    .option("--test-command <command>", "a test command; give it again for each one, in order (replaces the project's test commands)", collect, [] as string[])
+    .option("--clear-test-commands", "remove every test command")
+    .option("--allow-domain <domain>", "a website the project's machines may reach, such as artifacts.acme.dev or *.acme.dev; give it again for each (replaces the project's list)", collect, [] as string[])
+    .option("--clear-allowed-domains", "remove every allowed domain")
+    .option("--description <text>", "the project's description, or \"\" for none")
+    .option("--add-repository <owner/name>", "add a repository of your connected GitHub account; give it again for each", collect, [] as string[])
+    .option("--remove-repository <name>", "remove a repository, by its name or owner/name; give it again for each", collect, [] as string[])
+    .option("--devcontainer-repository <name>", "the repository whose devcontainer the project's commands run in")
+    .option("--devcontainer-config <path>", "the devcontainer's configuration file in that repository (default .devcontainer/devcontainer.json)")
+    .option("--remove-devcontainer", "run the project's commands without a devcontainer")
+    .action(async (name: string, options: {
+      setupCommand: string[]; clearSetupCommands?: boolean; testCommand: string[]; clearTestCommands?: boolean; allowDomain: string[]; clearAllowedDomains?: boolean;
+      description?: string; addRepository: string[]; removeRepository: string[]; devcontainerRepository?: string; devcontainerConfig?: string; removeDevcontainer?: boolean;
+    }, command: Command) => {
+      const globals = globalOptions(command);
+      const conflicts: Array<[boolean, string]> = [
+        [options.clearSetupCommands === true && options.setupCommand.length > 0, "--setup-command and --clear-setup-commands"],
+        [options.clearTestCommands === true && options.testCommand.length > 0, "--test-command and --clear-test-commands"],
+        [options.clearAllowedDomains === true && options.allowDomain.length > 0, "--allow-domain and --clear-allowed-domains"],
+        [options.removeDevcontainer === true && (options.devcontainerRepository !== undefined || options.devcontainerConfig !== undefined), "--remove-devcontainer and the devcontainer options"],
+      ];
+      const conflict = conflicts.find(([clash]) => clash);
+      if (conflict !== undefined) throw agentXError("CONFIG_INVALID", `choose one: ${conflict[1]} contradict each other`);
+      if (options.devcontainerConfig !== undefined && options.devcontainerRepository === undefined) throw agentXError("CONFIG_INVALID", "--devcontainer-config needs --devcontainer-repository");
+      const result = await changeDeveloperProjectSettings(developerSession(), developerEnv(command), name, {
+        ...(options.clearSetupCommands === true ? { setupCommands: [] } : options.setupCommand.length > 0 ? { setupCommands: options.setupCommand } : {}),
+        ...(options.clearTestCommands === true ? { testCommands: [] } : options.testCommand.length > 0 ? { testCommands: options.testCommand } : {}),
+        ...(options.clearAllowedDomains === true ? { allowedDomains: [] } : options.allowDomain.length > 0 ? { allowedDomains: options.allowDomain } : {}),
+        ...(options.description === undefined ? {} : { description: options.description }),
+        ...(options.addRepository.length > 0 ? { addRepositories: options.addRepository } : {}),
+        ...(options.removeRepository.length > 0 ? { removeRepositories: options.removeRepository } : {}),
+        ...(options.removeDevcontainer === true ? { devcontainer: null }
+          : options.devcontainerRepository === undefined ? {}
+            : { devcontainer: { repository: options.devcontainerRepository, ...(options.devcontainerConfig === undefined ? {} : { configPath: options.devcontainerConfig }) } }),
+      }, randomUUID());
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project, warnings: result.warnings }, true) : projectSettingsText(result));
+    });
+
   const envCommand = program.command("env").description("AgentX environments in this AWS account and region");
   envCommand
     .command("list")
@@ -1312,6 +1483,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--slack-signing-secret-file <path>", "file holding the Slack signing secret")
     .option("--slack-signing-secret-env <NAME>", "environment variable holding the Slack signing secret")
     .option("--worker-image <digest-ref>", "worker image by digest; an agentx built from source needs it with --engine cdk when the tag has no published release.json")
+    .option("--boot-stage2-sha256 <hex>", "with --worker-image: the SHA-256 of packages/worker/ec2/boot-stage2.sh in the release source that image was built from (a release supplies its own)")
     .option("--slack-image <digest-ref>", "Slack service image by digest; an agentx built from source needs it with --engine cdk when the tag has no published release.json")
     .option("--admin-email <email>", "Cognito: your email, for the AgentX admin user")
     .option("--repository <owner/name>", "the first project's repository")
@@ -1585,7 +1757,7 @@ interface InitCommandOptions extends SignInCommandOptions {
   githubAppId?: string; githubInstallationId?: string; githubPrivateKeyFile?: string; githubPrivateKeyEnv?: string;
   slackAppName?: string; slackAppPostedMessages?: "accept" | "ignore"; slackInstall?: "installed" | "approval";
   slackBotTokenFile?: string; slackBotTokenEnv?: string; slackSigningSecretFile?: string; slackSigningSecretEnv?: string;
-  workerImage?: string; slackImage?: string;
+  workerImage?: string; slackImage?: string; bootStage2Sha256?: string;
   rovaraCloud?: boolean; googleClientId?: string; googleClientSecretArn?: string; cloudDomainPrefix?: string;
   githubSignInClientId?: string; githubSignInClientSecretArn?: string;
   /** --signin: which developer sign-in methods agentx init's developer-signin step enables. */
@@ -1638,7 +1810,7 @@ function initOptions(globals: GlobalOptions, options: InitCommandOptions, comman
     budget: options.budget, budgetScope: options.budgetScope,
     githubAccount: options.githubAccount, githubAccountType: options.githubAccountType, githubAppName: options.githubAppName,
     slackAppName: options.slackAppName, slackAppPostedMessages: options.slackAppPostedMessages,
-    workerImage: options.workerImage, slackImage: options.slackImage,
+    workerImage: options.workerImage, slackImage: options.slackImage, bootStage2Sha256: options.bootStage2Sha256,
     rovaraCloud: options.rovaraCloud, googleClientId: options.googleClientId, googleClientSecretArn: options.googleClientSecretArn, cloudDomainPrefix: options.cloudDomainPrefix,
     githubSignInClientId: options.githubSignInClientId, githubSignInClientSecretArn: options.githubSignInClientSecretArn,
   });

@@ -286,7 +286,7 @@ describe("current workflow E2E authority", () => {
 
     harness.db.set(recoveredTask);
     const planPage = await getTaskDocumentView({ orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
-      checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }),
+      checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }),
       projectChannelIds: async () => [], now: () => Date.now() }, { orgId: TEST_ORG, developerId: MAYA.developerId } as never, taskId);
     expect(planPage).toMatchObject({ status: "The E2E plan needs correction", nextStep: expect.stringContaining("Request changes") as unknown });
     expect(planPage.nextStep).not.toContain("Approve");

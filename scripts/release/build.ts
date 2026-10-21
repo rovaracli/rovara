@@ -306,6 +306,9 @@ export async function buildRelease(input: BuildReleaseInput): Promise<ReleaseMan
       legalDocuments.push({ file, sha256: sha256Hex(content) });
     }
 
+    // The stage 2 boot script the worker image of this commit carries (Task 10); a deploy writes its hash beside the image.
+    const bootStage2Sha256 = sha256Hex(await readFile(join(REPO_ROOT, "packages", "worker", "ec2", "boot-stage2.sh")));
+
     // Write release.json as validated, pretty JSON.
     const manifest = ReleaseManifestSchema.parse({
       schemaVersion: 1,
@@ -316,6 +319,7 @@ export async function buildRelease(input: BuildReleaseInput): Promise<ReleaseMan
       packages,
       legalDocuments,
       images,
+      bootStage2Sha256,
     } satisfies ReleaseManifest);
     await writeFile(join(input.out, "release.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     return manifest;

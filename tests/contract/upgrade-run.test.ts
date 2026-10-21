@@ -493,17 +493,27 @@ describe("agentx upgrade with the cdk engine", () => {
 
   // Issue 152 replaces live check L7's refusal: a source-built CLI takes the version from the tag.
   it("with a source-built CLI and no --release or --to, builds the release from --source: the tag's version", async () => {
-    const built: Array<{ source: string; images?: { worker?: string; slack?: string } }> = [];
+    const built: Array<{ source: string; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }> = [];
     const h = await cdk({
       cliVersion: undefined,
       loadRelease: async () => { throw new Error("test setup: no release directory or download expected"); },
       sourceRelease: async (input) => { built.push(input); return release("1.3.0"); },
     });
-    const images = { worker: `123456789012.dkr.ecr.us-east-1.amazonaws.com/w@sha256:${"d".repeat(64)}` };
+    const images = { worker: `123456789012.dkr.ecr.us-east-1.amazonaws.com/w@sha256:${"d".repeat(64)}`, bootStage2Sha256: "5a".repeat(32) };
     const result = await runUpgrade({ ...options, source: "/src", images }, h.deps);
     expect(built).toEqual([{ source: "/src", images }]);
     expect(result).toMatchObject({ from: "1.2.3", to: "1.3.0" });
     expect((await readEnvironmentSettings(h.store, "staging"))?.version).toBe("1.3.0");
+  });
+
+  // Task 10: the image and the hash of the boot script it carries are written together, so a hand-supplied worker image brings its hash.
+  it("refuses a hand-supplied worker image without --boot-stage2-sha256, before it reads or deploys anything", async () => {
+    const h = await cdk({ cliVersion: undefined, loadRelease: async () => { throw new Error("test setup: nothing may be loaded"); } });
+    const images = { worker: `123456789012.dkr.ecr.us-east-1.amazonaws.com/w@sha256:${"d".repeat(64)}` };
+    await expect(runUpgrade({ ...options, source: "/src", images }, h.deps)).rejects.toThrow("--worker-image needs --boot-stage2-sha256");
+    await expect(runUpgrade({ ...options, source: "/src", images: { ...images, bootStage2Sha256: "nope" } }, h.deps)).rejects.toThrow("--boot-stage2-sha256 must be 64 lower-case hex digits");
+    expect(h.deployer.deployed).toEqual([]);
+    expect(h.prepared).toEqual([]);
   });
 
   it("with --to or --release, loads that release as before (prepare then checks it is the source's tag)", async () => {
@@ -614,7 +624,7 @@ describe("the agentx upgrade command", () => {
   });
 
   it("passes --source and the image flags to the source release of a source-built CLI's cdk upgrade (issue 152)", async () => {
-    const built: Array<{ source: string; images?: { worker?: string; slack?: string } }> = [];
+    const built: Array<{ source: string; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }> = [];
     const h = await harness({ cliVersion: undefined, sourceRelease: async (input) => { built.push(input); return release(); } });
     await writeEnvironmentSettings(h.store, { ...INSTALLED, engine: "cdk" });
     const io = capture();

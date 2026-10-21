@@ -201,10 +201,16 @@ import {
   type ModelSelection,
   type ProjectModelOptions,
   GithubOwnerSchema,
+  EgressApproveBodySchema,
+  EgressRejectBodySchema,
   OrgIdSchema,
+  OrgRoleSchema,
   type OrgRecord,
+  type OrgRole,
   PROJECT_REVISION_SK_PREFIX,
+  orgMemberKey,
   orgProjectCatalogKey,
+  projectMetaKey,
   projectMemberKey,
   projectSetupApprovalKey,
   slackBindingKey,
@@ -214,6 +220,9 @@ import {
   projectRevisionKey,
   projectSelectionKey,
   singleOrgIdForEnv,
+  type EgressDecisionResponse,
+  type EgressOwner,
+  type EgressPendingResponse,
   type OrgId,
   type ChannelMembersRequest,
   isAdminChangePressEvent,
@@ -232,6 +241,7 @@ import {
   ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, ProjectSetupRunnerEnvironmentSchema, ProjectSetupRunnerToolchainSchema,
   projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey,
   WorkerInvocationSchema,
+  workerProjectDefinition,
   workflowPublicationContext,
   workflowPublicationContextDigest,
   PER_TASK_BUDGET_USD,
@@ -262,7 +272,10 @@ import { attributionDroppedLog, callConnector, connectorCatalogKey, discoverConn
 import { resolveConnectors, BUILT_IN_CONNECTOR_TYPES, type ConnectorType, type ConnectorTypeContext, type ResolvedConnector } from "./connector-types.js";
 import { CredentialRegistry, secretsManagerSource, type ConnectorCredentials, type ConnectorCredentialsConfiguration } from "./credentials.js";
 import { developerTokenVerifier } from "../developer/verify-token.js";
-import type { DeveloperRecord } from "../developer/store.js";
+import { DeveloperSignInStore, type DeveloperRecord } from "../developer/store.js";
+import { startGithubConnect, type GithubConnectionDependencies } from "../org/github-connection.js";
+import { unlockTrial } from "../org/trial.js";
+import { isGithubInstallPath, routeGithubInstall } from "./github-install-web.js";
 import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, readDecisionDetail } from "../developer/owner-answers.js";
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
 import { loadWorkflowDocument, readObjectText as readStoredText, shortenMarkdown } from "../developer/plan-artifacts.js";
@@ -273,6 +286,7 @@ import { approvedFeedbackFixes, withFeedbackFixes, withStatusLines } from "../de
 import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, requireAllowedGithubOwner, type CloudProjectDefaults, type CreateProjectInput } from "../org/cloud-projects.js";
 import { installEnvironmentName, orgResolverFromEnvironment, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
 import { OrgStore } from "../org/store.js";
+import { decideEgressDomain, listPendingEgress, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import { requireProject } from "./project-records.js";
 import { admitProjectSetupRuntime, projectSetupBindingDigest, projectSetupRuntimeKey, ProjectSetupRuntimeRecordSchema } from "./project-setup-runtime-catalog.js";
 import { projectSetupTerminalAuthorityChecks } from "./project-setup-terminal-conditions.js";
@@ -289,6 +303,7 @@ import {
   type CallbackClaims, type OperationRecord,
 } from "./cancellation.js";
 import { requireCreatorStillMember, requireWorkspaceCreatorStillMember, type CreatorCheckDependencies } from "../developer/creator-member.js";
+import { requireNewWorkAllowed } from "../developer/project-roles.js";
 import { aiToolTurn, completedTurn, developerFooter, E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON, githubWorkflowPullRequestKey, inertName, OUTCOME, partyOfTask, taskKey, taskOwnerKey, taskOwnerSubject, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type GithubWorkflowPullRequestRecord, type StoredEvent } from "../developer/task-records.js";
 import { readWorkspaceLimits } from "../developer/limits.js";
 import { WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem, type WorkflowDispatchRecord, type WorkflowE2EReadinessMarker, AWS_TEMPORARY_MESSAGE, GATED_TASK_PULL_REQUEST_ACTION_REFUSAL, GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, UNEXPECTED_REQUEST_MESSAGE, hashJson, isConditional, isTemporaryAwsError, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, planDocumentInstructions, workerPrompt } from "./broker-shared.js";
@@ -304,7 +319,7 @@ import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { admitSpend, changeBudgets, keyIdOf, mintCap, mintKeyHealing, recordMintedKey, type OrgBudgetSettings } from "../org/budget.js";
-import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
+import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import { ADMISSION_REFUSALS, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
@@ -451,13 +466,15 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "appSlug" | "oauthClient" | "installation" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
   projectSetupRuntimeCatalogId?: string;
   /** Separate server-selected namespace for the already qualified portable feature verifier. */
   e2eFeatureRuntimeCatalogId?: string;
+  /** The fetch the GitHub install flow's user-token calls (github.com and api.github.com) go through; the global fetch when absent. */
+  githubFetch?: typeof fetch;
   /** Reads the GitHub webhook HMAC key from the configured GitHub App secret; `refresh` asks for a fresh read of the secret. */
   githubWebhookSecret?: (options?: { refresh?: boolean }) => Promise<string>;
   /** How long a PR description update (D2) may take before it gives up without writing; 5 seconds when absent. */
@@ -482,6 +499,11 @@ interface AwsBrokerDependencies {
    * subnets, and the built-in GitHub App). Absent, POST /v1/dev/projects answers RUNTIME_UNAVAILABLE.
    */
   cloudProjects?: CloudProjectDefaults;
+  /**
+   * Plan 2, Task 18: pushes the approved egress domains to the cell's DNS firewall (Task 19's `syncCellAllowList`). Absent, a change waits
+   * for the scheduled sync and the person who made it is told it will apply within 5 minutes.
+   */
+  egressDomainsSync?: EgressDomainsDependencies["sync"];
   /** Which org a caller belongs to (ruling R1). Absent means every caller belongs to the install's single org (ruling R3). */
   orgResolver?: OrgResolver;
   /** The install's environment name, which its single org id derives from; defaults to the developer sign-in's, then AGENTX_ENV, then "default". */
@@ -645,6 +667,72 @@ async function putOrgGithubOwner(dependencies: AwsBrokerDependencies, identity: 
   await orgStoreOf(dependencies).setGithubOwner(parsed.data.orgId, parsed.data.githubOwner);
   console.log(JSON.stringify({ component: "broker", event: "admin.org_github_owner_changed", orgId: parsed.data.orgId, githubOwner: parsed.data.githubOwner }));
   return { org: { orgId: parsed.data.orgId, githubOwner: parsed.data.githubOwner } };
+}
+
+function egressDepsOf(dependencies: AwsBrokerDependencies): EgressDomainsDependencies {
+  return { documentClient: dependencies.documentClient, tableName: dependencies.tableName, cloud: dependencies.cloud === true, now: () => new Date(), sync: dependencies.egressDomainsSync ?? (async () => ({ ok: false })) };
+}
+
+/**
+ * Plan 2, Task 18: `GET /v1/admin/egress/pending`. The domains waiting for Rovara staff (operators of the admin pool; on cloud they belong to
+ * no org, ruling R6), from every org, oldest first, with the org's name and who asked.
+ */
+async function listEgressPending(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity): Promise<EgressPendingResponse> {
+  if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+  const orgs = orgStoreOf(dependencies);
+  const developers = dependencies.developer === undefined ? undefined
+    : new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
+  const orgNames = new Map<string, string>();
+  const people = new Map<string, string>();
+  const pending: EgressPendingResponse["pending"] = [];
+  for (const row of await listPendingEgress(dependencies)) {
+    if (!orgNames.has(row.orgId)) orgNames.set(row.orgId, (await orgs.getOrg(row.orgId))?.name ?? "Unknown");
+    if (!people.has(row.requestedBy)) people.set(row.requestedBy, (await developers?.getDeveloper(row.requestedBy))?.displayName ?? "Unknown");
+    pending.push({ orgId: row.orgId, orgName: orgNames.get(row.orgId)!, owner: row.owner, domain: row.domain, requestedAt: row.requestedAt, requestedBy: { developerId: row.requestedBy, name: people.get(row.requestedBy)! } });
+  }
+  return { pending };
+}
+
+/**
+ * Plan 2, Task 18: `POST /v1/admin/egress/approve` and `/reject`. An operator decides one pending domain of one owner of one org; the audit
+ * item names the operator. A domain that is not pending (decided already, removed, or never asked for) is CONFIG_INVALID.
+ */
+async function decideEgress(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, decision: "approved" | "rejected", body: unknown): Promise<EgressDecisionResponse & { warning?: string }> {
+  if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+  const parsed: z.ZodSafeParseResult<{ orgId: OrgId; owner: EgressOwner; domain: string; reason?: string }> = decision === "approved"
+    ? EgressApproveBodySchema.safeParse(body) : EgressRejectBodySchema.safeParse(body);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
+  }
+  const { orgId, owner, domain, reason } = parsed.data;
+  const { warning } = await decideEgressDomain(egressDepsOf(dependencies), { orgId, owner, domain, decision, operatorId: identity.subject, ...(reason === undefined ? {} : { reason }) });
+  return { orgId, owner, domain, status: decision, ...(warning === undefined ? {} : { warning }) };
+}
+
+/**
+ * Plan 2, Task 13: what connecting GitHub to an org needs. Undefined without developer sign-in, and where the GitHub App provider cannot
+ * say its slug, OAuth client and installations (a test double without them). `cloud` is the install's own setting: whether an OAuth client
+ * exists decides nothing about which flow an install uses.
+ */
+function githubConnectionOf(dependencies: AwsBrokerDependencies): GithubConnectionDependencies | undefined {
+  const app = dependencies.githubPullRequests;
+  if (dependencies.developer === undefined || app.appSlug === undefined || app.oauthClient === undefined || app.installation === undefined) return undefined;
+  const signIn = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
+  return {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, cloud: dependencies.cloud === true,
+    origin: new URL(dependencies.developer.issuer).origin,
+    app: { appSlug: () => app.appSlug!(), oauthClient: () => app.oauthClient!(), installation: (id) => app.installation!(id) },
+    identities: signIn, orgs: orgStoreOf(dependencies),
+    unlockTrial: (input) => unlockTrial({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, input),
+    ...(dependencies.githubFetch === undefined ? {} : { fetch: dependencies.githubFetch }),
+  };
+}
+
+/** `POST /v1/app/github/connect`'s dependency for the developer routes; absent where there is no connection to offer. */
+function githubConnectRoute(dependencies: AwsBrokerDependencies): { githubConnect?: { start: (caller: DeveloperCaller) => Promise<{ installUrl: string; expiresAt: string }> } } {
+  const connection = githubConnectionOf(dependencies);
+  return connection === undefined ? {} : { githubConnect: { start: (caller) => startGithubConnect(connection, caller) } };
 }
 
 function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">): OrgStore {
@@ -1130,6 +1218,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // The /v1/dev route has no API Gateway authorizer, so what it carries goes to the developer API or nowhere.
       if (event.routeKey === DEVELOPER_ROUTE_KEY && !url.pathname.startsWith("/v1/dev/")) throw agentXError("NOT_FOUND", "route not found");
       if (event.routeKey === APP_ROUTE_KEY && !url.pathname.startsWith("/v1/app/")) throw agentXError("NOT_FOUND", "route not found");
+      // Plan 2, Task 13: the GitHub install flow's callback and the confirm page's form post. No token here: see github-install-web.ts.
+      if (isGithubInstallPath(url.pathname)) return await routeGithubInstall(githubConnectionOf(dependencies), request, url);
       if (url.pathname === "/v1/github/webhooks") {
         if (request.method !== "POST") return json({ error: { code: "NOT_FOUND", message: "route not found" } }, request.requestId, 404);
         if (request.body === undefined || dependencies.githubWebhookSecret === undefined) {
@@ -1306,11 +1396,20 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         const answer = await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),
+          ...(dependencies.egressDomainsSync === undefined ? {} : { egressSync: dependencies.egressDomainsSync }),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
           workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
           registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : url => dependencies.githubPullRequests.getRepositoryIdentity!(url),
           createProject: (caller, input, org) => createCloudProject(dependencies, caller, input, org),
+          ...githubConnectRoute(dependencies),
+          projectSettings: {
+            registerRevision: async (actor, input) => { await registerProjectFor(dependencies, actor, input, { creatorMembership: "none" }); },
+            ...(dependencies.cloudProjects === undefined ? {} : { githubCredentialRef: dependencies.cloudProjects.githubCredentialRef }),
+            ...(dependencies.githubPullRequests.getRepositoryIdentity === undefined ? {} : {
+              repositoryIdentity: (url: string) => dependencies.githubPullRequests.getRepositoryIdentity!(url),
+            }),
+          },
           refreshTaskFeedback: taskId => refreshTaskFeedbackForOwnerDecision(dependencies, taskId) }, request, url);
         return answer instanceof StatusReply ? json(answer.body, request.requestId, answer.statusCode) : json(answer, request.requestId);
       }
@@ -1486,6 +1585,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Ruling R55: an operator names the one GitHub owner a cloud org may create projects for.
       if (request.method === "PUT" && url.pathname === "/v1/admin/org/github-owner") {
         return json(await putOrgGithubOwner(dependencies, identity, body), request.requestId);
+      }
+      // Plan 2, Task 18: Rovara staff decide the domains projects ask for.
+      if (request.method === "GET" && url.pathname === "/v1/admin/egress/pending") {
+        return json(await listEgressPending(dependencies, identity), request.requestId);
+      }
+      if (request.method === "POST" && (url.pathname === "/v1/admin/egress/approve" || url.pathname === "/v1/admin/egress/reject")) {
+        return json(await decideEgress(dependencies, identity, url.pathname.endsWith("/approve") ? "approved" : "rejected", body), request.requestId);
       }
       if (request.method === "GET" && url.pathname === "/v1/admin/turns") {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
@@ -1844,7 +1950,7 @@ async function routeWorkspaceRequest(
 async function authorizeWorkspaceConnectors(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, workspaceId: string) {
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
   if (identity.slack && identity.slack.binding.projectName !== workspace.projectName) throw agentXError("FORBIDDEN", "Slack channel is no longer bound to this project");
-  await requireMembership(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName);
+  await requireProjectAuthority(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName, { taskCreator: () => workspaceTaskOwner(dependencies, workspace.id) });
   // The policy and the scopes it may address come from the project's latest registered revision,
   // so enabling, narrowing or revoking a tool reaches an existing thread at once.
   const project = await requireLatestProject(dependencies, requireOrgId(identity.orgId), workspace.projectName);
@@ -1967,18 +2073,28 @@ async function registerProject(
 
 /**
  * The registration itself, for any actor in any org; the caller has already decided that the actor may register. `creatorMembership`
- * says what the actor gets on the project: an administrator row (the admin route), or none, when the caller grants access itself
- * (a cloud org's owner or admin, ruling R55, is granted like any developer).
+ * says what the actor gets on the project: an administrator row (the admin route), a developer grant written in the same transaction,
+ * or none, when the caller grants access itself (a cloud org's owner or admin, ruling R55, is granted like any developer).
+ *
+ * Plan 2, Task 11: a project's META item (status, description, who created it and when) is written in the transaction that registers its
+ * first revision. With `requireNewName` the name must be new in the org: a catalog entry already there (an archived project, or one from
+ * before META existed) is PROJECT_NAME_TAKEN, and so is a transaction whose revision, META or catalog condition fails (a TransactionConflict, or a failed setup row, is not: those
+ * answer as a retryable conflict and as the admission's own error). Without it, registration stays
+ * idempotent and writes META only for a project new to the org, leaving a project that predates META without one (it reads as active,
+ * created by "unknown").
  */
-async function registerProjectFor(
+export async function registerProjectFor(
   dependencies: AwsBrokerDependencies,
   actor: RegistrationActor,
   value: unknown,
-  options: { creatorMembership: "administrator" | "none"; checked?: { preflight?: PreflightOutcome } },
+  options: { creatorMembership: "administrator" | "developer" | "none"; requireNewName?: boolean; description?: string; checked?: { preflight?: PreflightOutcome } },
 ): Promise<RegistrationResult> {
   const checked = options.checked;
   const orgId = actor.orgId;
   const { definition, runtimeBinding, wantsPreflight, setupApproval } = parseRegistrationInput(value);
+  if (options.requireNewName === true && await getItem(dependencies, orgProjectCatalogKey(orgId, definition.name)) !== undefined) {
+    throw agentXError("PROJECT_NAME_TAKEN", `a project named ${definition.name} already exists in this organization; choose another name`);
+  }
   let setupRuntimeAdmission: ReturnType<typeof admitProjectSetupRuntime>;
   let setupExecutionCreated = false;
   let setupApprovalBinding: RegisteredProjectRecord["setupApproval"];
@@ -2106,7 +2222,14 @@ async function registerProjectFor(
     registeredAt: now,
     ...(setupApprovalBinding === undefined ? {} : { setupApproval: setupApprovalBinding }),
   };
-  const membership = options.creatorMembership === "administrator" ? membershipRecord(orgId, actor.ownerKey, definition.name, "administrator") : undefined;
+  const membership = options.creatorMembership === "none" ? undefined
+    : membershipRecord(orgId, actor.ownerKey, definition.name, options.creatorMembership === "administrator" ? "administrator" : "developer");
+  const metaKey = projectMetaKey(orgId, definition.name);
+  const metaItem = {
+    ...metaKey, entityType: "PROJECT_META", name: definition.name, status: "active",
+    ...(options.description === undefined ? {} : { description: options.description }),
+    createdAt: now, createdBy: actor.ownerKey,
+  };
   const setupAdmissionRows = setupRuntimeAdmission && setupApprovalBinding?.decision === "approve" && definition.e2e !== undefined
     ? await createProjectSetupAdmissionRows(dependencies, actor, record, setupApprovalBinding, setupRuntimeAdmission)
     : undefined;
@@ -2121,6 +2244,16 @@ async function registerProjectFor(
       await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
       { Put: { TableName: dependencies.tableName, Item: record, ConditionExpression: "attribute_not_exists(pk)" } },
       ...(membership === undefined ? [] : [{ Put: { TableName: dependencies.tableName, Item: membership } }]),
+      // Only a project new to the org gets a META item; a revision of an existing one leaves its META alone.
+      ...(options.requireNewName === true ? [{ Put: { TableName: dependencies.tableName, Item: metaItem, ConditionExpression: "attribute_not_exists(pk)" } }]
+        : snapshot.catalog === undefined && snapshot.newestRevision === 0 ? [{ Update: {
+          TableName: dependencies.tableName, Key: metaKey,
+          UpdateExpression: "SET entityType = if_not_exists(entityType, :entity), #name = if_not_exists(#name, :name), #status = if_not_exists(#status, :status), createdAt = if_not_exists(createdAt, :now), createdBy = if_not_exists(createdBy, :by)"
+            + (options.description === undefined ? "" : ", description = if_not_exists(description, :description)"),
+          ExpressionAttributeNames: { "#name": "name", "#status": "status" },
+          ExpressionAttributeValues: { ":entity": "PROJECT_META", ":name": definition.name, ":status": "active", ":now": now, ":by": actor.ownerKey,
+            ...(options.description === undefined ? {} : { ":description": options.description }) },
+        } }] : []),
       // Spec 025 A3: the admin project list reads this row instead of scanning the table.
       ...(updateCatalog ? [{ Update: {
         TableName: dependencies.tableName,
@@ -2138,9 +2271,28 @@ async function registerProjectFor(
       return respond(withoutKeys(record), false, preflight);
     } catch (error) {
       if (!isConditional(error)) throw error;
+      // Another request took the name between the read above and this commit.
+      if (options.requireNewName === true) {
+        const reasons = (error as { CancellationReasons?: Array<{ Code?: string } | undefined> }).CancellationReasons;
+        const failed = (index: number) => reasons?.[index]?.Code === "ConditionalCheckFailed";
+        // The name is taken only when the revision, META or catalog item's own condition failed. Items sit in this order: revision,
+        // the grant (if any), META, the catalog update (if any), then the setup rows.
+        const metaIndex = membership === undefined ? 1 : 2;
+        if (failed(0) || failed(metaIndex) || (updateCatalog && failed(metaIndex + 1))) {
+          throw agentXError("PROJECT_NAME_TAKEN", `a project named ${definition.name} already exists in this organization; choose another name`);
+        }
+        // A transaction that only met another in flight says nothing about the name: the caller tries again.
+        if (reasons?.some((reason) => reason?.Code === "TransactionConflict")) {
+          throw agentXError("RUNTIME_UNAVAILABLE", "another change to this organization's projects was in progress; try again in a moment");
+        }
+        // Anything else (a setup row's condition) is handled as it is without requireNewName, below.
+      }
       // A same-revision registration may have won concurrently. Validate the immutable record and
       // catalog before returning duplicate success; otherwise retry only a catalog/history advance.
       const winner = await getItem<RegisteredProjectRecord>(dependencies, key);
+      if (winner !== undefined && options.requireNewName === true) {
+        throw agentXError("PROJECT_NAME_TAKEN", `a project named ${definition.name} already exists in this organization; choose another name`);
+      }
       if (winner !== undefined) {
         if (!sameJsonContent(winner.definition, definition) || !sameJsonContent(winner.runtimeBinding, runtimeBinding)
           || !sameJsonContent(winner.setupApproval, setupApprovalBinding)) {
@@ -2618,7 +2770,7 @@ async function newWorkspacePreparation(
     projectRevision,
     callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence),
     payload: {
-      project: project.definition,
+      project: workerProjectDefinition(project.definition),
       repositoryGrant: issueRepositoryGrant(
         dependencies,
         project,
@@ -3339,6 +3491,9 @@ async function ensureThreadWorkspace(
 
   // New threads use the latest revision; an existing thread keeps the revision its workspace was prepared with.
   const project = await requireLatestProject(dependencies, requireOrgId(identity.orgId), slack.binding.projectName);
+  // Plan 2, Task 11: a new thread is new work, so an archived project refuses it. A person in the bound channel is a contributor;
+  // threads that already have a workspace were answered above and keep going.
+  await requireNewWorkAllowed(dependencies, requireOrgId(identity.orgId), slack.binding.projectName, "contributor", "task");
   if (lazyPreparation) {
     return createUnpreparedThreadWorkspace(dependencies, identity, requestId, project, include, includeSettingsRevision);
   }
@@ -3576,7 +3731,7 @@ async function startThreadPreparation(
     projectRevision,
     callbackCapability: issueCapability(dependencies, workspace.id, operationId, fence),
     payload: {
-      project: latest.definition,
+      project: workerProjectDefinition(latest.definition),
       repositoryGrant: issueRepositoryGrant(dependencies, latest, identity.ownerKey, workspace.id, operationId),
     },
   };
@@ -4198,7 +4353,7 @@ async function retryWorkspacePreparation(
     projectRevision: workspace.projectRevision,
     callbackCapability: issueCapability(dependencies, workspace.id, operationId, fence),
     payload: {
-      project: project.definition,
+      project: workerProjectDefinition(project.definition),
       repositoryGrant: issueRepositoryGrant(
         dependencies,
         project,
@@ -4698,7 +4853,7 @@ async function acceptTask(
   assertNoUntrustedRoutingFields(value);
   const request = OperationRequestSchema.parse(value);
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
-  await requireMembership(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName);
+  await requireProjectAuthority(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName, { taskCreator: () => workspaceTaskOwner(dependencies, workspace.id) });
   const requestHash = hashJson({ conversationId: request.conversationId, prompt: request.prompt,
     ...(options.workflowReviewNote === undefined ? {} : { workflowReviewNote: options.workflowReviewNote }),
     ...(options.workflowReviewers === undefined ? {} : { workflowReviewers: options.workflowReviewers }),
@@ -4809,7 +4964,7 @@ async function acceptPullRequest(
   // Ruling R60: before any access check, so a removed creator's task says why instead of "project not found".
   await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspaceId);
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
-  await requireMembership(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName);
+  await requireProjectAuthority(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName, { taskCreator: () => workspaceTaskOwner(dependencies, workspace.id) });
   const candidate = options.workflowCandidate;
   if (candidate !== undefined && (candidate.repositoryId !== request.repository || !/^[a-f0-9]{40}$/.test(candidate.treeSha)
     || (candidate.commitSha !== undefined && !/^[a-f0-9]{40}$/.test(candidate.commitSha))
@@ -4905,7 +5060,7 @@ async function acceptPullRequest(
     callbackCapability: issueCapability(dependencies, workspaceId, operationId, fence, true),
     payload: {
       mode: "create",
-      project: project.definition,
+      project: workerProjectDefinition(project.definition),
       repository: repository.name,
       title: request.title,
       ...(body === undefined ? {} : { body }),
@@ -5001,7 +5156,7 @@ async function acceptPullRequestLifecycle(
   // Ruling R60: before any access check, as for acceptPullRequest.
   await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspaceId);
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
-  await requireMembership(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName);
+  await requireProjectAuthority(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName, { taskCreator: () => workspaceTaskOwner(dependencies, workspace.id) });
   const candidate = options.workflowCandidate;
   if (candidate !== undefined && (request.action !== "append" || !/^[a-f0-9]{64}$/.test(candidate.candidateDigest)
     || !/^[a-f0-9]{40}$/.test(candidate.treeSha) || !/^[a-f0-9]{40}$/.test(candidate.baseCommitSha) || !/^[a-f0-9]{40}$/.test(candidate.expectedHeadCommit))) {
@@ -5162,7 +5317,7 @@ async function acceptPullRequestLifecycle(
       callbackCapability: issueCapability(dependencies, workspaceId, operationId, fence, true),
       payload: {
         mode: request.action,
-        project: project.definition,
+        project: workerProjectDefinition(project.definition),
         repository: record.repository,
         title,
         body,
@@ -5238,7 +5393,7 @@ async function acceptPullRequestLifecycle(
     callbackCapability: issueCapability(dependencies, workspaceId, operationId, fence, true),
     payload: {
       action: request.action,
-      project: project.definition,
+      project: workerProjectDefinition(project.definition),
       repository: record.repository,
       pullRequestNumber: record.number,
       headBranch: record.headBranch,
@@ -7422,15 +7577,17 @@ async function workflowE2ECurrentAuthorityIsValid(
     stage = "creator-project-access";
     const creator = await getWorkflowE2ECreatorIdentity(dependencies, task.developerId);
     if (creator === undefined || creator.revoked || dependencies.developer === undefined) return reject("current-creator-identity-unavailable");
+    // The creator's live org role, read afresh on every round: an owner or admin with no grant is a maintainer (finding 5).
+    const creatorOrgMember = await readOrgMember(dependencies, orgId, task.developerId);
     let creatorAccess: Awaited<ReturnType<typeof checkProjectAccess>>;
     try {
       creatorAccess = await checkProjectAccess({ documentClient: dependencies.documentClient, tableName: dependencies.tableName,
         developer: dependencies.developer, now: Date.now },
-      { orgId, developerId: task.developerId, ...(creator.slackUserId === undefined ? {} : { slackUserId: creator.slackUserId }) }, task.project);
+      { orgId, developerId: task.developerId, orgRole: creatorOrgMember?.role ?? "member", ...(creator.slackUserId === undefined ? {} : { slackUserId: creator.slackUserId }) }, task.project);
     } catch { return reject("current-creator-project-access-unavailable"); }
     const creatorMembershipKey = projectMemberKey(orgId, task.developerId, task.project);
     const creatorMembership = await getItem<Record<string, unknown>>(dependencies, creatorMembershipKey);
-    const creatorAuthority = await workflowE2ECreatorAuthorityProof(dependencies, task, creatorMembership, creatorAccess);
+    const creatorAuthority = await workflowE2ECreatorAuthorityProof(dependencies, task, creatorMembership, creatorAccess, creatorOrgMember);
     if (creatorAuthority === undefined || canonicalJson(admission.creatorAuthority) !== canonicalJson(creatorAuthority)) {
       return reject("creator-membership-proof-changed-or-unavailable");
     }
@@ -7521,6 +7678,7 @@ async function workflowE2ECurrentAuthorityIsValid(
       ExpressionAttributeValues: { ":entity": "MEMBERSHIP", ":ownerKey": task.developerId, ":project": task.project,
         ":role": creatorAuthority.role, ":grantId": creatorAuthority.grantId } } });
     }
+    if (creatorAuthority.kind === "org-role") authorityChecks.push(orgRoleAuthorityCheck(dependencies.tableName, creatorAuthority));
     if (creatorAccess.access === "channel") {
       const teamId = dependencies.developer.slackTeamId;
       if (teamId === undefined || creatorAccess.channelIds.length === 0) return reject("current-channel-access-proof-unavailable");
@@ -7547,12 +7705,19 @@ async function workflowE2ECreatorAuthorityProof(
   task: DeveloperTaskRecord,
   membership: Record<string, unknown> | undefined,
   access: Awaited<ReturnType<typeof checkProjectAccess>>,
+  orgMember: { role: OrgRole; memberUpdatedAt: string } | undefined,
 ): Promise<({ kind: "direct-membership"; developerId: string; project: string; role: "developer" | "administrator"; grantId: string }
+  | { kind: "org-role"; developerId: string; project: string; orgId: OrgId; role: "owner" | "admin"; memberUpdatedAt: string }
   | { kind: "channel-access"; developerId: string; project: string; teamId: string; channelIds: string[]; bindings: Array<{ channelId: string; updatedAt: string }> }) | undefined> {
   if (membership?.entityType === "MEMBERSHIP" && membership.ownerKey === task.developerId && membership.projectName === task.project
     && (membership.role === "developer" || membership.role === "administrator") && typeof membership.grantId === "string"
     && /^[0-9a-f-]{36}$/iu.test(membership.grantId)) {
     return { kind: "direct-membership", developerId: task.developerId, project: task.project, role: membership.role, grantId: membership.grantId };
+  }
+  // No grant, but a live org owner or admin, who maintains every project in the org. The record is the one read for this round.
+  if (orgMember !== undefined && (orgMember.role === "owner" || orgMember.role === "admin")) {
+    return { kind: "org-role", developerId: task.developerId, project: task.project, orgId: await orgOfRecord(dependencies, task),
+      role: orgMember.role, memberUpdatedAt: orgMember.memberUpdatedAt };
   }
   if (access.access !== "channel" || dependencies.developer?.slackTeamId === undefined || access.channelIds.length === 0) return undefined;
   const teamId = dependencies.developer.slackTeamId;
@@ -9602,11 +9767,22 @@ async function blockWorkflowE2EReadiness(dependencies: AwsBrokerDependencies, it
 }
 
 /**
+ * The transaction check that keeps an `org-role` proof honest at commit: the creator's member record must still name the role and the
+ * time the proof saw. A demotion, or a role changed and changed back, fails it.
+ */
+export function orgRoleAuthorityCheck(tableName: string, proof: { developerId: string; orgId: OrgId; role: "owner" | "admin"; memberUpdatedAt: string }): Record<string, unknown> {
+  return { ConditionCheck: { TableName: tableName, Key: orgMemberKey(proof.orgId, proof.developerId),
+    ConditionExpression: "developerId = :developer AND #role = :role AND (roleUpdatedAt = :updatedAt OR (attribute_not_exists(roleUpdatedAt) AND joinedAt = :updatedAt))",
+    ExpressionAttributeNames: { "#role": "role" },
+    ExpressionAttributeValues: { ":developer": proof.developerId, ":role": proof.role, ":updatedAt": proof.memberUpdatedAt } } };
+}
+
+/**
  * Required native E2E rounds are admitted only after the existing EC2 outbox path reports the exact
  * READY session generation. The readiness operation has no feature payload and never reaches a worker.
  */
 /** Rechecks the original task creator's live project grant before warm-up and round admission. */
-async function requireWorkflowE2ECreatorAuthority(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord) {
+export async function requireWorkflowE2ECreatorAuthority(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord) {
   const creatorRecord = await getWorkflowE2ECreatorIdentity(dependencies, task.developerId);
   if (creatorRecord?.revoked === true) {
     throw agentXError("TASK_ACCESS_DENIED", "the original task creator's account has been revoked");
@@ -9615,11 +9791,13 @@ async function requireWorkflowE2ECreatorAuthority(dependencies: AwsBrokerDepende
     throw agentXError("RUNTIME_UNAVAILABLE", "the original creator identity is unavailable for this E2E round");
   }
   const orgId = await orgOfRecord(dependencies, task);
+  // The creator's live org role, read afresh on every round (finding 5): a demoted or removed creator loses an org-role proof here.
+  const creatorOrgMember = await readOrgMember(dependencies, orgId, task.developerId);
   let creatorAccess: Awaited<ReturnType<typeof checkProjectAccess>>;
   try {
     creatorAccess = await checkProjectAccess({ documentClient: dependencies.documentClient, tableName: dependencies.tableName,
       developer: dependencies.developer, now: Date.now },
-    { orgId, developerId: task.developerId, ...(creatorRecord.slackUserId === undefined ? {} : { slackUserId: creatorRecord.slackUserId }) }, task.project);
+    { orgId, developerId: task.developerId, orgRole: creatorOrgMember?.role ?? "member", ...(creatorRecord.slackUserId === undefined ? {} : { slackUserId: creatorRecord.slackUserId }) }, task.project);
   } catch (error) {
     if (error instanceof AgentXError && error.code === "PROJECT_ACCESS_DENIED") {
       throw agentXError("TASK_ACCESS_DENIED", "the original creator no longer has current access to this task's project");
@@ -9627,7 +9805,7 @@ async function requireWorkflowE2ECreatorAuthority(dependencies: AwsBrokerDepende
     throw agentXError("RUNTIME_UNAVAILABLE", "the original creator's current project access is unavailable");
   }
   const creatorMembership = await getItem<Record<string, unknown>>(dependencies, projectMemberKey(orgId, task.developerId, task.project));
-  const creatorAuthority = await workflowE2ECreatorAuthorityProof(dependencies, task, creatorMembership, creatorAccess);
+  const creatorAuthority = await workflowE2ECreatorAuthorityProof(dependencies, task, creatorMembership, creatorAccess, creatorOrgMember);
   if (creatorAuthority === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the creator has no versioned direct or locally bound channel access proof for this E2E round");
   return creatorAuthority;
 }
@@ -11501,7 +11679,7 @@ async function getAuthorizedOperation(
   operationId: string,
 ): Promise<Operation> {
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
-  await requireMembership(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName);
+  await requireProjectAuthority(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName, { taskCreator: () => workspaceTaskOwner(dependencies, workspace.id) });
   const operation = await requireOperation(dependencies, workspaceId, operationId);
   // D22: from a shared thread, the developer's own run (its status, result and events) answers
   // exactly as an unknown operation does, so it cannot be probed. Channel operations stay readable.
@@ -11750,6 +11928,42 @@ async function requireMembership(
   const membership = await getMembership(dependencies, orgId, ownerKey, projectName);
   if (!membership) throw agentXError("NOT_FOUND", "project not found");
   return membership;
+}
+
+/**
+ * What authorizes work on a project's task paths (`acceptTask`, both pull-request accepts, `getAuthorizedOperation` and the workspace
+ * connectors): a `MEMBERSHIP` grant (today's behavior), or else a live org owner or admin, who maintains every project in their org
+ * (Plan 2, Task 11, I4). The org role is read consistently from the member record on every call, but that branch answers only when no
+ * grant row exists: a task identity always has its per-task MEMBERSHIP row (newWorkspacePreparation), so a demotion does not stop a
+ * running task here. New work (checkProjectAccess) and each required-E2E round (the org-role proof) are where a demotion bites. `taskCreator` names the developer whose task this workspace runs, when it runs one: the record read is theirs, and only for
+ * them does a cloud install answer a missing record with the removal's words. Anything else with no grant is NOT_FOUND "project not
+ * found", exactly as before, on every install.
+ */
+export async function requireProjectAuthority(
+  dependencies: AwsBrokerDependencies,
+  orgId: OrgId,
+  ownerKey: string,
+  projectName: string,
+  options: { taskCreator?: () => Promise<string | undefined> } = {},
+): Promise<{ kind: "grant"; membership: MembershipRecord } | { kind: "org-role"; role: "owner" | "admin" }> {
+  const membership = await getMembership(dependencies, orgId, ownerKey, projectName);
+  if (membership) return { kind: "grant", membership };
+  const creator = await options.taskCreator?.();
+  const member = await readOrgMember(dependencies, orgId, creator ?? ownerKey);
+  if (member?.role === "owner" || member?.role === "admin") return { kind: "org-role", role: member.role };
+  // R60 has already ended the task at its call sites; this only keeps the words right when the creator's record is gone.
+  if (member === undefined && creator !== undefined && dependencies.cloud === true) {
+    throw agentXError("TASK_ACCESS_DENIED", "you are no longer a member of this organization");
+  }
+  throw agentXError("NOT_FOUND", "project not found");
+}
+
+/** A developer's live org member record (a consistent read), or undefined when they have none; the role is the one on record. */
+async function readOrgMember(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">, orgId: OrgId, developerId: string): Promise<{ role: OrgRole; memberUpdatedAt: string } | undefined> {
+  const record = await getItem<{ role?: unknown; roleUpdatedAt?: unknown; joinedAt?: unknown }>(dependencies, orgMemberKey(orgId, developerId));
+  const role = OrgRoleSchema.safeParse(record?.role);
+  if (record === undefined || !role.success) return undefined;
+  return { role: role.data, memberUpdatedAt: typeof record.roleUpdatedAt === "string" ? record.roleUpdatedAt : typeof record.joinedAt === "string" ? record.joinedAt : "" };
 }
 
 async function getMembership(dependencies: AwsBrokerDependencies, orgId: OrgId, ownerKey: string, projectName: string) {
@@ -12241,6 +12455,7 @@ function developerConfiguration(inviteTaskPerson?: DeveloperApiConfiguration["in
     slackAuthCheck: slackAuthCheckThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     endDeveloperSessions: endDeveloperSessionsThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     unlinkIdentity: unlinkIdentityThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
+    startIdentityLink: startIdentityLinkThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     channelByName: channelByNameThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     // D17: kept for the Lambda's lifetime; an unknown kid refetches at most once a minute.
     verifyAccessToken: developerTokenVerifier({

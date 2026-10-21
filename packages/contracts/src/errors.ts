@@ -3,6 +3,7 @@ import { z } from "zod";
 export const AgentXErrorCodeSchema = z.enum([
   "CONFIG_INVALID",
   "AUTH_REQUIRED",
+  "REAUTH_REQUIRED",
   "FORBIDDEN",
   "NOT_FOUND",
   "PROJECT_REVISION_MISMATCH",
@@ -51,12 +52,19 @@ export const AgentXErrorCodeSchema = z.enum([
   "AGENT_BUDGET_REQUIRED",
   "TEST_ALLOWANCE_USED",
   "APPROVAL_CLOSED",
+  "PROJECT_NAME_TAKEN",
+  "PROJECT_ARCHIVED",
+  "GITHUB_NOT_CONNECTED",
+  "GITHUB_INSTALLATION_TAKEN",
 ]);
 
 export type AgentXErrorCode = z.infer<typeof AgentXErrorCodeSchema>;
 
 /** What INVITE_WRONG_EMAIL (409) says: an email-targeted invite was presented by a sign-in whose verified email is another address. */
 export const INVITE_WRONG_EMAIL_MESSAGE = "This invite is for a different email address. Sign in with the address it was sent to, or ask for an invite to yours.";
+
+/** What GITHUB_INSTALLATION_TAKEN (409) says: the GitHub account's installation is bound to another Rovara organization. */
+export const GITHUB_INSTALLATION_TAKEN_MESSAGE = "This GitHub account is already connected to another Rovara organization.";
 
 export class AgentXError extends Error {
   constructor(
@@ -71,7 +79,8 @@ export class AgentXError extends Error {
 
 export function errorStatus(code: AgentXErrorCode): number {
   if (code === "AUTH_REQUIRED") return 401;
-  if (code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED" || code === "AGENT_NOT_ON_PROJECT" || code === "AGENT_TOOL_NOT_GRANTED" || code === "MODEL_NOT_ALLOWED" || code === "REMOVED_FROM_ORG") return 403;
+  // The sign-in is valid but too old, or the wrong kind, for this change: 403, so a client does not treat it as a sign-in that ended.
+  if (code === "REAUTH_REQUIRED" || code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED" || code === "AGENT_NOT_ON_PROJECT" || code === "AGENT_TOOL_NOT_GRANTED" || code === "MODEL_NOT_ALLOWED" || code === "REMOVED_FROM_ORG" || code === "GITHUB_NOT_CONNECTED") return 403;
   if (code === "NOT_FOUND" || code === "PROJECT_NOT_FOUND" || code === "TASK_NOT_FOUND") return 404;
   if (code === "BUDGET_EXCEEDED" || code === "ORG_BUDGET_EXCEEDED" || code === "MACHINE_TIME_EXCEEDED" || code === "PROJECT_BUDGET_EXCEEDED" || code === "AGENT_BUDGET_EXCEEDED" || code === "TEST_ALLOWANCE_USED") return 402;
   if (code === "CONFIG_INVALID") return 400;

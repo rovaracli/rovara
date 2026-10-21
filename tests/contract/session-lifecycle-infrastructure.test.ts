@@ -48,6 +48,8 @@ describe("EC2 session lifecycle infrastructure (issue #83)", () => {
     const bundles = readdirSync(assemblyDir).filter((name) => name.startsWith("asset.") && existsSync(join(assemblyDir, name, "index.js")));
     const withBootScript = bundles.filter((name) => existsSync(join(assemblyDir, name, "boot.sh")));
     expect(withBootScript).toHaveLength(1);
+    // Task 10: the legacy deployment's single-file boot is bundled beside it, for the function to render when no model proxy is required.
+    expect(existsSync(join(assemblyDir, withBootScript[0]!, "boot-legacy.sh"))).toBe(true);
   }, 240_000);
 
   it("lets the step Lambda read only the worker settings and the signing key's public key", () => {

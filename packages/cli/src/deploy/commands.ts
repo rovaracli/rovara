@@ -156,11 +156,12 @@ export function deployIdentityAnswers(identity: z.infer<typeof IdentityAnswersSc
 }
 
 /** A parsed images answer as `DeployAnswers["images"]`, or undefined when there is none. */
-export function deployImagesAnswers(images: { worker?: string | undefined; slack?: string | undefined } | undefined): DeployAnswers["images"] {
+export function deployImagesAnswers(images: { worker?: string | undefined; slack?: string | undefined; bootStage2Sha256?: string | undefined } | undefined): DeployAnswers["images"] {
   if (images === undefined) return undefined;
   return {
     ...(images.worker === undefined ? {} : { worker: images.worker }),
     ...(images.slack === undefined ? {} : { slack: images.slack }),
+    ...(images.bootStage2Sha256 === undefined ? {} : { bootStage2Sha256: images.bootStage2Sha256 }),
   };
 }
 

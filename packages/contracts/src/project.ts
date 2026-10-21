@@ -7,6 +7,7 @@ import type { GitHubConnectorConfig } from "./connectors.js";
 import type { GitHubMcpPolicy } from "./github-mcp.js";
 import { ProjectModelsSchema } from "./models.js";
 import { redactText } from "./redaction.js";
+import { ALLOWED_DOMAIN_MESSAGE, StoredAllowedDomainSchema, firstRefusedDomainIndex } from "./app-projects.js";
 
 import { AGENTX_NAME_PATTERN } from "./names.js";
 import { E2EPolicySchema, E2E_PROJECT_CHECK_ID } from "./e2e.js";
@@ -242,6 +243,16 @@ export const DevcontainerDefinitionSchema = z
   })
   .strict();
 
+/**
+ * The websites a project's machines may reach beyond the install-wide defaults (Plan 2, Task 17). The revision stores what a maintainer
+ * asked for; whether each is approved is the egress item's to say (Task 18). Control-plane only: a worker never reads it, so the broker
+ * leaves it out of every invocation (`workerProjectDefinition`), and a worker of an earlier release, whose definition is strict, still parses one.
+ * Only the shape of a domain is checked here, so a stored revision stays readable when the Public Suffix List is refreshed; the list is
+ * checked wherever a definition is written (`ProjectDefinitionSchema`).
+ */
+export const ProjectNetworkSchema = z.object({ allowedDomains: z.array(StoredAllowedDomainSchema).max(50) }).strict();
+export type ProjectNetwork = z.infer<typeof ProjectNetworkSchema>;
+
 export const DEFAULT_DEVCONTAINER_CONFIG_PATH = ".devcontainer/devcontainer.json";
 
 /**
@@ -308,6 +319,7 @@ function projectDefinitionObject<Connectors extends z.ZodTypeAny>(connectorsSche
       setup: z.array(ProjectCommandSchema).max(64),
       readiness: z.array(ProjectCommandSchema).max(64),
       devcontainer: DevcontainerDefinitionSchema.optional(),
+      network: ProjectNetworkSchema.optional(),
       orchestratorInstructions: z.string().min(1).max(32_768),
       models: ProjectModelsSchema.optional(),
       integrations: z.object({
@@ -383,6 +395,11 @@ export const ProjectDefinitionSchema = projectDefinitionObject(ConnectorsSchema)
       context.addIssue({ code: "custom", path: ["e2e", "targets"], message: "project-e2e is a reserved check identity, not a target ID" });
     }
   })
+  // Registration and settings saves: the Public Suffix List is consulted when a domain is written, never when a stored revision is read.
+  .superRefine((project, context) => {
+    const index = firstRefusedDomainIndex(project.network?.allowedDomains ?? []);
+    if (index !== undefined) context.addIssue({ code: "custom", path: ["network", "allowedDomains", index], message: ALLOWED_DOMAIN_MESSAGE });
+  })
   // Runs wherever ProjectDefinitionSchema parses a project: registration, the developer CLI's
   // local project-file check, and the local broker. A stored revision is read with
   // StoredProjectDefinitionSchema, which does not re-check.
@@ -430,6 +447,16 @@ function withoutFields(value: unknown, fields: readonly string[]): unknown {
 }
 
 export type ProjectDefinition = z.infer<typeof ProjectDefinitionSchema>;
+
+/**
+ * A project definition as a worker is sent it: without `network`. Workers of an earlier release parse the definition with a strict schema that
+ * does not know the field, and the field is the control plane's alone (the DNS firewall enforces it, not the worker).
+ */
+export function workerProjectDefinition<Definition extends object>(definition: Definition): Omit<Definition, "network"> {
+  const rest: Record<string, unknown> = { ...(definition as Record<string, unknown>) };
+  delete rest.network;
+  return rest as Omit<Definition, "network">;
+}
 /** A project definition as `StoredProjectDefinitionSchema` parses it: its connectors may include
  * an entry of a type this release's schema does not know, passed through unexamined. */
 export type StoredProjectDefinition = z.infer<typeof StoredProjectDefinitionSchema>;

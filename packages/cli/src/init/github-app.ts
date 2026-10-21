@@ -23,21 +23,46 @@ const TOKEN_RENEW_MS = 5 * 60 * 1000;
 const API = "https://api.github.com";
 
 export interface GitHubManifest {
-  name: string; url: string; redirect_url: string; public: false;
+  name: string; url: string; redirect_url: string; public: boolean;
+  /** A Rovara Cloud App only: where GitHub sends a person who installs it (with the install's state, and a code when user authorization is on). */
+  callback_urls?: string[];
+  request_oauth_on_install?: true;
+  setup_on_update?: true;
   hook_attributes: { url: string; active: true };
-  default_permissions: { contents: "write"; pull_requests: "write"; issues: "write"; metadata: "read" };
+  /** members (organization members, read) is a Rovara Cloud App's only: the install callback's admin check reads the person's membership with a user token. */
+  default_permissions: { contents: "write"; pull_requests: "write"; issues: "write"; metadata: "read"; members?: "read" };
   default_events: string[];
 }
 
-export function githubAppManifest(input: { appName: string; redirectUrl: string; webhookUrl: string }): GitHubManifest {
-  return {
+/** Where a Rovara Cloud install's GitHub App sends a person who installs it, from the control plane's API endpoint. */
+export const githubInstallCallbackUrl = (apiEndpoint: string) => `${apiEndpoint.replace(/\/+$/, "")}/v1/github/install/callback`;
+
+/**
+ * `cloud: false` is the private App every install makes. `cloud: true` is the one shared App of Rovara Cloud: public, so any organization can install it;
+ * GitHub asks the installer for user authorization and redirects to `installCallbackUrl` (also on a reconfigure); members: read is what
+ * GET /user/memberships/orgs/{org} needs with a user access token ("Organization permissions for Members" in GitHub's
+ * "Permissions required for GitHub Apps").
+ */
+export function githubAppManifest(input: { appName: string; redirectUrl: string; webhookUrl: string; cloud: boolean; installCallbackUrl: string }): GitHubManifest {
+  const base = {
     name: input.appName,
     url: AGENTX_HOMEPAGE,
     redirect_url: input.redirectUrl,
-    public: false,
-    hook_attributes: { url: input.webhookUrl, active: true },
-    default_permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read" },
-    default_events: [...GITHUB_WEBHOOK_EVENTS],
+  };
+  const hook = { hook_attributes: { url: input.webhookUrl, active: true as const } };
+  const events = { default_events: [...GITHUB_WEBHOOK_EVENTS] };
+  if (!input.cloud) {
+    return { ...base, public: false, ...hook, default_permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read" }, ...events };
+  }
+  return {
+    ...base,
+    public: true,
+    callback_urls: [input.installCallbackUrl],
+    request_oauth_on_install: true,
+    setup_on_update: true,
+    ...hook,
+    default_permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", members: "read" },
+    ...events,
   };
 }
 
@@ -139,8 +164,9 @@ export const GITHUB_WEBHOOK_EVENTS = ["pull_request", "pull_request_review", "pu
 export const githubWebhookUrl = (apiEndpoint: string) => `${apiEndpoint.replace(/\/+$/, "")}/v1/github/webhooks`;
 
 export interface GitHubApi {
-  /** webhook_secret is the secret GitHub made for the manifest's webhook; it is null when the manifest had none. */
-  convertManifest(code: string): Promise<{ id: number; slug: string; pem: string; owner: { login: string; type: string }; webhook_secret?: string | null }>;
+  /** webhook_secret is the secret GitHub made for the manifest's webhook; it is null when the manifest had none. client_id and
+   * client_secret are the App's OAuth credentials, which the install flow's user authorization needs. */
+  convertManifest(code: string): Promise<{ id: number; slug: string; pem: string; owner: { login: string; type: string }; webhook_secret?: string | null; client_id?: string | null; client_secret?: string | null }>;
   getApp(jwt: string): Promise<{ slug: string; owner: { login: string; type: string }; events?: string[] }>;
   /** The App's webhook settings. GitHub masks the secret, so only the rest can be read back. */
   getHookConfig(jwt: string): Promise<{ url?: string; contentType?: string; insecureSsl?: string }>;
@@ -248,13 +274,18 @@ export function githubAppSecretName(env: string): string {
   return `agentx/${env}/github-app`;
 }
 
-export interface AppSecret { appId: string; slug: string; account: string; privateKey: string }
+export interface AppSecret { appId: string; slug: string; account: string; privateKey: string; clientId?: string; clientSecret?: string }
 
 export function parseAppSecret(raw: string, name: string): AppSecret {
   try {
     const value = JSON.parse(raw) as Partial<AppSecret>;
     if (typeof value.appId === "string" && typeof value.slug === "string" && typeof value.account === "string" && typeof value.privateKey === "string") {
-      return { appId: value.appId, slug: value.slug, account: value.account, privateKey: checkPrivateKeyPem(value.privateKey) };
+      const clientId = typeof value.clientId === "string" && value.clientId !== "" ? value.clientId : undefined;
+      const clientSecret = typeof value.clientSecret === "string" && value.clientSecret !== "" ? value.clientSecret : undefined;
+      return {
+        appId: value.appId, slug: value.slug, account: value.account, privateKey: checkPrivateKeyPem(value.privateKey),
+        ...(clientId === undefined ? {} : { clientId }), ...(clientSecret === undefined ? {} : { clientSecret }),
+      };
     }
   } catch { /* the one message below; never echo the value */ }
   throw agentXError("CONFIG_INVALID", `secret ${name} is not an AgentX GitHub App secret; delete it (aws secretsmanager delete-secret --secret-id ${name} --force-delete-without-recovery) and run agentx init again`);
@@ -265,25 +296,29 @@ export const appSettingsUrl = (owner: { login: string; type: string }, slug: str
 const installationSettingsUrl = (accountType: "organization" | "user", account: string, id: string) =>
   accountType === "organization" ? `https://github.com/organizations/${account}/settings/installations/${id}` : `https://github.com/settings/installations/${id}`;
 
-/** Where the control plane receives GitHub's deliveries: its GithubWebhookUrl output, or its API endpoint for an older release. */
-async function controlPlaneWebhookUrl(context: InitContext): Promise<string> {
+const WEBHOOK_PATH = "/v1/github/webhooks";
+
+/** The control plane's addresses GitHub calls: its GithubWebhookUrl output, or its API endpoint for an older release; the API endpoint
+ * is the output, or what the webhook URL is under. */
+async function controlPlaneUrls(context: InitContext): Promise<{ webhookUrl: string; apiEndpoint: string }> {
   const stackName = environmentStackName(context.env, "control-plane");
   const outputs = await (await context.deployment()).deployer.outputs(stackName);
-  const url = outputs?.GithubWebhookUrl ?? (outputs?.ApiEndpoint === undefined ? undefined : githubWebhookUrl(outputs.ApiEndpoint));
-  if (url === undefined) throw agentXError("CONFIG_INVALID", `stack ${stackName} reports no GitHub webhook URL; the control-plane step must finish first, so run agentx init again`);
-  return url;
+  const webhookUrl = outputs?.GithubWebhookUrl ?? (outputs?.ApiEndpoint === undefined ? undefined : githubWebhookUrl(outputs.ApiEndpoint));
+  if (webhookUrl === undefined) throw agentXError("CONFIG_INVALID", `stack ${stackName} reports no GitHub webhook URL; the control-plane step must finish first, so run agentx init again`);
+  const apiEndpoint = outputs?.ApiEndpoint ?? (webhookUrl.endsWith(WEBHOOK_PATH) ? webhookUrl.slice(0, -WEBHOOK_PATH.length) : webhookUrl);
+  return { webhookUrl, apiEndpoint };
 }
 
 type CreatedApp = AppSecret & { owner: { login: string; type: string }; webhookSecret?: string };
 
-async function createWithManifest(context: InitContext, api: GitHubApi, show: (card: GitHubCardInput) => void, webhookUrl: string): Promise<CreatedApp> {
+async function createWithManifest(context: InitContext, api: GitHubApi, show: (card: GitHubCardInput) => void, urls: { webhookUrl: string; apiEndpoint: string }): Promise<CreatedApp> {
   const { account, accountType, appName } = context.answers.github;
   const state = randomBytes(16).toString("hex");
   const actionUrl = githubNewAppUrl({ account, accountType, state });
   const openHost: OpenManifestHost = context.manifestHost ?? startManifestListener;
   const listener = await openHost({
     state,
-    page: (redirectUrl, nonce) => manifestFormPage({ actionUrl, manifest: githubAppManifest({ appName, redirectUrl, webhookUrl }), ...(nonce === undefined ? {} : { nonce }) }),
+    page: (redirectUrl, nonce) => manifestFormPage({ actionUrl, manifest: githubAppManifest({ appName, redirectUrl, webhookUrl: urls.webhookUrl, cloud: context.answers.cloud === true, installCallbackUrl: githubInstallCallbackUrl(urls.apiEndpoint) }), ...(nonce === undefined ? {} : { nonce }) }),
     timeoutMs: context.githubWaitMs ?? GITHUB_WAIT_MS,
   });
   try {
@@ -307,7 +342,14 @@ async function createWithManifest(context: InitContext, api: GitHubApi, show: (c
     const conversion = await api.convertManifest(code);
     // The secret GitHub made for the manifest's webhook, kept only when the broker would accept it.
     const webhookSecret = storedWebhookSecret({ webhookSecret: conversion.webhook_secret });
-    return { appId: String(conversion.id), slug: conversion.slug, account: conversion.owner.login, privateKey: checkPrivateKeyPem(conversion.pem.trim()), owner: conversion.owner, ...(webhookSecret === undefined ? {} : { webhookSecret }) };
+    // The App's OAuth credentials, kept for the install flow's user authorization; never printed.
+    const clientId = typeof conversion.client_id === "string" && conversion.client_id !== "" ? conversion.client_id : undefined;
+    const clientSecret = typeof conversion.client_secret === "string" && conversion.client_secret !== "" ? conversion.client_secret : undefined;
+    return {
+      appId: String(conversion.id), slug: conversion.slug, account: conversion.owner.login, privateKey: checkPrivateKeyPem(conversion.pem.trim()), owner: conversion.owner,
+      ...(clientId === undefined ? {} : { clientId }), ...(clientSecret === undefined ? {} : { clientSecret }),
+      ...(webhookSecret === undefined ? {} : { webhookSecret }),
+    };
   } finally {
     listener.close();
   }
@@ -352,11 +394,13 @@ async function runGitHubAppStep(context: InitContext, progress: ProgressHandle, 
     return arn;
   };
   const jwtFor = (appId: string, privateKey: string) => githubAppJwt({ appId, privateKey, nowSeconds: Math.floor(context.now() / 1000) });
-  let hookUrl: Promise<string> | undefined;
-  const webhookUrl = () => (hookUrl ??= controlPlaneWebhookUrl(context));
+  let controlPlane: ReturnType<typeof controlPlaneUrls> | undefined;
+  const urls = () => (controlPlane ??= controlPlaneUrls(context));
 
   let app = progress.current().github;
   let privateKey: string | undefined;
+  /** The App secret's value as this run knows it: what it just wrote, or what it just read. The webhook setup works from it, never from a read right after a save. */
+  let secretValue: string | undefined;
   const preMade = context.preMadeGitHubApp;
   if (app !== undefined && preMade !== undefined && app.appId !== preMade.appId) {
     throw agentXError("CONFIG_INVALID", `this install already uses GitHub App ${app.appId}, not ${preMade.appId} from --github-app-id; pass --github-app-id ${app.appId}, or leave the GitHub App flags off to continue with the recorded app`);
@@ -369,6 +413,7 @@ async function runGitHubAppStep(context: InitContext, progress: ProgressHandle, 
         throw agentXError("CONFIG_INVALID", `secret ${name} holds GitHub App ${recovered.appId}, not ${preMade.appId} from --github-app-id; pass --github-app-id ${recovered.appId}, or delete the secret (aws secretsmanager delete-secret --secret-id ${name} --force-delete-without-recovery) and run agentx init again`);
       }
       privateKey = recovered.privateKey;
+      secretValue = leftover;
       app = { account: recovered.account, appId: recovered.appId, slug: recovered.slug, privateKeySecretArn: await requireArn() };
       await progress.update({ github: app });
       context.write(`Found the GitHub App ${recovered.slug} an earlier run created.`);
@@ -393,7 +438,7 @@ async function runGitHubAppStep(context: InitContext, progress: ProgressHandle, 
   if (app === undefined) {
     const created = preMade !== undefined ? await usePreMadeApp(context, api, preMade.appId)
       : recovering === "finish" && pending !== undefined ? await usePreMadeApp(context, api, pending.appId)
-        : await createWithManifest(context, api, show, await webhookUrl());
+        : await createWithManifest(context, api, show, await urls());
     if (created.owner.login.toLowerCase() !== account.toLowerCase()) {
       // An app made beforehand is the owner's own: point at the flag, never tell them to delete it.
       if (preMade !== undefined) {
@@ -405,10 +450,15 @@ async function runGitHubAppStep(context: InitContext, progress: ProgressHandle, 
     // between here and the store can still find the app and offer to finish with it or replace it.
     await progress.update({ githubPending: { account, appId: created.appId, slug: created.slug } });
     try {
-      const value = JSON.stringify({ appId: created.appId, slug: created.slug, account, privateKey: created.privateKey, ...(created.webhookSecret === undefined ? {} : { webhookSecret: created.webhookSecret }) });
+      const value = JSON.stringify({
+        appId: created.appId, slug: created.slug, account, privateKey: created.privateKey,
+        ...(created.clientId === undefined ? {} : { clientId: created.clientId }), ...(created.clientSecret === undefined ? {} : { clientSecret: created.clientSecret }),
+        ...(created.webhookSecret === undefined ? {} : { webhookSecret: created.webhookSecret }),
+      });
       // The control-plane step created the secret with no value; an install that has not reached it creates it here.
       if (await context.secrets.arn(name) === undefined) await context.secrets.create(name, value);
       else await context.secrets.put(name, value);
+      secretValue = value;
     } catch (error) {
       // Only the error's name: never its message or cause, which could echo the request.
       const reason = error instanceof Error ? error.name : "unknown error";
@@ -425,11 +475,13 @@ async function runGitHubAppStep(context: InitContext, progress: ProgressHandle, 
     const stored = await context.secrets.get(name);
     if (stored === undefined) throw agentXError("CONFIG_INVALID", `secret ${name} is missing; delete the GitHub App ${app.slug} and run agentx init again`);
     privateKey = parseAppSecret(stored, name).privateKey;
+    secretValue = stored;
   }
+  if (secretValue === undefined) throw agentXError("RUNTIME_UNAVAILABLE", `secret ${name} holds no value this run knows; run agentx init again`);
 
   // Every origin of the app (manifest, --github-app-id, an earlier run's) ends here: the webhook secret is stored and GitHub's
   // hook is pointed at the control plane. A secret that is already stored, including the one GitHub made, is kept.
-  const webhook = await ensureGithubWebhook({ appJwt: jwtFor(app.appId, privateKey), api, secrets: context.secrets, secretId: name, webhookUrl: await webhookUrl() });
+  const webhook = await ensureGithubWebhook({ appJwt: jwtFor(app.appId, privateKey), api, secrets: context.secrets, secretValue, secretId: name, webhookUrl: (await urls()).webhookUrl });
   context.write(`GitHub webhook: ${webhook.status}`);
   for (const line of [activeHintLine(webhook), missingEventsLine(webhook)]) if (line !== undefined) context.write(line);
 

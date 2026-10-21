@@ -126,6 +126,8 @@ function answersJson(overrides: Record<string, unknown> = {}): Record<string, un
     images: {
       worker: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/agentx/worker@sha256:${"a".repeat(64)}`,
       slack: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/agentx/slack@sha256:${"b".repeat(64)}`,
+      // A hand-supplied worker image brings the hash of the stage 2 boot script it carries (Task 10).
+      bootStage2Sha256: "5a".repeat(32),
     },
     ...overrides,
   };
@@ -1110,7 +1112,7 @@ describe("agentx deploy --mode upgrade keeps the deployed budget", () => {
     await writeFile(answersFile, JSON.stringify({
       env: ENV, region: REGION, account: ACCOUNT, models: { orchestrator: "us.anthropic.claude-sonnet-4-6", classifier: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: "us.anthropic.claude-sonnet-4-6" }, identity: { mode: "cognito" },
       github: { appId: "123", privateKeySecretArn: `arn:aws:secretsmanager:${REGION}:${ACCOUNT}:secret:agentx/staging/github-app-AbCdEf` },
-      images: { worker: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/w@sha256:${"b".repeat(64)}`, slack: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/s@sha256:${"c".repeat(64)}` },
+      images: { worker: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/w@sha256:${"b".repeat(64)}`, slack: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/s@sha256:${"c".repeat(64)}`, bootStage2Sha256: "5a".repeat(32) },
     }));
     const reads: string[] = [];
     const signingKey = "k".repeat(43);

@@ -8,7 +8,7 @@ import type { DeployAnswers } from "../deploy/deploy-environment.js";
 import type { StackReader } from "../environments/adopt.js";
 import type { EnvironmentSettings } from "../environments/settings.js";
 
-export async function upgradeAnswers(input: { settings: EnvironmentSettings; stacks: StackReader; images?: { worker?: string; slack?: string } }): Promise<DeployAnswers> {
+export async function upgradeAnswers(input: { settings: EnvironmentSettings; stacks: StackReader; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }): Promise<DeployAnswers> {
   const { settings } = input;
   const controlPlaneName = settings.stacks["control-plane"];
   const controlPlane = await input.stacks.describe(controlPlaneName);
@@ -48,6 +48,8 @@ export async function upgradeAnswers(input: { settings: EnvironmentSettings; sta
   const images = input.images === undefined || (input.images.worker === undefined && input.images.slack === undefined) ? undefined : {
     ...(input.images.worker === undefined ? {} : { worker: input.images.worker }),
     ...(input.images.slack === undefined ? {} : { slack: input.images.slack }),
+    // Task 10: the hash of the stage 2 boot script the worker image carries goes with it, into the same runtime stack deploy.
+    ...(input.images.bootStage2Sha256 === undefined ? {} : { bootStage2Sha256: input.images.bootStage2Sha256 }),
   };
   return {
     env: settings.env,

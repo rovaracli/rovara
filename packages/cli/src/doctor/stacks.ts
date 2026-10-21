@@ -81,6 +81,16 @@ export async function stackChecks(context: DoctorContext): Promise<DoctorCheck[]
     checks.push(check("stacks", "drift", "ok", unchecked.length === 0 ? "no drift at the last drift check" : `no drift at the last drift check for ${inSync.join(", ")}; ${notChecked}`));
   }
 
+  // Task 10: a worker boots stage 2 from its image and checks it against this hash, so the runtime stack must hold one beside WorkerImageUri.
+  const runtime = described.get("runtime");
+  if (runtime?.stack !== undefined) {
+    const hash = runtime.stack.parameters.BootStage2Sha256;
+    const name = `${runtime.name} boot hash`;
+    checks.push(hash !== undefined && /^[a-f0-9]{64}$/.test(hash)
+      ? check("stacks", name, "ok", "the worker image comes with a boot stage 2 hash")
+      : check("stacks", name, "fail", `${runtime.name} has no boot hash for its worker image (BootStage2Sha256 is ${hash === undefined || hash === "" ? "missing" : hash === "none" ? "none" : "not 64 lower-case hex digits"}), so workers cannot launch`, `agentx --env ${env} upgrade writes the worker image and its boot hash together`));
+  }
+
   const title = `release ${settings.version}`;
   const manifest = await services.releaseManifest(settings.version);
   if (manifest === undefined) {

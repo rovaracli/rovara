@@ -25,6 +25,8 @@ describe("release builder", () => {
       "legal/LICENSE-APACHE",
       "legal/RELICENSED.md",
     ]);
+    // Task 10: the manifest names the stage 2 boot script the worker image of this commit carries, so a deploy writes its hash beside the image.
+    expect(manifest.bootStage2Sha256).toBe(sha(await readFile(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "packages", "worker", "ec2", "boot-stage2.sh"))));
     // One template per part in every supported region, so the next region added breaks nothing here.
     const parts = ["access", "foundation", "identity", "runtime", "control-plane", "slack"];
     expect([...new Set(manifest.templates.map((t) => t.region))].sort()).toEqual([...SUPPORTED_REGIONS]);

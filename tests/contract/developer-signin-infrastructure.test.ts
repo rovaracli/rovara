@@ -210,7 +210,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
     const creatorChecks = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:ConditionCheckItem"));
     expect(reads).toHaveLength(1);
     expect(reads[0]!.Action).toBe("dynamodb:GetItem");
-    expect(reads[0]!.Condition).toEqual({ "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["SESSION#*", "DEVELOPER#*", "EMAIL#*"] } });
+    // Plan 2, Task 13: SIGNIN_IDENTITY# (the forward link of a sign-in identity) joined the read, for the GitHub connect callback. Read only.
+    expect(reads[0]!.Condition).toEqual({ "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["SESSION#*", "DEVELOPER#*", "EMAIL#*", "SIGNIN_IDENTITY#*"] } });
     expect(creatorChecks).toHaveLength(1);
     expect(actionsOf(creatorChecks[0]!)).toEqual(["dynamodb:ConditionCheckItem"]);
     expect(creatorChecks[0]!.Condition).toEqual({
@@ -247,6 +248,28 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(tableStatements.flatMap(actionsOf).sort()).toEqual(["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
   });
 
+  it("needs no new permission for the fresh sign-in check and for adding a removed method back (Plan 2, Task 8b)", () => {
+    const [tableId] = ofType(named, "AWS::DynamoDB::Table").find(([logicalId]) => logicalId.startsWith("DeveloperSignInTable"))!;
+    const tableStatements = statementsOfRole(named, "DeveloperSignInFunctionServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(named, statement, tableId, SAMPLE_TABLE_ARN));
+    // What the two flows do in DeveloperIdentity, item by item (the fresh-signin test records the commands and pins that nothing else is used):
+    //   GetItem    SESSION#<id> (is the session fresh, and not the method being removed), DEVELOPER#<id> (revoked, ended, marks), SIGNIN_IDENTITY#<key>
+    //   PutItem    AUTHREQ#<id> (the link request), and in the re-add's transaction SIGNIN_IDENTITY#<key> and DEVELOPER#<id> / IDENTITY#<key>
+    //   UpdateItem AUTHREQ#<id> (method chosen, request used), and in the re-add's transaction DEVELOPER#<id> (the cutoff mark)
+    // They are all covered by the one statement every sign-in already has: Get, Put and Update on the table, with no key condition.
+    const everySignIn = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:GetItem"));
+    expect(everySignIn).toHaveLength(1);
+    expect(actionsOf(everySignIn[0]!).sort()).toEqual(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]);
+    expect(everySignIn[0]!.Condition).toBeUndefined();
+    // Nothing was added for them: Delete and Query stay inside the developer partitions (the unlink's), and no other action exists.
+    expect(tableStatements).toHaveLength(3);
+    expect(tableStatements.flatMap(actionsOf).sort()).toEqual(["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
+    for (const narrow of tableStatements.filter((statement) => !actionsOf(statement).includes("dynamodb:GetItem"))) expect(leadingKeysOf(narrow)).toEqual(["DEVELOPER#*"]);
+    // The broker starts the flow by naming the token's session in an invoke; it still only reads SESSION# and DEVELOPER# and has no write.
+    const broker = statementsOfRole(named, "BrokerServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(named, statement, tableId, SAMPLE_TABLE_ARN));
+    expect(broker.flatMap(actionsOf).sort()).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:Query"]);
+    for (const write of ["dynamodb:PutItem", "dynamodb:UpdateItem"]) expect(rolesThatMay(named, write, tableId, SAMPLE_TABLE_ARN)).toEqual(["DeveloperSignInFunctionServiceRole"]);
+  });
+
   it("gives the broker no write on the sign-in table: unlinking runs in DeveloperIdentity", () => {
     const [tableId] = ofType(named, "AWS::DynamoDB::Table").find(([logicalId]) => logicalId.startsWith("DeveloperSignInTable"))!;
     const actions = statementsOfRole(named, "BrokerServiceRole")
@@ -259,7 +282,7 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(rolesThatMay(named, "dynamodb:DeleteItem", tableId, SAMPLE_TABLE_ARN)).toEqual(["DeveloperSignInFunctionServiceRole"]);
   });
 
-  it("throttles the public /v1/auth/*, /v1/dev/*, /v1/app/*, and /review/* routes on the default stage (burst 50, 20 requests a second)", () => {
+  it("throttles the public /v1/auth/*, /v1/dev/*, /v1/app/*, /review/* and GitHub install routes on the default stage (burst 50, 20 requests a second)", () => {
     const stages = ofType(named, "AWS::ApiGatewayV2::Stage");
     expect(stages).toHaveLength(1);
     const [, stage] = stages[0]!;
@@ -268,6 +291,9 @@ describe("developer sign-in infrastructure (named environments)", () => {
       "ANY /v1/dev/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "ANY /v1/app/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "ANY /review/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
+      // Plan 2, Task 13: GitHub's install redirect and the confirm page's form post.
+      "GET /v1/github/install/callback": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
+      "POST /v1/github/install/confirm": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
     });
     // A stage's route settings name routes that must already exist.
     const routeId = (key: string) => ofType(named, "AWS::ApiGatewayV2::Route").find(([, r]) => r.Properties.RouteKey === key)![0];
@@ -276,6 +302,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(dependsOn).toContain(routeId("ANY /v1/dev/{proxy+}"));
     expect(dependsOn).toContain(routeId("ANY /v1/app/{proxy+}"));
     expect(dependsOn).toContain(routeId("ANY /review/{proxy+}"));
+    expect(dependsOn).toContain(routeId("GET /v1/github/install/callback"));
+    expect(dependsOn).toContain(routeId("POST /v1/github/install/confirm"));
     // The app route is served by the broker, which verifies the developer token itself: no API Gateway authorizer.
     const appRoute = ofType(named, "AWS::ApiGatewayV2::Route").find(([, r]) => r.Properties.RouteKey === "ANY /v1/app/{proxy+}")![1];
     expect(appRoute.Properties.AuthorizationType).toBe("NONE");

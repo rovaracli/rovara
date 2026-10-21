@@ -38,6 +38,12 @@ describe("upgradeAnswers: everything from the environment itself, nothing asked"
     expect(answers.permissionsBoundaryArn).toBe("arn:aws:iam::123456789012:policy/company-boundary");
   });
 
+  it("passes the stage 2 boot hash with the worker image override (Task 10)", async () => {
+    const images = { worker: `w@sha256:${"b".repeat(64)}`, bootStage2Sha256: "5a".repeat(32) };
+    const answers = await upgradeAnswers({ settings: SETTINGS, stacks: stacks({ ...noOperator, "agentx-staging-control-plane": controlPlane }), images });
+    expect(answers.images).toEqual(images);
+  });
+
   it("refuses when the control-plane stack is gone or lacks the GitHub App", async () => {
     await expect(upgradeAnswers({ settings: SETTINGS, stacks: stacks({}) })).rejects.toThrow("stack agentx-staging-control-plane does not exist; agentx doctor says what else is missing");
     await expect(upgradeAnswers({ settings: SETTINGS, stacks: stacks({ "agentx-staging-control-plane": {} }) })).rejects.toThrow("stack agentx-staging-control-plane has no GitHubAppId parameter");

@@ -4,7 +4,7 @@
 import { GetTemplateCommand } from "@aws-sdk/client-cloudformation";
 import { agentXError, environmentStackName } from "@agentx/contracts";
 import { CONFIG_KEYS } from "../config/keys.js";
-import { CLOUD_NEEDS_CDK_MESSAGE } from "../deploy/answer-schemas.js";
+import { CLOUD_NEEDS_CDK_MESSAGE, bootStage2ImagesProblem } from "../deploy/answer-schemas.js";
 import { progressLine, type Ask, type PreparedDeployment } from "../deploy/commands.js";
 import { deployEnvironment, keptOperatorParameters, templateParameterNames } from "../deploy/deploy-environment.js";
 import type { DeployRequest } from "../deploy/deployer.js";
@@ -26,7 +26,7 @@ import { writeUpgradeBundle } from "./export.js";
 import { cdkDiffRisks, cdkReviewedDeployer, guardData, upgradeConfirm } from "./review.js";
 import { notesText, refusePrereleaseTarget, upgradeDirection, type ReleaseNotes } from "./target.js";
 
-export interface UpgradeOptions { env: string; to?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; images?: { worker?: string; slack?: string } }
+export interface UpgradeOptions { env: string; to?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }
 
 export interface UpgradeDependencies {
   store: ParameterStore;
@@ -38,7 +38,7 @@ export interface UpgradeDependencies {
   /** Issue 152: a source-built CLI's cdk upgrade with no --release or --to builds its release from
    * the --source checkout (release-fetch.ts's sourceRelease): the tag's version, the images from the
    * image flags or the tag's published release.json. */
-  sourceRelease(input: { source: string; images?: { worker?: string; slack?: string } }): Promise<LoadedRelease>;
+  sourceRelease(input: { source: string; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }): Promise<LoadedRelease>;
   notes(version: string): Promise<ReleaseNotes | undefined>;
   prepare(input: { settings: EnvironmentSettings; release: LoadedRelease; source?: string }): Promise<PreparedDeployment>;
   cdkDiff(request: DeployRequest, settings: EnvironmentSettings, source: string): Promise<string>;
@@ -166,7 +166,7 @@ async function setUpGithubWebhook(env: string, deps: UpgradeDependencies): Promi
     const controlPlane = await deps.stacks.describe(settings.stacks["control-plane"]);
     const outcome = await ensureGithubWebhook({
       appJwt: githubAppJwt({ appId: app.appId, privateKey: app.privateKey, nowSeconds: Math.floor(deps.now() / 1000) }),
-      api: github, secrets, secretId: secretName,
+      api: github, secrets, secretValue: raw, secretId: secretName,
       webhookUrl: controlPlane?.outputs.GithubWebhookUrl ?? githubWebhookUrl(settings.controlPlaneUrl),
     });
     deps.write(`GitHub webhook: ${outcome.status}`);
@@ -178,6 +178,9 @@ async function setUpGithubWebhook(env: string, deps: UpgradeDependencies): Promi
 
 export async function runUpgrade(options: UpgradeOptions, deps: UpgradeDependencies): Promise<UpgradeResult> {
   const { env } = options;
+  // Task 10: a hand-supplied worker image brings the hash of the stage 2 boot script it carries, before anything is read or changed.
+  const imagesProblem = bootStage2ImagesProblem(options.images);
+  if (imagesProblem !== undefined) throw agentXError("CONFIG_INVALID", imagesProblem);
   const first = upgradableSettings(await readEnvironmentSettings(deps.store, env), env);
   // Ruling F19 (FR-013): the bundle holds the published templates; deploying them onto cdk-deployed
   // stacks would switch the environment's engine.

@@ -37,7 +37,7 @@ const commentItem = (harness: Harness, taskId: string, commentId: string) => har
 function routeDeps(harness: Harness): DeveloperTaskRouteDependencies {
   return {
     documentClient: validatingDocumentClient(harness.db), tableName: "state", actions: harness.actions,
-    orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "channel", channelIds: [SLACK_CHANNEL] }),
+    orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "channel", channelIds: [SLACK_CHANNEL], role: "contributor" as const }),
     projectChannelIds: async () => [SLACK_CHANNEL], now: () => Date.now(), log: () => undefined,
   };
 }

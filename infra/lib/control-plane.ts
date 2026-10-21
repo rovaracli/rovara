@@ -787,6 +787,17 @@ export class ControlPlaneStack extends Stack {
       target: `integrations/${integration.ref}`,
       authorizationType: "NONE",
     });
+    // Plan 2, Task 13: GitHub's install redirect and the confirm page's form post. No JWT: the broker checks the connect state against
+    // GitHub, and the confirmation by cookie and Origin. A named environment only (the legacy deployment has no developer sign-in);
+    // the stage throttles them like the other public routes (DeveloperSignIn applies `throttledRoutes`).
+    const githubInstallRoutes = naming.env === undefined ? [] : [
+      new apigwv2.CfnRoute(this, "GithubInstallCallbackRoute", {
+        apiId: api.ref, routeKey: "GET /v1/github/install/callback", target: `integrations/${integration.ref}`, authorizationType: "NONE",
+      }),
+      new apigwv2.CfnRoute(this, "GithubInstallConfirmRoute", {
+        apiId: api.ref, routeKey: "POST /v1/github/install/confirm", target: `integrations/${integration.ref}`, authorizationType: "NONE",
+      }),
+    ];
     // Confused-deputy guard: only this account's own EventBridge schedules may assume the recovery roles.
     // Scheduler sets aws:SourceArn to the schedule group's ARN, not the schedule's; these schedules use the default group.
     const schedulerPrincipal = new iam.ServicePrincipal("scheduler.amazonaws.com", { conditions: {
@@ -888,7 +899,7 @@ export class ControlPlaneStack extends Stack {
     // Spec 025 phase 25a: developer sign-in, named environments only (R3).
     if (naming.env !== undefined && signInParameters !== undefined) {
       const developerSignIn = new DeveloperSignIn(this, "DeveloperSignIn", {
-        naming, env: naming.env, api, stage: defaultStage, brokerIntegration: integration, broker, slackSecret, parameters: signInParameters, turnRecords, state,
+        naming, env: naming.env, api, stage: defaultStage, brokerIntegration: integration, broker, slackSecret, parameters: signInParameters, turnRecords, state, throttledRoutes: githubInstallRoutes,
         ...(props?.cloud === true ? { cloud: true } : {}),
       });
       if (naming.env === "agentxlivetest123" && taskPersonProofEnabled !== undefined) {

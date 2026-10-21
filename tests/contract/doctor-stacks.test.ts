@@ -16,8 +16,41 @@ describe("doctor: stacks (FR-050)", () => {
     expect(checks.filter((entry) => entry.status !== "ok")).toEqual([]);
     expect(checks.map((entry) => entry.name)).toEqual([
       "agentx-staging-access", "agentx-staging-foundation", "agentx-staging-identity", "agentx-staging-control-plane", "agentx-staging-runtime", "agentx-staging-slack",
-      "engine", "drift", "release 1.2.3",
+      "engine", "drift", "agentx-staging-runtime boot hash", "release 1.2.3",
     ]);
+  });
+
+  it("passes a runtime stack whose worker image comes with a 64-hex boot stage 2 hash", async () => {
+    const found = (await stackChecks(doctorContext())).find((entry) => entry.name === "agentx-staging-runtime boot hash")!;
+    expect(found).toMatchObject({ status: "ok" });
+  });
+
+  it.each([
+    ["is none (a release from before the boot split)", "none"],
+    ["is not 64 lower-case hex digits", "E".repeat(63)],
+    ["is empty", ""],
+  ])("fails a runtime stack whose boot stage 2 hash %s, and points at agentx upgrade", async (_why, value) => {
+    const stacks = healthyStacks();
+    stacks["agentx-staging-runtime"] = { ...stacks["agentx-staging-runtime"]!, parameters: { ...stacks["agentx-staging-runtime"]!.parameters, BootStage2Sha256: value } };
+    const found = (await stackChecks(doctorContext({ services: doctorServices({ stackMap: stacks }) }))).find((entry) => entry.name === "agentx-staging-runtime boot hash")!;
+    expect(found.status).toBe("fail");
+    expect(found.detail).toContain("no boot hash for its worker image");
+    expect(found.detail).toContain("cannot launch");
+    expect(found.fix).toContain("agentx --env staging upgrade");
+  });
+
+  it("fails a runtime stack that has no boot stage 2 hash parameter at all", async () => {
+    const stacks = healthyStacks();
+    const rest = { ...stacks["agentx-staging-runtime"]!.parameters };
+    delete rest.BootStage2Sha256;
+    stacks["agentx-staging-runtime"] = { ...stacks["agentx-staging-runtime"]!, parameters: rest };
+    const found = (await stackChecks(doctorContext({ services: doctorServices({ stackMap: stacks }) }))).find((entry) => entry.name === "agentx-staging-runtime boot hash")!;
+    expect(found.status).toBe("fail");
+  });
+
+  it("does not check the boot hash of a runtime stack that does not exist (its own check already fails)", async () => {
+    const names = (await stackChecks(withStack("agentx-staging-runtime", undefined))).map((entry) => entry.name);
+    expect(names).not.toContain("agentx-staging-runtime boot hash");
   });
 
   it("fails a missing stack and says upgrade deploys it again", async () => {

@@ -1,8 +1,24 @@
 # EC2 worker boot behavior
 
-`boot.sh` is compressed into EC2 user data, so its source stays small to preserve the required 4 KB
-configuration reserve. The details below document its operational boundaries without adding bytes to
-the executable bootstrap.
+`boot.sh` is compressed into EC2 user data, so its source stays small to preserve the required 4.5 KB
+reserve. The details below document its operational boundaries without adding bytes to the executable
+bootstrap.
+
+## Two stages in a named environment
+
+A named environment boots in two stages. `boot.sh` (stage 1) sets up the volume and Docker, walls
+containers off from the host (`wall_off_containers`, before any container exists), pulls the worker
+image by digest and then runs `run_stage2`: it reads `boot-stage2.sh` out of that image
+(`docker create`, `docker cp <id>:/opt/agentx/boot/stage2.sh`, `docker rm`), checks its SHA-256
+against `AGENTX_BOOT_STAGE2_SHA256`, sources it and calls `stage2_main`. Stage 2 writes the worker's
+environment, launcher and unit, starts the worker, and starts the optional E2E qualification. A hash
+mismatch fails the boot with a reason on `/ping`; the file is never sourced.
+
+The hash is the launch setting `worker-boot-stage2-sha256`, written by the same runtime stack deploy
+that writes `worker-image`, from the release source the image was built from (`release.json`'s
+`bootStage2Sha256`; a hand-supplied `--worker-image` needs `--boot-stage2-sha256`). The legacy
+(production) deployment keeps its single-file boot as `boot-legacy.sh`, byte for byte what `boot.sh`
+was before the split (ruling R58).
 
 ## Failure reporting and volume discovery
 

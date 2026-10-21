@@ -7,6 +7,17 @@ const GITHUB_APP_ID = /^[1-9][0-9]*$/;
 const FILE_AT_COMMIT_MAX_BYTES = 20_971_520;
 const FILE_AT_COMMIT_TIMEOUT_MS = 8_000;
 const READ_TOKEN_REUSE_MS = 5 * 60_000;
+/** GitHub makes an App's slug from its name: letters, digits and hyphens. It goes into the install address. */
+const GITHUB_APP_SLUG = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?$/;
+
+/** One installation of the App, as GitHub reports it (GET /app/installations/{id}): only what the install flow decides on. */
+export interface GitHubInstallation {
+  id: number;
+  /** `Enterprise` is an account GitHub can install an App on that no Rovara organization may connect (Plan 2, Task 13). */
+  account: { login: string; id: number; type: "User" | "Organization" | "Enterprise" };
+  repositorySelection: "all" | "selected";
+  suspendedAt: string | null;
+}
 
 export interface GitHubAppCredentialProviderOptions {
   credentialRef: string;
@@ -14,6 +25,11 @@ export interface GitHubAppCredentialProviderOptions {
    * deploys before its GitHub App exists, and then reads the id from the App's secret. */
   appId: string | (() => Promise<string>);
   getPrivateKey: () => Promise<string>;
+  /**
+   * The App secret's JSON text, for the fields `agentx init` stores beside the key (slug, OAuth client id and secret). `refresh: true`
+   * reads it again, for a field set after the first read. Absent: the App's slug is asked of GitHub, and it has no OAuth client.
+   */
+  getAppSecret?: (options?: { refresh?: boolean }) => Promise<string>;
   fetchImplementation?: typeof fetch;
   now?: () => number;
 }
@@ -96,6 +112,7 @@ export class GitHubAppCredentialProvider {
   private readonly now: () => number;
   private readonly installations = new Map<string, Promise<{ id: number; login: string }>>();
   private readonly readTokens = new Map<string, { token: Promise<string>; expiresAt: number }>();
+  private slug: string | undefined;
 
   constructor(private readonly options: GitHubAppCredentialProviderOptions) {
     if (typeof options.appId === "string" && !GITHUB_APP_ID.test(options.appId)) throw new Error("GitHub App ID must be numeric");
@@ -758,6 +775,69 @@ export class GitHubAppCredentialProvider {
     return { id: id as number, login };
   }
 
+  /**
+   * The App's slug, which makes its install address (https://github.com/apps/<slug>/installations/new): from the App's secret,
+   * or from GitHub when the secret has none. Refused when it is not letters, digits and hyphens.
+   */
+  async appSlug(): Promise<string> {
+    if (this.slug !== undefined) return this.slug;
+    const fromSecret = this.options.getAppSecret === undefined ? undefined : secretField(await this.options.getAppSecret(), "slug");
+    let slug = fromSecret;
+    if (slug === undefined) {
+      const response = await this.fetchImplementation("https://api.github.com/app", { headers: await this.appHeaders(), signal: AbortSignal.timeout(5_000), redirect: "error" });
+      if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub App lookup failed with HTTP ${response.status}`);
+      const body: unknown = await response.json();
+      slug = body && typeof body === "object" && "slug" in body && typeof body.slug === "string" ? body.slug : undefined;
+    }
+    if (slug === undefined || !GITHUB_APP_SLUG.test(slug)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub App slug is missing or not valid");
+    this.slug = slug;
+    return slug;
+  }
+
+  /**
+   * The App's OAuth client id and secret, for the install flow's user authorization; undefined when the App secret has neither (an App
+   * made before the install flow: `agentx github oauth set` stores them). A client set while this process runs is found by one fresh read.
+   */
+  async oauthClient(): Promise<{ clientId: string; clientSecret: string } | undefined> {
+    const { getAppSecret } = this.options;
+    if (getAppSecret === undefined) return undefined;
+    const read = (secret: string) => {
+      const clientId = secretField(secret, "clientId");
+      const clientSecret = secretField(secret, "clientSecret");
+      return clientId === undefined || clientSecret === undefined ? undefined : { clientId, clientSecret };
+    };
+    return read(await getAppSecret()) ?? read(await getAppSecret({ refresh: true }));
+  }
+
+  /** One installation of the App, by id (the App's JWT; GitHub tells it nothing of an installation of another App). */
+  async installation(id: number): Promise<GitHubInstallation> {
+    if (!Number.isSafeInteger(id) || id < 1) throw agentXError("CONFIG_INVALID", "GitHub installation id must be a positive integer");
+    const response = await this.fetchImplementation(`https://api.github.com/app/installations/${id}`, {
+      headers: await this.appHeaders(), signal: AbortSignal.timeout(5_000), redirect: "error",
+    });
+    if (response.status === 404) throw agentXError("NOT_FOUND", "GitHub has no such installation of this App");
+    if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub App installation lookup failed with HTTP ${response.status}`);
+    const body: unknown = await response.json();
+    const record = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {};
+    const account = record.account && typeof record.account === "object" ? record.account as Record<string, unknown> : {};
+    const selection = record.repository_selection;
+    const suspendedAt = record.suspended_at;
+    if (
+      record.id !== id
+      || typeof account.login !== "string" || account.login === ""
+      || !Number.isSafeInteger(account.id) || (account.id as number) < 1
+      || (account.type !== "User" && account.type !== "Organization" && account.type !== "Enterprise")
+      || (selection !== "all" && selection !== "selected")
+      || (suspendedAt !== null && suspendedAt !== undefined && typeof suspendedAt !== "string")
+    ) {
+      throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid installation response");
+    }
+    return {
+      id, account: { login: account.login, id: account.id as number, type: account.type },
+      repositorySelection: selection, suspendedAt: suspendedAt ?? null,
+    };
+  }
+
   /** Spec 025 A13: how many accounts the App is installed on (the first 100), for the health route. */
   async installationCount(): Promise<number> {
     const response = await this.fetchImplementation("https://api.github.com/app/installations?per_page=100", {
@@ -1070,6 +1150,20 @@ export function appIdFromSecret(secret: string): string {
     // Report one stable error below without reflecting secret contents.
   }
   throw agentXError("RUNTIME_UNAVAILABLE", "GitHub App secret holds no appId; set the control plane's GitHubAppId parameter");
+}
+
+/** A non-empty string field of the App secret's JSON; undefined when the secret is not JSON or the field is not a string. Never throws, never echoes. */
+function secretField(secret: string, name: string): string | undefined {
+  try {
+    const value = JSON.parse(secret.trim()) as unknown;
+    if (value && typeof value === "object" && name in value) {
+      const field = (value as Record<string, unknown>)[name];
+      if (typeof field === "string" && field.trim() !== "") return field.trim();
+    }
+  } catch {
+    // Do not include secret material in errors.
+  }
+  return undefined;
 }
 
 const GITHUB_WEBHOOK_SECRET_MISSING = "GitHub App secret does not contain a valid webhook secret";

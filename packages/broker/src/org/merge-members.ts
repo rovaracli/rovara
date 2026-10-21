@@ -267,7 +267,7 @@ async function retire(
     TransactItems: [
       { Delete: { TableName, Key: orgMemberKey(state.duplicateOrgId, duplicateId), ConditionExpression: "attribute_exists(pk) AND #role = :seen", ExpressionAttributeNames: roleName, ExpressionAttributeValues: { ":seen": state.duplicateRole } } },
       { Delete: { TableName, Key: developerOrgKey(duplicateId), ConditionExpression: "attribute_exists(pk) AND orgId = :orgId", ExpressionAttributeValues: { ":orgId": state.duplicateOrgId } } },
-      { Update: { TableName, Key: orgMemberKey(orgId, survivorId), UpdateExpression: "SET #role = :role", ConditionExpression: "attribute_exists(pk) AND #role = :seen", ExpressionAttributeNames: roleName, ExpressionAttributeValues: { ":role": state.role, ":seen": state.survivorRole } } },
+      { Update: { TableName, Key: orgMemberKey(orgId, survivorId), UpdateExpression: "SET #role = :role, roleUpdatedAt = :at", ConditionExpression: "attribute_exists(pk) AND #role = :seen", ExpressionAttributeNames: roleName, ExpressionAttributeValues: { ":role": state.role, ":seen": state.survivorRole, ":at": state.at } } },
       { Update: { TableName, Key: developerOrgKey(survivorId), UpdateExpression: "SET #role = :role", ConditionExpression: "attribute_exists(pk) AND orgId = :orgId", ExpressionAttributeNames: roleName, ExpressionAttributeValues: { ":role": state.role, ":orgId": orgId } } },
       ...(race === undefined ? [] : [
         // Closed, not deleted: still disposable at this moment (its creator, a trial, no GitHub owner, and the trial claim as read).

@@ -402,7 +402,7 @@ describe("broker-backed feedback review data", () => {
     const workspace = harness.db.get(`WORKSPACE#${task.workspaceId}`, "META") as Record<string, unknown>;
     harness.db.set({ ...workspace, status: "READY", activeOperationId: undefined });
     const deps = { documentClient: harness.db, tableName: "state", actions: harness.actions,
-      orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [],
+      orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [],
       refreshTaskFeedback: async () => undefined, now: () => Date.parse(now) };
     return { harness, taskId, deps, workflow, bundleDigest: bundles[0]!.digest, bundleDigests: bundles.map(bundle => bundle.digest), reviewDigest, githubRead };
   }

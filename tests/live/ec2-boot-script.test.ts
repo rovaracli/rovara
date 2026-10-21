@@ -209,7 +209,8 @@ interface Faults {
 }
 
 async function boot(bootConfig: Ec2WorkerBootConfig, volumeState: "blank" | "existing" | "foreign", faults: Faults = {}) {
-  const script = await readFile(new URL("../../packages/worker/ec2/boot.sh", import.meta.url), "utf8");
+  // This config names no environment kind, so it is the legacy deployment's launch: boot-legacy.sh, the single-file boot (Task 10, ruling R58).
+  const script = await readFile(new URL("../../packages/worker/ec2/boot-legacy.sh", import.meta.url), "utf8");
   // Already base64 gzip, exactly what RunInstances receives (#229).
   const userData = ec2WorkerUserData(bootConfig, script);
   const result = spawnSync("docker", [

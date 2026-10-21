@@ -3,7 +3,7 @@ import { providerKeyParameters } from "./model-keys.js";
 import { openRouterRoutingParameter } from "./openrouter.js";
 import { CfnParameter, Stack, type StackProps, aws_ssm as ssm } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { WORKER_SETTING_PARAMETERS } from "@agentx/contracts";
+import { BOOT_STAGE2_SHA256_PARAMETER, WORKER_SETTING_PARAMETERS } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 
 export interface WorkerSettingsStackProps extends StackProps {
@@ -89,6 +89,22 @@ export class WorkerSettingsStack extends Stack {
       ["WorkerModelIdParameter", "modelId", modelId.valueAsString],
       ["WorkerPromptCacheRetentionParameter", "promptCacheRetention", promptCacheRetention.valueAsString],
     ];
+    // Task 10 (named environments only; the legacy template is byte-identical): stage 2 of the boot ships in the worker image, and this is the
+    // hash that checks it. It is one more setting of the same runtime stack deploy that sets the image, so the two travel together. "none"
+    // (the default) is a release from before the boot split; the control plane then refuses to launch a worker and says to upgrade.
+    if (naming.env !== undefined) {
+      const bootStage2Sha256 = new CfnParameter(this, "BootStage2Sha256", {
+        type: "String",
+        default: "none",
+        allowedPattern: "^(none|[a-f0-9]{64})$",
+        description: "SHA-256 of the boot-stage2.sh in the release source the worker image was built from, or none",
+      });
+      new ssm.StringParameter(this, "WorkerBootStage2Sha256Parameter", {
+        parameterName: `${naming.ec2.workerSettingsPrefix}${BOOT_STAGE2_SHA256_PARAMETER}`,
+        stringValue: bootStage2Sha256.valueAsString,
+        description: "AgentX worker boot stage 2 hash for EC2 workers",
+      });
+    }
     for (const [id, setting, value] of workerSettings) {
       new ssm.StringParameter(this, id, {
         parameterName: `${naming.ec2.workerSettingsPrefix}${WORKER_SETTING_PARAMETERS[setting]}`,

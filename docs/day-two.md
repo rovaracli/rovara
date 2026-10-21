@@ -105,6 +105,18 @@ and still stops on a data replacement you did not name. Without a terminal, `--y
 control-plane, slack. The runtime goes before the control plane so the worker, which reads
 strictly, is the tolerant side while the two differ.
 
+**The worker image and its boot hash go together.** A worker boots its second stage from the worker
+image and checks it against a hash (`BootStage2Sha256`, a parameter of the runtime stack), so the
+image (`WorkerImageUri`) and the hash are always written in one runtime deploy, from the same
+release. The control plane must be upgraded with them: a control plane that expects a hash will not
+launch a worker while the runtime stack has none (it says `run agentx upgrade`), and a runtime
+stack with a new image but an old hash makes every worker fail its boot check. So never change
+`WorkerImageUri` on its own; deploy the runtime stack and then the control plane of one release, as
+`upgrade` does. With `--worker-image`, pass `--boot-stage2-sha256` too, the SHA-256 of
+`packages/worker/ec2/boot-stage2.sh` in the source the image was built from. `agentx doctor` fails
+a runtime stack with no valid boot hash. If you deploy stacks by hand from an `--export` bundle,
+keep that order.
+
 **Stopping and re-running.** `upgrade` stops at the first failure; CloudFormation rolls that stack
 back. Stacks before it stay on the new release. Run the same command again: it continues. When
 every stack is done, it records the new version in the settings and runs `doctor`.
@@ -274,7 +286,12 @@ managed, so a Python project's setup command should make a virtual environment
 - `agentx --env <env> signin check`: checks every piece sign-in needs, and says what to fix.
 - `agentx --env <env> signin unlink cloud|github`: removes that sign-in method from your own account and signs out
   its sessions; your other methods keep working. The method your account was created with, and your only method,
-  cannot be removed.
+  cannot be removed. It needs a sign-in from the last 10 minutes with a method you are keeping: if yours is older,
+  or is the method you are removing, the command signs you in again first and then retries once.
+- `agentx --env <env> signin link cloud|github`: adds a sign-in method you removed earlier back to your own account
+  (the same sign-in as before, never anyone else's). It needs the same fresh sign-in, opens the sign-in in your
+  browser, and the page there says when it is added. Run `agentx whoami` to see it. A sign-in that has since started
+  its own account cannot be added back.
 
 Developers need no AWS credentials: they run `npx @preplabsai/rovara-code login <control plane URL>`.
 To hand tasks to Rovara from Claude Code, Codex or Cursor, and to share them to Slack, they follow

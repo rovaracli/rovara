@@ -4,7 +4,7 @@ import { rm } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { agentXError, environmentStackName } from "@agentx/contracts";
 import {
-  githubAppJwt, githubAppManifest, githubAppSecretName, githubAppStep, githubNewAppUrl, githubRestApi, manifestFormPage, parseManifestCallback, startManifestListener,
+  githubAppJwt, githubAppManifest, githubAppSecretName, githubAppStep, githubNewAppUrl, githubRestApi, manifestFormPage, parseAppSecret, parseManifestCallback, startManifestListener,
 } from "../../packages/cli/src/init/github-app.js";
 import { emptyProgress, type InstallProgress } from "../../packages/cli/src/init/install-state.js";
 import { terminalPrompter, unattendedPrompter } from "../../packages/cli/src/init/prompts.js";
@@ -24,6 +24,9 @@ afterEach(async () => { await Promise.all(homes.splice(0).map((home) => rm(home,
 const SECRET = githubAppSecretName("staging");
 const WEBHOOK_URL = "https://abc123.execute-api.us-east-1.amazonaws.com/v1/github/webhooks";
 const GITHUB_WEBHOOK_SECRET = "github-made-webhook-secret-".padEnd(40, "g");
+const INSTALL_CALLBACK_URL = "https://abc123.execute-api.us-east-1.amazonaws.com/v1/github/install/callback";
+const OAUTH_CLIENT_ID = "Iv23liCLIENTidValue";
+const OAUTH_CLIENT_SECRET = "github-oauth-client-secret-".padEnd(40, "c");
 
 /** Spec 048 FR-032: an InitContext and ProgressHandle for the GitHub step, built like every other
  * test's `initContext()` and `progressHandle()`, extended with a seeded `githubPending`, a scripted
@@ -49,7 +52,7 @@ async function githubContext(input: {
 
 describe("GitHub App manifest", () => {
   it("the manifest subscribes to the four PR events and points the webhook at the control plane", () => {
-    expect(githubAppManifest({ appName: "AgentX acme (staging)", redirectUrl: "http://127.0.0.1:50123/github/created", webhookUrl: WEBHOOK_URL })).toEqual({
+    expect(githubAppManifest({ appName: "AgentX acme (staging)", redirectUrl: "http://127.0.0.1:50123/github/created", webhookUrl: WEBHOOK_URL, cloud: false, installCallbackUrl: INSTALL_CALLBACK_URL })).toEqual({
       name: "AgentX acme (staging)",
       url: "https://github.com/PrepLabsAI/Rovara",
       redirect_url: "http://127.0.0.1:50123/github/created",
@@ -60,13 +63,37 @@ describe("GitHub App manifest", () => {
     });
   });
 
+  it("a cloud manifest is public, asks for user authorization on install, and reads organization members", () => {
+    const manifest = githubAppManifest({ appName: "Rovara", redirectUrl: "http://127.0.0.1:50123/github/created", webhookUrl: WEBHOOK_URL, cloud: true, installCallbackUrl: INSTALL_CALLBACK_URL });
+    expect(manifest).toEqual({
+      name: "Rovara",
+      url: "https://github.com/PrepLabsAI/Rovara",
+      redirect_url: "http://127.0.0.1:50123/github/created",
+      public: true,
+      callback_urls: [INSTALL_CALLBACK_URL],
+      request_oauth_on_install: true,
+      setup_on_update: true,
+      hook_attributes: { url: WEBHOOK_URL, active: true },
+      default_permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", members: "read" },
+      default_events: ["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment"],
+    });
+  });
+
+  it("a private manifest carries none of the install-flow fields", () => {
+    const manifest = githubAppManifest({ appName: "Rovara", redirectUrl: "http://127.0.0.1:1/github/created", webhookUrl: WEBHOOK_URL, cloud: false, installCallbackUrl: INSTALL_CALLBACK_URL });
+    expect(Object.keys(manifest)).not.toEqual(expect.arrayContaining(["callback_urls"]));
+    expect(manifest).not.toHaveProperty("request_oauth_on_install");
+    expect(manifest).not.toHaveProperty("setup_on_update");
+    expect(manifest.default_permissions).not.toHaveProperty("members");
+  });
+
   it("opens the new-app page for an organization or a personal account", () => {
     expect(githubNewAppUrl({ account: "acme", accountType: "organization", state: "s1" })).toBe("https://github.com/organizations/acme/settings/apps/new?state=s1");
     expect(githubNewAppUrl({ account: "alice", accountType: "user", state: "s1" })).toBe("https://github.com/settings/apps/new?state=s1");
   });
 
   it("posts the manifest from an auto-submitting form, escaping everything", () => {
-    const page = manifestFormPage({ actionUrl: "https://github.com/settings/apps/new?state=s1", manifest: githubAppManifest({ appName: "A\"<b>'&", redirectUrl: "http://127.0.0.1:1/github/created", webhookUrl: "https://cp.example.test/v1/github/webhooks" }) });
+    const page = manifestFormPage({ actionUrl: "https://github.com/settings/apps/new?state=s1", manifest: githubAppManifest({ appName: "A\"<b>'&", redirectUrl: "http://127.0.0.1:1/github/created", webhookUrl: "https://cp.example.test/v1/github/webhooks", cloud: false, installCallbackUrl: INSTALL_CALLBACK_URL }) });
     expect(page).toContain('<form id="manifest-form" method="post" action="https://github.com/settings/apps/new?state=s1">');
     expect(page).toContain('name="manifest" value="{&quot;name&quot;:&quot;A\\&quot;&lt;b&gt;&#39;&amp;&quot;');
     expect(page).not.toContain("<b>");
@@ -138,6 +165,70 @@ describe("GitHub App step", () => {
     await githubAppStep(fakeGitHubApi()).run(context, progressHandle());
     expect(pages[0]).toContain(WEBHOOK_URL);
     expect(pages[0]).toContain("pull_request_review_comment");
+  });
+
+  it("a Rovara Cloud install posts a public manifest with the install callback URL; a private one does not", async () => {
+    const pageFor = async (answers: ReturnType<typeof sampleAnswers>): Promise<string> => {
+      const pages: string[] = [];
+      const context = initContext({
+        answers,
+        openBrowser: async () => true,
+        manifestHost: async (host) => {
+          pages.push(host.page("http://127.0.0.1:50123/github/created"));
+          return { startUrl: "http://127.0.0.1:50123/github/start", redirectUrl: "http://127.0.0.1:50123/github/created", port: 50123, code: Promise.resolve("0123456789abcdef0123"), close: () => undefined };
+        },
+      });
+      homes.push(context.home);
+      await githubAppStep(fakeGitHubApi()).run(context, progressHandle());
+      return pages[0]!;
+    };
+    const cloud = await pageFor(sampleAnswers({ cloud: true }));
+    expect(cloud).toContain("&quot;public&quot;:true");
+    expect(cloud).toContain(`&quot;callback_urls&quot;:[&quot;${INSTALL_CALLBACK_URL}&quot;]`);
+    expect(cloud).toContain("&quot;members&quot;:&quot;read&quot;");
+    const priv = await pageFor(sampleAnswers());
+    expect(priv).toContain("&quot;public&quot;:false");
+    expect(priv).not.toContain("callback_urls");
+  });
+
+  it("stores the conversion's client id and client secret in the app secret, and prints neither", async () => {
+    const api = fakeGitHubApi({ clientId: OAUTH_CLIENT_ID, clientSecret: OAUTH_CLIENT_SECRET });
+    const context = initContext({ openBrowser: browserThatCreatesGitHubApp([]) });
+    homes.push(context.home);
+    const progress = progressHandle();
+    await githubAppStep(api).run(context, progress);
+    expect(JSON.parse(context.secrets.values.get(SECRET)!)).toMatchObject({ appId: "424242", clientId: OAUTH_CLIENT_ID, clientSecret: OAUTH_CLIENT_SECRET, privateKey: TEST_PRIVATE_KEY });
+    expect(context.lines.join("\n")).not.toContain(OAUTH_CLIENT_SECRET);
+    expect(JSON.stringify(progress.value())).not.toContain(OAUTH_CLIENT_SECRET);
+    expect(parseAppSecret(context.secrets.values.get(SECRET)!, SECRET)).toMatchObject({ clientId: OAUTH_CLIENT_ID, clientSecret: OAUTH_CLIENT_SECRET });
+  });
+
+  it("a conversion with no client credentials stores none", async () => {
+    const context = initContext({ openBrowser: browserThatCreatesGitHubApp([]) });
+    homes.push(context.home);
+    await githubAppStep(fakeGitHubApi()).run(context, progressHandle());
+    const stored = JSON.parse(context.secrets.values.get(SECRET)!) as Record<string, unknown>;
+    expect(stored).not.toHaveProperty("clientId");
+    expect(stored).not.toHaveProperty("clientSecret");
+  });
+
+  it("after the first save, reads nothing back from Secrets Manager (the webhook setup uses the value just written)", async () => {
+    const secrets = memoryInitSecrets();
+    const events: string[] = [];
+    const get = secrets.get.bind(secrets);
+    const create = secrets.create.bind(secrets);
+    const put = secrets.put.bind(secrets);
+    secrets.get = async (name) => { events.push("get"); return get(name); };
+    secrets.create = async (name, value) => { events.push("save"); await create(name, value); };
+    secrets.put = async (name, value) => { events.push("save"); await put(name, value); };
+    const context = initContext({ secrets, openBrowser: browserThatCreatesGitHubApp([]) });
+    homes.push(context.home);
+    await githubAppStep(fakeGitHubApi({ webhookSecret: GITHUB_WEBHOOK_SECRET, clientId: OAUTH_CLIENT_ID, clientSecret: OAUTH_CLIENT_SECRET })).run(context, progressHandle());
+    const firstSave = events.indexOf("save");
+    expect(firstSave).toBeGreaterThanOrEqual(0);
+    expect(events.slice(firstSave)).not.toContain("get");
+    // The client credentials the first save held are still there once the webhook setup is done.
+    expect(JSON.parse(secrets.values.get(SECRET)!)).toMatchObject({ clientId: OAUTH_CLIENT_ID, clientSecret: OAUTH_CLIENT_SECRET, webhookSecret: GITHUB_WEBHOOK_SECRET });
   });
 
   it("falls back to the control plane's API endpoint for the webhook URL", async () => {

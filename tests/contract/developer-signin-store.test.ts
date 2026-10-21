@@ -135,7 +135,8 @@ describe("AgentX codes", () => {
     const wrongRedirect = await store.issueCode({ developerId, amr: "slack", slackUserId: "U0123ABCD", codeChallenge: challenge, redirectUri: redirect });
     expect(await store.redeemCode({ code: wrongRedirect, verifier, redirectUri: "http://127.0.0.1:49153/callback" })).toBeUndefined();
 
-    expect(await store.redeemCode({ code, verifier, redirectUri: redirect })).toEqual({ developerId, amr: "slack", slackUserId: "U0123ABCD" });
+    // The code carries when the person signed in (Plan 2, Task 8b): the time it was issued, which a session made from it keeps.
+    expect(await store.redeemCode({ code, verifier, redirectUri: redirect })).toEqual({ developerId, amr: "slack", slackUserId: "U0123ABCD", authTime: new Date(clock).toISOString() });
     expect(await store.redeemCode({ code, verifier, redirectUri: redirect })).toBeUndefined();
 
     const late = await store.issueCode({ developerId, amr: "oidc", codeChallenge: challenge, redirectUri: redirect });

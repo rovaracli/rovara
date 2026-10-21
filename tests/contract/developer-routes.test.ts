@@ -483,13 +483,13 @@ describe("checkProjectAccess, FR-018's first three checks (FR-013, FR-014, FR-04
     vi.fn(async (request: ChannelInfoRequest) => ({ ok: true as const, channels: request.channelIds.filter((id) => channels[id] !== undefined).map((channelId) => ({ channelId, ...channels[channelId]! })) }));
 
   it("grants a granted project, and a project through a bound channel the caller is in", async () => {
-    expect(await checkProjectAccess(deps(), maya, "solo")).toEqual({ revision: 1, policy: { enabled: true, share: "optional", shareMode: { default: "view", allowContinue: true }, channelMembersMayUse: true }, access: "granted", channelIds: [] });
-    expect(await checkProjectAccess(deps(), maya, "payments-api")).toMatchObject({ revision: 7, access: "channel" });
+    expect(await checkProjectAccess(deps(), maya, "solo")).toEqual({ revision: 1, policy: { enabled: true, share: "optional", shareMode: { default: "view", allowContinue: true }, channelMembersMayUse: true }, access: "granted", channelIds: [], role: "contributor" });
+    expect(await checkProjectAccess(deps(), maya, "payments-api")).toMatchObject({ revision: 7, access: "channel", role: "contributor" });
     expect(channelMembers).toHaveBeenLastCalledWith({ kind: "channel-members", slackUserId: "U0MAYA001", channelIds: ["C0PAY0001"] });
   });
 
   it("uses supplied fresh proof for a target subject without a session or cached Slack lookup", async () => {
-    const subject = { orgId: TEST_ORG, developerId, slackUserId: "U0MAYA001" };
+    const subject = { orgId: TEST_ORG, orgRole: "member" as const, developerId, slackUserId: "U0MAYA001" };
     channelMembers.mockRejectedValue(new Error("cached path must not run"));
 
     await expect(checkProjectAccess(deps(), subject, "payments-api", { freshMemberOf: ["C0PAY0001"] }))

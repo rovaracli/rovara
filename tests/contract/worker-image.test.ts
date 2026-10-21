@@ -75,7 +75,8 @@ describe("the worker image", () => {
   });
 
   it("is started by the EC2 boot script without overriding its entrypoint (#170, characterization)", () => {
-    const boot = readFileSync("packages/worker/ec2/boot.sh", "utf8");
+    // The unit and launcher are written by stage 2 of the boot, which ships in this image (Task 10).
+    const boot = readFileSync("packages/worker/ec2/boot-stage2.sh", "utf8");
     const unit = boot.slice(boot.indexOf('cat >"/etc/systemd/system/$WORKER_UNIT" <<EOF'), boot.indexOf("EOF\n}", boot.indexOf('cat >"/etc/systemd/system/$WORKER_UNIT" <<EOF')));
     const launcher = /cat >\/usr\/local\/libexec\/agentx-worker-start <<'LAUNCHER'\n([\s\S]*?)\nLAUNCHER/.exec(boot)?.[1] ?? "";
     expect(unit).toContain("ExecStart=/usr/local/libexec/agentx-worker-start");
@@ -105,7 +106,7 @@ describe("the worker image", () => {
   });
 
   it("hands the browser executor image to the processes that qualify the web/API runtime, and fails closed without it", () => {
-    const boot = readFileSync("packages/worker/ec2/boot.sh", "utf8");
+    const boot = readFileSync("packages/worker/ec2/boot-stage2.sh", "utf8");
     // worker.env feeds the container, so docker exec --user node agentx-worker (the qualifier) sees EXECUTOR_IMAGE.
     expect(boot).toContain(`[[ -z "\${EXECUTOR_IMAGE:-}" ]] || printf 'EXECUTOR_IMAGE=%s\\n' "$EXECUTOR_IMAGE" >>"$WORKER_ENV_FILE"`);
     expect(boot).toContain('--env-file "$WORKER_ENV_FILE"');

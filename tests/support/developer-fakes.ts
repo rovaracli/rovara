@@ -210,7 +210,7 @@ export function fakeSlack(options: { users: FakeSlackUser[]; channels?: Record<s
   };
 }
 
-export interface FakeOidcUser { sub: string; name?: string; email?: string; email_verified?: boolean; groups?: string[] }
+export interface FakeOidcUser { sub: string; name?: string; email?: string; email_verified?: boolean; groups?: string[]; /** The ID token's `auth_time` claim (epoch seconds): when the provider last authenticated the person. Absent: the token carries none. */ auth_time?: number }
 
 /** A company OIDC provider with discovery, a token endpoint (client_secret_basic) and keys. */
 export function fakeOidc(options: { users: FakeOidcUser[]; clientSecret?: string; now?: () => number }) {
