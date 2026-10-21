@@ -61,3 +61,39 @@ export type ProjectModelOptions = z.infer<typeof ProjectModelOptionsSchema>;
 export function modelKey(model: ModelIdentifier): string {
   return `${model.provider}\0${model.modelId}`;
 }
+
+export type ModelCompany = "anthropic" | "openai" | "google" | "other";
+
+const BEDROCK_REGION_PREFIX = /^(?:us|eu|apac|global)\./;
+
+/**
+ * The company that trained a model, whichever route reaches it: an Anthropic id over Bedrock or OpenRouter is
+ * still Anthropic's. Anything unrecognised is `other`, so a "different company" check never treats two
+ * unknown models as the same company by accident of a shared route.
+ */
+export function modelCompany(model: ModelIdentifier): ModelCompany {
+  const provider = model.provider.toLowerCase();
+  const id = model.modelId.toLowerCase();
+  if (provider === "anthropic") return "anthropic";
+  if (provider === "openai") return "openai";
+  if (provider === "amazon-bedrock" && id.replace(BEDROCK_REGION_PREFIX, "").startsWith("anthropic.")) return "anthropic";
+  if (provider === "openrouter") {
+    if (id.startsWith("anthropic/")) return "anthropic";
+    if (id.startsWith("openai/")) return "openai";
+    if (id.startsWith("google/")) return "google";
+  }
+  if (id.startsWith("gpt-")) return "openai";
+  if (id.startsWith("gemini")) return "google";
+  return "other";
+}
+
+/**
+ * One name for the same model across routes, so a budget or a price list written once matches
+ * `us.anthropic.claude-haiku-4-5-20251001-v1:0` on Bedrock and `anthropic/claude-haiku-4-5` on OpenRouter.
+ */
+export function canonicalModelName(model: ModelIdentifier): string {
+  let id = model.modelId;
+  if (model.provider === "amazon-bedrock") id = id.replace(BEDROCK_REGION_PREFIX, "").replace(/^anthropic\./, "");
+  if (model.provider === "openrouter") id = id.replace(/^[^/]+\//, "");
+  return id.replace(/-v\d+:\d+$/, "").replace(/-\d{8}$/, "").toLowerCase().replaceAll(".", "-");
+}
