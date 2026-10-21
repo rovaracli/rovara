@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MEMBER_GRANT_SK_PREFIX, memberGrantsPk, orgFailureIndexKey, orgLimitKey, orgProjectCatalogKey, orgProjectCatalogPk, orgSettingsKey, orgUsageIndexKey,
-  projectMemberKey, projectPk, projectRevisionKey, projectSelectionKey,
+  projectMemberKey, projectMetaKey, projectPk, projectRevisionKey, projectSelectionKey,
 } from "../../packages/contracts/src/org-scoped-keys.js";
 import { singleOrgIdForEnv, type OrgId } from "../../packages/contracts/src/org.js";
 import { checkProjectAccess, type DeveloperApiConfiguration, type DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
@@ -24,6 +24,7 @@ describe("org-scoped key builders", () => {
   it("prefix every collision-prone key with the org", () => {
     expect(projectRevisionKey(ORG_A, "web", 7)).toEqual({ pk: `ORG#${ORG_A}#PROJECT#web`, sk: "REV#000000000007" });
     expect(projectSelectionKey(ORG_A, "web")).toEqual({ pk: projectPk(ORG_A, "web"), sk: "SELECTION" });
+    expect(projectMetaKey(ORG_A, "web")).toEqual({ pk: projectPk(ORG_A, "web"), sk: "META" });
     expect(projectMemberKey(ORG_A, "owner-1", "web")).toEqual({ pk: `ORG#${ORG_A}#MEMBER#owner-1`, sk: "PROJECT#web" });
     expect(memberGrantsPk(ORG_A, "owner-1")).toBe(projectMemberKey(ORG_A, "owner-1", "web").pk);
     expect(MEMBER_GRANT_SK_PREFIX).toBe("PROJECT#");

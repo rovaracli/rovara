@@ -328,8 +328,9 @@ export class OrgStore {
       [
         {
           Update: {
-            TableName: this.input.tableName, Key: orgMemberKey(orgId, developerId), UpdateExpression: "SET #role = :role",
-            ConditionExpression: "attribute_exists(pk) AND #role = :current", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":role": role, ":current": current },
+            // `roleUpdatedAt` is what an E2E round's org-role proof records (Plan 2, Task 11), so a role changed and changed back reads as new.
+            TableName: this.input.tableName, Key: orgMemberKey(orgId, developerId), UpdateExpression: "SET #role = :role, roleUpdatedAt = :at",
+            ConditionExpression: "attribute_exists(pk) AND #role = :current", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":role": role, ":current": current, ":at": new Date(this.input.now()).toISOString() },
           },
         },
         {

@@ -66,7 +66,7 @@ describe("the PlanEvidence job", () => {
     expect(taskRecord(harness, taskId).workflow.artifacts.at(-1)).toEqual(artifact);
     // The page shows the code.
     const view = await getTaskDocumentView(
-      { orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
+      { orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() },
       { orgId: TEST_ORG, developerId: taskRecord(harness, taskId).developerId } as never, taskId);
     expect(view.documents[0]).toMatchObject({ evidence: { excerpts: [{ status: "ok", lines: ["two", "three"] }] } });
   });
@@ -274,7 +274,7 @@ describe("a deployment with no PlanEvidence function", () => {
     expect(bundleOf(harness, taskId, artifact.id).excerpts).toEqual([expect.objectContaining({ claimId: "1", status: "ok", lines: ["two", "three"] })]);
     // The page reads it as it reads a job's bundle.
     const view = await getTaskDocumentView(
-      { orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
+      { orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() },
       { orgId: TEST_ORG, developerId: taskRecord(harness, taskId).developerId } as never, taskId);
     expect(view.documents[0]).toMatchObject({ evidence: { excerpts: [{ status: "ok", lines: ["two", "three"] }] } });
   });

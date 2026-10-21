@@ -55,7 +55,7 @@ async function waitingTask(options: { fromTool?: boolean; queue?: false | ((sent
   const sent: Sent[] = [];
   const deps: DeveloperTaskRouteDependencies = { orgId: TEST_ORG,
     documentClient: validatingDocumentClient(harness.db), tableName: "state", actions: harness.actions,
-    checkAccess: async () => ({ revision: 1, policy: {} as never, access: "channel", channelIds: [SLACK_CHANNEL] }),
+    checkAccess: async () => ({ revision: 1, policy: {} as never, access: "channel", channelIds: [SLACK_CHANNEL], role: "contributor" as const }),
     projectChannelIds: async () => [SLACK_CHANNEL], now: () => Date.now(), log: () => undefined, channelMember: async () => true,
     ...(options.wrap === undefined ? {} : { documentClient: options.wrap(validatingDocumentClient(harness.db)) }),
     ...(options.queue === false ? {} : { slackRequestQueue: { send: async (message: Sent) => { if (typeof options.queue === "function") await options.queue(message); sent.push(message); } } }),

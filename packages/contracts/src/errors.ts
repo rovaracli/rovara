@@ -42,6 +42,8 @@ export const AgentXErrorCodeSchema = z.enum([
   "TRIAL_LOCKED",
   "TRIAL_GITHUB_USED",
   "MACHINE_TIME_EXCEEDED",
+  "PROJECT_NAME_TAKEN",
+  "PROJECT_ARCHIVED",
 ]);
 
 export type AgentXErrorCode = z.infer<typeof AgentXErrorCodeSchema>;

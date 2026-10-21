@@ -9,8 +9,10 @@ import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentXNameSchema,
   CHANNEL_MEMBERS_MAX_CHANNELS,
+  DEFAULT_DEVCONTAINER_CONFIG_PATH,
   DEVELOPER_TOKEN_AUDIENCE,
   DEVELOPER_WORKSPACES_PER_PROJECT,
+  StoredProjectDefinitionSchema,
   WORKSPACE_PROJECT_INDEX,
   WorkspaceInstanceSchema,
   TaskPersonProofResponseSchema,
@@ -21,12 +23,19 @@ import {
   PROJECT_REVISION_SK_PREFIX,
   SLACK_BINDING_SK_PREFIX,
   developerTaskPolicy,
+  formatCommandLine,
   memberGrantsPk,
+  orgProjectCatalogPk,
   workspaceProjectIndexValue,
   projectPk,
   slackBindingPk,
   workspaceRecordFields,
   type AppMeResponse,
+  type AppProjectDetail,
+  type AppProjectSummary,
+  type AppProjectsResponse,
+  type ProjectRole,
+  type ProjectSetupStatus,
   type ChannelByNameRequest,
   type ChannelByNameResponse,
   type ChannelInfoRequest,
@@ -66,6 +75,7 @@ import {
   type TaskPeopleDisplayReadResponse,
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
+import { effectiveProjectRole, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
 import { DEFAULT_ROVARA_WEB_ORIGIN, inviteUrl } from "../org/invite-url.js";
 import { parseCreateProjectBody, requireAllowedGithubOwner, type CreateProjectInput } from "../org/cloud-projects.js";
@@ -166,7 +176,8 @@ export class StatusReply {
   constructor(readonly statusCode: number, readonly body: object) {}
 }
 /** Who is asking about a project, and in which org: grants and revisions are read in that org only. */
-export type ProjectAccessCaller = ProjectAccessSubject & { orgId: OrgId };
+export type ProjectAccessCaller = ProjectAccessSubject & { orgId: OrgId; orgRole: OrgRole };
+export { effectiveProjectRole, requireNewWorkAllowed };
 export interface DeveloperCaller { developerId: string; sessionId: string; amr: DeveloperSignInMethod; name: string; slackUserId?: string; email?: string; orgId: OrgId; orgRole: OrgRole }
 
 /** What the broker needs from a Lambda invoke; `@aws-sdk/client-lambda`'s InvokeCommand output fits. */
@@ -681,6 +692,141 @@ async function listProjects(deps: DeveloperRouteDependencies, caller: DeveloperC
   };
 }
 
+type StoredProject = z.infer<typeof StoredProjectDefinitionSchema>;
+
+/** A project's latest revision as stored, with who registered it and when; undefined when it has none or the revision no longer parses. */
+async function latestProjectRecord(deps: DeveloperRouteDependencies, orgId: OrgId, project: string): Promise<{ definition: StoredProject; registeredBy: string; registeredAt: string } | undefined> {
+  const response = await deps.documentClient.send(new QueryCommand({
+    TableName: deps.tableName,
+    KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+    ExpressionAttributeValues: { ":pk": projectPk(orgId, project), ":prefix": PROJECT_REVISION_SK_PREFIX },
+    ScanIndexForward: false,
+    Limit: 1,
+    ConsistentRead: true,
+  })) as { Items?: Array<{ definition?: unknown; registeredBy?: unknown; registeredAt?: unknown }> };
+  const item = response.Items?.[0];
+  if (item === undefined) return undefined;
+  const definition = StoredProjectDefinitionSchema.safeParse(item.definition);
+  if (!definition.success) {
+    logDeveloperEvent({ event: "developer.project_unreadable", project, reason: definition.error.issues[0]?.message ?? "invalid" });
+    return undefined;
+  }
+  return { definition: definition.data, registeredBy: typeof item.registeredBy === "string" ? item.registeredBy : "unknown", registeredAt: typeof item.registeredAt === "string" ? item.registeredAt : "" };
+}
+
+/** GitHub's spelling of a repository, `owner/name`, from its URL; the repository's own name when the URL is no GitHub path. */
+function repositoryFullName(repository: { name: string; url: string }): string {
+  try {
+    const parts = new URL(repository.url).pathname.replace(/\.git$/, "").split("/").filter(Boolean);
+    if (parts.length === 2) return parts.join("/");
+  } catch { /* fall through to the name */ }
+  return repository.name;
+}
+
+/** The setup status, derived on every read from the project's META and the check's workspace (Plan 2, Task 22 writes `setupCheck`). */
+async function setupStateOf(deps: DeveloperRouteDependencies, meta: ProjectMetaItem | undefined, latestRevision: number): Promise<AppProjectSummary["setup"]> {
+  const check = meta?.setupCheck;
+  if (check === undefined) return { status: "unchecked" };
+  const checked = { checkedRevision: check.revision, checkedAt: check.startedAt };
+  if (check.revision < latestRevision) return { status: "outdated", ...checked };
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: `WORKSPACE#${check.workspaceId}`, sk: "META" }, ConsistentRead: true })) as { Item?: { status?: string } };
+  const workspace = response.Item?.status;
+  if (workspace === undefined) return { status: "unchecked" };
+  const status: ProjectSetupStatus = workspace === "PREPARING" ? "checking" : workspace === "PREPARATION_FAILED" ? "failed" : "ready";
+  return { status, ...checked };
+}
+
+async function appProjectSummary(
+  deps: DeveloperRouteDependencies,
+  name: string,
+  role: ProjectRole,
+  record: NonNullable<Awaited<ReturnType<typeof latestProjectRecord>>>,
+  meta: ProjectMetaItem | undefined,
+): Promise<AppProjectSummary> {
+  const { definition } = record;
+  return {
+    name,
+    ...(meta?.description === undefined ? {} : { description: meta.description }),
+    status: meta?.status ?? "active",
+    latestRevision: definition.revision,
+    repositories: definition.repositories.map((repository) => ({ fullName: repositoryFullName(repository), defaultBranch: repository.defaultBranch })),
+    myRole: role,
+    setup: await setupStateOf(deps, meta, definition.revision),
+  };
+}
+
+/**
+ * The projects the caller may see in the app and their role in each. Org owners and admins see every project in the org's own
+ * catalog, as maintainers. Anyone else sees what a grant or channel access gives, as listProjects resolves it: contributors. Every
+ * read is keyed by `caller.orgId`, so another org's project of the same name is never reached. With `only`, just that name.
+ */
+async function visibleProjectRoles(deps: DeveloperRouteDependencies, caller: DeveloperCaller, only?: string): Promise<Map<string, ProjectRole>> {
+  const roles = new Map<string, ProjectRole>();
+  if (caller.orgRole === "owner" || caller.orgRole === "admin") {
+    const names = only !== undefined ? [only]
+      : (await queryAll<{ name?: unknown }>(deps, orgProjectCatalogPk(caller.orgId), "PROJECT#")).flatMap((entry) => (typeof entry.name === "string" ? [entry.name] : []));
+    for (const name of names) roles.set(name, effectiveProjectRole(caller, undefined, false)!);
+    return roles;
+  }
+  const grants = (await grantsOf(deps, caller)).filter((name) => only === undefined || name === only);
+  const bindings = (await bindingsOf(deps, caller.orgId)).filter((binding) => only === undefined || binding.projectName === only);
+  const policies = await projectsWithPolicy(deps, caller.orgId, [...grants, ...bindings.map((binding) => binding.projectName)]);
+  const access = await resolveDeveloperAccess({
+    grants, bindings,
+    ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
+    channelMembersMayUse: (project) => policies.get(project)?.policy.channelMembersMayUse === true,
+    channelMembers: safeChannelMembers(deps),
+  });
+  for (const [name, entry] of access.projects) {
+    const role = effectiveProjectRole(caller, entry.access === "granted" ? { role: "developer" } : undefined, entry.access === "channel");
+    if (role !== undefined && policies.has(name)) roles.set(name, role);
+  }
+  return roles;
+}
+
+/** `GET /v1/app/projects`: the caller's projects, sorted by name. Archived ones only with `?include=archived`. */
+async function listAppProjects(deps: DeveloperRouteDependencies, caller: DeveloperCaller, includeArchived: boolean): Promise<AppProjectsResponse> {
+  const roles = await visibleProjectRoles(deps, caller);
+  const names = [...roles.keys()].sort();
+  const built = await mapLimit(names, REVISION_READS_AT_ONCE, async (name) => {
+    const [record, meta] = await Promise.all([latestProjectRecord(deps, caller.orgId, name), readProjectMeta(deps, caller.orgId, name)]);
+    // A catalog entry with no readable revision is not a project the app can show.
+    if (record === undefined || (meta?.status === "archived" && !includeArchived)) return undefined;
+    return appProjectSummary(deps, name, roles.get(name)!, record, meta);
+  });
+  return { projects: built.filter((project): project is AppProjectSummary => project !== undefined) };
+}
+
+const PROJECT_NOT_FOUND_IN_APP = "project not found";
+
+/** `GET /v1/app/projects/{name}`: no access, no such project and another org's project all answer the same 404 PROJECT_NOT_FOUND. */
+async function getAppProject(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string): Promise<AppProjectDetail> {
+  const notFound = () => agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
+  let name: string;
+  try { name = decodeURIComponent(rawName); } catch { throw notFound(); }
+  if (!AgentXNameSchema.safeParse(name).success) throw notFound();
+  const role = (await visibleProjectRoles(deps, caller, name)).get(name);
+  if (role === undefined) throw notFound();
+  const [record, meta] = await Promise.all([latestProjectRecord(deps, caller.orgId, name), readProjectMeta(deps, caller.orgId, name)]);
+  if (record === undefined) throw notFound();
+  const { definition } = record;
+  const createdBy = meta?.createdBy ?? "unknown";
+  const creator = createdBy === "unknown" ? undefined : await signInStoreOf(deps).getDeveloper(createdBy);
+  return {
+    ...await appProjectSummary(deps, name, role, record, meta),
+    settings: {
+      setupCommands: definition.setup.map(formatCommandLine),
+      testCommands: definition.readiness.map(formatCommandLine),
+      devcontainer: definition.devcontainer === undefined ? null
+        : { repository: definition.devcontainer.repository, configPath: definition.devcontainer.configPath ?? DEFAULT_DEVCONTAINER_CONFIG_PATH },
+      // Until egress items exist (Plan 2, Task 18) a project stores no domains of its own to show.
+      allowedDomains: [],
+    },
+    createdAt: meta?.createdAt ?? record.registeredAt,
+    createdBy: { developerId: createdBy, name: creator?.displayName ?? "Unknown" },
+  };
+}
+
 /**
  * FR-018's first three checks, in order, for one project; the start route calls it (Task 8), and
  * every route must call it before a DeveloperTaskActions member that trusts its caller.
@@ -693,14 +839,17 @@ export async function checkProjectAccess(
   caller: ProjectAccessCaller,
   project: string,
   membership?: { freshMemberOf: readonly string[] },
-): Promise<{ revision: number; policy: DeveloperTaskPolicy; access: "granted" | "channel"; channelIds: string[] }> {
+): Promise<{ revision: number; policy: DeveloperTaskPolicy; access: "granted" | "channel"; channelIds: string[]; role: ProjectRole }> {
   // A name that is not a project name is never echoed back: it could be long or carry markup.
   if (!AgentXNameSchema.safeParse(project).success) throw agentXError("PROJECT_NOT_FOUND", "that is not a valid AgentX project name");
   const known = (await projectsWithPolicy(deps, caller.orgId, [project])).get(project);
   if (known === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${project}\` doesn't exist in this AgentX`);
   const grants = (await grantsOf(deps, caller)).filter((name) => name === project);
   const bindings = (await bindingsOf(deps, caller.orgId)).filter((binding) => binding.projectName === project);
-  const projectMemberships = grants.map((projectName) => ({ projectName, role: "developer" }));
+  // An org owner or admin counts as granted on every project in their org, with no grant (Plan 2, Task 11, I4). A project of another org
+  // is never reached: `known` and every row read above are this org's.
+  const orgMaintainer = caller.orgRole === "owner" || caller.orgRole === "admin";
+  const projectMemberships = grants.length > 0 || orgMaintainer ? [{ projectName: project, role: "developer" }] : [];
   const evaluate = (freshMemberOf?: readonly string[]) => evaluateProjectAuthority({
     project,
     revision: { revision: known.revision, definition: { developerTasks: known.policy } },
@@ -732,7 +881,11 @@ export async function checkProjectAccess(
       : [...(await channelNames(deps, result.visibleChannelIds)).values()].filter((channel) => !channel.isPrivate).map((channel) => channel.name).sort();
     throw agentXError("PROJECT_ACCESS_DENIED", accessDeniedMessage(project, visible));
   }
-  return { revision: result.revision, policy: result.policy, access: result.access, channelIds: result.channelIds };
+  // This function never refuses an archived project or a viewer: those refusals are requireNewWorkAllowed's, at the places new work
+  // starts, because the E2E rechecks of a running task's creator also come through here.
+  const role = effectiveProjectRole(caller, grants.length > 0 ? { role: "developer" } : undefined, result.access === "channel");
+  if (role === undefined) throw agentXError("PROJECT_ACCESS_DENIED", accessDeniedMessage(project, []));
+  return { revision: result.revision, policy: result.policy, access: result.access, channelIds: result.channelIds, role };
 }
 
 /**
@@ -977,6 +1130,9 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   const caller = await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization));
   if (request.method === "GET" && url.pathname === "/v1/app/me") return getAppMe(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);
+  if (request.method === "GET" && url.pathname === "/v1/app/projects") return listAppProjects(deps, caller, url.searchParams.get("include") === "archived");
+  const appProject = /^\/v1\/app\/projects\/([^/]+)$/.exec(url.pathname);
+  if (request.method === "GET" && appProject !== null) return getAppProject(deps, caller, appProject[1]!);
   if (request.method === "POST" && url.pathname === "/v1/dev/projects") return createProject(deps, caller, jsonBody(request));
   if (request.method === "GET" && url.pathname === "/v1/dev/workspaces") return listWorkspaces(deps, caller);
   if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);

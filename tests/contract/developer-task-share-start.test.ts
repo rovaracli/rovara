@@ -30,7 +30,7 @@ describe("the client a task keeps (FR-033)", () => {
       const request = { method: "POST", path: "/v1/dev/tasks", headers: {}, requestId: randomUUID(), body: JSON.stringify(start({ client: "slack" })) };
       return await routeDeveloperTaskRequest({ orgId: TEST_ORG,
         documentClient: db, tableName: "state", actions, now: () => Date.now(),
-        checkAccess: async () => ({ revision: 1, policy: DEFAULT_DEVELOPER_TASK_POLICY, access: "granted", channelIds: [] }),
+        checkAccess: async () => ({ revision: 1, policy: DEFAULT_DEVELOPER_TASK_POLICY, access: "granted", channelIds: [], role: "contributor" as const }),
         projectChannelIds: async () => [],
       }, caller, request, new URL("https://agentx.test/v1/dev/tasks")) as { task: { taskId: string } };
     };
@@ -128,7 +128,7 @@ describe("sharing at the start (FR-031)", () => {
     const caller = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: MAYA.provider, name: MAYA.name, slackUserId: MAYA.slackUserId! };
     const refusal = await routeDeveloperTaskRequest({ orgId: TEST_ORG,
       documentClient: db, tableName: "state", actions, now: () => Date.now(),
-      checkAccess: async () => ({ revision: 1, policy: DEFAULT_DEVELOPER_TASK_POLICY, access: "granted", channelIds: [SLACK_CHANNEL] }),
+      checkAccess: async () => ({ revision: 1, policy: DEFAULT_DEVELOPER_TASK_POLICY, access: "granted", channelIds: [SLACK_CHANNEL], role: "contributor" as const }),
       projectChannelIds: async () => [],
       boundChannels: async (channelIds) => channelIds.map((channelId) => ({ channelId, name: "payments-dev", isPrivate: false })),
     }, caller, { method: "POST", path: "/v1/dev/tasks", headers: {}, requestId: randomUUID(), body: JSON.stringify(start({ shareToChannel: true })) }, new URL("https://agentx.test/v1/dev/tasks")).then(() => undefined, (error: unknown) => error);

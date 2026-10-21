@@ -146,6 +146,7 @@ import {
   workflowFindingAccepted,
   workflowFindingProblem,
   capText,
+  type ProjectRole,
 } from "@agentx/contracts";
 import { z } from "zod";
 import { channelLabel, decideMode, decideShare, type BoundChannel, type ShareDecision } from "../developer/share.js";
@@ -213,6 +214,7 @@ import {
 } from "../developer/owner-answers.js";
 import type { TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
 import { requireCreatorStillMember } from "../developer/creator-member.js";
+import { requireNewWorkAllowed } from "../developer/project-roles.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -242,7 +244,7 @@ export interface DeveloperTaskRouteDependencies {
   refreshTaskFeedback?(taskId: string): Promise<void>;
   /** Present only for a Slack-signed internal task start; the existing thread becomes the task thread. */
   initialSlackThread?: { teamId: string; channelId: string; threadTs: string };
-  checkAccess(project: string): Promise<{ revision: number; policy: DeveloperTaskPolicy; access: "granted" | "channel"; channelIds: string[] }>;
+  checkAccess(project: string): Promise<{ revision: number; policy: DeveloperTaskPolicy; access: "granted" | "channel"; channelIds: string[]; role: ProjectRole }>;
   /** C3: bound channels' names and privacy, best effort (R10). */
   boundChannels?(channelIds: readonly string[]): Promise<BoundChannel[]>;
   /**
@@ -1358,7 +1360,7 @@ async function chargeFailure(deps: DeveloperTaskRouteDependencies, charge: Works
   }
 }
 
-type ProjectAccess = Awaited<ReturnType<DeveloperTaskRouteDependencies["checkAccess"]>>;
+type ProjectAccess = Omit<Awaited<ReturnType<DeveloperTaskRouteDependencies["checkAccess"]>>, "role">;
 
 /**
  * C3: where and how a task is shared, or undefined for a private one. Names are read only when a
@@ -1452,6 +1454,8 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
   let access: Awaited<ReturnType<DeveloperTaskRouteDependencies["checkAccess"]>>;
   try {
     access = await deps.checkAccess(request.project);
+    // Plan 2, Task 11: an archived project, or a role that may not start tasks, refuses only here, where new work starts.
+    await requireNewWorkAllowed(deps, deps.orgId, request.project, access.role, "task");
   } catch (error) {
     if (error instanceof AgentXError) return refused(error);
     throw error;

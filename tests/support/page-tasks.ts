@@ -86,7 +86,7 @@ export function pageTask(options: { path?: "QUICK" | "FULL"; reviewPhase?: "REQU
       },
       operations: async () => [],
     } as unknown as DeveloperTaskRouteDependencies["actions"],
-    checkAccess: vi.fn(async () => ({ revision: 1, policy: {} as never, access: "channel" as const, channelIds: [CHANNEL] })),
+    checkAccess: vi.fn(async () => ({ revision: 1, policy: {} as never, access: "channel" as const, channelIds: [CHANNEL], role: "contributor" as const })),
     channelMember: vi.fn(async (slackUserId: string) => members.has(slackUserId)),
     projectChannelIds: async () => [CHANNEL],
     now: () => now,

@@ -560,7 +560,7 @@ describe("a removed creator's work stops (ruling R60)", () => {
   /** What a route needs when a background path (a Slack press, the dispatcher) acts for the task's creator. */
   const routeDeps = (harness: Harness) => ({
     documentClient: harness.db, tableName: "state", actions: harness.actions, now: Date.now, orgId: TEST_ORG,
-    checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [],
+    checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [],
   });
   const asCreator = (who: Developer) => ({ developerId: who.developerId, sessionId: "workflow-dispatch", amr: who.provider, name: who.name, orgId: TEST_ORG, orgRole: "member" as const });
   const gateway = () => ({
