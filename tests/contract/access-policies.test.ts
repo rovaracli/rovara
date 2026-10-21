@@ -12,6 +12,7 @@ const scope: PolicyScope = {
 // role-scoped (the first test pins their resource to this environment's role path), not user, group or
 // managed-policy management.
 const ROLE_SCOPED_POLICY_ACTIONS = ["iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:AttachRolePolicy"];
+const COGNITO_EMAIL_SLR = "arn:aws:iam::123456789012:role/aws-service-role/email.cognito-idp.amazonaws.com/AWSServiceRoleForAmazonCognitoIdpEmailService";
 const actions = (statements: ReturnType<typeof serviceRoleStatements>) => statements.flatMap((s) => s.Action);
 
 describe("service role policy", () => {
@@ -28,7 +29,9 @@ describe("service role policy", () => {
   it("scopes every IAM action to the environment's role path, except service-linked roles", () => {
     for (const statement of serviceRoleStatements(scope).filter((s) => s.Action.some((a) => a.startsWith("iam:")))) {
       const resources = [statement.Resource].flat();
-      if (statement.Sid === "ServiceLinkedRoles") {
+      if (statement.Sid === "CognitoEmailServiceLinkedRole") {
+        expect(resources).toEqual([COGNITO_EMAIL_SLR]);
+      } else if (statement.Sid === "ServiceLinkedRoles") {
         expect(resources).toEqual(["arn:aws:iam::123456789012:role/aws-service-role/*"]);
         expect(statement.Condition?.StringLike?.["iam:AWSServiceName"]).toBeDefined();
       } else if (statement.Sid === "IamInstanceProfiles") {
@@ -74,6 +77,18 @@ describe("service role policy", () => {
   it("creates only the ECS, load balancer, database and Route 53 Resolver service-linked roles", () => {
     const linked = serviceRoleStatements(scope).find((s) => s.Sid === "ServiceLinkedRoles")!;
     expect(linked.Condition).toEqual({ StringLike: { "iam:AWSServiceName": ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com", "route53resolver.amazonaws.com"] } });
+  });
+
+  it("may create the Cognito email service-linked role (Task 7) and only that one, by its exact ARN and service name", () => {
+    // Cognito creates AWSServiceRoleForAmazonCognitoIdpEmailService when a user pool first sends with Amazon SES (EmailSendingAccount DEVELOPER);
+    // the caller needs iam:CreateServiceLinkedRole (https://docs.aws.amazon.com/cognito/latest/developerguide/using-service-linked-roles.html).
+    const statement = serviceRoleStatements(scope).find((s) => s.Sid === "CognitoEmailServiceLinkedRole")!;
+    expect(statement).toEqual({
+      Sid: "CognitoEmailServiceLinkedRole", Effect: "Allow", Action: ["iam:CreateServiceLinkedRole"], Resource: COGNITO_EMAIL_SLR,
+      Condition: { StringEquals: { "iam:AWSServiceName": "email.cognito-idp.amazonaws.com" } },
+    });
+    // The wider statement keeps its four services and does not grow.
+    expect(serviceRoleStatements(scope).find((s) => s.Sid === "ServiceLinkedRoles")!.Condition).toEqual({ StringLike: { "iam:AWSServiceName": ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com", "route53resolver.amazonaws.com"] } });
   });
 
   it("never grants iam:* or wildcard IAM user, group or policy management", () => {
@@ -189,6 +204,18 @@ describe("operator role policy", () => {
     expect(alarm.Resource).toBe("arn:aws:cloudwatch:us-east-1:123456789012:alarm:agentx-staging-TestAlarm");
   });
 
+  it("may read SES identities and the account's sending status for agentx signin cloud --email-from (Task 7), and send or change nothing", () => {
+    const statements = operatorRoleStatements(scope);
+    expect(statements.find((s) => s.Sid === "SesIdentityCheck")).toEqual({
+      Sid: "SesIdentityCheck", Effect: "Allow", Action: ["ses:GetEmailIdentity"], Resource: "arn:aws:ses:us-east-1:123456789012:identity/*",
+    });
+    // ses:GetAccount takes no resource, so "*" with the region condition (as Addresses does).
+    expect(statements.find((s) => s.Sid === "SesAccountCheck")).toEqual({
+      Sid: "SesAccountCheck", Effect: "Allow", Action: ["ses:GetAccount"], Resource: "*", Condition: { StringEquals: { "aws:RequestedRegion": "us-east-1" } },
+    });
+    expect(actions(statements).filter((a) => a.startsWith("ses:")).sort()).toEqual(["ses:GetAccount", "ses:GetEmailIdentity"]);
+  });
+
   it("may read only this environment's budget, and change none", () => {
     const budget = operatorRoleStatements(scope).find((s) => s.Sid === "Budget")!;
     expect(budget.Action).toEqual(["budgets:ViewBudget"]);
@@ -276,6 +303,17 @@ describe("default permission boundary", () => {
       Resource: "arn:aws:iam::123456789012:role/aws-service-role/*",
       Condition: { StringLike: { "iam:AWSServiceName": ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com", "route53resolver.amazonaws.com"] } },
     });
+  });
+
+  it("lets the roles it bounds create the Cognito email service-linked role and read SES identity and account status (Task 7), no more", () => {
+    const byId = Object.fromEntries(allows.map((s) => [s.Sid, s]));
+    expect(byId.CognitoEmailServiceLinkedRole).toEqual({
+      Sid: "CognitoEmailServiceLinkedRole", Effect: "Allow", Action: ["iam:CreateServiceLinkedRole"], Resource: COGNITO_EMAIL_SLR,
+      Condition: { StringEquals: { "iam:AWSServiceName": "email.cognito-idp.amazonaws.com" } },
+    });
+    expect(byId.SesIdentityCheck).toEqual({ Sid: "SesIdentityCheck", Effect: "Allow", Action: ["ses:GetEmailIdentity"], Resource: "arn:aws:ses:us-east-1:123456789012:identity/*" });
+    expect(byId.SesAccountCheck).toEqual({ Sid: "SesAccountCheck", Effect: "Allow", Action: ["ses:GetAccount"], Resource: "*", Condition: { StringEquals: { "aws:RequestedRegion": "us-east-1" } } });
+    expect(BOUNDARY_SERVICES).not.toContain("ses");
   });
 
   it("explicitly denies account, organization, user, group and policy management, and changing itself", () => {

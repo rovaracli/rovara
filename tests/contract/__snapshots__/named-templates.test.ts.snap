@@ -449,6 +449,34 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 },
                 {
                   "Action": [
+                    "iam:CreateServiceLinkedRole",
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "iam:AWSServiceName": "email.cognito-idp.amazonaws.com",
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":iam::",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":role/aws-service-role/email.cognito-idp.amazonaws.com/AWSServiceRoleForAmazonCognitoIdpEmailService",
+                      ],
+                    ],
+                  },
+                  "Sid": "CognitoEmailServiceLinkedRole",
+                },
+                {
+                  "Action": [
                     "budgets:ModifyBudget",
                     "budgets:ViewBudget",
                     "budgets:TagResource",
@@ -697,6 +725,76 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 ],
               },
               "Sid": "ServiceLinkedRoles",
+            },
+            {
+              "Action": [
+                "iam:CreateServiceLinkedRole",
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "iam:AWSServiceName": "email.cognito-idp.amazonaws.com",
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":iam::",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":role/aws-service-role/email.cognito-idp.amazonaws.com/AWSServiceRoleForAmazonCognitoIdpEmailService",
+                  ],
+                ],
+              },
+              "Sid": "CognitoEmailServiceLinkedRole",
+            },
+            {
+              "Action": [
+                "ses:GetEmailIdentity",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ses:",
+                    {
+                      "Ref": "AWS::Region",
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":identity/*",
+                  ],
+                ],
+              },
+              "Sid": "SesIdentityCheck",
+            },
+            {
+              "Action": [
+                "ses:GetAccount",
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "aws:RequestedRegion": {
+                    "Ref": "AWS::Region",
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Resource": "*",
+              "Sid": "SesAccountCheck",
             },
             {
               "Action": [
@@ -1496,6 +1594,48 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   "Effect": "Allow",
                   "Resource": "*",
                   "Sid": "Addresses",
+                },
+                {
+                  "Action": [
+                    "ses:GetEmailIdentity",
+                  ],
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":ses:",
+                        {
+                          "Ref": "AWS::Region",
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":identity/*",
+                      ],
+                    ],
+                  },
+                  "Sid": "SesIdentityCheck",
+                },
+                {
+                  "Action": [
+                    "ses:GetAccount",
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "aws:RequestedRegion": {
+                        "Ref": "AWS::Region",
+                      },
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": "*",
+                  "Sid": "SesAccountCheck",
                 },
                 {
                   "Action": [

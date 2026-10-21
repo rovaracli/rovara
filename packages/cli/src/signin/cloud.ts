@@ -4,7 +4,10 @@
 // stores it (the environment settings' cloudSignIn and init's own answers, so a later resume does not
 // refuse the new value) and into the control-plane stack's parameters, which deploy and upgrade read
 // back from the same settings. Runs under the environment lock. No secret value is read or printed.
+// --email-from (Task 7) also sets the sender of the sign-in code email: Amazon SES must have verified the sending
+// domain, and the account's sandbox status is reported (a warning, never a refusal).
 import { DescribeStacksCommand, type Stack } from "@aws-sdk/client-cloudformation";
+import { GetAccountCommand, GetEmailIdentityCommand } from "@aws-sdk/client-sesv2";
 import { AgentXError, agentXError, environmentStackName } from "@agentx/contracts";
 import { CloudSignInAnswersSchema, type CloudSignInAnswers } from "../deploy/answer-schemas.js";
 import { updateStackParameters } from "../deploy/parameter-update.js";
@@ -13,11 +16,14 @@ import { readEnvironmentSettings, writeEnvironmentSettings, type EnvironmentSett
 import { readInstallAnswers, writeInstallAnswers } from "../init/install-state.js";
 import { errorReason } from "./apply.js";
 import { installed, type SigninServices } from "./commands.js";
+import { describeEmailSender } from "./settings.js";
 
 export interface CloudSignInFlags {
   githubClientId?: string; githubClientSecretArn?: string;
   googleClientId?: string; googleClientSecretArn?: string;
   noGithub?: boolean; noGoogle?: boolean;
+  /** `Name <address>` or an address: the sender of the sign-in code email, sent through Amazon SES. */
+  emailFrom?: string; noEmailFrom?: boolean;
 }
 
 export interface CloudSignInResult {
@@ -58,9 +64,52 @@ function checkFlags(flags: CloudSignInFlags): void {
       throw agentXError("CONFIG_INVALID", `${idFlag} and ${arnFlag} go together (omit both to leave ${label} sign-in as it is, or use ${offFlag} to turn it off)`);
     }
   }
-  if (METHOD_IDS.every((method) => off[method] !== true && given[method][0] === undefined)) {
-    throw agentXError("CONFIG_INVALID", "give --github-client-id and --github-client-secret-arn, --google-client-id and --google-client-secret-arn, --no-github or --no-google");
+  if (flags.noEmailFrom === true && flags.emailFrom !== undefined) throw agentXError("CONFIG_INVALID", "--no-email-from cannot be combined with --email-from");
+  if (flags.emailFrom !== undefined) parseSender(flags.emailFrom);
+  if (METHOD_IDS.every((method) => off[method] !== true && given[method][0] === undefined) && flags.emailFrom === undefined && flags.noEmailFrom !== true) {
+    throw agentXError("CONFIG_INVALID", "give --github-client-id and --github-client-secret-arn, --google-client-id and --google-client-secret-arn, --email-from, --no-github, --no-google or --no-email-from");
   }
+}
+
+const SENDER = /^(?:[^<>]+?\s*<([^<>@\s,]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+))>|([^<>@\s,]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)))$/;
+
+/** The sender as Cognito will show it, and the domain Amazon SES must have verified; the address is the part after the last @. */
+function parseSender(value: string): { from: string; domain: string } {
+  const from = value.trim();
+  const match = SENDER.exec(from);
+  const domain = (match?.[2] ?? match?.[4])?.toLowerCase();
+  if (domain === undefined) throw agentXError("CONFIG_INVALID", `--email-from ${JSON.stringify(value)} is not "Name <address>" or an address with a domain, for example "Rovara <signin@rovara.dev>"`);
+  return { from, domain };
+}
+
+const partitionOf = (settings: EnvironmentSettings): string => /^arn:(aws[a-z-]*):/.exec(settings.access?.cloudFormationRoleArn ?? "")?.[1] ?? "aws";
+
+/**
+ * The sender, once Amazon SES has verified its domain in the environment's region (SESv2 GetEmailIdentity; Cognito sends with that
+ * identity, https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-email.html). A sandbox account is only a warning, so a
+ * staging install with verified test addresses still works. Nothing is changed here.
+ */
+async function checkSender(services: SigninServices, settings: EnvironmentSettings, value: string): Promise<{ emailFrom: string; emailSourceArn: string }> {
+  const { from, domain } = parseSender(value);
+  const ses = services.ses;
+  if (ses === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "--email-from needs an Amazon SES client, and this command has none; nothing changed");
+  let verified: boolean;
+  try {
+    verified = ((await ses.send(new GetEmailIdentityCommand({ EmailIdentity: domain }))) as { VerifiedForSendingStatus?: boolean }).VerifiedForSendingStatus === true;
+  } catch (error) {
+    if ((error as { name?: string }).name !== "NotFoundException") throw agentXError("RUNTIME_UNAVAILABLE", `could not look up ${domain} in Amazon SES (${errorReason(error)}); nothing changed`);
+    verified = false;
+  }
+  if (!verified) throw agentXError("CONFIG_INVALID", `Amazon SES has not verified ${domain} in ${settings.region}; verify the domain in SES first`);
+  try {
+    const account = (await ses.send(new GetAccountCommand({}))) as { ProductionAccessEnabled?: boolean };
+    if (account.ProductionAccessEnabled === false) {
+      services.write(`Amazon SES is in its sandbox in ${settings.region}: sign-in codes will not reach unverified addresses until SES production access is granted (at most 200 messages a day until then). Verified test addresses still work.`);
+    }
+  } catch (error) {
+    services.write(`could not check whether Amazon SES is in its sandbox in ${settings.region} (${errorReason(error)}); if it is, sign-in codes will not reach unverified addresses until SES production access is granted`);
+  }
+  return { emailFrom: from, emailSourceArn: `arn:${partitionOf(settings)}:ses:${settings.region}:${settings.account}:identity/${domain}` };
 }
 
 /**
@@ -92,8 +141,10 @@ async function checkSecret(services: SigninServices, settings: EnvironmentSettin
 }
 
 /** The settings' cloudSignIn after the flags: the methods the flags name replaced or removed, everything else kept. */
-function nextSignIn(current: CloudSignInAnswers | undefined, flags: CloudSignInFlags): CloudSignInAnswers | undefined {
+function nextSignIn(current: CloudSignInAnswers | undefined, flags: CloudSignInFlags, sender: { emailFrom: string; emailSourceArn: string } | undefined): CloudSignInAnswers | undefined {
   const next: CloudSignInAnswers = { ...current };
+  if (flags.noEmailFrom === true) { delete next.emailFrom; delete next.emailSourceArn; }
+  if (sender !== undefined) { next.emailFrom = sender.emailFrom; next.emailSourceArn = sender.emailSourceArn; }
   if (flags.noGithub === true) { delete next.githubClientId; delete next.githubClientSecretArn; }
   if (flags.noGoogle === true) { delete next.googleClientId; delete next.googleClientSecretArn; }
   if (flags.githubClientId !== undefined && flags.githubClientSecretArn !== undefined) { next.githubClientId = flags.githubClientId.trim(); next.githubClientSecretArn = flags.githubClientSecretArn.trim(); }
@@ -108,10 +159,14 @@ function stackChanges(next: CloudSignInAnswers | undefined, flags: CloudSignInFl
   const named: Record<Method, boolean> = {
     github: flags.noGithub === true || flags.githubClientId !== undefined, google: flags.noGoogle === true || flags.googleClientId !== undefined,
   };
-  return Object.fromEntries(METHOD_IDS.filter((method) => named[method]).flatMap((method) => {
-    const { idParameter, arnParameter, idKey, arnKey } = METHODS[method];
-    return [[idParameter, next?.[idKey] ?? ""], [arnParameter, next?.[arnKey] ?? ""]];
-  }));
+  const entries: Array<[string, string]> = [
+    ...METHOD_IDS.filter((method) => named[method]).flatMap((method): Array<[string, string]> => {
+      const { idParameter, arnParameter, idKey, arnKey } = METHODS[method];
+      return [[idParameter, next?.[idKey] ?? ""], [arnParameter, next?.[arnKey] ?? ""]];
+    }),
+    ...(flags.noEmailFrom === true || flags.emailFrom !== undefined ? [["CloudSignInEmailFrom", next?.emailFrom ?? ""] as [string, string], ["CloudSignInEmailSourceArn", next?.emailSourceArn ?? ""] as [string, string]] : []),
+  ];
+  return Object.fromEntries(entries);
 }
 
 /** `record` with its cloudSignIn set to `signIn`, or without one: an optional property is absent, never undefined. */
@@ -125,6 +180,8 @@ function withSignIn<T extends { cloudSignIn?: CloudSignInAnswers | undefined }>(
 const notApplied = (stackName: string) => agentXError("CONFIG_INVALID", `the cloud sign-in change to ${stackName} was not applied; nothing changed`);
 const sameSignIn = (a: CloudSignInAnswers | undefined, b: CloudSignInAnswers | undefined) => JSON.stringify(Object.entries(a ?? {}).sort()) === JSON.stringify(Object.entries(b ?? {}).sort());
 
+const describeChange = (label: string, was: string, now: string): string => (was === now ? `  ${label}: ${now}` : `  ${label}: ${was} -> ${now}`);
+
 /** The change's own words, with each method's old and new state and only a secret's name. */
 function summaryLines(env: string, before: CloudSignInAnswers | undefined, after: CloudSignInAnswers | undefined): string[] {
   return [
@@ -135,6 +192,7 @@ function summaryLines(env: string, before: CloudSignInAnswers | undefined, after
       const now = describeMethod(after?.[idKey], after?.[arnKey]);
       return was === now ? `  ${label} sign-in: ${now}` : `  ${label} sign-in: ${was} -> ${now}`;
     }),
+    describeChange("Sign-in email", describeEmailSender(before?.emailFrom), describeEmailSender(after?.emailFrom)),
   ];
 }
 
@@ -158,6 +216,8 @@ export async function runSigninCloud(services: SigninServices, env: string, flag
     const arn = flags[arnKey]?.trim();
     if (flags[idKey] !== undefined && arn !== undefined) await checkSecret(services, first, arnFlag, arn);
   }
+  // Checked like the secrets, before the lock, and the warning is printed before the change is shown.
+  const sender = flags.emailFrom === undefined ? undefined : await checkSender(services, first, flags.emailFrom);
   const holder = (await services.identity.get()).arn;
   return withEnvironmentLock({ store: services.store, env, holder, command: "signin cloud", now: services.now }, async () => {
     // Read again under the lock, so a change made while the secrets were checked is kept.
@@ -167,7 +227,7 @@ export async function runSigninCloud(services: SigninServices, env: string, flag
     const stackName = settings.stacks["control-plane"] ?? environmentStackName(env, "control-plane");
     // Read before the stack changes, so answers that cannot be read stop the change instead of following it.
     const answers = await readInstallAnswers(services.store, env);
-    const next = nextSignIn(settings.cloudSignIn, flags);
+    const next = nextSignIn(settings.cloudSignIn, flags, sender);
     const summary = summaryLines(env, settings.cloudSignIn, next);
     const confirm = async (text: string) => { services.write(text); return yes || services.prompter.confirm("Apply this change?", { defaultValue: false }); };
 

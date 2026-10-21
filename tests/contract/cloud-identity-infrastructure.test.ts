@@ -2,6 +2,7 @@ import { Stack } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
+import { evaluate } from "../support/cfn-evaluate.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -270,5 +271,74 @@ describe("cloud identity infrastructure", () => {
   it("puts no em dash in any resource description or name", () => {
     const text = JSON.stringify(cloud().toJSON());
     expect(text).not.toContain(String.fromCharCode(0x2014));
+  });
+});
+
+describe("cloud sign-in codes from a branded Amazon SES sender (Task 7)", () => {
+  const POOL_LOGICAL_ID = "DeveloperSignInCloudIdentityUserPoolAEDBF8D7";
+  const FROM = "Rovara <signin@rovara.dev>";
+  const SOURCE_ARN = "arn:aws:ses:us-west-2:123456789012:identity/rovara.dev";
+  const CODE_BODY = "<p>Your Rovara sign-in code is <strong>{####}</strong>.</p><p>It works once and expires in a few minutes. If you didn't try to sign in to Rovara, you can ignore this email.</p><p>Rovara</p>";
+  const pool = (template: Template) => {
+    const json = template.toJSON() as { Resources: Record<string, { Type: string; Properties: Record<string, unknown> }>; Conditions: Record<string, unknown>; Parameters: Record<string, { Default?: string; Type: string }> };
+    return { json, properties: json.Resources[POOL_LOGICAL_ID]!.Properties };
+  };
+  const evaluated = (parameters: Record<string, string>) => {
+    const { json, properties } = pool(cloud());
+    return evaluate(properties, { parameters, conditions: json.Conditions }) as Record<string, unknown>;
+  };
+
+  it("keeps the user pool's logical id, so nothing is replaced", () => {
+    const { json } = pool(cloud());
+    const pools = Object.entries(json.Resources).filter(([, resource]) => resource.Type === "AWS::Cognito::UserPool");
+    expect(pools.map(([id]) => id)).toEqual([POOL_LOGICAL_ID]);
+  });
+
+  it("declares CloudSignInEmailFrom and CloudSignInEmailSourceArn with empty defaults, and the condition needs both", () => {
+    const { json } = pool(cloud());
+    expect(json.Parameters.CloudSignInEmailFrom).toMatchObject({ Type: "String", Default: "" });
+    expect(json.Parameters.CloudSignInEmailSourceArn).toMatchObject({ Type: "String", Default: "" });
+    expect(json.Conditions.CloudSignInEmailFromSes).toEqual({
+      "Fn::And": [
+        { "Fn::Not": [{ "Fn::Equals": [{ Ref: "CloudSignInEmailFrom" }, ""] }] },
+        { "Fn::Not": [{ "Fn::Equals": [{ Ref: "CloudSignInEmailSourceArn" }, ""] }] },
+      ],
+    });
+  });
+
+  it("sends from Amazon SES (DEVELOPER) with the Rovara sender and sign-in code template when both parameters are set", () => {
+    const properties = evaluated({ CloudSignInEmailFrom: FROM, CloudSignInEmailSourceArn: SOURCE_ARN, CloudIdentityDomainPrefix: "rovara-staging" });
+    expect(properties.EmailConfiguration).toEqual({ EmailSendingAccount: "DEVELOPER", From: FROM, SourceArn: SOURCE_ARN });
+    expect(properties.EmailAuthenticationSubject).toBe("Your Rovara sign-in code");
+    expect(properties.EmailAuthenticationMessage).toBe(CODE_BODY);
+    expect(String(properties.EmailAuthenticationMessage)).toContain("{####}");
+    expect(properties).not.toHaveProperty("EmailMfaConfiguration");
+  });
+
+  it("uses Cognito's default sender and no sign-in code template when neither is set, or only one is", () => {
+    for (const parameters of [{}, { CloudSignInEmailFrom: FROM }, { CloudSignInEmailSourceArn: SOURCE_ARN }]) {
+      const properties = evaluated({ CloudSignInEmailFrom: "", CloudSignInEmailSourceArn: "", CloudIdentityDomainPrefix: "rovara-staging", ...parameters });
+      expect(properties.EmailConfiguration).toEqual({ EmailSendingAccount: "COGNITO_DEFAULT" });
+      expect(properties).not.toHaveProperty("EmailAuthenticationSubject");
+      expect(properties).not.toHaveProperty("EmailAuthenticationMessage");
+    }
+  });
+
+  it("sets the verification email in both cases, with the same body", () => {
+    for (const parameters of [{ CloudSignInEmailFrom: "", CloudSignInEmailSourceArn: "" }, { CloudSignInEmailFrom: FROM, CloudSignInEmailSourceArn: SOURCE_ARN }]) {
+      const properties = evaluated({ CloudIdentityDomainPrefix: "rovara-staging", ...parameters });
+      expect(properties.VerificationMessageTemplate).toMatchObject({ DefaultEmailOption: "CONFIRM_WITH_CODE", EmailSubject: "Confirm your email for Rovara", EmailMessage: CODE_BODY });
+    }
+  });
+
+  it("does not touch multi-factor authentication: the pool still signs in with choice-based passwordless codes", () => {
+    const properties = evaluated({ CloudSignInEmailFrom: FROM, CloudSignInEmailSourceArn: SOURCE_ARN, CloudIdentityDomainPrefix: "rovara-staging" });
+    expect(properties).not.toHaveProperty("MfaConfiguration");
+    expect(properties).not.toHaveProperty("EnabledMfas");
+    expect(properties.Policies).toMatchObject({ SignInPolicy: { AllowedFirstAuthFactors: ["PASSWORD", "EMAIL_OTP"] } });
+  });
+
+  it("has no em dash in any Description, parameter or resource", () => {
+    expect(JSON.stringify(cloud().toJSON())).not.toContain("—");
   });
 });

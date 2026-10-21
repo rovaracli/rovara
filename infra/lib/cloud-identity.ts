@@ -3,7 +3,7 @@
 // legacy deployments are not part of the multi-tenant branch). The DeveloperIdentity function is the
 // confidential client: it runs the authorization code flow against this pool (developer/server.ts) and
 // then issues its own developer tokens, so nothing here replaces the admin pool in identity.ts.
-import { CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, SecretValue, Stack, aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
+import { Aws, CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, SecretValue, Stack, aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import { Construct } from "constructs";
 
@@ -13,6 +13,13 @@ export const CLOUD_CALLBACK_PATH = "/callback/cloud";
 export const GITHUB_CALLBACK_PATH = "/callback/github";
 /** The name shown on the sign-in button, and the broker's own default (developer-identity.ts). */
 export const CLOUD_DISPLAY_NAME = "Rovara";
+/**
+ * The sign-in code email (Task 7), pinned by tests/contract/cloud-identity-infrastructure.test.ts. The verification
+ * email (sign-up confirmation) carries the same body under its own subject. {####} is where Cognito puts the code.
+ */
+export const SIGN_IN_CODE_SUBJECT = "Your Rovara sign-in code";
+export const SIGN_IN_CODE_MESSAGE = "<p>Your Rovara sign-in code is <strong>{####}</strong>.</p><p>It works once and expires in a few minutes. If you didn't try to sign in to Rovara, you can ignore this email.</p><p>Rovara</p>";
+export const VERIFICATION_SUBJECT = "Confirm your email for Rovara";
 
 export interface CloudIdentityProps {
   env: string;
@@ -75,6 +82,21 @@ export class CloudIdentity extends Construct {
     const googleEnabled = new CfnCondition(stack, "GoogleSignInEnabled", {
       expression: Fn.conditionNot(Fn.conditionEquals(googleClientId.valueAsString, "")),
     });
+    // Sign-in codes from a branded Amazon SES sender (Task 7). Both empty keeps Cognito's built-in sender.
+    const emailFrom = new CfnParameter(stack, "CloudSignInEmailFrom", {
+      type: "String", default: "", maxLength: 320,
+      description: "Sender of the sign-in code email, for example Rovara <signin@rovara.dev>; needs CloudSignInEmailSourceArn. Leave empty to use Amazon Cognito's default sender",
+    });
+    const emailSourceArn = new CfnParameter(stack, "CloudSignInEmailSourceArn", {
+      type: "String", default: "", allowedPattern: "^(arn:aws[a-z-]*:ses:[a-z0-9-]+:[0-9]{12}:identity/\\S+)?$",
+      description: "ARN of the Amazon SES identity (the verified domain) that sends the sign-in code email, for example arn:aws:ses:us-west-2:123456789012:identity/rovara.dev; needs CloudSignInEmailFrom",
+    });
+    const emailFromSes = new CfnCondition(stack, "CloudSignInEmailFromSes", {
+      expression: Fn.conditionAnd(
+        Fn.conditionNot(Fn.conditionEquals(emailFrom.valueAsString, "")),
+        Fn.conditionNot(Fn.conditionEquals(emailSourceArn.valueAsString, "")),
+      ),
+    });
     this.webOrigin = new CfnParameter(stack, "RovaraWebOrigin", {
       type: "String", default: "https://rovara.dev", allowedPattern: "^https://[^/\\s]+$",
       description: "The hosted Rovara web app's origin, which invite links point at",
@@ -82,7 +104,8 @@ export class CloudIdentity extends Construct {
 
     // Changing signInAliases/autoVerify or the required email attribute replaces the user pool (Cognito cannot
     // update them in place), so once deployed treat them as fixed, as with the admin pool (identity.ts).
-    // Emails (sign-in codes) go out through Cognito's built-in sender; see the report for its daily cap.
+    // Emails (sign-in codes) go out through Cognito's built-in sender, or through Amazon SES from a branded sender
+    // when CloudSignInEmailFrom and CloudSignInEmailSourceArn are set (the overrides below). The built-in sender has a daily cap.
     const pool = new cognito.UserPool(this, "UserPool", {
       userPoolName: `rovara-${props.env}-cloud`,
       selfSignUpEnabled: true,
@@ -94,11 +117,22 @@ export class CloudIdentity extends Construct {
       // Cognito requires password to stay allowed; the sign-in page offers the emailed code and Google.
       signInPolicy: { allowedFirstAuthFactors: { password: true, emailOtp: true } },
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+      // The sign-up confirmation email, in both senders' cases; the sign-in code email below has the same body.
+      userVerification: { emailStyle: cognito.VerificationEmailStyle.CODE, emailSubject: VERIFICATION_SUBJECT, emailBody: SIGN_IN_CODE_MESSAGE },
       deletionProtection: true,
       // Retained: the user pool holds every Rovara account and must outlive a stack deletion.
       removalPolicy: RemovalPolicy.RETAIN,
     });
-    (pool.node.defaultChild as cognito.CfnUserPool).adminCreateUserConfig = { allowAdminCreateUserOnly: false };
+    const cfnPool = pool.node.defaultChild as cognito.CfnUserPool;
+    cfnPool.adminCreateUserConfig = { allowAdminCreateUserOnly: false };
+    // Both are in-place updates (no interruption, so the pool is never replaced). DEVELOPER makes Cognito call Amazon SES
+    // and create its service-linked role AWSServiceRoleForAmazonCognitoIdpEmailService on first use. The one-time sign-in
+    // code template is EmailAuthenticationSubject/Message; the API's EmailMfaConfiguration is not a CloudFormation property.
+    cfnPool.addPropertyOverride("EmailConfiguration", Fn.conditionIf(emailFromSes.logicalId, {
+      EmailSendingAccount: "DEVELOPER", From: emailFrom.valueAsString, SourceArn: emailSourceArn.valueAsString,
+    }, { EmailSendingAccount: "COGNITO_DEFAULT" }));
+    cfnPool.addPropertyOverride("EmailAuthenticationSubject", Fn.conditionIf(emailFromSes.logicalId, SIGN_IN_CODE_SUBJECT, Aws.NO_VALUE));
+    cfnPool.addPropertyOverride("EmailAuthenticationMessage", Fn.conditionIf(emailFromSes.logicalId, SIGN_IN_CODE_MESSAGE, Aws.NO_VALUE));
 
     const googleClientSecretValue = SecretValue.secretsManager(googleClientSecretArn.valueAsString, { jsonField: "clientSecret" });
     const google = new cognito.UserPoolIdentityProviderGoogle(this, "Google", {
