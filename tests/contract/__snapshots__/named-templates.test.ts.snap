@@ -3312,6 +3312,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                     "SESSION#*",
                     "DEVELOPER#*",
                     "EMAIL#*",
+                    "SIGNIN_IDENTITY#*",
                   ],
                 },
               },
@@ -3645,6 +3646,8 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "DeveloperSignInAuthRoute98555360",
         "DeveloperSignInDevRoute4BB932E2",
         "DeveloperSignInFeedbackReviewRoute881C7CFE",
+        "GithubInstallCallbackRoute",
+        "GithubInstallConfirmRoute",
       ],
       "Properties": {
         "ApiId": {
@@ -3665,6 +3668,14 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "ThrottlingRateLimit": 20,
           },
           "ANY /v1/dev/{proxy+}": {
+            "ThrottlingBurstLimit": 50,
+            "ThrottlingRateLimit": 20,
+          },
+          "GET /v1/github/install/callback": {
+            "ThrottlingBurstLimit": 50,
+            "ThrottlingRateLimit": 20,
+          },
+          "POST /v1/github/install/confirm": {
             "ThrottlingBurstLimit": 50,
             "ThrottlingRateLimit": 20,
           },
@@ -6128,6 +6139,48 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "TreatMissingData": "notBreaching",
       },
       "Type": "AWS::CloudWatch::Alarm",
+    },
+    "GithubInstallCallbackRoute": {
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApi",
+        },
+        "AuthorizationType": "NONE",
+        "RouteKey": "GET /v1/github/install/callback",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "BrokerIntegration",
+              },
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::ApiGatewayV2::Route",
+    },
+    "GithubInstallConfirmRoute": {
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApi",
+        },
+        "AuthorizationType": "NONE",
+        "RouteKey": "POST /v1/github/install/confirm",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "BrokerIntegration",
+              },
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::ApiGatewayV2::Route",
     },
     "GithubWebhookRecoveryRoleD4894C8E": {
       "Properties": {

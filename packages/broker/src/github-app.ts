@@ -13,7 +13,8 @@ const GITHUB_APP_SLUG = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?$/;
 /** One installation of the App, as GitHub reports it (GET /app/installations/{id}): only what the install flow decides on. */
 export interface GitHubInstallation {
   id: number;
-  account: { login: string; id: number; type: "User" | "Organization" };
+  /** `Enterprise` is an account GitHub can install an App on that no Rovara organization may connect (Plan 2, Task 13). */
+  account: { login: string; id: number; type: "User" | "Organization" | "Enterprise" };
   repositorySelection: "all" | "selected";
   suspendedAt: string | null;
 }
@@ -825,7 +826,7 @@ export class GitHubAppCredentialProvider {
       record.id !== id
       || typeof account.login !== "string" || account.login === ""
       || !Number.isSafeInteger(account.id) || (account.id as number) < 1
-      || (account.type !== "User" && account.type !== "Organization")
+      || (account.type !== "User" && account.type !== "Organization" && account.type !== "Enterprise")
       || (selection !== "all" && selection !== "selected")
       || (suspendedAt !== null && suspendedAt !== undefined && typeof suspendedAt !== "string")
     ) {

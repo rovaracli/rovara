@@ -182,6 +182,8 @@ export interface DeveloperRouteDependencies {
    * waits for the scheduled sync, and the caller is told it will apply within 5 minutes.
    */
   egressSync?: EgressDomainsDependencies["sync"];
+  /** Plan 2, Task 13: starts connecting GitHub to the caller's org (the broker's `startGithubConnect`). Without it the route answers NOT_FOUND. */
+  githubConnect?: { start(caller: DeveloperCaller): Promise<{ installUrl: string; expiresAt: string }> };
 }
 
 /** A route's answer with a status other than 200; the broker's handler writes the status and the body. */
@@ -1178,6 +1180,10 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "GET" && appProject !== null) return getAppProject(deps, caller, appProject[1]!);
   const projectSettingsRoute = /^\/v1\/app\/projects\/([^/]+)\/settings$/.exec(url.pathname);
   if (request.method === "PUT" && projectSettingsRoute !== null) return putProjectSettings(deps, caller, projectSettingsRoute[1]!, jsonBody(request));
+  if (request.method === "POST" && url.pathname === "/v1/app/github/connect") {
+    if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
+    return deps.githubConnect.start(caller);
+  }
   if (request.method === "POST" && url.pathname === "/v1/dev/projects") return createProject(deps, caller, jsonBody(request));
   if (request.method === "GET" && url.pathname === "/v1/dev/workspaces") return listWorkspaces(deps, caller);
   if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);

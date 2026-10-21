@@ -161,6 +161,23 @@ export function orgGithubInstallationKey(orgId: OrgId, installationId: number): 
   return { pk: orgPk(orgId), sk: `GITHUB_INSTALLATION#${String(installationId)}` };
 }
 
+/**
+ * One connect attempt (Plan 2, Task 13), keyed by the SHA-256 of its state (base64url). It holds who started it and for which org, and
+ * later what the callback found and the hash of the confirmation token; it is single use (`consumedAt`) and short lived (`expiresAt`).
+ */
+export function githubConnectStateKey(stateHash: string): OrgKey {
+  return { pk: `GITHUB_CONNECT#${stateHash}`, sk: "META" };
+}
+
+/**
+ * Written once when an installation is first bound to an org, and never deleted (not by a disconnect, not by closing the org): it says the
+ * installation was bound before. `firstBoundAt` and `firstOrgId` are set only the first time. Task 14's request flow never binds an
+ * installation that has one.
+ */
+export function githubInstallationEverBoundKey(installationId: number): OrgKey {
+  return { pk: `GITHUB_INSTALLATION#${String(installationId)}`, sk: "EVER_BOUND" };
+}
+
 export interface GithubInstallationRecord {
   installationId: number;
   orgId: OrgId;

@@ -55,6 +55,8 @@ export interface DeveloperSignInProps {
   parameters: DeveloperSignInParameters;
   /** The API's default stage, which throttles the public /v1/auth routes. */
   stage: apigwv2.CfnStage;
+  /** Further public routes of the same API the stage throttles like the /v1/auth, /v1/dev and /v1/app ones (the GitHub install routes). */
+  throttledRoutes?: apigwv2.CfnRoute[];
   /** The TurnRecords table (control-plane.ts), so the broker may write AI-tool audit records.
    * The concrete Table (as with slackSecret above): dynamodb.ITable's tableStreamArn is an
    * optional string, but Table's getter returns string | undefined, which this repo's
@@ -267,12 +269,17 @@ export class DeveloperSignIn extends Construct {
     // Public routes are stage-capped: bursts of 50, 20 requests a second on average,
     // across all callers. A developer signs in a few times a week, so this only bites a flood.
     const throttle = { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 };
-    props.stage.routeSettings = { [SIGN_IN_ROUTE_KEY]: throttle, [DEV_ROUTE_KEY]: throttle, [APP_ROUTE_KEY]: throttle, [FEEDBACK_REVIEW_ROUTE_KEY]: throttle };
+    const throttledRoutes = props.throttledRoutes ?? [];
+    props.stage.routeSettings = {
+      [SIGN_IN_ROUTE_KEY]: throttle, [DEV_ROUTE_KEY]: throttle, [APP_ROUTE_KEY]: throttle, [FEEDBACK_REVIEW_ROUTE_KEY]: throttle,
+      ...Object.fromEntries(throttledRoutes.map((route) => [route.routeKey, throttle])),
+    };
     // Route settings must name routes that already exist.
     props.stage.addDependency(authRoute);
     props.stage.addDependency(devRoute);
     props.stage.addDependency(appRoute);
     props.stage.addDependency(feedbackReviewRoute);
+    for (const route of throttledRoutes) props.stage.addDependency(route);
 
     const broker = props.broker;
     broker.addEnvironment("DEVELOPER_TOKEN_ISSUER", issuer);
@@ -294,11 +301,13 @@ export class DeveloperSignIn extends Construct {
       broker.addEnvironment("DEVELOPER_GITHUB_CLIENT_ID", cloud.githubClientId.valueAsString);
     }
     fn.grantInvoke(broker);
-    // Spec 025 25e: EMAIL# is the email index resolveDeveloper reads to name a developer by email.
+    // Spec 025 25e: EMAIL# is the email index resolveDeveloper reads to name a developer by email. Plan 2, Task 13: SIGNIN_IDENTITY# is
+    // the forward link "which developer is this sign-in" (DeveloperSignInStore.developerForIdentity), which the GitHub connect callback
+    // reads to check that the GitHub user is the developer who started the connect. Read only.
     broker.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem"],
       resources: [table.tableArn],
-      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["SESSION#*", "DEVELOPER#*", "EMAIL#*"] } },
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["SESSION#*", "DEVELOPER#*", "EMAIL#*", "SIGNIN_IDENTITY#*"] } },
     }));
     // GET /v1/app/me lists a developer's linked identities (DeveloperSignInStore.identitiesOf): a Query on the developer's own
     // partition, which holds one IDENTITY# row per linked sign-in beside the developer record.

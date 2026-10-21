@@ -210,7 +210,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
     const creatorChecks = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:ConditionCheckItem"));
     expect(reads).toHaveLength(1);
     expect(reads[0]!.Action).toBe("dynamodb:GetItem");
-    expect(reads[0]!.Condition).toEqual({ "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["SESSION#*", "DEVELOPER#*", "EMAIL#*"] } });
+    // Plan 2, Task 13: SIGNIN_IDENTITY# (the forward link of a sign-in identity) joined the read, for the GitHub connect callback. Read only.
+    expect(reads[0]!.Condition).toEqual({ "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["SESSION#*", "DEVELOPER#*", "EMAIL#*", "SIGNIN_IDENTITY#*"] } });
     expect(creatorChecks).toHaveLength(1);
     expect(actionsOf(creatorChecks[0]!)).toEqual(["dynamodb:ConditionCheckItem"]);
     expect(creatorChecks[0]!.Condition).toEqual({
@@ -281,7 +282,7 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(rolesThatMay(named, "dynamodb:DeleteItem", tableId, SAMPLE_TABLE_ARN)).toEqual(["DeveloperSignInFunctionServiceRole"]);
   });
 
-  it("throttles the public /v1/auth/*, /v1/dev/*, /v1/app/*, and /review/* routes on the default stage (burst 50, 20 requests a second)", () => {
+  it("throttles the public /v1/auth/*, /v1/dev/*, /v1/app/*, /review/* and GitHub install routes on the default stage (burst 50, 20 requests a second)", () => {
     const stages = ofType(named, "AWS::ApiGatewayV2::Stage");
     expect(stages).toHaveLength(1);
     const [, stage] = stages[0]!;
@@ -290,6 +291,9 @@ describe("developer sign-in infrastructure (named environments)", () => {
       "ANY /v1/dev/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "ANY /v1/app/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "ANY /review/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
+      // Plan 2, Task 13: GitHub's install redirect and the confirm page's form post.
+      "GET /v1/github/install/callback": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
+      "POST /v1/github/install/confirm": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
     });
     // A stage's route settings name routes that must already exist.
     const routeId = (key: string) => ofType(named, "AWS::ApiGatewayV2::Route").find(([, r]) => r.Properties.RouteKey === key)![0];
@@ -298,6 +302,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(dependsOn).toContain(routeId("ANY /v1/dev/{proxy+}"));
     expect(dependsOn).toContain(routeId("ANY /v1/app/{proxy+}"));
     expect(dependsOn).toContain(routeId("ANY /review/{proxy+}"));
+    expect(dependsOn).toContain(routeId("GET /v1/github/install/callback"));
+    expect(dependsOn).toContain(routeId("POST /v1/github/install/confirm"));
     // The app route is served by the broker, which verifies the developer token itself: no API Gateway authorizer.
     const appRoute = ofType(named, "AWS::ApiGatewayV2::Route").find(([, r]) => r.Properties.RouteKey === "ANY /v1/app/{proxy+}")![1];
     expect(appRoute.Properties.AuthorizationType).toBe("NONE");

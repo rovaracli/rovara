@@ -1178,6 +1178,14 @@ describe("GitHub App install flow lookups (Plan 2, Task 12)", () => {
     await expect(provider.installation(7)).resolves.toEqual({ id: 7, account: { login: "alice", id: 3, type: "User" }, repositorySelection: "all", suspendedAt: "2026-10-20T10:00:00Z" });
   });
 
+  it("reads an Enterprise installation (Plan 2, Task 13 refuses to connect one, so it has to be readable)", async () => {
+    const { fetchImplementation } = recording(() => Response.json({
+      id: 8, repository_selection: "selected", suspended_at: null, account: { login: "bigco", id: 5, type: "Enterprise" },
+    }));
+    const provider = new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => pem, fetchImplementation });
+    await expect(provider.installation(8)).resolves.toEqual({ id: 8, account: { login: "bigco", id: 5, type: "Enterprise" }, repositorySelection: "selected", suspendedAt: null });
+  });
+
   it("refuses an installation id that is not a positive integer without calling GitHub", async () => {
     const { fetchImplementation } = recording(() => Response.json({}));
     const provider = new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => pem, fetchImplementation });

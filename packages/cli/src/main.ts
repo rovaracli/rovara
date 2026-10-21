@@ -64,6 +64,7 @@ import { runInit, type InitCliDependencies, type InitOptions } from "./init/comm
 import { cliCommandLine, currentCliInvocation, type CliInvocation } from "./init/cli-command.js";
 import { StoppedByOperator, isCtrlCAtPrompt } from "./stopped.js";
 import { runGithubOauthSet, type GithubOauthServices } from "./github/oauth.js";
+import { githubConnect, githubConnectText } from "./developer/github.js";
 import { secretsManagerInitSecrets, type FinishFlags, type SecretFlags } from "./init/context.js";
 import { githubRestApi } from "./init/github-app.js";
 import { processPrompter } from "./init/prompts.js";
@@ -148,6 +149,8 @@ export interface CliDependencies {
   doctor?: { store?: ParameterStore; services?: (settings: EnvironmentSettings) => DoctorServices };
   /** `agentx github oauth set` overrides, for tests: never touch AWS or GitHub. */
   githubOauth?: Partial<GithubOauthServices>;
+  /** `agentx github connect` polling, for tests. */
+  githubConnect?: { pollMs?: number; waitMs?: number };
   /** `agentx upgrade` overrides, for tests: never touch AWS or GitHub. */
   upgrade?: Partial<UpgradeDependencies>;
   /** `agentx destroy` overrides, for tests: never touch AWS. */
@@ -558,6 +561,20 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         readStdin: overrides.readStdin ?? (async () => { const chunks: Buffer[] = []; for await (const chunk of dependencies.stdin ?? process.stdin) chunks.push(Buffer.from(chunk as Uint8Array)); return Buffer.concat(chunks).toString("utf8"); }),
       }, globals.env, { clientId: options.clientId, clientSecretStdin: options.clientSecretStdin });
       services.stdout.write(globals.json ? formatSuccess(result, true) : `GitHub App client id and secret saved for ${result.env}.\n`);
+    });
+
+  githubCommand
+    .command("connect")
+    .description("connect your organization's GitHub account to Rovara (owners and admins, Rovara Cloud): opens GitHub's install page and waits until it is done")
+    .option("--no-browser", "print the install link instead of opening a browser")
+    .action(async (options: { browser: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await githubConnect(developerSession(), developerEnv(command), {
+        write: (line) => { services.stderr.write(`${line}\n`); },
+        ...(options.browser ? { openBrowser: dependencies.login?.openBrowser ?? openSystemBrowser } : {}),
+        ...(dependencies.githubConnect ?? {}),
+      });
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, account: result.account, installationId: result.installationId }, true) : githubConnectText(result));
     });
 
   registerSigninCommands(program, {

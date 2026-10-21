@@ -268,6 +268,9 @@ import { resolveConnectors, BUILT_IN_CONNECTOR_TYPES, type ConnectorType, type C
 import { CredentialRegistry, secretsManagerSource, type ConnectorCredentialsConfiguration } from "./credentials.js";
 import { developerTokenVerifier } from "../developer/verify-token.js";
 import { DeveloperSignInStore, type DeveloperRecord } from "../developer/store.js";
+import { startGithubConnect, type GithubConnectionDependencies } from "../org/github-connection.js";
+import { unlockTrial } from "../org/trial.js";
+import { isGithubInstallPath, routeGithubInstall } from "./github-install-web.js";
 import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, readDecisionDetail } from "../developer/owner-answers.js";
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
 import { loadWorkflowDocument, readObjectText as readStoredText, shortenMarkdown } from "../developer/plan-artifacts.js";
@@ -455,13 +458,15 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "appSlug" | "oauthClient" | "installation" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
   projectSetupRuntimeCatalogId?: string;
   /** Separate server-selected namespace for the already qualified portable feature verifier. */
   e2eFeatureRuntimeCatalogId?: string;
+  /** The fetch the GitHub install flow's user-token calls (github.com and api.github.com) go through; the global fetch when absent. */
+  githubFetch?: typeof fetch;
   /** Reads the GitHub webhook HMAC key from the configured GitHub App secret; `refresh` asks for a fresh read of the secret. */
   githubWebhookSecret?: (options?: { refresh?: boolean }) => Promise<string>;
   /** How long a PR description update (D2) may take before it gives up without writing; 5 seconds when absent. */
@@ -689,6 +694,31 @@ async function decideEgress(dependencies: AwsBrokerDependencies, identity: Authe
   const { orgId, owner, domain, reason } = parsed.data;
   const { warning } = await decideEgressDomain(egressDepsOf(dependencies), { orgId, owner, domain, decision, operatorId: identity.subject, ...(reason === undefined ? {} : { reason }) });
   return { orgId, owner, domain, status: decision, ...(warning === undefined ? {} : { warning }) };
+}
+
+/**
+ * Plan 2, Task 13: what connecting GitHub to an org needs. Undefined without developer sign-in, and where the GitHub App provider cannot
+ * say its slug, OAuth client and installations (a test double without them). `cloud` is the install's own setting: whether an OAuth client
+ * exists decides nothing about which flow an install uses.
+ */
+function githubConnectionOf(dependencies: AwsBrokerDependencies): GithubConnectionDependencies | undefined {
+  const app = dependencies.githubPullRequests;
+  if (dependencies.developer === undefined || app.appSlug === undefined || app.oauthClient === undefined || app.installation === undefined) return undefined;
+  const signIn = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
+  return {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, cloud: dependencies.cloud === true,
+    origin: new URL(dependencies.developer.issuer).origin,
+    app: { appSlug: () => app.appSlug!(), oauthClient: () => app.oauthClient!(), installation: (id) => app.installation!(id) },
+    identities: signIn, orgs: orgStoreOf(dependencies),
+    unlockTrial: (input) => unlockTrial({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, input),
+    ...(dependencies.githubFetch === undefined ? {} : { fetch: dependencies.githubFetch }),
+  };
+}
+
+/** `POST /v1/app/github/connect`'s dependency for the developer routes; absent where there is no connection to offer. */
+function githubConnectRoute(dependencies: AwsBrokerDependencies): { githubConnect?: { start: (caller: DeveloperCaller) => Promise<{ installUrl: string; expiresAt: string }> } } {
+  const connection = githubConnectionOf(dependencies);
+  return connection === undefined ? {} : { githubConnect: { start: (caller) => startGithubConnect(connection, caller) } };
 }
 
 function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">): OrgStore {
@@ -1174,6 +1204,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // The /v1/dev route has no API Gateway authorizer, so what it carries goes to the developer API or nowhere.
       if (event.routeKey === DEVELOPER_ROUTE_KEY && !url.pathname.startsWith("/v1/dev/")) throw agentXError("NOT_FOUND", "route not found");
       if (event.routeKey === APP_ROUTE_KEY && !url.pathname.startsWith("/v1/app/")) throw agentXError("NOT_FOUND", "route not found");
+      // Plan 2, Task 13: the GitHub install flow's callback and the confirm page's form post. No token here: see github-install-web.ts.
+      if (isGithubInstallPath(url.pathname)) return await routeGithubInstall(githubConnectionOf(dependencies), request, url);
       if (url.pathname === "/v1/github/webhooks") {
         if (request.method !== "POST") return json({ error: { code: "NOT_FOUND", message: "route not found" } }, request.requestId, 404);
         if (request.body === undefined || dependencies.githubWebhookSecret === undefined) {
@@ -1356,6 +1388,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
           registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : url => dependencies.githubPullRequests.getRepositoryIdentity!(url),
           createProject: (caller, input, org) => createCloudProject(dependencies, caller, input, org),
+          ...githubConnectRoute(dependencies),
           projectSettings: {
             registerRevision: async (actor, input) => { await registerProjectFor(dependencies, actor, input, { creatorMembership: "none" }); },
             ...(dependencies.cloudProjects === undefined ? {} : { githubCredentialRef: dependencies.cloudProjects.githubCredentialRef }),

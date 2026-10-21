@@ -45,12 +45,16 @@ export const AgentXErrorCodeSchema = z.enum([
   "PROJECT_NAME_TAKEN",
   "PROJECT_ARCHIVED",
   "GITHUB_NOT_CONNECTED",
+  "GITHUB_INSTALLATION_TAKEN",
 ]);
 
 export type AgentXErrorCode = z.infer<typeof AgentXErrorCodeSchema>;
 
 /** What INVITE_WRONG_EMAIL (409) says: an email-targeted invite was presented by a sign-in whose verified email is another address. */
 export const INVITE_WRONG_EMAIL_MESSAGE = "This invite is for a different email address. Sign in with the address it was sent to, or ask for an invite to yours.";
+
+/** What GITHUB_INSTALLATION_TAKEN (409) says: the GitHub account's installation is bound to another Rovara organization. */
+export const GITHUB_INSTALLATION_TAKEN_MESSAGE = "This GitHub account is already connected to another Rovara organization.";
 
 export class AgentXError extends Error {
   constructor(
