@@ -24,3 +24,17 @@ export {
   type TimestampVerdict,
 } from "./timestamp.js";
 export { defaultAnchors, type AuthorityLabel } from "./trust.js";
+export {
+  BundleParseError,
+  parseBundle,
+  statementHash,
+  type AuditBundleV1,
+  type BundleDetail,
+  type BundleSeal,
+  type BundleTimestamp,
+  type EpochStatementV1,
+  type LockedObjectV1,
+  type LockMode,
+} from "./bundle.js";
+export { bundleSealedThroughSeq, verifyBundle, type BundleCheck, type BundleReport, type VerifyBundleOptions } from "./verify-bundle.js";
+export { verifyExtends } from "./extends.js";
