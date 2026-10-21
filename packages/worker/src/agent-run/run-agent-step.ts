@@ -121,10 +121,22 @@ export async function runAgentStep(input: RunAgentStepInput): Promise<AgentStepR
   let failure: Error | undefined;
   let result: AgentStepResult | undefined;
   let reportingFailure: unknown;
+  // Ends every broker request when the step does: its time limit, which covers the whole step, or a cancellation. Registered
+  // before anything else, so a cancel that arrives while the tools are being read is honoured and no session starts.
+  const stepEnds = new AbortController();
+  let stepTimedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cancelled = (): boolean => input.cancellationController?.isCancelled(input.operationId) === true;
   try {
-    // The connector tools the broker grants this step; none without a grant.
-    const catalogs = await (input.catalogs ?? agentToolCatalogsSource({ brokerUrl: input.brokerUrl, capability: input.capability, ...(input.fetch === undefined ? {} : { fetch: input.fetch }) }))();
-    const call = input.call ?? brokerToolCall({ brokerUrl: input.brokerUrl, capability: input.capability, ...(input.fetch === undefined ? {} : { fetch: input.fetch }) });
+    unregister = input.cancellationController?.register(input.operationId, { abort: async () => { stepEnds.abort(); await session?.abort(); } });
+    if (payload.timeoutMs !== undefined) {
+      timer = setTimeout(() => { stepTimedOut = true; stepEnds.abort(); void Promise.resolve(session?.abort()).catch(() => undefined); }, payload.timeoutMs);
+    }
+    const broker = { brokerUrl: input.brokerUrl, capability: input.capability, signal: stepEnds.signal, ...(input.fetch === undefined ? {} : { fetch: input.fetch }) };
+    // The connector tools the broker grants this step: none for a step with no grants, and a step whose tools cannot be read fails.
+    const catalogs = await (input.catalogs ?? agentToolCatalogsSource(broker))();
+    if (cancelled()) throw new WorkerOperationCancelledError(input.operationId);
+    const call = input.call ?? brokerToolCall(broker);
     const tools: ToolDefinition[] = createConnectorBridgeTools(catalogs, call, { workspaceId: input.workspaceId, conversationId: input.conversationId });
     const branch = payload.resultContract === undefined ? undefined : chooseBranchTool(payload.resultContract);
     if (branch !== undefined) tools.push(branch.tool);
@@ -145,7 +157,6 @@ export async function runAgentStep(input: RunAgentStepInput): Promise<AgentStepR
     }, input.modelAccess.piAdapter);
 
     const handle = session;
-    unregister = input.cancellationController?.register(input.operationId, { abort: async () => { await handle.abort(); } });
     const loopGuard = new ToolLoopGuard();
     let loopStop: Error | undefined;
     let lastAssistant: AssistantOutcome | undefined;
@@ -170,6 +181,7 @@ export async function runAgentStep(input: RunAgentStepInput): Promise<AgentStepR
       }
     });
 
+    if (cancelled()) throw new WorkerOperationCancelledError(input.operationId);
     await events.append("lifecycle", { status: "RUNNING", conversationId: input.conversationId, conversation: { started: true, reopened: false } });
     await events.flush();
     // withStepTimeout aborts the session when the time is up, and an abort can end the prompt before the timeout's own error
@@ -182,10 +194,10 @@ export async function runAgentStep(input: RunAgentStepInput): Promise<AgentStepR
       if (loopStop !== undefined) throw loopStop;
       throw error;
     }
-    if (timedOut) throw new Error(`timeout:${payload.timeoutMs}`);
+    if (timedOut || stepTimedOut) throw new Error(`timeout:${payload.timeoutMs}`);
     if (loopStop !== undefined) throw loopStop;
     // An abort can end the prompt normally: a cancellation is the operation's outcome.
-    if (input.cancellationController?.isCancelled(input.operationId) === true) throw new WorkerOperationCancelledError(input.operationId);
+    if (cancelled()) throw new WorkerOperationCancelledError(input.operationId);
     const modelFailure = failedTurn(lastAssistant);
     if (modelFailure !== undefined) throw modelFailure;
     const report = typeof finalText === "string" ? finalText.trim() : "";
@@ -199,13 +211,14 @@ export async function runAgentStep(input: RunAgentStepInput): Promise<AgentStepR
     outcome = "SUCCEEDED";
     await events.append("result", { status: "SUCCEEDED", conversationId: input.conversationId, agentStepResult: result });
   } catch (error) {
-    if (input.cancellationController?.isCancelled(input.operationId) === true) {
+    if (cancelled()) {
       outcome = "CANCELLED";
       failure = new WorkerOperationCancelledError(input.operationId);
       try { await events.append("lifecycle", { status: "CANCELLED", conversationId: input.conversationId }); } catch (reporting) { reportingFailure = reporting; }
     } else {
       outcome = "FAILED";
-      failure = error instanceof Error ? error : new Error(String(error));
+      // A request the step's own time limit cut short is a timeout, whatever the transport called it.
+      failure = stepTimedOut ? new Error(`timeout:${payload.timeoutMs}`) : error instanceof Error ? error : new Error(String(error));
       try { await events.append("error", { message: redactText(failure.message) }); } catch (reporting) { reportingFailure = reporting; }
     }
   }
@@ -226,6 +239,7 @@ export async function runAgentStep(input: RunAgentStepInput): Promise<AgentStepR
   } catch (error) {
     reportingFailure ??= error;
   }
+  clearTimeout(timer);
   unsubscribe?.();
   unregister?.();
   session?.dispose();

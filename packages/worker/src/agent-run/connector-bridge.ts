@@ -13,7 +13,7 @@ const TOOLS_PATH = "/v1/internal/agent-tools";
 const CALL_PATH = "/v1/internal/agent-tools/call";
 
 /** One call to the broker: the request the model's tool call made, for one connector. */
-export type ConnectorBridgeCall = (input: ConnectorCallRequest & { workspaceId: string; connector: string }) => Promise<unknown>;
+export type ConnectorBridgeCall = (input: ConnectorCallRequest & { workspaceId: string; connector: string }, signal?: AbortSignal) => Promise<unknown>;
 
 /** One bridge for every presented connector tool. No per-vendor tool implementations. */
 export function createConnectorBridgeTools(
@@ -31,7 +31,7 @@ export function createConnectorBridgeTools(
       label: `${catalog.connector} / ${tool.upstreamName}`,
       description: tool.description,
       parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
-      execute: async (callId, parameters) => {
+      execute: async (callId, parameters, signal) => {
         const { target, ...rest } = parameters;
         const scope = targeted ? tool.scopes.find((entry) => entry.alias === target) : tool.scopes[0];
         if (!scope) {
@@ -47,7 +47,7 @@ export function createConnectorBridgeTools(
         return text(await call({
           workspaceId: context.workspaceId, connector: catalog.connector, requestId,
           scope: scope.alias, tool: tool.upstreamName, schemaHash: scope.schemaHash, arguments: args,
-        }));
+        }, signal));
       },
     });
   }));
@@ -59,8 +59,22 @@ function text(value: unknown) {
 
 const CatalogsResponseSchema = z.object({ catalogs: z.array(ConnectorCatalogSchema).max(32) });
 
-interface BrokerInput { brokerUrl: string; capability: string; fetch?: typeof fetch }
+/** The longest a broker request may take, whatever the step's own limit is. */
+export const BROKER_CATALOGS_TIMEOUT_MS = 30_000;
+export const BROKER_CALL_TIMEOUT_MS = 120_000;
+/** The most of a tool's answer that is shown to the model. */
+export const TOOL_ANSWER_MAX_BYTES = 1_048_576;
+
+interface BrokerInput {
+  brokerUrl: string;
+  capability: string;
+  fetch?: typeof fetch;
+  /** Ends every request when the step does (its time limit, a cancellation). */
+  signal?: AbortSignal;
+}
 const urlOf = (brokerUrl: string, path: string): string => `${brokerUrl.replace(/\/$/u, "")}${path}`;
+const bounded = (timeoutMs: number, ...signals: Array<AbortSignal | undefined>): AbortSignal =>
+  AbortSignal.any([AbortSignal.timeout(timeoutMs), ...signals.filter((signal): signal is AbortSignal => signal !== undefined)]);
 
 /** The broker's reason for a refusal, for the model to read: its own message, bounded, and never the body of anything else. */
 async function refusal(response: Response): Promise<Error> {
@@ -69,16 +83,37 @@ async function refusal(response: Response): Promise<Error> {
   return Object.assign(new Error(message), typeof body?.error?.code === "string" ? { code: body.error.code } : {});
 }
 
+/** The body as JSON, read at most TOOL_ANSWER_MAX_BYTES deep: a larger answer is a tool error, never model context. */
+async function boundedJson(response: Response): Promise<unknown> {
+  const tooLarge = () => new Error("The tool's answer is larger than 1 MiB, so Rovara did not show it. Ask for less, or narrow the request.");
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > TOOL_ANSWER_MAX_BYTES) throw tooLarge();
+  if (response.body === null) return undefined;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+    total += chunk.byteLength;
+    // Leaving the loop cancels the stream.
+    if (total > TOOL_ANSWER_MAX_BYTES) throw tooLarge();
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+}
+
 /**
- * The tools this step's agent may call, as the broker presents them (only the granted ones), with the step's capability. A
- * capability without the agent-tools scope is a step with no connector tools: no catalogs, never a failed step. Any other
- * refusal fails the step, because a half-known tool list is not one to run on.
+ * The tools this step's agent may call, as the broker presents them (only the granted ones), with the step's capability. A step
+ * with no grants gets an empty list from the broker. Anything else, a refusal included, fails the step: a half-known tool list
+ * is not one to run on, and a tools-less run would end with a report that looks like a success.
  */
 export function agentToolCatalogsSource(input: BrokerInput): () => Promise<ConnectorCatalog[]> {
   const transport = input.fetch ?? fetch;
   return async () => {
-    const response = await transport(urlOf(input.brokerUrl, TOOLS_PATH), { method: "GET", headers: { [CAPABILITY_HEADER]: input.capability } });
-    if (response.status === 403) return [];
+    const response = await transport(urlOf(input.brokerUrl, TOOLS_PATH), {
+      method: "GET", headers: { [CAPABILITY_HEADER]: input.capability }, signal: bounded(BROKER_CATALOGS_TIMEOUT_MS, input.signal),
+    });
+    if (response.status === 401 || response.status === 403) {
+      throw agentXError("CALLBACK_FORBIDDEN", `the control plane refused this step's tool list (HTTP ${response.status})`);
+    }
     if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `agent tools request failed with HTTP ${response.status}`);
     const parsed = CatalogsResponseSchema.safeParse(await response.json().catch(() => undefined));
     if (!parsed.success) throw agentXError("RUNTIME_UNAVAILABLE", "the broker answered the agent tools request with something unexpected");
@@ -88,19 +123,21 @@ export function agentToolCatalogsSource(input: BrokerInput): () => Promise<Conne
 
 /**
  * A call to the broker's agent-tools route: `ConnectorCallRequest & { connector }` with the step's capability, and nothing else
- * (the workspace id is the capability's). The answer, including a wait for approval, is the broker's to word.
+ * (the workspace id is the capability's). The answer, including a wait for approval, is the broker's to word. The request ends
+ * with the step, with the tool call's own signal, and after BROKER_CALL_TIMEOUT_MS.
  */
 export function brokerToolCall(input: BrokerInput): ConnectorBridgeCall {
   const transport = input.fetch ?? fetch;
-  return async (callInput) => {
+  return async (callInput, signal) => {
     const request: Omit<typeof callInput, "workspaceId"> & { workspaceId?: string } = { ...callInput };
     delete request.workspaceId;
     const response = await transport(urlOf(input.brokerUrl, CALL_PATH), {
       method: "POST",
       headers: { [CAPABILITY_HEADER]: input.capability, "content-type": "application/json" },
       body: JSON.stringify(request),
+      signal: bounded(BROKER_CALL_TIMEOUT_MS, input.signal, signal),
     });
     if (!response.ok) throw await refusal(response);
-    return response.json();
+    return boundedJson(response);
   };
 }

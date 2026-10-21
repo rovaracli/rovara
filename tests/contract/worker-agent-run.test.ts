@@ -219,13 +219,50 @@ describe("the connector bridge", () => {
     expect(results[0]!.content[0]!.text).toContain("This agent may only read in Linear.");
   });
 
-  it("runs a step with no grants: a capability without the agent-tools scope means no connector tools", async () => {
-    const fetchFake = vi.fn(async () => new Response(JSON.stringify({ error: { code: "FORBIDDEN", message: "no" } }), { status: 403 })) as unknown as typeof fetch;
-    await expect(agentToolCatalogsSource({ brokerUrl: BROKER, capability: CAPABILITY, fetch: fetchFake })()).resolves.toEqual([]);
-    const server = vi.fn(async () => new Response("", { status: 500 })) as unknown as typeof fetch;
-    await expect(agentToolCatalogsSource({ brokerUrl: BROKER, capability: CAPABILITY, fetch: server })()).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
-    const odd = vi.fn(async () => new Response(JSON.stringify({ catalogs: [{ nonsense: true }] }), { status: 200 })) as unknown as typeof fetch;
-    await expect(agentToolCatalogsSource({ brokerUrl: BROKER, capability: CAPABILITY, fetch: odd })()).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  it("reads a step with no grants from the broker's own empty answer, and fails on any refusal or error: no silent tools-less run", async () => {
+    const answering = (status: number, body: unknown) => vi.fn(async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
+    const source = (transport: typeof fetch) => agentToolCatalogsSource({ brokerUrl: BROKER, capability: CAPABILITY, fetch: transport })();
+    await expect(source(answering(200, { catalogs: [] }))).resolves.toEqual([]);
+    for (const status of [401, 403]) await expect(source(answering(status, { error: { code: "CALLBACK_FORBIDDEN", message: "no" } }))).rejects.toMatchObject({ code: "CALLBACK_FORBIDDEN" });
+    for (const status of [404, 500, 503]) await expect(source(answering(status, {}))).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(source(answering(200, { catalogs: [{ nonsense: true }] }))).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(source(answering(200, {}))).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+
+  it("fails the step, and calls no model, when its tools cannot be read", async () => {
+    const fetchFake = vi.fn(async () => new Response(JSON.stringify({ error: { code: "CALLBACK_FORBIDDEN", message: "no" } }), { status: 403 })) as unknown as typeof fetch;
+    const model = vi.fn(() => fauxAssistantMessage("I could not reach Linear, but here is a report."));
+    const { error, result, events } = await run([model], { fetch: fetchFake, catalogs: undefined, call: undefined });
+    expect(result).toBeUndefined();
+    expect(error).toMatchObject({ code: "CALLBACK_FORBIDDEN" });
+    expect(model).not.toHaveBeenCalled();
+    expect(events.find((event) => event.type === "error")).toBeDefined();
+  });
+
+  it("gives the catalogs request a signal, and ends the step timed out when the broker hangs past the step's limit", async () => {
+    const seen: Array<AbortSignal | undefined> = [];
+    const hung = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      seen.push(init?.signal ?? undefined);
+      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+    })) as unknown as typeof fetch;
+    const { error } = await run([fauxAssistantMessage("never")], { fetch: hung, catalogs: undefined, call: undefined, payload: step({ timeoutMs: 40 }) });
+    expect(error?.message).toBe("timeout:40");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.aborted).toBe(true);
+  });
+
+  it("ends a step cancelled while its tools are being read, starting no session", async () => {
+    const controller = new WorkerCancellationController();
+    const operationId = randomUUID();
+    const hung = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+    })) as unknown as typeof fetch;
+    const model = vi.fn(() => fauxAssistantMessage("never"));
+    const started = run([model], { operationId, cancellationController: controller, fetch: hung, catalogs: undefined, call: undefined });
+    await vi.waitFor(async () => { await controller.cancel(operationId, 1); }, { timeout: 5_000, interval: 20 });
+    const { error } = await started;
+    expect(error?.name).toBe("WorkerOperationCancelledError");
+    expect(model).not.toHaveBeenCalled();
   });
 
   it("posts the request without the workspace id, to the call route only", async () => {
@@ -235,6 +272,40 @@ describe("the connector bridge", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]!.url).toBe(`${BROKER}/v1/internal/agent-tools/call`);
     expect(seen[0]!.body).not.toHaveProperty("workspaceId");
+  });
+
+  it("gives the call a signal that ends with the step's, and forwards the tool call's own signal", async () => {
+    const seen: Array<AbortSignal | undefined> = [];
+    const hung = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      seen.push(init?.signal ?? undefined);
+      init?.signal?.addEventListener("abort", () => reject(new Error("the call was cancelled")));
+    })) as unknown as typeof fetch;
+    const stepEnds = new AbortController();
+    const post = brokerToolCall({ brokerUrl: BROKER, capability: CAPABILITY, fetch: hung, signal: stepEnds.signal });
+    const request = { workspaceId: "w", connector: "linear", requestId: randomUUID(), scope: "main", tool: "get_issue", schemaHash: hash("0"), arguments: {} };
+    const byStep = post(request);
+    stepEnds.abort();
+    await expect(byStep).rejects.toThrow("the call was cancelled");
+    const byTool = new AbortController();
+    const calling = brokerToolCall({ brokerUrl: BROKER, capability: CAPABILITY, fetch: hung })(request, byTool.signal);
+    byTool.abort();
+    await expect(calling).rejects.toThrow("the call was cancelled");
+    expect(seen.every((signal) => signal?.aborted === true)).toBe(true);
+    expect(seen).toHaveLength(2);
+  });
+
+  it("refuses an answer over 1 MiB with a clear tool error instead of putting it in the model's context", async () => {
+    const big = vi.fn(async () => new Response(JSON.stringify({ status: "SUCCEEDED", text: "x".repeat(1_100_000) }), { status: 200 })) as unknown as typeof fetch;
+    const results: Array<ReturnType<typeof lastResult>> = [];
+    const { error, result } = await run([
+      toolUse(fauxToolCall("linear__get_issue", { id: "ENG-1" }, { id: "big" })),
+      (context) => { results.push(lastResult(context)); return fauxAssistantMessage("Too big."); },
+    ], { fetch: (async (url: string, init?: RequestInit) => url.endsWith("/call") ? big(url, init) : new Response(JSON.stringify({ catalogs: [catalog("linear", "get_issue")] }), { status: 200 })) as unknown as typeof fetch, catalogs: undefined, call: undefined });
+    expect(error).toBeUndefined();
+    expect(result?.report).toBe("Too big.");
+    expect(results[0]!.isError).toBe(true);
+    expect(results[0]!.content[0]!.text).toContain("larger than 1 MiB");
+    expect(results[0]!.content[0]!.text.length).toBeLessThan(1_000);
   });
 
   it("has the same tool names and request ids as the orchestrator's createConnectorTools for one catalog", async () => {

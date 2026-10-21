@@ -5,7 +5,7 @@
 // and read_skill run in the worker without touching the container. No real Docker daemon, no network.
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -113,10 +113,11 @@ const agentStep = (extra: Record<string, unknown> = {}) => ({
   workspace: "read", inputs: "Request:\nWhy did the deploy fail?", ...extra,
 });
 
-async function runStep(responses: FauxResponseStep[], step: unknown, fake: ReturnType<typeof fakeDocker>, extra: Record<string, unknown> = {}) {
+async function runStep(responses: FauxResponseStep[], step: unknown, fake: ReturnType<typeof fakeDocker>, extra: Record<string, unknown> = {}, onPrepared?: (root: string) => Promise<void>) {
   const { modelRuntime, faux } = await fauxModelRuntime();
   faux.setResponses(responses);
   const root = await preparedWorkspace(fake.docker);
+  await onPrepared?.(root);
   const events: WorkerEvent[] = [];
   const calls: Array<ConnectorCallRequest & { connector: string }> = [];
   const result = await runTaskInvocation(invocation(step), {
@@ -210,5 +211,20 @@ describe("an agent step in the task sandbox", () => {
     const model = vi.fn(async () => fauxAssistantMessage("Never."));
     await expect(runStep([model], agentStep(), fake)).rejects.toThrow();
     expect(model).not.toHaveBeenCalled();
+  });
+
+  it("does not start the project's devcontainer for workspace none, and does for read", async () => {
+    // A project with a devcontainer: the manifest names one. Starting it would call the devcontainer CLI, which fails here.
+    const withDevcontainer = async (root: string) => {
+      const file = join(root, ".agentx/preparation-manifest.json");
+      const manifest = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+      await writeFile(file, JSON.stringify({ ...manifest, devcontainer: { repository: "sample", configPath: "repo/sample/.devcontainer/devcontainer.json" } }));
+    };
+    const attempts = vi.fn(async () => { throw new Error("the devcontainer CLI was called"); });
+    const devcontainerCli = new Proxy({}, { get: () => attempts }) as never;
+    const none = await runStep([fauxAssistantMessage("No files needed.")], agentStep({ workspace: "none" }), fakeDocker({}), { devcontainerCli }, withDevcontainer);
+    expect(none.result.agentStepResult?.report).toBe("No files needed.");
+    expect(attempts).not.toHaveBeenCalled();
+    await expect(runStep([fauxAssistantMessage("never")], agentStep({ workspace: "read" }), fakeDocker({}), { devcontainerCli }, withDevcontainer)).rejects.toThrow();
   });
 });
