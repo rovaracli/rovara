@@ -33,8 +33,9 @@ export const EMPTY_UNION_SENTINEL = "none.invalid";
 export const EGRESS_BACKFILL_KEY: OrgKey = { pk: EGRESS_DOMAINS_PK, sk: "BACKFILL" };
 
 /** After an update the list reads UPDATING until Resolver has applied it; a second update meanwhile would be refused. Polled this often, this many times. */
+// Ten seconds at most: an approval waits for this inside the broker's 30 second request, and a run that gives up is retried by the schedule.
 const POLL_INTERVAL_MS = 1000;
-const MAX_POLLS = 15;
+const MAX_POLLS = 10;
 
 export interface SyncCellAllowListDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
