@@ -5,7 +5,17 @@ import { sha256Hex } from "@rovara/audit-verifier";
 import { z } from "zod";
 import { OrgIdSchema } from "./org.js";
 
-export { AUDIT_LIMITS_COPY, type AuditBundleV1, type AuditRecordV1 } from "@rovara/audit-verifier";
+// The writers (the appender) and readers of the chain use the verifier's own record, commitment and JSON functions,
+// so what is written is by construction what an auditor recomputes.
+export {
+  AUDIT_LIMITS_COPY,
+  canonicalJson as auditCanonicalJson,
+  detailCommit,
+  genesisHash,
+  recordHash,
+  type AuditBundleV1,
+  type AuditRecordV1,
+} from "@rovara/audit-verifier";
 
 export const AUDIT_SEAL_INTERVAL_MINUTES = 15;
 export const AUDIT_RETENTION_DAYS_DEFAULT = 1096;

@@ -2,8 +2,10 @@
 // explicit key policy, and the Object Lock bucket with its policy; and (Task 6) the broker's side of the outbox: its
 // grants, the drain schedule and the two alarms on its log. The appender, the anchor and their grants arrive in later
 // tasks, each pinned in its own test. Named environments only (the caller gates on naming.env); every stateful resource
-// is kept when the stack goes.
+// is kept when the stack goes. Task 7 adds the appender (the only writer of the chain) with its event source, grants and
+// two alarms.
 import { createHash } from "node:crypto";
+import { resolve } from "node:path";
 import {
   Aws,
   CfnCondition,
@@ -17,7 +19,9 @@ import {
   aws_dynamodb as dynamodb,
   aws_iam as iam,
   aws_kms as kms,
-  type aws_lambda as lambda,
+  aws_lambda as lambda,
+  aws_lambda_event_sources as lambdaEventSources,
+  aws_lambda_nodejs as lambdaNodejs,
   aws_logs as logs,
   aws_s3 as s3,
   aws_scheduler as scheduler,
@@ -178,7 +182,8 @@ export interface AuditLedgerProps {
   readonly notifyOperator: cloudwatch.IAlarmAction;
   /**
    * The appender function's role (Task 7 builds the function on it): may generate data keys and decrypt under the
-   * encryption context. It is an input because the key policy names it, and it has no permissions of its own here.
+   * encryption context. It is an input because the key policy names it; its other grants are the construct's, pinned
+   * in AuditAppenderPolicy and the event source's consume statement.
    */
   readonly appenderRole: iam.IRole;
   /** The region the environment installs in; it is part of the ledger bucket's name, which S3 caps at 63 characters. */
@@ -195,6 +200,8 @@ export class AuditLedger extends Construct {
   readonly sealsTable: dynamodb.Table;
   readonly keysTable: dynamodb.Table;
   readonly vaultKey: kms.Key;
+  /** The appender (Task 7): the only function that writes the chain. */
+  readonly appender: lambda.Function;
   readonly ledgerBucket: s3.Bucket;
   readonly exportsBucket: s3.Bucket;
   /** The settings of each lock profile, and the one the `AuditLockProfile` parameter defaults to. */
@@ -438,6 +445,7 @@ export class AuditLedger extends Construct {
     });
 
     this.addBrokerOutbox(props, brokerRole);
+    this.appender = this.addAppender(props);
 
     // The second copy, in a separate account: only with both context values (auditReplicaSettings throws on the ARN alone).
     if (this.replica !== undefined) {
@@ -573,5 +581,82 @@ export class AuditLedger extends Construct {
       "An audit event has waited more than 10 minutes in the outbox, or the drain could not read the outbox at all: events are not being delivered. Check the intake queue, the State table and the broker logs for audit.pending_stuck and audit.drain_failed.",
       counted("AuditPendingStuck", "AuditPendingStuck", AUDIT_PENDING_STUCK_EVENTS),
     );
+  }
+
+  /**
+   * The appender (Task 7): the only writer of the audit chain. It reads the FIFO intake queue (the org is the message group,
+   * so one appender at a time per org), ten messages a batch, and reports a partial batch's failures so FIFO order holds.
+   * Its grants are exactly these (nothing else is attached to the role):
+   *  - the ledger table: `GetItem`, `PutItem`, `UpdateItem` and `ConditionCheckItem` (a transaction authorizes each item by its
+   *    own action) and only for items whose partition key is `AUDIT#...`, `AUDIT_DIRTY` or `AUDIT_ORGS`, so the seals
+   *    state (`AUDIT_EPOCH` and the rest) is out of reach even on this table;
+   *  - the keys table: `GetItem` and `PutItem`, never `DeleteItem` or `UpdateItem`: a key is made once and removed only by erasure;
+   *  - the intake queue's consume actions (from the event source) and its own log group;
+   *  - KMS through the key policy only (AppenderUse), so a stolen role without the encryption context gets nothing.
+   * Nothing on the seals table, either bucket, the dead-letter queue or the State table.
+   */
+  private addAppender(props: AuditLedgerProps): lambda.Function {
+    const { naming, appenderRole } = props;
+    const logGroup = new logs.LogGroup(this, "AuditAppenderLogs", { retention: logs.RetentionDays.ONE_MONTH, removalPolicy: RemovalPolicy.DESTROY });
+    const appender = new lambdaNodejs.NodejsFunction(this, "AuditAppender", {
+      description: "Appends audit events to each org's hash chain, one writer per org, and seals their details",
+      runtime: lambda.Runtime.NODEJS_22_X,
+      entry: resolve(process.cwd(), "packages/broker/src/audit/appender-handler.ts"),
+      handler: "handler",
+      // The queue's visibility timeout (180 s) is six times this, as Lambda's guidance for SQS sources asks.
+      timeout: Duration.seconds(30),
+      memorySize: 256,
+      role: appenderRole,
+      logGroup,
+      environment: {
+        AUDIT_LEDGER_TABLE_NAME: this.ledgerTable.tableName,
+        AUDIT_KEYS_TABLE_NAME: this.keysTable.tableName,
+        // The key's ARN, never the alias: kms:Update* and kms:CreateAlias let an administrator repoint the alias.
+        AUDIT_VAULT_KEY_ARN: this.vaultKey.keyArn,
+      },
+      bundling: { externalModules: [], minify: true, sourceMap: true, target: "node22" },
+    });
+    // A function on a role of our own gets no log permission from CDK.
+    logGroup.grantWrite(appenderRole);
+    new iam.Policy(this, "AuditAppenderPolicy", {
+      roles: [appenderRole],
+      statements: [
+        new iam.PolicyStatement({
+          sid: "LedgerTable",
+          actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"],
+          resources: [this.ledgerTable.tableArn],
+          conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT#*", "AUDIT_DIRTY", "AUDIT_ORGS"] } },
+        }),
+        new iam.PolicyStatement({
+          sid: "KeysTable",
+          actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
+          resources: [this.keysTable.tableArn],
+        }),
+      ],
+    });
+    appender.addEventSource(new lambdaEventSources.SqsEventSource(this.intakeQueue, { batchSize: 10, reportBatchItemFailures: true }));
+
+    // Two alarms the health route reads (HEALTH_ALARM_SUFFIXES): a message that exhausted its receives, and a queue that is
+    // not draining. The names are the plan's audit-intake-dead-letters and audit-intake-backlog in the house style.
+    new cloudwatch.Alarm(this, "AuditIntakeDeadLettersAlarm", {
+      alarmName: naming.alarmName("AuditIntakeDeadLetters"),
+      alarmDescription: "An audit event reached the intake dead-letter queue: the appender could not record it after five receives. Check the appender logs for audit.append_failed and audit.record_invalid, fix the cause, then redrive the queue.",
+      metric: this.intakeDeadLetterQueue.metricApproximateNumberOfMessagesVisible({ statistic: "Maximum", period: Duration.minutes(5) }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(props.notifyOperator);
+    new cloudwatch.Alarm(this, "AuditIntakeBacklogAlarm", {
+      alarmName: naming.alarmName("AuditIntakeBacklog"),
+      alarmDescription: "The oldest audit event in the intake queue has waited more than 15 minutes for two periods: the appender is not keeping up or is failing. Check the appender logs and the queue.",
+      metric: this.intakeQueue.metricApproximateAgeOfOldestMessage({ statistic: "Maximum", period: Duration.minutes(5) }),
+      threshold: 900,
+      evaluationPeriods: 2,
+      datapointsToAlarm: 2,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(props.notifyOperator);
+    return appender;
   }
 }

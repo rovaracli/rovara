@@ -6,8 +6,8 @@ type Resource = { Type: string; Properties?: Record<string, unknown> };
 export const hasAuditLedger = (template: unknown): boolean => Object.keys((template as { Resources?: object }).Resources ?? {}).some((id) => id.startsWith("AuditLedger"));
 
 /**
- * The Audit Ledger adds, to a named control plane, one construct's resources (AuditLedger*) and the appender's bare
- * role (AuditAppenderRole*), and nothing else but one environment variable on the broker (Task 6: the intake queue's
+ * The Audit Ledger adds, to a named control plane, one construct's resources (AuditLedger*, the appender function among
+ * them) and the appender's role with the policy CDK attaches to it (AuditAppenderRole*), and nothing else but one environment variable on the broker (Task 6: the intake queue's
  * URL; its grants are a policy of their own, inside the construct) and, since Task 5b, the AuditLockProfile parameter
  * with its AuditLockIsTrial condition (nothing outside the ledger uses them). No other parameter, output or grant on an existing
  * resource. The inventory is checked here to be exactly this, then taken out, so the rest of the template must still
@@ -16,17 +16,24 @@ export const hasAuditLedger = (template: unknown): boolean => Object.keys((templ
 export function withoutAuditLedger(template: unknown): unknown {
   const resources = (template as { Resources: Record<string, Resource> }).Resources;
   const ids = Object.keys(resources).filter((id) => id.startsWith("AuditLedger") || id.startsWith("AuditAppenderRole"));
-  expect(ids.map((id) => `${resources[id]!.Type} ${id.replace(/[0-9A-F]{8}$/, "")}`).sort()).toStrictEqual([
+  expect(ids.map((id) => `${resources[id]!.Type} ${id.replace(/[0-9A-F]{8}$/, "").replace(/(SqsEventSource).+$/, "$1")}`).sort()).toStrictEqual([
+    "AWS::CloudWatch::Alarm AuditLedgerAuditIntakeBacklogAlarm",
+    "AWS::CloudWatch::Alarm AuditLedgerAuditIntakeDeadLettersAlarm",
     "AWS::CloudWatch::Alarm AuditLedgerAuditPendingStuckAlarm",
     "AWS::CloudWatch::Alarm AuditLedgerAuditRecordFailedAlarm",
     "AWS::DynamoDB::Table AuditLedgerAuditKeysTable",
     "AWS::DynamoDB::Table AuditLedgerAuditLedgerTable",
     "AWS::DynamoDB::Table AuditLedgerAuditSealsTable",
+    "AWS::IAM::Policy AuditAppenderRoleDefaultPolicy",
+    "AWS::IAM::Policy AuditLedgerAuditAppenderPolicy",
     "AWS::IAM::Policy AuditLedgerAuditBrokerOutboxPolicy",
     "AWS::IAM::Role AuditAppenderRole",
     "AWS::IAM::Role AuditLedgerAuditDrainSchedulerRole",
     "AWS::KMS::Alias AuditLedgerAuditVaultKeyAlias",
     "AWS::KMS::Key AuditLedgerAuditVaultKey",
+    "AWS::Lambda::EventSourceMapping AuditLedgerAuditAppenderSqsEventSource",
+    "AWS::Lambda::Function AuditLedgerAuditAppender",
+    "AWS::Logs::LogGroup AuditLedgerAuditAppenderLogs",
     "AWS::Logs::MetricFilter AuditLedgerAuditPendingStuckMetric",
     "AWS::Logs::MetricFilter AuditLedgerAuditRecordFailedMetric",
     "AWS::S3::Bucket AuditLedgerAuditExportsBucket",

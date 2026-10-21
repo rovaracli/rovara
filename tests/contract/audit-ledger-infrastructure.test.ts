@@ -5,12 +5,13 @@ import { createHash } from "node:crypto";
 import { App, ArnFormat, Stack, aws_cloudwatch_actions as cloudwatchActions, aws_dynamodb as dynamodb, aws_iam as iam, aws_lambda as lambda, aws_sns as sns } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { AUDIT_INTAKE_MAX_RECEIVES, canonicalJson } from "@agentx/contracts";
+import { AUDIT_INTAKE_MAX_RECEIVES, HEALTH_ALARM_SUFFIXES, canonicalJson } from "@agentx/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { AuditLedger } from "../../infra/lib/audit-ledger.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { auditLockSettings, auditTsaSettings } from "../../infra/lib/audit-settings.js";
 import { evaluate } from "../support/cfn-evaluate.js";
+import { roleStatements, simulateIam, type IamStatement } from "../support/iam-simulate.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -478,7 +479,7 @@ describe("the audit ledger in templates", () => {
       expect(reaches("kms:PutKeyPolicy")).toBe(true);
     });
 
-    it("the appender role is a bare Lambda role and the broker role is the broker function's", () => {
+    it("the appender role is a Lambda role with no managed or inline policy of its own (its grants are separate policies, pinned below) and the broker role is the broker function's", () => {
       const appender = one(production.template, "AWS::IAM::Role", "AuditAppenderRole")[1];
       expect(JSON.stringify(appender.Properties.AssumeRolePolicyDocument)).toContain("lambda.amazonaws.com");
       expect(appender.Properties.ManagedPolicyArns).toBeUndefined();
@@ -821,8 +822,14 @@ describe("the audit ledger in templates", () => {
           const mentions = policies(synthesis).flatMap(({ withoutHash: policy, properties }) => rawStatements(properties)
             .filter((statement) => watched.some((name) => JSON.stringify([statement.Resource, statement.NotResource]).includes(name)))
             .map((statement) => `${policy}/${statement.Sid ?? "?"}`));
-          // Task 7 and later tasks add their own functions' statements here; Task 6 adds exactly the broker's send.
-          expect(mentions).toStrictEqual(["AuditLedgerAuditBrokerOutboxPolicy/SendAuditEvents"]);
+          // Each function's statements are listed here: the broker's send (Task 6), and the appender's consume and
+          // table statements (Task 7, pinned in full in "the appender" below). Later tasks add theirs.
+          expect(mentions.sort()).toStrictEqual([
+            "AuditAppenderRoleDefaultPolicy/?",
+            "AuditLedgerAuditAppenderPolicy/KeysTable",
+            "AuditLedgerAuditAppenderPolicy/LedgerTable",
+            "AuditLedgerAuditBrokerOutboxPolicy/SendAuditEvents",
+          ]);
           for (const [, role] of ofType(synthesis.template, "AWS::IAM::Role")) {
             expect(JSON.stringify(role.Properties.Policies ?? [])).not.toMatch(/AuditLedger(Audit)?(IntakeQueue|LedgerTable|SealsTable|KeysTable|LedgerBucket)/);
           }
@@ -929,6 +936,242 @@ describe("the audit ledger in templates", () => {
     it("a legacy template has no audit alarm, schedule or environment variable", () => {
       const legacy = Template.fromStack(buildAgentXApp().node.children.filter((child): child is Stack => Stack.isStack(child)).find((stack) => stack.stackName === "AgentXControlPlane")!).toJSON();
       expect(JSON.stringify(legacy)).not.toMatch(/AUDIT_INTAKE_QUEUE_URL|agentx\.audit-drain|AuditRecordFailed|AuditPendingStuck/);
+    });
+  });
+
+  describe("the appender (Task 7)", () => {
+    const ROLE = "AuditAppenderRole";
+    const LEDGER = "AuditLedgerAuditLedgerTable.Arn";
+    const KEYS = "AuditLedgerAuditKeysTable.Arn";
+    const SEALS = "AuditLedgerAuditSealsTable.Arn";
+    const QUEUE = "AuditLedgerAuditIntakeQueue.Arn";
+    const DLQ = "AuditLedgerAuditIntakeDeadLetterQueue.Arn";
+    const VAULT_KEY = "AuditLedgerAuditVaultKey.Arn";
+    const LEDGER_BUCKET = "AuditLedgerAuditLedgerBucket.Arn";
+    const EXPORTS_BUCKET = "AuditLedgerAuditExportsBucket.Arn";
+    const functionOf = (synthesis: Synth) => one(synthesis.template, "AWS::Lambda::Function", "AuditLedgerAuditAppender");
+    const identity = (synthesis: Synth): IamStatement[] => roleStatements(synthesis.template, one(synthesis.template, "AWS::IAM::Role", ROLE)[0], concreteAws);
+    const sortedByAction = (statements: IamStatement[]) => statements.slice().sort((left, right) => String([left.Action].flat()[0]).localeCompare(String([right.Action].flat()[0])));
+
+    for (const env of ["production", "staging", "acme"]) {
+      describe(env, () => {
+        const synthesis = named(env);
+
+        it("is a Node 22 function with 30 seconds and 256 MB on the appender role, from the appender handler", () => {
+          const [, fn] = functionOf(synthesis);
+          expect(fn.Properties).toMatchObject({ Runtime: "nodejs22.x", Timeout: 30, MemorySize: 256, Handler: "index.handler" });
+          expect(concreteAws(fn.Properties.Role)).toBe(`${ROLE}.Arn`);
+          expect(fn.Properties.ReservedConcurrentExecutions).toBeUndefined();
+          expect(fn.Properties.VpcConfig).toBeUndefined();
+        });
+
+        it("is given its two tables and the vault key's ARN, and nothing else audit-related", () => {
+          const [, fn] = functionOf(synthesis);
+          const variables = (fn.Properties.Environment as { Variables: Json }).Variables;
+          const audit = Object.fromEntries(Object.entries(variables).filter(([name]) => name.startsWith("AUDIT_")).map(([name, value]) => [name, concreteAws(value)]));
+          expect(audit).toStrictEqual({
+            AUDIT_LEDGER_TABLE_NAME: "Ref:AuditLedgerAuditLedgerTable",
+            AUDIT_KEYS_TABLE_NAME: "Ref:AuditLedgerAuditKeysTable",
+            // The key's ARN, never its alias: an administrator can repoint an alias.
+            AUDIT_VAULT_KEY_ARN: VAULT_KEY,
+          });
+          expect(JSON.stringify(variables)).not.toContain("alias/");
+        });
+
+        it("is the only function given the ledger or keys table names or the vault key", () => {
+          const others = ofType(synthesis.template, "AWS::Lambda::Function").filter(([id]) => withoutHash(id) !== "AuditLedgerAuditAppender");
+          for (const [id, fn] of others) {
+            const variables = JSON.stringify((fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables ?? {});
+            expect(variables, id).not.toMatch(/AuditLedgerAudit(LedgerTable|KeysTable|SealsTable|VaultKey)/);
+          }
+        });
+
+        it("reads the intake queue in batches of ten and reports partial batch failures", () => {
+          const mappings = ofType(synthesis.template, "AWS::Lambda::EventSourceMapping");
+          const mine = mappings.filter(([, mapping]) => concreteAws(mapping.Properties.EventSourceArn) === QUEUE);
+          expect(mine).toHaveLength(1);
+          const properties = mine[0]![1].Properties;
+          expect(properties).toMatchObject({ BatchSize: 10, FunctionResponseTypes: ["ReportBatchItemFailures"] });
+          expect(properties.Enabled ?? true).toBe(true);
+          expect(properties.MaximumBatchingWindowInSeconds).toBeUndefined();
+          expect(concreteAws(properties.FunctionName)).toBe("Ref:AuditLedgerAuditAppender");
+          // Nothing reads the dead-letter queue: it is for people.
+          expect(mappings.filter(([, mapping]) => concreteAws(mapping.Properties.EventSourceArn) === DLQ)).toHaveLength(0);
+        });
+
+        it("has exactly the pinned statements, in a policy of its own and the CDK-generated ones for the queue and the log group", () => {
+          const own = ofType(synthesis.template, "AWS::IAM::Policy").filter(([id]) => withoutHash(id) === "AuditLedgerAuditAppenderPolicy");
+          expect(own).toHaveLength(1);
+          expect(((own[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => concreteAws(statement))).toStrictEqual([
+            {
+              Sid: "LedgerTable", Effect: "Allow",
+              Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"],
+              Resource: LEDGER,
+              Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT#*", "AUDIT_DIRTY", "AUDIT_ORGS"] } },
+            },
+            { Sid: "KeysTable", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Resource: KEYS },
+          ]);
+          // The whole identity of the role: those two, the queue's consume actions and the log group's write actions.
+          expect(sortedByAction(identity(synthesis))).toStrictEqual(sortedByAction([
+            ...((own[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => concreteAws(statement) as IamStatement),
+            {
+              Effect: "Allow",
+              Action: ["sqs:ReceiveMessage", "sqs:ChangeMessageVisibility", "sqs:GetQueueUrl", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+              Resource: QUEUE,
+            },
+            { Effect: "Allow", Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: "AuditLedgerAuditAppenderLogs.Arn" },
+          ]));
+          expect(identity(synthesis)).toHaveLength(4);
+        });
+
+        it("names no other resource, no NotAction, no NotResource and has no wildcard resource", () => {
+          for (const statement of identity(synthesis)) {
+            expect(statement.NotAction).toBeUndefined();
+            expect(statement.NotResource).toBeUndefined();
+            expect([statement.Resource].flat().join(",")).not.toContain("*");
+            expect(statement.Effect).toBe("Allow");
+          }
+        });
+
+        describe("what IAM lets it do (the policies simulated)", () => {
+          const request = (action: string, resource: string, leadingKeys?: string[]) => simulateIam(identity(synthesis), { action, resource, ...(leadingKeys === undefined ? {} : { context: { "dynamodb:LeadingKeys": leadingKeys } }) });
+
+          it("allows the four item actions on the ledger table for AUDIT#<org>, AUDIT_DIRTY and AUDIT_ORGS keys, alone or together", () => {
+            for (const action of ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"]) {
+              for (const keys of [["AUDIT#org_aaaaaaaaaaaaaaaaaaaa"], ["AUDIT_DIRTY"], ["AUDIT_ORGS"], ["AUDIT#org_aaaaaaaaaaaaaaaaaaaa", "AUDIT_DIRTY", "AUDIT_ORGS"]]) {
+                expect(request(action, LEDGER, keys).allowed, `${action} ${keys.join(",")}`).toBe(true);
+              }
+            }
+          });
+
+          it("denies PutItem with leading key AUDIT_EPOCH, SEALED#, SEALS# or any other key on the ledger table, alone or beside a good one", () => {
+            for (const keys of [["AUDIT_EPOCH"], ["SEALED#org_aaaaaaaaaaaaaaaaaaaa"], ["SEALS#org_aaaaaaaaaaaaaaaaaaaa"], ["AUDIT_PENDING#3"], ["AUDIT#org_aaaaaaaaaaaaaaaaaaaa", "AUDIT_EPOCH"], ["AUDITX"], ["audit#org_a"]]) {
+              expect(request("dynamodb:PutItem", LEDGER, keys), keys.join(",")).toMatchObject({ allowed: false, reason: "implicit-deny" });
+              expect(request("dynamodb:UpdateItem", LEDGER, keys).allowed).toBe(false);
+            }
+          });
+
+          it("denies every table action on the seals table, with any key", () => {
+            for (const action of ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:Query", "dynamodb:DeleteItem"]) {
+              for (const keys of [["AUDIT_EPOCH"], ["AUDIT#org_aaaaaaaaaaaaaaaaaaaa"], ["SEALED#org_aaaaaaaaaaaaaaaaaaaa"]]) {
+                expect(request(action, SEALS, keys).allowed, `${action} ${keys.join(",")}`).toBe(false);
+              }
+            }
+          });
+
+          it("allows GetItem and PutItem on the keys table, and nothing else there", () => {
+            expect(request("dynamodb:GetItem", KEYS, ["ORG#org_aaaaaaaaaaaaaaaaaaaa"]).allowed).toBe(true);
+            expect(request("dynamodb:PutItem", KEYS, ["ORG#org_aaaaaaaaaaaaaaaaaaaa"]).allowed).toBe(true);
+            for (const action of ["dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:ConditionCheckItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:BatchWriteItem"]) {
+              expect(request(action, KEYS, ["ORG#org_aaaaaaaaaaaaaaaaaaaa"]).allowed, action).toBe(false);
+            }
+          });
+
+          it("has no DeleteItem, Query, Scan or batch action on any table", () => {
+            for (const table of [LEDGER, KEYS, SEALS]) {
+              for (const action of ["dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:BatchWriteItem", "dynamodb:BatchGetItem", "dynamodb:DeleteTable", "dynamodb:*"]) {
+                expect(request(action, table, ["AUDIT#org_aaaaaaaaaaaaaaaaaaaa"]).allowed, `${action} ${table}`).toBe(false);
+              }
+            }
+          });
+
+          it("has nothing on the ledger bucket, the exports bucket or any S3 action", () => {
+            for (const bucket of [LEDGER_BUCKET, EXPORTS_BUCKET]) {
+              for (const resource of [bucket, `${bucket}/orgs/org_aaaaaaaaaaaaaaaaaaaa/seals/000000000001.json`]) {
+                for (const action of ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket", "s3:PutObjectRetention", "s3:*"]) {
+                  expect(request(action, resource).allowed, `${action} ${resource}`).toBe(false);
+                }
+              }
+            }
+            expect(identity(synthesis).some((statement) => [statement.Action].flat().some((action) => String(action).startsWith("s3:")))).toBe(false);
+          });
+
+          it("takes messages from the intake queue only: it cannot send to it, and it has nothing on the dead-letter queue", () => {
+            for (const action of ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:GetQueueAttributes", "sqs:GetQueueUrl"]) {
+              expect(request(action, QUEUE).allowed, action).toBe(true);
+              expect(request(action, DLQ).allowed, `${action} on the DLQ`).toBe(false);
+            }
+            for (const action of ["sqs:SendMessage", "sqs:PurgeQueue", "sqs:DeleteQueue"]) expect(request(action, QUEUE).allowed, action).toBe(false);
+          });
+
+          it("has no KMS permission of its own: the key policy is what allows it", () => {
+            for (const action of ["kms:GenerateDataKey", "kms:Decrypt", "kms:Encrypt", "kms:CreateGrant"]) expect(request(action, VAULT_KEY).allowed, action).toBe(false);
+            expect(identity(synthesis).some((statement) => [statement.Action].flat().some((action) => String(action).startsWith("kms:")))).toBe(false);
+          });
+
+          it("the simulator sees the leading-key condition: the same statements without it would allow AUDIT_EPOCH", () => {
+            const loosened = identity(synthesis).map(({ Condition: _condition, ...rest }) => { void _condition; return rest; });
+            expect(simulateIam(loosened, { action: "dynamodb:PutItem", resource: LEDGER, context: { "dynamodb:LeadingKeys": ["AUDIT_EPOCH"] } }).allowed).toBe(true);
+            expect(request("dynamodb:PutItem", LEDGER, ["AUDIT_EPOCH"]).allowed).toBe(false);
+          });
+        });
+
+        describe("what the vault key policy lets it do (the key policy simulated)", () => {
+          const keyStatements = () => ((one(synthesis.template, "AWS::KMS::Key", "AuditLedgerAuditVaultKey")[1].Properties.KeyPolicy as { Statement: Statement[] }).Statement).map((statement) => concreteAws(statement) as IamStatement);
+          const asAppender = (action: string, context: Record<string, string | string[]>) => simulateIam(keyStatements(), { action, resource: "*", principal: `${ROLE}.Arn`, context });
+          const good = { "kms:EncryptionContext:rovara:purpose": "audit-details", "kms:EncryptionContextKeys": ["rovara:org"] };
+
+          it("allows GenerateDataKey and Decrypt under the audit-details context carrying rovara:org", () => {
+            expect(asAppender("kms:GenerateDataKey", good).allowed).toBe(true);
+            expect(asAppender("kms:Decrypt", good).allowed).toBe(true);
+          });
+
+          it("denies them without the context, with another purpose or without rovara:org", () => {
+            expect(asAppender("kms:GenerateDataKey", {}).allowed).toBe(false);
+            expect(asAppender("kms:Decrypt", { ...good, "kms:EncryptionContext:rovara:purpose": "something-else" }).allowed).toBe(false);
+            expect(asAppender("kms:Decrypt", { ...good, "kms:EncryptionContextKeys": ["rovara:purpose"] }).allowed).toBe(false);
+          });
+
+          it("denies Encrypt, ReEncrypt, CreateGrant and key administration, and denies every other principal", () => {
+            for (const action of ["kms:Encrypt", "kms:ReEncryptFrom", "kms:GenerateDataKeyWithoutPlaintext", "kms:CreateGrant", "kms:PutKeyPolicy", "kms:ScheduleKeyDeletion"]) {
+              expect(asAppender(action, good).allowed, action).toBe(false);
+            }
+            expect(simulateIam(keyStatements(), { action: "kms:Decrypt", resource: "*", principal: "SomeoneElse.Arn", context: good }).allowed).toBe(false);
+          });
+        });
+
+        it("alarms when a message reaches the dead-letter queue, and when the oldest intake message is over 15 minutes old for two periods", () => {
+          const topicId = one(synthesis.template, "AWS::SNS::Topic", "OperatorAlerts")[0];
+          const [, deadLetters] = one(synthesis.template, "AWS::CloudWatch::Alarm", "AuditLedgerAuditIntakeDeadLettersAlarm");
+          expect(concreteAws(deadLetters.Properties)).toMatchObject({
+            AlarmName: `agentx-${env}-AuditIntakeDeadLetters`,
+            Namespace: "AWS/SQS", MetricName: "ApproximateNumberOfMessagesVisible", Statistic: "Maximum",
+            Dimensions: [{ Name: "QueueName", Value: "AuditLedgerAuditIntakeDeadLetterQueue.QueueName" }],
+            Period: 300, EvaluationPeriods: 1, Threshold: 1, ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
+          });
+          expect(deadLetters.Properties.AlarmActions).toStrictEqual([{ Ref: topicId }]);
+          const [, backlog] = one(synthesis.template, "AWS::CloudWatch::Alarm", "AuditLedgerAuditIntakeBacklogAlarm");
+          expect(concreteAws(backlog.Properties)).toMatchObject({
+            AlarmName: `agentx-${env}-AuditIntakeBacklog`,
+            Namespace: "AWS/SQS", MetricName: "ApproximateAgeOfOldestMessage", Statistic: "Maximum",
+            Dimensions: [{ Name: "QueueName", Value: "AuditLedgerAuditIntakeQueue.QueueName" }],
+            Period: 300, EvaluationPeriods: 2, DatapointsToAlarm: 2, Threshold: 900, ComparisonOperator: "GreaterThanThreshold", TreatMissingData: "notBreaching",
+          });
+          expect(backlog.Properties.AlarmActions).toStrictEqual([{ Ref: topicId }]);
+        });
+
+        it("names its alarms in the list the health route reads", () => {
+          for (const suffix of ["AuditIntakeDeadLetters", "AuditIntakeBacklog"]) expect(HEALTH_ALARM_SUFFIXES).toContain(suffix);
+        });
+
+        it("keeps its log group a month and its logs name no person", () => {
+          const [, logGroup] = one(synthesis.template, "AWS::Logs::LogGroup", "AuditLedgerAuditAppenderLogs");
+          expect(logGroup.Properties.RetentionInDays).toBe(30);
+        });
+      });
+    }
+
+    it("a scratch stack with the ledger alone builds the same function, so the checks above read the construct and not the control plane", () => {
+      const stack = new Stack(new App(), "Scratch");
+      new AuditLedger(stack, "AuditLedger", { ...scratchProps(stack), appenderRole: new iam.Role(stack, "AppenderRole", { assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com") }) });
+      const template = Template.fromStack(stack).toJSON() as TemplateJson;
+      expect(one(template, "AWS::Lambda::Function", "AuditLedgerAuditAppender")[1].Properties).toMatchObject({ Timeout: 30, MemorySize: 256 });
+      expect(one(template, "AWS::Lambda::EventSourceMapping", "AuditLedgerAuditAppenderSqsEventSource")[1].Properties).toMatchObject({ BatchSize: 10 });
+    });
+
+    it("a legacy template has no appender", () => {
+      const legacy = Template.fromStack(buildAgentXApp().node.children.filter((child): child is Stack => Stack.isStack(child)).find((stack) => stack.stackName === "AgentXControlPlane")!).toJSON();
+      expect(JSON.stringify(legacy)).not.toMatch(/AuditAppender|AUDIT_LEDGER_TABLE_NAME|AuditIntakeBacklog/);
     });
   });
 
