@@ -35,7 +35,7 @@ describe("retained resources in a named environment", () => {
     const expected: Record<string, string[]> = {
       "agentx-staging-access": ["ArtifactBucket AWS::S3::Bucket"],
       "agentx-staging-control-plane": [
-        "Artifacts AWS::S3::Bucket", "DeveloperSignInTable AWS::DynamoDB::Table", "SlackSecret AWS::SecretsManager::Secret", "SlackThreadSessions AWS::S3::Bucket",
+        "Artifacts AWS::S3::Bucket", "DeveloperSignInTable AWS::DynamoDB::Table", "ModelProxySaltKey AWS::SecretsManager::Secret", "SlackSecret AWS::SecretsManager::Secret", "SlackThreadSessions AWS::S3::Bucket",
         "SlackThreads AWS::DynamoDB::Table", "State AWS::DynamoDB::Table", "TurnRecords AWS::DynamoDB::Table",
       ],
       "agentx-staging-foundation": ["VpcFlowLogs AWS::Logs::LogGroup", "WorkspaceKey AWS::KMS::Key"],
