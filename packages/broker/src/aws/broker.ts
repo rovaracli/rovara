@@ -319,6 +319,9 @@ import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { admitSpend, changeBudgets, keyIdOf, mintCap, mintKeyHealing, recordMintedKey, type OrgBudgetSettings } from "../org/budget.js";
+import { AgentStore, type AgentStoreInput } from "../agents/store.js";
+import type { ProjectMembers } from "../agents/access.js";
+import type { AgentRouteDependencies } from "../agents/routes.js";
 import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import { ADMISSION_REFUSALS, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
@@ -506,6 +509,12 @@ interface AwsBrokerDependencies {
   egressDomainsSync?: EgressDomainsDependencies["sync"];
   /** Which org a caller belongs to (ruling R1). Absent means every caller belongs to the install's single org (ruling R3). */
   orgResolver?: OrgResolver;
+  /**
+   * Plan 3, Task 7: what the agent routes (`/v1/app/agents*`) need beyond the broker's own tables: who holds which role on a project (Plan 2
+   * Task 21's `createProjectMembers`). Absent, those routes answer NOT_FOUND. The store, access checks and approvals are built from the
+   * broker's State table and sign-in table.
+   */
+  agents?: { projectMembers: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"] } & Pick<AgentStoreInput, "newId" | "builtins">;
   /** The install's environment name, which its single org id derives from; defaults to the developer sign-in's, then AGENTX_ENV, then "default". */
   environmentName?: string;
   githubMcp?: GitHubMcpDependencies;
@@ -708,6 +717,27 @@ async function decideEgress(dependencies: AwsBrokerDependencies, identity: Authe
   const { orgId, owner, domain, reason } = parsed.data;
   const { warning } = await decideEgressDomain(egressDepsOf(dependencies), { orgId, owner, domain, decision, operatorId: identity.subject, ...(reason === undefined ? {} : { reason }) });
   return { orgId, owner, domain, status: decision, ...(warning === undefined ? {} : { warning }) };
+}
+
+/** The agent routes' dependencies, built once per handler; undefined without the project roles or developer sign-in they need. */
+function agentRouteDependencies(dependencies: AwsBrokerDependencies): AgentRouteDependencies | undefined {
+  const { agents, developer } = dependencies;
+  if (agents === undefined || developer === undefined) return undefined;
+  return {
+    store: new AgentStore({
+      documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+      ...(agents.newId === undefined ? {} : { newId: agents.newId }),
+      ...(agents.builtins === undefined ? {} : { builtins: agents.builtins }),
+    }),
+    projectMembers: agents.projectMembers,
+    documentClient: dependencies.documentClient,
+    tableName: dependencies.tableName,
+    signInStore: new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, now: Date.now }),
+    now: Date.now,
+    // The confirmation page is served by the cell, at the origin its access tokens are issued from.
+    confirmOrigin: new URL(developer.issuer).origin,
+    ...(agents.resolveSkill === undefined ? {} : { resolveSkill: agents.resolveSkill }),
+  };
 }
 
 /**
@@ -1047,6 +1077,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   }
   // Spec 025: the broker actions the developer task routes call, built once per handler.
   const tasks = developerTaskActions(dependencies);
+  const agents = agentRouteDependencies(dependencies);
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
   return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
@@ -1403,6 +1434,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : url => dependencies.githubPullRequests.getRepositoryIdentity!(url),
           createProject: (caller, input, org) => createCloudProject(dependencies, caller, input, org),
           ...githubConnectRoute(dependencies),
+          ...(agents === undefined ? {} : { agents }),
           projectSettings: {
             registerRevision: async (actor, input) => { await registerProjectFor(dependencies, actor, input, { creatorMembership: "none" }); },
             ...(dependencies.cloudProjects === undefined ? {} : { githubCredentialRef: dependencies.cloudProjects.githubCredentialRef }),

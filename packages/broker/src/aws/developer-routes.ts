@@ -97,6 +97,8 @@ import {
   proposeTaskOwnershipForPage, proposeTaskPeopleRoleForPage,
   getWorkflowFeedbackReview, routeDeveloperTaskRequest, submitWorkflowFeedbackDecision, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
+import { StatusReply } from "./status-reply.js";
+import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
 import { createFeedbackReviewWeb } from "./feedback-review-web.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION, TASK_STATUS, createTaskWeb } from "./task-web.js";
 import { TASK_PAGE_API_PREFIX, createTaskWebApi } from "./task-web-api.js";
@@ -184,12 +186,11 @@ export interface DeveloperRouteDependencies {
   egressSync?: EgressDomainsDependencies["sync"];
   /** Plan 2, Task 13: starts connecting GitHub to the caller's org (the broker's `startGithubConnect`). Without it the route answers NOT_FOUND. */
   githubConnect?: { start(caller: DeveloperCaller): Promise<{ installUrl: string; expiresAt: string }> };
+  /** Plan 3, Task 7: what the agent routes (`/v1/app/agents*` and the other Plan 3 paths) need. Without it they answer NOT_FOUND. */
+  agents?: AgentRouteDependencies;
 }
 
-/** A route's answer with a status other than 200; the broker's handler writes the status and the body. */
-export class StatusReply {
-  constructor(readonly statusCode: number, readonly body: object) {}
-}
+export { StatusReply };
 /** Who is asking about a project, and in which org: grants and revisions are read in that org only. */
 export type ProjectAccessCaller = ProjectAccessSubject & { orgId: OrgId; orgRole: OrgRole };
 export { effectiveProjectRole, requireNewWorkAllowed };
@@ -1173,6 +1174,11 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // Never request.jwtClaims: no API Gateway authorizer runs on /v1/dev/* (D17).
   const caller = await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization));
+  // Plan 3's paths, project sub-paths included, are matched before Plan 2's `/v1/app/projects/{name}*` handlers (PF24).
+  if (isAgentRoute(url.pathname)) {
+    if (deps.agents === undefined) throw agentXError("NOT_FOUND", "agents are not set up in this deployment");
+    return routeAgentRequest(deps.agents, caller, request, url);
+  }
   if (request.method === "GET" && url.pathname === "/v1/app/me") return getAppMe(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/projects") return listAppProjects(deps, caller, url.searchParams.get("include") === "archived");

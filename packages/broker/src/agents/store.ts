@@ -32,6 +32,7 @@ import {
   type AgentId,
   type AgentOwner,
   type AgentPrincipal,
+  type AgentXError,
   type AgentXErrorCode,
   type BaseRef,
   type OrgId,
@@ -768,8 +769,11 @@ export interface ResolveOptions {
   resolveSkill?: (ref: SkillRef) => ResolvedSkill;
 }
 
-function problemsError(problems: Array<{ path: string; message: string }>): Error {
-  return coded("CONFIG_INVALID", problems.map(formatRecipeProblem).join("; "));
+/** A recipe that can't run: `CONFIG_INVALID` with every problem in the message, and the problems themselves on `problems` (the publish route reports the first). */
+export type RecipeProblemsError = AgentXError & { problems: Array<{ path: string; message: string }> };
+
+function problemsError(problems: Array<{ path: string; message: string }>): RecipeProblemsError {
+  return Object.assign(coded("CONFIG_INVALID", problems.map(formatRecipeProblem).join("; ")), { problems });
 }
 
 function refuseSkills(): ResolvedSkill {

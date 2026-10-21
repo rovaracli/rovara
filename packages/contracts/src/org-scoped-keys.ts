@@ -2,7 +2,7 @@
 // grant on it, the workspace limits) or that list across tenants (the usage and failure indexes).
 // Each one is prefixed with `orgScoped(orgId, ...)`, and nothing else builds these keys.
 import { canonicalInstant, indexDay } from "./admin.js";
-import type { AgentId, AgentPrincipal, SkillId } from "./agent.js";
+import type { AgentId, AgentPrincipal, ApprovalId, SkillId } from "./agent.js";
 import { OrgIdSchema, orgScoped, type OrgId, type OrgKey } from "./org.js";
 
 const REVISION_WIDTH = 12;
@@ -236,4 +236,22 @@ export function agentTasksKey(orgId: OrgId, agentId: AgentId, createdAt: string,
 /** An org's settings for one built-in agent: the version it pinned, its budget and its accountable person. */
 export function builtinSettingsKey(orgId: OrgId, agentId: AgentId): OrgKey {
   return { pk: orgScoped(orgId, "BUILTIN_AGENTS"), sk: agentId };
+}
+
+/** An approval record: a pending change, a write waiting for a person, or a step waiting for one. */
+export function approvalKey(orgId: OrgId, approvalId: ApprovalId): OrgKey {
+  return { pk: orgScoped(orgId, `APPROVAL#${approvalId}`), sk: "META" };
+}
+
+/**
+ * The global index of approvals still open, in the order they expire (ids only: the item names the org and the approval, and a
+ * reader re-checks `orgId` on the record it points at). `expiresAt` is an instant.
+ */
+export function openApprovalKey(expiresAt: string, orgId: OrgId, approvalId: ApprovalId): OrgKey {
+  return { pk: "OPEN_APPROVALS", sk: `${canonicalInstant(expiresAt)}#${orgId}#${approvalId}` };
+}
+
+/** The item that lists one approval for one person who may be asked to decide it (an id it names, or a candidate of its rule). */
+export function approverIndexKey(orgId: OrgId, developerId: string, approvalId: ApprovalId): OrgKey {
+  return { pk: orgScoped(orgId, `APPROVER#${developerId}`), sk: approvalId };
 }

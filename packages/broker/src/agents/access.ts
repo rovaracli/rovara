@@ -11,6 +11,7 @@ import {
   agentXError,
   atLeast,
   isBuiltinAgentId,
+  OrgRoleSchema,
   orgMemberKey,
   orgProjectCatalogKey,
   principalKey,
@@ -101,6 +102,11 @@ async function followMerges(signInStore: Pick<DeveloperSignInStore, "getDevelope
   return current;
 }
 
+/** The developer a record names, read as whoever they were merged into (by default through the sign-in table, as `evaluate` does). */
+export function resolveSurvivor(deps: AgentAccessDeps, orgId: OrgId, developerId: string): Promise<string> {
+  return deps.resolveDeveloper === undefined ? followMerges(deps.signInStore, developerId) : deps.resolveDeveloper(orgId, developerId);
+}
+
 /** One request's reads of developers and project roles, each made once. */
 class Lookups {
   private readonly survivors = new Map<string, Promise<string>>();
@@ -111,7 +117,7 @@ class Lookups {
   survivor(developerId: string): Promise<string> {
     let found = this.survivors.get(developerId);
     if (found === undefined) {
-      found = this.deps.resolveDeveloper === undefined ? followMerges(this.deps.signInStore, developerId) : this.deps.resolveDeveloper(this.caller.orgId, developerId);
+      found = resolveSurvivor(this.deps, this.caller.orgId, developerId);
       this.survivors.set(developerId, found);
     }
     return found;
@@ -283,6 +289,13 @@ async function isOrgMember(deps: AgentAccessDeps, lookups: Lookups, orgId: OrgId
   return exists(deps, orgMemberKey(orgId, await lookups.survivor(developerId)));
 }
 
+/** A member's role in the org (a developer merged into another is looked for as the survivor), or undefined for someone who isn't a member. */
+export async function orgRoleOf(deps: AgentAccessDeps, orgId: OrgId, developerId: string): Promise<OrgRole | undefined> {
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgMemberKey(orgId, await resolveSurvivor(deps, orgId, developerId)), ConsistentRead: true })) as { Item?: { role?: unknown } };
+  const role = OrgRoleSchema.safeParse(response.Item?.role);
+  return role.success ? role.data : undefined;
+}
+
 const isProjectInCatalog = (deps: AgentAccessDeps, orgId: OrgId, project: string) => exists(deps, orgProjectCatalogKey(orgId, project));
 
 /** Refuses, as `CONFIG_INVALID` at `path`, a principal that isn't in the org: an unknown member or a project not in the catalog. */
@@ -335,19 +348,35 @@ export async function setShares(deps: AgentAccessDeps, caller: AgentCaller, agen
   if (isBuiltinAgentId(agentId)) throw invalid("Built-in agents belong to the whole company and can't be shared.");
   const { agent } = await requireAgentAccess(deps, caller, agentId, "manage");
   if (!isCustom(agent)) throw notFound();
-  const lookups = new Lookups(deps, caller);
-  const wanted = await withSurvivors(lookups, parseShares(shares));
-  for (const [index, share] of wanted.entries()) await requirePrincipalExists(deps, lookups, caller.orgId, `shares.${String(index)}`, share.principal);
+  return saveShares(deps, caller.orgId, caller.developerId, agent, shares);
+}
 
+/**
+ * Writes the share set without asking who may: for a caller `setShares` has checked, and for a confirmed pending change, whose
+ * decider the approval's rule has already checked (Task 7's `agent_share`). `by` is the developer the `shared` event names.
+ */
+export async function saveShares(deps: AgentAccessDeps, orgId: OrgId, by: string, agent: AgentRecord, shares: AgentShare[]): Promise<AgentShare[]> {
+  const wanted = await checkShares(deps, orgId, by, shares);
   // The revision is read before the shares: a save that lands in between leaves this one's revision stale, and it conflicts.
   const expectedSharesRevision = agent.sharesRevision ?? 0;
-  const current = new Map((await validShares(deps, caller.orgId, agentId)).map((share) => [principalKey(share.principal), share]));
+  const current = new Map((await validShares(deps, orgId, agent.agentId)).map((share) => [principalKey(share.principal), share]));
   const upsert = wanted.filter((share) => current.get(principalKey(share.principal))?.level !== share.level);
   const keep = new Set(wanted.map((share) => principalKey(share.principal)));
   const remove = [...current].filter(([key]) => !keep.has(key)).map(([, share]) => share.principal);
   if (upsert.length > 0 || remove.length > 0) {
-    await deps.store.replaceShares({ orgId: caller.orgId, agentId, upsert, remove, expectedSharesRevision, by: caller.developerId });
+    await deps.store.replaceShares({ orgId, agentId: agent.agentId, upsert, remove, expectedSharesRevision, by });
   }
+  return wanted;
+}
+
+/**
+ * The shares as they would be stored, or the refusal `saveShares` would give: well formed, at most 50, no person or group twice (after
+ * naming each member by the developer they were merged into), and everyone named in the org. Nothing is written.
+ */
+export async function checkShares(deps: AgentAccessDeps, orgId: OrgId, by: string, shares: unknown): Promise<AgentShare[]> {
+  const lookups = new Lookups(deps, { orgId, developerId: by, orgRole: "member" });
+  const wanted = await withSurvivors(lookups, parseShares(shares));
+  for (const [index, share] of wanted.entries()) await requirePrincipalExists(deps, lookups, orgId, `shares.${String(index)}`, share.principal);
   return wanted;
 }
 
