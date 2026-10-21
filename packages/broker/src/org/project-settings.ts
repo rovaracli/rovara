@@ -301,7 +301,7 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
     }
   }
   if (body.description !== undefined) await writeDescription(deps, caller.orgId, name, body.description);
-  warnings.push(...await recordEgress(deps, caller, name, parsed.data.network?.allowedDomains ?? []));
+  warnings.push(...await recordEgress(deps.egress, caller, name, parsed.data.network?.allowedDomains ?? []));
   console.log(JSON.stringify({
     component: "broker", event: "developer.project_settings_changed", orgId: caller.orgId, project: name, revision: changed ? parsed.data.revision : current.revision,
     changed: SETTING_FIELDS.filter((field) => body[field] !== undefined),
@@ -316,18 +316,12 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
  * after one whose egress write failed (say, the one that removed the last domain) takes the old item's domains out of the union. With no item
  * and no domains it reads once and writes nothing. Domains every project already has are not asked about.
  */
-async function recordEgress(deps: Pick<ProjectSettingsDependencies, "documentClient" | "tableName" | "egress">, caller: ProjectSettingsCaller, project: string, domains: readonly string[]): Promise<string[]> {
+async function recordEgress(egress: EgressDomainsDependencies, caller: ProjectSettingsCaller, project: string, domains: readonly string[]): Promise<string[]> {
   const owner = { kind: "project", project } as const;
   const asked = domains.filter((domain) => !DEFAULT_AGENT_ALLOW_DOMAINS.includes(domain));
-  const { warning } = await putEgressDomains(deps.egress, caller.orgId, owner, asked, { developerId: caller.developerId }, { ownerActive: await projectIsActive(deps, caller.orgId, project) });
+  const { warning } = await putEgressDomains(egress, caller.orgId, owner, asked, { developerId: caller.developerId });
   if (asked.length === 0) return warning === undefined ? [] : [warning];
-  return [...egressStatusWarnings(await readEgressDomains(deps.egress, caller.orgId, owner), asked), ...(warning === undefined ? [] : [warning])];
-}
-
-/** Whether the project is in use: an archived project's egress item starts inactive, so its approvals stay out of the firewall's union. A project with no META record reads as active. */
-export async function projectIsActive(deps: Pick<ProjectSettingsDependencies, "documentClient" | "tableName">, orgId: OrgId, project: string): Promise<boolean> {
-  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: projectMetaKey(orgId, project), ConsistentRead: true })) as { Item?: { status?: unknown } };
-  return response.Item?.status !== "archived";
+  return [...egressStatusWarnings(await readEgressDomains(egress, caller.orgId, owner), asked), ...(warning === undefined ? [] : [warning])];
 }
 
 /**

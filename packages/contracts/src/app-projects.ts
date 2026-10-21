@@ -75,8 +75,11 @@ function hostLabelsOf(value: string): string[] | undefined {
   return labels.length >= 2 && labels.every((label) => DNS_LABEL.test(label)) && TOP_LEVEL_LABEL.test(labels.at(-1)!) ? labels : undefined;
 }
 
-/** Whether a lower-cased entry is a hostname, or `*.` and a hostname, that is not a public suffix and does not sit over one. */
-function isAllowedDomain(value: string): boolean {
+/**
+ * Whether a lower-cased entry is a hostname, or `*.` and a hostname, that is not a public suffix and does not sit over one. It is the one check
+ * between a domain and the DNS firewall: upper case, a trailing dot, `*`, a bare TLD and anything not ASCII (punycode is) all fail it.
+ */
+export function isAllowedDomain(value: string): boolean {
   const labels = hostLabelsOf(value);
   if (labels === undefined) return false;
   const host = labels.join(".");

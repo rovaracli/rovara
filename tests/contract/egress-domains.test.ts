@@ -212,6 +212,53 @@ describe("a settings save on Rovara Cloud", () => {
     expect(await approvedUnion(h.deps)).toEqual(["a.acme.dev"]);
   });
 
+  it("creates an archived project's first item inactive even when the archive lands after the project was read (Task 19 review, Minor 4)", async () => {
+    const h = await install();
+    let archived = false;
+    const racing = { send: async (input: unknown) => {
+      const answer = await h.db.send(input as never);
+      // The first read of the project's META says active; the archive lands right after it.
+      if (!archived && input instanceof GetCommand && input.input.Key?.sk === "META") {
+        archived = true;
+        h.db.set({ ...(h.db.get(projectMetaKey(TEST_ORG, "web")) as object), status: "archived" });
+      }
+      return answer;
+    } };
+    await putEgressDomains({ ...h.deps, documentClient: racing }, TEST_ORG, WEB, ["a.acme.dev"], { developerId: "dev-1" });
+    expect(archived).toBe(true);
+    expect(h.item()).toMatchObject({ active: false });
+    expect(await approvedUnion(h.deps)).toEqual([]);
+    // The other way: an item for a project that is archived when read, restored before the write, is created active.
+    const restored = await install();
+    restored.db.set({ ...(restored.db.get(projectMetaKey(TEST_ORG, "web")) as object), status: "archived" });
+    let flipped = false;
+    const racingBack = { send: async (input: unknown) => {
+      const answer = await restored.db.send(input as never);
+      if (!flipped && input instanceof GetCommand && input.input.Key?.sk === "META") {
+        flipped = true;
+        restored.db.set({ ...(restored.db.get(projectMetaKey(TEST_ORG, "web")) as object), status: "active" });
+      }
+      return answer;
+    } };
+    await putEgressDomains({ ...restored.deps, documentClient: racingBack }, TEST_ORG, WEB, ["a.acme.dev"], { developerId: "dev-1" });
+    expect(restored.item()).toMatchObject({ active: true });
+  });
+
+  it("backs off a little, with jitter, before retrying a cancellation that was not about the item, and only a few times (Task 19 review, Minor 5)", async () => {
+    const sleeps: number[] = [];
+    const { db, deps } = plain({ cloud: true });
+    const slow = { ...deps, sleep: async (milliseconds: number) => { sleeps.push(milliseconds); } };
+    db.injectFault({ command: "TransactWriteCommand", times: 2, error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "TransactionConflict" }] } });
+    await putEgressDomains(slow, TEST_ORG, WEB, ["a.acme.dev"], { developerId: "dev-1" });
+    expect(sleeps).toHaveLength(2);
+    for (const milliseconds of sleeps) { expect(milliseconds).toBeGreaterThan(0); expect(milliseconds).toBeLessThanOrEqual(500); }
+    // Never more than three waits, then it gives up.
+    sleeps.length = 0;
+    db.injectFault({ command: "TransactWriteCommand", times: 10, error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ThrottlingError" }] } });
+    await expect(putEgressDomains(slow, TEST_ORG, WEB, ["a.acme.dev", "b.acme.dev"], { developerId: "dev-1" })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(sleeps).toHaveLength(3);
+  });
+
   it("never shows another org's items: the same project name in another org is its own item", async () => {
     const h = await install();
     seedProject(h.db, OTHER_ORG);

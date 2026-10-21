@@ -4,7 +4,7 @@
 import { GetFirewallDomainListCommand, UpdateFirewallDomainsCommand } from "@aws-sdk/client-route53resolver";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  EGRESS_SYNC_KEY, egressDomainsKey, projectMetaKey, projectRevisionKey, type EgressAuditItem, type EgressDomainsItem, type EgressOwner, type OrgId,
+  EGRESS_SYNC_KEY, egressDomainsKey, isAllowedDomain, projectMetaKey, projectRevisionKey, type EgressAuditItem, type EgressDomainsItem, type EgressOwner, type OrgId,
 } from "../../packages/contracts/src/index.js";
 import {
   EGRESS_BACKFILL_KEY, EMPTY_UNION_SENTINEL, FIREWALL_DOMAINS_PER_CALL, backfillLegacyEgress, runEgressDomainsSync, syncCellAllowList,
@@ -226,6 +226,43 @@ describe("syncCellAllowList", () => {
     expect(failed.marker()!.syncedSeq).toBeUndefined();
   });
 
+  it("leaves a rejected or removed domain out of the REPLACE payload (Task 19 review, Minor 6)", async () => {
+    const t = setup();
+    const cloud = t.deps(true);
+    await putEgressDomains(cloud, TEST_ORG, WEB, ["ok.acme.dev", "no.acme.dev", "gone.acme.dev", "wait.acme.dev"], { developerId: "dev-1" });
+    for (const domain of ["ok.acme.dev", "gone.acme.dev"]) await decideEgressDomain(cloud, { orgId: TEST_ORG, owner: WEB, domain, decision: "approved", operatorId: "staff-1" });
+    await decideEgressDomain(cloud, { orgId: TEST_ORG, owner: WEB, domain: "no.acme.dev", decision: "rejected", operatorId: "staff-1", reason: "no" });
+    // Removing an approved domain syncs without it; rejected and pending ones were never in.
+    await putEgressDomains(cloud, TEST_ORG, WEB, ["ok.acme.dev", "no.acme.dev", "wait.acme.dev"], { developerId: "dev-1" });
+    for (const update of t.resolver.updates()) expect(update.Domains).not.toContain("no.acme.dev");
+    expect(t.resolver.updates().at(-1)!.Domains).toEqual(["ok.acme.dev"]);
+  });
+
+  it("remembers which list it filled, and fills a different (replaced, empty) list even when the marker is clean (Minor 1)", async () => {
+    const t = setup();
+    await putEgressDomains(t.deps(), TEST_ORG, WEB, ["a.acme.dev"], { developerId: "dev-1" });
+    expect(t.marker()).toMatchObject({ syncedSeq: 1, syncedListId: LIST_ID });
+    t.resolver.send.mockClear();
+    const replaced = fakeResolver();
+    const otherList = () => syncCellAllowList({ documentClient: t.db, tableName: "state", resolver: replaced, listId: "rslvr-fdl-replacement", now: t.now, sleep: t.sleep });
+    expect(await otherList()).toEqual({ ok: true, domains: 1 });
+    expect(replaced.updates()).toEqual([{ FirewallDomainListId: "rslvr-fdl-replacement", Operation: "REPLACE", Domains: ["a.acme.dev"] }]);
+    expect(t.marker()).toMatchObject({ syncedListId: "rslvr-fdl-replacement" });
+    replaced.send.mockClear();
+    expect(await otherList()).toEqual({ ok: true, domains: 0 });
+    expect(replaced.send).not.toHaveBeenCalled();
+  });
+
+  it("reads a marker with no dirtySeq (written before the counter existed) as dirty, then settles", async () => {
+    const t = setup();
+    await putEgressDomains(t.quiet(), TEST_ORG, WEB, ["a.acme.dev"], { developerId: "dev-1" });
+    t.db.set({ pk: EGRESS_SYNC_KEY.pk, sk: EGRESS_SYNC_KEY.sk, entityType: "EGRESS_SYNC", dirtyAt: "2026-10-01T00:00:00.000Z", syncedAt: "2026-10-01T00:00:00.000Z" });
+    expect(await t.sync()).toEqual({ ok: true, domains: 1 });
+    expect(t.resolver.updates()).toHaveLength(1);
+    expect(await t.sync()).toEqual({ ok: true, domains: 0 });
+    expect(t.resolver.updates()).toHaveLength(1);
+  });
+
   it("sends the commands the Resolver API defines, to the one list", async () => {
     const t = setup();
     await putEgressDomains(t.deps(), TEST_ORG, WEB, ["a.acme.dev"], { developerId: "dev-1" });
@@ -233,6 +270,55 @@ describe("syncCellAllowList", () => {
     expect(update).toBeInstanceOf(UpdateFirewallDomainsCommand);
     expect(read).toBeInstanceOf(GetFirewallDomainListCommand);
     expect((read as { input: unknown }).input).toEqual({ FirewallDomainListId: LIST_ID });
+  });
+});
+
+const BAD_DOMAINS = ["*", "com", "github.io", "*.github.io", "acme.dev.", "ACME.dev", "bücher.example.com", "10.0.0.1", "localhost"];
+
+describe("domains at the firewall boundary (Task 19 review, Important 1)", () => {
+  it("exports the predicate the settings route uses: hostnames and *.hostnames that are not public suffixes, lower case, no trailing dot", () => {
+    for (const bad of BAD_DOMAINS) expect(isAllowedDomain(bad), bad).toBe(false);
+    for (const good of ["acme.dev", "*.acme.dev", "xn--bcher-kva.example.com", "a.b.acme.dev"]) expect(isAllowedDomain(good), good).toBe(true);
+  });
+
+  it("is enforced by putEgressDomains: a bad domain is refused, whatever the caller, and nothing is written", async () => {
+    const t = setup();
+    for (const bad of BAD_DOMAINS) {
+      await expect(putEgressDomains(t.deps(), TEST_ORG, SOURCE, ["ok.acme.dev", bad], { developerId: "dev-1" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    }
+    expect(t.db.get(egressDomainsKey(TEST_ORG, SOURCE))).toBeUndefined();
+    expect(t.db.get(EGRESS_SYNC_KEY)).toBeUndefined();
+    // Punycode is a valid hostname and is accepted.
+    await putEgressDomains(t.deps(), TEST_ORG, SOURCE, ["xn--bcher-kva.example.com", "*.acme.dev"], { developerId: "dev-1" });
+    expect(t.resolver.updates().at(-1)!.Domains).toEqual(["*.acme.dev", "xn--bcher-kva.example.com"]);
+  });
+
+  it("is the sync's last line of defence: an approved bad entry is dropped and logged, never sent", async () => {
+    const t = setup();
+    const entries = [...BAD_DOMAINS, "ok.acme.dev"].map((domain) => ({ domain, status: "approved", requestedAt: "2026-10-01T00:00:00.000Z", requestedBy: "dev-1" }));
+    t.db.set({ ...egressDomainsKey(TEST_ORG, WEB), entityType: "EGRESS_DOMAINS", orgId: TEST_ORG, owner: WEB, active: true, domains: entries, updatedAt: "2026-10-01T00:00:00.000Z" });
+    t.db.set({ ...EGRESS_SYNC_KEY, entityType: "EGRESS_SYNC", dirtyAt: "2026-10-01T00:00:00.000Z", dirtySeq: 1 });
+    expect(await t.sync()).toEqual({ ok: true, domains: 1 });
+    expect(t.resolver.updates()).toEqual([{ FirewallDomainListId: LIST_ID, Operation: "REPLACE", Domains: ["ok.acme.dev"] }]);
+    const logged = vi.mocked(console.log).mock.calls.map(([line]) => String(line)).find((line) => line.includes("egress.domains_dropped"));
+    expect(logged).toBeDefined();
+    expect(JSON.parse(logged!)).toMatchObject({ dropped: BAD_DOMAINS.length });
+  });
+
+  it("sends the sentinel when every approved entry was bad", async () => {
+    const t = setup();
+    const entries = ["*", "com"].map((domain) => ({ domain, status: "approved", requestedAt: "2026-10-01T00:00:00.000Z", requestedBy: "dev-1" }));
+    t.db.set({ ...egressDomainsKey(TEST_ORG, WEB), entityType: "EGRESS_DOMAINS", orgId: TEST_ORG, owner: WEB, active: true, domains: entries, updatedAt: "2026-10-01T00:00:00.000Z" });
+    t.db.set({ ...EGRESS_SYNC_KEY, entityType: "EGRESS_SYNC", dirtyAt: "2026-10-01T00:00:00.000Z", dirtySeq: 1 });
+    expect(await t.sync()).toEqual({ ok: true, domains: 0 });
+    expect(t.resolver.updates()).toEqual([{ FirewallDomainListId: LIST_ID, Operation: "REPLACE", Domains: [EMPTY_UNION_SENTINEL] }]);
+  });
+
+  it("is applied by the backfill, which asks only for the good stored domains (and reads them lower case)", async () => {
+    const t = setup();
+    legacyProject(t.db, "web", ["*", "com", "github.io", "acme.dev.", "bücher.example.com", "Old.Acme.dev", "ok.acme.dev"]);
+    expect(await backfillLegacyEgress(t.deps(true))).toEqual({ ran: true, projects: 1 });
+    expect((t.db.get(egressDomainsKey(TEST_ORG, WEB)) as unknown as EgressDomainsItem).domains.map((entry) => entry.domain)).toEqual(["old.acme.dev", "ok.acme.dev"]);
   });
 });
 

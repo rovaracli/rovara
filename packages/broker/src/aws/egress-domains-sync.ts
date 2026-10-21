@@ -12,13 +12,13 @@ import {
   EGRESS_DOMAINS_PK,
   EGRESS_SYNC_KEY,
   EgressSyncMarkerSchema,
+  isAllowedDomain,
   orgOfProjectPk,
   projectPk,
   type OrgId,
   type OrgKey,
 } from "@agentx/contracts";
 import { approvedUnion, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
-import { projectIsActive } from "../org/project-settings.js";
 
 /** Route 53 Resolver's UpdateFirewallDomains: "There is a limit of 1000 domains per request" (API reference, UpdateFirewallDomains, Domains). */
 export const FIREWALL_DOMAINS_PER_CALL = 1000;
@@ -31,6 +31,14 @@ export const EMPTY_UNION_SENTINEL = "none.invalid";
 
 /** Set once the legacy backfill has run to the end: `{ completedAt, projects }`. Its sort key does not start with `ORG#`, so no egress query reads it. */
 export const EGRESS_BACKFILL_KEY: OrgKey = { pk: EGRESS_DOMAINS_PK, sk: "BACKFILL" };
+
+/*
+ * Limits worth knowing. Each chunk of 1000 may wait up to MAX_POLLS seconds for the list to settle, and the broker has 30 seconds, so an INLINE sync
+ * (the one an approval triggers) can finish only about two chunks, a union of about 2,000 domains; past that the approval's answer can time out. That
+ * is safe: the change is already stored, the marker stays dirty, and the scheduled run (its own 30 seconds, then retried every 5 minutes) finishes the
+ * sync. Fifty domains a project makes that many domains a 40-project cell, far past launch. If a union grows near it, split the sync into one chunk
+ * per invocation instead of raising the timeout.
+ */
 
 /** After an update the list reads UPDATING until Resolver has applied it; a second update meanwhile would be refused. Polled this often, this many times. */
 // Ten seconds at most: an approval waits for this inside the broker's 30 second request, and a run that gives up is retried by the schedule.
@@ -52,13 +60,22 @@ const defaultSleep = (milliseconds: number) => new Promise<void>((resolve) => { 
 
 const log = (event: string, fields: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", event: `egress.${event}`, ...fields }));
 
-async function readMarker(deps: Pick<SyncCellAllowListDependencies, "documentClient" | "tableName">): Promise<{ dirtySeq: number; syncedSeq: number } | undefined> {
+interface Marker { dirtySeq: number | undefined; syncedSeq: number; syncedListId: string | undefined }
+
+async function readMarker(deps: Pick<SyncCellAllowListDependencies, "documentClient" | "tableName">): Promise<Marker | undefined> {
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: EGRESS_SYNC_KEY, ConsistentRead: true })) as { Item?: unknown };
   if (response.Item === undefined) return undefined;
   const parsed = EgressSyncMarkerSchema.partial().safeParse(response.Item);
   if (!parsed.success) throw new Error("the egress sync marker could not be read");
-  return { dirtySeq: parsed.data.dirtySeq ?? 0, syncedSeq: parsed.data.syncedSeq ?? 0 };
+  return { dirtySeq: parsed.data.dirtySeq, syncedSeq: parsed.data.syncedSeq ?? 0, syncedListId: parsed.data.syncedListId };
 }
+
+/**
+ * The marker is dirty when a change is newer than the last sync, or when that sync filled another list (the project list was replaced, so it is
+ * empty and the clean marker would leave it so), or when it carries no `dirtySeq` at all and has not been synced into this list (written before
+ * the counter existed).
+ */
+const isDirty = (marker: Marker, listId: string): boolean => marker.syncedListId !== listId || (marker.dirtySeq ?? 0) > marker.syncedSeq;
 
 /** Waits until the list has applied the last update; false when it did not in time or the update failed. */
 async function listSettled(deps: SyncCellAllowListDependencies): Promise<boolean> {
@@ -87,8 +104,11 @@ export async function syncCellAllowList(deps: SyncCellAllowListDependencies): Pr
   try {
     // The marker first, then the union: a change written after this read has a higher `dirtySeq` and keeps the marker dirty.
     const marker = await readMarker(deps);
-    if (marker === undefined || marker.dirtySeq <= marker.syncedSeq) return { ok: true, domains: 0 };
-    const union = await approvedUnion(deps);
+    if (marker === undefined || !isDirty(marker, deps.listId)) return { ok: true, domains: 0 };
+    // The last line of defence: a domain the firewall must never serve (`*` would open the cell) is dropped here whatever stored it.
+    const approved = await approvedUnion(deps);
+    const union = approved.filter(isAllowedDomain);
+    if (union.length !== approved.length) log("domains_dropped", { dropped: approved.length - union.length, examples: approved.filter((domain) => !isAllowedDomain(domain)).slice(0, 5) });
     const domains = union.length === 0 ? [EMPTY_UNION_SENTINEL] : union;
     for (let start = 0; start < domains.length; start += FIREWALL_DOMAINS_PER_CALL) {
       await deps.resolver.send(new UpdateFirewallDomainsCommand({
@@ -105,9 +125,10 @@ export async function syncCellAllowList(deps: SyncCellAllowListDependencies): Pr
       await deps.documentClient.send(new UpdateCommand({
         TableName: deps.tableName,
         Key: EGRESS_SYNC_KEY,
-        UpdateExpression: "SET syncedAt = :now, syncedSeq = :seq",
-        ConditionExpression: "dirtySeq = :seq",
-        ExpressionAttributeValues: { ":now": deps.now().toISOString(), ":seq": marker.dirtySeq },
+        UpdateExpression: "SET syncedAt = :now, syncedSeq = :seq, syncedListId = :list",
+        // A marker that never had a counter is cleared while it still has none.
+        ConditionExpression: marker.dirtySeq === undefined ? "attribute_not_exists(dirtySeq)" : "dirtySeq = :seq",
+        ExpressionAttributeValues: { ":now": deps.now().toISOString(), ":seq": marker.dirtySeq ?? 0, ":list": deps.listId },
       }));
     } catch (error) {
       if (!(error instanceof Error) || error.name !== "ConditionalCheckFailedException") throw error;
@@ -182,9 +203,13 @@ export async function backfillLegacyEgress(deps: EgressDomainsDependencies): Pro
   for (const { orgId, project, domains } of await projectsWithStoredDomains(deps)) {
     const owner = { kind: "project", project } as const;
     if (await readEgressDomains(deps, orgId, owner) !== undefined) continue;
-    const asked = [...new Set(domains)].filter((domain) => !DEFAULT_AGENT_ALLOW_DOMAINS.includes(domain));
+    // Stored domains are read lower case, as the project reads them; any the firewall must never serve is left out and logged, not asked about.
+    const stored = [...new Set(domains.map((domain) => domain.toLowerCase()))];
+    const valid = stored.filter(isAllowedDomain);
+    if (valid.length !== stored.length) log("backfill_domains_dropped", { orgId, project, dropped: stored.length - valid.length });
+    const asked = valid.filter((domain) => !DEFAULT_AGENT_ALLOW_DOMAINS.includes(domain));
     if (asked.length === 0) continue;
-    await putEgressDomains(deps, orgId, owner, asked, undefined, { ownerActive: await projectIsActive(deps, orgId, project) });
+    await putEgressDomains(deps, orgId, owner, asked);
     projects += 1;
   }
   await deps.documentClient.send(new PutCommand({
