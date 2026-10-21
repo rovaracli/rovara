@@ -20,6 +20,7 @@ import { SESv2Client } from "@aws-sdk/client-sesv2";
 import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import { Route53ResolverClient } from "@aws-sdk/client-route53resolver";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import {
   AgentXError,
@@ -289,6 +290,7 @@ import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, type Cloud
 import { installEnvironmentName, orgResolverFromEnvironment, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
 import { OrgStore } from "../org/store.js";
 import { decideEgressDomain, listPendingEgress, type EgressDomainsDependencies } from "../org/egress-domains.js";
+import { runEgressDomainsSync, syncCellAllowList } from "./egress-domains-sync.js";
 import { requireProject } from "./project-records.js";
 import { admitProjectSetupRuntime, projectSetupBindingDigest, projectSetupRuntimeKey, ProjectSetupRuntimeRecordSchema } from "./project-setup-runtime-catalog.js";
 import { projectSetupTerminalAuthorityChecks } from "./project-setup-terminal-conditions.js";
@@ -1101,7 +1103,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   const tasks = developerTaskActions(dependencies);
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
-  return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
+  return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
     // Spec 025 E14: a Slack Confirm or Cancel press, invoked directly by the ingress (never through API Gateway).
     if (isAdminChangePressEvent(event)) {
       if (adminChanges === undefined) return json({ error: { code: "NOT_FOUND", message: "admin changes are not set up in this deployment" } }, "slack-ingress", 404);
@@ -1126,6 +1128,16 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "github.install_request_reminders_failed", error: error instanceof Error ? error.name : "unknown" }));
         return json({ error: "reminders_failed" }, "github-install-request-reminders", 500);
+      }
+    }
+    // Plan 2, Task 19: every 5 minutes, the legacy backfill (once) and then the cell's DNS allowlist follows the approved egress domains.
+    if (isEgressDomainsSyncEvent(event)) {
+      try {
+        const outcome = await runEgressDomainsSync(egressDepsOf(dependencies));
+        return json(outcome, "egress-domains-sync", outcome.ok ? 200 : 500);
+      } catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "egress.sync_run_failed", error: error instanceof Error ? error.name : "unknown" }));
+        return json({ error: "egress_sync_failed" }, "egress-domains-sync", 500);
       }
     }
     if (isGithubWebhookRecoveryEvent(event)) {
@@ -9761,6 +9773,10 @@ function isGithubInstallRequestReminderEvent(event: unknown): event is { kind: "
   return event !== null && typeof event === "object" && (event as { kind?: unknown }).kind === "github-install-request-reminders";
 }
 
+function isEgressDomainsSyncEvent(event: unknown): event is { source: "agentx.egress-domains-sync" } {
+  return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.egress-domains-sync";
+}
+
 function isGithubWebhookRecoveryEvent(event: unknown): event is { source: "agentx.github-webhook-recovery" } {
   return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.github-webhook-recovery";
 }
@@ -12610,6 +12626,13 @@ const sqs = new SQSClient(awsClientConfiguration);
 
 const githubNoticeSender = process.env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";
 
+// Plan 2, Task 19: set only on Rovara Cloud, where the foundation's DNS firewall has a "ProjectAllowList" for the approved egress domains.
+// Absent, a change reports that it will apply within 5 minutes and the scheduled run (which needs the list too) is not created.
+const projectAllowListId = process.env.AGENT_PROJECT_ALLOW_LIST_ID;
+const egressDomainsSync = projectAllowListId === undefined || projectAllowListId === ""
+  ? undefined
+  : () => syncCellAllowList({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), resolver: new Route53ResolverClient(awsClientConfiguration), listId: projectAllowListId, now: () => new Date() });
+
 export const handler = createAwsBrokerHandler({
   documentClient,
   s3,
@@ -12655,6 +12678,7 @@ export const handler = createAwsBrokerHandler({
   ...(developer ? { developer } : {}),
   ...(chatgpt ? { chatgpt } : {}),
   ...(modelAccess ? { modelAccess } : {}),
+  ...(egressDomainsSync === undefined ? {} : { egressDomainsSync }),
   cloud: cloudOrgResolver !== undefined,
   // Ruling R55: a cloud org's projects run on the foundation's EC2 workers, with the built-in GitHub App.
   ...(cloudProjectDefaults === undefined ? {} : { cloudProjects: cloudProjectDefaults }),
