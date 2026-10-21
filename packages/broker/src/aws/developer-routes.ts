@@ -1024,9 +1024,11 @@ async function listOrganizationMembers(deps: DeveloperRouteDependencies, caller:
   const listed = await mapLimit(members, REVISION_READS_AT_ONCE, async (member) => {
     const [record, identities] = await Promise.all([store.getDeveloper(member.developerId), store.identitiesOf(member.developerId)]);
     const email = record?.email ?? identities.find((identity) => identity.email !== undefined)?.email;
+    // A person from before sign-in methods were linked has no IDENTITY rows: their record's own provider is the method they signed in with.
+    const methods = identities.length > 0 ? identities.map((identity) => identity.provider) : record === undefined ? [] : [record.provider];
     return {
       developerId: member.developerId, name: record?.displayName ?? "Unknown", ...(email === undefined ? {} : { email }), role: member.role, joinedAt: member.joinedAt,
-      identities: [...new Set(identities.map((identity) => identity.provider))],
+      identities: [...new Set(methods)],
     };
   });
   return { members: listed.sort((left, right) => left.joinedAt.localeCompare(right.joinedAt) || left.developerId.localeCompare(right.developerId)) };
@@ -1081,7 +1083,7 @@ async function removeOrganizationMember(deps: DeveloperRouteDependencies, caller
   if (caller.orgRole === "admin" && target.role !== "member") throw agentXError("FORBIDDEN", "an admin can remove members only; ask an owner to remove an owner or admin");
   const store = signInStoreOf(deps);
   const [record, emails] = await Promise.all([store.getDeveloper(developerId), emailsOf(store, developerId)]);
-  await deps.orgs.removeMember({ orgId: caller.orgId, developerId, emails, ban: deps.cloud !== true });
+  await deps.orgs.removeMember({ orgId: caller.orgId, developerId, emails, ban: deps.cloud !== true, expectedRole: target.role });
   await endSessionsAfterRemoval(deps, developerId);
   const name = record?.displayName ?? "That person";
   logDeveloperEvent({ event: "developer.org_member_removed", orgId: caller.orgId, role: target.role, banned: String(deps.cloud !== true) });
@@ -1101,6 +1103,9 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
   const store = signInStoreOf(deps);
   const emails = await emailsOf(store, caller.developerId);
   const sole = caller.orgRole === "owner" && (await deps.orgs.listMembers(caller.orgId)).every((member) => member.developerId === caller.developerId);
+  // Ruling (Task 4, Minor 6): closing is for cloud orgs. A private install's only org is never closed: a closed org would take every
+  // later sign-in with no owner. Its sole owner promotes someone else first.
+  if (sole && deps.cloud !== true) throw agentXError("LAST_OWNER", "You are the only owner. Make someone else an owner first.");
   if (sole) {
     await deps.orgs.closeOrg(caller.orgId, {
       archiveProjects: deps.closeOrgHooks?.archiveProjects ?? (async () => undefined), clearEgress: deps.closeOrgHooks?.clearEgress ?? (async () => undefined), emails,

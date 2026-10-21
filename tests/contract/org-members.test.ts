@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  developerOrgKey, githubInstallationKey, orgBanKey, orgEmailKey, orgGithubInstallationKey, orgMemberKey, orgMetaKey, orgSettingsKey, orgSlackTeamKey,
+  developerOrgKey, githubInstallationKey, orgBanKey, orgEmailKey, orgGithubInstallationKey, orgMemberKey, orgMetaKey, orgRemovedKey, orgSettingsKey, orgSlackTeamKey,
   slackTeamOrgKey, trialGithubKey, type OrgRole,
 } from "@agentx/contracts";
 import { createCandidateManifest } from "../../packages/contracts/src/task-workflow.js";
@@ -68,7 +68,7 @@ describe("GET /v1/app/org/members", () => {
     const members = listed.body.members as Array<Record<string, unknown>>;
     expect(members.map((member) => member.name).sort()).toEqual(["Bea", "Maya Chen", "Omar Diaz"]);
     expect(members.find((member) => member.name === "Bea")).toMatchObject({ developerId: bea.developerId, email: "bea@example.com", role: "admin", identities: ["cloud", "github"] });
-    expect(members.find((member) => member.developerId === OMAR.developerId)).toMatchObject({ name: "Omar Diaz", role: "owner", identities: [] });
+    expect(members.find((member) => member.developerId === OMAR.developerId)).toMatchObject({ name: "Omar Diaz", role: "owner", identities: ["oidc"] });
     expect(JSON.stringify(members)).not.toMatch(/issuer|subject|https:\/\/github\.example/);
   });
 
@@ -277,6 +277,20 @@ describe("POST /v1/app/org/leave", () => {
   });
 });
 
+describe("POST /v1/app/org/leave on a private install (ruling, Task 4 Minor 6)", () => {
+  it("answers LAST_OWNER, make someone else an owner first, when the sole owner and only member leaves a non-cloud install; the org stays open", async () => {
+    const harness = await org();
+    harness.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
+    harness.db.delete(developerOrgKey(MAYA.developerId));
+    const refused = await harness.dev(OMAR, "POST", "/v1/app/org/leave", { requestId: randomUUID() });
+    expect(refused.status).toBe(409);
+    expect(errorOf(refused)).toMatchObject({ code: "LAST_OWNER", message: expect.stringContaining("ake someone else an owner first") as string });
+    expect(harness.db.get(orgMetaKey(TEST_ORG))?.closedAt).toBeUndefined();
+    expect(roleOf(harness, OMAR)).toBe("owner");
+    expect(harness.endDeveloperSessions).not.toHaveBeenCalled();
+  });
+});
+
 describe("OrgStore.closeOrg and removeMember", () => {
   const T0 = Date.parse("2026-10-21T00:00:00.000Z");
   const setup = () => {
@@ -360,6 +374,92 @@ describe("OrgStore.closeOrg and removeMember", () => {
     };
     await expect(store.setRole({ orgId, developerId: "owner", role: "member" })).rejects.toMatchObject({ code: "LAST_OWNER" });
     expect(db.get(orgMemberKey(orgId, "owner"))).toMatchObject({ role: "owner" });
+  });
+
+  it("checks that the removal is still allowed after everything it reads, so a demotion during those reads leaves the grants alone", async () => {
+    const { db, store } = setup();
+    const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
+    await store.addMember({ orgId, developerId: "dev-2", role: "owner" });
+    db.set({ ...projectMemberKey(orgId, "owner", "payments"), entityType: "MEMBERSHIP", ownerKey: "owner", projectName: "payments", role: "developer" });
+    // While the email pointers are read, the only other owner is demoted: the check that follows sees it.
+    const realSend = db.send;
+    db.send = async (command) => {
+      const result = await realSend(command);
+      if (command.constructor.name === "GetCommand" && JSON.stringify((command as { input: unknown }).input).includes("ORG_EMAIL")) {
+        db.set({ ...db.get(orgMemberKey(orgId, "dev-2"))!, role: "member" });
+      }
+      return result;
+    };
+    await expect(store.removeMember({ orgId, developerId: "owner", emails: ["owner@example.com"], ban: false })).rejects.toMatchObject({ code: "LAST_OWNER" });
+    expect(db.get(projectMemberKey(orgId, "owner", "payments"))).toBeDefined();
+    expect(db.get(orgMemberKey(orgId, "owner"))).toBeDefined();
+  });
+
+  it("deletes the member only while their role is the one the caller saw (Minor 4): a promotion in between is CHANGE_STALE and nothing is removed", async () => {
+    const { db, store } = setup();
+    const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
+    await store.addMember({ orgId, developerId: "dev-2", role: "member" });
+    await expect(store.removeMember({ orgId, developerId: "dev-2", emails: [], ban: false, expectedRole: "admin" })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    expect(db.get(orgMemberKey(orgId, "dev-2"))).toBeDefined();
+    // The promotion lands after the store read the member and before its transaction.
+    const realSend = db.send;
+    db.send = async (command) => {
+      if (command.constructor.name === "TransactWriteCommand") db.set({ ...db.get(orgMemberKey(orgId, "dev-2"))!, role: "admin" });
+      return realSend(command);
+    };
+    await expect(store.removeMember({ orgId, developerId: "dev-2", emails: [], ban: false, expectedRole: "member" })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    expect(db.get(orgMemberKey(orgId, "dev-2"))).toMatchObject({ role: "admin" });
+    expect(db.get(orgRemovedKey(orgId, "dev-2"))).toBeUndefined();
+  });
+
+  it("refuses an invite into a closed org without burning the invite (Minor 5)", async () => {
+    const { db, store } = setup();
+    const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
+    const { token } = await store.createInvite({ orgId, createdBy: "owner", role: "member" });
+    await store.closeOrg(orgId, { archiveProjects: async () => undefined, clearEgress: async () => undefined });
+    await expect(store.acceptInvite({ token, developerId: "late" })).rejects.toMatchObject({ code: "INVITE_INVALID" });
+    expect(db.get(orgMemberKey(orgId, "late"))).toBeUndefined();
+    expect(db.get(developerOrgKey("late"))).toBeUndefined();
+    expect(db.find((item) => item.entityType === "ORG_INVITE")[0]).not.toHaveProperty("acceptedAt");
+  });
+
+  it("does not close an org that gained a member after closeOrg read it: LAST_OWNER, bindings kept, joins allowed again (Minor 5)", async () => {
+    const { db, store } = setup();
+    const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
+    await store.bindSlackTeam({ orgId, teamId: "T1" });
+    const { token } = await store.createInvite({ orgId, createdBy: "owner", role: "member" });
+    // The invite is accepted right after closeOrg's first read of the members.
+    let armed = true;
+    const realSend = db.send;
+    db.send = async (command) => {
+      const result = await realSend(command);
+      if (armed && command.constructor.name === "QueryCommand" && JSON.stringify((command as { input: unknown }).input).includes("MEMBER#")) {
+        armed = false;
+        await store.acceptInvite({ token, developerId: "joiner" });
+      }
+      return result;
+    };
+    await expect(store.closeOrg(orgId, { archiveProjects: async () => undefined, clearEgress: async () => undefined })).rejects.toMatchObject({ code: "LAST_OWNER" });
+    expect(db.get(slackTeamOrgKey("T1"))).toBeDefined();
+    expect(db.get(orgMemberKey(orgId, "owner"))).toBeDefined();
+    expect(db.get(orgMetaKey(orgId))?.closedAt).toBeUndefined();
+    expect(db.get(orgMetaKey(orgId))?.closingAt).toBeUndefined();
+    const second = await store.createInvite({ orgId, createdBy: "owner", role: "member" });
+    await expect(store.acceptInvite({ token: second.token, developerId: "other" })).resolves.toMatchObject({ orgId });
+  });
+
+  it("blocks joins from the moment closeOrg has checked the members (Minor 5): an invite accepted while it archives is refused", async () => {
+    const { db, store } = setup();
+    const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
+    const { token } = await store.createInvite({ orgId, createdBy: "owner", role: "member" });
+    let refused: unknown;
+    await store.closeOrg(orgId, {
+      archiveProjects: async () => { refused = await store.acceptInvite({ token, developerId: "joiner" }).catch((error: unknown) => error); },
+      clearEgress: async () => undefined,
+    });
+    expect(refused).toMatchObject({ code: "INVITE_INVALID" });
+    expect(db.get(orgMemberKey(orgId, "joiner"))).toBeUndefined();
+    expect(db.get(orgMetaKey(orgId))?.closedAt).toBeDefined();
   });
 });
 
@@ -521,6 +621,46 @@ describe("a removed creator's work stops (ruling R60)", () => {
       .rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
   });
 
+  it("shows the refused task as ended in its view and its list row: status CANCELLED, outcome creator_removed with R60's reason, no longer REVIEW and waiting", async () => {
+    const harness = await org();
+    const { taskId, finishImplementation } = await implementing(harness, MAYA);
+    expect((await harness.remove(OMAR, MAYA)).status).toBe(200);
+    await finishImplementation();
+    const task = taskRecord(harness, taskId);
+    expect(task.workflow).toMatchObject({ stage: "REVIEW", state: "WAITING" });
+    const path = `/v1/dev/tasks/${taskId}`;
+    const read = async (route: string) => routeDeveloperTaskRequest(routeDeps(harness), asCreator(MAYA), { method: "GET", path: route, headers: {}, requestId: randomUUID() }, new URL(route, "https://agentx.invalid")) as Promise<Record<string, unknown>>;
+    const { task: view } = await read(path) as { task: { status: string; outcome?: string; outcomeReason?: string; workflow?: { state: string; blockReason?: string } } };
+    expect(view).toMatchObject({ status: "CANCELLED", outcome: "creator_removed", outcomeReason: REMOVED_REASON("Maya Chen") });
+    expect(view.workflow).toMatchObject({ state: "BLOCKED", blockReason: REMOVED_REASON("Maya Chen") });
+    const { tasks } = await read("/v1/dev/tasks") as unknown as { tasks: Array<{ taskId: string; status: string }> };
+    expect(tasks.find((row) => row.taskId === taskId)).toMatchObject({ status: "CANCELLED" });
+  });
+
+  it("tells a removed person whose task was still being set up why it stopped: the view carries R60's reason, not a generic setup failure (Minor 9)", async () => {
+    const harness = await org();
+    const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the flaky retry test", client: "claude-code" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    const task = taskRecord(harness, taskId);
+    expect((await harness.remove(OMAR, MAYA)).status).toBe(200);
+    // The prepare finishes after the removal: the first task cannot be queued (the backstop refuses it).
+    await harness.finish(task.workspaceId, String(operations(harness, task.workspaceId).find((item) => item.kind === "prepare")?.id), "SUCCEEDED", PREPARED);
+    expect(operations(harness, task.workspaceId).filter((operation) => operation.kind === "task")).toEqual([]);
+    const path = `/v1/dev/tasks/${taskId}`;
+    const { task: view } = await routeDeveloperTaskRequest(routeDeps(harness), asCreator(MAYA), { method: "GET", path, headers: {}, requestId: randomUUID() }, new URL(path, "https://agentx.invalid")) as { task: { status: string; outcome?: string; outcomeReason?: string } };
+    expect(view).toMatchObject({ status: "CANCELLED", outcome: "creator_removed", outcomeReason: REMOVED_REASON("Maya Chen") });
+  });
+
+  it("answers a continue on a removed creator's busy task with R60's reason, not a busy or setup error (Minor 1)", async () => {
+    const harness = await org();
+    const { taskId } = await implementing(harness, MAYA);
+    expect((await harness.remove(OMAR, MAYA)).status).toBe(200);
+    // The IMPLEMENT step is still running, so the workspace is busy: the removal's reason comes first.
+    const path = `/v1/dev/tasks/${taskId}/continue`;
+    await expect(routeDeveloperTaskRequest(routeDeps(harness) as never, asCreator(MAYA), { method: "POST", path, headers: {}, requestId: randomUUID(), body: JSON.stringify({ requestId: randomUUID(), instructions: "more" }) }, new URL(path, "https://agentx.invalid")))
+      .rejects.toMatchObject({ code: "TASK_ACCESS_DENIED", message: expect.stringContaining(REMOVED_REASON("Maya Chen")) as string });
+  });
+
   it("answers a pull request follow-up and an update for the removed creator's workspace with TASK_ACCESS_DENIED", async () => {
     const harness = await org();
     const { taskId, workspaceId } = await implementing(harness, MAYA);
@@ -581,6 +721,15 @@ describe("a removed creator's work stops (ruling R60)", () => {
     expect(refused.statusCode).toBe(403);
     expect(JSON.parse(refused.body)).toMatchObject({ error: { code: "TASK_ACCESS_DENIED", message: expect.stringContaining(REMOVED_REASON("Maya Chen")) as string } });
     expect(exchange).not.toHaveBeenCalled();
+
+    // The worker's own pull request and update callbacks are refused as well: no installation token is minted and no PR is opened or updated.
+    const mint = vi.spyOn(harness.brokerInput.repositoryGrants, "exchange");
+    for (const action of ["pull-request", "pull-request-update"]) {
+      await expect(harness.callback(workspaceId, publish.id, action, { requestId: randomUUID(), repository: "demo", title: "Fix it", draft: true, pullRequestNumber: 42 }), action).rejects.toThrow(/TASK_ACCESS_DENIED/);
+    }
+    expect(github.reconcilePullRequest).not.toHaveBeenCalled();
+    expect(github.updatePullRequest).not.toHaveBeenCalled();
+    expect(mint).not.toHaveBeenCalled();
   });
 });
 
@@ -602,6 +751,33 @@ describe("every task launch checks that the creator is still a member (ruling R6
       const guard = Math.min(...["creatorGuard(", "withCurrentThreadNotes("].map((marker) => (chunk.indexOf(marker) === -1 ? Infinity : chunk.indexOf(marker))));
       const launch = chunk.search(/deps\.actions\.(acceptTask|acceptPullRequest|acceptPullRequestUpdate)\(/);
       expect(guard, name).toBeLessThan(launch);
+    }
+  });
+
+  it("pins the broker's own sites: acceptPullRequest, acceptPullRequestLifecycle, taskOperationParts, the credential exchange and both worker pull request callbacks (Minor 7)", () => {
+    const broker = readFileSync(join(import.meta.dirname, "../../packages/broker/src/aws/broker.ts"), "utf8");
+    const guard = /requireWorkspaceCreatorStillMember\(|requireCreatorStillMember\(/;
+    const section = (start: RegExp, end: RegExp) => {
+      const from = broker.search(start);
+      expect(from, String(start)).toBeGreaterThanOrEqual(0);
+      const rest = broker.slice(from + 1);
+      const length = rest.search(end);
+      return broker.slice(from, length === -1 ? undefined : from + 1 + length);
+    };
+    const firstOf = (text: string, pattern: RegExp) => text.search(pattern);
+    const functionOf = (name: string) => section(new RegExp(`^(?:export )?async function ${name}\\(`, "m"), /^(?:export )?(?:async )?function /m);
+    const before = (text: string, later: RegExp, name: string) => {
+      const checked = firstOf(text, guard);
+      expect(checked, `${name} checks`).toBeGreaterThanOrEqual(0);
+      expect(checked, `${name} checks before ${String(later)}`).toBeLessThan(firstOf(text, later));
+    };
+    before(functionOf("acceptPullRequest"), /requireOwnedWorkspace\(/, "acceptPullRequest");
+    before(functionOf("acceptPullRequestLifecycle"), /requireOwnedWorkspace\(/, "acceptPullRequestLifecycle");
+    before(functionOf("taskOperationParts"), /requireLatestProject\(/, "taskOperationParts");
+    before(functionOf("exchangeRepositoryCredential"), /repositoryGrants\.exchange\(/, "exchangeRepositoryCredential");
+    for (const action of ["pull-request", "pull-request-update"]) {
+      const branch = section(new RegExp(`if \\(action === "${action}"\\) \\{`), /^ {2}if \(action === /m);
+      before(branch, /reconcilePullRequest(Update)?\(/, `${action} callback`);
     }
   });
 });

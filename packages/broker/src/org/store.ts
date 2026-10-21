@@ -220,26 +220,28 @@ export class OrgStore {
     const { orgId, role } = invite;
     // One transaction: the invite is marked accepted only if the developer joins, and joins only if
     // the invite is still live, so a refusal on either side leaves the other untouched.
-    await this.transact(
-      [
-        {
-          Update: {
-            TableName: this.input.tableName,
-            Key: orgInviteKey(tokenHash),
-            UpdateExpression: "SET acceptedBy = :by, acceptedAt = :at",
-            ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(acceptedAt) AND expiresAt > :now",
-            ExpressionAttributeValues: { ":by": input.developerId, ":at": nowIso, ":now": nowIso },
-          },
+    const items: TransactItem[] = [
+      {
+        Update: {
+          TableName: this.input.tableName,
+          Key: orgInviteKey(tokenHash),
+          UpdateExpression: "SET acceptedBy = :by, acceptedAt = :at",
+          ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(acceptedAt) AND expiresAt > :now",
+          ExpressionAttributeValues: { ":by": input.developerId, ":at": nowIso, ":now": nowIso },
         },
-        ...this.membershipItems({ orgId, developerId: input.developerId, role, email: input.email }),
-        // An invite is the way back after a removal with a ban: it clears the ban in the same transaction.
-        { Delete: { TableName: this.input.tableName, Key: orgBanKey(orgId, input.developerId) } },
-      ],
-      (failed) => {
-        if (failed.has(0)) return inviteInvalid();
-        return failed.has(1) || failed.has(2) || failed.has(3) ? alreadyInOrg() : undefined;
       },
-    );
+      ...this.membershipItems({ orgId, developerId: input.developerId, role, email: input.email }),
+      // An invite is the way back after a removal with a ban: it clears the ban in the same transaction.
+      { Delete: { TableName: this.input.tableName, Key: orgBanKey(orgId, input.developerId) } },
+      // A closed org (or one whose last owner is closing it) takes no new members. closeOrg writes `closingAt` before it checks that its
+      // sole owner is alone, and both writes touch this item, so the two transactions are serialized.
+      { ConditionCheck: { TableName: this.input.tableName, Key: orgMetaKey(orgId), ConditionExpression: "attribute_not_exists(closedAt) AND attribute_not_exists(closingAt)" } },
+    ];
+    await this.transact(items, (failed) => {
+      if (failed.has(0)) return inviteInvalid();
+      if (failed.has(items.length - 1)) return coded("INVITE_INVALID", "that organization has closed");
+      return failed.has(1) || failed.has(2) || failed.has(3) ? alreadyInOrg() : undefined;
+    });
     return { orgId, role };
   }
 
@@ -305,15 +307,25 @@ export class OrgStore {
    * Removes a member. Their project grants and monthly limit go first (so a half-finished removal leaves a member with nothing), then one
    * transaction deletes the member record, the developer pointer and each email pointer that names them, and puts the ban when asked.
    * Removing the last owner is refused (LAST_OWNER) before anything is deleted.
+   *
+   * Everything the removal reads (the email pointers) is read first, and the member and the other owner are checked last, immediately before
+   * the grants go. The transaction repeats both checks (the member's role is the one just read; another owner still holds the role), so a
+   * change after that point fails it with CHANGE_STALE or LAST_OWNER. The one window left is the time `deleteMemberData` takes: a demotion
+   * landing inside it fails the transaction after the grants and monthly limit are already gone (re-running the removal, or the person
+   * being promoted again, does not bring them back). `expectedRole` is the role the caller's authorization saw; a different one is CHANGE_STALE.
    */
-  async removeMember(input: { orgId: OrgId; developerId: string; emails: string[]; ban: boolean }): Promise<void> {
+  async removeMember(input: { orgId: OrgId; developerId: string; emails: string[]; ban: boolean; expectedRole?: OrgRole }): Promise<void> {
     const { orgId, developerId } = input;
+    if (await this.get(orgMemberKey(orgId, developerId)) === undefined) throw coded("NOT_FOUND", "that person is not a member of the organization");
+    const pointers = await this.emailPointersOf(input.emails, developerId);
     const member = await this.get(orgMemberKey(orgId, developerId));
     if (member === undefined) throw coded("NOT_FOUND", "that person is not a member of the organization");
-    const guard = member.role === "owner" ? await this.otherOwnerGuard(orgId, developerId) : [];
+    const role = member.role as OrgRole;
+    if (input.expectedRole !== undefined && input.expectedRole !== role) throw coded("CHANGE_STALE", "the organization's members changed; try again");
+    const guard = role === "owner" ? await this.otherOwnerGuard(orgId, developerId) : [];
     await this.deleteMemberData(orgId, developerId);
-    const items = this.removalItems(input, await this.emailPointersOf(input.emails, developerId), guard);
-    await this.transact(items, (failed) => (guard.length > 0 && failed.has(items.length - 1) ? coded("LAST_OWNER", LAST_OWNER_MESSAGE) : failed.has(0) ? coded("NOT_FOUND", "that person is not a member of the organization") : undefined));
+    const items = this.removalItems(input, role, pointers, guard);
+    await this.transact(items, (failed) => (guard.length > 0 && failed.has(items.length - 1) ? coded("LAST_OWNER", LAST_OWNER_MESSAGE) : failed.has(0) ? coded("CHANGE_STALE", "the organization's members changed; try again") : undefined));
   }
 
   /**
@@ -327,6 +339,16 @@ export class OrgStore {
     if (members.length > 1 || members.some((member) => member.role !== "owner")) throw coded("LAST_OWNER", LAST_OWNER_MESSAGE);
     const meta = await this.get(orgMetaKey(orgId));
     if (meta === undefined) throw coded("NOT_FOUND", "your organization was not found");
+    // From here no invite is accepted into the org, and only then is the member list read again: a join that slipped in before the fence
+    // is seen by this second read and stops the close (bindings untouched); a join after it is refused by acceptInvite.
+    if (meta.closedAt === undefined) {
+      await this.setClosing(orgId);
+      const again = await this.listMembers(orgId);
+      if (again.length !== members.length || again.some((member, index) => member.developerId !== members[index]?.developerId || member.role !== "owner")) {
+        await this.clearClosing(orgId);
+        throw coded("LAST_OWNER", LAST_OWNER_MESSAGE);
+      }
+    }
     for (const binding of await this.queryPartition(orgPk(orgId), "GITHUB_INSTALLATION#")) {
       const installationId = Number(String(binding.sk).slice("GITHUB_INSTALLATION#".length));
       await this.deleteIfOurs(githubInstallationKey(installationId), orgId);
@@ -345,14 +367,35 @@ export class OrgStore {
       [
         {
           Update: {
-            TableName: this.input.tableName, Key: orgMetaKey(orgId), UpdateExpression: "SET closedAt = :at",
+            TableName: this.input.tableName, Key: orgMetaKey(orgId), UpdateExpression: "SET closedAt = :at REMOVE closingAt",
             ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":at": this.iso() },
           },
         },
-        ...this.removalItems({ orgId, developerId: sole.developerId, ban: false }, await this.emailPointersOf(deps.emails ?? [], sole.developerId), []),
+        ...this.removalItems({ orgId, developerId: sole.developerId, ban: false }, sole.role, await this.emailPointersOf(deps.emails ?? [], sole.developerId), []),
       ],
       () => coded("CHANGE_STALE", "the organization changed while it was closing; try again"),
     );
+  }
+
+  /** Stops invites into the org while it closes (`closingAt`); kept if already set, so a stopped close can be run again. */
+  private async setClosing(orgId: OrgId): Promise<void> {
+    try {
+      await this.input.documentClient.send(new UpdateCommand({
+        TableName: this.input.tableName, Key: orgMetaKey(orgId), UpdateExpression: "SET closingAt = if_not_exists(closingAt, :at)",
+        ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":at": this.iso() },
+      }));
+    } catch (error) {
+      if (errorName(error) === "ConditionalCheckFailedException") throw coded("CHANGE_STALE", "the organization changed while it was closing; try again");
+      throw error;
+    }
+  }
+
+  private async clearClosing(orgId: OrgId): Promise<void> {
+    await this.input.documentClient.send(new UpdateCommand({
+      TableName: this.input.tableName, Key: orgMetaKey(orgId), UpdateExpression: "REMOVE closingAt", ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt)",
+    })).catch((error: unknown) => {
+      if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+    });
   }
 
   /** The reverse of a GitHub or Slack binding's global item, deleted only while it still names this org. */
@@ -379,10 +422,11 @@ export class OrgStore {
   }
 
   /** The transaction items that end a membership: member, pointer, the person's email pointers and, given `ban`, the ban. */
-  private removalItems(input: { orgId: OrgId; developerId: string; ban: boolean }, emailPointers: string[], guard: TransactItem[]): TransactItem[] {
+  private removalItems(input: { orgId: OrgId; developerId: string; ban: boolean }, seenRole: OrgRole, emailPointers: string[], guard: TransactItem[]): TransactItem[] {
     const { orgId, developerId } = input;
     return [
-      { Delete: { TableName: this.input.tableName, Key: orgMemberKey(orgId, developerId), ConditionExpression: "attribute_exists(pk)" } },
+      // Only while the member still holds the role that was read: a promotion in between fails the transaction.
+      { Delete: { TableName: this.input.tableName, Key: orgMemberKey(orgId, developerId), ConditionExpression: "attribute_exists(pk) AND #role = :seen", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":seen": seenRole } } },
       { Delete: { TableName: this.input.tableName, Key: developerOrgKey(developerId), ConditionExpression: "attribute_exists(pk) AND orgId = :org", ExpressionAttributeValues: { ":org": orgId } } },
       ...emailPointers.map((pk): TransactItem => ({
         Delete: { TableName: this.input.tableName, Key: { pk, sk: "DEVELOPER" }, ConditionExpression: "developerId = :dev", ExpressionAttributeValues: { ":dev": developerId } },

@@ -6246,10 +6246,14 @@ async function handleCallback(
     return json({ authorized: true }, request.requestId);
   }
   if (action === "pull-request") {
+    // Ruling R60: a publish step that began before the removal still opens no pull request, and mints no installation token.
+    await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), operation.workspaceId);
     const pullRequest = await logCallbackRefusal(action, operation, () => reconcilePullRequest(dependencies, operation, body));
     return json(pullRequest, request.requestId);
   }
   if (action === "pull-request-update") {
+    // Ruling R60, as for the pull request callback above.
+    await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), operation.workspaceId);
     const pullRequest = await logCallbackRefusal(action, operation, () => reconcilePullRequestUpdate(dependencies, operation, body));
     return json(pullRequest, request.requestId);
   }

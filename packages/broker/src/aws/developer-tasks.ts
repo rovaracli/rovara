@@ -923,6 +923,8 @@ export async function submitWorkflowFeedbackDecision(
 ): Promise<{ status: string; nextAction: string }> {
   let access = await authorizeTaskAction(deps, caller, taskId, "feedback");
   let task = access.task;
+  // Ruling R60, first: before the GitHub refresh and any other work, so the removal's reason wins.
+  await creatorGuard(deps, task);
   let current = task.workflow;
   if (current === undefined) throw agentXError("NOT_FOUND", "PR feedback review not found");
   const prior = current.feedbackDecisions?.find(decision => decision.requestId === input.requestId);
@@ -1042,7 +1044,6 @@ export async function submitWorkflowFeedbackDecision(
     const running = { ...next, revision: next.revision + 1, state: "RUNNING" as const, feedbackDispatchApproval: approval, updatedAt: iso(deps) };
     const workspace = await actionableWorkspace(deps, latest);
     const readiness = running.checkPolicy === undefined ? undefined : workflowSelectedChecks(running.checkPolicy).map(check => check.command);
-    await creatorGuard(deps, latest);
     try {
       await deps.actions.acceptTask(developerTaskIdentity(latest, deps.orgId), workspace.id, {
         requestId: input.requestId, conversationId: latest.conversationId, prompt,
@@ -1222,6 +1223,7 @@ export async function taskView(
   ]);
   const derivedBase = deriveTaskStatus({
     closedAt: task.closedAt,
+    outcome: task.outcome,
     workspaceStatus: workspace.status,
     pointer,
     operations: operations.map((operation) => ({ id: operation.id, kind: operation.kind, status: operation.status, error: operation.error, createdAt: operation.createdAt, updatedAt: operation.updatedAt, fence: operation.fence })),
@@ -1269,7 +1271,12 @@ export async function taskView(
     void _internalOperationId;
     workflow = { ...publicWorkflow, decisions: task.workflow.decisions.map(({ answerOverrides, commentsIncluded, via, ...decision }) => { void answerOverrides; void commentsIncluded; void via; return decision; }) };
   }
-  if (options.details && workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING") {
+  // Ruling R60: a task whose creator was removed has ended. The view says so, with the reason, instead of the step it was waiting on.
+  const removedReason = removedReasonOf(task);
+  if (removedReason !== undefined && workflow !== undefined && workflow.stage !== "MERGED" && workflow.stage !== "CLOSED") {
+    workflow = { ...workflow, state: "BLOCKED", blockReason: removedReason };
+  }
+  if (removedReason === undefined && options.details && workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING") {
     const activeArtifactType = workflow.path === "FULL" && workflow.reviewPhase === "REQUIREMENTS" ? "requirements"
       : workflow.path === "FULL" && workflow.reviewPhase === "DESIGN" ? "design" : "plan";
     const planArtifact = workflow.artifacts.filter((artifact) => artifact.type === activeArtifactType).at(-1);
@@ -1299,6 +1306,7 @@ export async function taskView(
     ...(workflow === undefined ? {} : { workflow }),
     ...(e2ePresentation === undefined ? {} : { e2ePresentation }),
     ...(derived.failure === undefined ? {} : { failure: derived.failure }),
+    ...(removedReason === undefined ? {} : { outcome: "creator_removed" as const, outcomeReason: removedReason }),
     startingRevision: task.startingRevision,
     client: task.client,
     shared: task.shared,
@@ -1770,6 +1778,8 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "continue");
   const access = await authorizeLegacyTaskAction(deps, caller, taskId, "control");
   const { task } = access;
+  // Ruling R60, first: before the busy, workspace and model-proxy refusals, so the removal's reason wins.
+  await creatorGuard(deps, task);
   if (task.workflow !== undefined) throw agentXError("WORKSPACE_BUSY", GATED_TASK_TURN_REFUSAL);
   const turns = turnTable(deps);
   await actionableWorkspace(deps, task);
@@ -1778,7 +1788,6 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   const baseline = deps.modelAccess === undefined ? undefined
     : await taskSpendBaseline({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, task.modelKeyIds ?? []);
   const receivedAt = iso(deps);
-  await creatorGuard(deps, task);
   try {
     // acceptTask answers a repeated requestId with its first operation and writes nothing, and
     // refuses a second running turn (TASK_BUSY) before anything is written.
@@ -2184,6 +2193,8 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "workflow-retry");
   const access = await authorizeTaskAction(deps, caller, taskId, "retry");
   const { task } = access;
+  // Ruling R60, first: before the E2E branch writes its dispatch row, so the removal's reason wins.
+  await creatorGuard(deps, task);
   const recoveryHash = hashJson({ action: "committed-source-recovery", taskId, actorId: access.actorId, request });
   const recoveryKey = { pk: `DEVTASK#${taskId}`, sk: `WORKFLOW_SOURCE_RECOVERY#${request.requestId}` };
   const priorRecovery = await get<{ payloadHash: string; actorId: string; operationId: string }>(deps, recoveryKey);
@@ -2329,7 +2340,6 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
       await syncIndex(deps, fresh, view.status, view.updatedAt);
       return { task: view };
     }
-    await creatorGuard(deps, task);
     try {
       await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
         requestId: request.requestId, conversationId: task.conversationId,
@@ -3074,7 +3084,6 @@ export async function startTaskWorkflowE2EChecksFromSystem(
     updatedAt: receivedAt,
   });
   const requestId = workflowRequestId("agentx-auto-e2e-checks", taskId, expected.workflowRevision, expected.candidateDigest);
-  await creatorGuard(deps, task);
   const accepted = await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
     requestId, conversationId: task.conversationId,
     prompt: "Run the broker-admitted E2E verification groups for this exact candidate. Do not edit files or expand the admitted scenarios.",
@@ -3101,9 +3110,14 @@ export function taskPageUrl(issuer: string, taskId: string): string {
   return new URL(`/review/${encodeURIComponent(taskId)}/task`, new URL(issuer).origin).href;
 }
 
+/** Ruling R60: why the task ended, when its creator was removed from the org (an open task only). */
+const removedReasonOf = (task: DeveloperTaskRecord) => (task.outcome === "creator_removed" && task.closedAt === undefined ? task.outcomeReason : undefined);
+
 /** Where a workflow task stands and what happens next, in the words the task page shows. */
-function taskPageStage(workflow: WorkflowSnapshot | undefined, closed: boolean, owner: boolean, publication: "failed" | "retrying" | undefined = undefined): { status: string; nextStep: string } {
+function taskPageStage(workflow: WorkflowSnapshot | undefined, closed: boolean, owner: boolean, publication: "failed" | "retrying" | undefined = undefined, removedReason: string | undefined = undefined): { status: string; nextStep: string } {
   if (closed || workflow?.stage === "CLOSED") return { status: "Closed", nextStep: "Nothing; this task is closed." };
+  // Ruling R60: the creator was removed from the org, so the task ended; no step is waiting.
+  if (removedReason !== undefined && workflow?.stage !== "MERGED") return { status: removedReason, nextStep: "Nothing; this task has ended." };
   if (workflow === undefined) return { status: "In progress", nextStep: "Follow the task where it was started." };
   const name = workflowDocumentName(workflow);
   const inSlack = "in the task's Slack thread";
@@ -3634,7 +3648,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
     }
   }
   return {
-    taskId, now: deps.now(), title: task.title, ...taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task)),
+    taskId, now: deps.now(), title: task.title, ...taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task)),
     path: workflow?.path ?? "QUICK", revision: workflow?.revision ?? 0, stage: taskPageStep(workflow, task.closedAt !== undefined), role: owner ? "owner" : "reader",
     documents, ...(unverified.length === 0 ? {} : { unverified }), checks, checksRan: results.length > 0, ...(checksNote === undefined ? {} : { checksNote }), findings,
     ...(acceptedFindings.length === 0 ? {} : { acceptedFindings }),
@@ -4640,7 +4654,7 @@ export async function workflowTaskAnswerContext(
     return undefined;
   }
   const oneLine = (text: string, max: number) => Array.from(inertReplyText(redactText(text)).replace(/\s+/gu, " ").trim()).slice(0, max).join("");
-  const stage = taskPageStage(workflow, false, false, await publicationAttempts(deps, task));
+  const stage = taskPageStage(workflow, false, false, await publicationAttempts(deps, task), removedReasonOf(task));
   const step = taskPageStep(workflow, false);
   // The latest document of the three kinds: the coding plan carries the whole requirements and design tree, so it is the
   // newest once it exists. Only this task's own private storage is read.

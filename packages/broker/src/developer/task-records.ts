@@ -286,11 +286,14 @@ export function deriveTaskStatus(input: {
   workspaceStatus: string;
   pointer?: { pendingPrompt?: string | undefined; cancelledAt?: string | undefined } | undefined;
   operations: readonly OperationFacts[];
+  /** Ruling R60: a task whose creator was removed has ended, whatever its last operation was. */
+  outcome?: DeveloperTaskRecord["outcome"] | undefined;
 }): DerivedStatus {
   const closing = input.workspaceStatus === "CLOSING" || input.operations.some((operation) => operation.kind === "close" && LIVE.has(operation.status));
   const current = currentOperation(input.operations);
   const withCurrent = current === undefined ? {} : { current };
   if (input.closedAt !== undefined || input.workspaceStatus === "CLOSED") return { status: "CLOSED", closing: false, ...withCurrent };
+  if (input.outcome === "creator_removed") return { status: "CANCELLED", closing, ...withCurrent };
   if (input.pointer?.cancelledAt !== undefined && current === undefined) return { status: "CANCELLED", closing };
   if (input.workspaceStatus === "PREPARATION_FAILED") {
     const prepare = input.operations.filter((operation) => operation.kind === "prepare").sort(byCreated).at(-1);

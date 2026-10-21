@@ -28,6 +28,8 @@ export interface OrgRecord {
   githubOwner?: string;
   /** When the org was closed (its sole owner left, or the race org of a duplicate sign-in was retired); a closed org takes no new members. */
   closedAt?: string;
+  /** Set while the sole owner's leave closes the org: from then on no invite is accepted into it. A stopped close is run again by the owner. */
+  closingAt?: string;
 }
 
 /** A GitHub account or organization login, stored lower case: 1 to 39 letters, digits and single hyphens, never starting or ending with one. */
