@@ -245,11 +245,17 @@ describe("default permission boundary", () => {
     expect(allows.find((s) => s.Sid === "Services")!.Action).not.toContain("events:*");
   });
 
-  it("allows only sts:GetCallerIdentity from STS, never AssumeRole", () => {
+  it("allows only sts:GetCallerIdentity from STS, and AssumeRole with TagSession for the one ConnectorSecretsRole", () => {
     const sts = allows.flatMap((s) => s.Action).filter((a) => a.startsWith("sts:"));
-    expect(sts).toEqual(["sts:GetCallerIdentity"]);
+    expect(sts).toEqual(["sts:GetCallerIdentity", "sts:AssumeRole", "sts:TagSession"]);
     expect(allows.find((s) => s.Sid === "CallerIdentity")).toEqual({ Sid: "CallerIdentity", Effect: "Allow", Action: ["sts:GetCallerIdentity"], Resource: "*" });
-    expect(allows.flatMap((s) => s.Action).filter((a) => a === "*" || a === "sts:*" || /^sts:AssumeRole/.test(a))).toEqual([]);
+    // Plan 3 (R62): the broker assumes this one role, named exactly; no wildcard, and no other role.
+    expect(allows.find((s) => s.Sid === "ConnectorSecretsRole")).toEqual({
+      Sid: "ConnectorSecretsRole", Effect: "Allow", Action: ["sts:AssumeRole", "sts:TagSession"],
+      Resource: "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-connector-secrets",
+    });
+    expect(allows.flatMap((s) => s.Action).filter((a) => a === "*" || a === "sts:*")).toEqual([]);
+    expect(allows.filter((s) => s.Action.some((a) => /^sts:(AssumeRole|TagSession)/.test(a))).map((s) => s.Sid)).toEqual(["ConnectorSecretsRole"]);
   });
 
   it("never allows iam:* or any user, group, access key, login profile or managed-policy action", () => {

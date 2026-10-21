@@ -61,7 +61,8 @@ export const SERVICE_ROLE_SERVICES: readonly string[] = [
  * Service Quotas are not here: sts:* would let a bounded role assume any same-account role that
  * trusts the account, escaping the boundary, and servicequotas:* would let it read every quota in
  * the account instead of only the two EC2 quotas prerequisites checks; the boundary names
- * sts:GetCallerIdentity and servicequotas:GetServiceQuota alone (see defaultBoundaryStatements).
+ * sts:GetCallerIdentity, servicequotas:GetServiceQuota and, for the one ConnectorSecretsRole,
+ * sts:AssumeRole and sts:TagSession (see defaultBoundaryStatements).
  * Budgets is a wildcard here only as a ceiling (phase 15d2, FR-047). AWS's service reference for
  * Budgets confirms that ModifyBudget, ViewBudget, TagResource, UntagResource and
  * ListTagsForResource take the budget/${BudgetName} resource, so the service and operator roles'
@@ -120,6 +121,14 @@ const BUDGET_ACTIONS = ["budgets:ModifyBudget", "budgets:ViewBudget", "budgets:T
 /** The IAM path every role of an environment's stacks lives under, except the access stack's two roles. */
 export function environmentRolePath(env: string): string {
   return `/agentx/${env}/`;
+}
+
+/**
+ * The control plane's ConnectorSecretsRole (Plan 3, ruling R62): the broker assumes it, tagged with an org, to reach that
+ * org's connection and hook secrets. Fixed so the default boundary can name it as the one role a bounded role may assume.
+ */
+export function connectorSecretsRoleName(env: string): string {
+  return `agentx-${env}-connector-secrets`;
 }
 
 /** The name of the default permission boundary the access stack creates when the company gives none. */
@@ -208,8 +217,16 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
   return [
     { Sid: "Services", Effect: "Allow", Action: BOUNDARY_SERVICES.map((s) => `${s}:*`), Resource: "*" },
     { Sid: "EcsFailureEventsRule", Effect: "Allow", Action: ["events:*"], Resource: ecsFailureRuleArn(scope) },
-    // The operator's identity check; the only STS action any AgentX role uses.
+    // The operator's identity check.
     { Sid: "CallerIdentity", Effect: "Allow", Action: ["sts:GetCallerIdentity"], Resource: "*" },
+    // The broker assumes the ConnectorSecretsRole, with an org session tag, and no other role (sts:* would let a bounded role
+    // assume any same-account role that trusts the account, escaping the boundary).
+    {
+      Sid: "ConnectorSecretsRole",
+      Effect: "Allow",
+      Action: ["sts:AssumeRole", "sts:TagSession"],
+      Resource: `arn:${partition}:iam::${account}:role${environmentRolePath(scope.env)}${connectorSecretsRoleName(scope.env)}`,
+    },
     // The operator's EC2 quota reads (prerequisites on a resume); named like CallerIdentity above,
     // not scoped further, since scoped ARNs in the identity policy already limit it to two quotas.
     { Sid: "Quotas", Effect: "Allow", Action: ["servicequotas:GetServiceQuota"], Resource: "*" },

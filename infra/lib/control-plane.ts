@@ -1,3 +1,4 @@
+import { connectorSecretsPolicyStatements, connectorSecretsTrustPolicy } from "./connector-secrets-policy.js";
 import { grantProviderKeySecrets } from "./model-keys.js";
 import { EgressAlarms } from "./egress-alarms.js";
 import { ModelAccess } from "./model-access.js";
@@ -35,7 +36,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { HEALTH_ALARM_SUFFIXES, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
+import { HEALTH_ALARM_SUFFIXES, connectorSecretsRoleName, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
 import { TaskPersonProof } from "./task-person-proof.js";
@@ -209,6 +210,31 @@ export class ControlPlaneStack extends Stack {
       resources: [this.formatArn({ service: "codebuild", resource: "project", resourceName: "agentx-*" })],
     }));
     if (naming.env !== undefined) broker.addEnvironment("CONNECTOR_SECRET_PREFIX", naming.connectorSecretPrefix);
+    // Plan 3, ruling R62: an org's connection keys and event hook secrets (agentx/<env>/org-connectors/<org>/... and
+    // agentx/<env>/org-hooks/<org>/...) are readable only through this role, in a session the broker tags with the org.
+    // The broker role may assume it and holds no Secrets Manager permission on those paths. Named environments only.
+    if (naming.env !== undefined) {
+      const connectorSecretsRole = new iam.CfnRole(this, "ConnectorSecretsRole", {
+        // Fixed, so the default permissions boundary can name it as the one role the broker's bounded role may assume.
+        roleName: connectorSecretsRoleName(naming.env),
+        description: "AgentX org connector and hook secrets: assumed by the broker with a rovara:org session tag, reaches only that org's secrets",
+        assumeRolePolicyDocument: connectorSecretsTrustPolicy(broker.role!.roleArn),
+        policies: [{
+          policyName: "OrgConnectorSecrets",
+          policyDocument: {
+            Version: "2012-10-17",
+            Statement: connectorSecretsPolicyStatements({ secretArnPrefix: `arn:${Aws.PARTITION}:secretsmanager:${Aws.REGION}:${Aws.ACCOUNT_ID}:secret:`, env: naming.env }),
+          },
+        }],
+      });
+      broker.addToRolePolicy(new iam.PolicyStatement({
+        sid: "AssumeConnectorSecretsRole",
+        actions: ["sts:AssumeRole", "sts:TagSession"],
+        resources: [connectorSecretsRole.attrArn],
+      }));
+      broker.addEnvironment("CONNECTOR_SECRETS_ROLE_ARN", connectorSecretsRole.attrArn);
+      broker.addEnvironment("AGENTX_ENV", naming.env);
+    }
     // Spec 043: SWE-bench runs. The broker reads the optional eval stack's settings, the runner image
     // and the worker model per request, and starts the eval state machine by its fixed name; both
     // exist only once the eval stack is deployed, and until then a run is refused as not installed.

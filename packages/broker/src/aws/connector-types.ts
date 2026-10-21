@@ -4,7 +4,7 @@ import type { GitHubMcpDependencies } from "../github-mcp.js";
 import { GITHUB_LEDGER } from "./connector-ledger.js";
 import { asanaConnectorType } from "./asana-connector-type.js";
 import { mcpConnectorType } from "./connector-presets.js";
-import type { CredentialRegistry, HostPin } from "./credentials.js";
+import type { ConnectorCredentials, HostPin } from "./credentials.js";
 import { jiraConnectorType } from "./jira-connector-type.js";
 import { linearConnectorType } from "./linear-connector-type.js";
 
@@ -37,7 +37,7 @@ export interface ResolvedConnector<Scope = unknown> {
 
 export interface ConnectorTypeContext {
   githubMcp?: GitHubMcpDependencies;
-  credentialRegistry?: CredentialRegistry;
+  credentialRegistry?: ConnectorCredentials;
   /** A vendor connection override, for a connector type with no deployment connect of its own. Only test types use this today. */
   connect?: typeof connectMcp;
 }

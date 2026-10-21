@@ -20,6 +20,7 @@ import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+import { STSClient } from "@aws-sdk/client-sts";
 import {
   AgentXError,
   E2ESetupProposalSchema,
@@ -255,7 +256,7 @@ import { DynamoConnectorLedger, GITHUB_LEDGER } from "./connector-ledger.js";
 import { observeConnectorRoute } from "./connector-metrics.js";
 import { attributionDroppedLog, callConnector, connectorCatalogKey, discoverConnector, discoverLegacyGitHubScope, stripCode, type ConnectorContextBase, type ScopeDiscovery } from "./connector-routes.js";
 import { resolveConnectors, BUILT_IN_CONNECTOR_TYPES, type ConnectorType, type ConnectorTypeContext, type ResolvedConnector } from "./connector-types.js";
-import { CredentialRegistry, secretsManagerSource, type ConnectorCredentialsConfiguration } from "./credentials.js";
+import { CredentialRegistry, secretsManagerSource, type ConnectorCredentials, type ConnectorCredentialsConfiguration } from "./credentials.js";
 import { developerTokenVerifier } from "../developer/verify-token.js";
 import type { DeveloperRecord } from "../developer/store.js";
 import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, readDecisionDetail } from "../developer/owner-answers.js";
@@ -291,6 +292,9 @@ import { developerIdForSlackUser, grantProjectAccess } from "./admin-actions.js"
 import { chatGptOwner, chatGptTaskSelection } from "../chatgpt/task-model.js";
 import { answerSlackChatGpt, isSlackChatGptCommandEvent, isSlackChatGptFinishEvent } from "./slack-chatgpt.js";
 import { chatGptConnections, kmsChatGptSealer, type ChatGptConnections } from "../chatgpt/connections.js";
+import { OrgSecrets, type SecretsClient } from "../connections/org-secrets.js";
+import { orgCredentialRegistry } from "../connections/registry.js";
+import type { OrgConnectionDeps } from "../connections/store.js";
 import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
@@ -480,6 +484,12 @@ interface AwsBrokerDependencies {
   githubMcp?: GitHubMcpDependencies;
   catalogs: CatalogCache<ScopeDiscovery>;
   credentialRegistry?: CredentialRegistry;
+  /**
+   * Plan 3, ruling R62: where a cloud org's connections and their org-tagged secrets live. On a cloud install the connector
+   * types read these, for the caller's, workspace's or task's org, instead of `credentialRegistry`. Absent, a cloud org has
+   * no connections at all: the install-wide registry is never used for one.
+   */
+  orgConnections?: OrgConnectionDeps;
   /** The administrator turn record export; absent when the deployment has no TurnRecords table. */
   turnRecords?: TurnRecordExport;
   /** The TurnRecords table developer task audit records go to (spec 025); absent when there is none. */
@@ -1688,7 +1698,7 @@ async function routeWorkspaceRequest(
     if (!parsed?.success) {
       const types = dependencies.connectorTypes ?? BUILT_IN_CONNECTOR_TYPES;
       const discovery = await discoverLegacyGitHubScope({
-        connectors: resolveConnectors(project.definition, connectorTypeContext(dependencies), types),
+        connectors: resolveConnectors(project.definition, connectorTypeContext(dependencies, await orgOfRecord(dependencies, workspace)), types),
         githubTypeKnown: Object.hasOwn(types, "github"),
         connectorName: github.name, repository: repository.name, projectName: workspace.projectName,
         context: connectorContext(identity, workspace, project), catalogs: dependencies.catalogs,
@@ -1709,7 +1719,7 @@ async function routeWorkspaceRequest(
   const connectorRoute = /^\/v1\/workspaces\/([0-9a-f-]+)\/connectors\/([a-z][a-z0-9-]{0,19})\/(tools|call)$/.exec(url.pathname);
   if (connectorRoute?.[1] && connectorRoute[2] && ((request.method === "GET" && connectorRoute[3] === "tools") || (request.method === "POST" && connectorRoute[3] === "call"))) {
     const { workspace, project } = await authorizeWorkspaceConnectors(dependencies, identity, connectorRoute[1]);
-    const connector = resolveConnectors(project.definition, connectorTypeContext(dependencies), dependencies.connectorTypes)
+    const connector = resolveConnectors(project.definition, connectorTypeContext(dependencies, await orgOfRecord(dependencies, workspace)), dependencies.connectorTypes)
       .find((entry) => entry.name === connectorRoute[2]);
     if (!connector) throw agentXError("NOT_FOUND", "connector not found");
     const parsed = request.method === "POST" ? ConnectorCallRequestSchema.safeParse(body) : undefined;
@@ -1825,10 +1835,20 @@ async function authorizeGitHubConnector(dependencies: AwsBrokerDependencies, ide
   return { workspace, project, github };
 }
 
-function connectorTypeContext(dependencies: AwsBrokerDependencies): ConnectorTypeContext {
+/**
+ * What a connector type reads: the GitHub MCP dependencies and a credential registry. A private install uses its
+ * install-wide registry. A cloud install uses the org registry of the org the workspace, task or caller belongs to
+ * (`orgId`), and none when it has no org or no org connections are configured: it never falls back to credentials that
+ * belong to the whole install.
+ */
+export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "githubMcp" | "credentialRegistry" | "orgConnections" | "cloud">, orgId?: OrgId): ConnectorTypeContext {
+  let credentialRegistry: ConnectorCredentials | undefined = dependencies.credentialRegistry;
+  if (dependencies.cloud === true) {
+    credentialRegistry = dependencies.orgConnections !== undefined && orgId !== undefined ? orgCredentialRegistry(dependencies.orgConnections, orgId) : undefined;
+  }
   return {
     ...(dependencies.githubMcp ? { githubMcp: dependencies.githubMcp } : {}),
-    ...(dependencies.credentialRegistry ? { credentialRegistry: dependencies.credentialRegistry } : {}),
+    ...(credentialRegistry ? { credentialRegistry } : {}),
   };
 }
 
@@ -1881,16 +1901,17 @@ function parseRegistrationInput(value: unknown): { definition: ProjectDefinition
 }
 
 /** Registration's refusals and preflight, for a new revision; registerProject and a change plan share them. */
-async function registrationChecks(dependencies: AwsBrokerDependencies, identity: Pick<RegistrationActor, "ownerKey">, definition: ProjectDefinition, wantsPreflight: boolean): Promise<PreflightOutcome | undefined> {
+async function registrationChecks(dependencies: AwsBrokerDependencies, identity: { ownerKey: string; orgId?: OrgId | undefined }, definition: ProjectDefinition, wantsPreflight: boolean): Promise<PreflightOutcome | undefined> {
   const budget = toolBudget(approvedToolCount(definition));
-  const connectors = () => resolveConnectors(definition, connectorTypeContext(dependencies), dependencies.connectorTypes);
+  const context = connectorTypeContext(dependencies, identity.orgId);
+  const connectors = () => resolveConnectors(definition, context, dependencies.connectorTypes);
   const nameProblems = presentedNameProblems(definition);
   if (nameProblems.length > 0) throw agentXError("CONFIG_INVALID", nameProblems.join("; "));
   if (budget.refusal) throw agentXError("CONFIG_INVALID", budget.refusal);
   // Spec 053 FR-003: Pi would clamp an unsupported level to another one; refuse the admin's choice instead.
   const levelProblems = definition.models === undefined ? [] : unsupportedThinkingLevels(definition.models);
   if (levelProblems.length > 0) throw agentXError("CONFIG_INVALID", levelProblems.join("; "));
-  const credentialProblems = await credentialRefusals(connectors(), dependencies.credentialRegistry);
+  const credentialProblems = await credentialRefusals(connectors(), context.credentialRegistry);
   if (credentialProblems.length > 0) throw agentXError("CONFIG_INVALID", credentialProblems.join("; "));
   // A repository the GitHub App cannot reach would otherwise fail only at prepare (#123).
   for (const repository of definition.repositories) {
@@ -1969,7 +1990,7 @@ async function registerProjectFor(
     }
   }
   const budget = toolBudget(approvedToolCount(definition));
-  const connectors = () => resolveConnectors(definition, connectorTypeContext(dependencies), dependencies.connectorTypes);
+  const connectors = () => resolveConnectors(definition, connectorTypeContext(dependencies, orgId), dependencies.connectorTypes);
   const respond = (project: Omit<RegisteredProjectRecord, "pk" | "sk">, duplicate: boolean, preflight: PreflightOutcome | undefined) => {
     const warnings = registrationWarnings(budget.warning, preflight);
     return {
@@ -3328,7 +3349,7 @@ async function ensureThreadWorkspace(
     operationId: preparation.operationId,
     created: true,
     orchestratorInstructions: project.definition.orchestratorInstructions,
-    ...await threadIntegrations(project.definition, include, dependencies),
+    ...await threadIntegrations(project.definition, include, dependencies, identity.orgId),
     ...(include.recoverableOperations ? { recoverableOperations: [] } : {}),
     ...(includeSettingsRevision ? { settingsRevision: project.definition.revision } : {}),
     ...(include.actionPolicy && project.definition.actionPolicy ? { actionPolicy: project.definition.actionPolicy } : {}),
@@ -3392,7 +3413,7 @@ async function createUnpreparedThreadWorkspace(
     operationId: null,
     created: true,
     orchestratorInstructions: project.definition.orchestratorInstructions,
-    ...await threadIntegrations(project.definition, include, dependencies),
+    ...await threadIntegrations(project.definition, include, dependencies, identity.orgId),
     ...(include.recoverableOperations ? { recoverableOperations: [] } : {}),
     ...(includeSettingsRevision ? { settingsRevision: project.definition.revision } : {}),
     ...(include.actionPolicy && project.definition.actionPolicy ? { actionPolicy: project.definition.actionPolicy } : {}),
@@ -3781,7 +3802,7 @@ async function sharedThreadWorkspace(
     operationId: active.operationId,
     created: false,
     orchestratorInstructions: settings.definition.orchestratorInstructions,
-    ...await threadIntegrations(settings.definition, include, dependencies),
+    ...await threadIntegrations(settings.definition, include, dependencies, identity.orgId),
     ...(include.recoverableOperations ? { recoverableOperations: [] } : {}),
     ...(includeSettingsRevision ? { settingsRevision: settings.definition.revision } : {}),
     ...(include.actionPolicy && settings.definition.actionPolicy ? { actionPolicy: settings.definition.actionPolicy } : {}),
@@ -3822,7 +3843,7 @@ async function existingThreadWorkspace(
   const settings = await requireLatestProject(dependencies, requireOrgId(identity.orgId), workspace.projectName);
   const applied = {
     orchestratorInstructions: settings.definition.orchestratorInstructions,
-    ...await threadIntegrations(settings.definition, include, dependencies),
+    ...await threadIntegrations(settings.definition, include, dependencies, identity.orgId),
     ...(include.recoverableOperations ? { recoverableOperations: workspace.status === "BUSY" && workspace.activeOperationId ? [workspace.activeOperationId] : [] } : {}),
     ...(includeSettingsRevision ? { settingsRevision: settings.definition.revision } : {}),
     ...(include.actionPolicy && settings.definition.actionPolicy ? { actionPolicy: settings.definition.actionPolicy } : {}),
@@ -3863,7 +3884,7 @@ interface IntegrationInclude { integrations: boolean; connectors: boolean; allCo
  * resolved type is withheld unless the service also sends includeAllConnectorTypes.
  * githubMcpRepositories stays github-only regardless, for feature 007's included integrations.
  */
-async function threadIntegrations(project: ProjectDefinition, include: IntegrationInclude, dependencies: AwsBrokerDependencies): Promise<{
+async function threadIntegrations(project: ProjectDefinition, include: IntegrationInclude, dependencies: AwsBrokerDependencies, orgId: OrgId | undefined): Promise<{
   githubMcpRepositories?: string[];
   connectors?: ThreadConnector[];
   repositories?: string[];
@@ -3872,7 +3893,7 @@ async function threadIntegrations(project: ProjectDefinition, include: Integrati
   const repositories = github?.repositories.map((repository) => repository.name) ?? [];
   let connectors: ThreadConnector[] | undefined;
   if (include.connectors) {
-    const resolved = resolveConnectors(project, connectorTypeContext(dependencies), dependencies.connectorTypes);
+    const resolved = resolveConnectors(project, connectorTypeContext(dependencies, orgId), dependencies.connectorTypes);
     const visible = include.allConnectorTypes ? resolved : resolved.filter((connector) => connector.type === "github");
     connectors = await Promise.all(visible.map(async (connector) => ({
       name: connector.name,
@@ -12079,6 +12100,24 @@ const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient(awsClientC
 });
 const s3 = new S3Client(awsClientConfiguration);
 const secretsManager = new SecretsManagerClient(awsClientConfiguration);
+// Plan 3, ruling R62: a cloud org's connection secrets are read and written only in a ConnectorSecretsRole session tagged
+// with the org (OrgSecrets assumes it per org). Set only where the control plane created that role.
+const connectorSecretsRoleArn = process.env.CONNECTOR_SECRETS_ROLE_ARN;
+const orgConnections: OrgConnectionDeps | undefined = connectorSecretsRoleArn === undefined || connectorSecretsRoleArn === "" ? undefined : {
+  documentClient,
+  tableName: requiredEnvironment("STATE_TABLE_NAME"),
+  env: installEnvironmentName(),
+  now: Date.now,
+  secrets: new OrgSecrets({
+    env: installEnvironmentName(),
+    roleArn: connectorSecretsRoleArn,
+    sts: new STSClient(awsClientConfiguration),
+    secretsFor: (credentials): SecretsClient => {
+      const client = new SecretsManagerClient({ ...awsClientConfiguration, credentials });
+      return { send: (command) => client.send(command as never) as Promise<{ SecretString?: string; ARN?: string }> };
+    },
+  }),
+};
 const codeBuild = createCodeBuildGateway(awsClientConfiguration);
 const stepFunctions = new SFNClient(awsClientConfiguration);
 const ssm = new SSMClient(awsClientConfiguration);
@@ -12201,6 +12240,7 @@ export const handler = createAwsBrokerHandler({
   ...(chatgpt ? { chatgpt } : {}),
   ...(modelAccess ? { modelAccess } : {}),
   cloud: cloudOrgResolver !== undefined,
+  ...(orgConnections === undefined ? {} : { orgConnections }),
   // Ruling R55: a cloud org's projects run on the foundation's EC2 workers, with the built-in GitHub App.
   ...(cloudProjectDefaults === undefined ? {} : { cloudProjects: cloudProjectDefaults }),
   // Ruling R6: with the cloud sign-in configured, membership decides who has an org; operators of the admin pool have none.

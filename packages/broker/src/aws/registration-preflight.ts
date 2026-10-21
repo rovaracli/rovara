@@ -2,7 +2,7 @@ import { AgentXError, itemPathProblems, type ConnectorPreflight, type ProjectDef
 import { ConnectorNotConnected, isObject, presentCatalog, TARGET_CONFLICT_REASON, type CatalogTool, type GuardedItemTools, type SkippedTool } from "@agentx/gateway";
 import { discoverScope, stripCode, type ConnectorContextBase, type ScopeDiscovery } from "./connector-routes.js";
 import type { ResolvedConnector } from "./connector-types.js";
-import { credentialSetupCommand, hostPinProblem, type CredentialRegistry } from "./credentials.js";
+import { credentialSetupCommand, hostPinProblem, type ConnectorCredentials } from "./credentials.js";
 
 const MAX_SKIPPED = 64;
 const MAX_PROBLEM = 512;
@@ -130,7 +130,7 @@ export function registrationWarnings(budgetWarning: string | undefined, prefligh
  * registry, an unregistered reference, or a provider type the connector does not accept.
  * Only the reference and type are named, never a secret.
  */
-export async function credentialRefusals(connectors: readonly ResolvedConnector[], registry: CredentialRegistry | undefined): Promise<string[]> {
+export async function credentialRefusals(connectors: readonly ResolvedConnector[], registry: ConnectorCredentials | undefined): Promise<string[]> {
   const refusals: string[] = [];
   for (const connector of connectors) {
     const credential = connector.credential;

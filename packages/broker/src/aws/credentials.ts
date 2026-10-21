@@ -227,6 +227,12 @@ export function credentialSetupCommand(accepts: readonly CredentialType[] | unde
   return signIn ? "agentx admin credential authorize" : "agentx admin credential register";
 }
 
+/**
+ * What a connector type reads of a credential registry: the install-wide one below, or, on a cloud install, one org's
+ * connections (connections/registry.ts). It can say what is registered and hand out a provider; it cannot register.
+ */
+export type ConnectorCredentials = Pick<CredentialRegistry, "has" | "registration" | "typeOf" | "provider">;
+
 /** Registered connector credentials: records name a secret, never hold one. */
 export class CredentialRegistry {
   private readonly documentClient: DynamoDBDocumentClient;
