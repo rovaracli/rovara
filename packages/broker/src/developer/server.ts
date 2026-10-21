@@ -41,10 +41,12 @@ import {
   type SlackUserByEmailRequest,
   type SlackUserByEmailResponse,
 } from "@agentx/contracts";
-import { adaptHttpApiEvent, ownerKeyForSubject, type HttpApiV2Event } from "../aws/lambda.js";
+import { adaptHttpApiEvent, type HttpApiV2Event } from "../aws/lambda.js";
 import { SESSION_MAX_AGE_SECONDS } from "../aws/web-session.js";
 import { INVITE_TOKEN_PATTERN } from "../org/invite-url.js";
+import type { OrgStore } from "../org/store.js";
 import { resolveOrgOnSignIn, type ResolveOrgOnSignInDependencies } from "../org/sign-in.js";
+import { resolveSignInDeveloper } from "./identities.js";
 import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderResult, type SignInProvider } from "./providers.js";
 import type { SlackDirectory } from "./slack-directory.js";
 import { endedByAdmin, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type SessionRecord } from "./store.js";
@@ -62,7 +64,7 @@ export interface DeveloperIdentityDependencies {
   providers: Partial<Record<DeveloperSignInMethod, SignInProvider>>;
   directory: SlackDirectory;
   /** The org store: a sign-in puts the developer in an org, and the tokens carry it. */
-  orgs: ResolveOrgOnSignInDependencies["orgs"];
+  orgs: ResolveOrgOnSignInDependencies["orgs"] & Pick<OrgStore, "developerForVerifiedEmail">;
   /** The install's single org (ruling R3), which a Slack or company sign-in joins as a member. */
   singleOrgId?: OrgId;
   /** Told when a sign-in created or joined an org, so the model proxy can be told its budgets (see ResolveOrgOnSignInDependencies.onOrgJoined). */
@@ -335,7 +337,9 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       return client({ error: "access_denied", error_description: `${result.reason}${hint}` });
     }
     const identity = result.identity;
-    const developerId = ownerKeyForSubject(identity.issuer, identity.subject);
+    // One developer per person: a second sign-in route for the same verified email is linked to the first route's developer.
+    const resolved = await resolveSignInDeveloper({ store, orgs: deps.orgs }, { method, identity });
+    const { developerId, identityKey } = resolved;
     const existing = await store.getDeveloper(developerId);
     if (existing?.revoked === true) {
       deps.log({ event: "signin.refused", method, reason: "developer_revoked", developerId });
@@ -349,11 +353,16 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       const link = await deps.directory.lookupByEmail(identity.email);
       slackUserId = link === "unavailable" ? existing?.slackUserId : link === "none" ? undefined : link.userId;
     }
-    await store.upsertDeveloper({
-      developerId, provider: method, issuer: identity.issuer, subject: identity.subject, displayName: identity.displayName,
-      ...(identity.email === undefined ? {} : { email: identity.email }),
-      ...(slackUserId === undefined ? {} : { slackUserId }),
-    });
+    // The developer record keeps the first identity's issuer and subject (ownerKeyForSubject(issuer, subject) === developerId, which
+    // task-person-identity.ts relies on), so a linked sign-in only records that it happened.
+    if (resolved.link === "new-self" || (resolved.link === "existing" && developerId === identityKey)) {
+      await store.upsertDeveloper({
+        developerId, provider: method, issuer: identity.issuer, subject: identity.subject, displayName: identity.displayName,
+        ...(identity.email === undefined ? {} : { email: identity.email }),
+        ...(slackUserId === undefined ? {} : { slackUserId }),
+      });
+    }
+    if (resolved.link !== "new-self") await store.touchIdentity(identityKey);
     // A first sign-in puts the person in an org (ruling R2); the tokens and the browser session carry it from here.
     const org = await resolveOrgOnSignIn(
       { orgs: deps.orgs, ...(deps.singleOrgId === undefined ? {} : { singleOrgId: deps.singleOrgId }), singleOrgName: config.env, log: deps.log,
@@ -365,14 +374,14 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (request.browserReturnTo !== undefined) {
       // A fixed 30 days from sign-in, with no renewal: the session record ends then, whatever the cookie says.
       const endsAt = Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS;
-      const { session } = await store.createSession({ developerId, amr: method,
+      const { session } = await store.createSession({ developerId, amr: method, identityKey,
         ...(slackUserId === undefined ? {} : { slackUserId }),
         reviewExpiresAt: endsAt, endsAt,
       });
       deps.log({ event: "signin.browser_succeeded", method, developerId });
       return browserReturn(request.browserReturnTo, true, session.sessionId);
     }
-    const agentxCode = await store.issueCode({ developerId, amr: method, ...(slackUserId === undefined ? {} : { slackUserId }), codeChallenge: request.codeChallenge, redirectUri: request.clientRedirectUri });
+    const agentxCode = await store.issueCode({ developerId, amr: method, identityKey, ...(slackUserId === undefined ? {} : { slackUserId }), codeChallenge: request.codeChallenge, redirectUri: request.clientRedirectUri });
     deps.log({ event: "signin.succeeded", method, developerId, linkedToSlack: slackUserId !== undefined });
     // An invite that was not used (the person is already in an org, or it is unknown, used, expired or for another email) is reported, not hidden.
     return client({ code: agentxCode, ...(org.inviteError === undefined ? {} : { inviteError: org.inviteError }) });

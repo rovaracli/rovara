@@ -2,6 +2,7 @@
 // responses with the non-strict schemas here, so a newer control plane can add fields.
 import { z } from "zod";
 import { EnvironmentNameSchema } from "./environments.js";
+export { normalizeEmail } from "./email.js";
 import { looseCopy } from "./loose.js";
 import { OrgRoleSchema } from "./org.js";
 import { DeveloperTaskPolicySchema } from "./project.js";
@@ -79,6 +80,32 @@ export const DeveloperSummarySchema = z.object({
   orgRole: OrgRoleSchema.optional(),
 });
 export type DeveloperSummary = z.infer<typeof DeveloperSummarySchema>;
+
+/**
+ * One sign-in method linked to a developer (`GET /v1/app/me`). It names the method and what the person recognises it by, never the
+ * provider's issuer or subject.
+ */
+export const LinkedIdentitySchema = z.object({
+  provider: DeveloperSignInMethodSchema,
+  email: z.string().optional(),
+  login: z.string().optional(),
+  linkedAt: z.string(),
+  lastSignInAt: z.string(),
+});
+export type LinkedIdentity = z.infer<typeof LinkedIdentitySchema>;
+
+/** `GET /v1/app/me`: who the signed-in developer is, their org, and every sign-in method linked to them. */
+export const AppMeResponseSchema = z.object({
+  developer: z.object({
+    id: z.string().regex(/^[a-f0-9]{64}$/),
+    name: z.string().min(1).max(200),
+    email: z.string().optional(),
+    orgRole: OrgRoleSchema,
+  }),
+  org: z.object({ orgId: z.string(), name: z.string(), plan: z.string() }),
+  identities: z.array(LinkedIdentitySchema),
+});
+export type AppMeResponse = z.infer<typeof AppMeResponseSchema>;
 
 /**
  * F6: a non-strict copy of `DeveloperTaskPolicySchema` (`project.ts`), used only to parse a

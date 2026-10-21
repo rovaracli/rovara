@@ -2,6 +2,7 @@
 // store builds on. `orgScoped` is the prefix for every collision-prone key.
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
+import { normalizeEmail } from "./email.js";
 
 export const OrgIdSchema = z.string().regex(/^org_[0-9a-z]{20}$/);
 export type OrgId = z.infer<typeof OrgIdSchema>;
@@ -125,5 +126,5 @@ export function trialGithubKey(githubUserId: string): OrgKey {
 }
 
 export function orgEmailKey(email: string): OrgKey {
-  return { pk: `ORG_EMAIL#${email.trim().toLowerCase()}`, sk: "DEVELOPER" };
+  return { pk: `ORG_EMAIL#${normalizeEmail(email).email}`, sk: "DEVELOPER" };
 }

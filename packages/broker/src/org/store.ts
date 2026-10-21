@@ -9,6 +9,7 @@ import {
   agentXError,
   developerOrgKey,
   newOrgId as generateOrgId,
+  normalizeEmail,
   orgEmailKey,
   orgInviteKey,
   orgInviteRequestKey,
@@ -58,7 +59,7 @@ function strip<T extends Item>(item: T): Omit<T, "pk" | "sk" | "entityType"> {
   return rest;
 }
 
-const normalizeEmail = (email: string) => email.trim().toLowerCase();
+const normalizeInviteEmail = (email: string) => normalizeEmail(email).email;
 
 export class OrgStore {
   private readonly newId: () => OrgId;
@@ -178,7 +179,7 @@ export class OrgStore {
     const invite: OrgInviteRecord = {
       orgId: input.orgId,
       tokenHash,
-      ...(input.email === undefined ? {} : { email: normalizeEmail(input.email) }),
+      ...(input.email === undefined ? {} : { email: normalizeInviteEmail(input.email) }),
       role: input.role,
       createdBy: input.createdBy,
       ...(input.requestId === undefined ? {} : { requestId: input.requestId }),

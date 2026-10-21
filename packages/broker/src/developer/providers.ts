@@ -9,6 +9,8 @@ export interface ProviderIdentity {
   emailVerified?: boolean;
   /** GitHub's numeric account id (the `github` method only); the one free trial per GitHub account is keyed on it. */
   githubUserId?: string;
+  /** The GitHub account's login (the `github` method only), shown beside the linked identity; it can change, so it never keys anything. */
+  login?: string;
 }
 /** `wrongAccount`: the person signed in fine but is not one AgentX accepts (another Slack workspace,
  * or without the required claim), so signing in as someone else may help. */
@@ -253,6 +255,7 @@ export function githubSignInProvider(input: {
           displayName: (name === undefined ? undefined : cleanDisplayName(name)) ?? githubUserId,
           ...(primary === undefined ? {} : { email: primary.email, emailVerified: true }),
           githubUserId,
+          ...(typeof user.login === "string" && cleanDisplayName(user.login) !== undefined ? { login: user.login } : {}),
         },
       };
     },

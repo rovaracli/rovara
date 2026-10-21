@@ -1,15 +1,15 @@
 // packages/broker/src/org/sign-in.ts
 // Multi-tenancy: which org a person lands in when they sign in. A developer who already belongs to an
-// org keeps it. Otherwise, in order: a cloud sign-in whose verified email is already linked to another
-// developer joins that developer's org (one person, two sign-in routes), an invite token joins the
-// org that invited them, a cloud sign-in creates an org of its own, and a Slack or company sign-in
-// joins the install's single org (ruling R2) as a member. A GitHub sign-in (Task 22) is a cloud sign-in
-// route for all of this: it links by verified email, accepts invites and creates an org like `cloud`.
-import { agentXError, type DeveloperSignInMethod, type OrgId, type OrgRole } from "@agentx/contracts";
+// org keeps it. Otherwise, in order: an invite token joins the org that invited them, a cloud sign-in
+// creates an org of its own, and a Slack or company sign-in joins the install's single org (ruling R2)
+// as a member. A person's second sign-in route is never a second member: identities.ts links it to the
+// first route's developer before this runs, so that developer already has its org. A GitHub sign-in
+// (Task 22) is a cloud sign-in route for all of this: it accepts invites and creates an org like `cloud`.
+import { agentXError, normalizeEmail, type DeveloperSignInMethod, type OrgId, type OrgRole } from "@agentx/contracts";
 import type { OrgStore } from "./store.js";
 
 export interface ResolveOrgOnSignInDependencies {
-  orgs: Pick<OrgStore, "orgForDeveloper" | "developerForVerifiedEmail" | "createOrgWithOwner" | "addMember" | "acceptInvite" | "peekInvite" | "ensureOrg">;
+  orgs: Pick<OrgStore, "orgForDeveloper" | "createOrgWithOwner" | "addMember" | "acceptInvite" | "peekInvite" | "ensureOrg">;
   /** The install's single org (ruling R3); unset in an install that has none. */
   singleOrgId?: OrgId;
   /** The name that single org is created with the first time someone joins it; the environment's name. */
@@ -28,7 +28,7 @@ export interface ResolveOrgOnSignInInput {
   developerId: string;
   displayName: string;
   email?: string;
-  /** The provider vouched for `email`. An unverified email never links two sign-ins, is never indexed and never satisfies an invite. */
+  /** The provider vouched for `email`. An unverified email is never indexed and never satisfies an invite; a non-ASCII one is never indexed either. */
   emailVerified: boolean;
   inviteToken?: string;
 }
@@ -41,7 +41,7 @@ export interface SignInOrg {
 }
 
 const codeOf = (error: unknown) => (error as { code?: unknown }).code;
-const sameEmail = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+const sameEmail = (a: string, b: string) => normalizeEmail(a).email === normalizeEmail(b).email;
 
 /** The org and role this sign-in belongs to, creating or joining one on a first sign-in. */
 export async function resolveOrgOnSignIn(deps: ResolveOrgOnSignInDependencies, input: ResolveOrgOnSignInInput): Promise<SignInOrg> {
@@ -64,26 +64,29 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
   // The methods that make accounts on a cloud install: "cloud" (Cognito) and "github" behave identically here.
   const cloud = input.method === "cloud" || input.method === "github";
   const verifiedEmail = input.emailVerified ? input.email : undefined;
+  // Only an ASCII address is indexed: Unicode folding can map another address onto it (normalizeEmail), and the index key would collide.
+  const indexedEmail = verifiedEmail !== undefined && normalizeEmail(verifiedEmail).ascii ? verifiedEmail : undefined;
   const withInviteError = (org: { orgId: OrgId; role: OrgRole }, inviteError: SignInOrg["inviteError"]): SignInOrg =>
     inviteError === undefined ? org : { ...org, inviteError };
 
   const joinOrg = (orgId: OrgId, role: OrgRole) => orgs.addMember({ orgId, developerId: input.developerId, role });
 
-  /** Rule 2: the org of another developer who signed in with the same verified email. */
-  const linkByEmail = async (): Promise<{ orgId: OrgId; role: OrgRole } | undefined> => {
-    if (!cloud || verifiedEmail === undefined) return undefined;
-    const linked = await orgs.developerForVerifiedEmail(verifiedEmail);
-    if (linked === undefined || linked === input.developerId) return undefined;
-    const membership = await orgs.orgForDeveloper(linked);
-    if (membership === undefined) return undefined;
-    // No email here: the pointer already names the first sign-in route, and it stays there.
-    await joinOrg(membership.orgId, membership.role);
-    return membership;
-  };
+  /** The membership a concurrent sign-in of the same person created. */
+  const winnerOfRace = (): Promise<{ orgId: OrgId; role: OrgRole } | undefined> => orgs.orgForDeveloper(input.developerId);
 
-  /** The membership a concurrent sign-in of the same person created, or the org their email links them to. */
-  const winnerOfRace = async (): Promise<{ orgId: OrgId; role: OrgRole } | undefined> =>
-    (await orgs.orgForDeveloper(input.developerId)) ?? linkByEmail();
+  /**
+   * `attempt` with the email to index. Refused as ALREADY_IN_ORG while this developer has no membership, the email pointer names another
+   * developer (the same person's other sign-in route raced this one to it): once more without the pointer, so this sign-in still gets
+   * its org and the pointer stays with the first. Merging the two is left to the duplicate healing, not to a sign-in.
+   */
+  const indexing = async <T>(attempt: (email: string | undefined) => Promise<T>): Promise<T> => {
+    try {
+      return await attempt(cloud ? indexedEmail : undefined);
+    } catch (error) {
+      if (!cloud || indexedEmail === undefined || codeOf(error) !== "ALREADY_IN_ORG" || await winnerOfRace() !== undefined) throw error;
+      return attempt(undefined);
+    }
+  };
 
   const inviteGiven = input.inviteToken !== undefined;
 
@@ -91,18 +94,7 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
   const existing = await orgs.orgForDeveloper(input.developerId);
   if (existing !== undefined) return withInviteError(existing, inviteGiven ? "ALREADY_IN_ORG" : undefined);
 
-  // Rule 2: the same person by another cloud sign-in route.
-  try {
-    const linked = await linkByEmail();
-    if (linked !== undefined) return withInviteError(linked, inviteGiven ? "ALREADY_IN_ORG" : undefined);
-  } catch (error) {
-    if (codeOf(error) !== "ALREADY_IN_ORG") throw error;
-    const winner = await orgs.orgForDeveloper(input.developerId);
-    if (winner === undefined) throw error;
-    return withInviteError(winner, inviteGiven ? "ALREADY_IN_ORG" : undefined);
-  }
-
-  // Rule 3: an invite, which an email-targeted invite grants only to that verified email (ruling R7).
+  // Rule 2: an invite, which an email-targeted invite grants only to that verified email (ruling R7).
   let inviteError: SignInOrg["inviteError"];
   if (input.inviteToken !== undefined) {
     const invite = await orgs.peekInvite(input.inviteToken);
@@ -110,11 +102,9 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
       inviteError = "INVITE_INVALID";
     } else {
       try {
-        return await orgs.acceptInvite({
-          token: input.inviteToken, developerId: input.developerId,
-          // Index the email only for the cloud method, which is what links its sign-in routes.
-          ...(cloud && verifiedEmail !== undefined ? { email: verifiedEmail } : {}),
-        });
+        const token = input.inviteToken;
+        // The email is indexed only for the cloud methods, whose sign-in routes it links.
+        return await indexing((email) => orgs.acceptInvite({ token, developerId: input.developerId, ...(email === undefined ? {} : { email }) }));
       } catch (error) {
         if (codeOf(error) === "INVITE_INVALID") inviteError = "INVITE_INVALID";
         else if (codeOf(error) === "ALREADY_IN_ORG") {
@@ -126,12 +116,12 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
     }
   }
 
-  // Rule 4: a cloud sign-in with nowhere to go starts an org of its own.
+  // Rule 3: a cloud sign-in with nowhere to go starts an org of its own.
   if (cloud) {
     try {
-      const orgId = await orgs.createOrgWithOwner({
-        name: `${input.displayName}'s team`, developerId: input.developerId, ...(verifiedEmail === undefined ? {} : { email: verifiedEmail }),
-      });
+      const orgId = await indexing((email) => orgs.createOrgWithOwner({
+        name: `${input.displayName}'s team`, developerId: input.developerId, ...(email === undefined ? {} : { email }),
+      }));
       return withInviteError({ orgId, role: "owner" }, inviteError);
     } catch (error) {
       if (codeOf(error) !== "ALREADY_IN_ORG") throw error;
@@ -142,7 +132,7 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
     }
   }
 
-  // Rule 5: a Slack or company sign-in joins the install's single org.
+  // Rule 4: a Slack or company sign-in joins the install's single org.
   if (deps.singleOrgId === undefined) throw agentXError("CONFIG_INVALID", "Sign in with Rovara on this install: Slack and company sign-ins do not create or join an organization here");
   // No email pointer here: the email index links one person's cloud identities, and a Slack or company
   // sign-in joins by identity alone.

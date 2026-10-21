@@ -2,18 +2,30 @@
 // The DeveloperSignIn table (spec 025 FR-005, FR-008). Codes and refresh tokens are stored only as
 // SHA-256 hashes. Every expiry is checked here; the table's TTL only cleans up afterwards.
 import { randomUUID } from "node:crypto";
-import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   DEVELOPER_AUTH_REQUEST_SECONDS,
   DEVELOPER_CODE_SECONDS,
   DEVELOPER_SESSION_SECONDS,
   type DeveloperSignInMethod,
+  type LinkedIdentity,
 } from "@agentx/contracts";
+import { ownerKeyForSubject } from "../aws/lambda.js";
 import { pkceChallengeMatches, randomToken, sha256Hex } from "./tokens.js";
 
 export interface AuthRequestRecord { id: string; clientRedirectUri: string; clientState: string; codeChallenge: string; nonce: string; method?: DeveloperSignInMethod; consumedAt?: string; expiresAt: number; browserReturnTo?: string; inviteToken?: string }
 export interface DeveloperRecord { developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string; displayName: string; email?: string; slackUserId?: string; firstSignInAt: string; lastSignInAt: string; revoked: boolean; sessionsEndedAt?: string }
-export interface SessionRecord { sessionId: string; developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; startedAt: string; endsAt: number; reviewExpiresAt?: number; lastRefreshAt?: string; revokedAt?: string; revokedReason?: string }
+/**
+ * One sign-in identity's link to a developer (Plan 2, Task 2). `identityKey` is `ownerKeyForSubject(issuer, subject)`. The forward item
+ * (`SIGNIN_IDENTITY#<identityKey>`) answers "which developer is this sign-in"; the reverse item (`DEVELOPER#<developerId>` /
+ * `IDENTITY#<identityKey>`) lists a developer's identities. Both carry these fields and are written in one transaction.
+ * `unlinkedFrom` and `unlinkedAt` are set when the person unlinked the identity from that developer.
+ */
+export interface IdentityLinkRecord {
+  developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string; email?: string; login?: string;
+  linkedAt: string; lastSignInAt: string; unlinkedFrom?: string; unlinkedAt?: string;
+}
+export interface SessionRecord { sessionId: string; developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; startedAt: string; endsAt: number; reviewExpiresAt?: number; lastRefreshAt?: string; revokedAt?: string; revokedReason?: string }
 
 /** A method's enabled-since cutoff from its environment variable, epoch seconds; "0", empty or unreadable means none. */
 export function methodSince(text: string | undefined): number | undefined {
@@ -47,7 +59,7 @@ export type RefreshLookup =
  * stale-lock race between two local processes does not sign the person out. */
 export const REFRESH_REUSE_GRACE_SECONDS = 60;
 
-interface CodeRecord { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; codeChallenge: string; redirectUri: string; expiresAt: number; usedAt?: string }
+interface CodeRecord { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; codeChallenge: string; redirectUri: string; expiresAt: number; usedAt?: string }
 interface RefreshRecord { sessionId: string; expiresAt: number; usedAt?: string; graceUsedAt?: string }
 interface CancellationReason { Code?: string }
 
@@ -57,6 +69,16 @@ export const META = "META";
 export function emailIndexKey(email: string): { pk: string; sk: "META" } {
   return { pk: `EMAIL#${sha256Hex(email.trim().toLowerCase())}`, sk: META };
 }
+export function signInIdentityKey(identityKey: string): { pk: string; sk: "META" } {
+  return { pk: `SIGNIN_IDENTITY#${identityKey}`, sk: META };
+}
+/** The reverse item: one row per identity linked to a developer, in the developer's own partition. */
+export function developerIdentityKey(developerId: string, identityKey: string): { pk: string; sk: string } {
+  return { pk: `DEVELOPER#${developerId}`, sk: `IDENTITY#${identityKey}` };
+}
+/** A link reads as no link once it was unlinked, unless the identity then re-linked to its own developer (its own key). */
+const isActiveLink = (link: Pick<IdentityLinkRecord, "developerId" | "unlinkedFrom">, identityKey: string): boolean =>
+  link.unlinkedFrom === undefined || link.developerId === identityKey;
 const conditionFailed = (error: unknown) =>
   error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException");
 
@@ -179,14 +201,130 @@ export class DeveloperSignInStore {
     return item === undefined ? undefined : strip(item);
   }
 
-  async issueCode(input: { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; codeChallenge: string; redirectUri: string }): Promise<string> {
+  /** The identity's link item as stored, whether or not it still counts as a link (see `isActiveLink`). */
+  async getIdentityLink(identityKey: string): Promise<IdentityLinkRecord | undefined> {
+    const item = await this.get<IdentityLinkRecord>(signInIdentityKey(identityKey).pk);
+    return item === undefined ? undefined : strip(item);
+  }
+
+  /**
+   * The developer this sign-in identity belongs to. An unlinked identity has none. With no link item at all it is its own developer
+   * when a `DEVELOPER#<identityKey>` record exists for the same issuer and subject, so a developer from before identity links is
+   * recognised before their next sign-in writes the link. Sign-in itself reads `getIdentityLink`, not this fallback.
+   */
+  async developerForIdentity(identityKey: string): Promise<string | undefined> {
+    const link = await this.getIdentityLink(identityKey);
+    if (link !== undefined) return isActiveLink(link, identityKey) ? link.developerId : undefined;
+    const record = await this.getDeveloper(identityKey);
+    return record !== undefined && ownerKeyForSubject(record.issuer, record.subject) === identityKey ? identityKey : undefined;
+  }
+
+  /**
+   * Links a sign-in identity to a developer, both items in one transaction. Whoever writes first wins: when another sign-in linked the
+   * identity to a different developer in the meantime, that developer is returned and nothing is written. `created` is true only when this
+   * call wrote a new link item (an identity unlinked earlier and now linked to its own developer again counts). Linking an unlinked
+   * identity to anyone but its own developer is refused: only the identity's own sign-in may start a new developer for it.
+   */
+  async linkIdentity(input: { identityKey: string; developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string; email?: string; login?: string }): Promise<{ developerId: string; created: boolean }> {
+    const { identityKey, developerId } = input;
+    const own = developerId === identityKey;
+    const current = await this.getIdentityLink(identityKey);
+    const settled = this.settledLink(current, identityKey, developerId, own);
+    if (settled !== undefined) return settled;
+    const at = this.iso();
+    const link: IdentityLinkRecord = {
+      developerId, provider: input.provider, issuer: input.issuer, subject: input.subject,
+      ...(input.email === undefined ? {} : { email: input.email }),
+      ...(input.login === undefined ? {} : { login: input.login }),
+      linkedAt: at, lastSignInAt: at,
+      // An unlinked item that the identity re-links to itself keeps its unlinkedFrom and unlinkedAt (they record why it left).
+      ...(current?.unlinkedFrom === undefined ? {} : { unlinkedFrom: current.unlinkedFrom }),
+      ...(current?.unlinkedAt === undefined ? {} : { unlinkedAt: current.unlinkedAt }),
+    };
+    const body = { entityType: "IDENTITY_LINK", ...link };
+    try {
+      await this.input.documentClient.send(new TransactWriteCommand({
+        TransactItems: [
+          { Put: {
+            TableName: this.input.tableName, Item: { ...signInIdentityKey(identityKey), ...body },
+            // Writes when nothing is linked, or (for the identity's own developer) over an item that was unlinked.
+            ConditionExpression: `attribute_not_exists(pk) OR (developerId = :d AND attribute_not_exists(unlinkedFrom))${own ? " OR attribute_exists(unlinkedFrom)" : ""}`,
+            ExpressionAttributeValues: { ":d": developerId },
+          } },
+          { Put: { TableName: this.input.tableName, Item: { ...developerIdentityKey(developerId, identityKey), ...body } } },
+        ],
+      }));
+    } catch (error) {
+      if (!conditionFailed(error)) throw error;
+      // Another sign-in linked this identity first: read what it wrote.
+      const winner = this.settledLink(await this.getIdentityLink(identityKey), identityKey, developerId, own);
+      if (winner === undefined) throw error;
+      return winner;
+    }
+    return { developerId, created: true };
+  }
+
+  /** What an existing link item settles for a `linkIdentity(developerId)` call: an answer, or undefined when the item can be (over)written. */
+  private settledLink(current: IdentityLinkRecord | undefined, identityKey: string, developerId: string, own: boolean): { developerId: string; created: false } | undefined {
+    if (current === undefined) return undefined;
+    if (isActiveLink(current, identityKey)) return { developerId: current.developerId, created: false };
+    if (own) return undefined;
+    throw new Error("this sign-in identity was unlinked and can only start its own developer");
+  }
+
+  /** The identities linked to a developer, oldest link first. Issuer and subject never leave the store. */
+  async identitiesOf(developerId: string): Promise<LinkedIdentity[]> {
+    const links: Array<IdentityLinkRecord & { sk: string }> = [];
+    let start: Record<string, unknown> | undefined;
+    do {
+      const response = await this.input.documentClient.send(new QueryCommand({
+        TableName: this.input.tableName,
+        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues: { ":pk": `DEVELOPER#${developerId}`, ":prefix": "IDENTITY#" },
+        ConsistentRead: true,
+        ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+      })) as { Items?: Array<IdentityLinkRecord & { sk: string }>; LastEvaluatedKey?: Record<string, unknown> };
+      links.push(...(response.Items ?? []));
+      start = response.LastEvaluatedKey;
+    } while (start !== undefined);
+    return links
+      .filter((link) => link.developerId === developerId && isActiveLink(link, link.sk.slice("IDENTITY#".length)))
+      .sort((left, right) => left.linkedAt.localeCompare(right.linkedAt) || left.sk.localeCompare(right.sk))
+      .map((link) => ({
+        provider: link.provider,
+        ...(link.email === undefined ? {} : { email: link.email }),
+        ...(link.login === undefined ? {} : { login: link.login }),
+        linkedAt: link.linkedAt, lastSignInAt: link.lastSignInAt,
+      }));
+  }
+
+  /** Records a sign-in on the identity's link, on both items. Nothing happens for an identity with no active link. */
+  async touchIdentity(identityKey: string): Promise<void> {
+    const link = await this.getIdentityLink(identityKey);
+    if (link === undefined || !isActiveLink(link, identityKey)) return;
+    const at = this.iso();
+    const update = (key: { pk: string; sk: string }) => ({ Update: {
+      TableName: this.input.tableName, Key: key, UpdateExpression: "SET lastSignInAt = :at",
+      ConditionExpression: "attribute_exists(pk) AND developerId = :d", ExpressionAttributeValues: { ":at": at, ":d": link.developerId },
+    } });
+    try {
+      await this.input.documentClient.send(new TransactWriteCommand({
+        TransactItems: [update(signInIdentityKey(identityKey)), update(developerIdentityKey(link.developerId, identityKey))],
+      }));
+    } catch (error) {
+      // Unlinked, or relinked elsewhere, between the read and the write: the time of that sign-in is not worth a failed sign-in.
+      if (!conditionFailed(error)) throw error;
+    }
+  }
+
+  async issueCode(input: { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; codeChallenge: string; redirectUri: string }): Promise<string> {
     const code = randomToken("agxc_");
     const record: CodeRecord = { ...input, expiresAt: this.seconds() + DEVELOPER_CODE_SECONDS };
     await this.put({ pk: `CODE#${sha256Hex(code)}`, sk: META, entityType: "AUTH_CODE", ...record }, "attribute_not_exists(pk)");
     return code;
   }
 
-  async redeemCode(input: { code: string; verifier: string; redirectUri: string }): Promise<{ developerId: string; amr: DeveloperSignInMethod; slackUserId?: string } | undefined> {
+  async redeemCode(input: { code: string; verifier: string; redirectUri: string }): Promise<{ developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string } | undefined> {
     const pk = `CODE#${sha256Hex(input.code)}`;
     try {
       // Burned first, whatever the verifier: a code is tried once.
@@ -203,11 +341,11 @@ export class DeveloperSignInStore {
     }
     const record = await this.get<CodeRecord>(pk);
     if (record === undefined || record.redirectUri !== input.redirectUri || !pkceChallengeMatches(input.verifier, record.codeChallenge)) return undefined;
-    return { developerId: record.developerId, amr: record.amr, ...(record.slackUserId === undefined ? {} : { slackUserId: record.slackUserId }) };
+    return { developerId: record.developerId, amr: record.amr, ...(record.slackUserId === undefined ? {} : { slackUserId: record.slackUserId }), ...(record.identityKey === undefined ? {} : { identityKey: record.identityKey }) };
   }
 
   /** `endsAt` (epoch seconds) is for a browser review sign-in, which has its own fixed length; every other session lasts DEVELOPER_SESSION_SECONDS. The stored record's clean-up time follows `endsAt`. */
-  async createSession(input: { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; reviewExpiresAt?: number; endsAt?: number }): Promise<{ session: SessionRecord; refreshToken: string }> {
+  async createSession(input: { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; reviewExpiresAt?: number; endsAt?: number }): Promise<{ session: SessionRecord; refreshToken: string }> {
     const session: SessionRecord = { endsAt: this.seconds() + DEVELOPER_SESSION_SECONDS, ...input, sessionId: randomUUID(), startedAt: this.iso() };
     const refreshToken = randomToken("agxr_");
     await this.input.documentClient.send(new TransactWriteCommand({
