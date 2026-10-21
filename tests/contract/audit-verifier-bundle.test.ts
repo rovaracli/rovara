@@ -1,9 +1,11 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { statementHash, type AuditBundleV1 } from "../../packages/audit-verifier/src/bundle.js";
+import { merkleRoot } from "../../packages/audit-verifier/src/merkle.js";
+import { sealHash, sealLeafData } from "../../packages/audit-verifier/src/record.js";
 import { runCli } from "../../packages/audit-verifier/src/cli.js";
 import { verifyExtends } from "../../packages/audit-verifier/src/extends.js";
 import { AUDIT_LIMITS_COPY } from "../../packages/audit-verifier/src/limits-copy.js";
@@ -35,6 +37,7 @@ describe("verifyBundle: a good export", () => {
       "batchRoot",
       "headHash",
       "prevSealHash",
+      "epochs",
       "inclusion",
       "timestamps",
       "coverage",
@@ -143,11 +146,11 @@ describe("verifyBundle: each tamper fails its named check", () => {
     expect(report.epochsWithoutTimestamp).toEqual([epochIdOf(2)]);
   });
 
-  it("a changed sealCount fails only the timestamps (the token signed the statement)", () => {
+  it("a changed sealCount fails the timestamps (the token signed the statement) and the proof size", () => {
     const report = run((b) => {
       (b.seals[0] as AuditBundleV1["seals"][number]).epoch.sealCount += 1;
     });
-    expect(failed(report)).toEqual(["timestamps"]);
+    expect(failed(report)).toEqual(["inclusion", "timestamps"]);
     expect(report.epochsWithoutTimestamp).toEqual([epochIdOf(1)]);
   });
 
@@ -189,6 +192,70 @@ describe("verifyBundle: each tamper fails its named check", () => {
     });
     expect(report.ok).toBe(false);
     expect(failed(report)).toEqual(expect.arrayContaining(["sealRanges", "prevSealHash"]));
+  });
+});
+
+describe("verifyBundle: statements, not epoch ids, carry the time", () => {
+  // Rewrite record 25, re-chain, and re-seal 21-35 under a stamped epoch's id with a fresh one-leaf
+  // statement and no token. Keyed by epoch id alone, the forged statement inherited epoch 2's time.
+  const forge = () => {
+    const fixture = buildAuditFixture();
+    const bundle = cloneBundle(fixture.bundle);
+    rechainFrom(bundle, 25, (record) => void (record.facts.forged = "yes"));
+    const second = bundle.seals[1] as AuditBundleV1["seals"][number];
+    const third = bundle.seals[2] as AuditBundleV1["seals"][number];
+    const range = [...bundle.records, ...bundle.unsealed].filter((r) => r.seq >= 21 && r.seq <= 35);
+    const seal = {
+      ...third.seal,
+      epochId: second.epoch.epochId,
+      batchRoot: merkleRoot(range.map((r) => Uint8Array.from(Buffer.from(r.hash, "hex")))),
+      headHash: (range[range.length - 1] as { hash: string }).hash,
+      prevSealHash: sealHash(second.seal),
+    };
+    third.seal = seal;
+    third.epoch = { ...second.epoch, sealsRoot: merkleRoot([sealLeafData(seal)]), sealCount: 1 };
+    third.inclusion = { index: 0, size: 1, path: [] };
+    third.timestamps = [];
+    delete third.coveredBy;
+    return { fixture, bundle };
+  };
+
+  it("does not let a forged statement reuse a stamped epoch's id and time", () => {
+    const { fixture, bundle } = forge();
+    const report = verifyBundle(bundle, { anchors: fixture.anchors });
+    expect(report.ok).toBe(false);
+    expect(failed(report)).toEqual(["epochs"]);
+    expect(report.epochsWithoutTimestamp).toEqual([epochIdOf(2)]);
+  });
+
+  it("fails when epoch ids go backwards across seals", () => {
+    const fixture = buildAuditFixture();
+    const bundle = cloneBundle(fixture.bundle);
+    (bundle.seals[2] as AuditBundleV1["seals"][number]).epoch.epochId = epochIdOf(1);
+    expect(failed(verifyBundle(bundle, { anchors: fixture.anchors }))).toContain("epochs");
+  });
+
+  it("fails when closedAt goes backwards across seals", () => {
+    const fixture = buildAuditFixture();
+    const bundle = cloneBundle(fixture.bundle);
+    (bundle.seals[2] as AuditBundleV1["seals"][number]).epoch.closedAt = closedAtOf(1).toISOString();
+    expect(failed(verifyBundle(bundle, { anchors: fixture.anchors }))).toContain("epochs");
+  });
+
+  it("fails when the proof is for a tree of another size or position than the epoch's seal count", () => {
+    const fixture = buildAuditFixture();
+    const bundle = cloneBundle(fixture.bundle);
+    (bundle.seals[0] as AuditBundleV1["seals"][number]).inclusion.size = 3;
+    expect(failed(verifyBundle(bundle, { anchors: fixture.anchors }))).toContain("inclusion");
+    const outside = cloneBundle(fixture.bundle);
+    (outside.seals[0] as AuditBundleV1["seals"][number]).inclusion.index = 2;
+    expect(failed(verifyBundle(outside, { anchors: fixture.anchors }))).toContain("inclusion");
+  });
+
+  it("reports the authorities whose tokens it could not check", () => {
+    const fixture = buildAuditFixture();
+    expect(verifyBundle(fixture.bundle, { anchors: {} }).unverifiedAuthorities).toEqual([TSA_LABEL]);
+    expect(verifyBundle(fixture.bundle, { anchors: fixture.anchors }).unverifiedAuthorities).toEqual([]);
   });
 });
 
@@ -444,6 +511,68 @@ describe("rovara-audit-verify", () => {
     expect(result.out).toContain(`openssl ts -verify -digest ${statementHash(fixture.statements[0] as never)} -in ${epochIdOf(1)}.${TSA_LABEL}.tst -token_in -CAfile ${TSA_LABEL}-root.pem`);
     expect(result.out.match(/openssl ts -verify/g)).toHaveLength(3);
     expect(result.out.endsWith(`${AUDIT_LIMITS_COPY}\n`)).toBe(true);
+  });
+
+  it("--extends fails when the forged-id re-seal is checked: the verifier does not print an independent time", () => {
+    const forged = cloneBundle(fixture.bundle);
+    (forged.seals[2] as AuditBundleV1["seals"][number]).epoch.epochId = epochIdOf(2);
+    const result = cli(write("forgedid.json", forged), ...trust);
+    expect(result.code).toBe(1);
+    expect(result.out).not.toContain("Independent time:");
+  });
+
+  it("says how to check tokens from an authority it has no root for", () => {
+    const customer = cloneBundle(fixture.bundle);
+    for (const entry of customer.seals) for (const stamp of entry.timestamps) stamp.tsa = "acme";
+    const result = cli(write("customer.json", customer));
+    expect(result.code).toBe(0);
+    expect(result.out).toContain("Tokens from acme were not checked: pass --trust acme=<pem file>");
+    expect(result.out).toContain("No independent timestamp for:");
+  });
+
+  it("does not say records are sealed when none are", () => {
+    const none = buildAuditFixture({ recordsA: 5, sealsA: [] });
+    const result = cli(write("none.json", none.bundle), ...trust);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain("No records in this export are sealed yet.");
+    expect(result.out).toContain("5 newer records are not sealed yet.");
+    expect(result.out).not.toContain("Sealed and checked through record 0");
+  });
+
+  it("strips bidirectional and other format characters from bundle text", () => {
+    const bad = cloneBundle(fixture.bundle);
+    bad.details = [{ seq: 7, subject: "a\u202eb\u200fc\u2066d", salt: "00112233445566778899aabbccddeeff", fields: {} }];
+    const result = cli(write("bidi.json", bad), ...trust);
+    expect(result.out).toContain("a?b?c?d");
+    expect(result.out).not.toMatch(/[\u202a-\u202e\u200e\u200f\u2066-\u2069]/);
+  });
+
+  it("refuses a file or a gzip expansion larger than the cap, with exit 2", () => {
+    const plain = write("big.json", fixture.bundle);
+    const zipped = write("big.json.gz", fixture.bundle, true);
+    const cap = statSync(zipped).size + 100;
+    expect(statSync(plain).size).toBeGreaterThan(cap);
+    const run = (path: string) => {
+      let err = "";
+      const code = runCli([path, ...trust], { stdout: () => undefined, stderr: (t) => (err += t) }, { maxJsonBytes: cap });
+      return { code, err };
+    };
+    expect(run(plain)).toMatchObject({ code: 2 });
+    expect(run(plain).err).toContain("larger than");
+    expect(run(zipped)).toMatchObject({ code: 2 });
+    expect(run(zipped).err).toContain("gzip");
+  });
+
+  it("maps an unexpected failure to exit 2 with a message", () => {
+    let err = "";
+    const code = runCli([write("good.json", fixture.bundle), ...trust], {
+      stdout: () => {
+        throw new Error("disk full");
+      },
+      stderr: (t) => (err += t),
+    });
+    expect(code).toBe(2);
+    expect(err).toContain("unexpected error: disk full");
   });
 
   it("strips control characters from text taken from a bundle", () => {

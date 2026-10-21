@@ -18,7 +18,8 @@ Exit codes: 0 every check passed, 1 a check failed, 2 usage or parse error.
 | `batchRoot` | The records in each seal's range give the Merkle root (RFC 9162) the seal recorded. |
 | `headHash` | The last record in each seal's range is the head the seal recorded. |
 | `prevSealHash` | Each seal links to the one before it (the first to `previousSeal`, or to the organization's genesis). |
-| `inclusion` | Each seal is a leaf of its epoch's seals root, by an RFC 9162 inclusion proof. |
+| `epochs` | Each epoch id has one statement, and epoch ids and `closedAt` never go backwards across the seals. A timestamp belongs to a statement's hash, never to an epoch id alone. |
+| `inclusion` | Each seal is a leaf of its epoch's seals root, by an RFC 9162 inclusion proof for a tree of the epoch's `sealCount` seals. |
 | `timestamps` | Each RFC 3161 token signs the hash of its epoch statement, chains to the pinned roots for its own authority label, and carries a time no more than 5 minutes before the last record the seal covers. |
 | `coverage` | An epoch with no token of its own is covered when a later epoch's statements chain to it, one by one through `prevStatementHash`, up to an epoch with a valid token. |
 | `details` | Any erasable details included in the export match the commitments in their records. |

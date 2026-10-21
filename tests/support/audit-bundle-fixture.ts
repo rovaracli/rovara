@@ -227,7 +227,7 @@ export function buildAuditFixture(options: FixtureOptions = {}): AuditFixture {
 
   const epochNumberOf = (epochId: string): number => statements.findIndex((s) => s.epochId === epochId) + 1;
   const exportFrom = options.exportFrom ?? 1;
-  const firstIndex = a.seals.findIndex((seal) => seal.fromSeq === exportFrom);
+  const firstIndex = exportFrom === 1 ? 0 : a.seals.findIndex((seal) => seal.fromSeq === exportFrom);
   if (firstIndex < 0) throw new Error(`exportFrom ${exportFrom} is not the start of a seal`);
 
   const seals: BundleSeal[] = a.seals.slice(firstIndex).map((seal) => {
@@ -259,8 +259,8 @@ export function buildAuditFixture(options: FixtureOptions = {}): AuditFixture {
   const previousRecord = a.records[startIndex - 1];
   const previousSeal = firstIndex === 0 ? null : (a.seals[firstIndex - 1] as OrgSealV1);
   const details: BundleDetail[] = [];
-  if (exportFrom <= DETAIL_SEQ) details.push({ seq: DETAIL_SEQ, subject: DETAIL_SUBJECT, salt: DETAIL_SALT, fields: { ...DETAIL_FIELDS } });
-  if (exportFrom <= ERASED_SEQ) details.push({ seq: ERASED_SEQ, subject: "person:bob", erased: true });
+  if (exportFrom <= DETAIL_SEQ && DETAIL_SEQ <= a.records.length) details.push({ seq: DETAIL_SEQ, subject: DETAIL_SUBJECT, salt: DETAIL_SALT, fields: { ...DETAIL_FIELDS } });
+  if (exportFrom <= ERASED_SEQ && ERASED_SEQ <= a.records.length) details.push({ seq: ERASED_SEQ, subject: "person:bob", erased: true });
 
   const bundle: AuditBundleV1 = {
     format: "rovara-audit-bundle",

@@ -6,7 +6,7 @@
  * The limits text printed is this program's own (AUDIT_LIMITS_COPY), never anything from the bundle.
  */
 import { X509Certificate } from "node:crypto";
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { parseBundle, statementHash, BundleParseError, type AuditBundleV1, type EpochStatementV1 } from "./bundle.js";
@@ -20,7 +20,11 @@ export type CliIo = { stdout: (text: string) => void; stderr: (text: string) => 
 
 const USAGE =
   "usage: rovara-audit-verify <bundle[.gz]> [--extends <older[.gz]>] [--trust <label>=<pem file> ...] [--json] [--print-openssl]";
-const MAX_JSON_BYTES = 1024 * 1024 * 1024;
+// Mirrors AUDIT_EXPORT_MAX_RECORDS (an export holds at most this many records). This package does not
+// import Rovara code, so the number is repeated here: 200,000 records at up to 2 KiB each, plus room
+// for seals, epochs, timestamps and details.
+const EXPORT_MAX_RECORDS = 200_000;
+const DEFAULT_MAX_JSON_BYTES = EXPORT_MAX_RECORDS * 2048 + 16 * 1024 * 1024;
 const LABEL = /^[A-Za-z0-9_.-]{1,64}$/;
 
 class UsageError extends Error {}
@@ -61,16 +65,20 @@ function parseArgs(argv: readonly string[]): Args {
   return { bundle, ...(extendsPath === undefined ? {} : { extendsPath }), trust, json, openssl };
 }
 
-function readBundle(path: string): AuditBundleV1 {
+function readBundle(path: string, maxBytes: number): AuditBundleV1 {
   let bytes: Buffer;
   try {
+    // The size is checked before the file is read, for plain and gzip files alike.
+    const size = statSync(path).size;
+    if (size > maxBytes) throw new UsageError(`${path} is larger than ${maxBytes} bytes, more than an export can be`);
     bytes = readFileSync(path);
   } catch (error) {
+    if (error instanceof UsageError) throw error;
     throw new UsageError(`cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
     try {
-      bytes = gunzipSync(bytes, { maxOutputLength: MAX_JSON_BYTES });
+      bytes = gunzipSync(bytes, { maxOutputLength: maxBytes });
     } catch (error) {
       throw new UsageError(`${path} is not a readable gzip file: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -113,15 +121,12 @@ function loadAnchors(trust: Args["trust"]): Record<string, X509Certificate[]> {
   return Object.fromEntries(merged);
 }
 
-/** Drops control characters so text from a bundle cannot move the cursor or recolor the terminal. */
+/**
+ * Replaces control, format (including bidirectional overrides), line and paragraph separator
+ * characters, so text from a bundle cannot move the cursor, recolor the terminal or reorder a line.
+ */
 function clean(text: string): string {
-  let result = "";
-  for (const char of text) {
-    const code = char.codePointAt(0) as number;
-    const control = code < 0x20 || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029;
-    result += control ? "?" : char;
-  }
-  return result;
+  return text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "?");
 }
 
 function statementJson(statement: EpochStatementV1): string {
@@ -175,7 +180,16 @@ function checkLine(entry: BundleCheck): string {
   return `${entry.ok ? "ok  " : "FAIL"} ${entry.name}: ${clean(entry.detail)}`;
 }
 
-export function runCli(argv: readonly string[], io: CliIo): number {
+export function runCli(argv: readonly string[], io: CliIo, options: { maxJsonBytes?: number } = {}): number {
+  try {
+    return run(argv, io, options.maxJsonBytes ?? DEFAULT_MAX_JSON_BYTES);
+  } catch (error) {
+    io.stderr(`unexpected error: ${clean(error instanceof Error ? error.message : String(error))}\n${USAGE}\n`);
+    return 2;
+  }
+}
+
+function run(argv: readonly string[], io: CliIo, maxBytes: number): number {
   let args: Args;
   let bundle: AuditBundleV1;
   let older: AuditBundleV1 | undefined;
@@ -183,8 +197,8 @@ export function runCli(argv: readonly string[], io: CliIo): number {
   try {
     args = parseArgs(argv);
     anchors = loadAnchors(args.trust);
-    bundle = readBundle(args.bundle);
-    if (args.extendsPath !== undefined) older = readBundle(args.extendsPath);
+    bundle = readBundle(args.bundle, maxBytes);
+    if (args.extendsPath !== undefined) older = readBundle(args.extendsPath, maxBytes);
   } catch (error) {
     if (error instanceof UsageError) {
       io.stderr(`${error.message}\n${USAGE}\n`);
@@ -216,7 +230,7 @@ export function runCli(argv: readonly string[], io: CliIo): number {
 
   const out: string[] = checks.map(checkLine);
   if (ok) {
-    out.push("", `Sealed and checked through record ${report.sealedThroughSeq}.`);
+    out.push("", report.sealedThroughSeq === 0 ? "No records in this export are sealed yet." : `Sealed and checked through record ${report.sealedThroughSeq}.`);
     out.push(`${report.unsealedCount} newer records are not sealed yet.`);
     if (report.epochsWithoutTimestamp.length > 0) {
       out.push(`No independent timestamp for: ${report.epochsWithoutTimestamp.join(", ")}.`);
@@ -229,6 +243,9 @@ export function runCli(argv: readonly string[], io: CliIo): number {
     }
   } else {
     out.push("", `This export did not pass: ${checks.filter((c) => !c.ok).map((c) => c.name).join(", ")}.`);
+  }
+  for (const label of report.unverifiedAuthorities) {
+    out.push(`Tokens from ${label} were not checked: pass --trust ${label}=<pem file> with that authority's root certificate.`);
   }
   if (args.openssl) out.push(...opensslLines(bundle));
   out.push("", AUDIT_LIMITS_COPY);

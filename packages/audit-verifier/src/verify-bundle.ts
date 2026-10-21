@@ -24,6 +24,8 @@ export type BundleReport = {
   coveredEpochs: string[];
   /** Epochs with neither: reported, not a failure. */
   epochsWithoutTimestamp: string[];
+  /** Authority labels with tokens in the export that were not checked, because no trusted root was given for them. */
+  unverifiedAuthorities: string[];
   lockModes: LockMode[];
 };
 
@@ -63,7 +65,7 @@ function decodeBase64(text: string): Uint8Array | undefined {
   return Uint8Array.from(Buffer.from(text, "base64"));
 }
 
-type TokenOutcome = { valid: string[]; problems: string[]; unverifiable: string[] };
+type TokenOutcome = { valid: string[]; problems: string[]; unverifiable: string[] /* authority labels */ };
 
 /**
  * Verifies every token against `hashHex` and its own label's anchors. A token whose label has
@@ -80,7 +82,7 @@ function checkTokens(
   for (const entry of tokens) {
     const roots = Object.hasOwn(anchors, entry.tsa) ? (anchors[entry.tsa] ?? []) : [];
     if (roots.length === 0) {
-      outcomeOf.unverifiable.push(`${context} ${entry.tsa}: no trusted root for this authority`);
+      outcomeOf.unverifiable.push(entry.tsa);
       continue;
     }
     const bytes = decodeBase64(entry.token);
@@ -245,11 +247,38 @@ export function verifyBundle(bundle: AuditBundleV1, options: VerifyBundleOptions
   );
 
   checks.push(
+    check("epochs", () => {
+      const problems: string[] = [];
+      const byId = new Map<string, string>(); // epoch id -> statement hash
+      let before: BundleSeal | undefined;
+      for (const entry of bundle.seals) {
+        const hash = statementHash(entry.epoch);
+        const known = byId.get(entry.epoch.epochId);
+        if (known !== undefined && known !== hash) {
+          problems.push(`${label(entry)}: epoch ${entry.epoch.epochId} appears with two different statements`);
+        }
+        byId.set(entry.epoch.epochId, known ?? hash);
+        if (before !== undefined) {
+          if (entry.epoch.epochId < before.epoch.epochId || Date.parse(entry.epoch.closedAt) < Date.parse(before.epoch.closedAt)) {
+            problems.push(`${label(entry)}: epoch ${entry.epoch.epochId} is earlier than epoch ${before.epoch.epochId} of the seal before`);
+          }
+        }
+        before = entry;
+      }
+      return outcome(problems, `${byId.size} distinct epochs, each with one statement, in order`);
+    }),
+  );
+
+  checks.push(
     check("inclusion", () => {
       const problems: string[] = [];
       for (const entry of bundle.seals) {
         if (entry.epoch.epochId !== entry.seal.epochId) {
           problems.push(`${label(entry)} names epoch ${entry.seal.epochId} but is shown in ${entry.epoch.epochId}`);
+          continue;
+        }
+        if (entry.inclusion.size !== entry.epoch.sealCount || entry.inclusion.index >= entry.epoch.sealCount) {
+          problems.push(`${label(entry)}: the proof is for a tree of ${entry.inclusion.size}, not the epoch's ${entry.epoch.sealCount} seals`);
           continue;
         }
         const ok = verifyInclusion({
@@ -266,25 +295,28 @@ export function verifyBundle(bundle: AuditBundleV1, options: VerifyBundleOptions
   );
 
   // Timestamps and coverage, per seal entry.
-  const stamped = new Map<string, string>(); // epochId -> earliest own valid genTime
-  const covered = new Map<string, string>(); // epochId -> earliest covering genTime
-  const seen: string[] = []; // epoch ids in bundle order
+  // Status is keyed by the statement's hash, never its epoch id: a statement that merely reuses a
+  // stamped epoch's id gets none of that epoch's time.
+  const stamped = new Map<string, string>(); // statement hash -> earliest own valid genTime
+  const covered = new Map<string, string>(); // statement hash -> earliest covering genTime
+  const seen: Array<{ hash: string; epochId: string }> = []; // distinct statements in bundle order
   const timestampProblems: string[] = [];
   const coverageProblems: string[] = [];
   const unverifiable: string[] = [];
   const notes = { timestampsChecked: 0, covers: 0 };
   for (const entry of bundle.seals) {
     const epochId = entry.epoch.epochId;
-    if (!seen.includes(epochId)) seen.push(epochId);
+    const key = statementHash(entry.epoch);
+    if (!seen.some((item) => item.hash === key)) seen.push({ hash: key, epochId });
     const lastRecordedAt = bySeq.get(entry.seal.toSeq)?.recordedAt;
     try {
-      const own = checkTokens(entry.timestamps, statementHash(entry.epoch), options.anchors, lastRecordedAt, `epoch ${epochId}`);
+      const own = checkTokens(entry.timestamps, key, options.anchors, lastRecordedAt, `epoch ${epochId}`);
       notes.timestampsChecked += entry.timestamps.length;
       timestampProblems.push(...own.problems);
       unverifiable.push(...own.unverifiable);
       const bound = earliest(own.valid);
-      if (bound !== undefined && (!stamped.has(epochId) || Date.parse(bound) < Date.parse(stamped.get(epochId) as string))) {
-        stamped.set(epochId, bound);
+      if (bound !== undefined && (!stamped.has(key) || Date.parse(bound) < Date.parse(stamped.get(key) as string))) {
+        stamped.set(key, bound);
       }
     } catch (error) {
       timestampProblems.push(`epoch ${epochId}: ${error instanceof Error ? error.message : String(error)}`);
@@ -312,7 +344,7 @@ export function verifyBundle(bundle: AuditBundleV1, options: VerifyBundleOptions
           unverifiable.push(...result.unverifiable);
           const bound = earliest(result.valid);
           if (bound !== undefined && coverageProblems.length === brokenBefore) {
-            if (!covered.has(epochId) || Date.parse(bound) < Date.parse(covered.get(epochId) as string)) covered.set(epochId, bound);
+            if (!covered.has(key) || Date.parse(bound) < Date.parse(covered.get(key) as string)) covered.set(key, bound);
           }
         }
       } catch (error) {
@@ -328,7 +360,7 @@ export function verifyBundle(bundle: AuditBundleV1, options: VerifyBundleOptions
   );
   checks.push(
     check("coverage", () =>
-      outcome(coverageProblems, `${notes.covers} covering chains checked; ${[...covered.keys()].filter((id) => !stamped.has(id)).length} epochs are covered by a later epoch`),
+      outcome(coverageProblems, `${notes.covers} covering chains checked; ${[...covered.keys()].filter((hash) => !stamped.has(hash)).length} epochs are covered by a later epoch`),
     ),
   );
 
@@ -355,11 +387,13 @@ export function verifyBundle(bundle: AuditBundleV1, options: VerifyBundleOptions
     }),
   );
 
-  const coveredEpochs = seen.filter((id) => !stamped.has(id) && covered.has(id));
-  const epochsWithoutTimestamp = seen.filter((id) => !stamped.has(id) && !covered.has(id));
-  const bounds = seen.flatMap((id) => {
-    const own = stamped.get(id);
-    return own !== undefined ? [own] : covered.has(id) ? [covered.get(id) as string] : [];
+  const coveredEpochs = seen.filter((item) => !stamped.has(item.hash) && covered.has(item.hash)).map((item) => item.epochId);
+  const epochsWithoutTimestamp = seen
+    .filter((item) => !stamped.has(item.hash) && !covered.has(item.hash))
+    .map((item) => item.epochId);
+  const bounds = seen.flatMap((item) => {
+    const own = stamped.get(item.hash);
+    return own !== undefined ? [own] : covered.has(item.hash) ? [covered.get(item.hash) as string] : [];
   });
   const timestampedThrough = latest(bounds);
 
@@ -383,6 +417,7 @@ export function verifyBundle(bundle: AuditBundleV1, options: VerifyBundleOptions
     ...(timestampedThrough === undefined ? {} : { timestampedThrough }),
     coveredEpochs,
     epochsWithoutTimestamp,
+    unverifiedAuthorities: [...new Set(unverifiable)],
     lockModes,
   };
 }
