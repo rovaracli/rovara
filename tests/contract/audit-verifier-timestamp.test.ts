@@ -711,3 +711,127 @@ describe("pinned roots and the real tokens", () => {
     expect(problemOf(verifyTimeStampToken(flipped, base))).toBe("signature");
   });
 });
+
+// ---- fix round 1: bounded path search, nesting depth, PSS salt length, hash input ----
+
+describe("the DER reader: nesting depth", () => {
+  function nested(levels: number): Uint8Array {
+    let bytes: Uint8Array = Uint8Array.of(0x05, 0x00);
+    for (let i = 0; i < levels; i += 1) {
+      const length = bytes.length;
+      const header = length < 0x80 ? [0x30, length] : length < 0x100 ? [0x30, 0x81, length] : [0x30, 0x82, length >> 8, length & 0xff];
+      bytes = Uint8Array.from([...header, ...bytes]);
+    }
+    return bytes;
+  }
+
+  /** Descends through the first child until the innermost NULL; counts how many levels it managed. */
+  function descend(bytes: Uint8Array): number {
+    let node: DerNode = parseDer(bytes);
+    let levels = 0;
+    while ((node.tag & 0x20) !== 0) {
+      node = children(node)[0] as DerNode;
+      levels += 1;
+    }
+    return levels;
+  }
+
+  it("reads reasonable nesting", () => {
+    expect(descend(nested(30))).toBe(30);
+  });
+
+  it("rejects absurdly deep nesting with a DerError", () => {
+    expect(() => descend(nested(200))).toThrow(DerError);
+  });
+});
+
+describe("verifyTimeStampToken: RSA-PSS salt length", () => {
+  const rsa = makePki("PssSalt", { signerKeyKind: "rsa" });
+  const pss = (pssSalt: { declared: number; signed: number }, hash: "sha256" | "sha512" = "sha256") =>
+    problemOf(verify(standardToken(rsa, { signatureScheme: "rsa-pss", hash, pssSalt }), [rsa.root]));
+
+  it("accepts 0 and the hash length (inclusive)", () => {
+    expect(pss({ declared: 0, signed: 0 })).toBe("ok");
+    expect(pss({ declared: 32, signed: 32 })).toBe("ok");
+    expect(pss({ declared: 64, signed: 64 }, "sha512")).toBe("ok");
+  });
+
+  it("refuses a salt longer than the hash, even when the signature really used it", () => {
+    expect(pss({ declared: 33, signed: 33 })).toBe("signature");
+    expect(pss({ declared: 65, signed: 32 }, "sha512")).toBe("signature");
+  });
+
+  it("refuses a negative salt length (Node would read -2 as auto-detect)", () => {
+    expect(pss({ declared: -2, signed: 32 })).toBe("signature");
+    expect(pss({ declared: -1, signed: 32 })).toBe("signature");
+  });
+});
+
+describe("verifyTimeStampToken: the hash input", () => {
+  const pki = makePki("HashInput");
+
+  it("accepts the lowercase hex of the expected length", () => {
+    expect(problemOf(verify(standardToken(pki), [pki.root]))).toBe("ok");
+  });
+
+  it("an uppercase, short, long or non-hex hash is `imprint`, never a throw", () => {
+    const token = standardToken(pki);
+    for (const hashHex of [HASH_HEX.toUpperCase(), HASH_HEX.slice(2), `${HASH_HEX}00`, `${"g".repeat(64)}`, ""]) {
+      expect(problemOf(verify(token, [pki.root], { hashHex }))).toBe("imprint");
+    }
+  });
+});
+
+describe("verifyTimeStampToken: the certificate path search is bounded", () => {
+  const pki = makePki("Bounded");
+
+  it("a pool of self-signed certificates sharing one name and key returns quickly with a failing verdict", () => {
+    const keys = newKey("ec");
+    const clones = Array.from({ length: 20 }, (_, i) =>
+      issueCertificate({
+        commonName: "Clone CA",
+        keys,
+        serial: 5000n + BigInt(i),
+        basicConstraints: { ca: true },
+        keyUsage: ["keyCertSign"],
+      }),
+    );
+    const signer = makeSigner(clones[0] as Authority, "Clone Leaf");
+    const token = buildToken({ signer, hashHex: HASH_HEX, nonce: NONCE, certificates: [signer, ...clones] });
+    const started = Date.now();
+    const verdict = verify(token, [pki.root]);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(verdict.ok).toBe(false);
+    expect(["untrusted", "chain"]).toContain(problemOf(verdict));
+  }, 30_000);
+
+  it("duplicates of certificates in the pool still verify, and cannot crowd out the acceptable path", () => {
+    // Two CA certificates with one name and key: a non-CA one first (repeated many times), the real one last.
+    const keys = newKey("ec");
+    const bad = issueCertificate({
+      commonName: "Twin CA",
+      issuer: pki.root,
+      keys,
+      basicConstraints: { ca: false },
+      keyUsage: ["digitalSignature"],
+    });
+    const good = issueCertificate({
+      commonName: "Twin CA",
+      issuer: pki.root,
+      keys,
+      basicConstraints: { ca: true },
+      keyUsage: ["keyCertSign"],
+    });
+    const signer = makeSigner(good, "Twin Leaf");
+    const crowded = buildToken({
+      signer,
+      hashHex: HASH_HEX,
+      nonce: NONCE,
+      certificates: [signer, ...Array.from({ length: 40 }, () => bad), good, good, good],
+    });
+    expect(problemOf(verify(crowded, [pki.root]))).toBe("ok");
+    // Plain duplicates of a valid chain.
+    const standard = standardToken(pki, { certificates: [pki.signer, pki.ca, pki.ca, pki.signer, pki.ca] });
+    expect(problemOf(verify(standard, [pki.root]))).toBe("ok");
+  });
+});

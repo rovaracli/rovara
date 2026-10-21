@@ -193,6 +193,8 @@ export interface CertSpec {
   signatureHash?: HashName;
   /** Omit the subject key identifier extension. */
   noSubjectKeyIdentifier?: boolean;
+  /** Use this key pair instead of generating one (to make certificates that share one key). */
+  keys?: { privateKey: KeyObject; publicKey: KeyObject };
 }
 
 export interface Authority {
@@ -230,7 +232,7 @@ export const FAKE_GEN_TIME = new Date("2026-10-20T12:00:00Z");
 
 export function issueCertificate(spec: CertSpec): Authority {
   const keyKind = spec.keyKind ?? "ec";
-  const keys = newKey(keyKind);
+  const keys = spec.keys ?? newKey(keyKind);
   const spki = new Uint8Array(keys.publicKey.export({ type: "spki", format: "der" }));
   const serial = spec.serial ?? (serialCounter += 1n);
   const subject = name(spec.commonName);
@@ -355,6 +357,8 @@ export interface TokenSpec {
   imprintHashHex?: string;
   /** Flip a bit of the signature after signing. */
   corruptSignature?: boolean;
+  /** RSA-PSS only: the salt length written into the parameters and the one the signature really used. */
+  pssSalt?: { declared: number; signed: number };
 }
 
 function essIssuerSerial(spec: TokenSpec): Bytes[] {
@@ -419,13 +423,15 @@ export function buildToken(spec: TokenSpec): Bytes {
     signatureAlgorithm = seq(oid(OIDS.rsaEncryption), nul());
     signatureValue = cryptoSign(hash, attributeSet, signer.privateKey);
   } else if (scheme === "rsa-pss") {
-    const saltLength = digestOf(hash, new Uint8Array(0)).length;
+    const hashLength = digestOf(hash, new Uint8Array(0)).length;
+    const saltLength = spec.pssSalt?.signed ?? hashLength;
+    const declared = spec.pssSalt?.declared ?? hashLength;
     signatureAlgorithm = seq(
       oid(OIDS.rsaPss),
       seq(
         ctx(0, hashAlgorithm(hash)),
         ctx(1, seq(oid(OIDS.mgf1), hashAlgorithm(hash))),
-        ctx(2, int(BigInt(saltLength))),
+        ctx(2, declared < 0 ? tlv(0x02, Uint8Array.of(256 + declared)) : int(BigInt(declared))),
       ),
     );
     signatureValue = cryptoSign(hash, attributeSet, {

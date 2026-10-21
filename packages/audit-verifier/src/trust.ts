@@ -6,7 +6,7 @@
  */
 import { X509Certificate } from "node:crypto";
 import { OID, parseCertificate, type CertificateFields } from "./cms.js";
-import { DerError, TAG, bitStringBytes, booleanValue, bytesEqual, children, expectSequence, integerValue, oidValue, parseDer, type DerNode } from "./der.js";
+import { DerError, TAG, bitStringBytes, booleanValue, bytesEqual, bytesToHex, children, expectSequence, integerValue, oidValue, parseDer, type DerNode } from "./der.js";
 import { DIGICERT_ROOT_PEM, SECTIGO_ROOT_PEM } from "./trust-roots.js";
 
 export type AuthorityLabel = "digicert" | "sectigo";
@@ -80,11 +80,17 @@ function validCa(fields: CertificateFields, index: number): boolean {
 
 const MAX_PATH_LENGTH = 8;
 const MAX_PATHS = 32;
+/** The most issuer links (subject signed by issuer?) one search examines before it gives up. */
+const MAX_LINK_CHECKS = 256;
 
 /**
  * Looks for paths from `signer` to one of `anchors` through `pool` (the certificates that came with the
  * token). "untrusted": no path of correctly signed certificates reaches an anchor. "chain": paths reach an
  * anchor but none passes the CA, path length, key usage and validity checks at `at`.
+ *
+ * The pool is attacker-supplied, so the search is bounded: certificates are de-duplicated by their bytes,
+ * each (subject, issuer) signature is checked once, and after `MAX_LINK_CHECKS` links the search stops and
+ * the token is "untrusted" (a bound that is hit never produces "ok").
  */
 export function checkCertificatePath(
   signer: Uint8Array,
@@ -98,38 +104,63 @@ export function checkCertificatePath(
     const found = candidate(new Uint8Array(anchor.raw));
     return found === undefined ? [] : [found];
   });
+  const seen = new Set<string>([bytesToHex(leaf.fields.raw), ...anchorCandidates.map((a) => bytesToHex(a.fields.raw))]);
   const poolCandidates = pool.flatMap((der) => {
     const found = candidate(der);
-    return found === undefined ? [] : [found];
+    if (found === undefined) return [];
+    const key = bytesToHex(found.fields.raw);
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [found];
   });
+  const issuers = [...anchorCandidates, ...poolCandidates];
 
   const isAnchor = (c: Candidate): boolean => anchorCandidates.some((a) => bytesEqual(a.fields.raw, c.fields.raw));
+  const verdicts = new Map<Candidate, Map<Candidate, boolean>>();
+  let linkChecks = 0;
+  let exhausted = false;
   const signedBy = (subject: Candidate, issuer: Candidate): boolean => {
     if (!bytesEqual(subject.fields.issuer, issuer.fields.subject)) return false;
-    try {
-      return subject.x509.verify(issuer.x509.publicKey);
-    } catch {
+    let known = verdicts.get(subject);
+    if (known === undefined) {
+      known = new Map();
+      verdicts.set(subject, known);
+    }
+    const cached = known.get(issuer);
+    if (cached !== undefined) return cached;
+    linkChecks += 1;
+    if (linkChecks > MAX_LINK_CHECKS) {
+      exhausted = true;
       return false;
     }
+    let result: boolean;
+    try {
+      result = subject.x509.verify(issuer.x509.publicKey);
+    } catch {
+      result = false;
+    }
+    known.set(issuer, result);
+    return result;
   };
 
   const paths: Candidate[][] = [];
   const walk = (path: Candidate[]): void => {
-    if (paths.length >= MAX_PATHS) return;
+    if (paths.length >= MAX_PATHS || exhausted) return;
     const last = path[path.length - 1] as Candidate;
     if (isAnchor(last)) {
       paths.push(path);
       return;
     }
     if (path.length >= MAX_PATH_LENGTH) return;
-    for (const issuer of [...anchorCandidates, ...poolCandidates]) {
+    for (const issuer of issuers) {
+      if (exhausted) return;
       if (path.some((member) => bytesEqual(member.fields.raw, issuer.fields.raw))) continue;
       if (signedBy(last, issuer)) walk([...path, issuer]);
     }
   };
   walk([leaf]);
 
-  if (paths.length === 0) return "untrusted";
+  if (exhausted || paths.length === 0) return "untrusted";
   const acceptable = paths.some((path) =>
     path.every((member, index) => {
       const valid = member.fields.notBefore <= at && at <= member.fields.notAfter;

@@ -37,12 +37,14 @@ export interface DerNode {
   readonly tag: number;
   readonly raw: Uint8Array;
   readonly content: Uint8Array;
+  /** How many constructed elements enclose this one (0 for the outermost). */
+  readonly depth: number;
 }
 
 const MAX_DEPTH = 64;
 
-/** Reads the element at the start of `bytes`; returns it and how many bytes it used. */
-export function readNode(bytes: Uint8Array): { node: DerNode; length: number } {
+/** Reads the element at the start of `bytes`; returns it and how many bytes it used. `depth` is its nesting level. */
+export function readNode(bytes: Uint8Array, depth = 0): { node: DerNode; length: number } {
   if (bytes.length < 2) throw new DerError("truncated header");
   const tag = bytes[0] as number;
   if ((tag & 0x1f) === 0x1f) throw new DerError("multi-byte tags are not supported");
@@ -63,7 +65,7 @@ export function readNode(bytes: Uint8Array): { node: DerNode; length: number } {
   const total = headerLength + contentLength;
   if (total > bytes.length) throw new DerError("element overruns its buffer");
   return {
-    node: { tag, raw: bytes.subarray(0, total), content: bytes.subarray(headerLength, total) },
+    node: { tag, raw: bytes.subarray(0, total), content: bytes.subarray(headerLength, total), depth },
     length: total,
   };
 }
@@ -76,13 +78,13 @@ export function parseDer(bytes: Uint8Array): DerNode {
 }
 
 /** The elements inside a constructed node, in order. */
-export function children(node: DerNode, depth = 0): DerNode[] {
-  if (depth > MAX_DEPTH) throw new DerError("nesting too deep");
+export function children(node: DerNode): DerNode[] {
+  if (node.depth >= MAX_DEPTH) throw new DerError("nesting too deep");
   if ((node.tag & 0x20) === 0) throw new DerError("not a constructed element");
   const out: DerNode[] = [];
   let offset = 0;
   while (offset < node.content.length) {
-    const { node: child, length } = readNode(node.content.subarray(offset));
+    const { node: child, length } = readNode(node.content.subarray(offset), node.depth + 1);
     out.push(child);
     offset += length;
   }

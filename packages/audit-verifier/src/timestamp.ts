@@ -133,6 +133,7 @@ const HASHES: Readonly<Record<string, "sha1" | "sha256" | "sha384" | "sha512">> 
   [OID.sha384]: "sha384",
   [OID.sha512]: "sha512",
 };
+const HASH_BYTES = { sha256: 32, sha384: 48, sha512: 64 } as const;
 const SIGNING_HASHES = new Set(["sha256", "sha384", "sha512"]);
 
 /** The hash named by an AlgorithmIdentifier node, or undefined when it is not one we accept. */
@@ -203,7 +204,7 @@ function signatureScheme(
     if (parameters === undefined) return undefined;
     let hash: string | undefined;
     let mgfHash: string | undefined;
-    let saltLength = 20;
+    let declaredSalt = 20n;
     for (const field of children(parameters)) {
       const inner = children(field)[0];
       if (inner === undefined) return undefined;
@@ -214,14 +215,17 @@ function signatureScheme(
         if (oidValue(mgf[0] as DerNode) !== "1.2.840.113549.1.1.8") return undefined;
         mgfHash = HASHES[oidValue(expectSequence(mgf[1] as DerNode, TAG.sequence, 1, 2)[0] as DerNode)];
       } else if (field.tag === contextTag(2, true)) {
-        saltLength = Number(integerValue(inner));
+        declaredSalt = integerValue(inner);
       } else {
         return undefined; // trailerField other than the default is not used with PSS
       }
     }
     const accepted = accept(hash);
     if (accepted === undefined || mgfHash !== hash) return undefined;
-    return { hash: accepted, pss: { saltLength } };
+    // RFC 4055: 0 <= saltLength <= the hash length in bytes. A negative value would reach Node as one of
+    // its special constants (-2 means "recover the length from the signature").
+    if (declaredSalt < 0n || declaredSalt > BigInt(HASH_BYTES[accepted])) return undefined;
+    return { hash: accepted, pss: { saltLength: Number(declaredSalt) } };
   }
   const entry = table[oid];
   if (entry === undefined) return undefined;
@@ -247,6 +251,7 @@ export function verifyTimeStampToken(token: Uint8Array, input: TimestampCheckInp
     const signedData = parseSignedData(token);
     if (signedData.eContentType !== OID.tstInfo || signedData.eContent === undefined) return fail("malformed");
     const tst = parseTstInfo(signedData.eContent);
+    if (!/^[0-9a-f]{64}$/.test(input.hashHex)) return fail("imprint"); // the same lowercase SHA-256 hex the request takes
     if (tst.imprintAlgorithm !== OID.sha256 || bytesToHex(tst.imprint) !== input.hashHex) return fail("imprint");
     if (input.nonce !== undefined && tst.nonce !== input.nonce) return fail("nonce");
 
