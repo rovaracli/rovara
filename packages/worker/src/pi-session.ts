@@ -21,6 +21,7 @@ import {
   SettingsManager,
   type SessionEntry,
   type SessionStats,
+  type Skill,
 } from "@earendil-works/pi-coding-agent";
 import { amazonBedrockProvider } from "@earendil-works/pi-ai/providers/amazon-bedrock";
 import { ROUTE_PROVIDER, createModelRuntimeWithFallback, routeUsageIdentity, type ChatGptFallback, type ChatGptFallbackReason, type ModelProxyOptions } from "@agentx/model-runtime";
@@ -29,6 +30,8 @@ import { devcontainerContextFile, hostPath, type DevcontainerPaths } from "./dev
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "./git.js";
 import type { FileOpsTarget } from "./file-ops-exec.js";
 import { sandboxFileTools } from "./sandbox-file-tools.js";
+import { agentStepTools, materializeSkills, skillsPromptSection, type AgentSkillFile } from "./agent-step.js";
+import { readSkillTool } from "./read-skill-tool.js";
 import { isEc2WorkerRuntime, localBashOperations } from "./task-sandbox.js";
 import {
   appendRepositoryContextFiles,
@@ -91,6 +94,16 @@ export interface PiSessionInput {
   extensionFactories?: InlineExtension[];
   /** Where the session reports what it does not fail on, such as an extension handler's error. Messages arrive redacted. */
   onDiagnostic?: (message: string) => void;
+  /**
+   * A coding step's tool list (Task 18). It only narrows the mode's own tools (agentStepTools): a name the mode does not
+   * allow is dropped, so a review step never gets bash. Absent: the mode's tools, as before.
+   */
+  agentTools?: readonly string[];
+  /**
+   * This operation's skills, from the broker's digest-pinned snapshot. They are the only skills the session has (the
+   * repository's and the home directory's never load), and the model reads them through `read_skill`.
+   */
+  skills?: readonly AgentSkillFile[];
 }
 
 export interface PiSessionAdapter {
@@ -140,6 +153,8 @@ export async function createWorkspacePiSession(
     fileTools?: FileOpsTarget;
     localFileTools?: boolean;
     extensionFactories?: InlineExtension[];
+    agentTools?: readonly string[];
+    skills?: readonly AgentSkillFile[];
   },
   adapter: PiSessionAdapter = defaultPiSessionAdapter,
 ): Promise<PiSessionHandle> {
@@ -166,6 +181,8 @@ export async function createWorkspacePiSession(
     ...(input.localFileTools === undefined ? {} : { localFileTools: input.localFileTools }),
     ...(input.extensionFactories === undefined ? {} : { extensionFactories: input.extensionFactories }),
     ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
+    ...(input.agentTools === undefined ? {} : { agentTools: input.agentTools }),
+    ...(input.skills === undefined ? {} : { skills: input.skills }),
   });
   assertContained(sessionDirectory, handle.sessionFile);
   return handle;
@@ -184,6 +201,8 @@ export async function openRegisteredWorkspacePiSession(
     fileTools?: FileOpsTarget;
     localFileTools?: boolean;
     extensionFactories?: InlineExtension[];
+    agentTools?: readonly string[];
+    skills?: readonly AgentSkillFile[];
   },
   adapter: PiSessionAdapter = defaultPiSessionAdapter,
 ): Promise<PiSessionHandle> {
@@ -215,6 +234,8 @@ export async function openRegisteredWorkspacePiSession(
     ...(input.localFileTools === undefined ? {} : { localFileTools: input.localFileTools }),
     ...(input.extensionFactories === undefined ? {} : { extensionFactories: input.extensionFactories }),
     ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
+    ...(input.agentTools === undefined ? {} : { agentTools: input.agentTools }),
+    ...(input.skills === undefined ? {} : { skills: input.skills }),
   });
   assertContained(sessionDirectory, handle.sessionFile);
   return handle;
@@ -331,7 +352,11 @@ async function createDefaultSession(
     if (!model.reasoning && requestedLevel !== undefined && requestedLevel !== "off") {
       throw agentXError("CONFIG_INVALID", "the selected model does not support reasoning; set thinkingLevel to off");
     }
-    const { resourceLoader, settingsManager } = await createWorkerResources(input);
+    // This operation's skills (Task 18): checked against their digests and written to the worker's own state first, so a session
+    // whose skills do not match what the agent was published with never starts.
+    const skillFiles = input.skills ?? [];
+    const skills = skillFiles.length === 0 ? [] : await materializeSkills(input.agentDirectory, skillFiles);
+    const { resourceLoader, settingsManager } = await createWorkerResources({ ...input, loadedSkills: skills });
     // An AgentX extension that failed to load would leave its work silently undone, so the session does not start.
     // It is a deterministic AgentX bug, so not RUNTIME_UNAVAILABLE, which the broker reads as "retry" (M-10).
     const loadErrors = resourceLoader.getExtensions().errors;
@@ -341,6 +366,8 @@ async function createDefaultSession(
       ));
     }
     const capabilities = piTaskToolCapabilities(input.workflowMode ?? "IMPLEMENT");
+    // A coding step's tool list only narrows the mode's tools (agentStepTools); without one this is the mode's own list.
+    const stepTools = agentStepTools(input.workflowMode ?? "IMPLEMENT", input.agentTools);
     // The adapter can be reached without createWorkspacePiSession; the same refusal holds.
     assertFileToolsContained(input);
     const { session } = await createAgentSession({
@@ -349,14 +376,17 @@ async function createDefaultSession(
       modelRuntime,
       model,
       thinkingLevel: requestedLevel ?? (model.reasoning ? "medium" : "off"),
-      tools: capabilities.tools,
+      // read_skill is the worker's own tool, never a file tool: it is there only when the operation has skills.
+      tools: skillFiles.length === 0 ? stepTools.tools : [...stepTools.tools, "read_skill"],
       // A custom tool with a built-in's name replaces it.
       customTools: [
-        ...(capabilities.shell ? [agentShellTool(input.cwd, input.bashOperations)] : []),
+        ...(stepTools.shell ? [agentShellTool(input.cwd, input.bashOperations)] : []),
         // Every file tool the session exposes runs in the task's container when there is one; a tool with a built-in's name replaces it.
         ...(input.fileTools !== undefined
-          ? sandboxFileTools({ target: input.fileTools, cwd: input.cwd, names: capabilities.tools })
-          : !capabilities.customFileTools || input.devcontainerPaths === undefined ? [] : devcontainerFileTools(input.cwd, input.devcontainerPaths)),
+          ? sandboxFileTools({ target: input.fileTools, cwd: input.cwd, names: stepTools.tools })
+          : !capabilities.customFileTools || input.devcontainerPaths === undefined ? []
+            : devcontainerFileTools(input.cwd, input.devcontainerPaths).filter((tool) => stepTools.tools.includes(tool.name))),
+        ...(skillFiles.length === 0 ? [] : [readSkillTool(skillFiles)]),
       ],
       resourceLoader,
       settingsManager,
@@ -454,13 +484,17 @@ function conversationStats(stats: SessionStats, entries: readonly SessionEntry[]
 /**
  * The worker's Pi settings and resources. Pi trusts its working folder by default: a `.pi/SYSTEM.md` there replaces
  * the system prompt, `.pi/settings.json` changes the default model and thinking level, and skills load from the
- * folder and from the home directory. The worker trusts none of it and loads no skills; it uses AgentX's own worker
- * prompt, passes the context files itself, after the AgentX preamble (spec 051), and loads only the inline extensions
+ * folder and from the home directory. The worker trusts none of it and loads no skills of its own (a step's skills are
+ * the broker's digest-pinned snapshot, given to it); it uses AgentX's own worker prompt, passes the context files itself, after the AgentX preamble (spec 051), and loads only the inline extensions
  * it is given. One settings manager serves the loader and the session, which would otherwise make its own trusted one.
  */
 export async function createWorkerResources(
-  input: Pick<PiSessionInput, "cwd" | "agentDirectory" | "contextFiles" | "extensionFactories">,
+  input: Pick<PiSessionInput, "cwd" | "agentDirectory" | "contextFiles" | "extensionFactories"> & {
+    /** This operation's skills, as written by materializeSkills: the only skills the session has. */
+    loadedSkills?: readonly Skill[];
+  },
 ): Promise<{ resourceLoader: DefaultResourceLoader; settingsManager: SettingsManager }> {
+  const skills = input.loadedSkills ?? [];
   // Pi never installs a package for the worker: the reload below would otherwise fetch every `packages` entry of the
   // settings it reads, running `npmCommand`, in the worker (R56). AgentX loads no package.
   process.env.PI_OFFLINE = "1";
@@ -486,13 +520,17 @@ export async function createWorkerResources(
     // Disables file-path extensions only; the inline extensionFactories still load.
     noExtensions: true,
     extensionFactories: [...(input.extensionFactories ?? [])],
+    // Nothing is discovered from disk: the repository's .pi/skills and the home directory's are never read. The skills the
+    // session has are this operation's snapshot, handed in here and replacing whatever loading would have found.
     noSkills: true,
+    skillsOverride: () => ({ skills: [...skills], diagnostics: [] }),
     noPromptTemplates: true,
     noThemes: true,
     agentsFilesOverride: appendRepositoryContextFiles(input.contextFiles),
     // AgentX's own prompt in place of Pi's, whatever a SYSTEM.md would have given. Pi then leaves out its tool list,
     // tool rules and documentation pointers; its addendum, project context and cwd sections are unchanged.
-    systemPromptOverride: () => AGENTX_WORKER_PROMPT,
+    // A step's skills are listed after it, naming read_skill: Pi's own list would point at the file and the read tool.
+    systemPromptOverride: () => (skills.length === 0 ? AGENTX_WORKER_PROMPT : `${AGENTX_WORKER_PROMPT}\n\n${skillsPromptSection(skills)}`),
     // Spec 051 FR-001/FR-010: the same preamble for coding tasks and eval runs, rendered as Pi's <addendum>.
     appendSystemPrompt: [AGENTX_PREAMBLE],
   });

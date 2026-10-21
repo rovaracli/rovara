@@ -14,6 +14,7 @@ import { invokeAuthenticationFromEnvironment } from "./invoke-auth.js";
 import { resolveTaskSessionModel } from "./task-model.js";
 import { chatGptTokenSource } from "./chatgpt-token.js";
 import { lazyModelProxy, modelAccessSource } from "./model-access.js";
+import { agentSkillsSource } from "./agent-step.js";
 import { createDefaultProjectSetupExecutor, createReadinessGatedProjectSetupRuntime } from "./project-setup-executor.js";
 import { postProjectSetupTerminalResult } from "./project-setup-callback.js";
 import { postWorkerTerminalResult } from "./terminal-callback.js";
@@ -97,6 +98,8 @@ const state = createWorkerServerState(
           model: session.model,
           ...(session.piAdapter === undefined ? {} : { piAdapter: session.piAdapter }),
           ...callbacks,
+          // The operation's skills snapshot, asked for only when the invocation's agentStep names skills.
+          agentSkills: agentSkillsSource({ controlPlaneUrl, capability: invocation.callbackCapability }),
           ...(invocation.payload.workflowE2EAdmission === undefined ? {} : {
             workflowE2EEvidenceRoot: requiredEnvironment("CONTAINED_FOUNDATION_EVIDENCE_DIR"),
             workflowE2ERuntimeRoot: process.cwd(),

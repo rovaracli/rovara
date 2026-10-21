@@ -1,6 +1,6 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, parsePlanDocument, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EWorkflowAdmissionRef } from "@agentx/contracts";
+import { AGENT_WORKER_OUTDATED, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, parsePlanDocument, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EWorkflowAdmissionRef } from "@agentx/contracts";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { budgetExhaustedFromMarker } from "@agentx/model-runtime";
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
@@ -24,6 +24,7 @@ import { sweepFileOps } from "./sandbox-file-tools.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
 import { EventBatcher, redactCredentials, type EventBatchSink } from "./events.js";
 import { ToolLoopGuard } from "./tool-loop-guard.js";
+import { pinnedSkills, withStepTimeout, type AgentSkillFile } from "./agent-step.js";
 import {
   createWorkspacePiSession,
   openRegisteredWorkspacePiSession,
@@ -102,6 +103,8 @@ export interface TaskInvocationDependencies {
   taskShell?: TaskShellSelection;
   /** The Docker CLI the file tools and the devcontainer's helper install use (R56); tests supply a fake. Default: the sandbox selection's, or the host's. */
   docker?: DockerCli;
+  /** This operation's skills snapshot from the control plane (agent-step.ts); asked only when the step names skills. */
+  agentSkills?: () => Promise<readonly AgentSkillFile[]>;
 }
 
 export async function runTaskInvocation(
@@ -128,6 +131,9 @@ async function runTask(
 ): Promise<TaskInvocationResult> {
   const invocation = WorkerInvocationSchema.parse(untrustedInvocation);
   if (invocation.kind !== "task") throw agentXError("CONFIG_INVALID", "runTaskInvocation requires a task");
+  // An agent step is Task 23's; this worker does not advertise task.agentRun, so a broker that sends one is refused here too.
+  const agentStep = invocation.payload.agentStep;
+  if (agentStep?.kind === "agent") throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   const workflowDependencies = invocation.payload.workflowDependencies;
   if (workflowDependencies !== undefined && invocation.payload.workflowMode !== "IMPLEMENT") {
     throw agentXError("CONFIG_INVALID", "ordered work requires implementation mode");
@@ -143,6 +149,20 @@ async function runTask(
   if (!manifest.complete || manifest.projectRevision !== invocation.projectRevision) {
     throw agentXError("WORKSPACE_NOT_READY", "workspace manifest is incomplete or revision-mismatched");
   }
+  // A coding step's skills: the broker's snapshot, only those the step was published with. Fetched before any container starts.
+  let stepSkills: AgentSkillFile[] | undefined;
+  if (agentStep?.skills !== undefined && agentStep.skills.length > 0) {
+    if (dependencies.agentSkills === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the worker cannot read this agent's skills");
+    stepSkills = pinnedSkills(await dependencies.agentSkills(), agentStep.skills);
+  }
+  // What a step adds to every session of the operation, the reviewers' too; nothing without agentStep.
+  const stepSession = {
+    ...(agentStep?.tools === undefined ? {} : { agentTools: agentStep.tools }),
+    ...(stepSkills === undefined ? {} : { skills: stepSkills }),
+  };
+  // The step's own time limit replaces the default one of each review.
+  const reviewTimeoutMs = agentStep?.timeoutMs ?? dependencies.timeouts?.reviewMs;
+  const feedbackTimeoutMs = agentStep?.timeoutMs ?? dependencies.timeouts?.feedbackReviewMs;
   if (workflowDependencies !== undefined) {
     if (manifest.repositories.length !== 1) throw agentXError("CONFIG_INVALID", "ordered work requires exactly one prepared repository");
     const repositoryId = manifest.repositories[0]?.name;
@@ -238,7 +258,10 @@ async function runTask(
         rootPath: dependencies.rootPath, model: dependencies.model, candidate: candidateRepositories,
         repositories: repositoryInputs, bundles: collected.bundles, artifactSink: dependencies.artifactSink,
         ...(collected.taskChecks === undefined ? {} : { taskChecks: collected.taskChecks }),
-        ...(dependencies.timeouts?.feedbackReviewMs === undefined ? {} : { timeoutMs: dependencies.timeouts.feedbackReviewMs }),
+        ...(feedbackTimeoutMs === undefined ? {} : { timeoutMs: feedbackTimeoutMs }),
+        ...(agentStep?.promptSection === undefined ? {} : { promptSection: agentStep.promptSection }),
+        ...(agentStep?.tools === undefined ? {} : { tools: agentStep.tools }),
+        ...(stepSkills === undefined ? {} : { skills: stepSkills }),
         ...(dependencies.piAdapter === undefined ? {} : { piAdapter: dependencies.piAdapter }), signal: stop.signal,
         ...(fileTools === undefined ? {} : { fileTools }),
         onProgress: message => { void events.append("progress", { message }).catch(() => undefined); },
@@ -470,6 +493,7 @@ async function runTask(
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
+        ...stepSession,
       },
       dependencies.piAdapter,
     );
@@ -481,6 +505,7 @@ async function runTask(
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
+        ...stepSession,
       },
       dependencies.piAdapter,
     );
@@ -665,9 +690,23 @@ async function runTask(
           message: "AgentX could not record the workspace state before this task; it will judge the task by the final diff only.",
         });
       }
+      // A step's time limit covers the whole operation, every prompt of it: each gets what is left. When it passes, the
+      // session and AgentX's check are stopped and the operation ends "timeout:<ms>", which the broker reads as timed out.
+      const stepStartedAt = Date.now();
+      const stepLimitMs = agentStep?.timeoutMs;
+      const stepHandle = { abort: async () => { verificationStop.abort(); await session.abort(); } };
+      const promptWithinStep = async (text: string): Promise<void> => {
+        if (stepLimitMs === undefined) return session.prompt(text);
+        const left = stepLimitMs - (Date.now() - stepStartedAt);
+        if (left <= 0) {
+          await stepHandle.abort().catch(() => undefined);
+          throw new Error(`timeout:${stepLimitMs}`);
+        }
+        return withStepTimeout(stepHandle, left, () => session.prompt(text), stepLimitMs);
+      };
       const promptAndSettle = async (text: string) => {
         try {
-          await session.prompt(text);
+          await promptWithinStep(text);
         } finally {
           await flushDiagnostics().catch(() => undefined);
         }
@@ -801,7 +840,10 @@ async function runTask(
           ...(invocation.payload.workflowReviewFeedback === undefined ? {} : { reviewFeedback: invocation.payload.workflowReviewFeedback }),
           ...(invocation.payload.workflowReviewNote === undefined ? {} : { reviewNote: invocation.payload.workflowReviewNote }),
           ...(invocation.payload.workflowReviewers === undefined ? {} : { reviewers: invocation.payload.workflowReviewers }),
-          ...(dependencies.timeouts?.reviewMs === undefined ? {} : { timeoutMs: dependencies.timeouts.reviewMs }),
+          ...(reviewTimeoutMs === undefined ? {} : { timeoutMs: reviewTimeoutMs }),
+          ...(agentStep?.promptSection === undefined ? {} : { promptSection: agentStep.promptSection }),
+          ...(agentStep?.tools === undefined ? {} : { tools: agentStep.tools }),
+          ...(stepSkills === undefined ? {} : { skills: stepSkills }),
           signal: verificationStop.signal,
           ...(dependencies.piAdapter === undefined ? {} : { piAdapter: dependencies.piAdapter }),
           ...(fileTools === undefined ? {} : { fileTools }),

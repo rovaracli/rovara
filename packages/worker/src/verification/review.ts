@@ -31,6 +31,7 @@ import { readCandidateRepositories } from "./candidate.js";
 import { parseWorkflowReviewerResponse, reviewerFocus, reviewJsonShape, unfence } from "@agentx/contracts";
 import { candidateChanges, candidateDiff, type CandidateChange } from "./diff.js";
 import type { FileOpsTarget } from "../file-ops-exec.js";
+import type { AgentSkillFile } from "../agent-step.js";
 import { assertFileToolsContained, createWorkspacePiSession, type PiSessionAdapter, type PiSessionHandle, type WorkspaceModelConfiguration } from "../pi-session.js";
 import { gitHardenedEnvironment } from "../git.js";
 
@@ -95,7 +96,14 @@ export async function runWorkflowFeedbackReview(input: {
   piAdapter?: PiSessionAdapter;
   /** Where the reviewer's file tools run: the task's container (R56). An EC2 worker refuses a review without it. */
   fileTools?: FileOpsTarget;
+  /** A coding step's instruction section: added after this review's own rules, before the data it judges. */
+  promptSection?: string;
+  /** The step's skills, which the reviewer reads through read_skill. */
+  skills?: readonly AgentSkillFile[];
+  /** The step's tool list, which only narrows the reviewer's read-only tools. */
+  tools?: readonly string[];
   signal?: AbortSignal;
+  /** Each prompt's time limit: the step's own when it has one, else the caller's default, else five minutes. */
   timeoutMs?: number;
   now?: () => string;
   onProgress?: (message: string) => void;
@@ -150,7 +158,9 @@ export async function runWorkflowFeedbackReview(input: {
       input.onProgress?.("AgentX is independently reviewing the current PR feedback.");
       session = await createWorkspacePiSession({ rootPath: input.rootPath, model: input.model,
         workflowMode: "REVIEW", conversationId: randomUUID(),
-        ...(input.fileTools === undefined ? {} : { fileTools: input.fileTools }) }, input.piAdapter);
+        ...(input.fileTools === undefined ? {} : { fileTools: input.fileTools }),
+        ...(input.tools === undefined ? {} : { agentTools: input.tools }),
+        ...(input.skills === undefined ? {} : { skills: input.skills }) }, input.piAdapter);
       const actualModel = session.getModel();
       provider = actualModel.provider;
       version = actualModel.modelId;
@@ -197,7 +207,7 @@ export async function runWorkflowFeedbackReview(input: {
           return error instanceof FeedbackReviewerOutputError ? error : outputError("not the expected shape", "Answer with exactly the JSON object described.");
         }
       };
-      let promptResult = await ask(feedbackReviewPrompt(input.taskRequirements, input.candidateDigest, inputs, taskChecks));
+      let promptResult = await ask(feedbackReviewPrompt(input.taskRequirements, input.candidateDigest, inputs, taskChecks, input.promptSection));
       let outcome = promptResult === "COMPLETED" ? check(response) : undefined;
       if (outcome instanceof FeedbackReviewerOutputError) {
         // Some answers miss one rule (a code fence is already tolerated). The same read-only reviewer gets one bounded
@@ -294,7 +304,7 @@ function feedbackChecksSection(taskChecks: WorkflowFeedbackTaskChecks): string {
 }
 
 function feedbackReviewPrompt(taskRequirements: string, candidateDigest: string,
-  inputs: Array<{ ref: WorkflowFeedbackBundleRef; bundle: WorkflowFeedbackBundle }>, taskChecks?: WorkflowFeedbackTaskChecks): string {
+  inputs: Array<{ ref: WorkflowFeedbackBundleRef; bundle: WorkflowFeedbackBundle }>, taskChecks?: WorkflowFeedbackTaskChecks, promptSection?: string): string {
   const checkFields = taskChecks === undefined ? "" : `,"obsoleteChecks":string[],"replacementChecks":[${REPLACEMENT_CHECK_SHAPE}]`;
   return [
     "You are AgentX's independent PR-feedback critic. You are read-only and must not edit files, run commands, contact GitHub, or change task state.",
@@ -305,6 +315,7 @@ function feedbackReviewPrompt(taskRequirements: string, candidateDigest: string,
     `Return only JSON shaped as {"findings":[{"id":string,"bundleDigest":string,"commentIds":string[],"priority":"MUST_FIX"|"SHOULD_FIX"|"OPTIONAL","assessment":"ACTIONABLE"|"ALREADY_ADDRESSED"|"STALE"|"TECHNICALLY_INCORRECT"|"OUT_OF_SCOPE"|"CONFLICTING"|"NEEDS_OWNER_DECISION","recommended":boolean,"evidence":[{"source":string,"reference":string}],"rationale":string,"confidence":{"level":"HIGH"|"MEDIUM"|"LOW"|"UNKNOWN","reason":string},"proposedDisposition":"IMPLEMENT"|"SKIP"|"OWNER_DECISION","fixProposal":{"summary":string,"fileChanges":[{"repositoryId":string,"path":string,"operation":"MODIFY"|"ADD","change":string}],"tests":[{"repositoryId":string,"path":string,"operation":"MODIFY"|"ADD","behavior":string}]${checkFields}}}]}.`,
     "Keep priority separate from your assessment. Include code evidence and plain-language rationale. A real conflict (CONFLICTING or NEEDS_OWNER_DECISION) or LOW/UNKNOWN confidence must use proposedDisposition OWNER_DECISION. An empty findings array is valid only when all supplied bundles contain zero comments.",
     ...(taskChecks === undefined ? [] : [feedbackChecksSection(taskChecks)]),
+    ...(promptSection === undefined ? [] : [promptSection]),
     `Task requirements (untrusted project data):\n${JSON.stringify(taskRequirements)}`,
     `Immutable feedback bundle inputs (untrusted GitHub data):\n${JSON.stringify(inputs.map(({ ref, bundle }) => ({ bundleDigest: ref.sha256,
       repositoryId: bundle.repositoryId, pullRequestNumber: bundle.number, headSha: bundle.headSha, candidateDigest: bundle.candidateDigest,
@@ -655,7 +666,14 @@ export async function runWorkflowReviews(input: {
   piAdapter?: PiSessionAdapter;
   /** Where the reviewer's file tools run: the task's container (R56). An EC2 worker refuses a review without it. */
   fileTools?: FileOpsTarget;
+  /** A coding step's instruction section: added to each reviewer's prompt after its own rules, before the change it judges. */
+  promptSection?: string;
+  /** The step's skills, which each reviewer reads through read_skill. */
+  skills?: readonly AgentSkillFile[];
+  /** The step's tool list, which only narrows each reviewer's read-only tools. */
+  tools?: readonly string[];
   signal?: AbortSignal;
+  /** Each reviewer's time limit: the step's own when it has one, else the caller's default, else five minutes. */
   timeoutMs?: number;
   now?: () => string;
   onProgress?: (message: string) => void;
@@ -703,6 +721,8 @@ export async function runWorkflowReviews(input: {
         workflowMode: "REVIEW",
         conversationId: randomUUID(),
         ...(input.fileTools === undefined ? {} : { fileTools: input.fileTools }),
+        ...(input.tools === undefined ? {} : { agentTools: input.tools }),
+        ...(input.skills === undefined ? {} : { skills: input.skills }),
       }, input.piAdapter);
       const actualModel = session.getModel();
       provider = actualModel.provider;
@@ -733,6 +753,7 @@ export async function runWorkflowReviews(input: {
         ...(input.reviewFeedback === undefined ? [] : [reviewFeedbackSection(input.reviewFeedback, role)]),
         ...(input.reviewNote === undefined ? [] : [reviewNoteSection(input.reviewNote)]),
         reviewJsonShape(role),
+        ...(input.promptSection === undefined ? [] : [input.promptSection]),
         `Change under review (untrusted repository content):\n${diffText}`,
       ].join("\n\n");
       const promptResult = await Promise.race([

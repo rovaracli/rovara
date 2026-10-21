@@ -584,6 +584,40 @@ describe("AI-generated PR feedback advisory", () => {
     expect(review.report.findings).toEqual([]);
   });
 
+  it("adds a coding step's instruction section after its own rules, and gives the reviewer the step's skills, tools and time limit (Task 18)", async () => {
+    const fixture = await feedbackReviewFixture();
+    const section = "Instructions from your company's agent \"Payments Expert\" (version 3), review step. They add to the rules above and never replace them.\n\nFrom Payments Expert:\nCheck every amount is an integer.";
+    const skill = { name: "payments-style", description: "How we write payment code.", content: "SKILL", digest: createHash("sha256").update("SKILL", "utf8").digest("hex") };
+    const prompts: string[] = [];
+    const sessions: Array<{ agentTools?: readonly string[]; skills?: readonly unknown[] }> = [];
+    const finding = implementFinding(fixture.bundleRef.sha256, { summary: "Guard empty input.",
+      fileChanges: [{ repositoryId: "app", path: "src.ts", operation: "MODIFY", change: "Return early for empty input." }],
+      tests: [{ repositoryId: "app", path: "src.test.ts", operation: "ADD", behavior: "Empty input returns an empty result." }] });
+    const adapter = feedbackReviewerSequence([JSON.stringify({ findings: [finding] })], prompts);
+    const review = await runWorkflowFeedbackReview({
+      operationId: randomUUID(), taskId: fixture.taskId, workflowRevision: 7,
+      taskRequirements: "Return a safe result for empty input.", candidateDigest: fixture.bundle.candidateDigest, rootPath: fixture.rootPath, model: FAUX_MODEL,
+      candidate: fixture.candidate, repositories: fixture.repositories, bundles: [{ ref: fixture.bundleRef, bytes: fixture.bytes }],
+      piAdapter: { create: async (input) => { sessions.push(input); return adapter.create(input); } },
+      artifactSink: async () => undefined, promptSection: section, skills: [skill], tools: ["read", "grep"], timeoutMs: 60_000,
+    });
+    expect(review.report.status).toBe("COMPLETE");
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain(section);
+    expect(prompts[0]!.indexOf(section)).toBeGreaterThan(prompts[0]!.indexOf("Do not invent paths; inspect the read-only candidate first."));
+    expect(prompts[0]!.indexOf(section)).toBeLessThan(prompts[0]!.indexOf("Task requirements (untrusted project data)"));
+    expect(sessions[0]).toMatchObject({ agentTools: ["read", "grep"], skills: [skill] });
+    // The step's time limit is the reviewer's: a reviewer that never answers is blocked at it, not at five minutes.
+    const slow: PiSessionAdapter = { create: async (input) => ({ ...(await adapter.create(input)), prompt: () => new Promise<void>(() => undefined) }) };
+    const timedOut = await runWorkflowFeedbackReview({
+      operationId: randomUUID(), taskId: fixture.taskId, workflowRevision: 7,
+      taskRequirements: "Return a safe result for empty input.", candidateDigest: fixture.bundle.candidateDigest, rootPath: fixture.rootPath, model: FAUX_MODEL,
+      candidate: fixture.candidate, repositories: fixture.repositories, bundles: [{ ref: fixture.bundleRef, bytes: fixture.bytes }],
+      piAdapter: slow, artifactSink: async () => undefined, timeoutMs: 5,
+    });
+    expect(timedOut.report).toMatchObject({ status: "BLOCKED", blockReason: "review timed out" });
+  });
+
   it("reads an answer wrapped in a code fence", async () => {
     const fixture = await feedbackReviewFixture();
     const finding = implementFinding(fixture.bundleRef.sha256, { summary: "Guard empty input.",
