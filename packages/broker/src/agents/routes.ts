@@ -13,6 +13,7 @@ import {
   DEFAULT_RUN_ESTIMATE_USD,
   RUN_LIMIT_MULTIPLIER,
   RecipeOverlaySchema,
+  SkillIdSchema,
   AgentXError,
   agentXError,
   atLeast,
@@ -45,6 +46,7 @@ import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolv
 import type { ApprovalDependencies } from "./approvals.js";
 import { readGuardrails, readGuardrailsWithRevision, requireBaseEnabled } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
+import type { SkillRecord } from "./skills.js";
 import { updateAvailable, type AgentDraft, type AgentRecord, type AgentVersion, type BuiltinSettings, type RequestMark } from "./store.js";
 
 /** What every agent route needs: the store, access, the approvals core and where the confirmation page lives. */
@@ -98,6 +100,8 @@ const OwnerBodySchema = z.object({ requestId: RequestIdSchema, owner: AgentOwner
 const AccountableBodySchema = z.object({ requestId: RequestIdSchema, accountable: DeveloperRefSchema }).strict();
 const UpdateBaseBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(1) }).strict();
 const AdoptBodySchema = z.object({ requestId: RequestIdSchema, version: z.number().int().min(1) }).strict();
+const SkillCreateBodySchema = z.object({ requestId: RequestIdSchema, content: z.string(), name: z.string().optional(), owner: AgentOwnerSchema.optional() }).strict();
+const SkillContentBodySchema = z.object({ requestId: RequestIdSchema, content: z.string(), expectedDigest: Hex64 }).strict();
 const GuardrailsBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(0), guardrails: AgentGuardrailsSchema }).strict();
 
 function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> {
@@ -514,6 +518,65 @@ async function adopt(deps: AgentRouteDependencies, caller: AgentCaller, agentId:
   return result.applied ? result.value : waiting(result);
 }
 
+// ---- skills (Task 9)
+
+const skillNotFound = () => agentXError("NOT_FOUND", "no skill has that ID");
+
+function skillView({ orgId: _orgId, ...skill }: SkillRecord): Shown { // eslint-disable-line @typescript-eslint/no-unused-vars -- the org is the caller's, never part of an answer
+  return skill;
+}
+
+/** The skill's owner, an org owner or admin, or (for a project's skill) a maintainer who can manage the project's agents. */
+async function mayChangeSkill(deps: AgentRouteDependencies, caller: AgentCaller, skill: SkillRecord): Promise<boolean> {
+  if (caller.orgRole === "owner" || caller.orgRole === "admin") return true;
+  if (skill.owner.kind === "member") return (await resolveSurvivor(deps, caller.orgId, skill.owner.developerId)) === caller.developerId;
+  const role = await deps.projectMembers.roleOf(caller.orgId, skill.owner.project, { developerId: caller.developerId, orgRole: caller.orgRole });
+  return role !== undefined && projectAllows(role, "manage_agents");
+}
+
+async function requireSkill(deps: AgentRouteDependencies, caller: AgentCaller, rawId: string): Promise<SkillRecord> {
+  const id = SkillIdSchema.safeParse(rawId);
+  const skill = id.success ? await deps.store.skills.get(caller.orgId, id.data) : undefined;
+  if (skill === undefined) throw skillNotFound();
+  return skill;
+}
+
+async function createSkill(deps: AgentRouteDependencies, caller: AgentCaller, body: unknown): Promise<StatusReply> {
+  const input = parseBody(SkillCreateBodySchema, body);
+  const { mark, replay } = await markRequest(deps, caller, "skill-create", "", input);
+  if (replay !== undefined) {
+    // The skill as it is now: a repeat is answered, but the skill is not frozen at its first content.
+    const skill = await deps.store.skills.get(caller.orgId, (replay.result as SkillRecord).skillId);
+    if (skill === undefined) throw skillNotFound();
+    return new StatusReply(201, { skill: skillView(skill) });
+  }
+  const owner = await requireOwnerAllowed(deps, caller, input.owner ?? { kind: "member", developerId: caller.developerId }, undefined, "a skill");
+  const skill = await deps.store.skills.create({
+    orgId: caller.orgId, content: input.content, owner, by: caller.developerId, request: mark,
+    ...(input.name === undefined ? {} : { name: input.name }),
+  });
+  return new StatusReply(201, { skill: skillView(skill) });
+}
+
+async function getSkill(deps: AgentRouteDependencies, caller: AgentCaller, rawId: string): Promise<Shown> {
+  const skill = await requireSkill(deps, caller, rawId);
+  const version = await deps.store.skills.getVersion(caller.orgId, skill.skillId, skill.currentDigest);
+  if (version === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "this skill's content can't be read right now");
+  return { skill: { ...skillView(skill), canEdit: await mayChangeSkill(deps, caller, skill) }, content: version.content };
+}
+
+async function putSkillContent(deps: AgentRouteDependencies, caller: AgentCaller, rawId: string, body: unknown): Promise<Shown> {
+  const input = parseBody(SkillContentBodySchema, body);
+  const skill = await requireSkill(deps, caller, rawId);
+  if (!await mayChangeSkill(deps, caller, skill)) {
+    throw agentXError("FORBIDDEN", skill.owner.kind === "project" ? `Only the skill's owner, a maintainer of ${skill.owner.project}, or an org admin can change it.` : "Only the skill's owner or an org admin can change it.");
+  }
+  const { mark, replay } = await markRequest(deps, caller, "skill-content", skill.skillId, input);
+  if (replay !== undefined) return { skill: skillView(replay.result as SkillRecord) };
+  const updated = await deps.store.skills.putContent({ orgId: caller.orgId, skillId: skill.skillId, content: input.content, expectedDigest: input.expectedDigest, by: caller.developerId, request: mark });
+  return { skill: skillView(updated) };
+}
+
 // ---- guardrails
 
 const GUARDRAILS_PATH = "/v1/app/org/agent-guardrails";
@@ -530,6 +593,7 @@ async function putGuardrails(deps: AgentRouteDependencies, caller: AgentCaller, 
 
 // ---- routing
 
+const SKILL_PATH = /^\/v1\/app\/skills(?:\/([^/]+)(?:\/(content))?)?$/;
 const AGENT_PATH = /^\/v1\/app\/agents(?:\/([^/]+)(?:\/([a-z-]+)(?:\/([0-9]{1,6}))?)?)?$/;
 
 function jsonBody(request: AdaptedHttpRequest): unknown {
@@ -549,6 +613,19 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
   if (url.pathname === GUARDRAILS_PATH) {
     if (request.method === "GET") return readGuardrailsWithRevision(deps, caller.orgId);
     if (request.method === "PUT") return putGuardrails(deps, caller, jsonBody(request));
+    throw agentXError("NOT_FOUND", "route not found");
+  }
+  const skillPath = SKILL_PATH.exec(url.pathname);
+  if (skillPath !== null) {
+    const [, skillId, sub] = skillPath;
+    if (skillId === undefined) {
+      if (request.method === "GET") return { skills: (await deps.store.skills.list(caller.orgId)).map(skillView) };
+      if (request.method === "POST") return createSkill(deps, caller, jsonBody(request));
+    } else if (sub === undefined) {
+      if (request.method === "GET") return getSkill(deps, caller, skillId);
+    } else if (request.method === "PUT") {
+      return putSkillContent(deps, caller, skillId, jsonBody(request));
+    }
     throw agentXError("NOT_FOUND", "route not found");
   }
   const matched = AGENT_PATH.exec(url.pathname);

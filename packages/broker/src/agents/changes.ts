@@ -62,6 +62,9 @@ async function runningNow(deps: ApprovalDependencies, agent: AgentRecord, fallba
   return agent.currentVersion === undefined ? resolveBase(deps, agent.orgId, fallbackBase) : resolveRecipe(deps, agent.orgId, agent.agentId, agent.currentVersion);
 }
 
+/** The digest each skill of a resolved recipe has, which a publish pins instead of reading the skill again. */
+const skillDigestsOf = (recipe: ResolvedRecipe): Record<string, string> => Object.fromEntries(recipe.skills.map((skill) => [skill.skillId, skill.digest]));
+
 /** Refuses a recipe the company's guardrails forbid, by its first problem, `<path>: <message>`. */
 async function requireWithinGuardrails(deps: ApprovalDependencies, orgId: OrgId, recipe: ResolvedRecipe): Promise<void> {
   const [first] = await validateRecipeForOrg(deps, orgId, recipe);
@@ -144,6 +147,7 @@ export async function publishDraft(
     // Only while what was compared against is still what runs: a rollback that lands in between changes the baseline.
     const version = await deps.store.publish({
       orgId: agent.orgId, agentId: agent.agentId, expectedDraftRevision: input.expectedRevision, digest, by: caller.developerId, expectedCurrentVersion: agent.currentVersion ?? null,
+      skillDigests: skillDigestsOf(next),
       ...(input.note === undefined ? {} : { note: input.note }), ...(input.request === undefined ? {} : { request: input.request }),
     });
     return { applied: true, value: version };
@@ -271,6 +275,7 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   await requireWithinGuardrails(deps, record.orgId, draftRecipe);
   await deps.store.publish({
     orgId: record.orgId, agentId: subject.agentId, expectedDraftRevision: subject.draftRevision, digest: subject.digest, by, expectedCurrentVersion: subject.expectedCurrentVersion ?? null,
+    skillDigests: skillDigestsOf(draftRecipe),
     ...(subject.note === undefined ? {} : { note: subject.note }),
   });
 }

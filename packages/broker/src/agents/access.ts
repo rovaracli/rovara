@@ -388,13 +388,13 @@ export async function checkShares(deps: AgentAccessDeps, orgId: OrgId, by: strin
 }
 
 /**
- * Refuses an owner the caller may not name, for a new agent or a change of owner (`current` is the owner it has now), and
+ * Refuses an owner the caller may not name, for a new agent (or skill, `owns`) or a change of owner (`current` is the owner it has now), and
  * returns the owner to store (a merged member named by their survivor).
  * A member owner must be the caller unless the caller is an org owner or admin; handing an agent to another member, or moving a
  * project's agent to any member (the caller too: the project's other maintainers lose it), takes an org owner or admin; a
  * project owner needs `manage_agents` on that project. The owner must be in the org.
  */
-export async function requireOwnerAllowed(deps: AgentAccessDeps, caller: AgentCaller, owner: AgentOwner, current?: AgentOwner): Promise<AgentOwner> {
+export async function requireOwnerAllowed(deps: AgentAccessDeps, caller: AgentCaller, owner: AgentOwner, current?: AgentOwner, owns: "an agent" | "a skill" = "an agent"): Promise<AgentOwner> {
   const lookups = new Lookups(deps, caller);
   const admin = isOrgAdmin(caller.orgRole);
   if (owner.kind === "member") {
@@ -402,7 +402,7 @@ export async function requireOwnerAllowed(deps: AgentAccessDeps, caller: AgentCa
     const self = survivor === caller.developerId;
     const handOver = current !== undefined && (!self || current.kind === "project");
     if (!admin && (!self || handOver)) {
-      throw agentXError("FORBIDDEN", current === undefined ? "Only an org owner or admin can make someone else an agent's owner." : "Only an org owner or admin can hand an agent to another member.");
+      throw agentXError("FORBIDDEN", current === undefined ? `Only an org owner or admin can make someone else ${owns}'s owner.` : "Only an org owner or admin can hand an agent to another member.");
     }
     const stored: AgentOwner = { kind: "member", developerId: survivor };
     if (!self) await requirePrincipalExists(deps, lookups, caller.orgId, "owner", stored);
@@ -410,7 +410,7 @@ export async function requireOwnerAllowed(deps: AgentAccessDeps, caller: AgentCa
   }
   if (!admin) {
     const role = await lookups.role(owner.project);
-    if (role === undefined || !projectAllows(role, "manage_agents")) throw agentXError("FORBIDDEN", `Only a maintainer of ${owner.project} can make it an agent's owner.`);
+    if (role === undefined || !projectAllows(role, "manage_agents")) throw agentXError("FORBIDDEN", `Only a maintainer of ${owner.project} can make it ${owns}'s owner.`);
   }
   await requirePrincipalExists(deps, lookups, caller.orgId, "owner", owner);
   return owner;

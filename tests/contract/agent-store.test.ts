@@ -452,15 +452,16 @@ describe("layers, cycles, archived bases and problems", () => {
     expect(await code(resolveAgent(store, ORG_A, bash.agentId, "draft"))).toMatchObject({ code: "CONFIG_INVALID" });
   });
 
-  it("refuses an overlay that adds a skill without a skill resolver, and applies it with one", async () => {
+  it("refuses a draft that names a skill the org does not have, resolves one it has, and lets a skill resolver replace the registry (Task 9)", async () => {
     const { store, make } = setup();
-    const skill = { skillId: "skl_aaaaaaaaaaaaaaaaaaaa" };
-    const agent = await make("Skilled", { ...scratch("a"), skills: { add: [skill] } });
-    expect(await code(resolveAgent(store, ORG_A, agent.agentId, "draft"))).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("skills") as string });
-    const recipe = await resolveAgent(store, ORG_A, agent.agentId, "draft", {
-      resolveSkill: (ref) => ({ skillId: ref.skillId, name: "triage-notes", description: "Notes", digest: "e".repeat(64) }),
+    expect(await code(make("Skilled", { ...scratch("a"), skills: { add: [{ skillId: "skl_aaaaaaaaaaaaaaaaaaaa" }] } }))).toEqual({ code: "CONFIG_INVALID", message: "skills: unknown skill" });
+    const skill = await store.skills.create({ orgId: ORG_A, content: "---\nname: triage-notes\ndescription: Notes\n---\nBody\n", owner: MEMBER, by: ALICE });
+    const agent = await make("Skilled", { ...scratch("a"), skills: { add: [{ skillId: skill.skillId }] } });
+    expect((await resolveAgent(store, ORG_A, agent.agentId, "draft")).skills.map((entry) => entry.name)).toEqual(["triage-notes"]);
+    const replaced = await resolveAgent(store, ORG_A, agent.agentId, "draft", {
+      resolveSkill: async (ref) => ({ skillId: ref.skillId, name: "other-name", description: "Notes", digest: "e".repeat(64) }),
     });
-    expect(recipe.skills.map((entry) => entry.name)).toEqual(["triage-notes"]);
+    expect(replaced.skills.map((entry) => entry.name)).toEqual(["other-name"]);
   });
 });
 

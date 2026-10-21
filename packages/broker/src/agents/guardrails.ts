@@ -24,6 +24,7 @@ import {
   type ResolvedStep,
 } from "@agentx/contracts";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
+import { skillProblems } from "./skills.js";
 import type { AgentRecord, AgentStore, AgentVersion, RequestMark } from "./store.js";
 
 /** What reading the guardrails needs. */
@@ -162,10 +163,12 @@ function differsFrom(step: ResolvedStep, other: ResolvedStep): boolean {
  * Why a recipe can't be published in this company: the recipe's own problems (`recipeProblems`), then anything the company's
  * guardrails forbid: a forbidden model (matched by canonical name, so another route to the same model counts), a model no
  * source serves, a step budget or autonomy above the limits, and, when cross-company review is required, a review step whose
- * models share a company with a build step's. Empty when it can be.
+ * models share a company with a build step's. A skill the company does not have (or a digest it never had) is a problem too (Task 9).
+ * Empty when it can be.
  */
 export async function validateRecipeForOrg(deps: RecipeCheckDependencies, orgId: OrgId, recipe: ResolvedRecipe): Promise<RecipeProblem[]> {
   const problems = recipeProblems(recipe);
+  problems.push(...await skillProblems({ documentClient: deps.documentClient, tableName: deps.tableName, now: Date.now }, orgId, recipe));
   const add = (path: string, message: string) => {
     if (!problems.some((existing) => existing.path === path && existing.message === message)) problems.push({ path, message });
   };

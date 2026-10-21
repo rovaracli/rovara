@@ -245,6 +245,7 @@ import {
   workflowPublicationContext,
   workflowPublicationContextDigest,
   PER_TASK_BUDGET_USD,
+  ResolvedRecipeSchema,
 } from "@agentx/contracts";
 import { compileE2EScenarios, collectE2EActualCliRun, qualifyE2ECollection, e2eSnapshotSourceDigest, parseE2EFirstPartyCapture, e2ePrivateTransferMaxBytes } from "@agentx/verifier";
 import { renderE2EMcpProjection, renderE2EPageHtml, renderE2ESlackBlocks, renderE2ENotifierSlackBlocks } from "../e2e-presentation.js";
@@ -320,6 +321,7 @@ import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { admitSpend, changeBudgets, keyIdOf, mintCap, mintKeyHealing, recordMintedKey, type OrgBudgetSettings } from "../org/budget.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
+import { SkillStore, servedSkills } from "../agents/skills.js";
 import type { ProjectMembers } from "../agents/access.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
@@ -1332,6 +1334,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Internal worker routes authenticate with operation-scoped capabilities; user JWT auth starts below them.
       // Ruling R29: a task's model proxy key, authorized by the operation's capability, which names the task's operation.
       if (request.method === "GET" && url.pathname === "/v1/internal/model-access") return await handleModelAccess(dependencies, request);
+      // Plan 3 Task 9: the pinned skills of the operation's task snapshot, authorized by the operation's `agent-skills` capability.
+      if (request.method === "GET" && url.pathname === "/v1/internal/agent-skills") return await handleAgentSkills(dependencies, request);
       const callback = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/(events|artifacts|result|candidate-export|e2e-admission|e2e-evidence|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status)$/.exec(
         url.pathname,
       );
@@ -4744,6 +4748,35 @@ async function recordChatGptFallback(dependencies: AwsBrokerDependencies, operat
   }
   console.log(JSON.stringify({ component: "broker", event: "chatgpt.fallback", operationId: operation.id, reason }));
   return { recorded: true };
+}
+
+/**
+ * Plan 3 Task 9: the skills a running step reads. The capability is checked like a callback's (signature, expiry, scope, fence, a task
+ * not yet finished); a refused one is 401. The skills are those of the snapshot recipe frozen on the operation's task, each at the digest
+ * it was published with, read under the task's org: a snapshot recorded for another org, or naming a skill the org lacks, serves nothing.
+ * A task with no snapshot (an older task, a Slack thread's) has no skills.
+ */
+async function handleAgentSkills(dependencies: AwsBrokerDependencies, request: AdaptedHttpRequest) {
+  const token = request.headers["x-agentx-callback-capability"];
+  if (!token) throw agentXError("AUTH_REQUIRED", "callback capability is required");
+  let claims: CallbackClaims;
+  try { claims = verifyCapability(dependencies, token, "agent-skills"); }
+  catch { throw agentXError("AUTH_REQUIRED", "invalid callback capability"); }
+  const operation = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
+  if (operation.fence !== claims.fence) throw agentXError("STALE_FENCE", "callback fence is stale");
+  if (TERMINAL.has(operation.status)) throw agentXError("STALE_FENCE", "terminal operations cannot read agent skills");
+  const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
+  const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+  const orgId = task?.orgId ?? operation.orgId;
+  if (orgId === undefined) throw agentXError("NOT_FOUND", "this operation belongs to no organisation");
+  // Task 15 writes the snapshot beside the task: `{ orgId, recipe, digest }` at `RECIPE`.
+  const snapshot = task === undefined ? undefined : await getItem<{ orgId?: string; recipe?: { skills?: unknown } }>(dependencies, { pk: taskKey(task.taskId).pk, sk: "RECIPE" });
+  if (snapshot?.recipe === undefined) return json({ skills: [] }, request.requestId);
+  if (snapshot.orgId !== orgId) throw agentXError("NOT_FOUND", "no agent snapshot belongs to this operation");
+  const pinned = ResolvedRecipeSchema.shape.skills.safeParse(snapshot.recipe.skills);
+  if (!pinned.success) throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
+  const store = new SkillStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now });
+  return json({ skills: await servedSkills(store, orgId, pinned.data) }, request.requestId);
 }
 
 /**

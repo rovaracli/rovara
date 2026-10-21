@@ -49,6 +49,7 @@ import {
   Aliases, EXISTS, NOT_EXISTS, REQUEST_MEMORY_DAYS, coded, commit as commitTransaction, errorName, putNew, strip, transact as sendTransaction, updateItem, withoutUndefined,
   type Item, type RequestMark, type TransactItem,
 } from "./table-writes.js";
+import { SkillStore } from "./skills.js";
 
 /** PF28: the most custom layers a recipe can be built from; a built-in base underneath is not counted. */
 export const MAX_CUSTOM_LAYERS = 3;
@@ -145,6 +146,8 @@ export interface AgentStoreInput {
   now: () => number;
   newId?: () => AgentId;
   builtins?: BuiltinSource;
+  /** The org's skills; by default a `SkillStore` on the same table. */
+  skills?: SkillStore;
 }
 
 const SHIPPED_BUILTINS: BuiltinSource = {
@@ -181,10 +184,13 @@ export class AgentStore {
   private readonly newId: () => AgentId;
   private readonly builtins: BuiltinSource;
   private eventSequence = 0;
+  /** The org's skills: a draft may only name ones the org has, publishing pins them, and a recipe resolves them from here. */
+  readonly skills: SkillStore;
 
   constructor(private readonly input: AgentStoreInput) {
     this.newId = input.newId ?? (() => newPrefixedId("agt"));
     this.builtins = input.builtins ?? SHIPPED_BUILTINS;
+    this.skills = input.skills ?? new SkillStore({ documentClient: input.documentClient, tableName: input.tableName, now: input.now });
   }
 
   private iso(): string {
@@ -406,6 +412,7 @@ export class AgentStore {
     if (input.owner.kind === "project" && input.accountable === undefined) throw coded("CONFIG_INVALID", "accountable: a project's agent needs an accountable maintainer");
     if (input.owner.kind === "member" && input.accountable !== undefined) throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
     const overlay = parseOverlay(input.overlay ?? {});
+    await this.skills.requireRefs(input.orgId, overlay.skills?.add);
     const base = input.extends === undefined ? undefined : await this.pinTarget(input.orgId, input.extends);
 
     const agentId = this.newId();
@@ -445,6 +452,7 @@ export class AgentStore {
     const draft = await this.getDraft(input.orgId, input.agentId);
     if (draft === undefined) throw notFound();
     if (draft.revision !== input.expectedRevision) throw conflict();
+    await this.skills.requireRefs(input.orgId, overlay.skills?.add);
     let base: BaseRef | undefined = draft.extends;
     if (input.extends === null) base = undefined;
     else if (input.extends !== undefined && input.extends !== draft.extends?.agentId) {
@@ -506,8 +514,12 @@ export class AgentStore {
    * the `latestVersion` and draft revision read here, so of two concurrent publishes one wins and the other conflicts. With
    * `expectedCurrentVersion` (`null` for none) it also applies only while that is the current version: what a caller compared the
    * draft against before deciding it was safe to publish.
+   *
+   * Every skill the draft adds without a digest is pinned to one in the version: `skillDigests[skillId]` (the digest the caller's recipe
+   * was resolved with, so the version is the recipe that was compared) or else the skill's current digest. The write applies only while
+   * the skill still has that content, so a skill edited in between refuses the publish instead of publishing something else.
    */
-  async publish(input: { orgId: OrgId; agentId: AgentId; expectedDraftRevision: number; digest: string; note?: string; by: string; expectedCurrentVersion?: number | null; request?: RequestMark }): Promise<AgentVersion> {
+  async publish(input: { orgId: OrgId; agentId: AgentId; expectedDraftRevision: number; digest: string; note?: string; by: string; expectedCurrentVersion?: number | null; skillDigests?: Readonly<Record<string, string>>; request?: RequestMark }): Promise<AgentVersion> {
     if (!SHA256_HEX.test(input.digest)) throw coded("CONFIG_INVALID", "digest: must be the recipe's SHA-256 digest");
     const agent = await this.require(input.orgId, input.agentId);
     const draft = await this.getDraft(input.orgId, input.agentId);
@@ -516,9 +528,12 @@ export class AgentStore {
     const n = agent.latestVersion;
     const version = n + 1;
     const publishedAt = this.iso();
+    const added = draft.overlay.skills?.add;
+    const pinned = added === undefined ? undefined : await this.skills.pin(input.orgId, added, input.skillDigests);
+    const overlay: RecipeOverlay = pinned === undefined ? draft.overlay : { ...draft.overlay, skills: { ...draft.overlay.skills, add: pinned.refs } };
     const published: AgentVersion = {
       version,
-      overlay: draft.overlay,
+      overlay,
       ...(draft.extends === undefined ? {} : { extends: draft.extends }),
       name: agent.name,
       description: agent.description,
@@ -540,6 +555,7 @@ export class AgentStore {
         ].join(" AND "),
       }),
       this.event(input.orgId, input.agentId, "published", input.by, { version, digest: input.digest, ...(input.note === undefined ? {} : { note: input.note }) }),
+      ...(pinned?.checks ?? []),
     ], () => conflict(), input.request, published);
     return published;
   }
@@ -752,8 +768,8 @@ export class AgentStore {
 }
 
 export interface ResolveOptions {
-  /** Looks up an added skill's name and digest (Task 9's skill store). Without it, an overlay that adds a skill is refused. */
-  resolveSkill?: (ref: SkillRef) => ResolvedSkill;
+  /** Looks up an added skill's name and digest. Without it, the org's skill registry (`store.skills`) does. */
+  resolveSkill?: (ref: SkillRef) => ResolvedSkill | Promise<ResolvedSkill>;
 }
 
 /** A recipe that can't run: `CONFIG_INVALID` with every problem in the message, and the problems themselves on `problems` (the publish route reports the first). */
@@ -761,10 +777,6 @@ export type RecipeProblemsError = AgentXError & { problems: Array<{ path: string
 
 function problemsError(problems: Array<{ path: string; message: string }>): RecipeProblemsError {
   return Object.assign(coded("CONFIG_INVALID", problems.map(formatRecipeProblem).join("; ")), { problems });
-}
-
-function refuseSkills(): ResolvedSkill {
-  throw coded("CONFIG_INVALID", "skills.add: skills can't be added to an agent yet");
 }
 
 /**
@@ -778,7 +790,7 @@ export async function resolveAgent(
   version: number | "current" | "draft",
   options: ResolveOptions = {},
 ): Promise<ResolvedRecipe> {
-  const resolveSkill = options.resolveSkill ?? refuseSkills;
+  const resolveSkill = options.resolveSkill ?? ((ref: SkillRef) => store.skills.resolve(orgId, ref));
 
   async function layer(id: AgentId, wanted: number | "current" | "draft", trail: Array<{ agentId: AgentId; name: string }>): Promise<ResolvedRecipe> {
     if (isBuiltinAgentId(id)) {
@@ -811,7 +823,10 @@ export async function resolveAgent(
     const problems = overlayProblems(base, content.overlay);
     if (problems.length > 0) throw problemsError(problems);
     const recipeLayer: RecipeLayer = { agentId: id, name: content.name, version: content.version, builtin: false };
-    return applyOverlay(base, content.overlay, recipeLayer, resolveSkill);
+    // The registry is read here, not inside applyOverlay, which is synchronous: the layer's added skills are looked up first.
+    const added = new Map<string, ResolvedSkill>();
+    for (const ref of content.overlay.skills?.add ?? []) added.set(ref.skillId, await resolveSkill(ref));
+    return applyOverlay(base, content.overlay, recipeLayer, (ref) => added.get(ref.skillId)!);
   }
 
   const recipe = await layer(agentId, version, []);
