@@ -3,6 +3,7 @@ import { z } from "zod";
 export const AgentXErrorCodeSchema = z.enum([
   "CONFIG_INVALID",
   "AUTH_REQUIRED",
+  "REAUTH_REQUIRED",
   "FORBIDDEN",
   "NOT_FOUND",
   "PROJECT_REVISION_MISMATCH",
@@ -61,7 +62,8 @@ export class AgentXError extends Error {
 
 export function errorStatus(code: AgentXErrorCode): number {
   if (code === "AUTH_REQUIRED") return 401;
-  if (code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED" || code === "REMOVED_FROM_ORG") return 403;
+  // The sign-in is valid but too old, or the wrong kind, for this change: 403, so a client does not treat it as a sign-in that ended.
+  if (code === "REAUTH_REQUIRED" || code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED" || code === "REMOVED_FROM_ORG") return 403;
   if (code === "NOT_FOUND" || code === "PROJECT_NOT_FOUND" || code === "TASK_NOT_FOUND") return 404;
   if (code === "BUDGET_EXCEEDED" || code === "ORG_BUDGET_EXCEEDED" || code === "MACHINE_TIME_EXCEEDED") return 402;
   if (code === "CONFIG_INVALID") return 400;

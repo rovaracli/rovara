@@ -283,7 +283,12 @@ managed, so a Python project's setup command should make a virtual environment
 - `agentx --env <env> signin check`: checks every piece sign-in needs, and says what to fix.
 - `agentx --env <env> signin unlink cloud|github`: removes that sign-in method from your own account and signs out
   its sessions; your other methods keep working. The method your account was created with, and your only method,
-  cannot be removed.
+  cannot be removed. It needs a sign-in from the last 10 minutes with a method you are keeping: if yours is older,
+  or is the method you are removing, the command signs you in again first and then retries once.
+- `agentx --env <env> signin link cloud|github`: adds a sign-in method you removed earlier back to your own account
+  (the same sign-in as before, never anyone else's). It needs the same fresh sign-in, opens the sign-in in your
+  browser, and the page there says when it is added. Run `agentx whoami` to see it. A sign-in that has since started
+  its own account cannot be added back.
 
 Developers need no AWS credentials: they run `npx @preplabsai/rovara-code login <control plane URL>`.
 To hand tasks to Rovara from Claude Code, Codex or Cursor, and to share them to Slack, they follow

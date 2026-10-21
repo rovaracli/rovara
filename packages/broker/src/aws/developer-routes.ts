@@ -42,6 +42,10 @@ import {
   type EndDeveloperSessionsResponse,
   type UnlinkIdentityRequest,
   type UnlinkIdentityResponse,
+  type StartIdentityLinkRequest,
+  type StartIdentityLinkResponse,
+  StartIdentityLinkAppResponseSchema,
+  type StartIdentityLinkAppResponse,
   UnlinkableSignInMethodSchema,
   type LinkedIdentity,
   type OrgId,
@@ -115,6 +119,8 @@ export interface DeveloperApiConfiguration {
   endDeveloperSessions?: (request: EndDeveloperSessionsRequest) => Promise<EndDeveloperSessionsResponse>;
   /** Plan 2, Task 8: a person unlinks one of their own sign-in methods, through DeveloperIdentity (the broker only reads the sign-in table). */
   unlinkIdentity?: (request: UnlinkIdentityRequest) => Promise<UnlinkIdentityResponse>;
+  /** Plan 2, Task 8b: a person starts adding a sign-in method they removed earlier back, through DeveloperIdentity (it owns the sign-in table's writes). */
+  startIdentityLink?: (request: StartIdentityLinkRequest) => Promise<StartIdentityLinkResponse>;
   /** Spec 025 E12: a public channel by its name, through DeveloperIdentity. */
   channelByName?: (request: ChannelByNameRequest) => Promise<ChannelByNameResponse>;
   /** Verifies the Authorization header's developer access token (D17; verify-token.ts) and returns its claims. */
@@ -185,7 +191,7 @@ type IdentityRefusal = typeof SLACK_UNAVAILABLE | { ok: false; error: "invalid_r
  */
 async function identityInvoke<T>(
   invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>,
-  request: ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | ChannelByNameRequest,
+  request: ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest,
   readReply: (reply: Record<string, unknown>) => T | undefined,
   event: string,
 ): Promise<T | IdentityRefusal> {
@@ -339,21 +345,39 @@ export function endDeveloperSessionsThroughLambda(invoke: (payload: Uint8Array) 
   };
 }
 
+/** The words a refusal of the sign-in function carries to the person: short, and nothing the function did not write for them. */
+const refusalMessageOf = (reply: Record<string, unknown>): string | undefined =>
+  typeof reply.message === "string" && reply.message.length > 0 && reply.message.length <= 200 ? reply.message : undefined;
+
 /**
- * Plan 2, Task 8: unlinks a sign-in method through DeveloperIdentity. A refusal (the only way in, or the first sign-in) and a method that
- * is not linked are answers, passed on in the person's words; every other failure is unavailable.
+ * Plan 2, Task 8 and 8b: unlinks a sign-in method through DeveloperIdentity. A refusal (the only way in, or the first sign-in), a sign-in
+ * that is not fresh enough or is the method being removed (`reauth`), and a method that is not linked are answers, passed on in the
+ * person's words; every other failure is unavailable.
  */
 export function unlinkIdentityThroughLambda(invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>): (request: UnlinkIdentityRequest) => Promise<UnlinkIdentityResponse> {
   return async (request) => {
     const answer = await identityInvoke(invoke, request, (reply): UnlinkIdentityResponse | undefined => {
       if (reply.ok === true) return { ok: true };
       if (reply.ok === false && reply.error === "not_found") return { ok: false, error: "not_found" };
-      if (reply.ok === false && reply.error === "refused" && typeof reply.message === "string" && reply.message.length > 0 && reply.message.length <= 200) {
-        return { ok: false, error: "refused", message: reply.message };
-      }
+      const message = refusalMessageOf(reply);
+      if (reply.ok === false && (reply.error === "refused" || reply.error === "reauth") && message !== undefined) return { ok: false, error: reply.error, message };
       return undefined;
     }, "developer.unlink_identity");
-    if (answer.ok || answer.error === "not_found" || answer.error === "refused" || answer.error === "invalid_request") return answer;
+    if (answer.ok || answer.error === "not_found" || answer.error === "refused" || answer.error === "reauth" || answer.error === "invalid_request") return answer;
+    return { ok: false, error: "unavailable" };
+  };
+}
+
+/** Plan 2, Task 8b: starts adding a removed sign-in method back through DeveloperIdentity; its answer is the sign-in link, or why not. */
+export function startIdentityLinkThroughLambda(invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>): (request: StartIdentityLinkRequest) => Promise<StartIdentityLinkResponse> {
+  return async (request) => {
+    const answer = await identityInvoke(invoke, request, (reply): StartIdentityLinkResponse | undefined => {
+      if (reply.ok === true && typeof reply.authorizeUrl === "string" && StartIdentityLinkAppResponseSchema.safeParse({ authorizeUrl: reply.authorizeUrl }).success) return { ok: true, authorizeUrl: reply.authorizeUrl };
+      const message = refusalMessageOf(reply);
+      if (reply.ok === false && (reply.error === "refused" || reply.error === "reauth") && message !== undefined) return { ok: false, error: reply.error, message };
+      return undefined;
+    }, "developer.start_identity_link");
+    if (answer.ok || answer.error === "refused" || answer.error === "reauth" || answer.error === "invalid_request") return answer;
     return { ok: false, error: "unavailable" };
   };
 }
@@ -961,6 +985,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && url.pathname === "/v1/app/org/leave") return leaveOrganization(deps, caller, jsonBody(request));
   const identityRoute = /^\/v1\/app\/me\/identities\/([a-z]{1,16})$/.exec(url.pathname);
   if (identityRoute !== null && request.method === "DELETE") return unlinkAppIdentity(deps, caller, identityRoute[1]!);
+  if (identityRoute !== null && request.method === "POST") return startAppIdentityLink(deps, caller, identityRoute[1]!);
   const memberRoute = /^\/v1\/app\/org\/members\/([a-f0-9]{64})(\/role)?$/.exec(url.pathname);
   if (memberRoute !== null && request.method === "PUT" && memberRoute[2] !== undefined) return changeMemberRole(deps, caller, memberRoute[1]!, jsonBody(request));
   if (memberRoute !== null && request.method === "DELETE" && memberRoute[2] === undefined) return removeOrganizationMember(deps, caller, memberRoute[1]!);
@@ -1013,14 +1038,35 @@ async function unlinkAppIdentity(deps: DeveloperRouteDependencies, caller: Devel
   const method = UnlinkableSignInMethodSchema.safeParse(provider);
   if (!method.success) throw agentXError("CONFIG_INVALID", "name the sign-in method to remove: cloud or github");
   if (deps.developer.unlinkIdentity === undefined) throw agentXError("NOT_FOUND", "removing a sign-in method is not set up in this deployment");
-  const answer = await deps.developer.unlinkIdentity({ kind: "unlink-identity", developerId: caller.developerId, provider: method.data });
+  const answer = await deps.developer.unlinkIdentity({ kind: "unlink-identity", developerId: caller.developerId, sessionId: caller.sessionId, provider: method.data });
   if (!answer.ok) {
+    // Removing a method needs a fresh sign-in with another method (Plan 2, Task 8b); the message says which is missing.
+    if (answer.error === "reauth") throw agentXError("REAUTH_REQUIRED", answer.message);
     if (answer.error === "refused") throw agentXError("CONFIG_INVALID", answer.message);
     if (answer.error === "not_found") throw agentXError("NOT_FOUND", "that sign-in method is not linked to your account");
     throw agentXError("RUNTIME_UNAVAILABLE", "removing the sign-in method did not complete; try again");
   }
   logDeveloperEvent({ event: "developer.identity_unlinked", provider: method.data });
   return { identities: await signInStoreOf(deps).identitiesOf(caller.developerId) };
+}
+
+/**
+ * `POST /v1/app/me/identities/{provider}`: starts adding a sign-in method the caller removed earlier back to their own account. The
+ * developer and the session are the verified token's (`caller`), never anything the request carries; the session must be fresh. The answer
+ * is the sign-in link to open, which links the identity back only to this developer.
+ */
+async function startAppIdentityLink(deps: DeveloperRouteDependencies, caller: DeveloperCaller, provider: string): Promise<StartIdentityLinkAppResponse> {
+  const method = UnlinkableSignInMethodSchema.safeParse(provider);
+  if (!method.success) throw agentXError("CONFIG_INVALID", "name the sign-in method to add back: cloud or github");
+  if (deps.developer.startIdentityLink === undefined) throw agentXError("NOT_FOUND", "adding a sign-in method back is not set up in this deployment");
+  const answer = await deps.developer.startIdentityLink({ kind: "start-identity-link", developerId: caller.developerId, sessionId: caller.sessionId, provider: method.data });
+  if (!answer.ok) {
+    if (answer.error === "reauth") throw agentXError("REAUTH_REQUIRED", answer.message);
+    if (answer.error === "refused") throw agentXError("CONFIG_INVALID", answer.message);
+    throw agentXError("RUNTIME_UNAVAILABLE", "adding the sign-in method back did not start; try again");
+  }
+  logDeveloperEvent({ event: "developer.identity_link_started", provider: method.data });
+  return { authorizeUrl: answer.authorizeUrl };
 }
 
 /** The caller's own org and their role in it. */

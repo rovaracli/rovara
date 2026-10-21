@@ -41,7 +41,7 @@ import { disableEvalChannel, enableEvalChannel, parseMaxCostUsd, showEvalChannel
 import { exportTurns, parseSince } from "./admin/turns.js";
 import { loginWithPkce, openSystemBrowser, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
-import { createDeveloperProject, createProjectText, developerLogout, fetchDeveloperProjects, fetchLinkedIdentities, logoutText, unlinkSignInMethod, unlinkText, whoamiText } from "./developer/commands.js";
+import { createDeveloperProject, createProjectText, developerLogout, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
 import { orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
@@ -535,14 +535,41 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   // commands are the operator's).
   const signinCommand = program.commands.find((candidate) => candidate.name() === "signin");
   if (signinCommand === undefined) throw new Error("the signin command is registered by registerSigninCommands");
+  /** The fresh sign-in `signin unlink` and `signin link` run when the server asks for one: today's developer login, then the request again. */
+  const freshSignInFor = (command: Command, browser: boolean): FreshSignIn => async ({ url, exclude, reason }) => {
+    services.stderr.write(`This needs a fresh sign-in (${reason}). Signing in again now.\n`);
+    await developerLogin({
+      url, allowLoopback: globalOptions(command).allowLoopback, browser, home, tokenStore: services.tokenStore, fetch: services.fetchImplementation,
+      write: (line) => { services.stderr.write(`${line}\n`); },
+      ...(dependencies.login?.openBrowser === undefined ? {} : { openBrowser: dependencies.login.openBrowser }),
+      ...(exclude === undefined ? {} : { excludeMethod: exclude }),
+      fresh: true,
+    });
+  };
   signinCommand
     .command("unlink")
-    .description("remove a sign-in method (cloud or github) from your own Rovara account; sessions signed in that way end")
+    .description("remove a sign-in method (cloud or github) from your own Rovara account; sessions signed in that way end. Needs a sign-in from the last 10 minutes with another method")
     .argument("<method>", "cloud or github")
-    .action(async (method: string, _options: Record<string, never>, command: Command) => {
+    .option("--no-browser", "if a fresh sign-in is needed, print the sign-in link instead of opening a browser")
+    .action(async (method: string, options: { browser: boolean }, command: Command) => {
       const globals = globalOptions(command);
-      const result = await unlinkSignInMethod(developerSession(), developerEnv(command), method);
+      const result = await unlinkSignInMethod(developerSession(), developerEnv(command), method, freshSignInFor(command, options.browser));
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, removed: result.provider, identities: result.identities }, true) : unlinkText(result));
+    });
+  signinCommand
+    .command("link")
+    .description("add a sign-in method (cloud or github) you removed earlier back to your own Rovara account. Needs a sign-in from the last 10 minutes")
+    .argument("<method>", "cloud or github")
+    .option("--no-browser", "print the sign-in link instead of opening a browser")
+    .action(async (method: string, options: { browser: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await linkSignInMethod(developerSession(), developerEnv(command), method, freshSignInFor(command, options.browser));
+      if (globals.json) {
+        services.stdout.write(formatSuccess({ env: result.env, url: result.url, provider: result.provider, authorizeUrl: result.authorizeUrl }, true));
+        return;
+      }
+      services.stdout.write(linkText(result, options.browser));
+      if (options.browser) await (dependencies.login?.openBrowser ?? openSystemBrowser)(result.authorizeUrl).catch(() => undefined);
     });
   registerConfigCommands(program, {
     ...(dependencies.config === undefined ? {} : { overrides: dependencies.config }), parameterStore, fetch: services.fetchImplementation, stdout: services.stdout, stderr: services.stderr,

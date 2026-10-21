@@ -22,7 +22,8 @@ export class ProviderNotConfiguredError extends Error { override name = "Provide
 
 export interface SignInProvider {
   readonly method: DeveloperSignInMethod;
-  authorizeUrl(input: { state: string; nonce: string; redirectUri: string }): Promise<string>;
+  /** `prompt: "login"` (Plan 2, Task 8b) asks the provider to have the person sign in again instead of reusing its browser session, where it can (the OpenID Connect providers; Slack and GitHub have no such option). */
+  authorizeUrl(input: { state: string; nonce: string; redirectUri: string; prompt?: "login" }): Promise<string>;
   complete(input: { code: string; nonce: string; redirectUri: string }): Promise<ProviderResult>;
 }
 
@@ -160,10 +161,10 @@ export function oidcSignInProvider(input: {
   };
   return {
     method,
-    async authorizeUrl({ state, nonce, redirectUri }) {
+    async authorizeUrl({ state, nonce, redirectUri, prompt }) {
       const doc = await discover();
       const url = new URL(doc.authorization_endpoint);
-      for (const [key, value] of Object.entries({ response_type: "code", scope: SCOPES, client_id: input.clientId, state, nonce, redirect_uri: redirectUri })) url.searchParams.set(key, value);
+      for (const [key, value] of Object.entries({ response_type: "code", scope: SCOPES, client_id: input.clientId, state, nonce, redirect_uri: redirectUri, ...(prompt === undefined ? {} : { prompt }) })) url.searchParams.set(key, value);
       return url.toString();
     },
     async complete({ code, nonce, redirectUri }) {

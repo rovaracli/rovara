@@ -1,5 +1,5 @@
 // agentx whoami and agentx logout (FR-011).
-import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, UnlinkIdentityAppResponseSchema, UnlinkableSignInMethodSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, StartIdentityLinkAppResponseSchema, UnlinkIdentityAppResponseSchema, UnlinkableSignInMethodSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerTokenKey, removeDeveloperEnvironment, resolveDeveloperEnvironment } from "./config.js";
 import { developerAccessToken, type DeveloperSessionDeps } from "./session.js";
@@ -50,7 +50,9 @@ export async function developerRequest<T>(
     const reason = refusalMessage(refusal);
     // A 409 is a refusal the person can act on (such as LAST_OWNER), shown as the server worded it, under the code it named.
     const named = AgentXErrorCodeSchema.safeParse((refusal as { error?: { code?: unknown } } | undefined)?.error?.code);
-    if (reason !== undefined) throw agentXError(response.status === 400 ? "CONFIG_INVALID" : response.status === 403 ? "FORBIDDEN" : response.status === 409 ? (named.success ? named.data : "CONFIG_INVALID") : "NOT_FOUND", reason);
+    // A 403 that asks for a fresh sign-in (REAUTH_REQUIRED) keeps its code, so the caller can run one; any other 403 is FORBIDDEN.
+    const forbidden = named.success && named.data === "REAUTH_REQUIRED" ? "REAUTH_REQUIRED" : "FORBIDDEN";
+    if (reason !== undefined) throw agentXError(response.status === 400 ? "CONFIG_INVALID" : response.status === 403 ? forbidden : response.status === 409 ? (named.success ? named.data : "CONFIG_INVALID") : "NOT_FOUND", reason);
   }
   if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `AgentX answered HTTP ${response.status}; try again`);
   const parsed = schema.safeParse(await response.json().catch(() => undefined));
@@ -130,18 +132,41 @@ export function whoamiText(result: { env: string; url: string; projects: Develop
   return `${lines.join("\n")}\n`;
 }
 
-/** What `agentx signin unlink` calls each method, for its output. */
+/** What `agentx signin unlink` and `agentx signin link` call each method, for their output. */
 const UNLINK_METHOD_TEXT = { cloud: "Rovara sign-in (email code)", github: "GitHub" } as const;
 
 /**
- * `agentx signin unlink <cloud|github>` (Plan 2, Task 8): removes one sign-in method from the signed-in developer's own account. Sessions
- * made with that method end; the others go on. The server refuses the account's only sign-in method and the one it was created with,
- * in its own words.
+ * Runs a fresh sign-in for the environment (Plan 2, Task 8b): the browser or email-code sign-in `agentx login` does, with `exclude` (the
+ * method being removed) left out of the choices. `reason` is the server's words for why one is needed.
  */
-export async function unlinkSignInMethod(deps: DeveloperSessionDeps, env: string | undefined, provider: string): Promise<{ env: string; url: string; provider: "cloud" | "github"; identities: LinkedIdentity[] }> {
+export type FreshSignIn = (input: { env: string; url: string; exclude?: "cloud" | "github"; reason: string }) => Promise<void>;
+
+/**
+ * Changing the account's sign-in methods needs a sign-in from the last ten minutes, with a method that is not the one being removed. When
+ * the server says so (REAUTH_REQUIRED), this signs in again once, with `freshSignIn`, and retries the request once; a second refusal is
+ * the person's to read. With no `freshSignIn` the refusal is shown at once.
+ */
+async function withFreshSignIn<T>(deps: DeveloperSessionDeps, env: string | undefined, exclude: "cloud" | "github" | undefined, freshSignIn: FreshSignIn | undefined, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (!(error instanceof AgentXError) || error.code !== "REAUTH_REQUIRED" || freshSignIn === undefined) throw error;
+    const resolved = await resolveDeveloperEnvironment(deps.home, env);
+    await freshSignIn({ env: resolved.env, url: resolved.entry.url, ...(exclude === undefined ? {} : { exclude }), reason: error.message.replace(/^REAUTH_REQUIRED: /, "") });
+    return run();
+  }
+}
+
+/**
+ * `agentx signin unlink <cloud|github>` (Plan 2, Task 8 and 8b): removes one sign-in method from the signed-in developer's own account. Sessions
+ * made with that method end; the others go on. The server refuses the account's only sign-in method and the one it was created with,
+ * in its own words, and wants a sign-in from the last ten minutes with another method (see `withFreshSignIn`).
+ */
+export async function unlinkSignInMethod(deps: DeveloperSessionDeps, env: string | undefined, provider: string, freshSignIn?: FreshSignIn): Promise<{ env: string; url: string; provider: "cloud" | "github"; identities: LinkedIdentity[] }> {
   const method = UnlinkableSignInMethodSchema.safeParse(provider);
   if (!method.success) throw agentXError("CONFIG_INVALID", `unknown sign-in method ${JSON.stringify(sanitizeServerText(provider))}; use cloud or github`);
-  const { env: resolved, url, body } = await developerRequest(deps, env, `/v1/app/me/identities/${method.data}`, UnlinkIdentityAppResponseSchema, { method: "DELETE", explain: true });
+  const { env: resolved, url, body } = await withFreshSignIn(deps, env, method.data, freshSignIn,
+    () => developerRequest(deps, env, `/v1/app/me/identities/${method.data}`, UnlinkIdentityAppResponseSchema, { method: "DELETE", explain: true }));
   return { env: resolved, url, provider: method.data, identities: body.identities };
 }
 
@@ -149,6 +174,28 @@ export function unlinkText(result: { provider: "cloud" | "github"; identities: L
   const left = result.identities.map((identity) => SIGN_IN_METHOD_TEXT[identity.provider]);
   return `Removed ${UNLINK_METHOD_TEXT[result.provider]} from your account. Sessions signed in that way have ended.\n`
     + `${left.length === 0 ? "No sign-in methods are linked." : `You can still sign in with ${left.join(", ")}.`}\n`;
+}
+
+/**
+ * `agentx signin link <cloud|github>` (Plan 2, Task 8b): asks for the sign-in link that adds a method the person removed earlier back to
+ * their own account. It only ever links that identity back to this account; the page the link opens says how it went. Like a removal it
+ * wants a sign-in from the last ten minutes (any method).
+ */
+export async function linkSignInMethod(deps: DeveloperSessionDeps, env: string | undefined, provider: string, freshSignIn?: FreshSignIn): Promise<{ env: string; url: string; provider: "cloud" | "github"; authorizeUrl: string }> {
+  const method = UnlinkableSignInMethodSchema.safeParse(provider);
+  if (!method.success) throw agentXError("CONFIG_INVALID", `unknown sign-in method ${JSON.stringify(sanitizeServerText(provider))}; use cloud or github`);
+  const { env: resolved, url, body } = await withFreshSignIn(deps, env, undefined, freshSignIn,
+    () => developerRequest(deps, env, `/v1/app/me/identities/${method.data}`, StartIdentityLinkAppResponseSchema, { method: "POST", explain: true }));
+  return { env: resolved, url, provider: method.data, authorizeUrl: body.authorizeUrl };
+}
+
+export function linkText(result: { provider: "cloud" | "github"; authorizeUrl: string }, browser: boolean): string {
+  const method = UNLINK_METHOD_TEXT[result.provider];
+  const first = browser
+    ? `Opening your browser to add ${method} back to your account. If it does not open, open this link:`
+    : `Open this link in a browser to add ${method} back to your account:`;
+  return `${first}\n${result.authorizeUrl}\n`
+    + "When the page says it was added, run agentx whoami to see it. Only a sign-in method you removed from this account can be added back.\n";
 }
 
 /** `agentx project create` (ruling R55): the signed-in owner or admin of a cloud org creates a project from a repository. */
