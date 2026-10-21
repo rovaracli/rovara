@@ -56,8 +56,8 @@ export const AppProjectDetailSchema = AppProjectSummarySchema.extend({
 });
 export type AppProjectDetail = z.infer<typeof AppProjectDetailSchema>;
 
-/** The answer to archiving or restoring a project (Plan 2, Task 20): the project as the app now shows it. */
-export const ProjectArchiveResponseSchema = z.object({ project: AppProjectDetailSchema });
+/** The answer to archiving or restoring a project (Plan 2, Task 20): the project as the app now shows it, and a warning when the firewall could not be told at once. */
+export const ProjectArchiveResponseSchema = z.object({ project: AppProjectDetailSchema, warnings: z.array(z.string()) });
 export type ProjectArchiveResponse = z.infer<typeof ProjectArchiveResponseSchema>;
 
 export const AppProjectsResponseSchema = z.object({ projects: z.array(AppProjectSummarySchema) });

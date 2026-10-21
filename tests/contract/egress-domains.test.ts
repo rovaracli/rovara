@@ -374,7 +374,7 @@ describe("egress items", () => {
     expect(h.audits().map((audit) => audit.action).sort()).toEqual(["approved", "requested", "requested"]);
     expect(h.sync).toHaveBeenCalledTimes(2);
     // An owner with no item has nothing to flip.
-    await expect(setEgressOwnerActive(h.deps, TEST_ORG, SOURCE, false)).resolves.toBeUndefined();
+    await expect(setEgressOwnerActive(h.deps, TEST_ORG, SOURCE, false)).resolves.toEqual({});
     expect(h.item(TEST_ORG, SOURCE)).toBeUndefined();
   });
 

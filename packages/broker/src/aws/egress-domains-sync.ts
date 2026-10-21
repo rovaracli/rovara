@@ -18,6 +18,7 @@ import {
   type OrgId,
   type OrgKey,
 } from "@agentx/contracts";
+import { reconcileProjectEgress } from "../org/project-archive.js";
 import { approvedUnion, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
 
 /** Route 53 Resolver's UpdateFirewallDomains: "There is a limit of 1000 domains per request" (API reference, UpdateFirewallDomains, Domains). */
@@ -221,7 +222,7 @@ export async function backfillLegacyEgress(deps: EgressDomainsDependencies): Pro
 }
 
 /**
- * The scheduled run (every 5 minutes): the one-off legacy backfill, then the sync. A backfill failure does not stop the sync (the firewall must
+ * The scheduled run (every 5 minutes): the one-off legacy backfill, the reconcile of project items with their META (Task 20), then the sync. A backfill or reconcile failure does not stop the sync (the firewall must
  * follow approvals either way) but makes the result `{ ok: false }` so the run is seen to have failed and tried again.
  */
 export async function runEgressDomainsSync(deps: EgressDomainsDependencies): Promise<{ ok: boolean; domains: number; backfilled: number }> {
@@ -233,6 +234,14 @@ export async function runEgressDomainsSync(deps: EgressDomainsDependencies): Pro
     backfillOk = false;
     log("backfill_failed", { error: error instanceof Error ? error.name : "UnknownError" });
   }
+  // An archive or restore that stopped after its META write: the items are made to agree with their projects before the union is sent.
+  let reconciled = true;
+  try {
+    await reconcileProjectEgress({ documentClient: deps.documentClient, tableName: deps.tableName, egress: deps });
+  } catch (error) {
+    reconciled = false;
+    log("reconcile_failed", { error: error instanceof Error ? error.name : "UnknownError" });
+  }
   const synced = await deps.sync();
-  return { ok: synced.ok && backfillOk, domains: synced.domains ?? 0, backfilled };
+  return { ok: synced.ok && backfillOk && reconciled, domains: synced.domains ?? 0, backfilled };
 }

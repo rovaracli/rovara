@@ -4,7 +4,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
-  AppProjectsResponseSchema, egressDomainsKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, type EgressOwner, type OrgId,
+  AppProjectsResponseSchema, EGRESS_SYNC_PENDING_WARNING, egressDomainsKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, type EgressOwner, type OrgId,
 } from "../../packages/contracts/src/index.js";
 import { createCandidateManifest } from "../../packages/contracts/src/task-workflow.js";
 import { approvedUnion, decideEgressDomain, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../../packages/broker/src/org/egress-domains.js";
@@ -34,8 +34,8 @@ const metaOf = (h: Harness, name = "payments", orgId: OrgId = TEST_ORG) => h.db.
 const listed = async (h: Harness, who: Developer, query = "") => (await h.dev(who, "GET", `/v1/app/projects${query}`)).body.projects as Array<{ name: string; status: string }> | undefined;
 
 /** A cloud install whose firewall sync is a spy, so a test sees when an archive or restore asks for it. */
-async function cloudInstall() {
-  const sync = vi.fn(async () => ({ ok: true, domains: 0 }));
+async function cloudInstall(options: { syncOk?: boolean } = {}) {
+  const sync = vi.fn(async () => ({ ok: options.syncOk ?? true, domains: 0 }));
   const h = await createDeveloperTaskBroker({ brokerExtra: { cloud: true, egressDomainsSync: sync } });
   setRole(h.db, OMAR, "owner");
   const egress: EgressDomainsDependencies = { documentClient: h.db, tableName: "state", cloud: true, now: () => new Date(), sync };
@@ -343,6 +343,119 @@ describe("the project's approved domains", () => {
   });
 });
 
+describe("the scheduled sync repairs an archive or restore that stopped after META (fix round, Important 1)", () => {
+  const scheduled = (h: Awaited<ReturnType<typeof cloudInstall>>) => h.handler({ source: "agentx.egress-domains-sync" });
+  const archivedMeta = (h: Harness, name = "payments", orgId: OrgId = TEST_ORG) =>
+    h.db.set({ ...(metaOf(h, name, orgId) as object), status: "archived", archivedAt: "2026-10-21T10:00:00.000Z", archivedBy: OMAR.developerId });
+
+  it("takes an archived project's still-active items out of the union", async () => {
+    const h = await cloudInstall();
+    await h.approve(["artifacts.acme.dev"]);
+    archivedMeta(h);
+    // The process died here: META says archived, the item is still active, the union still serves the domain.
+    expect(await approvedUnion(h.egress)).toEqual(["artifacts.acme.dev"]);
+    const run = await scheduled(h);
+    expect(run.statusCode).toBe(200);
+    expect(await approvedUnion(h.egress)).toEqual([]);
+    expect(await readEgressDomains(h.egress, TEST_ORG, PAYMENTS)).toMatchObject({ active: false, domains: [{ domain: "artifacts.acme.dev", status: "approved" }] });
+  });
+
+  it("puts a restored project's inactive items back in the union", async () => {
+    const h = await cloudInstall();
+    await h.approve(["artifacts.acme.dev"]);
+    await archiveRoute(h, OMAR);
+    // The process died after the restore wrote META: the project is active and its item is still inactive.
+    const { archivedAt: _at, archivedBy: _by, ...rest } = metaOf(h)!;
+    void _at; void _by;
+    h.db.set({ ...rest, status: "active" });
+    expect(await approvedUnion(h.egress)).toEqual([]);
+    expect((await scheduled(h)).statusCode).toBe(200);
+    expect(await approvedUnion(h.egress)).toEqual(["artifacts.acme.dev"]);
+  });
+
+  it("leaves items that already agree with their project alone, and a project with no META reads as active", async () => {
+    const h = await cloudInstall();
+    await h.approve(["artifacts.acme.dev"]);
+    h.db.delete(projectMetaKey(TEST_ORG, "payments"));
+    h.sync.mockClear();
+    expect((await scheduled(h)).statusCode).toBe(200);
+    expect(await approvedUnion(h.egress)).toEqual(["artifacts.acme.dev"]);
+    expect(await readEgressDomains(h.egress, TEST_ORG, PAYMENTS)).toMatchObject({ active: true });
+  });
+
+  it("repairs each org's projects by their own META", async () => {
+    const h = await cloudInstall();
+    h.db.set({ ...projectMetaKey(OTHER_ORG, "payments"), entityType: "PROJECT_META", name: "payments", status: "active", createdAt: "x", createdBy: "y" });
+    await h.approve(["a.acme.dev"]);
+    await h.approve(["b.acme.dev"], "payments", OTHER_ORG);
+    archivedMeta(h);
+    await scheduled(h);
+    expect(await approvedUnion(h.egress)).toEqual(["b.acme.dev"]);
+  });
+});
+
+describe("the answer's warnings and the stored request id (fix round)", () => {
+  it("carries the pending-sync warning when the firewall could not be told, and none when it could", async () => {
+    const failing = await cloudInstall({ syncOk: false });
+    await failing.approve(["artifacts.acme.dev"]);
+    const archived = await archiveRoute(failing, OMAR);
+    expect(archived.status).toBe(200);
+    expect(archived.body.warnings).toEqual([EGRESS_SYNC_PENDING_WARNING]);
+    expect((await restoreRoute(failing, OMAR)).body.warnings).toEqual([EGRESS_SYNC_PENDING_WARNING]);
+    const working = await cloudInstall();
+    await working.approve(["artifacts.acme.dev"]);
+    expect((await archiveRoute(working, OMAR)).body.warnings).toEqual([]);
+    expect((await restoreRoute(working, OMAR)).body.warnings).toEqual([]);
+  });
+
+  it("answers a replay of the same request id without applying it again: a late archive after a restore leaves the project active", async () => {
+    const h = await createDeveloperTaskBroker();
+    setRole(h.db, OMAR, "owner");
+    const first = randomUUID();
+    expect((await archiveRoute(h, OMAR, "payments", { requestId: first })).status).toBe(200);
+    expect((await restoreRoute(h, OMAR)).status).toBe(200);
+    const late = await archiveRoute(h, OMAR, "payments", { requestId: first });
+    expect(late.status).toBe(200);
+    expect(late.body.project).toMatchObject({ status: "active" });
+    expect(late.body.warnings).toEqual([]);
+    expect(metaOf(h)).toMatchObject({ status: "active" });
+    // The same goes for a late restore after a second archive.
+    const restoreId = randomUUID();
+    await restoreRoute(h, OMAR, "payments", { requestId: restoreId });
+    await archiveRoute(h, OMAR);
+    expect((await restoreRoute(h, OMAR, "payments", { requestId: restoreId })).body.project).toMatchObject({ status: "archived" });
+    expect(metaOf(h)).toMatchObject({ status: "archived" });
+  });
+
+  it("refuses one request id used for the other action, and does not store an id whose call failed", async () => {
+    const h = await cloudInstall();
+    await h.approve(["artifacts.acme.dev"]);
+    const id = randomUUID();
+    h.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
+    expect((await archiveRoute(h, OMAR, "payments", { requestId: id })).status).toBeGreaterThanOrEqual(500);
+    // The retry with the same id is not a replay: it finishes the job.
+    const retried = await archiveRoute(h, OMAR, "payments", { requestId: id });
+    expect(retried.status).toBe(200);
+    expect(await approvedUnion(h.egress)).toEqual([]);
+    const other = await restoreRoute(h, OMAR, "payments", { requestId: id });
+    expect(other.status).toBe(409);
+    expect(other.body.error).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    expect(metaOf(h)).toMatchObject({ status: "archived" });
+  });
+
+  it("keeps a request id to its own project", async () => {
+    const h = await createDeveloperTaskBroker();
+    setRole(h.db, OMAR, "owner");
+    h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "web"), entityType: "PROJECT_CATALOG", name: "web", latestRevision: 1, firstRegisteredAt: "x" });
+    const id = randomUUID();
+    await archiveRoute(h, OMAR, "payments", { requestId: id });
+    // Another project's archive under the same id is its own request, not a replay.
+    const key = (name: string) => h.db.find((item) => item.pk === projectMetaKey(TEST_ORG, name).pk && typeof item.sk === "string" && item.sk.startsWith("ARCHIVE_REQUEST#"));
+    expect(key("payments")).toHaveLength(1);
+    expect(key("web")).toHaveLength(0);
+  });
+});
+
 describe("a settings save on an archived project", () => {
   const command = (executable: string, args: string[], timeoutSeconds: number) => ({ cwd: "repo/web", executable, args, timeoutSeconds });
 
@@ -436,7 +549,11 @@ describe("closing an org archives its projects (POST /v1/app/org/leave by the on
     await putEgressDomains(egress, TEST_ORG, PAYMENTS, ["p.acme.dev"], { developerId: OMAR.developerId });
     await decideEgressDomain(egress, { orgId: TEST_ORG, owner: PAYMENTS, domain: "p.acme.dev", decision: "approved", operatorId: "operator-1" });
 
+    // Closing makes no per-project flip or sync: the items are deleted by clearOrgEgress, whose one sync follows. At each sync, alpha's item is already gone.
+    const seen: Array<boolean> = [];
+    sync.mockImplementation(async () => { seen.push(h.db.get(egressDomainsKey(orgA, { kind: "project", project: "alpha" })) !== undefined); return { ok: true, domains: 0 }; });
     const left = await h.dev(zed, "POST", "/v1/app/org/leave", { requestId: randomUUID() });
+    expect(seen).toEqual([false]);
     expect(left.status, JSON.stringify(left.body)).toBe(200);
     expect(left.body).toMatchObject({ orgClosed: true });
     expect(metaOf(h, "alpha", orgA)).toMatchObject({ status: "archived", archivedBy: zed.developerId });

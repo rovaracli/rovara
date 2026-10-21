@@ -1260,7 +1260,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   // Plan 2, Task 20: a maintainer archives a project (asking first) and restores it.
   projectCommand
     .command("archive")
-    .description("archive a project, on Rovara Cloud (a maintainer of the project): no new tasks can start in it; running work keeps going. Asks first")
+    .description("archive a project (a maintainer of the project): no new tasks can start in it; running work keeps going. Asks first")
     .argument("<name>", "the project's name")
     .option("--yes", "archive without asking", false)
     .action(async (name: string, options: { yes: boolean }, command: Command) => {
@@ -1268,16 +1268,16 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const confirm = changeConfirmer(options.yes);
       if (!await confirm(archiveProjectQuestion(name))) throw agentXError("CONFIRMATION_DECLINED", `you did not archive ${name}; nothing changed`);
       const result = await changeDeveloperProjectArchive(developerSession(), developerEnv(command), name, "archive", randomUUID());
-      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project }, true) : archiveProjectText(result.project));
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project, warnings: result.warnings }, true) : archiveProjectText(result));
     });
   projectCommand
     .command("restore")
-    .description("restore an archived project, on Rovara Cloud (a maintainer of the project)")
+    .description("restore an archived project (a maintainer of the project)")
     .argument("<name>", "the project's name")
     .action(async (name: string, _options: unknown, command: Command) => {
       const globals = globalOptions(command);
       const result = await changeDeveloperProjectArchive(developerSession(), developerEnv(command), name, "restore", randomUUID());
-      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project }, true) : restoreProjectText(result.project));
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project, warnings: result.warnings }, true) : restoreProjectText(result));
     });
   const collect = (value: string, previous: string[]) => [...previous, value];
   projectCommand

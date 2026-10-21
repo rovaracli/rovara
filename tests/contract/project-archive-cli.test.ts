@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
-import { executeCli } from "../../packages/cli/src/main.js";
+import { createCliProgram, executeCli } from "../../packages/cli/src/main.js";
 import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";
 
 const URL_ = "https://abc123.execute-api.us-west-2.amazonaws.com";
@@ -47,9 +47,9 @@ async function cli(answer: (method: string, path: string) => Response, options: 
 describe("agentx project archive", () => {
   it("asks first, then posts a request id to the archive route with the developer session and says what changed", async () => {
     const questions: string[] = [];
-    const h = await cli(() => Response.json({ project: detail("archived"), requestId: "r" }), { confirm: async (question) => { questions.push(question); return true; } });
+    const h = await cli(() => Response.json({ project: detail("archived"), warnings: [], requestId: "r" }), { confirm: async (question) => { questions.push(question); return true; } });
     expect(await h.run(["project", "archive", "web"])).toBe(0);
-    expect(questions).toEqual(["Archive web? Nobody can start new tasks in it until it is restored. Tasks already running keep going, and its approved domains stop being allowed."]);
+    expect(questions).toEqual(["Archive web? Nobody can start new tasks in it until it is restored. Tasks already running keep going, but lose access to this project's approved extra domains."]);
     expect(h.calls).toEqual([{ method: "POST", path: "/v1/app/projects/web/archive", authorization: "Bearer access", body: { requestId: expect.stringMatching(UUID) as string } }]);
     expect(h.out.join("")).toBe("Archived web. To bring it back, run: agentx project restore web\n");
   });
@@ -62,8 +62,10 @@ describe("agentx project archive", () => {
   });
 
   it("--yes skips the question, and --json prints the project", async () => {
-    const h = await cli(() => Response.json({ project: detail("archived"), requestId: "r" }));
+    const confirm = vi.fn(async () => false);
+    const h = await cli(() => Response.json({ project: detail("archived"), warnings: [], requestId: "r" }), { confirm });
     expect(await h.run(["--json", "project", "archive", "web", "--yes"])).toBe(0);
+    expect(confirm).not.toHaveBeenCalled();
     expect(h.calls).toHaveLength(1);
     expect(JSON.parse(h.out.join(""))).toMatchObject({ ok: true, data: { project: { name: "web", status: "archived" } } });
   });
@@ -77,9 +79,32 @@ describe("agentx project archive", () => {
   });
 });
 
+describe("warnings and help", () => {
+  const WARNING = "The firewall will apply this within 5 minutes.";
+
+  it("prints each warning the server sent after the archive and restore lines, and --json carries them", async () => {
+    const archived = await cli(() => Response.json({ project: detail("archived"), warnings: [WARNING], requestId: "r" }));
+    expect(await archived.run(["project", "archive", "web", "--yes"])).toBe(0);
+    expect(archived.out.join("")).toBe(`Archived web. To bring it back, run: agentx project restore web\nNote: ${WARNING}\n`);
+    const restored = await cli(() => Response.json({ project: detail("active"), warnings: [WARNING], requestId: "r" }));
+    expect(await restored.run(["project", "restore", "web"])).toBe(0);
+    expect(restored.out.join("")).toBe(`Restored web. People can start tasks in it again, and its approved domains are allowed again.\nNote: ${WARNING}\n`);
+    const json = await cli(() => Response.json({ project: detail("archived"), warnings: [WARNING], requestId: "r" }));
+    expect(await json.run(["--json", "project", "archive", "web", "--yes"])).toBe(0);
+    expect(JSON.parse(json.out.join(""))).toMatchObject({ data: { warnings: [WARNING] } });
+  });
+
+  it("does not say the commands are for Rovara Cloud only", () => {
+    const project = createCliProgram().commands.find((command) => command.name() === "project")!;
+    for (const name of ["archive", "restore"]) {
+      expect(project.commands.find((command) => command.name() === name)!.description(), name).not.toContain("Rovara Cloud");
+    }
+  });
+});
+
 describe("agentx project restore", () => {
   it("posts a request id to the restore route without asking, and says what changed", async () => {
-    const h = await cli(() => Response.json({ project: detail("active"), requestId: "r" }));
+    const h = await cli(() => Response.json({ project: detail("active"), warnings: [], requestId: "r" }));
     expect(await h.run(["project", "restore", "web"])).toBe(0);
     expect(h.calls).toEqual([{ method: "POST", path: "/v1/app/projects/web/restore", authorization: "Bearer access", body: { requestId: expect.stringMatching(UUID) as string } }]);
     expect(h.out.join("")).toBe("Restored web. People can start tasks in it again, and its approved domains are allowed again.\n");

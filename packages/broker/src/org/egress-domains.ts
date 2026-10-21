@@ -224,13 +224,13 @@ export async function putEgressDomains(
   return { ...await syncNow(deps), pending: result };
 }
 
-/** Archive (false) and restore (true) flip `active`: an inactive item leaves the union and keeps its approvals. An owner with no item has nothing to flip. */
-export async function setEgressOwnerActive(deps: EgressDomainsDependencies, orgId: OrgId, owner: EgressOwner, active: boolean): Promise<void> {
+/** Archive (false) and restore (true) flip `active`: an inactive item leaves the union and keeps its approvals. An owner with no item has nothing to flip. `warning` is set when the firewall could not be told at once (the schedule finishes it). */
+export async function setEgressOwnerActive(deps: EgressDomainsDependencies, orgId: OrgId, owner: EgressOwner, active: boolean): Promise<{ warning?: string }> {
   const { dirty } = await mutate(deps, egressDomainsKey(orgId, owner), (current, at): Plan<undefined> => {
     if (current === undefined || current.active === active) return { audits: [], dirty: false, result: undefined };
     return { next: { ...current, active, updatedAt: at }, audits: [], dirty: current.domains.some((entry) => entry.status === "approved"), result: undefined };
   });
-  if (dirty) await syncNow(deps);
+  return dirty ? syncNow(deps) : {};
 }
 
 /** Staff decide one pending domain: `pending` becomes `approved` or `rejected`, audited with the operator's identity. */
@@ -269,6 +269,11 @@ async function pagesOf(deps: Reader, prefix: string): Promise<EgressDomainsItem[
     start = page.LastEvaluatedKey;
   } while (start !== undefined);
   return items;
+}
+
+/** Every egress item of every org (the scheduled reconcile reads them to compare each project's item with its META). */
+export async function listEgressItems(deps: Reader): Promise<EgressDomainsItem[]> {
+  return pagesOf(deps, EGRESS_ALL_ORGS_SK_PREFIX);
 }
 
 /** The approved domains of every active item, sorted and without repeats: what the DNS firewall layer serves. */

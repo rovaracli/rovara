@@ -291,7 +291,7 @@ export function projectSettingsText(result: ProjectSettingsResponse): string {
 
 /** What `agentx project archive` asks before it archives: what stops, and what keeps going. */
 export const archiveProjectQuestion = (name: string) =>
-  `Archive ${clean(name)}? Nobody can start new tasks in it until it is restored. Tasks already running keep going, and its approved domains stop being allowed.`;
+  `Archive ${clean(name)}? Nobody can start new tasks in it until it is restored. Tasks already running keep going, but lose access to this project's approved extra domains.`;
 
 /**
  * `agentx project archive <name>` and `agentx project restore <name>` (Plan 2, Task 20): a maintainer of the project, through
@@ -303,17 +303,20 @@ export async function changeDeveloperProjectArchive(
   name: string,
   change: "archive" | "restore",
   requestId: string,
-): Promise<{ env: string; url: string; project: AppProjectDetail }> {
+): Promise<{ env: string; url: string; project: AppProjectDetail; warnings: string[] }> {
   const { env: resolved, url, body } = await developerRequest(deps, env, `/v1/app/projects/${encodeURIComponent(name)}/${change}`, ProjectArchiveResponseSchema, {
     method: "POST",
     body: { requestId },
     explain: true,
   });
-  return { env: resolved, url, project: body.project };
+  return { env: resolved, url, project: body.project, warnings: body.warnings };
 }
 
-export const archiveProjectText = (project: AppProjectDetail) => `Archived ${clean(project.name)}. To bring it back, run: agentx project restore ${clean(project.name)}\n`;
-export const restoreProjectText = (project: AppProjectDetail) => `Restored ${clean(project.name)}. People can start tasks in it again, and its approved domains are allowed again.\n`;
+const warningLines = (warnings: readonly string[]) => warnings.map((warning) => `Note: ${clean(warning)}\n`).join("");
+export const archiveProjectText = (result: { project: AppProjectDetail; warnings: readonly string[] }) =>
+  `Archived ${clean(result.project.name)}. To bring it back, run: agentx project restore ${clean(result.project.name)}\n${warningLines(result.warnings)}`;
+export const restoreProjectText = (result: { project: AppProjectDetail; warnings: readonly string[] }) =>
+  `Restored ${clean(result.project.name)}. People can start tasks in it again, and its approved domains are allowed again.\n${warningLines(result.warnings)}`;
 
 /** How the logout went at the server: revoked, not answered at all, or answered without confirming. */
 export interface DeveloperLogoutResult {

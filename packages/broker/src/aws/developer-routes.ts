@@ -77,7 +77,7 @@ import {
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
-import { archiveOrgProjects, archiveProject, restoreProject, type ProjectArchiveDependencies } from "../org/project-archive.js";
+import { applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
 import { updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
 import { effectiveProjectRole, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
@@ -878,9 +878,10 @@ async function getAppProject(deps: DeveloperRouteDependencies, caller: Developer
  * `POST /v1/app/projects/{name}/archive` and `.../restore` (Plan 2, Task 20): a maintainer of the project (an org owner or admin, or the
  * project's own maintainer) archives it or brings it back, and the answer is the project as the app now shows it. No access is a 404 and a
  * role without `archive` a 403. Repeating either call on a project already in that state answers 200 and changes nothing (it does run the
- * firewall step again, which finishes a call that stopped half-way). Archiving refuses only new work; it stops nothing that is running.
+ * firewall step again, which finishes a call that stopped half-way). The request id is stored: a replay of it applies nothing, even after the
+ * opposite action. `warnings` says when the firewall could not be told at once. Archiving refuses only new work; it stops nothing that is running.
  */
-async function changeProjectArchive(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, body: unknown, change: "archive" | "restore"): Promise<{ project: AppProjectDetail }> {
+async function changeProjectArchive(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, body: unknown, change: "archive" | "restore"): Promise<{ project: AppProjectDetail; warnings: string[] }> {
   const notFound = () => agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
   let name: string;
   try { name = decodeURIComponent(rawName); } catch { throw notFound(); }
@@ -891,10 +892,9 @@ async function changeProjectArchive(deps: DeveloperRouteDependencies, caller: De
   const parsed = ArchiveBodySchema.safeParse(body);
   if (!parsed.success) throw bodyError(parsed.error);
   if (await latestProjectRecord(deps, caller.orgId, name) === undefined) throw notFound();
-  if (change === "archive") await archiveProject(archiveDepsOf(deps), caller.orgId, name, { developerId: caller.developerId });
-  else await restoreProject(archiveDepsOf(deps), caller.orgId, name);
-  logDeveloperEvent({ event: change === "archive" ? "developer.project_archived" : "developer.project_restored", orgId: caller.orgId, project: name });
-  return { project: await getAppProject(deps, caller, name) };
+  const { warnings, replayed } = await applyArchiveRequest(archiveDepsOf(deps), caller.orgId, name, change, parsed.data.requestId, { developerId: caller.developerId });
+  if (!replayed) logDeveloperEvent({ event: change === "archive" ? "developer.project_archived" : "developer.project_restored", orgId: caller.orgId, project: name });
+  return { project: await getAppProject(deps, caller, name), warnings };
 }
 
 /**
