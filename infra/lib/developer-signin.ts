@@ -8,6 +8,8 @@ import { CloudIdentity } from "./cloud-identity.js";
 
 const SIGN_IN_ROUTE_KEY = "ANY /v1/auth/{proxy+}";
 const DEV_ROUTE_KEY = "ANY /v1/dev/{proxy+}";
+/** The hosted app's routes (`GET /v1/app/me`): authorizer-free like the dev routes, the broker verifies the developer token itself. */
+const APP_ROUTE_KEY = "ANY /v1/app/{proxy+}";
 const FEEDBACK_REVIEW_ROUTE_KEY = "ANY /review/{proxy+}";
 
 export interface DeveloperSignInParameters {
@@ -191,6 +193,9 @@ export class DeveloperSignIn extends Construct {
     const devRoute = new apigwv2.CfnRoute(this, "DevRoute", {
       apiId: props.api.ref, routeKey: DEV_ROUTE_KEY, target: `integrations/${props.brokerIntegration.ref}`, authorizationType: "NONE",
     });
+    const appRoute = new apigwv2.CfnRoute(this, "AppRoute", {
+      apiId: props.api.ref, routeKey: APP_ROUTE_KEY, target: `integrations/${props.brokerIntegration.ref}`, authorizationType: "NONE",
+    });
     // The review page uses its own opaque, revocable session cookie and owner checks in the broker.
     const feedbackReviewRoute = new apigwv2.CfnRoute(this, "FeedbackReviewRoute", {
       apiId: props.api.ref, routeKey: FEEDBACK_REVIEW_ROUTE_KEY, target: `integrations/${props.brokerIntegration.ref}`, authorizationType: "NONE",
@@ -198,10 +203,11 @@ export class DeveloperSignIn extends Construct {
     // Public routes are stage-capped: bursts of 50, 20 requests a second on average,
     // across all callers. A developer signs in a few times a week, so this only bites a flood.
     const throttle = { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 };
-    props.stage.routeSettings = { [SIGN_IN_ROUTE_KEY]: throttle, [DEV_ROUTE_KEY]: throttle, [FEEDBACK_REVIEW_ROUTE_KEY]: throttle };
+    props.stage.routeSettings = { [SIGN_IN_ROUTE_KEY]: throttle, [DEV_ROUTE_KEY]: throttle, [APP_ROUTE_KEY]: throttle, [FEEDBACK_REVIEW_ROUTE_KEY]: throttle };
     // Route settings must name routes that already exist.
     props.stage.addDependency(authRoute);
     props.stage.addDependency(devRoute);
+    props.stage.addDependency(appRoute);
     props.stage.addDependency(feedbackReviewRoute);
 
     const broker = props.broker;
@@ -229,6 +235,13 @@ export class DeveloperSignIn extends Construct {
       actions: ["dynamodb:GetItem"],
       resources: [table.tableArn],
       conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["SESSION#*", "DEVELOPER#*", "EMAIL#*"] } },
+    }));
+    // GET /v1/app/me lists a developer's linked identities (DeveloperSignInStore.identitiesOf): a Query on the developer's own
+    // partition, which holds one IDENTITY# row per linked sign-in beside the developer record.
+    broker.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:Query"],
+      resources: [table.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVELOPER#*"] } },
     }));
     // The workflow E2E terminal authority transaction also condition-checks the original creator
     // record. Keep that cross-table fence to developer identity rows only.

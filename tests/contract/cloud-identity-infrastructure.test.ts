@@ -131,6 +131,14 @@ describe("cloud identity infrastructure", () => {
     expect(callback).toContain("Fn::GetAtt");
   });
 
+  it("does not let the app client write email or email_verified, which link one person's sign-in methods", () => {
+    const [, client] = resourcesOf(cloud(), "AWS::Cognito::UserPoolClient")[0]!;
+    const writable = client.Properties.WriteAttributes as string[];
+    expect(writable.length).toBeGreaterThan(0);
+    expect(writable).not.toContain("email");
+    expect(writable).not.toContain("email_verified");
+  });
+
   it("stores the client secret as {clientSecret} in Secrets Manager under the environment's name", () => {
     const template = cloud();
     template.hasResourceProperties("AWS::SecretsManager::Secret", {

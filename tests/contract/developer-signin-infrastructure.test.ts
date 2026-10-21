@@ -196,11 +196,16 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(JSON.stringify(permissions[0]!.SourceArn)).toContain("/*/*/v1/auth/*");
   });
 
-  it("gives the broker only session, developer and email-index reads on the sign-in table", () => {
+  it("gives the broker only session, developer and email-index reads, and a developer-partition Query, on the sign-in table", () => {
     const [tableId] = ofType(named, "AWS::DynamoDB::Table").find(([logicalId]) => logicalId.startsWith("DeveloperSignInTable"))!;
     const tableStatements = statementsOfRole(named, "BrokerServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(named, statement, tableId, SAMPLE_TABLE_ARN));
-    expect(tableStatements).toHaveLength(2);
+    expect(tableStatements).toHaveLength(3);
     const reads = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:GetItem"));
+    // GET /v1/app/me lists a developer's linked identities: a Query, and only inside the developer's own partition.
+    const queries = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:Query"));
+    expect(queries).toHaveLength(1);
+    expect(actionsOf(queries[0]!)).toEqual(["dynamodb:Query"]);
+    expect(queries[0]!.Condition).toEqual({ "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVELOPER#*"] } });
     const creatorChecks = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:ConditionCheckItem"));
     expect(reads).toHaveLength(1);
     expect(reads[0]!.Action).toBe("dynamodb:GetItem");
@@ -222,13 +227,14 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(tableStatements[0]!.Resource).toEqual({ "Fn::GetAtt": [tableId, "Arn"] });
   });
 
-  it("throttles the public /v1/auth/*, /v1/dev/*, and /review/* routes on the default stage (burst 50, 20 requests a second)", () => {
+  it("throttles the public /v1/auth/*, /v1/dev/*, /v1/app/*, and /review/* routes on the default stage (burst 50, 20 requests a second)", () => {
     const stages = ofType(named, "AWS::ApiGatewayV2::Stage");
     expect(stages).toHaveLength(1);
     const [, stage] = stages[0]!;
     expect(stage.Properties.RouteSettings).toEqual({
       "ANY /v1/auth/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "ANY /v1/dev/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
+      "ANY /v1/app/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "ANY /review/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
     });
     // A stage's route settings name routes that must already exist.
@@ -236,7 +242,12 @@ describe("developer sign-in infrastructure (named environments)", () => {
     const dependsOn = [(stage as Resource & { DependsOn?: string | string[] }).DependsOn].flat();
     expect(dependsOn).toContain(routeId("ANY /v1/auth/{proxy+}"));
     expect(dependsOn).toContain(routeId("ANY /v1/dev/{proxy+}"));
+    expect(dependsOn).toContain(routeId("ANY /v1/app/{proxy+}"));
     expect(dependsOn).toContain(routeId("ANY /review/{proxy+}"));
+    // The app route is served by the broker, which verifies the developer token itself: no API Gateway authorizer.
+    const appRoute = ofType(named, "AWS::ApiGatewayV2::Route").find(([, r]) => r.Properties.RouteKey === "ANY /v1/app/{proxy+}")![1];
+    expect(appRoute.Properties.AuthorizationType).toBe("NONE");
+    expect(appRoute.Properties.Target).toEqual(ofType(named, "AWS::ApiGatewayV2::Route").find(([, r]) => r.Properties.RouteKey === "ANY /v1/dev/{proxy+}")![1].Properties.Target);
   });
 
   it("keeps sign-in records in a retained, point-in-time recoverable table with a TTL", () => {
