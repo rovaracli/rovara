@@ -339,7 +339,8 @@ export class ModelProxyClient implements ModelAccess {
         name: item.model_name,
         org: typeof info.rovara_org === "string" ? info.rovara_org : undefined,
         roleArn: typeof info.rovara_role_arn === "string" ? info.rovara_role_arn : undefined,
-        served: info.rovara_tested !== false,
+        // A Bedrock model is served only once its probe has passed; a missing flag fails closed.
+        served: typeof info.rovara_role_arn !== "string" || info.rovara_tested === true,
       });
     }
     return entries;
