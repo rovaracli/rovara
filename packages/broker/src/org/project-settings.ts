@@ -28,6 +28,7 @@ import {
   type StoredProjectDefinition,
 } from "@agentx/contracts";
 import { cloudRepositoryEntry } from "./cloud-projects.js";
+import { egressStatusWarnings, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "./egress-domains.js";
 
 /** Who changes the settings, and in which org. */
 export interface ProjectSettingsCaller { developerId: string; orgId: OrgId; orgRole: OrgRole }
@@ -44,6 +45,11 @@ export interface ProjectSettingsDependencies<Caller extends ProjectSettingsCalle
   effectiveRole(caller: Caller, project: string): Promise<ProjectRole | undefined>;
   /** Registers one revision through the broker's registration (`registerProjectFor`, with no creator membership). */
   registerRevision(actor: { orgId: OrgId; ownerKey: string }, input: { definition: ProjectDefinition; runtimeBinding: unknown }): Promise<void>;
+  /**
+   * Plan 2, Task 18: where the allowed domains are recorded. A domain waits there for Rovara's approval (on cloud) and is audited. Required:
+   * a save that cannot record its domains must not look as if it did.
+   */
+  egress: EgressDomainsDependencies;
   /** What the app shows of the project once the change is saved. */
   readProject(caller: Caller, project: string): Promise<AppProjectDetail>;
   /** The credential an added repository uses: the foundation's built-in GitHub App credential. */
@@ -288,11 +294,26 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
     }
   }
   if (body.description !== undefined) await writeDescription(deps, caller.orgId, name, body.description);
+  warnings.push(...await recordEgress(deps.egress, caller, name, body.allowedDomains !== undefined, parsed.data.network?.allowedDomains ?? []));
   console.log(JSON.stringify({
     component: "broker", event: "developer.project_settings_changed", orgId: caller.orgId, project: name, revision: changed ? parsed.data.revision : current.revision,
     changed: SETTING_FIELDS.filter((field) => body[field] !== undefined),
   }));
   return { project: await deps.readProject(caller, name), warnings };
+}
+
+/**
+ * Makes the project's egress item match the domains the project now has, and answers what the person is told: each domain still waiting for
+ * Rovara, each one Rovara refused, and that the firewall will follow within 5 minutes when it could not be told at once. It runs on every
+ * save of a project that has domains, not only one that changes them, so a project whose domains were stored before approvals existed (and
+ * so are in no item, serving nothing) asks for them on its next save. Domains every project already has are not asked about.
+ */
+async function recordEgress(egress: EgressDomainsDependencies, caller: ProjectSettingsCaller, project: string, domainsGiven: boolean, domains: readonly string[]): Promise<string[]> {
+  if (!domainsGiven && domains.length === 0) return [];
+  const owner = { kind: "project", project } as const;
+  const asked = domains.filter((domain) => !DEFAULT_AGENT_ALLOW_DOMAINS.includes(domain));
+  const { warning } = await putEgressDomains(egress, caller.orgId, owner, asked, { developerId: caller.developerId });
+  return [...egressStatusWarnings(await readEgressDomains(egress, caller.orgId, owner), asked), ...(warning === undefined ? [] : [warning])];
 }
 
 /**

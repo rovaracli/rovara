@@ -79,3 +79,4 @@ export * from "./org-scoped-keys.js";
 export * from "./app-projects.js";
 export * from "./public-suffix.js";
 export * from "./default-allow-domains.js";
+export * from "./egress.js";

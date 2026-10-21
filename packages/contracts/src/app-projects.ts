@@ -48,8 +48,8 @@ export const AppProjectDetailSchema = AppProjectSummarySchema.extend({
     setupCommands: z.array(z.string()),
     testCommands: z.array(z.string()),
     devcontainer: z.object({ repository: z.string(), configPath: z.string() }).nullable(),
-    /** Until egress items exist (Plan 2, Task 18), every domain the revision stores reads as approved. */
-    allowedDomains: z.array(z.object({ domain: z.string(), status: AppProjectDomainStatusSchema })),
+    /** Each domain with where it stands: on Rovara Cloud a new one is `pending` until staff approve it, and a `rejected` one says why. */
+    allowedDomains: z.array(z.object({ domain: z.string(), status: AppProjectDomainStatusSchema, reason: z.string().optional() })),
   }),
   createdAt: z.string(),
   createdBy: z.object({ developerId: z.string(), name: z.string() }),

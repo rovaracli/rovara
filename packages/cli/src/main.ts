@@ -28,6 +28,7 @@ import { STSClient } from "@aws-sdk/client-sts";
 import { Command, Option } from "commander";
 import { authorizeCredential, expectedAccountEmail, secretsManagerAuthorizeSecrets, type AuthorizeSecrets } from "./admin/authorize.js";
 import { budgetText, parseBudgetUsd, setOrgBudget } from "./admin/budget.js";
+import { decideEgress, decisionText, listPendingEgress, parseOwnerArgument, pendingText } from "./admin/egress.js";
 import { githubOwnerText, setOrgGithubOwner } from "./admin/github-owner.js";
 import { listCredentials, registerCredential } from "./admin/credential.js";
 import { requestRuntimeInstallChallenge, submitRuntimeInstallProposal } from "./admin/runtime-installation.js";
@@ -852,6 +853,45 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const { settings, accessToken } = await authenticate(globals, services.tokenStore);
       const result = await setOrgGithubOwner({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, orgId: options.org, githubOwner: options.owner }, services.fetchImplementation);
       services.stdout.write(globals.json ? formatSuccess(result, true) : githubOwnerText(result.org));
+    });
+
+  const adminEgress = admin.command("egress").description("domains projects ask to reach; on Rovara Cloud a new one is served only after Rovara staff approve it");
+  adminEgress
+    .command("pending")
+    .description("list the domains waiting for approval, from every organization (Rovara Cloud operators only)")
+    .action(async (_options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await listPendingEgress({ controlPlaneUrl: settings.controlPlaneUrl, accessToken }, services.fetchImplementation);
+      services.stdout.write(globals.json ? formatSuccess(result, true) : pendingText(result));
+    });
+  adminEgress
+    .command("approve")
+    .description("approve a pending domain: it joins the DNS allowlist of the cell")
+    .argument("<org>", "the organization's ID")
+    .argument("<owner>", "project:<name> or model-source:<id>, as `agentx admin egress pending` prints it")
+    .argument("<domain>", "the domain")
+    .action(async (org: string, owner: string, domain: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const parsedOwner = parseOwnerArgument(owner);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await decideEgress({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, decision: "approve", orgId: org, owner: parsedOwner, domain }, services.fetchImplementation);
+      services.stdout.write(globals.json ? formatSuccess(result, true) : decisionText(result));
+    });
+  adminEgress
+    .command("reject")
+    .description("reject a pending domain; the project's maintainers are told why")
+    .argument("<org>", "the organization's ID")
+    .argument("<owner>", "project:<name> or model-source:<id>, as `agentx admin egress pending` prints it")
+    .argument("<domain>", "the domain")
+    .option("--reason <text>", "why, 1 to 200 characters; shown to the project's maintainers")
+    .action(async (org: string, owner: string, domain: string, options: { reason?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const parsedOwner = parseOwnerArgument(owner);
+      if (options.reason === undefined || options.reason.trim() === "") throw agentXError("CONFIG_INVALID", "say why with --reason <text>");
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await decideEgress({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, decision: "reject", orgId: org, owner: parsedOwner, domain, reason: options.reason }, services.fetchImplementation);
+      services.stdout.write(globals.json ? formatSuccess(result, true) : decisionText(result));
     });
 
   const adminSlack = admin.command("slack").description("bind Slack channels to this project for the hosted orchestrator");

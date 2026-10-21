@@ -256,10 +256,10 @@ describe("allowed domains", () => {
     const h = await install();
     const saved = await h.put(OMAR, { allowedDomains: ["foo.github.io", "*.acme.co.uk", "artifacts.acme.dev", "*.www.ck"] });
     expect(saved.status).toBe(200);
-    expect(saved.body.warnings).toEqual([]);
+    // Each is a new request: on cloud a domain waits for Rovara's approval (Task 18).
+    expect(saved.body.warnings).toEqual(["foo.github.io", "*.acme.co.uk", "artifacts.acme.dev", "*.www.ck"].map((domain) => `${domain} is waiting for Rovara to approve it`));
     expect(h.revision(2)!.definition).toMatchObject({ network: { allowedDomains: ["foo.github.io", "*.acme.co.uk", "artifacts.acme.dev", "*.www.ck"] } });
-    // Until egress items exist, every stored domain reads as approved.
-    expect((await h.detail()).settings.allowedDomains).toEqual(["foo.github.io", "*.acme.co.uk", "artifacts.acme.dev", "*.www.ck"].map((domain) => ({ domain, status: "approved" })));
+    expect((await h.detail()).settings.allowedDomains).toEqual(["foo.github.io", "*.acme.co.uk", "artifacts.acme.dev", "*.www.ck"].map((domain) => ({ domain, status: "pending" })));
   });
 
   it("stores Artifacts.ACME.dev as artifacts.acme.dev, once", async () => {
@@ -274,7 +274,7 @@ describe("allowed domains", () => {
     expect(DEFAULT_AGENT_ALLOW_DOMAINS).toContain("*.amazonaws.com");
     const saved = await h.put(OMAR, { allowedDomains: ["registry.npmjs.org", "*.amazonaws.com", "artifacts.acme.dev"] });
     expect(saved.status).toBe(200);
-    expect(saved.body.warnings).toEqual(["registry.npmjs.org is already allowed for every project", "*.amazonaws.com is already allowed for every project"]);
+    expect(saved.body.warnings).toEqual(["registry.npmjs.org is already allowed for every project", "*.amazonaws.com is already allowed for every project", "artifacts.acme.dev is waiting for Rovara to approve it"]);
     expect(h.revision(2)!.definition).toMatchObject({ network: { allowedDomains: ["registry.npmjs.org", "*.amazonaws.com", "artifacts.acme.dev"] } });
   });
 

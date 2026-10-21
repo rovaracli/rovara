@@ -196,6 +196,8 @@ import {
   type ModelSelection,
   type ProjectModelOptions,
   GithubOwnerSchema,
+  EgressApproveBodySchema,
+  EgressRejectBodySchema,
   OrgIdSchema,
   OrgRoleSchema,
   type OrgRecord,
@@ -213,6 +215,9 @@ import {
   projectRevisionKey,
   projectSelectionKey,
   singleOrgIdForEnv,
+  type EgressDecisionResponse,
+  type EgressOwner,
+  type EgressPendingResponse,
   type OrgId,
   type ChannelMembersRequest,
   isAdminChangePressEvent,
@@ -262,7 +267,7 @@ import { attributionDroppedLog, callConnector, connectorCatalogKey, discoverConn
 import { resolveConnectors, BUILT_IN_CONNECTOR_TYPES, type ConnectorType, type ConnectorTypeContext, type ResolvedConnector } from "./connector-types.js";
 import { CredentialRegistry, secretsManagerSource, type ConnectorCredentialsConfiguration } from "./credentials.js";
 import { developerTokenVerifier } from "../developer/verify-token.js";
-import type { DeveloperRecord } from "../developer/store.js";
+import { DeveloperSignInStore, type DeveloperRecord } from "../developer/store.js";
 import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, readDecisionDetail } from "../developer/owner-answers.js";
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
 import { loadWorkflowDocument, readObjectText as readStoredText, shortenMarkdown } from "../developer/plan-artifacts.js";
@@ -273,6 +278,7 @@ import { approvedFeedbackFixes, withFeedbackFixes, withStatusLines } from "../de
 import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, requireAllowedGithubOwner, type CloudProjectDefaults, type CreateProjectInput } from "../org/cloud-projects.js";
 import { installEnvironmentName, orgResolverFromEnvironment, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
 import { OrgStore } from "../org/store.js";
+import { decideEgressDomain, listPendingEgress, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import { requireProject } from "./project-records.js";
 import { admitProjectSetupRuntime, projectSetupBindingDigest, projectSetupRuntimeKey, ProjectSetupRuntimeRecordSchema } from "./project-setup-runtime-catalog.js";
 import { projectSetupTerminalAuthorityChecks } from "./project-setup-terminal-conditions.js";
@@ -480,6 +486,11 @@ interface AwsBrokerDependencies {
    * subnets, and the built-in GitHub App). Absent, POST /v1/dev/projects answers RUNTIME_UNAVAILABLE.
    */
   cloudProjects?: CloudProjectDefaults;
+  /**
+   * Plan 2, Task 18: pushes the approved egress domains to the cell's DNS firewall (Task 19's `syncCellAllowList`). Absent, a change waits
+   * for the scheduled sync and the person who made it is told it will apply within 5 minutes.
+   */
+  egressDomainsSync?: EgressDomainsDependencies["sync"];
   /** Which org a caller belongs to (ruling R1). Absent means every caller belongs to the install's single org (ruling R3). */
   orgResolver?: OrgResolver;
   /** The install's environment name, which its single org id derives from; defaults to the developer sign-in's, then AGENTX_ENV, then "default". */
@@ -637,6 +648,47 @@ async function putOrgGithubOwner(dependencies: AwsBrokerDependencies, identity: 
   await orgStoreOf(dependencies).setGithubOwner(parsed.data.orgId, parsed.data.githubOwner);
   console.log(JSON.stringify({ component: "broker", event: "admin.org_github_owner_changed", orgId: parsed.data.orgId, githubOwner: parsed.data.githubOwner }));
   return { org: { orgId: parsed.data.orgId, githubOwner: parsed.data.githubOwner } };
+}
+
+function egressDepsOf(dependencies: AwsBrokerDependencies): EgressDomainsDependencies {
+  return { documentClient: dependencies.documentClient, tableName: dependencies.tableName, cloud: dependencies.cloud === true, now: () => new Date(), sync: dependencies.egressDomainsSync ?? (async () => ({ ok: false })) };
+}
+
+/**
+ * Plan 2, Task 18: `GET /v1/admin/egress/pending`. The domains waiting for Rovara staff (operators of the admin pool; on cloud they belong to
+ * no org, ruling R6), from every org, oldest first, with the org's name and who asked.
+ */
+async function listEgressPending(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity): Promise<EgressPendingResponse> {
+  if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+  const orgs = orgStoreOf(dependencies);
+  const developers = dependencies.developer === undefined ? undefined
+    : new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
+  const orgNames = new Map<string, string>();
+  const people = new Map<string, string>();
+  const pending: EgressPendingResponse["pending"] = [];
+  for (const row of await listPendingEgress(dependencies)) {
+    if (!orgNames.has(row.orgId)) orgNames.set(row.orgId, (await orgs.getOrg(row.orgId))?.name ?? "Unknown");
+    if (!people.has(row.requestedBy)) people.set(row.requestedBy, (await developers?.getDeveloper(row.requestedBy))?.displayName ?? "Unknown");
+    pending.push({ orgId: row.orgId, orgName: orgNames.get(row.orgId)!, owner: row.owner, domain: row.domain, requestedAt: row.requestedAt, requestedBy: { developerId: row.requestedBy, name: people.get(row.requestedBy)! } });
+  }
+  return { pending };
+}
+
+/**
+ * Plan 2, Task 18: `POST /v1/admin/egress/approve` and `/reject`. An operator decides one pending domain of one owner of one org; the audit
+ * item names the operator. A domain that is not pending (decided already, removed, or never asked for) is CONFIG_INVALID.
+ */
+async function decideEgress(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, decision: "approved" | "rejected", body: unknown): Promise<EgressDecisionResponse & { warning?: string }> {
+  if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+  const parsed: z.ZodSafeParseResult<{ orgId: OrgId; owner: EgressOwner; domain: string; reason?: string }> = decision === "approved"
+    ? EgressApproveBodySchema.safeParse(body) : EgressRejectBodySchema.safeParse(body);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
+  }
+  const { orgId, owner, domain, reason } = parsed.data;
+  const { warning } = await decideEgressDomain(egressDepsOf(dependencies), { orgId, owner, domain, decision, operatorId: identity.subject, ...(reason === undefined ? {} : { reason }) });
+  return { orgId, owner, domain, status: decision, ...(warning === undefined ? {} : { warning }) };
 }
 
 function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">): OrgStore {
@@ -1298,6 +1350,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         const answer = await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),
+          ...(dependencies.egressDomainsSync === undefined ? {} : { egressSync: dependencies.egressDomainsSync }),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
           workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
@@ -1485,6 +1538,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Ruling R55: an operator names the one GitHub owner a cloud org may create projects for.
       if (request.method === "PUT" && url.pathname === "/v1/admin/org/github-owner") {
         return json(await putOrgGithubOwner(dependencies, identity, body), request.requestId);
+      }
+      // Plan 2, Task 18: Rovara staff decide the domains projects ask for.
+      if (request.method === "GET" && url.pathname === "/v1/admin/egress/pending") {
+        return json(await listEgressPending(dependencies, identity), request.requestId);
+      }
+      if (request.method === "POST" && (url.pathname === "/v1/admin/egress/approve" || url.pathname === "/v1/admin/egress/reject")) {
+        return json(await decideEgress(dependencies, identity, url.pathname.endsWith("/approve") ? "approved" : "rejected", body), request.requestId);
       }
       if (request.method === "GET" && url.pathname === "/v1/admin/turns") {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");

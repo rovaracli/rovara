@@ -9,6 +9,7 @@ import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentXNameSchema,
   CHANNEL_MEMBERS_MAX_CHANNELS,
+  DEFAULT_AGENT_ALLOW_DOMAINS,
   DEFAULT_DEVCONTAINER_CONFIG_PATH,
   DEVELOPER_TOKEN_AUDIENCE,
   DEVELOPER_WORKSPACES_PER_PROJECT,
@@ -75,6 +76,7 @@ import {
   type TaskPeopleDisplayReadResponse,
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
+import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import { updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
 import { effectiveProjectRole, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
@@ -158,7 +160,7 @@ export interface DeveloperRouteDependencies {
   orgs?: Pick<OrgStore, "orgForDeveloper" | "getOrg" | "createInvite" | "listMembers" | "setRole" | "removeMember" | "closeOrg">;
   /**
    * What closing an org does besides releasing its GitHub and Slack bindings: archive its projects (Task 20) and clear its egress domains
-   * (Task 18). Both default to nothing until those tasks supply them; `POST /v1/app/org/leave` calls them when the last owner leaves.
+   * (Task 18). Archiving defaults to nothing until Task 20 supplies it, and egress to `clearOrgEgress`; `POST /v1/app/org/leave` calls them when the last owner leaves.
    */
   closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void> };
   /** The model proxy, for budgets (ruling R28). Absent without one: budgets are not set up, and task starts are not checked against them. */
@@ -175,6 +177,11 @@ export interface DeveloperRouteDependencies {
    * GitHub's view of it. Without it the route answers NOT_FOUND.
    */
   projectSettings?: Pick<ProjectSettingsDependencies<DeveloperCaller>, "registerRevision" | "githubCredentialRef" | "repositoryIdentity" | "requireRepositoryConnected">;
+  /**
+   * Plan 2, Task 18: pushes the approved domains to the cell's DNS firewall (Task 19's `syncCellAllowList`). Without it an approved change
+   * waits for the scheduled sync, and the caller is told it will apply within 5 minutes.
+   */
+  egressSync?: EgressDomainsDependencies["sync"];
 }
 
 /** A route's answer with a status other than 200; the broker's handler writes the status and the body. */
@@ -805,6 +812,11 @@ async function listAppProjects(deps: DeveloperRouteDependencies, caller: Develop
 
 const PROJECT_NOT_FOUND_IN_APP = "project not found";
 
+/** Where egress items are kept and how a change reaches the firewall (Plan 2, Task 18). */
+function egressDepsOf(deps: DeveloperRouteDependencies): EgressDomainsDependencies {
+  return { documentClient: deps.documentClient, tableName: deps.tableName, cloud: deps.cloud === true, now: () => new Date(deps.now()), sync: deps.egressSync ?? (async () => ({ ok: false })) };
+}
+
 /** `GET /v1/app/projects/{name}`: no access, no such project and another org's project all answer the same 404 PROJECT_NOT_FOUND. */
 async function getAppProject(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string): Promise<AppProjectDetail> {
   const notFound = () => agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
@@ -818,6 +830,7 @@ async function getAppProject(deps: DeveloperRouteDependencies, caller: Developer
   const { definition } = record;
   const createdBy = meta?.createdBy ?? "unknown";
   const creator = createdBy === "unknown" ? undefined : await signInStoreOf(deps).getDeveloper(createdBy);
+  const egress = await readEgressDomains(deps, caller.orgId, { kind: "project", project: name });
   return {
     ...await appProjectSummary(deps, name, role, record, meta),
     settings: {
@@ -825,8 +838,14 @@ async function getAppProject(deps: DeveloperRouteDependencies, caller: Developer
       testCommands: definition.readiness.map(formatCommandLine),
       devcontainer: definition.devcontainer === undefined ? null
         : { repository: definition.devcontainer.repository, configPath: definition.devcontainer.configPath ?? DEFAULT_DEVCONTAINER_CONFIG_PATH },
-      // Until egress items exist (Plan 2, Task 18), a domain the revision stores reads as approved.
-      allowedDomains: (definition.network?.allowedDomains ?? []).map((domain) => ({ domain, status: "approved" as const })),
+      // A domain every project has is approved. Any other is as its egress item says; one the item does not list was never asked for (a
+      // project that stored it before approvals existed), so on cloud it serves nothing and reads as pending until the next save asks.
+      allowedDomains: (definition.network?.allowedDomains ?? []).map((domain) => {
+        if (DEFAULT_AGENT_ALLOW_DOMAINS.includes(domain)) return { domain, status: "approved" as const };
+        const entry = egress?.domains.find((candidate) => candidate.domain === domain);
+        if (entry === undefined) return { domain, status: deps.cloud === true ? "pending" as const : "approved" as const };
+        return { domain, status: entry.status, ...(entry.status === "rejected" && entry.reason !== undefined ? { reason: entry.reason } : {}) };
+      }),
     },
     createdAt: meta?.createdAt ?? record.registeredAt,
     createdBy: { developerId: createdBy, name: creator?.displayName ?? "Unknown" },
@@ -844,6 +863,7 @@ async function putProjectSettings(deps: DeveloperRouteDependencies, caller: Deve
     documentClient: deps.documentClient,
     tableName: deps.tableName,
     cloud: deps.cloud === true,
+    egress: egressDepsOf(deps),
     ...deps.projectSettings,
     effectiveRole: async (who, project) => (await visibleProjectRoles(deps, who, project)).get(project),
     readProject: (who, project) => getAppProject(deps, who, project),
@@ -1388,7 +1408,7 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
   if (sole && deps.cloud !== true) throw agentXError("LAST_OWNER", "You are the only owner. Make someone else an owner first.");
   if (sole) {
     await deps.orgs.closeOrg(caller.orgId, {
-      archiveProjects: deps.closeOrgHooks?.archiveProjects ?? (async () => undefined), clearEgress: deps.closeOrgHooks?.clearEgress ?? (async () => undefined), emails,
+      archiveProjects: deps.closeOrgHooks?.archiveProjects ?? (async () => undefined), clearEgress: deps.closeOrgHooks?.clearEgress ?? ((orgId) => clearOrgEgress(egressDepsOf(deps), orgId)), emails,
     });
   } else {
     await deps.orgs.removeMember({ orgId: caller.orgId, developerId: caller.developerId, emails, ban: false });

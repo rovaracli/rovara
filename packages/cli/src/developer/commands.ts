@@ -249,7 +249,7 @@ export function projectShowText(project: AppProjectDetail): string {
     ...(settings.testCommands.length === 0 ? ["  none"] : settings.testCommands.map((command) => `  ${clean(command)}`)),
     `Devcontainer: ${settings.devcontainer === null ? "none" : `${clean(settings.devcontainer.repository)} (${clean(settings.devcontainer.configPath)})`}`,
     "Allowed domains:",
-    ...(settings.allowedDomains.length === 0 ? ["  none beyond the defaults every project has"] : settings.allowedDomains.map((entry) => `  ${clean(entry.domain)}  (${entry.status})`)),
+    ...(settings.allowedDomains.length === 0 ? ["  none beyond the defaults every project has"] : settings.allowedDomains.map((entry) => `  ${clean(entry.domain)}  (${entry.status}${entry.reason === undefined ? "" : `: ${clean(entry.reason)}`})`)),
   ];
   return `${lines.join("\n")}\n`;
 }
