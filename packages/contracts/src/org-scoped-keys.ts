@@ -228,6 +228,16 @@ export function skillKey(orgId: OrgId, skillId: SkillId, sk: SkillItemSk): OrgKe
   return { pk: orgScoped(orgId, `SKILL#${skillId}`), sk };
 }
 
+/** The org's skill directory: one item per skill, for listing without reading every partition. */
+export function skillDirectoryKey(orgId: OrgId, skillId: SkillId): OrgKey {
+  return { pk: orgScoped(orgId, "SKILL_DIRECTORY"), sk: skillId };
+}
+
+/** The item that makes a skill's name unique in its org. A skill name is already lower case (`^[a-z0-9][a-z0-9-]{0,63}$`). */
+export function skillNameKey(orgId: OrgId, name: string): OrgKey {
+  return { pk: orgScoped(orgId, "SKILL_NAME"), sk: name };
+}
+
 /** The index item that lists an agent's recent tasks, newest last; `createdAt` is an instant. */
 export function agentTasksKey(orgId: OrgId, agentId: AgentId, createdAt: string, taskId: string): OrgKey {
   return { pk: orgScoped(orgId, `AGENT_TASKS#${agentId}`), sk: `${canonicalInstant(createdAt)}#${taskId}` };

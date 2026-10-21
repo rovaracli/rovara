@@ -44,7 +44,9 @@ import {
   principalKey,
   principalSharesKey,
   projectAgentKey,
+  skillDirectoryKey,
   skillKey,
+  skillNameKey,
 } from "../../packages/contracts/src/org-scoped-keys.js";
 import * as spend from "../../packages/contracts/src/spend.js";
 import * as contracts from "../../packages/contracts/src/index.js";
@@ -370,11 +372,19 @@ describe("agent keys", () => {
       principalSharesKey(ORG, { kind: "org" }, "rovara-code"),
       projectAgentKey(ORG, "web", "rovara-code"),
       skillKey(ORG, `skl_${"a".repeat(20)}`, "META"),
+      skillDirectoryKey(ORG, `skl_${"a".repeat(20)}`),
+      skillNameKey(ORG, "Triage-Notes"),
       agentTasksKey(ORG, "rovara-code", "2026-10-20T10:00:00.000Z", "task-1"),
       builtinSettingsKey(ORG, "ticket-triage"),
     ];
     for (const key of keys) expect(key.pk.startsWith(`ORG#${ORG}#`)).toBe(true);
     expect(new Set(keys.map((key) => `${key.pk}|${key.sk}`)).size).toBe(keys.length);
+  });
+
+  it("keys a skill's directory entry by id and its name item by the name, which is already lower case", () => {
+    const id = `skl_${"a".repeat(20)}`;
+    expect(skillDirectoryKey(ORG, id)).toEqual({ pk: orgScoped(ORG, "SKILL_DIRECTORY"), sk: id });
+    expect(skillNameKey(ORG, "triage-notes")).toEqual({ pk: orgScoped(ORG, "SKILL_NAME"), sk: "triage-notes" });
   });
 
   it("builds agent items under one partition", () => {
