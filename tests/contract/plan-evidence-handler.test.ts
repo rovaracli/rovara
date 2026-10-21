@@ -121,7 +121,7 @@ describe("the PlanEvidence job", () => {
     const revision = harness.db.get(revisionKey.pk, revisionKey.sk) as { definition: { repositories: Array<Record<string, unknown>> } };
     harness.db.set({ ...revision, definition: { ...revision.definition, repositories: [...revision.definition.repositories, { name: "web", url: "https://github.com/example/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }] } });
     const task = taskRecord(harness, taskId);
-    harness.db.set({ ...task, preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }, { repositoryId: "web", baseCommitSha: "f".repeat(40) }] } as never);
+    harness.db.set({ ...task, preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }, { repositoryId: "web", baseCommitSha: "f".repeat(40) }] });
     const time = clock(rows(harness)[0]!.nextAttemptAt + 1_000);
     const reads: string[] = [];
     const getFile: GetFile = async (url, path) => {
