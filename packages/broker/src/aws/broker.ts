@@ -245,6 +245,7 @@ import { runAuditDrain } from "../audit/drain.js";
 import type { AuditExportClientDeps } from "../audit/export.js";
 import { exportInvoker, exportLinkSigner } from "../audit/export-wiring.js";
 import { routeAuditAdminRequest } from "../audit/admin-routes.js";
+import { isAuditViewPath } from "../audit/view-page.js";
 import { AuditKeyring } from "../audit/keyring.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
@@ -1100,8 +1101,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       const url = new URL(request.path, "https://agentx.invalid");
       // The browser page uses its own opaque revocable session cookie and reauthorizes each
       // request. Only API Gateway's exact public review route may reach this branch.
-      if (event.routeKey === FEEDBACK_REVIEW_ROUTE_KEY) {
-        if (!url.pathname.startsWith("/review/") || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
+      // The audit page (`/v1/app/audit/view`) is a browser page of the same kind: its own session cookie, no API Gateway authorizer.
+      if (event.routeKey === FEEDBACK_REVIEW_ROUTE_KEY || isAuditViewPath(url.pathname)) {
+        if (!(url.pathname.startsWith("/review/") || isAuditViewPath(url.pathname)) || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
         return await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),
@@ -1109,6 +1111,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
           registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : url => dependencies.githubPullRequests.getRepositoryIdentity!(url),
+          ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
           refreshTaskFeedback: taskId => refreshTaskFeedbackForOwnerDecision(dependencies, taskId) }, request, url) as { statusCode: number; headers: Record<string, string>; body: string };
       }
       // The /v1/dev route has no API Gateway authorizer, so what it carries goes to the developer API or nowhere.

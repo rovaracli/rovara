@@ -144,20 +144,26 @@ export function exportRequestWithout(body: Record<string, unknown>, fields: read
 // ---- shared answers ---------------------------------------------------------------------------------------------------
 
 /** What the answer of an export read holds: the export's view, and for a ready one the link (`exportDownloadUrl` signs the file the record names). */
-export async function exportAnswer(ledger: AuditExportClientDeps, orgId: OrgId, exportId: string): Promise<{ view: AuditExportView; body: object; download: boolean }> {
+export async function exportAnswer(ledger: AuditExportClientDeps, orgId: OrgId, exportId: string): Promise<{ view: AuditExportView; body: object; download: boolean; link?: AuditExportLink }> {
   const view = await getAuditExport(ledger, orgId, exportId);
   if (view === undefined) throw agentXError("NOT_FOUND", EXPORT_NOT_FOUND);
   if (view.status !== "ready") return { view, body: { ...view }, download: false };
   // A signing failure (RUNTIME_UNAVAILABLE) is the caller's 503, as it comes.
-  const download = await exportDownloadUrl(ledger, orgId, exportId);
-  return { view, body: { ...view, download }, download: true };
+  const link = await exportDownloadUrl(ledger, orgId, exportId);
+  return { view, body: { ...view, download: link }, download: true, link };
+}
+
+/** A signed download link and how long it works. */
+export interface AuditExportLink {
+  url: string;
+  expiresInSeconds: number;
 }
 
 /** What a started export answers: 202 while it runs, 200 for an export that already finished (a repeat of its request) or could not start. */
 export const startedReply = (started: { exportId: string; status: string }): AuditRouteReply => ({ status: started.status === "running" ? 202 : 200, body: started });
 
 /** The first and last sequence number of a page, and how many records it held: all zero for an empty page. */
-function pageFacts(result: AuditReadResult): { fromSeq: number; toSeq: number; count: number } {
+export function pageFacts(result: AuditReadResult): { fromSeq: number; toSeq: number; count: number } {
   const first = result.records[0]?.record.seq;
   const last = result.records.at(-1)?.record.seq;
   return first === undefined || last === undefined ? { fromSeq: 0, toSeq: 0, count: 0 } : { fromSeq: first, toSeq: last, count: result.records.length };

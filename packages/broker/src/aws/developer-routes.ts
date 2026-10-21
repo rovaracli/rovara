@@ -65,6 +65,7 @@ import type { ModelAccess } from "../model-proxy/access.js";
 import type { OrgStore } from "../org/store.js";
 import type { AuditExportClientDeps } from "../audit/export.js";
 import { isAuditOrgPath, routeAuditRequest } from "../audit/routes.js";
+import { createAuditViewPage, isAuditViewPath } from "../audit/view-page.js";
 import { checkTaskPersonIdentity, registerTaskChannelPeople, resolveTaskPickerPersonWithId, type ProjectAccessSubject, type TaskPersonIdentityDependencies } from "../developer/task-person-identity.js";
 import { taskPeopleDisplayAdmission, type TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
 import { META, endedByAdmin, methodSince, startedBeforeMethodOn, type DeveloperRecord, type SessionRecord } from "../developer/store.js";
@@ -872,12 +873,17 @@ export function developerTaskRouteDependencies(
 }
 
 export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
+  // The browser pages sign in with the opaque review session cookie, re-read (with the membership) on every request.
+  const authenticateSession = async (sessionId: string) => {
+    try { return await authenticateDeveloperSessionId(deps, sessionId); }
+    catch { return undefined; }
+  };
+  // The audit page (Task 13): a read-only view for the org's owners and admins; the org is the session's own.
+  if (isAuditViewPath(url.pathname)) {
+    return createAuditViewPage({ origin: new URL(deps.developer.issuer).origin, authenticateSession, ledger: deps.auditLedger })(request, url);
+  }
   if (url.pathname.startsWith("/review/")) {
     if (deps.tasks === undefined) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
-    const authenticateSession = async (sessionId: string) => {
-      try { return await authenticateDeveloperSessionId(deps, sessionId); }
-      catch { return undefined; }
-    };
     // Task 18: the read-only task page and its "moved on" check; every other /review/ path is the PR-feedback review.
     // Spec 061 slice 2: the page's JSON API is matched here too, so the PR-feedback page never sees its paths.
     if (TASK_PAGE.test(url.pathname) || TASK_PEOPLE_CONFIRMATION.test(url.pathname) || TASK_STATUS.test(url.pathname) || TASK_PAGE_API_PREFIX.test(url.pathname)) {
