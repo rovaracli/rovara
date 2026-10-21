@@ -8,6 +8,7 @@ const MASTER = "sk-master-planted-value";
 const ORG = "org_abcdefghij0123456789";
 const DEV = "a".repeat(64);
 const NOW = 1_800_000_000_000;
+const CATALOG = ["us.anthropic.claude-sonnet-4-6", "us.anthropic.claude-haiku-4-5-20251001-v1:0"];
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const bodyOf = (init: RequestInit | undefined) => JSON.parse(init?.body as string) as Record<string, unknown>;
@@ -25,7 +26,7 @@ function proxy(answer: (seen: Seen) => Response | undefined) {
     seen.push(entry);
     return answer(entry) ?? json({ error: { message: "not found" } }, 404);
   });
-  const client = new ModelProxyClient({ baseUrl: BASE, masterKey: async () => MASTER, fetch, now: () => NOW });
+  const client = new ModelProxyClient({ baseUrl: BASE, masterKey: async () => MASTER, fetch, now: () => NOW, catalog: CATALOG });
   return { client, seen, fetch };
 }
 
@@ -57,22 +58,24 @@ describe("ModelProxyClient", () => {
   });
 
   it("upsertOrg creates the LiteLLM team with the monthly budget and 1mo reset", async () => {
-    const { client, seen } = proxy(({ path }) => (path === "/team/new" ? json({ team_id: ORG }) : undefined));
+    const { client, seen } = proxy(({ path }) => (path === "/team/new" ? json({ team_id: ORG }) : path === "/model/info" ? json({ data: [] }) : undefined));
     await client.upsertOrg(ORG, 100);
-    expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual(["POST /team/new"]);
-    expect(seen[0]!.headers.get("authorization")).toBe(`Bearer ${MASTER}`);
-    expect(seen[0]!.body).toEqual({ team_id: ORG, max_budget: 100, budget_duration: "1mo" });
+    expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual(["GET /model/info", "POST /team/new"]);
+    expect(seen[1]!.headers.get("authorization")).toBe(`Bearer ${MASTER}`);
+    // Every team is limited to the Rovara AI catalog (an empty list would mean every model).
+    expect(seen[1]!.body).toEqual({ team_id: ORG, max_budget: 100, budget_duration: "1mo", models: CATALOG });
   });
 
   it("upsertOrg updates the team when it already exists", async () => {
     const { client, seen } = proxy(({ path }) => {
       if (path === "/team/new") return json({ error: { message: `Team id = ${ORG} already exists. Please use a different team id.` } }, 400);
       if (path === "/team/update") return json({ team_id: ORG });
+      if (path === "/model/info") return json({ data: [] });
       return undefined;
     });
     await client.upsertOrg(ORG, 150);
-    expect(seen.map((s) => s.path)).toEqual(["/team/new", "/team/update"]);
-    expect(seen[1]!.body).toEqual({ team_id: ORG, max_budget: 150, budget_duration: "1mo" });
+    expect(seen.map((s) => s.path)).toEqual(["/model/info", "/team/new", "/team/update"]);
+    expect(seen[2]!.body).toEqual({ team_id: ORG, max_budget: 150, budget_duration: "1mo", models: CATALOG });
   });
 
   it("upsertMember creates the LiteLLM user inside the team with no stray key, then updates it when it exists", async () => {
@@ -99,19 +102,20 @@ describe("ModelProxyClient", () => {
       const { client, seen } = proxy(({ path }) => {
         if (path === create) return json({ error: { message: "max_budget must be a non-negative number" } }, 400);
         if (path === update) return json({ error: { message: "not found" } }, 404);
+        if (path === "/model/info") return json({ data: [] });
         return undefined;
       });
       const error = await failure(call(client));
       expect(error.code, create).toBe("CONFIG_INVALID");
       expect(error.message, create).toContain("max_budget must be a non-negative number");
-      expect(seen.map((s) => s.path), create).toEqual([create]);
+      expect(seen.map((s) => s.path).filter((path) => path !== "/model/info"), create).toEqual([create]);
     }
   });
 
   it("a 409 on create also falls back to update", async () => {
-    const { client, seen } = proxy(({ path }) => (path === "/team/new" ? json({ error: { message: "conflict" } }, 409) : path === "/team/update" ? json({}) : undefined));
+    const { client, seen } = proxy(({ path }) => (path === "/team/new" ? json({ error: { message: "conflict" } }, 409) : path === "/team/update" ? json({}) : path === "/model/info" ? json({ data: [] }) : undefined));
     await client.upsertOrg(ORG, 5);
-    expect(seen.map((s) => s.path)).toEqual(["/team/new", "/team/update"]);
+    expect(seen.map((s) => s.path)).toEqual(["/model/info", "/team/new", "/team/update"]);
   });
 
   it("spend maps /team/info and /user/info to the member and org figures LiteLLM reports", async () => {
@@ -186,7 +190,7 @@ describe("ModelProxyClient", () => {
   });
 
   it("a fetch rejection and a 5xx answer throw MODEL_PROXY_UNAVAILABLE", async () => {
-    const down = new ModelProxyClient({ baseUrl: BASE, masterKey: async () => MASTER, fetch: async () => { throw new TypeError("fetch failed"); }, now: () => NOW });
+    const down = new ModelProxyClient({ baseUrl: BASE, masterKey: async () => MASTER, fetch: async () => { throw new TypeError("fetch failed"); }, now: () => NOW, catalog: CATALOG });
     const refused = await failure(down.upsertOrg(ORG, 1));
     expect(refused).toBeInstanceOf(AgentXError);
     expect(refused.code).toBe("MODEL_PROXY_UNAVAILABLE");
@@ -204,7 +208,7 @@ describe("ModelProxyClient", () => {
   });
 
   it("a 4xx answer throws with the proxy's message and never echoes a key", async () => {
-    const { client } = proxy(() => json({ error: { message: "Invalid team budget for sk-leaked-virtual-key-12345" } }, 400));
+    const { client } = proxy(({ path }) => (path === "/model/info" ? json({ data: [] }) : json({ error: { message: "Invalid team budget for sk-leaked-virtual-key-12345" } }, 400)));
     const error = await failure(client.upsertOrg(ORG, -1));
     expect(error.code).toBe("CONFIG_INVALID");
     expect(error.message).toContain("Invalid team budget");
@@ -216,10 +220,10 @@ describe("ModelProxyClient", () => {
   it("reads the master key once per call and never puts it in an error", async () => {
     let reads = 0;
     const fetch = routeFetch(async () => json({ error: { message: "boom" } }, 500));
-    const client = new ModelProxyClient({ baseUrl: `${BASE}/`, masterKey: async () => { reads += 1; return MASTER; }, fetch, now: () => NOW });
+    const client = new ModelProxyClient({ baseUrl: `${BASE}/`, masterKey: async () => { reads += 1; return MASTER; }, fetch, now: () => NOW, catalog: CATALOG });
     const error = await failure(client.upsertOrg(ORG, 1));
     expect(error.message).not.toContain(MASTER);
     expect(reads).toBe(1);
-    expect(fetch.calls).toEqual(["POST http://proxy.internal:4000/team/new"]);
+    expect(fetch.calls).toEqual(["GET http://proxy.internal:4000/model/info"]);
   });
 });

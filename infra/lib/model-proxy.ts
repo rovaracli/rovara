@@ -216,6 +216,13 @@ export class ModelProxy extends Construct {
 
     // The key LiteLLM encrypts stored credentials with (company AI keys, written through its credentials API). Generated here, read only
     // by the proxy's execution role (ECS injects it), and kept when the stack goes: without it the stored keys cannot be read.
+    // ROTATION: do not rotate or replace this value in place. LiteLLM encrypts each stored credential with it and has no re-encrypt step,
+    // so a new value leaves every stored company key unreadable (calls through those sources fail until each key is sent again).
+    // Likewise RETAIN keeps the secret when the stack is deleted; a re-created stack generates a new one that cannot decrypt a retained
+    // database, so reuse the retained secret (import it) or clear the stored credentials. To rotate on purpose: (1) put the new value
+    // in the secret, (2) redeploy so every proxy task restarts with it, (3) have each org's admin re-enter every source key (the broker's
+    // upsertSource with an apiKey PATCHes the credential, now encrypted under the new salt), (4) check each source. Never run two salt
+    // values at once: replicas must share one. The master key and the other secrets are unaffected.
     const saltKey = new secretsmanager.Secret(this, "SaltKey", {
       description: "LITELLM_SALT_KEY of the AgentX model proxy; encrypts the company AI keys stored in its database",
       generateSecretString: { excludePunctuation: true, passwordLength: 48 },

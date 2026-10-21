@@ -4,7 +4,7 @@
 // (budget_duration "1mo"). It holds the master key only through the `masterKey` callback, reads it
 // once per call, and never puts it, or a key, in an error. Network failures and 5xx answers are
 // MODEL_PROXY_UNAVAILABLE; a 4xx carries the proxy's message.
-import { randomBytes } from "node:crypto";
+import { randomInt } from "node:crypto";
 import { AgentXError, INFERENCE_PATHS, agentXError, bedrockExternalId, modelSourceOrgProblem, type OrgId } from "@agentx/contracts";
 import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "./access.js";
 import { credentialNameOf, proxyModelsOf, sourceAliasPrefix, sourceUsesKey, type PriceLookup } from "./sources.js";
@@ -46,7 +46,8 @@ export interface ModelProxyClientInput {
   random?: () => string;
 }
 
-interface ProxyModelEntry { id: string; name: string; org: string | undefined; roleArn: string | undefined }
+/** `served` is false for a Bedrock source that has not passed its probe: its models exist (the probe finds the role through them) but no team may call them. */
+interface ProxyModelEntry { id: string; name: string; org: string | undefined; roleArn: string | undefined; served: boolean }
 
 type Json = Record<string, unknown>;
 interface Reply { status: number; body: unknown }
@@ -54,8 +55,8 @@ interface Reply { status: number; body: unknown }
 const isRecord = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
 const unavailable = (message: string) => agentXError("MODEL_PROXY_UNAVAILABLE", message);
 
-/** The proxy's own words for a refusal, with anything shaped like a key removed and the length capped. */
-function proxyMessage(body: unknown): string {
+/** The proxy's own words for a refusal, with anything shaped like a key and the exact `secret` removed first, and only then the length capped. */
+function proxyMessage(body: unknown, secret?: string): string {
   let text = "";
   if (isRecord(body)) {
     const error = body.error;
@@ -64,15 +65,18 @@ function proxyMessage(body: unknown): string {
     else if (typeof body.detail === "string") text = body.detail;
     else if (isRecord(body.detail) && typeof body.detail.error === "string") text = body.detail.error;
   }
+  // Scrub before truncating: a cut through the middle of a secret would leave its beginning in the message.
+  if (secret !== undefined && secret !== "") text = text.replaceAll(secret, "[key]");
   return text.replace(/sk-[A-Za-z0-9_-]+/gu, "[key]").slice(0, MAX_MESSAGE_LENGTH);
 }
 
-function refusal(reply: Reply): AgentXError {
-  const message = `model proxy refused the request (${String(reply.status)}): ${proxyMessage(reply.body) || "no reason given"}`;
+function refusal(reply: Reply, secret?: string): AgentXError {
+  const message = `model proxy refused the request (${String(reply.status)}): ${proxyMessage(reply.body, secret) || "no reason given"}`;
   return agentXError(reply.status === 404 ? "NOT_FOUND" : "CONFIG_INVALID", message);
 }
 
-const randomBase36 = (): string => Array.from(randomBytes(20), (byte) => (byte % 36).toString(36)).join("");
+// randomInt draws uniformly (rejection sampling); `byte % 36` would make the first 4 of 36 characters more likely.
+const randomBase36 = (): string => Array.from({ length: 20 }, () => randomInt(36).toString(36)).join("");
 
 /** An error with every occurrence of a secret removed from its text (the vendor key can come back inside a proxy refusal). */
 function scrubbed(error: unknown, secret: string | undefined): unknown {
@@ -80,12 +84,16 @@ function scrubbed(error: unknown, secret: string | undefined): unknown {
   return agentXError(error.code, error.message.slice(error.code.length + 2).replaceAll(secret, "[key]"));
 }
 
-/** A key may name only this org's aliases and the Rovara AI catalog: never a wildcard, an access group or another org's alias. */
-function assertKeyModels(orgId: OrgId, models: readonly string[]): void {
+/**
+ * A key may name only this org's own aliases (`<orgId>.<sourceId>.<model>`) or exact Rovara AI catalog ids. Nothing else: no wildcard
+ * of any kind (an own-prefixed one included), no access group, no raw provider name, no other org's alias.
+ */
+function assertKeyModels(orgId: OrgId, models: readonly string[], catalog: readonly string[]): void {
   if (models.length === 0) throw agentXError("CONFIG_INVALID", "a key needs at least one model");
+  const ownPrefix = `${orgId}.`;
   for (const model of models) {
-    const own = model.startsWith(`${orgId}.`);
-    if (!own && (model.includes("*") || model === "all-proxy-models" || model.startsWith("org_"))) throw agentXError("CONFIG_INVALID", "a key may name only this organization's models");
+    const own = model.startsWith(ownPrefix) && model.length > ownPrefix.length;
+    if (model.includes("*") || !(own || catalog.includes(model))) throw agentXError("CONFIG_INVALID", "a key may name only this organization's models and the Rovara AI catalog");
   }
 }
 
@@ -108,14 +116,20 @@ export class ModelProxyClient implements ModelAccess {
   }
 
   async upsertOrg(orgId: OrgId, monthlyBudgetUsd: number): Promise<void> {
-    const body = { team_id: orgId, max_budget: monthlyBudgetUsd, budget_duration: BUDGET_DURATION };
-    await this.createOrUpdate("/team/new", "/team/update", body);
+    // Every team is limited to the Rovara AI catalog plus the org's own served aliases, whether or not it has sources: a team with empty
+    // `models` can call every model, and org aliases exist once any org registers a source. Both the create and the update carry the
+    // list, so a team left unscoped by an earlier deploy is brought in line by its next upsert (the deploy can call upsertOrg per org).
+    const catalog = this.teamCatalog();
+    const master = await this.master();
+    const own = (await this.listModels(master)).filter((entry) => entry.org === orgId && entry.served).map((entry) => entry.name);
+    const body = { team_id: orgId, max_budget: monthlyBudgetUsd, budget_duration: BUDGET_DURATION, models: [...new Set([...own, ...catalog])] };
+    await this.createOrUpdate(master, "/team/new", "/team/update", body);
   }
 
   async upsertMember(orgId: OrgId, developerId: string, monthlyBudgetUsd: number): Promise<void> {
     const body = { user_id: developerId, user_role: USER_ROLE, max_budget: monthlyBudgetUsd, budget_duration: BUDGET_DURATION, metadata: { orgId } };
     // No key comes with the user: keys are minted per task or turn.
-    await this.createOrUpdate("/user/new", "/user/update", { ...body, auto_create_key: false }, body);
+    await this.createOrUpdate(await this.master(), "/user/new", "/user/update", { ...body, auto_create_key: false }, body);
   }
 
   async spend(orgId: OrgId, developerId: string): Promise<MemberSpend> {
@@ -160,7 +174,7 @@ export class ModelProxyClient implements ModelAccess {
 
   async mintKey(input: MintKeyInput): Promise<MintedKey> {
     const requestedAt = this.input.now();
-    if (input.models !== undefined) assertKeyModels(input.orgId, input.models);
+    if (input.models !== undefined) assertKeyModels(input.orgId, input.models, this.teamCatalog());
     const tags = input.tags === undefined ? {} : Object.fromEntries(Object.entries(input.tags).filter(([, value]) => value !== undefined));
     const reply = await this.call("POST", "/key/generate", {
       team_id: input.orgId,
@@ -195,34 +209,39 @@ export class ModelProxyClient implements ModelAccess {
   private async registerSource({ orgId, source, apiKey }: UpsertSourceInput): Promise<void> {
     const problem = modelSourceOrgProblem(orgId, source);
     if (problem !== undefined) throw agentXError("CONFIG_INVALID", problem);
+    // A Bedrock source authenticates by role and external id; a key beside them could be used as a bearer token and bypass both.
+    if (source.kind === "bedrock" && apiKey !== undefined) throw agentXError("CONFIG_INVALID", "a Bedrock source uses a role, not an api key");
     const prices = this.input.prices;
     if (prices === undefined) throw agentXError("CONFIG_INVALID", "model prices are not configured");
     const catalog = this.teamCatalog();
     const master = await this.master();
     const credentialName = credentialNameOf(orgId, source.sourceId);
     // Reads first, so a source that cannot be built is refused before anything is written.
-    const stored = source.kind === "bedrock" ? false : await this.credentialExists(master, credentialName);
+    const stored = source.kind === "bedrock" ? false : await this.credentialExists(master, credentialName, apiKey);
     if (apiKey === undefined && !stored && sourceUsesKey(source)) throw agentXError("CONFIG_INVALID", "this source has no stored key; send one");
     const wanted = proxyModelsOf(orgId, source, apiKey !== undefined || stored ? credentialName : undefined, prices);
-    const existing = await this.listModels(master);
+    const existing = await this.listModels(master, apiKey);
     const prefix = sourceAliasPrefix(orgId, source.sourceId);
     const mine = existing.filter((entry) => entry.org === orgId && entry.name.startsWith(prefix));
     const names = new Set(wanted.map((model) => model.model_name));
     // The alias carries the org, so another org cannot own one of these names; a deployment that does is a collision LiteLLM would load-balance across.
     if (existing.some((entry) => names.has(entry.name) && entry.org !== orgId)) throw agentXError("CONFIG_INVALID", "a model with this alias already exists");
+    const refuse = (reply: Reply): AgentXError => refusal(reply, apiKey);
     if (apiKey !== undefined) {
       const credential = { credential_name: credentialName, credential_values: { api_key: apiKey, ...(source.kind === "endpoint" ? { api_base: source.baseUrl } : {}) }, credential_info: { rovara_org: orgId, rovara_source: source.sourceId } };
       const written = stored
         ? await this.request("PATCH", `/credentials/${encodeURIComponent(credentialName)}`, master, credential)
         : await this.request("POST", "/credentials", master, credential);
-      if (written.status !== 200) throw refusal(written);
+      if (written.status !== 200) throw refuse(written);
     }
     // New deployments first, then the old ones go: the alias never stops serving. The old ids are the ones listed above.
     const created = await Promise.all(wanted.map((model) => this.request("POST", "/model/new", master, { ...model })));
-    for (const reply of created) if (reply.status !== 200) throw refusal(reply);
-    await this.deleteModels(master, mine.map((entry) => entry.id));
-    const others = existing.filter((entry) => entry.org === orgId && !entry.name.startsWith(prefix)).map((entry) => entry.name);
-    await this.setTeamModels(master, orgId, [...others, ...names], catalog);
+    for (const reply of created) if (reply.status !== 200) throw refuse(reply);
+    await this.deleteModels(master, mine.map((entry) => entry.id), apiKey);
+    const others = existing.filter((entry) => entry.org === orgId && entry.served && !entry.name.startsWith(prefix)).map((entry) => entry.name);
+    // A Bedrock source is served only once its probe has passed (`tested`); until then its models exist for the probe but no team has them.
+    const served = source.kind !== "bedrock" || source.tested ? [...names] : [];
+    await this.setTeamModels(master, orgId, [...others, ...served], catalog, apiKey);
   }
 
   async removeSource(orgId: OrgId, sourceId: string): Promise<void> {
@@ -232,7 +251,7 @@ export class ModelProxyClient implements ModelAccess {
     const prefix = sourceAliasPrefix(orgId, sourceId);
     const mine = existing.filter((entry) => entry.org === orgId && entry.name.startsWith(prefix));
     // The team first: it takes the aliases away at once on every replica, while a deleted model lingers on a replica for up to about 30 seconds.
-    await this.setTeamModels(master, orgId, existing.filter((entry) => entry.org === orgId && !entry.name.startsWith(prefix)).map((entry) => entry.name), catalog);
+    await this.setTeamModels(master, orgId, existing.filter((entry) => entry.org === orgId && entry.served && !entry.name.startsWith(prefix)).map((entry) => entry.name), catalog);
     await this.deleteModels(master, mine.map((entry) => entry.id));
     const removed = await this.request("DELETE", `/credentials/${encodeURIComponent(credentialNameOf(orgId, sourceId))}`, master, undefined);
     // A source with no key (Bedrock) has no credential to remove.
@@ -289,27 +308,27 @@ export class ModelProxyClient implements ModelAccess {
     return catalog;
   }
 
-  private async setTeamModels(master: string, orgId: OrgId, aliases: readonly string[], catalog: readonly string[]): Promise<void> {
+  private async setTeamModels(master: string, orgId: OrgId, aliases: readonly string[], catalog: readonly string[], secret?: string): Promise<void> {
     const reply = await this.request("POST", "/team/update", master, { team_id: orgId, models: [...new Set([...aliases, ...catalog])] });
-    if (reply.status !== 200) throw refusal(reply);
+    if (reply.status !== 200) throw refusal(reply, secret);
   }
 
-  private async deleteModels(master: string, ids: readonly string[]): Promise<void> {
+  private async deleteModels(master: string, ids: readonly string[], secret?: string): Promise<void> {
     const replies = await Promise.all(ids.map((id) => this.request("POST", "/model/delete", master, { id })));
-    for (const reply of replies) if (reply.status !== 200 && reply.status !== 404) throw refusal(reply);
+    for (const reply of replies) if (reply.status !== 200 && reply.status !== 404) throw refusal(reply, secret);
   }
 
-  private async credentialExists(master: string, name: string): Promise<boolean> {
+  private async credentialExists(master: string, name: string, secret?: string): Promise<boolean> {
     const reply = await this.request("GET", "/credentials", master, undefined);
-    if (reply.status !== 200) throw refusal(reply);
+    if (reply.status !== 200) throw refusal(reply, secret);
     const credentials = isRecord(reply.body) && Array.isArray(reply.body.credentials) ? reply.body.credentials : [];
     return credentials.some((entry) => isRecord(entry) && entry.credential_name === name);
   }
 
   /** Every model the proxy holds, reduced to what the registry needs. The listing carries no key; nothing else is kept. */
-  private async listModels(master: string): Promise<ProxyModelEntry[]> {
+  private async listModels(master: string, secret?: string): Promise<ProxyModelEntry[]> {
     const reply = await this.request("GET", "/model/info", master, undefined);
-    if (reply.status !== 200) throw refusal(reply);
+    if (reply.status !== 200) throw refusal(reply, secret);
     const data = isRecord(reply.body) && Array.isArray(reply.body.data) ? reply.body.data : [];
     const entries: ProxyModelEntry[] = [];
     for (const item of data) {
@@ -320,14 +339,14 @@ export class ModelProxyClient implements ModelAccess {
         name: item.model_name,
         org: typeof info.rovara_org === "string" ? info.rovara_org : undefined,
         roleArn: typeof info.rovara_role_arn === "string" ? info.rovara_role_arn : undefined,
+        served: info.rovara_tested !== false,
       });
     }
     return entries;
   }
 
   /** Creates the record; when the proxy says it already exists, the record is updated instead. Any other refusal is the create's own. */
-  private async createOrUpdate(createPath: string, updatePath: string, createBody: Json, updateBody: Json = createBody): Promise<void> {
-    const master = await this.master();
+  private async createOrUpdate(master: string, createPath: string, updatePath: string, createBody: Json, updateBody: Json = createBody): Promise<void> {
     const created = await this.request("POST", createPath, master, createBody);
     if (created.status === 200) return;
     // LiteLLM answers 400 for validation errors too, so only a 409 or an "already exists" 400 means the record is there.

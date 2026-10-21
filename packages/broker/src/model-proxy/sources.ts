@@ -79,6 +79,8 @@ export function proxyModelsOf(orgId: OrgId, source: ModelSource, credentialName:
       params.aws_external_id = source.externalId;
       // The probe reads these back from the proxy: the role to assume is not secret.
       info.rovara_role_arn = source.roleArn;
+      // Until the probe has passed no team may call the role's models; the registry reads this back to keep them out of every team.
+      info.rovara_tested = source.tested;
     }
     if (source.kind === "endpoint") {
       params.api_base = source.baseUrl;

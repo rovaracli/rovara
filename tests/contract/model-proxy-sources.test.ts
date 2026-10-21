@@ -1,11 +1,19 @@
 // Plan 3 Task 25: company sources in the model proxy. A fake LiteLLM keeps models, credentials and teams the way the real one does
 // (docs/learnings/model-sources-spike.md), and a fake STS evaluates a role's trust policy, so the Bedrock probe tests prove something.
 import { INFERENCE_PATHS, ModelSourceSchema, sourceAlias, type AgentXError, type ModelSource } from "@agentx/contracts";
-import { describe, expect, it, vi } from "vitest";
+import type * as NodeCrypto from "node:crypto";
+import { randomInt } from "node:crypto";
+import { describe, expect, it, vi, type Mock } from "vitest";
 import type { ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
 import { ModelProxyClient, type RoleAssumer } from "../../packages/broker/src/model-proxy/client.js";
 import { createModelAccessHandler, stsRoleAssumer } from "../../packages/broker/src/model-proxy/handler.js";
 import { ModelAccessInvoker } from "../../packages/broker/src/model-proxy/invoker.js";
+
+// A passthrough spy, so the probe's random id can be shown to come from randomInt (no modulo bias).
+vi.mock("node:crypto", async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeCrypto>();
+  return { ...actual, randomInt: vi.fn(actual.randomInt) };
+});
 
 const BASE = "http://proxy.internal:4001";
 const MASTER = "sk-master-planted-value";
@@ -22,8 +30,8 @@ const haiku = { provider: "anthropic", modelId: "claude-haiku-4-5" };
 const bedrockModel = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-5-20250929-v1:0" };
 
 const anthropicSource = (models = [sonnet, haiku], sourceId = SRC): ModelSource => ModelSourceSchema.parse({ kind: "anthropic", sourceId, label: "Company Anthropic", models: models.map((catalog) => ({ catalog })) });
-const bedrockSource = (): ModelSource => ModelSourceSchema.parse({
-  kind: "bedrock", sourceId: SRC, label: "Our AWS", roleArn: ROLE, region: "us-east-1", externalId: `rovara-${ORG}`, models: [{ catalog: bedrockModel }],
+const bedrockSource = (tested = false, sourceId = SRC): ModelSource => ModelSourceSchema.parse({
+  kind: "bedrock", sourceId, label: "Our AWS", roleArn: ROLE, region: "us-east-1", externalId: `rovara-${ORG}`, models: [{ catalog: bedrockModel }], tested,
 });
 const endpointSource = (api = "openai-completions"): ModelSource => ModelSourceSchema.parse({
   kind: "endpoint", sourceId: SRC, label: "Gateway", baseUrl: "https://llm.example.com/v1", api, models: [{ name: "our-model", catalog: sonnet }],
@@ -44,7 +52,7 @@ interface StoredCredential { credential_name: string; credential_values: Record<
 function litellm(options: { health?: (id: string) => { healthy: number; unhealthy: number }; failOn?: (seen: Seen) => Response | undefined } = {}) {
   const models: StoredModel[] = [];
   const credentials = new Map<string, StoredCredential>();
-  const teams = new Map<string, string[]>();
+  const teams = new Map<string, string[] | undefined>();
   const seen: Seen[] = [];
   let counter = 0;
   const fetchFake = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -94,8 +102,14 @@ function litellm(options: { health?: (id: string) => { healthy: number; unhealth
       const name = decodeURIComponent(path.slice("/credentials/".length));
       return credentials.delete(name) ? json({ success: true }) : json({ error: { message: "not found" } }, 404);
     }
-    if (method === "POST" && path === "/team/update") {
+    if (method === "POST" && path === "/team/new") {
+      if (teams.has(body.team_id)) return json({ error: { message: `Team id = ${body.team_id} already exists. Please use a different team id.` } }, 400);
+      // A team created with no models can call every model: the fake records that as undefined.
       teams.set(body.team_id, body.models);
+      return json({ team_id: body.team_id });
+    }
+    if (method === "POST" && path === "/team/update") {
+      if (Object.hasOwn(entry.body ?? {}, "models")) teams.set(body.team_id, body.models);
       return json({ team_id: body.team_id });
     }
     if (method === "GET" && path === "/health") {
@@ -303,6 +317,100 @@ describe("upsertSource", () => {
   });
 });
 
+describe("upsertOrg: every org team is scoped", () => {
+  it("creates a team with no sources limited to the Rovara AI catalog, never to an empty list", async () => {
+    const proxy = litellm();
+    await client(proxy).upsertOrg(ORG, 100);
+    expect(proxy.teams.get(ORG)).toEqual(CATALOG);
+    const created = proxy.seen.find((entry) => entry.path === "/team/new")!;
+    expect(created.body).toEqual({ team_id: ORG, max_budget: 100, budget_duration: "1mo", models: CATALOG });
+  });
+
+  it("brings an existing unscoped team in line on its next upsert, and keeps the org's own aliases there", async () => {
+    const proxy = litellm();
+    const source = anthropicSource([sonnet]);
+    await client(proxy).upsertSource({ orgId: ORG, source, apiKey: VENDOR_KEY });
+    await client(proxy).upsertSource({ orgId: OTHER_ORG, source: ModelSourceSchema.parse({ ...source, label: "Theirs" }), apiKey: VENDOR_KEY });
+    // The team as an older deploy left it: it exists and `models` is empty (every model).
+    proxy.teams.set(ORG, []);
+    proxy.teams.set(OTHER_ORG, undefined);
+    await client(proxy).upsertOrg(ORG, 250);
+    expect([...proxy.teams.get(ORG)!].sort()).toEqual([sourceAlias(ORG, SRC, sonnet), ...CATALOG].sort());
+    const update = proxy.seen.filter((entry) => entry.path === "/team/update").at(-1)!;
+    expect(update.body).toEqual({ team_id: ORG, max_budget: 250, budget_duration: "1mo", models: update.body!.models });
+    // Another org's team is not touched by this org's upsert.
+    expect(proxy.teams.get(OTHER_ORG)).toBeUndefined();
+    await client(proxy).upsertOrg(OTHER_ORG, 250);
+    expect(proxy.teams.get(OTHER_ORG)).not.toContain(sourceAlias(ORG, SRC, sonnet));
+    expect([...proxy.teams.get(OTHER_ORG)!].sort()).toEqual([sourceAlias(OTHER_ORG, SRC, sonnet), ...CATALOG].sort());
+  });
+
+  it("is idempotent and leaves a Bedrock alias out until its probe has passed", async () => {
+    const proxy = litellm();
+    await client(proxy).upsertSource({ orgId: ORG, source: bedrockSource(false) });
+    await client(proxy).upsertOrg(ORG, 10);
+    await client(proxy).upsertOrg(ORG, 10);
+    expect(proxy.teams.get(ORG)).toEqual(CATALOG);
+  });
+
+  it("writes nothing, and no team, when the catalog is not configured (an empty list would mean every model)", async () => {
+    const proxy = litellm();
+    expect((await failure(client(proxy, { catalog: [] }).upsertOrg(ORG, 100))).code).toBe("CONFIG_INVALID");
+    expect(proxy.seen.filter((entry) => entry.method !== "GET")).toEqual([]);
+    expect(proxy.teams.size).toBe(0);
+  });
+});
+
+describe("source safety", () => {
+  it("refuses an api key on a Bedrock source before anything is read or written", async () => {
+    const proxy = litellm();
+    const error = await failure(client(proxy).upsertSource({ orgId: ORG, source: bedrockSource(), apiKey: VENDOR_KEY }));
+    expect(error.code).toBe("CONFIG_INVALID");
+    expect(error.message).not.toContain(VENDOR_KEY);
+    expect(proxy.seen).toEqual([]);
+  });
+
+  it("serves a Bedrock source only after its probe has passed: registered for the probe, not in the team until tested", async () => {
+    const proxy = litellm();
+    const untested = bedrockSource(false);
+    await client(proxy).upsertSource({ orgId: ORG, source: untested });
+    expect(proxy.models.map((model) => model.model_name)).toEqual([aliasOf(untested, 0)]);
+    expect(proxy.teams.get(ORG)).toEqual(CATALOG);
+    // The probe can still find the role.
+    const sts = fakeSts([{ Effect: "Allow", Condition: { StringEquals: { "sts:ExternalId": `rovara-${ORG}` } } }]);
+    expect(await client(proxy, { roles: sts.roles }).checkSource(ORG, SRC)).toEqual({ ok: true, health: "healthy" });
+
+    await client(proxy).upsertSource({ orgId: ORG, source: bedrockSource(true) });
+    expect(proxy.teams.get(ORG)).toEqual([aliasOf(untested, 0), ...CATALOG]);
+    expect(proxy.models).toHaveLength(1);
+  });
+
+  it("does not add an untested Bedrock alias to the team when the org changes another source, and takes one away on removal", async () => {
+    const proxy = litellm();
+    const SRC_BEDROCK = "src_bbbbbbbbbb0123456789";
+    await client(proxy).upsertSource({ orgId: ORG, source: bedrockSource(false, SRC_BEDROCK) });
+    const other = anthropicSource([sonnet]);
+    await client(proxy).upsertSource({ orgId: ORG, source: other, apiKey: VENDOR_KEY });
+    expect([...proxy.teams.get(ORG)!].sort()).toEqual([aliasOf(other, 0), ...CATALOG].sort());
+    await client(proxy).removeSource(ORG, SRC);
+    expect(proxy.teams.get(ORG)).toEqual(CATALOG);
+    expect(proxy.models.map((model) => model.model_name)).toEqual([sourceAlias(ORG, SRC_BEDROCK, bedrockModel)]);
+  });
+
+  it("scrubs the vendor key before truncating a refusal, even when the key straddles the cut", async () => {
+    // No sk- prefix, so only the exact-key scrub can catch it; it starts a few characters before the 300-character cut.
+    const plain = "vendorkey-planted-ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const message = `${"x".repeat(292)}${plain} and more`;
+    for (const path of ["/credentials", "/model/new", "/team/update"]) {
+      const proxy = litellm({ failOn: (seen) => (seen.path === path && seen.method === "POST" ? json({ error: { message } }, 400) : undefined) });
+      const error = await failure(client(proxy).upsertSource({ orgId: ORG, source: anthropicSource([sonnet]), apiKey: plain }));
+      expect(error.message, path).toContain("[key]");
+      expect(error.message, path).not.toContain("vendorkey");
+      expect(error.message, path).not.toContain(plain.slice(0, 5));
+    }
+  });
+});
+
 describe("removeSource", () => {
   it("takes the aliases out of the team, deletes the source's models and its credential, and touches nothing else", async () => {
     const proxy = litellm();
@@ -355,11 +463,40 @@ describe("mintKey with sources", () => {
     expect(proxy.seen[0]!.body!.metadata).toEqual({ orgId: ORG, developerId: "dev-1", purpose: "task", refId: "task-1", agentId: "agt_1", payerKind: "agent", payerId: "agt_1", source: "rovara", origin: "api" });
   });
 
-  it("refuses a wildcard, an access group, another org's alias and an empty list, sending nothing", async () => {
+  it("refuses anything but this org's own aliases and exact catalog ids, sending nothing", async () => {
     const proxy = litellm({ failOn: () => json({ key: "sk-virtual-3" }) });
-    for (const models of [["*"], ["all-proxy-models"], [sourceAlias(OTHER_ORG, SRC, sonnet)], ["openai/*"], []]) {
-      expect((await failure(client(proxy).mintKey(mint(models)))).code, models.join()).toBe("CONFIG_INVALID");
-    }
+    const refused: Array<[string, string[]]> = [
+      ["a bare wildcard", ["*"]],
+      ["the all-models access group", ["all-proxy-models"]],
+      ["an access group by name", ["team-shared-models"]],
+      ["a raw provider name", ["anthropic/claude-sonnet-4-5"]],
+      ["a raw provider wildcard", ["openai/*"]],
+      ["a catalog wildcard", ["us.anthropic.claude-*"]],
+      ["an own-prefixed wildcard", [`${ORG}.*`]],
+      ["an own source wildcard", [`${ORG}.${SRC}.*`]],
+      ["a wildcard beside a valid alias", [sourceAlias(ORG, SRC, sonnet), "*"]],
+      ["another org's alias", [sourceAlias(OTHER_ORG, SRC, sonnet)]],
+      ["another org's alias beside a valid one", [sourceAlias(ORG, SRC, sonnet), sourceAlias(OTHER_ORG, SRC, sonnet)]],
+      ["another org's wildcard", [`${OTHER_ORG}.*`]],
+      ["an id that is not in the catalog", ["us.anthropic.claude-opus-9"]],
+      ["the org prefix alone", [`${ORG}.`]],
+      ["the org id itself", [ORG]],
+      ["an empty list", []],
+    ];
+    for (const [what, models] of refused) expect((await failure(client(proxy).mintKey(mint(models)))).code, what).toBe("CONFIG_INVALID");
+    expect(proxy.seen).toEqual([]);
+  });
+
+  it("accepts this org's own aliases and exact catalog ids, together", async () => {
+    const proxy = litellm({ failOn: () => json({ key: "sk-virtual-4" }) });
+    const models = [sourceAlias(ORG, SRC, sonnet), CATALOG[0]!, CATALOG[1]!];
+    await client(proxy).mintKey(mint(models));
+    expect(proxy.seen[0]!.body!.models).toEqual(models);
+  });
+
+  it("refuses a keyed mint when the catalog is not configured, since it could not tell a catalog id from a stranger's model", async () => {
+    const proxy = litellm({ failOn: () => json({ key: "sk-virtual-5" }) });
+    expect((await failure(client(proxy, { catalog: [] }).mintKey(mint([sourceAlias(ORG, SRC, sonnet)])))).code).toBe("CONFIG_INVALID");
     expect(proxy.seen).toEqual([]);
   });
 });
@@ -414,6 +551,26 @@ describe("checkSource: the Bedrock probe", () => {
     expect(wrong).toHaveLength(2);
     for (const id of wrong) expect(id).toMatch(/^rovara-org_[0-9a-z]{20}$/);
     expect(new Set(wrong).size).toBe(2);
+  });
+
+  it("draws every character of the wrong external id from randomInt(36), so no value is more likely than another", async () => {
+    const proxy = litellm();
+    await client(proxy).upsertSource({ orgId: ORG, source: bedrockSource() });
+    const sts = fakeSts(trustFor({ StringEquals: { "sts:ExternalId": `rovara-${ORG}` } }));
+    const draws = randomInt as unknown as Mock<(max: number) => number>;
+    let next = 0;
+    const maxes: number[] = [];
+    draws.mockClear();
+    draws.mockImplementation(() => next++ % 36);
+    try {
+      const real = new ModelProxyClient({ baseUrl: BASE, masterKey: async () => MASTER, fetch: proxy.fetch, now: () => 0, prices, catalog: CATALOG, roles: sts.roles });
+      await real.checkSource(ORG, SRC);
+      maxes.push(...draws.mock.calls.map(([max]) => max));
+    } finally {
+      draws.mockRestore();
+    }
+    expect(sts.attempts.at(-1)!.externalId).toBe("rovara-org_0123456789abcdefghij");
+    expect(maxes).toEqual(Array.from({ length: 20 }, () => 36));
   });
 
   it("reports an unreachable STS as unavailable, not as a verdict on the trust policy", async () => {
