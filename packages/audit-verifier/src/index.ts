@@ -14,3 +14,13 @@ export {
   type OrgSealV1,
 } from "./record.js";
 export { AUDIT_LIMITS_COPY } from "./limits-copy.js";
+export {
+  buildTimeStampRequest,
+  parseTimeStampResponse,
+  verifyTimeStampToken,
+  type TimeStampResponse,
+  type TimestampCheckInput,
+  type TimestampProblem,
+  type TimestampVerdict,
+} from "./timestamp.js";
+export { defaultAnchors, type AuthorityLabel } from "./trust.js";

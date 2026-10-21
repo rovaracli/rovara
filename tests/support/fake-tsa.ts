@@ -126,7 +126,13 @@ export const OIDS = {
 } as const;
 
 export type HashName = "sha256" | "sha384" | "sha512";
-const HASH_OID: Record<HashName, string> = { sha256: OIDS.sha256, sha384: OIDS.sha384, sha512: OIDS.sha512 };
+export type EssHashName = HashName | "sha1";
+const HASH_OID: Record<EssHashName, string> = {
+  sha1: OIDS.sha1,
+  sha256: OIDS.sha256,
+  sha384: OIDS.sha384,
+  sha512: OIDS.sha512,
+};
 const RSA_OID: Record<HashName, string> = {
   sha256: OIDS.sha256WithRsa,
   sha384: OIDS.sha384WithRsa,
@@ -139,7 +145,7 @@ const ECDSA_OID: Record<HashName, string> = {
 };
 
 const digestOf = (hash: HashName | "sha1", data: Bytes): Buffer => createHash(hash).update(data).digest();
-const hashAlgorithm = (hash: HashName): Bytes => seq(oid(HASH_OID[hash]), nul());
+const hashAlgorithm = (hash: EssHashName): Bytes => seq(oid(HASH_OID[hash]), nul());
 
 // ---- keys ----
 
@@ -334,7 +340,7 @@ export interface TokenSpec {
   /** The certificate whose hash the signing-certificate attribute carries; default is the signer's. */
   essCertificate?: Bytes;
   /** Hash of the signing-certificate attribute (ESSCertIDv2); default sha256. */
-  essHash?: HashName;
+  essHash?: EssHashName;
   /** Add an issuerSerial to the ESS certificate id. */
   essIssuerSerial?: boolean | { serial: bigint };
   /** Use these bytes as the messageDigest attribute instead of the true digest. */
@@ -343,6 +349,8 @@ export interface TokenSpec {
   omitContentType?: boolean;
   /** eContentType; default id-ct-TSTInfo. */
   eContentType?: string;
+  /** Hash algorithm named in the TSTInfo message imprint; default sha256. Independent of the signature hash. */
+  imprintHash?: HashName;
   /** Hash (hex) written into the TSTInfo message imprint instead of `hashHex`. */
   imprintHashHex?: string;
   /** Flip a bit of the signature after signing. */
@@ -355,8 +363,10 @@ function essIssuerSerial(spec: TokenSpec): Bytes[] {
   return [seq(seq(ctx(4, spec.signer.issuerNameDer)), int(serial))];
 }
 
-export function buildTstInfo(spec: Pick<TokenSpec, "hashHex" | "nonce" | "genTime" | "serial" | "imprintHashHex" | "hash">): Bytes {
-  const hash = spec.hash ?? "sha256";
+export function buildTstInfo(
+  spec: Pick<TokenSpec, "hashHex" | "nonce" | "genTime" | "serial" | "imprintHashHex" | "imprintHash">,
+): Bytes {
+  const hash = spec.imprintHash ?? "sha256";
   return seq(
     int(1n),
     oid("1.2.3.4.5"),
