@@ -21,6 +21,8 @@ Nothing is lost while this alarm is on. Sealing goes on: records are sealed, the
 | `stored_token_invalid` | The key `<epochId>.<label>.tsr` already holds an object that does not verify as a token for that epoch. It is not adopted and cannot be replaced (the bucket is locked); the epoch waits and a later epoch covers it. Treat it like an object conflict: see `audit-object-conflict.md`. |
 | `version_drift` | The token key holds a delete marker or a second version (also logged as `audit.version_drift`). See `audit-object-conflict.md`. |
 
+A `gen_time` line with `label: all` means a token already held could not cover an older waiting epoch (its records are later than the token's time). Nothing is lost: the epochs stay `stamp_pending` and the next epoch with newer tokens covers them; with no new records in any org they wait for the next record.
+
 Each run asks each authority at most twice (the epoch being closed and the newest epoch that is still waiting), at least 15 seconds apart. An outage does not become a storm of requests.
 
 ## Network
@@ -40,4 +42,4 @@ A token from one URL is judged only against that URL's roots. An auditor verifyi
 
 ## `off`
 
-`agentxAuditTsa=off` makes no request. Epochs are sealed without a token and the export says "No independent timestamp". Epochs that were already `stamp_pending` when a stack is switched to `off` stay as they are.
+`agentxAuditTsa=off` makes no request. Epochs are sealed without a token and the export says "No independent timestamp". Epochs that were already `stamp_pending` when a stack is switched to `off` stay as they are. They are not resumed when timestamps are switched on again: they export as "No independent timestamp" like the epochs sealed while it was off. Wait for no epoch to be `stamp_pending` before switching to `off`.

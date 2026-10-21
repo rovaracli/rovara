@@ -1068,9 +1068,9 @@ async function newestPending(ctx: Context): Promise<StampTarget | undefined> {
 /**
  * Every epoch before `epoch` that is still waiting is covered by it (`covered_by`) and sealed: its statement chains to this
  * one's, which has tokens, so the verifier takes the later tokens for the older epochs too. The walk goes back by `prevEpochId`
- * and stops at the first epoch that is not waiting (or was covered by this epoch before a crash). The writes go oldest first
+ * and stops at the first epoch that is neither waiting nor covered by some epoch. The writes go oldest first
  * but a page of them runs at once, so a crash can leave a later epoch of the page covered and an earlier one still waiting: the
- * walk passes through the epochs already covered by this epoch, and so finishes the work on a repeat.
+ * walk passes through the epochs already covered (by this epoch or any other), and so finishes the work on a repeat.
  *
  * The covering is all or nothing, and only when the verifier would accept it (review N1): each waiting epoch's last record is held
  * against the earliest time among this epoch's tokens with the verifier's own rule. If any epoch fails it, nothing is written, the
@@ -1079,13 +1079,15 @@ async function newestPending(ctx: Context): Promise<StampTarget | undefined> {
  */
 async function coverOlder(ctx: Context, epoch: EpochMeta): Promise<{ covered: number; complete: boolean }> {
   const epochId = epoch.epochId;
-  const waiting: string[] = [];
   const pending: string[] = [];
   for (let id = epoch.prevEpochId; id !== null;) {
     const item = await getItem(ctx, ctx.deps.sealsTable, `EPOCH#${id}`, "META");
-    if (item === undefined || !(item.status === "stamp_pending" || item.covered_by === epochId)) break;
-    waiting.push(id);
-    if (item.status === "stamp_pending") pending.push(id);
+    if (item === undefined) break;
+    const waiting = item.status === "stamp_pending";
+    // The walk passes every epoch some epoch already covers, whichever one: a page of covering writes can fail half way after a newer
+    // epoch has completed, and an epoch still waiting behind covered ones (review N4) must still be found.
+    if (!waiting && typeof item.covered_by !== "string") break;
+    if (waiting) pending.push(id);
     id = typeof item.prevEpochId === "string" ? item.prevEpochId : null;
   }
   if (pending.length > 0) {
@@ -1100,8 +1102,8 @@ async function coverOlder(ctx: Context, epoch: EpochMeta): Promise<{ covered: nu
       return { covered: 0, complete: false };
     }
   }
-  waiting.reverse();
-  await eachPage(waiting, async (id) => {
+  pending.reverse();
+  await eachPage(pending, async (id) => {
     try {
       await ctx.deps.documentClient.send(new UpdateCommand({
         TableName: ctx.deps.sealsTable,
@@ -1116,7 +1118,7 @@ async function coverOlder(ctx: Context, epoch: EpochMeta): Promise<{ covered: nu
       if (!isConditionalFailure(error)) throw error;
     }
   });
-  return { covered: waiting.length, complete: true };
+  return { covered: pending.length, complete: true };
 }
 
 /** An epoch that has every token and was waiting is sealed (after the epochs it covers, so a crash resumes the covering). */
@@ -1166,15 +1168,16 @@ async function stampWaiting(ctx: Context): Promise<void> {
 
 /** A pending epoch older than this, with nothing to cover it, is reported every run (the same alarm as a failed token). */
 const PENDING_ALARM_MINUTES = 180;
+/** The most epochs the age check walks back through in one run. */
+const ALARM_WALK_LIMIT = 1000;
 
 /**
  * The first thing every run does for the timestamps (I2): finish the settling a crashed run left. The newest completed epoch is
  * the head, and the epochs that wait are always a run that ends at the head: an epoch is completed as `sealed` only when none
  * waits before it, and otherwise as `stamp_pending` and sealed last, after it has covered them. So a sealed head means there is
  * nothing to settle and this does nothing (one read). A waiting head that holds a token from every authority has its locks
- * checked (N2, as in any run that stamps) and is then settled with the same idempotent step the end of a run takes. A waiting head
- * that lacks a token and has waited, with the epochs before it, for longer than PENDING_ALARM_MINUTES is logged as a timestamp
- * failure, so the alarm fires even when no authority is asked or answers wrongly.
+ * checked (N2, as in any run that stamps) and is then settled with the same idempotent step the end of a run takes. Whatever
+ * still waits afterwards is checked for age (`alarmIfWaitingTooLong`), so the alarm fires even when no authority is asked or answers wrongly.
  */
 async function resumeStamps(ctx: Context): Promise<void> {
   const active = activeTsa(ctx);
@@ -1187,16 +1190,29 @@ async function resumeStamps(ctx: Context): Promise<void> {
     const target: StampTarget = { meta, statement: meta.statement };
     await enforceStampLocks(ctx, [target]);
     await settleStamps(ctx, [target]);
-    return;
   }
-  // The waiting epochs end at the head; the walk stops at the first one old enough to alarm, or at the first that is not waiting.
+  await alarmIfWaitingTooLong(ctx, head.epochId);
+}
+
+/**
+ * Logs a timestamp failure (`pending_too_long`) for any epoch that is still waiting after PENDING_ALARM_MINUTES. The walk starts at the
+ * head and passes waiting epochs and epochs some epoch covered, so an epoch left waiting behind covered ones is found too; it stops at
+ * the first other epoch, or after ALARM_WALK_LIMIT epochs. It does nothing when nothing waits.
+ */
+async function alarmIfWaitingTooLong(ctx: Context, headId: string): Promise<void> {
   const limit = ctx.now - PENDING_ALARM_MINUTES * 60_000;
-  for (let current: EpochMeta | undefined = meta; current !== undefined && current.status === "stamp_pending";) {
-    if (Date.parse(current.closedAt) < limit) {
-      ctx.deps.log({ event: "audit.timestamp_failed", level: "error", label: "all", problem: "pending_too_long", epochId: current.epochId, closedAt: current.closedAt });
+  let id: string | null = headId;
+  for (let steps = 0; id !== null && steps < ALARM_WALK_LIMIT; steps += 1) {
+    const meta: EpochMeta = await readMeta(ctx, id);
+    if (meta.status === "stamp_pending") {
+      if (Date.parse(meta.closedAt) < limit) {
+        ctx.deps.log({ event: "audit.timestamp_failed", level: "error", label: "all", problem: "pending_too_long", epochId: meta.epochId, closedAt: meta.closedAt });
+        return;
+      }
+    } else if (meta.coveredBy === undefined) {
       return;
     }
-    current = current.prevEpochId === null ? undefined : await readMeta(ctx, current.prevEpochId);
+    id = meta.prevEpochId;
   }
 }
 

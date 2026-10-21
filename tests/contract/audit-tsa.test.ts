@@ -1232,6 +1232,68 @@ describe("review N3: a run with nothing to settle does no settling work", () => 
   });
 });
 
+describe("review N4: an older pending epoch is never stranded behind epochs a later epoch covered", () => {
+  /** E0 to E3 wait (both authorities refuse), then they come back. */
+  async function fourWaiting(): Promise<World> {
+    const w = world();
+    w.digicert.behavior = "rejection";
+    w.sectigo.behavior = "rejection";
+    for (const slot of [0, 1, 2, 3]) {
+      w.h.clock.now = at(slot);
+      appendRecords(w.h, A, 1);
+      await run(w.h, at(slot));
+    }
+    w.digicert.behavior = "grant";
+    w.sectigo.behavior = "grant";
+    return w;
+  }
+  const E4 = epochIdAt(at(4));
+  const E3 = epochIdAt(at(3));
+
+  it("a page of covering writes that fails half way, after a newer epoch completed, is finished by the next run: the epoch left waiting is covered too (the re-checker's probe H)", async () => {
+    const w = await fourWaiting();
+    let coverings = 0;
+    // E4 is completed and is the head; E3 then covers E0, E1 and E2 in one page. The second write of the page fails, the others land.
+    w.h.hooks.before = (command) => {
+      if (command.constructor.name === "UpdateCommand" && JSON.stringify(command.input).includes("covered_by")) {
+        coverings += 1;
+        if (coverings === 2) throw crash();
+      }
+    };
+    w.h.clock.now = at(4);
+    appendRecords(w.h, A, 1);
+    await expect(run(w.h, at(4))).rejects.toMatchObject({ name: "ProcessDied" });
+    w.h.hooks.before = undefined;
+    expect(epochHead(w.h)).toMatchObject({ epochId: E4 });
+    expect([E0, E1, E2].map((id) => (metaOf(w.h, id)?.covered_by === undefined ? "waiting" : "covered"))).toStrictEqual(["covered", "waiting", "covered"]);
+    expect(statusOf(w.h, E1)).toBe("stamp_pending");
+    const requests = w.digicert.requests.length;
+    w.h.clock.now = at(5);
+    await run(w.h, at(5));
+    expect(w.digicert.requests.length).toBe(requests);
+    for (const id of [E0, E1, E2, E3, E4]) expect(statusOf(w.h, id), id).toBe("sealed");
+    expect(metaOf(w.h, E1)?.covered_by).toBeDefined();
+    const report = verifyBundle(exportBundle(w.h, A, w.settings), { anchors: anchorsOf(w) });
+    expect(report.ok, JSON.stringify(report.checks.filter((check) => !check.ok))).toBe(true);
+    expect(report.epochsWithoutTimestamp).toStrictEqual([]);
+  });
+
+  it("an epoch waiting behind covered ones that is older than 3 hours is reported, wherever it sits (nothing was logged for it before)", async () => {
+    const w = world({ digicert: "rejection", sectigo: "rejection" });
+    for (const slot of [0, 1, 2, 3]) {
+      w.h.clock.now = at(slot);
+      appendRecords(w.h, A, 1);
+      await run(w.h, at(slot));
+    }
+    // E1 and E2 were covered by E3; E0, the oldest, was left waiting by an interrupted run. E3, the head, still lacks its tokens.
+    for (const id of [E1, E2]) w.h.db.set({ ...metaOf(w.h, id)!, status: "sealed", covered_by: E3 });
+    expect(failures(w.h).filter((entry) => entry.problem === "pending_too_long")).toStrictEqual([]);
+    w.h.clock.now = at(14);
+    await run(w.h, at(14));
+    expect(failures(w.h).filter((entry) => entry.problem === "pending_too_long")).toMatchObject([{ epochId: E0, level: "error", label: "all" }]);
+  });
+});
+
 // ---- a small stand-in for the export builder (Task 11), with the stamps ----
 
 function anchorsOf(w: World): Record<string, X509Certificate[]> {
