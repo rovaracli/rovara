@@ -180,7 +180,7 @@ function approvalIdFor(orgId: OrgId, requestedBy: string, requestId: string): Ap
 
 /**
  * Records a change that waits for a person and applies nothing. The id comes from the request, so a replay of the same request
- * returns the record it made (another change under that request id is `IDEMPOTENCY_CONFLICT`). A rule or subject kind nobody
+ * returns the record it made (another change under that request id is `CONFIG_INVALID`, as on the routes that apply at once). A rule or subject kind nobody
  * registered is refused here (`CONFIG_INVALID`), so no record is made that no one could ever decide.
  */
 export async function createPendingChange(
@@ -197,7 +197,7 @@ export async function createPendingChange(
   const replay = async (): Promise<ApprovalRecord | undefined> => {
     const existing = await getApproval(deps, input.orgId, approvalId);
     if (existing === undefined) return undefined;
-    if (canonicalJson(existing.subject) !== canonicalJson(input.subject)) throw agentXError("IDEMPOTENCY_CONFLICT", "this request ID was already used for another change");
+    if (canonicalJson(existing.subject) !== canonicalJson(input.subject)) throw agentXError("CONFIG_INVALID", "requestId: this request ID was already used for a different request");
     return existing;
   };
   const before = await replay();

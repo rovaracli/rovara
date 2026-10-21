@@ -30,7 +30,7 @@ import {
   type ApprovalRecord,
   type ApproverSpec,
 } from "./approvals.js";
-import { lessSafeGuardrailChanges, readGuardrailsWithRevision, validateRecipeForOrg, writeGuardrails, type StoredGuardrails } from "./guardrails.js";
+import { lessSafeGuardrailChanges, readGuardrailsWithRevision, requireAgentEnabled, validateRecipeForOrg, writeGuardrails, type StoredGuardrails } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
 import { GUARDRAILS_CONFLICT_TEXT, resolveAgent, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
 
@@ -180,6 +180,8 @@ export async function rollbackAgent(
 export async function adoptBuiltin(
   deps: ApprovalDependencies, caller: AgentCaller, agentId: AgentId, input: { requestId: string; version: number; request?: RequestMark },
 ): Promise<ChangeResult<{ pinnedVersion: number; changes: string[] }>> {
+  // A built-in the company's admins turned off keeps the version its dependents pinned.
+  await requireAgentEnabled(deps, caller.orgId, agentId);
   // Read only: whether this applies is decided before anything is written (the store pins the org on the write that adopts).
   const pinned = await deps.store.pinnedBuiltinVersion(caller.orgId, agentId);
   const target = deps.store.builtinRecipe(agentId, input.version);
@@ -287,6 +289,7 @@ async function confirmRollback(deps: ApprovalDependencies, record: ApprovalRecor
 async function confirmAdopt(deps: ApprovalDependencies, record: ApprovalRecord): Promise<void> {
   const by = decider(record);
   const subject = record.subject as Extract<AgentChangeSubject, { kind: "builtin_adopt" }>;
+  await requireAgentEnabled(deps, record.orgId, subject.agentId);
   const pinned = await deps.store.pinnedBuiltinVersion(record.orgId, subject.agentId);
   if (pinned !== subject.expectedPinnedVersion) throw stale("The version your company uses changed after this was asked. Adopt again.");
   if (recipeDigest(deps.store.builtinRecipe(subject.agentId, subject.version)) !== subject.digest) throw stale("That version changed after this was asked. Adopt again.");

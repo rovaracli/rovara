@@ -81,7 +81,7 @@ describe("createPendingChange", () => {
   it("refuses a request id used for another change, and treats another person's or org's as its own", async () => {
     const { deps } = setup();
     const first = await createPendingChange(deps, input());
-    expect(await code(createPendingChange(deps, input({ subject: { ...SUBJECT, draftRevision: 4 } })))).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    expect(await code(createPendingChange(deps, input({ subject: { ...SUBJECT, draftRevision: 4 } })))).toMatchObject({ code: "CONFIG_INVALID", message: "requestId: this request ID was already used for a different request" });
     expect((await createPendingChange(deps, input({ requestedBy: BOB }))).approvalId).not.toBe(first.approvalId);
     expect((await createPendingChange(deps, input({ orgId: ORG_B }))).approvalId).not.toBe(first.approvalId);
   });

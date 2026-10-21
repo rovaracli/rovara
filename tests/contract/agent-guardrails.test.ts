@@ -19,6 +19,7 @@ import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { AgentGuardrailsSchema, DEFAULT_AGENT_GUARDRAILS, type AgentGuardrails } from "../../packages/contracts/src/agent-guardrails.js";
 import type { AgentId } from "../../packages/contracts/src/agent.js";
+import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
 import { recipeDigest, EMPTY_RECIPE, type RecipeOverlay, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe.js";
 import type { ModelIdentifier } from "../../packages/contracts/src/models.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
@@ -220,12 +221,12 @@ describe("reading and writing", () => {
 
 type Reply = { status: number; body: Record<string, unknown> };
 
-async function setup(options: { servable?: ModelIdentifier[] } = {}) {
+async function setup(options: { servable?: ModelIdentifier[]; builtins?: ConstructorParameters<typeof AgentStore>[0]["builtins"] } = {}) {
   const members = new FakeProjectMembers();
   const servableModels = options.servable === undefined ? undefined : async () => options.servable!;
   const h = await createDeveloperTaskBroker({
     orgResolver, register: false,
-    brokerExtra: { agents: { projectMembers: members, ...(servableModels === undefined ? {} : { servableModels }) } },
+    brokerExtra: { agents: { projectMembers: members, ...(servableModels === undefined ? {} : { servableModels }), ...(options.builtins === undefined ? {} : { builtins: options.builtins }) } },
   });
   const enroll = async (who: Developer, role: OrgRole) => {
     h.db.set({ pk: `SESSION#${who.sessionId}`, sk: "META", sessionId: who.sessionId, developerId: who.developerId, amr: who.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
@@ -237,7 +238,7 @@ async function setup(options: { servable?: ModelIdentifier[] } = {}) {
   await enroll(OWEN, "owner");
   await enroll(EVE, "member");
   h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "web"), entityType: "PROJECT_CATALOG", name: "web" });
-  const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now });
+  const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now, ...(options.builtins === undefined ? {} : { builtins: options.builtins }) });
   const deps: ApprovalDependencies = {
     store, projectMembers: members, documentClient: h.db, tableName: "state", now: Date.now, confirmOrigin: "https://cell.example.com",
     signInStore: new DeveloperSignInStore({ documentClient: h.db, tableName: "signin", now: Date.now }),
@@ -422,8 +423,8 @@ describe("relaxations wait for the confirmation page (R9-3, R69)", () => {
     expect(again).toEqual(first);
     expect(approvals()).toHaveLength(1);
     const other = await call(DANA, "PUT", GUARDRAILS, { ...body, guardrails: { ...strict, maxAutonomy: "prepare" } });
-    expect(other.status).toBe(409);
-    expect(errorOf(other).code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(other.status).toBe(400);
+    expect(errorOf(other)).toEqual({ code: "CONFIG_INVALID", message: "requestId: this request ID was already used for a different request" });
   });
 
   it("applies exactly the stored change when it is confirmed, crediting the person who confirmed it", async () => {
@@ -583,6 +584,25 @@ describe("validateRecipeForOrg", () => {
         { path: "steps.1.settings.differentCompanyFrom", message: "set the check step to a model from a different AI company than the draft step" },
       ]);
       expect(await check(recipeOf([agentStepOf("draft", { model: SONNET }), agentStepOf("check", { model: GPT, differentCompanyFrom: "draft" })]), { guardrails: on, servable: WITH_SECOND_COMPANY })).toEqual([]);
+    });
+
+    it("does not count a company it does not recognise as different, whichever side it is on", async () => {
+      // Claude reached through a route modelCompany does not know is still Anthropic's, but reads as an unrecognised company.
+      const vertex: ModelIdentifier = { provider: "google-vertex", modelId: "claude-opus-4-7" };
+      const served = [SONNET, GPT, vertex];
+      expect(await check(recipeOf([build({ model: vertex }), review({ model: SONNET })]), { guardrails: on, servable: served })).toEqual([{ path: "steps.1", message: different }]);
+      expect(await check(recipeOf([build({ model: SONNET }), review({ model: vertex })]), { guardrails: on, servable: served })).toEqual([{ path: "steps.1", message: different }]);
+      // An unrecognised company on the build side can't be told apart from the review's, whatever the review uses.
+      expect(await check(recipeOf([build({ model: vertex }), review({ model: GPT })]), { guardrails: on, servable: served })).toEqual([{ path: "steps.1", message: different }]);
+    });
+
+    it("says there is no second company when the only other models are unrecognised or forbidden", async () => {
+      const mistral: ModelIdentifier = { provider: "mistral", modelId: "large" };
+      const sameCompany = recipeOf([build({ model: SONNET }), review({ model: OPUS })]);
+      expect(await check(sameCompany, { guardrails: on, servable: [SONNET, OPUS, mistral] })).toEqual([{ path: "steps.1", message: noSecond }]);
+      expect(await check(sameCompany, { guardrails: guardrails({ requireCrossCompanyReview: true, forbiddenModels: [GPT] }), servable: WITH_SECOND_COMPANY })).toEqual([{ path: "steps.1", message: noSecond }]);
+      // A second company that is usable still gets the instruction to switch.
+      expect(await check(sameCompany, { guardrails: guardrails({ requireCrossCompanyReview: true, forbiddenModels: [mistral] }), servable: [SONNET, OPUS, GPT, mistral] })).toEqual([{ path: "steps.1", message: different }]);
     });
 
     it("asks nothing of review steps while the rule is off", async () => {
@@ -812,10 +832,88 @@ describe("a built-in agent turned off", () => {
     expect((await store.getVersion(TEST_ORG, childId, 1))?.extends).toEqual(pinned);
   });
 
-  it("shows the built-in itself as disabled to anyone who opens it", async () => {
+  it("is not found by a member who opens it directly, the same as in the list, while an admin sees it as disabled", async () => {
     const { call, deps } = await setup();
     expect((await call(DANA, "GET", "/v1/app/agents/service-reviewer")).body.agent).not.toHaveProperty("disabled");
+    expect((await call(EVE, "GET", "/v1/app/agents/service-reviewer")).status).toBe(200);
     await writeGuardrails(deps, TEST_ORG, OFF, DANA.developerId, { expectedRevision: 0 });
-    expect((await call(DANA, "GET", "/v1/app/agents/service-reviewer")).body.agent).toMatchObject({ disabled: true });
+    for (const path of ["", "/versions", "/versions/1", "/diff?from=1&to=1"]) {
+      const hidden = await call(EVE, "GET", `/v1/app/agents/service-reviewer${path}`);
+      expect([path, hidden.status, errorOf(hidden).code]).toEqual([path, 404, "NOT_FOUND"]);
+      expect((await call(DANA, "GET", `/v1/app/agents/service-reviewer${path}`)).status, path).toBe(200);
+    }
+    expect((await call(OWEN, "GET", "/v1/app/agents/service-reviewer")).body.agent).toMatchObject({ disabled: true });
+    // The others are still open to a member.
+    expect((await call(EVE, "GET", "/v1/app/agents/ticket-triage")).status).toBe(200);
+  });
+
+  it("can't be built on through a custom agent that builds on it", async () => {
+    const { call, deps, store } = await setup();
+    const base = await call(EVE, "POST", "/v1/app/agents", { name: "Base", extends: "service-reviewer", overlay: overlayWith() });
+    const baseId = (base.body.agent as { agentId: AgentId }).agentId;
+    await store.publish({ orgId: TEST_ORG, agentId: baseId, expectedDraftRevision: 1, digest: recipeDigest(await resolveAgent(store, TEST_ORG, baseId, "draft")), by: EVE.developerId });
+    const middle = await call(EVE, "POST", "/v1/app/agents", { name: "Middle", extends: baseId, overlay: overlayWith() });
+    expect(middle.status).toBe(201);
+    await writeGuardrails(deps, TEST_ORG, OFF, DANA.developerId, { expectedRevision: 0 });
+    const child = await call(EVE, "POST", "/v1/app/agents", { name: "Child", extends: baseId });
+    expect([child.status, errorOf(child)]).toEqual([409, { code: "AGENT_UNAVAILABLE", message: TEXT }]);
+    const other = await call(EVE, "POST", "/v1/app/agents", { name: "Other", overlay: overlayWith() });
+    const otherId = (other.body.agent as { agentId: AgentId }).agentId;
+    const switched = await call(EVE, "PUT", `/v1/app/agents/${otherId}/draft`, { expectedRevision: 1, overlay: overlayWith(), extends: baseId });
+    expect([switched.status, errorOf(switched).message]).toEqual([409, TEXT]);
+    // A custom agent that does not build on it is fine, and so is one with no published version to build on that chain.
+    const plain = await call(EVE, "POST", "/v1/app/agents", { name: "Plain", overlay: overlayWith() });
+    const plainId = (plain.body.agent as { agentId: AgentId }).agentId;
+    await store.publish({ orgId: TEST_ORG, agentId: plainId, expectedDraftRevision: 1, digest: recipeDigest(await resolveAgent(store, TEST_ORG, plainId, "draft")), by: EVE.developerId });
+    expect((await call(EVE, "POST", "/v1/app/agents", { name: "Fine", extends: plainId })).status).toBe(201);
+  });
+
+  it("can't be moved to by update-base through a base that builds on it, and moves again once it is turned back on", async () => {
+    const { call, deps, store } = await setup();
+    const publishDirect = async (agentId: AgentId) => {
+      const agent = (await store.get(TEST_ORG, agentId))!;
+      await store.publish({ orgId: TEST_ORG, agentId, expectedDraftRevision: agent.draftRevision, digest: recipeDigest(await resolveAgent(store, TEST_ORG, agentId, "draft")), by: EVE.developerId });
+    };
+    const base = (await call(EVE, "POST", "/v1/app/agents", { name: "Base", extends: "service-reviewer", overlay: overlayWith() })).body.agent as { agentId: AgentId };
+    await publishDirect(base.agentId);
+    const child = (await call(EVE, "POST", "/v1/app/agents", { name: "Child", extends: base.agentId, overlay: overlayWith() })).body.agent as { agentId: AgentId };
+    // The base moves on to a second version; the child still pins the first.
+    const baseDraft = (await store.getDraft(TEST_ORG, base.agentId))!;
+    await store.saveDraft({ orgId: TEST_ORG, agentId: base.agentId, overlay: overlayWith({}, { instructions: "Newer." }), expectedRevision: baseDraft.revision, by: EVE.developerId });
+    await publishDirect(base.agentId);
+    await writeGuardrails(deps, TEST_ORG, OFF, DANA.developerId, { expectedRevision: 0 });
+    const refused = await call(EVE, "POST", `/v1/app/agents/${child.agentId}/update-base`, { expectedRevision: 1 });
+    expect([refused.status, errorOf(refused)]).toEqual([409, { code: "AGENT_UNAVAILABLE", message: TEXT }]);
+    expect((await store.getDraft(TEST_ORG, child.agentId))?.extends?.version).toBe(1);
+    // Turned back on, the same request moves it.
+    await writeGuardrails(deps, TEST_ORG, defaults(), DANA.developerId, { expectedRevision: 1 });
+    expect((await call(EVE, "POST", `/v1/app/agents/${child.agentId}/update-base`, { expectedRevision: 1 })).status).toBe(200);
+  });
+
+  it("can't have its pin moved by adopt, asked or confirmed, while it is off", async () => {
+    const shipped = BUILTIN_AGENTS["ticket-triage"].versions[0]!.recipe;
+    const state = { latest: 1 };
+    const builtins = {
+      currentVersion: (id: string) => (id === "ticket-triage" ? state.latest : 1),
+      recipe: (id: string, version: number) => structuredClone(id === "ticket-triage" ? shipped : BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].versions[version - 1]!.recipe),
+      name: (id: string) => BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].name,
+    };
+    const { call, deps, store } = await setup({ builtins });
+    await store.ensureBuiltinSettings(TEST_ORG, "ticket-triage");
+    state.latest = 3;
+    // The pin moves to 2 while the built-in is on, then it is turned off.
+    expect((await call(DANA, "POST", "/v1/app/agents/ticket-triage/adopt", { version: 2 })).status).toBe(200);
+    await writeGuardrails(deps, TEST_ORG, guardrails({ disabledBuiltins: ["ticket-triage"] }), DANA.developerId, { expectedRevision: 0 });
+    const refused = await call(DANA, "POST", "/v1/app/agents/ticket-triage/adopt", { version: 3 });
+    expect([refused.status, errorOf(refused)]).toEqual([409, { code: "AGENT_UNAVAILABLE", message: "Ticket triage is turned off in your company. Ask an admin to turn it on." }]);
+    expect((await store.getBuiltinSettings(TEST_ORG, "ticket-triage"))?.pinnedVersion).toBe(2);
+    const record = {
+      orgId: TEST_ORG, approvalId: "apr_aaaaaaaaaaaaaaaaaaaa", kind: "change" as const, status: "PENDING" as const, requestedBy: DANA.developerId, decidedBy: DANA.developerId, changes: [],
+      approvers: { kind: "rule" as const, rule: "org_admin", candidates: [] }, createdAt: "x", expiresAt: "y",
+      subject: { kind: "builtin_adopt" as const, agentId: "ticket-triage" as const, version: 3, digest: recipeDigest(shipped), expectedPinnedVersion: 2 },
+    };
+    const error = await getApprovalSubjectHandler("builtin_adopt")!(deps, record).then(() => undefined, (thrown: Error) => thrown);
+    expect(error?.message).toMatch(/^AGENT_UNAVAILABLE: Ticket triage is turned off/);
+    expect((await store.getBuiltinSettings(TEST_ORG, "ticket-triage"))?.pinnedVersion).toBe(2);
   });
 });

@@ -43,7 +43,7 @@ import {
 } from "./access.js";
 import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, updateGuardrails, type ChangeResult } from "./changes.js";
 import type { ApprovalDependencies } from "./approvals.js";
-import { readGuardrails, readGuardrailsWithRevision, requireAgentEnabled } from "./guardrails.js";
+import { readGuardrails, readGuardrailsWithRevision, requireBaseEnabled } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
 import { updateAvailable, type AgentDraft, type AgentRecord, type AgentVersion, type BuiltinSettings, type RequestMark } from "./store.js";
 
@@ -109,6 +109,12 @@ function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> {
 }
 
 const notFound = () => agentXError("NOT_FOUND", "no agent has that ID");
+
+/** `requireAgentAccess` for reading an agent: a built-in the company turned off is not found by a member, as it is missing from their list; owners and admins still see it. */
+async function requireReadableAgent(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, wanted: Parameters<typeof requireAgentAccess>[3]) {
+  if (isBuiltinAgentId(agentId) && caller.orgRole !== "owner" && caller.orgRole !== "admin" && (await readGuardrails(deps, caller.orgId)).disabledBuiltins.some((id) => id === agentId)) throw notFound();
+  return requireAgentAccess(deps, caller, agentId, wanted);
+}
 
 function agentIdOf(raw: string): AgentId {
   const parsed = AgentIdSchema.safeParse(raw);
@@ -206,7 +212,7 @@ async function listAgents(deps: AgentRouteDependencies, caller: AgentCaller, url
 }
 
 async function getAgent(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId): Promise<Shown> {
-  const { agent, access } = await requireAgentAccess(deps, caller, agentId, "view");
+  const { agent, access } = await requireReadableAgent(deps, caller, agentId, "view");
   const shown = await view(deps, caller, agent, access);
   if (!("owner" in agent)) {
     const version = shown["pinnedVersion"] as number;
@@ -238,7 +244,7 @@ async function getAgent(deps: AgentRouteDependencies, caller: AgentCaller, agent
 }
 
 async function listVersions(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId): Promise<{ versions: Shown[] }> {
-  const { agent } = await requireAgentAccess(deps, caller, agentId, "view");
+  const { agent } = await requireReadableAgent(deps, caller, agentId, "view");
   if (!("owner" in agent)) {
     const pinned = (await deps.store.getBuiltinSettings(caller.orgId, agentId))?.pinnedVersion ?? deps.store.builtinLatestVersion(agentId);
     const releases = BUILTIN_AGENTS[agentId as keyof typeof BUILTIN_AGENTS].versions;
@@ -255,7 +261,7 @@ async function listVersions(deps: AgentRouteDependencies, caller: AgentCaller, a
 }
 
 async function getVersion(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, version: number): Promise<Shown> {
-  const { agent } = await requireAgentAccess(deps, caller, agentId, "view");
+  const { agent } = await requireReadableAgent(deps, caller, agentId, "view");
   if (!("owner" in agent)) {
     const release = BUILTIN_AGENTS[agentId as keyof typeof BUILTIN_AGENTS].versions.find((entry) => entry.version === version);
     if (release === undefined) throw agentXError("NOT_FOUND", `${deps.store.builtinName(agentId)} has no version ${String(version)}`);
@@ -278,7 +284,7 @@ async function diffAgent(deps: AgentRouteDependencies, caller: AgentCaller, agen
   const from = diffSpec(url.searchParams.get("from"), "from", true);
   const to = diffSpec(url.searchParams.get("to"), "to", false);
   // The draft is the editors' to see.
-  const { agent } = await requireAgentAccess(deps, caller, agentId, from === "draft" || to === "draft" ? "edit" : "view");
+  const { agent } = await requireReadableAgent(deps, caller, agentId, from === "draft" || to === "draft" ? "edit" : "view");
   const orgId = caller.orgId;
   const recipeOf = async (spec: number | "base" | "draft"): Promise<ResolvedRecipe> => {
     if (!("owner" in agent)) {
@@ -343,7 +349,7 @@ async function createAgent(deps: AgentRouteDependencies, caller: AgentCaller, bo
   const accountable = input.accountable === undefined ? undefined : stored.kind === "project" ? await requireAccountable(deps, caller.orgId, stored.project, input.accountable.developerId) : input.accountable;
   if (input.extends !== undefined) {
     await requireAgentAccess(deps, caller, input.extends, "use");
-    await requireAgentEnabled(deps, caller.orgId, input.extends);
+    await requireBaseEnabled(deps, caller.orgId, input.extends);
   }
   const agent = await deps.store.create({
     orgId: caller.orgId, name: input.name, owner: stored, createdBy: caller.developerId,
@@ -385,7 +391,7 @@ async function putDraft(deps: AgentRouteDependencies, caller: AgentCaller, agent
   // Building on another agent needs `use` on it; keeping the base it already has does not.
   if (typeof input.extends === "string" && input.extends !== (await deps.store.getDraft(caller.orgId, agentId))?.extends?.agentId) {
     await requireAgentAccess(deps, caller, input.extends, "use");
-    await requireAgentEnabled(deps, caller.orgId, input.extends);
+    await requireBaseEnabled(deps, caller.orgId, input.extends);
   }
   const draft = await deps.store.saveDraft({
     orgId: caller.orgId, agentId, overlay: input.overlay, expectedRevision: input.expectedRevision, by: caller.developerId, request: mark,
@@ -485,7 +491,11 @@ async function updateBase(deps: AgentRouteDependencies, caller: AgentCaller, age
   if (replay !== undefined) return answer((replay.result as { draft: AgentDraft }).draft, (replay.result as { previous?: BaseRef }).previous);
   const before = (await deps.store.getDraft(caller.orgId, agentId))?.extends;
   // The base was needed to build on it once; moving to its newer version needs `use` on it still.
-  if (before !== undefined) await requireAgentAccess(deps, caller, before.agentId, "use");
+  if (before !== undefined) {
+    await requireAgentAccess(deps, caller, before.agentId, "use");
+    // Moving to a newer version is building on it again: not while the built-in it comes from is turned off.
+    if (await updateAvailable(deps.store, caller.orgId, agentId) !== undefined) await requireBaseEnabled(deps, caller.orgId, before.agentId);
+  }
   const draft = await deps.store.updateBase({ orgId: caller.orgId, agentId, expectedRevision: input.expectedRevision, by: caller.developerId, request: mark });
   return answer(draft, before);
 }

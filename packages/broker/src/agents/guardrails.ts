@@ -24,7 +24,7 @@ import {
   type ResolvedStep,
 } from "@agentx/contracts";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
-import type { AgentStore, RequestMark } from "./store.js";
+import type { AgentRecord, AgentStore, AgentVersion, RequestMark } from "./store.js";
 
 /** What reading the guardrails needs. */
 export interface GuardrailDependencies {
@@ -86,6 +86,8 @@ export async function writeGuardrails(
 // ---- which changes are less safe
 
 const AUTONOMY_ORDER = AutonomySchema.options;
+/** Agents build on at most three custom layers over a built-in; a little more covers a stored chain that is longer than that. */
+const MAX_BASE_CHAIN = 8;
 const modelLabel = (model: ModelIdentifier): string => `${model.provider}/${model.modelId}`;
 
 /**
@@ -152,7 +154,8 @@ function modelsOf(step: ResolvedStep): ModelIdentifier[] {
 function differsFrom(step: ResolvedStep, other: ResolvedStep): boolean {
   const mine = modelsOf(step).map(modelCompany);
   const theirs = new Set<ModelCompany>(modelsOf(other).map(modelCompany));
-  return mine.length > 0 && theirs.size > 0 && mine.every((company) => company !== "other" && !theirs.has(company));
+  // Claude reached through a route modelCompany does not know reads as "other" but is still Anthropic's, so "other" never passes, on either side.
+  return mine.length > 0 && theirs.size > 0 && !theirs.has("other") && mine.every((company) => company !== "other" && !theirs.has(company));
 }
 
 /**
@@ -187,7 +190,10 @@ export async function validateRecipeForOrg(deps: RecipeCheckDependencies, orgId:
   if (AUTONOMY_ORDER.indexOf(recipe.autonomy) > AUTONOMY_ORDER.indexOf(guardrails.maxAutonomy)) add("autonomy", `${recipe.autonomy} is more than your company allows (${guardrails.maxAutonomy})`);
 
   if (guardrails.requireCrossCompanyReview) {
-    const secondCompany = new Set(servable.map(modelCompany)).size >= 2;
+    // Only a recognised company the company can actually choose counts: a forbidden model, or one of an unrecognised company, can't be the second.
+    const usable = new Set<ModelCompany>(servable.filter((model) => !forbiddenNames.has(canonicalModelName(model))).map(modelCompany));
+    usable.delete("other");
+    const secondCompany = usable.size >= 2;
     const requireDifferent = (path: string, step: ResolvedStep, other: ResolvedStep) => {
       if (differsFrom(step, other)) return;
       if (modelsOf(other).length === 0) add(path, `set the ${other.id} step to a model, so a different AI company can be checked for the ${step.id} step`);
@@ -207,6 +213,22 @@ export async function validateRecipeForOrg(deps: RecipeCheckDependencies, orgId:
 }
 
 // ---- turned-off built-ins
+
+/**
+ * Refuses a base that is, or builds on, a built-in agent that is turned off: the base itself, or any agent in the chain of the version
+ * a new layer would pin (a custom agent's current version, then the base that version builds on, and so on).
+ */
+export async function requireBaseEnabled(deps: GuardrailDependencies & { store: Pick<AgentStore, "get" | "getVersion"> }, orgId: OrgId, baseId: AgentId): Promise<void> {
+  const seen = new Set<string>();
+  let id: AgentId | undefined = baseId;
+  while (id !== undefined && !seen.has(id) && seen.size < MAX_BASE_CHAIN) {
+    if (isBuiltinAgentId(id)) return requireAgentEnabled(deps, orgId, id);
+    seen.add(id);
+    const agent: AgentRecord | undefined = await deps.store.get(orgId, id);
+    const version: AgentVersion | undefined = agent?.currentVersion === undefined ? undefined : await deps.store.getVersion(orgId, id, agent.currentVersion);
+    id = version?.extends?.agentId;
+  }
+}
 
 /**
  * Refuses a built-in agent the company's admins turned off: for starting a run of it and for building a new agent on it. Agents already

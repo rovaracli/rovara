@@ -607,7 +607,8 @@ describe("adopting a built-in's version", () => {
     const shipped = BUILTIN_AGENTS["ticket-triage"].versions[0]!.recipe;
     const widened: ResolvedRecipe = { ...structuredClone(shipped), tools: [...structuredClone(shipped.tools), { connector: { name: "docs" }, access: "read_write" }] };
     const reworded: ResolvedRecipe = { ...structuredClone(shipped), instructions: [{ agentName: "Ticket triage", text: "Sort by urgency." }] };
-    const releases: Record<number, ResolvedRecipe> = { 1: shipped, 2: widened, 3: reworded };
+    const widenedAgain: ResolvedRecipe = { ...structuredClone(shipped), tools: [...structuredClone(shipped.tools), { connector: { name: "wiki" }, access: "read_write" }] };
+    const releases: Record<number, ResolvedRecipe> = { 1: shipped, 2: widened, 3: reworded, 4: widenedAgain };
     const state = { latest: 1 };
     const source = {
       currentVersion: (id: string) => (id === "ticket-triage" ? state.latest : 1),
@@ -633,6 +634,17 @@ describe("adopting a built-in's version", () => {
     expect((await store.getBuiltinSettings(TEST_ORG, "ticket-triage"))?.pinnedVersion).toBe(1);
     expect(approvals()[0]).toMatchObject({ subject: { kind: "builtin_adopt", agentId: "ticket-triage", version: 2, expectedPinnedVersion: 1 }, approvers: { kind: "rule", rule: "org_admin" } });
     expect(candidatesOf(approvals()[0]!)).toEqual([DANA.developerId]);
+  });
+
+  it("refuses a request ID reused for another adoption while the first waits", async () => {
+    const { source, state } = release();
+    const { call, store } = await setup({ builtins: source });
+    await store.ensureBuiltinSettings(TEST_ORG, "ticket-triage");
+    state.latest = 4;
+    const requestId = randomUUID();
+    expect((await call(DANA, "POST", "/v1/app/agents/ticket-triage/adopt", { requestId, version: 2 })).status).toBe(202);
+    const other = await call(DANA, "POST", "/v1/app/agents/ticket-triage/adopt", { requestId, version: 4 });
+    expect([other.status, errorOf(other)]).toEqual([400, { code: "CONFIG_INVALID", message: "requestId: this request ID was already used for a different request" }]);
   });
 
   it("adopts a release that makes nothing less safe at once, and says what changed", async () => {
@@ -990,6 +1002,39 @@ describe("a repeated request answers what it answered before (R18)", () => {
     const again = await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, body);
     expect(again).toEqual(first);
     expect(approvals()).toHaveLength(1);
+  });
+
+  describe("a request ID reused for another change while the first waits for the page", () => {
+    const REUSED = { code: "CONFIG_INVALID", message: "requestId: this request ID was already used for a different request" };
+
+    it("is refused for publish, rollback and a company-wide share, the same as on the paths that apply at once", async () => {
+      const { call, create, seed, saveDraft, approvals } = await setup();
+      const agentId = await create(MAYA);
+      await seed(agentId, { ...SAFE, instructions: "One.", autonomy: "run" });
+      await seed(agentId, { ...SAFE, instructions: "Two.", autonomy: "run" });
+      await seed(agentId, SAFE);
+      const requestId = randomUUID();
+      const rollbackPath = `/v1/app/agents/${agentId}/rollback`;
+      expect((await call(MAYA, "POST", rollbackPath, { requestId, version: 1 })).status).toBe(202);
+      const other = await call(MAYA, "POST", rollbackPath, { requestId, version: 2 });
+      expect([other.status, errorOf(other)]).toEqual([400, REUSED]);
+
+      expect((await saveDraft(MAYA, agentId, { ...SAFE, autonomy: "run" })).status).toBe(200);
+      const draft = await call(MAYA, "GET", `/v1/app/agents/${agentId}/draft`);
+      const publishPath = `/v1/app/agents/${agentId}/publish`;
+      const expectedRevision = (draft.body.draft as { revision: number }).revision;
+      const publishId = randomUUID();
+      expect((await call(MAYA, "POST", publishPath, { requestId: publishId, expectedRevision })).status).toBe(202);
+      const changed = await call(MAYA, "POST", publishPath, { requestId: publishId, expectedRevision, note: "Another note" });
+      expect([changed.status, errorOf(changed)]).toEqual([400, REUSED]);
+
+      const sharesPath = `/v1/app/agents/${agentId}/shares`;
+      const shareId = randomUUID();
+      expect((await call(MAYA, "PUT", sharesPath, { requestId: shareId, shares: [{ principal: { kind: "org" }, level: "view" }] })).status).toBe(202);
+      const wider = await call(MAYA, "PUT", sharesPath, { requestId: shareId, shares: [{ principal: { kind: "org" }, level: "use" }] });
+      expect([wider.status, errorOf(wider)]).toEqual([400, REUSED]);
+      expect(approvals()).toHaveLength(3);
+    });
   });
 
   it("leaves no mark behind when the write is refused, so the request can be sent again", async () => {
