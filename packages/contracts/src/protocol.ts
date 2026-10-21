@@ -5,6 +5,9 @@ import { ModelSelectionSchema, type ModelSelection } from "./models.js";
 import { WorkflowDependencyInvocationSchema } from "./workflow-dependencies.js";
 import { E2EFeaturePlanIntentSchema, E2EWorkflowAdmissionRefSchema } from "./e2e.js";
 import { DEVELOPER_INSTRUCTIONS_MAX_BYTES } from "./developer-tasks.js";
+import { AgentIdSchema, SkillIdSchema } from "./agent.js";
+import { MAX_RESOLVED_SKILLS, PI_TOOL_NAMES, PiToolNameSchema, StepIdSchema } from "./agent-recipe.js";
+import { ResultContractSchema } from "./agent-run.js";
 
 export const AGENTX_PROTOCOL_VERSION = 1 as const;
 
@@ -15,8 +18,15 @@ export const AGENTX_PROTOCOL_VERSION = 1 as const;
  * list on GET /ping, and the eval runner image release records it beside the image, so the control
  * plane sends such a field only to a build that lists it.
  */
-export const WORKER_INVOCATION_FEATURES = ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission"] as const;
+export const WORKER_INVOCATION_FEATURES = ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.agentStep", "task.agentRun", "model.route"] as const;
 export type WorkerInvocationFeature = (typeof WORKER_INVOCATION_FEATURES)[number] | "project.setupSmoke";
+/** An agent step's payload (`agentStep`) goes only to a worker that lists this; the agent kind also needs AGENT_RUN_FEATURE. */
+export const AGENT_STEP_FEATURE = "task.agentStep" as const;
+export const AGENT_RUN_FEATURE = "task.agentRun" as const;
+/** A routed model (`modelRoute`) goes only to a worker that lists this. */
+export const MODEL_ROUTE_FEATURE = "model.route" as const;
+/** What a delivery says when the worker lacks a feature an agent step or a model route needs. Such a field is never dropped. */
+export const AGENT_WORKER_OUTDATED = "This agent needs a newer worker. Ask an admin to upgrade Rovara.";
 /** The field on /ping that carries WORKER_INVOCATION_FEATURES; absent on a worker built before it. */
 export const WORKER_PING_FEATURES_FIELD = "invocationFeatures";
 
@@ -75,6 +85,59 @@ export type WorkflowReviewFeedback = z.infer<typeof WorkflowReviewFeedbackSchema
 /** The owner's review retry note, bounded like the canonical task instruction and shown only as untrusted reviewer context. */
 export const WorkflowReviewNoteSchema = z.string().min(1).refine((value) => new TextEncoder().encode(value).byteLength <= DEVELOPER_INSTRUCTIONS_MAX_BYTES, `review note exceeds ${DEVELOPER_INSTRUCTIONS_MAX_BYTES} UTF-8 bytes`);
 export type WorkflowReviewNote = z.infer<typeof WorkflowReviewNoteSchema>;
+
+const utf8Encoder = new TextEncoder();
+/** Text of at most `max` UTF-8 bytes (`.max` would count UTF-16 units instead). */
+const textUpTo = (max: number) => z.string().refine((value) => utf8Encoder.encode(value).byteLength <= max, `must be at most ${max} UTF-8 bytes`);
+
+/** The most bytes of rendered run input and earlier reports one agent step is given. */
+export const AGENT_STEP_INPUTS_MAX_BYTES = 1_048_576;
+/** The longest a step may run: the check step's 240 minutes. */
+export const AGENT_STEP_TIMEOUT_MAX_MS = 240 * 60_000;
+
+/** A skill an agent step may read, pinned to the digest the agent version was published with. */
+export const AgentStepSkillSchema = z.object({ skillId: SkillIdSchema, digest: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+const AgentStepBase = { agentId: AgentIdSchema, version: z.number().int().min(1), stepId: StepIdSchema };
+const AgentStepTimeoutSchema = z.number().int().min(1).max(AGENT_STEP_TIMEOUT_MAX_MS);
+const AgentStepSkillsSchema = z.array(AgentStepSkillSchema).max(MAX_RESOLVED_SKILLS);
+
+/**
+ * What the recipe adds to one operation of a coding task (`kind: "coding"`: the step's tools, skills, time limit and
+ * instruction section) or what one step of an agent-step run is (`kind: "agent"`). Sent only to a worker that lists
+ * `task.agentStep` (and, for the agent kind, `task.agentRun`).
+ */
+export const AgentStepPayloadSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("coding"),
+    ...AgentStepBase,
+    tools: z.array(PiToolNameSchema).max(PI_TOOL_NAMES.length).optional(),
+    skills: AgentStepSkillsSchema.optional(),
+    timeoutMs: AgentStepTimeoutSchema.optional(),
+    promptSection: textUpTo(DEVELOPER_INSTRUCTIONS_MAX_BYTES).pipe(z.string().min(1)).optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal("agent"),
+    ...AgentStepBase,
+    instructions: textUpTo(DEVELOPER_INSTRUCTIONS_MAX_BYTES),
+    workspace: z.enum(["none", "read"]),
+    inputs: textUpTo(AGENT_STEP_INPUTS_MAX_BYTES).pipe(z.string().min(1)),
+    timeoutMs: AgentStepTimeoutSchema.optional(),
+    skills: AgentStepSkillsSchema.optional(),
+    /** On the last agent step of a run whose start named the branches it may choose between (G1). */
+    resultContract: ResultContractSchema.optional(),
+  }).strict(),
+]);
+export type AgentStepPayload = z.infer<typeof AgentStepPayloadSchema>;
+
+/** The API a routed model speaks through the model proxy. */
+export const MODEL_ROUTE_APIS = ["anthropic-messages", "openai-responses", "openai-completions"] as const;
+/** Where one operation's model comes from: the proxy alias its key may call, the API it speaks, and the catalog entry for its limits and usage. */
+export const ModelRouteSchema = z.object({
+  alias: z.string().min(1).max(512),
+  api: z.enum(MODEL_ROUTE_APIS),
+  catalog: z.string().min(1).max(256),
+}).strict();
+export type InvocationModelRoute = z.infer<typeof ModelRouteSchema>;
 
 const InvocationBaseSchema = z.object({
   protocolVersion: z.literal(AGENTX_PROTOCOL_VERSION),
@@ -171,6 +234,10 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
          * test commands. Sent only to a worker whose /ping lists "task.readiness". The limit is the project's own.
          */
         readiness: z.array(ProjectCommandSchema).max(64).optional(),
+        /** What the agent's recipe adds to this operation, or the agent step it is. Sent only to a worker that lists "task.agentStep"; never dropped. */
+        agentStep: AgentStepPayloadSchema.optional(),
+        /** The model proxy alias to use in place of the install's default route. Sent only to a worker that lists "model.route"; never dropped. */
+        modelRoute: ModelRouteSchema.optional(),
       })
       .strict().superRefine((payload, context) => {
         if ((payload.workflowMode === "FEEDBACK_REVIEW") !== (payload.workflowFeedbackReview !== undefined)) {

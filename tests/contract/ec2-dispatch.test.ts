@@ -472,6 +472,79 @@ describe("ec2-ebs delivery", () => {
       expect(postedPayload(capable.post).workflowDependencies).toEqual(workflowDependencies);
     });
 
+    describe("agent steps and model routes (Plan 3, Task 16a)", () => {
+      const NEWER_WORKER = "This agent needs a newer worker. Ask an admin to upgrade Rovara.";
+      const refusal = { code: "RUNTIME_UNAVAILABLE", message: `RUNTIME_UNAVAILABLE: ${NEWER_WORKER}` };
+      const coding = { kind: "coding", agentId: "code-reviewer", version: 2, stepId: "review", tools: ["read"], promptSection: "From Reviewer:\nBe strict." };
+      const agent = { kind: "agent", agentId: "ticket-triage", version: 1, stepId: "triage", instructions: "Be brief.", workspace: "none", inputs: "Request:\nGo." };
+      const modelRoute = { alias: "org.src.model", api: "openai-responses", catalog: "gpt-6" };
+
+      it("refuses an agent step on a worker that lacks task.agentStep, never dropping the field", async () => {
+        const record = taskRecord({ agentStep: coding });
+        for (const features of [[], ["task.workflowMode", "task.agentRun", "model.route"]]) {
+          const older = delivery({ workerFeatures: async () => features });
+          await expect(older.deliver(record, record.invocation)).rejects.toMatchObject(refusal);
+          expect(older.post).not.toHaveBeenCalled();
+        }
+        const unprobed = delivery();
+        await expect(unprobed.deliver(record, record.invocation)).rejects.toMatchObject(refusal);
+        expect(unprobed.post).not.toHaveBeenCalled();
+      });
+
+      it("sends a coding step unchanged to a worker that lists task.agentStep", async () => {
+        const record = taskRecord({ agentStep: coding });
+        const capable = delivery({ workerFeatures: async () => ["task.agentStep"] });
+        await expect(capable.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
+        expect(postedPayload(capable.post).agentStep).toEqual(coding);
+      });
+
+      it("needs task.agentRun as well for the agent kind", async () => {
+        const record = taskRecord({ agentStep: agent });
+        const onlyStep = delivery({ workerFeatures: async () => ["task.agentStep", "model.route"] });
+        await expect(onlyStep.deliver(record, record.invocation)).rejects.toMatchObject(refusal);
+        expect(onlyStep.post).not.toHaveBeenCalled();
+        const onlyRun = delivery({ workerFeatures: async () => ["task.agentRun"] });
+        await expect(onlyRun.deliver(record, record.invocation)).rejects.toMatchObject(refusal);
+        expect(onlyRun.post).not.toHaveBeenCalled();
+        const capable = delivery({ workerFeatures: async () => ["task.agentStep", "task.agentRun"] });
+        await expect(capable.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
+        expect(postedPayload(capable.post).agentStep).toEqual(agent);
+      });
+
+      it("refuses a model route on a worker that lacks model.route and sends it unchanged to one that has it", async () => {
+        const record = taskRecord({ modelRoute });
+        const older = delivery({ workerFeatures: async () => ["task.agentStep", "task.agentRun"] });
+        await expect(older.deliver(record, record.invocation)).rejects.toMatchObject(refusal);
+        expect(older.post).not.toHaveBeenCalled();
+        const capable = delivery({ workerFeatures: async () => ["model.route"] });
+        await expect(capable.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
+        expect(postedPayload(capable.post).modelRoute).toEqual(modelRoute);
+        expect(postedPayload(capable.post)).not.toHaveProperty("agentStep");
+      });
+
+      it("keeps both fields next to the fields it still drops for an older worker", async () => {
+        const record = taskRecord({ agentStep: coding, modelRoute, chatgpt: { model: { provider: "openai", modelId: "gpt-6.1-sol" } } });
+        const capable = delivery({ workerFeatures: async () => ["task.agentStep", "model.route"] });
+        await expect(capable.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
+        const sent = postedPayload(capable.post);
+        expect(sent.agentStep).toEqual(coding);
+        expect(sent.modelRoute).toEqual(modelRoute);
+        expect(sent).not.toHaveProperty("chatgpt");
+        const older = delivery({ workerFeatures: async () => ["task.agentStep"] });
+        await expect(older.deliver(record, record.invocation)).rejects.toMatchObject(refusal);
+        expect(older.post).not.toHaveBeenCalled();
+      });
+
+      it("sends a payload with neither field byte for byte as before, without asking the worker", async () => {
+        const workerFeatures = vi.fn(async () => [] as string[]);
+        const record = taskRecord({});
+        const plain = delivery({ workerFeatures });
+        await expect(plain.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
+        expect(workerFeatures).not.toHaveBeenCalled();
+        expect(plain.post.mock.calls[0]![1].body).toBe(JSON.stringify(record.invocation));
+      });
+    });
+
     it("keeps the readiness for a worker whose /ping lists it", async () => {
       const workerFeatures = vi.fn<NonNullable<Ec2DeliveryDependencies["workerFeatures"]>>(async () => ["task.readiness"]);
       const { deliver, post } = delivery({ workerFeatures });

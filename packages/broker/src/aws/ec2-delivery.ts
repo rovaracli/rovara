@@ -1,4 +1,8 @@
 import {
+  AGENT_RUN_FEATURE,
+  AGENT_STEP_FEATURE,
+  AGENT_WORKER_OUTDATED,
+  MODEL_ROUTE_FEATURE,
   WORKER_INVOKE_AUTHORIZATION_SCHEME,
   WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED,
   agentXError,
@@ -188,7 +192,9 @@ async function forWorker(
   const carriesPullRequestUpdate = invocation.kind === "maintain" && invocation.payload.workflowCandidateTreeSha !== undefined;
   const carriesChatGpt = invocation.kind === "task" && invocation.payload.chatgpt !== undefined;
   const carriesProjectSetupSmoke = invocation.kind === "project-setup-smoke";
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesWorkflowDependencies && !carriesProjectSetupSmoke) return invocation;
+  const carriesAgentStep = invocation.kind === "task" && invocation.payload.agentStep !== undefined;
+  const carriesModelRoute = invocation.kind === "task" && invocation.payload.modelRoute !== undefined;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -214,6 +220,15 @@ async function forWorker(
   }
   if (carriesWorkflowDependencies && !features.includes("task.workflowDependencies")) {
     throw agentXError("RUNTIME_UNAVAILABLE", "ordered work requires a compatible worker that advertises task.workflowDependencies");
+  }
+  // An agent step changes what the operation is allowed to do and a model route changes where its model comes from,
+  // so neither is ever dropped; the agent kind (a step with no coding workflow) also needs task.agentRun.
+  if (invocation.kind === "task" && invocation.payload.agentStep !== undefined
+    && !(features.includes(AGENT_STEP_FEATURE) && (invocation.payload.agentStep.kind !== "agent" || features.includes(AGENT_RUN_FEATURE)))) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  if (carriesModelRoute && !features.includes(MODEL_ROUTE_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   if (carriesProjectSetupSmoke && !features.includes("project.setupSmoke")) {
     throw agentXError("RUNTIME_UNAVAILABLE", "project setup smoke requires a worker that implements project.setupSmoke");
