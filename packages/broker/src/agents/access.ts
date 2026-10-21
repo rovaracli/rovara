@@ -132,6 +132,25 @@ class Lookups {
   }
 }
 
+/**
+ * The agent's stored shares that are a valid principal and level. A row that isn't (a corrupted write) is skipped and reported, so
+ * it never gives access, never reads as another principal (`principalKey` maps an unknown kind to the company-wide key) and never
+ * makes a read or a save throw.
+ */
+async function validShares(deps: AgentAccessDeps, orgId: OrgId, agentId: AgentId): Promise<AgentShare[]> {
+  const valid: AgentShare[] = [];
+  for (const share of await deps.store.listShares(orgId, agentId)) {
+    const principal = AgentPrincipalSchema.safeParse(share.principal);
+    const level = ShareLevelSchema.safeParse(share.level);
+    if (!principal.success || !level.success) {
+      report(deps, "agent_share_skipped", { orgId, agentId, reason: "the stored share is not a valid principal and level" });
+      continue;
+    }
+    valid.push({ principal: principal.data, level: level.data });
+  }
+  return valid;
+}
+
 interface Evaluation {
   access: AgentAccessLevel;
   /** The caller is the member owner, or the accountable maintainer of a project's agent. */
@@ -168,21 +187,15 @@ async function evaluate(lookups: Lookups, agent: AccessibleAgent, withShares = f
   let viaShares: AgentAccessLevel = "none";
   const sharedProjects: string[] = [];
   if (withShares || access !== "manage") {
-    for (const share of await deps.store.listShares(agent.orgId, agent.agentId)) {
-      const parsed = AgentPrincipalSchema.safeParse(share.principal);
-      if (!parsed.success || !ShareLevelSchema.safeParse(share.level).success) {
-        report(deps, "agent_share_skipped", { orgId: agent.orgId, agentId: agent.agentId, reason: "the stored share is not a valid principal and level" });
-        continue;
-      }
-      const stored = parsed.data;
+    for (const { principal: stored, level } of await validShares(deps, agent.orgId, agent.agentId)) {
       let given: AgentAccessLevel | undefined;
-      if (stored.kind === "org") given = share.level;
-      else if (stored.kind === "member") given = (await lookups.survivor(stored.developerId)) === caller.developerId ? share.level : undefined;
+      if (stored.kind === "org") given = level;
+      else if (stored.kind === "member") given = (await lookups.survivor(stored.developerId)) === caller.developerId ? level : undefined;
       else {
         sharedProjects.push(stored.project);
         const role = await lookups.role(stored.project);
         // A viewer of the project sees what is shared with it; they don't run or change it.
-        if (role !== undefined) given = role === "viewer" ? lower(share.level, "view") : share.level;
+        if (role !== undefined) given = role === "viewer" ? lower(level, "view") : level;
       }
       if (given !== undefined) viaShares = higher(viaShares, given);
     }
@@ -328,7 +341,7 @@ export async function setShares(deps: AgentAccessDeps, caller: AgentCaller, agen
 
   // The revision is read before the shares: a save that lands in between leaves this one's revision stale, and it conflicts.
   const expectedSharesRevision = agent.sharesRevision ?? 0;
-  const current = new Map((await deps.store.listShares(caller.orgId, agentId)).map((share) => [principalKey(share.principal), share]));
+  const current = new Map((await validShares(deps, caller.orgId, agentId)).map((share) => [principalKey(share.principal), share]));
   const upsert = wanted.filter((share) => current.get(principalKey(share.principal))?.level !== share.level);
   const keep = new Set(wanted.map((share) => principalKey(share.principal)));
   const remove = [...current].filter(([key]) => !keep.has(key)).map(([, share]) => share.principal);

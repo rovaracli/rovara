@@ -236,6 +236,33 @@ describe("agentAccess", () => {
     expect(logged[0]).toMatchObject({ event: "agent_share_skipped", fields: { agentId: agent.agentId } });
   });
 
+  it("saves shares over corrupted stored rows: they are skipped and logged, never mistaken for a real share, and never make the save throw", async () => {
+    const { db, store, deps, memberAgent, share } = setup();
+    const logged: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    deps.log = (event, fields) => logged.push({ event, fields });
+    const agent = await memberAgent("Odd rows");
+    const base = { entityType: "AGENT_SHARE", orgId: ORG_A, agentId: agent.agentId, level: "view", grantedBy: ALICE, grantedAt: "x" };
+    const pk = agentKey(ORG_A, agent.agentId, "META").pk;
+    // An unknown kind reads as "ORG" under principalKey, with the very level the manager is about to set; a row with no principal
+    // used to make principalKey throw.
+    db.set({ pk, sk: "SHARE#TEAM#x", ...base, principal: { kind: "team", id: "x" } });
+    db.set({ pk, sk: "SHARE#NOPE", ...base });
+    db.set({ pk, sk: "SHARE#PROJECT#", ...base, principal: { kind: "project" } });
+
+    const saved = await share(agent, [{ principal: { kind: "org" }, level: "view" }, { principal: { kind: "member", developerId: BOB }, level: "use" }]);
+    expect(saved).toHaveLength(2);
+    // The real company-wide share was written, not skipped as "already there".
+    expect(db.get(agentKey(ORG_A, agent.agentId, "SHARE#ORG"))).toMatchObject({ principal: { kind: "org" }, level: "view" });
+    expect(db.get(principalSharesKey(ORG_A, { kind: "org" }, agent.agentId))).toMatchObject({ level: "view" });
+    expect(logged.filter((entry) => entry.event === "agent_share_skipped")).toHaveLength(3);
+    // The corrupted rows are left alone, and a second identical save is a no-op.
+    expect(db.get({ pk, sk: "SHARE#TEAM#x" })).toBeDefined();
+    const before = db.commandNames().filter((name) => name === "TransactWriteCommand").length;
+    await share(agent, [{ principal: { kind: "org" }, level: "view" }, { principal: { kind: "member", developerId: BOB }, level: "use" }]);
+    expect(db.commandNames().filter((name) => name === "TransactWriteCommand").length).toBe(before);
+    expect((await store.listShares(ORG_A, agent.agentId)).length).toBe(5);
+  });
+
   it("gives nothing across orgs", async () => {
     const { access, memberAgent, share } = setup();
     const agent = await memberAgent("Org A only");
