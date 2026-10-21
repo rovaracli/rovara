@@ -13,7 +13,7 @@ skipLambdaBundling();
 
 type Statement = { Action: string | string[]; Resource: unknown; Condition?: Record<string, Record<string, unknown>> };
 type Policy = { Properties: { PolicyDocument: { Statement: Statement[] }; Roles: Array<{ Ref?: string }> } };
-const statementsOf = (template: Template, rolePrefix: string) => (Object.values(template.findResources("AWS::IAM::Policy")) as Policy[])
+const statementsOf = (template: Template, rolePrefix: string) => ([...Object.values(template.findResources("AWS::IAM::Policy")), ...Object.values(template.findResources("AWS::IAM::ManagedPolicy"))] as Policy[])
   .filter((policy) => policy.Properties.Roles.some((role) => role.Ref?.startsWith(rolePrefix)))
   .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
 const leading = (statement: Statement) => statement.Condition?.["ForAllValues:StringLike"]?.["dynamodb:LeadingKeys"];

@@ -19,7 +19,7 @@ type Policy = { Properties: { PolicyDocument: { Statement: Statement[] }; Roles:
 type LambdaFunction = { Properties: { Environment?: { Variables?: Record<string, unknown> } } };
 
 function brokerStatements(template: Template): Statement[] {
-  return (Object.values(template.findResources("AWS::IAM::Policy")) as Policy[])
+  return ([...Object.values(template.findResources("AWS::IAM::Policy")), ...Object.values(template.findResources("AWS::IAM::ManagedPolicy"))] as Policy[])
     .filter((policy) => policy.Properties.Roles.some((role) => role.Ref?.startsWith("BrokerServiceRole")))
     .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
 }

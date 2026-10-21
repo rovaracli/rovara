@@ -44,7 +44,7 @@ describe("ConnectorSecretsRole (named environments)", () => {
   let brokerRoleId: string;
   const statementsOfRole = (id: string): Statement[] => [
     ...(resources[id]!.Properties.Policies ?? []).flatMap((policy) => policy.PolicyDocument.Statement),
-    ...Object.values(resources).filter((resource) => resource.Type === "AWS::IAM::Policy" && (resource.Properties.Roles ?? []).some((entry) => entry.Ref === id))
+    ...Object.values(resources).filter((resource) => (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy") && (resource.Properties.Roles ?? []).some((entry) => entry.Ref === id))
       .flatMap((resource) => resource.Properties.PolicyDocument!.Statement),
   ];
 

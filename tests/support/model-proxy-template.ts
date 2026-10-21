@@ -61,7 +61,8 @@ function withoutModelAccess(synthesized: { Resources: Record<string, Resource> }
   // Ruling R29: the proxy's address, which the broker hands a task's worker with its key.
   expect(JSON.stringify(variables.MODEL_PROXY_URL)).toContain("LoadBalancer");
   delete variables.MODEL_PROXY_URL;
-  const grants = Object.values(resources).flatMap((resource) => (resource.Type === "AWS::IAM::Policy" ? [resource.Properties.PolicyDocument!] : []))
+  // The broker's grants live in named managed policies in named environments (ruling M2), inline elsewhere.
+  const grants = Object.values(resources).flatMap((resource) => (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy" ? [resource.Properties.PolicyDocument!] : []))
     .filter((document) => document.Statement.some((statement) => JSON.stringify(statement.Resource).includes(`"${functionId!}"`)
       && JSON.stringify(statement.Action).includes("lambda:InvokeFunction")));
   expect(grants).toHaveLength(1);

@@ -44,7 +44,7 @@ describe("model access function infrastructure (named environments)", () => {
     masterKeyId = only(resources, "AWS::SecretsManager::Secret", "ModelProxyMasterKey")[0];
   }, 240_000);
 
-  const statementsOf = (roleId: string) => ofType(resources, "AWS::IAM::Policy")
+  const statementsOf = (roleId: string) => [...ofType(resources, "AWS::IAM::Policy"), ...ofType(resources, "AWS::IAM::ManagedPolicy")]
     .filter(([, policy]) => (policy.Properties.Roles ?? []).some((role) => role.Ref === roleId))
     .flatMap(([, policy]) => policy.Properties.PolicyDocument!.Statement);
   const mentions = (value: unknown, id: string) => JSON.stringify(value).includes(`"${id}"`);
@@ -90,7 +90,7 @@ describe("model access function infrastructure (named environments)", () => {
 
   it("is the single reader of the master key besides the proxy's own task and execution roles", () => {
     const readers = new Set<string>();
-    for (const [, policy] of ofType(resources, "AWS::IAM::Policy")) {
+    for (const [, policy] of [...ofType(resources, "AWS::IAM::Policy"), ...ofType(resources, "AWS::IAM::ManagedPolicy")]) {
       for (const statement of policy.Properties.PolicyDocument!.Statement) {
         if (!mentions(statement.Resource, masterKeyId)) continue;
         for (const role of policy.Properties.Roles ?? []) readers.add(role.Ref!);
@@ -143,7 +143,7 @@ describe("model access function infrastructure (named environments)", () => {
     expect(resourcesOfInvokes.filter((resource) => mentions(resource, functionId))).toEqual([arn, { "Fn::Join": ["", [arn, ":*"]] }]);
     expect(resourcesOfInvokes.every((resource) => typeof resource === "object" && resource !== null)).toBe(true);
     // No other role may invoke it, and no other function is given its name.
-    for (const [, policy] of ofType(resources, "AWS::IAM::Policy")) {
+    for (const [, policy] of [...ofType(resources, "AWS::IAM::Policy"), ...ofType(resources, "AWS::IAM::ManagedPolicy")]) {
       if ((policy.Properties.Roles ?? []).some((role) => role.Ref === brokerRole)) continue;
       expect(JSON.stringify(policy.Properties.PolicyDocument)).not.toContain(`"${functionId}"`);
     }

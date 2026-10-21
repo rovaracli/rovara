@@ -12,11 +12,12 @@ const stacksOf = (app: App) => app.node.children.filter((c): c is Stack => Stack
 type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource: unknown; Condition?: unknown };
 type Resource = { Type: string; Condition?: string; Properties: Record<string, unknown> };
 const resourcesOf = (stack: Stack) => Template.fromStack(stack).toJSON().Resources as Record<string, Resource>;
-/** Every inline statement of every role: the role's own Policies and each AWS::IAM::Policy. */
+/** Every statement granted to a role: the role's own Policies, each AWS::IAM::Policy, and the broker's named managed grant policies (ruling M2). */
 function roleStatements(resources: Record<string, Resource>): Statement[] {
   return Object.values(resources).flatMap((r) => {
     if (r.Type === "AWS::IAM::Role") return ((r.Properties.Policies ?? []) as { PolicyDocument: { Statement: Statement[] } }[]).flatMap((p) => p.PolicyDocument.Statement);
     if (r.Type === "AWS::IAM::Policy") return (r.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
+    if (r.Type === "AWS::IAM::ManagedPolicy" && /^agentx-.+-broker-/.test((typeof r.Properties.ManagedPolicyName === "string" ? r.Properties.ManagedPolicyName : ""))) return (r.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
     return [];
   });
 }
@@ -139,7 +140,8 @@ describe("access stack", () => {
     const allowedServices = new Set([...allowed].filter((a) => a.endsWith(":*")).map((a) => a.split(":")[0]));
     expect(allowedServices.has("iam")).toBe(false);
     // The service role creates resources of these services, and the roles call them.
-    const neededServices = new Set([...resourceTypeServices(), ...Object.values(MANAGED_POLICY_SERVICES).flat().filter((s) => s !== "iam")]);
+    // IAM is allowed by name only (roles, instance profiles and, ruling M2, agentx-* managed policies), never by wildcard.
+    const neededServices = new Set([...resourceTypeServices(), ...Object.values(MANAGED_POLICY_SERVICES).flat()].filter((s) => s !== "iam"));
     expect([...neededServices].filter((service) => !allowedServices.has(service) && !(service === "events" && allowed.has("events:*")))).toEqual([]);
     // Every action a role uses is allowed by its service's wildcard or by name (IAM, STS and
     // Service Quotas only by name: servicequotas:GetServiceQuota is the operator's one scoped
@@ -201,7 +203,9 @@ describe("access stack", () => {
 
   it("lets the service role create every resource type the environment templates contain, and nothing unused", () => {
     const needed = resourceTypeServices();
-    expect([...needed].filter((service) => !SERVICE_ROLE_SERVICES.includes(service) && service !== "events")).toEqual([]);
+    // IAM resource types (roles, instance profiles, and the broker's agentx-* managed policies, ruling M2) are created through
+    // the service role's by-name IAM statements, never an iam:* wildcard.
+    expect([...needed].filter((service) => !SERVICE_ROLE_SERVICES.includes(service) && service !== "events" && service !== "iam")).toEqual([]);
     // The reverse: every wildcard service is created by some resource type or called by some role.
     const used = new Set([...needed, ...[...usedActions()].map((a) => a.split(":")[0]!)]);
     expect(SERVICE_ROLE_SERVICES.filter((service) => !used.has(service))).toEqual([]);

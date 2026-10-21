@@ -23,7 +23,10 @@ describe("permission boundary", () => {
       expect(json.Conditions.HasPermissionsBoundary, stack.stackName).toBeDefined();
       // The access stack creates the default boundary, so its roles Ref it (which also orders the
       // policy before the roles); every other stack names its deterministic ARN.
-      const policyIds = Object.entries(json.Resources).filter(([, r]) => r.Type === "AWS::IAM::ManagedPolicy").map(([id]) => id);
+      // The broker's named grant policies (agentx-<env>-broker-<group>, ruling M2) are managed policies too, but not boundaries.
+      const policyIds = Object.entries(json.Resources)
+        .filter(([, r]) => r.Type === "AWS::IAM::ManagedPolicy" && !/^agentx-.+-broker-/.test(((name) => (typeof name === "string" ? name : ""))((r.Properties as { ManagedPolicyName?: unknown }).ManagedPolicyName)))
+        .map(([id]) => id);
       const elseBranch = stack.stackName === "agentx-staging-access" ? { Ref: policyIds[0] } : defaultArn;
       expect(policyIds, stack.stackName).toHaveLength(stack.stackName === "agentx-staging-access" ? 1 : 0);
       for (const [id, resource] of Object.entries(json.Resources).filter(([, r]) => r.Type === "AWS::IAM::Role")) {

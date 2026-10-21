@@ -17,7 +17,9 @@ export interface PolicyStatementJson {
   Sid: string;
   Effect: "Allow" | "Deny";
   Action: string[];
-  Resource: string | string[];
+  Resource?: string | string[];
+  /** Only a Deny names it: every resource except these (ruling M2's carve-out for agentx-* managed policies). */
+  NotResource?: string | string[];
   Condition?: Record<string, Record<string, string | string[]>>;
 }
 
@@ -123,6 +125,30 @@ const ROLE_ACTIONS = [
   "iam:ListAttachedRolePolicies",
 ];
 
+/**
+ * Managed-policy management (Plan 3, ruling M2): the broker's grants live in named customer-managed policies (agentx-<env>-broker-<group>)
+ * because IAM caps a role's inline policies at 10,240 characters in total. These are exactly the actions CloudFormation's
+ * AWS::IAM::ManagedPolicy handlers use (create, read, update, delete), no SetDefaultPolicyVersion (CreatePolicyVersion sets the default)
+ * and no Attach/Detach (ROLE_ACTIONS has them, on roles). Allowed only on policies named agentx-*, in the service role and the boundary.
+ */
+export const MANAGED_POLICY_ACTIONS: readonly string[] = [
+  "iam:CreatePolicy",
+  "iam:DeletePolicy",
+  "iam:CreatePolicyVersion",
+  "iam:DeletePolicyVersion",
+  "iam:GetPolicy",
+  "iam:GetPolicyVersion",
+  "iam:ListPolicyVersions",
+  "iam:TagPolicy",
+  "iam:UntagPolicy",
+  "iam:ListEntitiesForPolicy",
+];
+
+/** The managed policies AgentX creates: named agentx-*, no path, in any environment (the default boundary lives under a path, so it never matches). */
+function agentxManagedPolicies(scope: Pick<PolicyScope, "partition" | "account">): string {
+  return `arn:${scope.partition}:iam::${scope.account}:policy/agentx-*`;
+}
+
 /** Instance profile management the service role needs for the EC2 workers' instance profile. */
 const INSTANCE_PROFILE_ACTIONS = [
   "iam:CreateInstanceProfile",
@@ -197,6 +223,7 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
     { Sid: "EcsFailureEventsRule", Effect: "Allow", Action: ["events:*"], Resource: ecsFailureRuleArn(scope) },
     { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS], Resource: roles },
     { Sid: "IamInstanceProfiles", Effect: "Allow", Action: [...INSTANCE_PROFILE_ACTIONS], Resource: environmentInstanceProfiles(scope) },
+    { Sid: "IamManagedPolicies", Effect: "Allow", Action: [...MANAGED_POLICY_ACTIONS], Resource: agentxManagedPolicies(scope) },
     {
       // Only actions that carry the iam:PermissionsBoundary key: CreateRole and
       // PutRolePermissionsBoundary as the boundary being set, the role policy actions as the
@@ -263,6 +290,8 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
     { Sid: "Quotas", Effect: "Allow", Action: ["servicequotas:GetServiceQuota"], Resource: "*" },
     { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS], Resource: roles },
     { Sid: "IamInstanceProfiles", Effect: "Allow", Action: [...INSTANCE_PROFILE_ACTIONS], Resource: environmentInstanceProfiles(scope) },
+    // The service role creates the broker's named managed policies (ruling M2); the boundary is a ceiling, so it names the same actions on the same ARNs.
+    { Sid: "IamManagedPolicies", Effect: "Allow", Action: [...MANAGED_POLICY_ACTIONS], Resource: agentxManagedPolicies(scope) },
     {
       // The operator passes the service role (root path) to CloudFormation; CloudFormation passes
       // the environment's roles to Lambda, ECS, EC2 and the rest.
@@ -286,7 +315,9 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
       Sid: "DenyPolicyManagement",
       Effect: "Deny",
       Action: ["iam:CreatePolicy*", "iam:*PolicyVersion*", "iam:DeletePolicy", "iam:SetDefaultPolicyVersion"],
-      Resource: "*",
+      // Everywhere except the agentx-* policies the service role creates (ruling M2). NotResource, so a policy that is not named
+      // agentx-* (and the default boundary, under a path) stays denied; DenyBoundaryChanges below still covers the boundary.
+      NotResource: agentxManagedPolicies(scope),
     },
     { Sid: "DenyBoundaryChanges", Effect: "Deny", Action: ["iam:*Policy*"], Resource: defaultBoundaryArn(scope) },
   ];

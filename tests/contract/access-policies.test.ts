@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  BOUNDARY_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, type PolicyScope,
+  BOUNDARY_SERVICES, MANAGED_POLICY_ACTIONS, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, type PolicyScope,
 } from "../../infra/lib/access-policies.js";
 
 const scope: PolicyScope = {
@@ -38,6 +38,11 @@ describe("service role policy", () => {
         // The EC2 workers' instance profile, under the same path as the environment's roles.
         expect(resources).toEqual(["arn:aws:iam::123456789012:instance-profile/agentx/staging/*"]);
         expect(statement.Action.every((a) => /^iam:[A-Za-z]*InstanceProfile$/.test(a))).toBe(true);
+      } else if (statement.Sid === "IamManagedPolicies") {
+        // Ruling M2 (owner-approved 2026-10-21): the broker's named managed policies, agentx-* only, and only the
+        // create/read/update/delete actions CloudFormation's AWS::IAM::ManagedPolicy handlers use.
+        expect(resources).toEqual(["arn:aws:iam::123456789012:policy/agentx-*"]);
+        expect([...statement.Action].sort()).toEqual([...MANAGED_POLICY_ACTIONS].sort());
       } else {
         // A path, not a name prefix: generated role names are truncated, and agentx-prod-* would
         // also match the prod-eu environment's roles.
@@ -91,8 +96,8 @@ describe("service role policy", () => {
     expect(serviceRoleStatements(scope).find((s) => s.Sid === "ServiceLinkedRoles")!.Condition).toEqual({ StringLike: { "iam:AWSServiceName": ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com", "route53resolver.amazonaws.com"] } });
   });
 
-  it("never grants iam:* or wildcard IAM user, group or policy management", () => {
-    const all = actions(serviceRoleStatements(scope));
+  it("never grants iam:* or wildcard IAM user, group or policy management (managed policies only as agentx-*, ruling M2)", () => {
+    const all = actions(serviceRoleStatements(scope).filter((statement) => statement.Sid !== "IamManagedPolicies"));
     expect(all).not.toContain("iam:*");
     expect(all.filter((a) => /^iam:(Create|Delete|Put|Attach).*(User|Group|Policy)$/.test(a) && !ROLE_SCOPED_POLICY_ACTIONS.includes(a))).toEqual([]);
   });
@@ -146,8 +151,8 @@ describe("operator role policy", () => {
     const statements = operatorRoleStatements(scope);
     const changeSetStatements = statements.filter((s) => s.Action.some((a) => /ChangeSet/.test(a)));
     expect(changeSetStatements.map((s) => s.Sid)).toEqual(["ChangeSets"]);
-    expect([changeSetStatements[0]!.Resource].flat().filter((r) => r.includes("agentx-staging-access"))).toEqual([]);
-    const resources = statements.flatMap((s) => [s.Resource].flat());
+    expect([changeSetStatements[0]!.Resource ?? []].flat().filter((r) => r.includes("agentx-staging-access"))).toEqual([]);
+    const resources = statements.flatMap((s) => [s.Resource ?? []].flat());
     expect(resources.filter((r) => r.includes("agentx-staging-*"))).toEqual([]);
     const list = statements.find((s) => s.Action.includes("cloudformation:ListStacks"))!;
     expect(list.Action).toEqual(["cloudformation:ListStacks"]);
@@ -162,7 +167,7 @@ describe("operator role policy", () => {
   it("reads only this environment's stacks' logs", () => {
     const logs = operatorRoleStatements(scope).find((s) => s.Sid === "Logs")!;
     expect(logs.Action).toEqual(["logs:FilterLogEvents", "logs:StartQuery"]);
-    const resources = [logs.Resource].flat();
+    const resources = [logs.Resource ?? []].flat();
     expect(resources).toContain("arn:aws:logs:us-east-1:123456789012:log-group:agentx-staging-control-plane-*");
     expect(resources.every((resource) => resource.includes(":log-group:agentx-staging-"))).toBe(true);
   });
@@ -285,8 +290,11 @@ describe("default permission boundary", () => {
     expect(allows.filter((s) => s.Action.some((a) => /^sts:(AssumeRole|TagSession)/.test(a))).map((s) => s.Sid)).toEqual(["ConnectorSecretsRole"]);
   });
 
-  it("never allows iam:* or any user, group, access key, login profile or managed-policy action", () => {
-    const iam = allows.flatMap((s) => s.Action).filter((a) => a.startsWith("iam:") || a === "*");
+  it("never allows iam:* or any user, group, access key, login profile or managed-policy action, except agentx-* managed policies (ruling M2)", () => {
+    const managedPolicies = allows.find((statement) => statement.Sid === "IamManagedPolicies");
+    expect(managedPolicies?.Resource).toBe("arn:aws:iam::123456789012:policy/agentx-*");
+    expect([...managedPolicies!.Action].sort()).toEqual([...MANAGED_POLICY_ACTIONS].sort());
+    const iam = allows.filter((statement) => statement.Sid !== "IamManagedPolicies").flatMap((s) => s.Action).filter((a) => a.startsWith("iam:") || a === "*");
     expect(iam).not.toContain("iam:*");
     expect(iam).not.toContain("*");
     expect(iam.filter((a) => /User|Group|AccessKey|LoginProfile|PolicyVersion|^iam:(Create|Delete)Policy$|DefaultPolicyVersion/.test(a))).toEqual([]);
@@ -323,10 +331,11 @@ describe("default permission boundary", () => {
   });
 
   it("explicitly denies account, organization, user, group and policy management, and changing itself", () => {
-    expect(denies.map((s) => ({ Action: s.Action, Resource: s.Resource }))).toEqual([
+    expect(denies.map((s) => ({ Action: s.Action, Resource: s.Resource ?? { NotResource: s.NotResource } }))).toEqual([
       { Action: ["organizations:*", "account:*"], Resource: "*" },
       { Action: ["iam:*User*", "iam:*Group*"], Resource: "*" },
-      { Action: ["iam:CreatePolicy*", "iam:*PolicyVersion*", "iam:DeletePolicy", "iam:SetDefaultPolicyVersion"], Resource: "*" },
+      // Every policy except the agentx-* managed policies the service role creates (ruling M2); the boundary itself stays denied below.
+      { Action: ["iam:CreatePolicy*", "iam:*PolicyVersion*", "iam:DeletePolicy", "iam:SetDefaultPolicyVersion"], Resource: { NotResource: "arn:aws:iam::123456789012:policy/agentx-*" } },
       { Action: ["iam:*Policy*"], Resource: "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-boundary" },
     ]);
     expect(denies.every((s) => s.Condition === undefined)).toBe(true);

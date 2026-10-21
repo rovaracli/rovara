@@ -126,7 +126,7 @@ function developerSignInConditionCheckEntries(template: TemplateJson): Array<{ p
   const expectedResource = { "Fn::GetAtt": [tableId, "Arn"] };
   const entries: Array<{ policyId: string; index: number; statement: Record<string, unknown>; tableId: string }> = [];
   for (const [policyId, resource] of Object.entries(resources)) {
-    if (resource.Type !== "AWS::IAM::Policy") continue;
+    if (resource.Type !== "AWS::IAM::Policy" && resource.Type !== "AWS::IAM::ManagedPolicy") continue; // the broker's named managed grant policies count (ruling M2)
     const properties = resource.Properties as { Roles?: unknown; PolicyDocument?: { Statement?: unknown } } | undefined;
     const roles = Array.isArray(properties?.Roles) ? properties.Roles as Array<Record<string, unknown>> : [];
     if (!roles.some((role) => role.Ref === roleId)) continue;
@@ -206,14 +206,14 @@ describe("the named TEST proof-only installation gate", () => {
       {
         label: "named",
         template: named,
-        withRoute: "4ff1072d2f31453e2d2971cb9cd049785abc483d5f39823b79c542d9b0367743",
-        withoutRoute: "01ac6e9e815e95b2ec08f02bb2ce4dbec904f3dc1229ad0c9e1235df78833b3e",
+        withRoute: "8d6e6d837f16299855fd15b07e8441ffab92087972e55ba2c4c1decad9261f4e",
+        withoutRoute: "8aef0071964b225b86952d20902823289b3da0ff8486257398e7052a267a2e1a",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "a126d4025980ec76bf69a40a363557ccdebf80029facfae278515e2c276dce38",
-        withoutRoute: "564cb3f6d5a9b1d4d37445e5e034145be123c1c9bc71b265509f053c330adbda",
+        withRoute: "433947e9de19b76fad2a0f3605328e9cea29f4ef4743317d98af5fe85a5b17c8",
+        withoutRoute: "70816b7ca3149fa7df25d3dbe5289354596aadeac5c29d5d32a7b963963ecabe",
       },
       {
         label: "legacy",

@@ -64,8 +64,63 @@ export function mergeRoleStatements(role: iam.IRole): void {
   }
 }
 
-/** Merges the role's statements when synthesis visits it, after every grant was made and before CDK sizes the policy. */
-export function mergeRoleStatementsOnSynth(role: iam.IRole): void {
-  const aspect: IAspect = { visit: (node: IConstruct) => { if (node === role) mergeRoleStatements(role); } };
+/**
+ * The named managed policies the broker's grants move into (ruling M2, owner-approved 2026-10-21): IAM caps a role's inline
+ * policies at 10,240 characters in total, and the deploy's CloudFormation role may create managed policies named agentx-* only.
+ * A statement moves whole into the group its first action's service belongs to, so each role keeps exactly the same grants.
+ */
+export const BROKER_POLICY_GROUPS = ["state", "orchestration", "integrations"] as const;
+export type BrokerPolicyGroup = (typeof BROKER_POLICY_GROUPS)[number];
+
+const STATE_SERVICES = new Set(["dynamodb", "s3", "kms"]);
+const ORCHESTRATION_SERVICES = new Set(["lambda", "sqs", "states", "events", "scheduler", "ecs", "ec2", "ssm", "sts", "iam", "logs", "cloudwatch"]);
+
+/** The group a statement belongs to, by the service of its first action (a stable choice, so a new grant never reshuffles the others). */
+export function brokerPolicyGroup(statement: iam.PolicyStatement): BrokerPolicyGroup {
+  const service = (statement.actions[0] ?? "").split(":")[0] ?? "";
+  if (STATE_SERVICES.has(service)) return "state";
+  if (ORCHESTRATION_SERVICES.has(service)) return "orchestration";
+  return "integrations";
+}
+
+/**
+ * Moves every statement of the role's default policy into the named managed policies `<prefix>-<group>`, attached to the role.
+ * Statements move unchanged, so the role's effective grants are identical; the permissions boundary still caps the role.
+ */
+export function moveRoleStatementsToManagedPolicies(role: iam.IRole, prefix: string): void {
+  const policy = role.node.tryFindChild("DefaultPolicy");
+  if (!(policy instanceof iam.Policy)) return;
+  const statements = (policy.document as unknown as { statements: iam.PolicyStatement[] }).statements;
+  const groups = new Map<BrokerPolicyGroup, iam.PolicyStatement[]>();
+  for (const statement of statements) {
+    const group = brokerPolicyGroup(statement);
+    groups.set(group, [...(groups.get(group) ?? []), statement]);
+  }
+  for (const group of BROKER_POLICY_GROUPS) {
+    const moved = groups.get(group);
+    if (moved === undefined || moved.length === 0) continue;
+    new iam.ManagedPolicy(policy.node.scope!, `${role.node.id}${group[0]!.toUpperCase()}${group.slice(1)}Policy`, {
+      managedPolicyName: `${prefix}-${group}`,
+      description: `AgentX broker grants (${group}), moved out of the role's inline policy for size`,
+      statements: moved,
+      roles: [role],
+    });
+  }
+  statements.splice(0, statements.length);
+  policy.node.scope!.node.tryRemoveChild(policy.node.id);
+}
+
+/**
+ * Merges the role's statements when synthesis visits it, after every grant was made and before CDK sizes the policy; with a
+ * `managedPolicyPrefix`, then moves them into the named managed policies.
+ */
+export function mergeRoleStatementsOnSynth(role: iam.IRole, options: { managedPolicyPrefix?: string } = {}): void {
+  const aspect: IAspect = {
+    visit: (node: IConstruct) => {
+      if (node !== role) return;
+      mergeRoleStatements(role);
+      if (options.managedPolicyPrefix !== undefined) moveRoleStatementsToManagedPolicies(role, options.managedPolicyPrefix);
+    },
+  };
   Aspects.of(role).add(aspect, { priority: BEFORE_POLICY_SPLIT });
 }

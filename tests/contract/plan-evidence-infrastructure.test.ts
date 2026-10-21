@@ -16,7 +16,7 @@ type LambdaFunction = { Properties: { Role: { "Fn::GetAtt": [string, string] }; 
 const functionNamed = (template: Template, prefix: string) => Object.entries(template.findResources("AWS::Lambda::Function") as Record<string, LambdaFunction>).find(([id]) => id.startsWith(prefix));
 const statementsOf = (template: Template, [, fn]: [string, LambdaFunction]) => {
   const roleId = fn.Properties.Role["Fn::GetAtt"][0];
-  return (Object.values(template.findResources("AWS::IAM::Policy")) as Policy[])
+  return ([...Object.values(template.findResources("AWS::IAM::Policy")), ...Object.values(template.findResources("AWS::IAM::ManagedPolicy"))] as Policy[])
     .filter((policy) => policy.Properties.Roles.some((role) => role.Ref === roleId))
     .flatMap((policy) => policy.Properties.PolicyDocument.Statement);
 };
@@ -74,7 +74,7 @@ describe("the PlanEvidence function's infrastructure", () => {
     expect(invoke).toHaveLength(1);
     expect(broker[1].Properties.Environment?.Variables).toMatchObject({ PLAN_EVIDENCE_FUNCTION_NAME: { Ref: planEvidence[0] } });
     // Nothing else may start it: no other role in the stack names it in an invoke grant.
-    const grants = (Object.values(named.findResources("AWS::IAM::Policy")) as Policy[])
+    const grants = ([...Object.values(named.findResources("AWS::IAM::Policy")), ...Object.values(named.findResources("AWS::IAM::ManagedPolicy"))] as Policy[])
       .filter((policy) => JSON.stringify(policy.Properties.PolicyDocument).includes(planEvidence[0]) && JSON.stringify(policy.Properties.PolicyDocument).includes("lambda:InvokeFunction"));
     expect(grants).toHaveLength(1);
     expect(grants[0]!.Properties.Roles).toEqual([{ Ref: broker[1].Properties.Role["Fn::GetAtt"][0] }]);

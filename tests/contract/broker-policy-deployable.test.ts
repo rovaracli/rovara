@@ -45,10 +45,15 @@ function grantedCombinations(resources: Record<string, Resource>): string[] {
 
 describe("the merged control plane's broker policy stays deployable", () => {
   for (const [label, env, cloud] of [["staging", "staging", false], ["staging with the hosted cloud", "staging", true], ["a live-test environment", "agentxlivetest123", false]] as const) {
-    it(`${label}: the broker role has no managed overflow policy, because the deploy's CloudFormation role cannot create one (R53)`, () => {
+    it(`${label}: the broker's grants live in the named agentx-<env>-broker-<group> managed policies the deploy may create (ruling M2)`, () => {
       const resources = controlPlane(env, { cloud });
-      expect(Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::IAM::ManagedPolicy").map(([id]) => id)).toEqual([]);
+      const managed = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::IAM::ManagedPolicy");
+      const names = managed.map(([, resource]) => (resource.Properties as { ManagedPolicyName?: string }).ManagedPolicyName).sort();
+      expect(names).toEqual([`agentx-${env}-broker-integrations`, `agentx-${env}-broker-orchestration`, `agentx-${env}-broker-state`]);
+      for (const [, resource] of managed) expect(attachedRoles(resource.Properties.Roles)).toContain("BrokerServiceRole");
+      // No unnamed overflow policy (CDK's own split), and no broker inline default policy left behind.
       expect(Object.keys(resources).filter((id) => id.startsWith("BrokerServiceRole") && id.includes("Overflow"))).toEqual([]);
+      expect(Object.keys(resources).filter((id) => id.startsWith("BrokerServiceRoleDefaultPolicy"))).toEqual([]);
     });
 
     it(`${label}: merging statements leaves every grant exactly as it was`, () => {
@@ -63,21 +68,22 @@ describe("the merged control plane's broker policy stays deployable", () => {
   }
 
   for (const [label, env, cloud] of [["staging", "staging", false], ["staging with the hosted cloud", "staging", true], ["a live-test environment", "agentxlivetest123", false]] as const) {
-    it(`${label}: the broker's inline policy keeps headroom under CDK's 10,000-character split`, () => {
+    it(`${label}: each broker managed policy keeps headroom under IAM's 6,144-character managed policy limit`, () => {
       const stack = controlPlaneStack(env, { cloud });
-      Template.fromStack(stack); // synthesizes, so the merge Aspect has run
-      const policy = stack.node.findAll().find((node): node is iam.Policy => node instanceof iam.Policy && stack.getLogicalId(node.node.defaultChild as iam.CfnPolicy).startsWith("BrokerServiceRoleDefaultPolicy"));
-      expect(policy).toBeDefined();
-      // CDK splits a role's default policy once its estimate reaches 10,000 (MAX_INLINE_SIZE in aws-iam role.ts), counting each
-      // statement with PolicyStatement._estimateSize (an internal API, pinned with aws-cdk-lib like _cfnProperties in
-      // permissions-boundary.ts): 20 characters per action and 150 per unresolved token (CDK's defaults), the literal length otherwise.
-      const estimate = (policy!.document as unknown as { statements: Array<{ _estimateSize(options: { actionEstimate: number; arnEstimate: number }): number }> }).statements
-        .reduce((total, statement) => total + statement._estimateSize({ actionEstimate: 20, arnEstimate: 150 }), 0);
-      expect(
-        estimate,
-        `The broker's inline policy is estimated at ${estimate} characters; the guard allows 9,500 and CDK splits at 10,000. ` +
-          "The deploy's CloudFormation role cannot create the managed overflow policy (R53). Split the new grant onto a separate iam.Policy attached to the broker role, narrow it, or merge more statements. Do not raise the limit.",
-      ).toBeLessThanOrEqual(9500);
+      Template.fromStack(stack); // synthesizes, so the merge-and-move Aspect has run
+      const policies = stack.node.findAll().filter((node): node is iam.ManagedPolicy => node instanceof iam.ManagedPolicy && /^agentx-.+-broker-/.test(String((node.node.defaultChild as iam.CfnManagedPolicy).managedPolicyName)));
+      expect(policies).toHaveLength(3);
+      for (const policy of policies) {
+        const name = String((policy.node.defaultChild as iam.CfnManagedPolicy).managedPolicyName);
+        // PolicyStatement._estimateSize is an internal API (pinned with aws-cdk-lib): 20 characters per action and 150 per unresolved token.
+        const estimate = (policy.document as unknown as { statements: Array<{ _estimateSize(options: { actionEstimate: number; arnEstimate: number }): number }> }).statements
+          .reduce((total, statement) => total + statement._estimateSize({ actionEstimate: 20, arnEstimate: 150 }), 0);
+        expect(
+          estimate,
+          `${name} is estimated at ${estimate} characters; the guard allows 5,500 (IAM caps a managed policy at 6,144). ` +
+            "Move a service into another group in infra/lib/merge-role-statements.ts (BROKER_POLICY_GROUPS) or add a new group. Do not raise the limit.",
+        ).toBeLessThanOrEqual(5500);
+      }
     });
   }
 

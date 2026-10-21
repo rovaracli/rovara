@@ -196,7 +196,11 @@ export class ControlPlaneStack extends Stack {
     });
     // The merged control plane's broker policy is past CDK's 10,000-character inline limit, and CDK would move the overflow into a
     // managed policy, which the deploy's CloudFormation role may not create (R53). Merge same-shaped statements instead.
-    if (naming.env !== undefined && props?.mergeBrokerStatements !== false) mergeRoleStatementsOnSynth(broker.role!);
+    // Then they move into named managed policies (agentx-<env>-broker-<group>, ruling M2): a role's inline policies are capped at 10,240
+    // characters in total, and the deploy's CloudFormation role may create managed policies named agentx-* only.
+    if (naming.env !== undefined && props?.mergeBrokerStatements !== false) {
+      mergeRoleStatementsOnSynth(broker.role!, { managedPolicyPrefix: `agentx-${naming.env}-broker` });
+    }
     state.grantReadWriteData(broker);
     artifacts.grantReadWrite(broker);
     broker.addToRolePolicy(new iam.PolicyStatement({
