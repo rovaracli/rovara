@@ -120,7 +120,7 @@ export class AuditKeyring {
 
   /**
    * Whether the org is shredded (also forgets its cached data key). Hand-off to Task 15: its shred sweep starts at least 30 s
-   * (the appender's timeout plus margin) after SHREDDED is written and deletes the whole ORG#<org> partition of the keys table.
+   * (the appender's timeout plus margin) after SHREDDED is written and deletes every item in the ORG#<org> partition of the keys table except SHREDDED itself (which must stay, or keys would be created again).
    * Until then, every key creation here re-checks this after its write (see liveDataKey and wrappedKey).
    */
   private async isShredded(orgId: string): Promise<boolean> {
@@ -167,7 +167,7 @@ export class AuditKeyring {
     // SHREDDED hand-off (Task 15): the keys table grants no ConditionCheckItem, so a shred cannot be made a condition of
     // this write. Look again instead: a shred that landed in between leaves this one unused key, and nothing is sealed under
     // it. The shred sweep must therefore start at least 30 s (the appender's timeout, plus margin) after SHREDDED is
-    // written and delete the whole ORG#<org> partition of the keys table (a query, not a list of known sort keys), so that
+    // written and delete every item in the ORG#<org> partition of the keys table except SHREDDED (a query, not a list of known sort keys), so that
     // every create already in flight has landed before the sweep and no key outlives it.
     if (await this.isShredded(orgId)) return "shredded";
     return this.remember(orgId, Buffer.from(generated.Plaintext));
