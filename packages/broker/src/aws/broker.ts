@@ -64,6 +64,7 @@ import {
   retiredClaimIds,
   canonicalPlanJson,
   canonicalJson,
+  githubNotConnectedMessage,
   type PlanDocument,
   type PlanEvidenceBundle,
   WORKFLOW_REGRESSED_CHECK_MAX,
@@ -196,12 +197,10 @@ import {
   type ModelRef,
   type ModelSelection,
   type ProjectModelOptions,
-  GithubOwnerSchema,
   EgressApproveBodySchema,
   EgressRejectBodySchema,
   OrgIdSchema,
   OrgRoleSchema,
-  type OrgRecord,
   type OrgRole,
   PROJECT_REVISION_SK_PREFIX,
   orgMemberKey,
@@ -213,6 +212,7 @@ import {
   slackMemberLimitKey,
   slackOrganizationLimitKey,
   projectPk,
+  projectCreateRequestKey,
   projectRevisionKey,
   projectSelectionKey,
   singleOrgIdForEnv,
@@ -285,7 +285,7 @@ import { PLAN_EVIDENCE_PK, attachEvidence, planCitesCode, planEvidenceDueKey, pl
 import { resolvePlanEvidence } from "../developer/plan-evidence.js";
 import { WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
 import { approvedFeedbackFixes, withFeedbackFixes, withStatusLines } from "../developer/pull-request-feedback-section.js";
-import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, requireAllowedGithubOwner, type CloudProjectDefaults, type CreateProjectInput } from "../org/cloud-projects.js";
+import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, type CloudProjectDefaults, type CreateProjectInput } from "../org/cloud-projects.js";
 import { installEnvironmentName, orgResolverFromEnvironment, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
 import { OrgStore } from "../org/store.js";
 import { decideEgressDomain, listPendingEgress, type EgressDomainsDependencies } from "../org/egress-domains.js";
@@ -310,7 +310,7 @@ import { aiToolTurn, completedTurn, developerFooter, E2E_PLAN_REFERENCE_INVALID_
 import { readWorkspaceLimits } from "../developer/limits.js";
 import { WORKFLOW_DISPATCH_PK, workflowDispatchItem, type WorkflowDispatchRecord, type WorkflowE2EReadinessMarker, AWS_TEMPORARY_MESSAGE, GATED_TASK_PULL_REQUEST_ACTION_REFUSAL, GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, UNEXPECTED_REQUEST_MESSAGE, hashJson, isConditional, isTemporaryAwsError, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, planDocumentInstructions, workerPrompt } from "./broker-shared.js";
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../e2e/feature-plan-planning-context.js";
-import { developerIdForSlackUser, grantProjectAccess } from "./admin-actions.js";
+import { developerIdForSlackUser } from "./admin-actions.js";
 import { chatGptOwner, chatGptTaskSelection } from "../chatgpt/task-model.js";
 import { answerSlackChatGpt, isSlackChatGptCommandEvent, isSlackChatGptFinishEvent } from "./slack-chatgpt.js";
 import { chatGptConnections, kmsChatGptSealer, type ChatGptConnections } from "../chatgpt/connections.js";
@@ -675,26 +675,6 @@ async function putInstallBudget(dependencies: AwsBrokerDependencies, identity: A
   );
   console.log(JSON.stringify({ component: "broker", event: "admin.org_budget_changed", orgId, overrides: Object.keys(budget.memberOverrides).length }));
   return { budget };
-}
-
-const SetGithubOwnerBodySchema = z.object({ orgId: OrgIdSchema, githubOwner: GithubOwnerSchema }).strict();
-
-/**
- * Ruling R55: `PUT /v1/admin/org/github-owner`. An operator (admin pool) sets the one GitHub account or organization whose repositories
- * an owner or admin of a cloud org may register as projects. Cloud installs only: any other install has one org and registers its
- * projects with the administrator's `project add`.
- */
-async function putOrgGithubOwner(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, body: unknown): Promise<{ org: { orgId: OrgId; githubOwner: string } }> {
-  if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
-  if (dependencies.cloud !== true) throw agentXError("CONFIG_INVALID", "this install has one organization; register its projects with agentx project add");
-  const parsed = SetGithubOwnerBodySchema.safeParse(body);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
-  }
-  await orgStoreOf(dependencies).setGithubOwner(parsed.data.orgId, parsed.data.githubOwner);
-  console.log(JSON.stringify({ component: "broker", event: "admin.org_github_owner_changed", orgId: parsed.data.orgId, githubOwner: parsed.data.githubOwner }));
-  return { org: { orgId: parsed.data.orgId, githubOwner: parsed.data.githubOwner } };
 }
 
 function egressDepsOf(dependencies: AwsBrokerDependencies): EgressDomainsDependencies {
@@ -1503,7 +1483,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
           registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : (url, orgId) => dependencies.githubPullRequests.getRepositoryIdentity!(url, githubScope(dependencies, orgId)),
-          createProject: (caller, input, org) => createCloudProject(dependencies, caller, input, org),
+          createProject: (caller, input) => createCloudProject(dependencies, caller, input),
           ...githubConnectRoute(dependencies),
           ...repositoriesGateRoute(dependencies),
           projectSettings: {
@@ -1688,10 +1668,6 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Ruling R47: an operator sets the budgets of a private or single-org install's one org. A cloud install's orgs set their own.
       if (request.method === "PUT" && url.pathname === "/v1/admin/org/budget") {
         return json(await putInstallBudget(dependencies, identity, body), request.requestId);
-      }
-      // Ruling R55: an operator names the one GitHub owner a cloud org may create projects for.
-      if (request.method === "PUT" && url.pathname === "/v1/admin/org/github-owner") {
-        return json(await putOrgGithubOwner(dependencies, identity, body), request.requestId);
       }
       // Plan 2, Task 18: Rovara staff decide the domains projects ask for.
       if (request.method === "GET" && url.pathname === "/v1/admin/egress/pending") {
@@ -2181,7 +2157,8 @@ async function registerProject(
  * Plan 2, Task 11: a project's META item (status, description, who created it and when) is written in the transaction that registers its
  * first revision. With `requireNewName` the name must be new in the org: a catalog entry already there (an archived project, or one from
  * before META existed) is PROJECT_NAME_TAKEN, and so is a transaction whose revision, META or catalog condition fails (a TransactionConflict, or a failed setup row, is not: those
- * answer as a retryable conflict and as the admission's own error). Without it, registration stays
+ * answer as a retryable conflict and as the admission's own error). `extraItems` are the caller's own transaction items, written with the
+ * project (and only then). Without `requireNewName`, registration stays
  * idempotent and writes META only for a project new to the org, leaving a project that predates META without one (it reads as active,
  * created by "unknown").
  */
@@ -2189,7 +2166,7 @@ export async function registerProjectFor(
   dependencies: AwsBrokerDependencies,
   actor: RegistrationActor,
   value: unknown,
-  options: { creatorMembership: "administrator" | "developer" | "none"; requireNewName?: boolean; description?: string; checked?: { preflight?: PreflightOutcome } },
+  options: { creatorMembership: "administrator" | "developer" | "none"; requireNewName?: boolean; description?: string; extraItems?: Array<Record<string, unknown>>; checked?: { preflight?: PreflightOutcome } },
 ): Promise<RegistrationResult> {
   const checked = options.checked;
   const orgId = actor.orgId;
@@ -2369,6 +2346,8 @@ export async function registerProjectFor(
           ...(snapshot.catalog?.latestRevision === undefined ? {} : { ":observed": snapshot.catalog.latestRevision }) },
       } }] : []),
       ...(setupAdmissionRows?.transactionItems ?? []),
+      // The caller's own writes that must land with the project (Task 16: the creation request's record), after every item above.
+      ...(options.extraItems ?? []),
       ] }));
       return respond(withoutKeys(record), false, preflight);
     } catch (error) {
@@ -2429,51 +2408,83 @@ function cloudProjectAnswer(registered: RegistrationResult): CloudProjectCreated
   };
 }
 
+const PROJECT_CREATE_REQUEST_SECONDS = 86_400;
+
+/** A request body's identity for a replay: the repository without regard to case, and the other fields as given. */
+function projectCreateBodyHash(input: CreateProjectInput): string {
+  return createHash("sha256").update(canonicalJson({
+    repository: `${input.owner}/${input.repositoryName}`.toLowerCase(),
+    ...(input.name === undefined ? {} : { name: input.name }),
+    ...(input.description === undefined ? {} : { description: input.description }),
+    ...(input.setupCommand === undefined ? {} : { setupCommand: input.setupCommand }),
+    ...(input.testCommand === undefined ? {} : { testCommand: input.testCommand }),
+  }), "utf8").digest("hex");
+}
+
 /**
- * Ruling R55: `POST /v1/dev/projects`, after the route has checked the install, the caller's role and the requested owner. The
- * repository must be visible to the install's GitHub App, and GitHub's own spelling of its owner is checked again against the org's
- * allowed owner. It registers through registerProjectFor, as the admin route does, then grants the creator access like any developer.
+ * What a failed read of GitHub means to the person who asked for a repository: a redirect (a renamed or transferred repository, which the
+ * lookup refuses with `redirect: "error"`) is theirs to fix, a network failure is not. Node's fetch rejects both with TypeError("fetch failed")
+ * and tells them apart by the cause; any other error is passed on as it is.
  */
-async function createCloudProject(dependencies: AwsBrokerDependencies, caller: DeveloperCaller, input: CreateProjectInput, org: Pick<OrgRecord, "githubOwner">): Promise<CloudProjectCreated> {
+function githubReadFailure(error: unknown, owner: string, name: string): never {
+  if (error instanceof TypeError) {
+    const cause = error.cause instanceof Error ? error.cause.message : undefined;
+    if (cause === "unexpected redirect") throw agentXError("CONFIG_INVALID", `GitHub moved or renamed ${owner}/${name}; use its current owner/name`);
+    if (error.message === "fetch failed") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub could not be reached just now; try again in a moment");
+  }
+  throw error;
+}
+
+/**
+ * Plan 2, Task 16: `POST /v1/app/projects`, after the route has checked the install, the caller's role and the body.
+ *
+ * Order: a replay of the request (the same `requestId` and body answers the project it made; another body is IDEMPOTENCY_CONFLICT), whether the
+ * org's own GitHub connection reaches the repository (`requireRepositoryConnected`: the installation GitHub says covers it must be bound to the
+ * org and active), GitHub's own description of the repository, the registration as a new name in the org (`registerProjectFor`), which writes
+ * the project, its META, the caller's grant and the request's record in one transaction. The revision's repository entry pins the installation
+ * and GitHub's repository id.
+ */
+async function createCloudProject(dependencies: AwsBrokerDependencies, caller: DeveloperCaller, input: CreateProjectInput): Promise<CloudProjectCreated> {
+  const orgId = caller.orgId;
+  const requestKey = projectCreateRequestKey(orgId, input.requestId);
+  const bodyHash = projectCreateBodyHash(input);
+  const nowMs = Date.now();
+  const recorded = await getItem<{ bodyHash?: unknown; projectName?: unknown; expiresAt?: unknown }>(dependencies, requestKey);
+  // A record past its day is no record: the id is free again (the transaction below replaces it).
+  if (recorded !== undefined && typeof recorded.expiresAt === "number" && recorded.expiresAt >= Math.floor(nowMs / 1000) && typeof recorded.projectName === "string") {
+    if (recorded.bodyHash !== bodyHash) throw agentXError("IDEMPOTENCY_CONFLICT", "this requestId was already used to create a different project");
+    const made = await getItem<RegisteredProjectRecord>(dependencies, projectRevisionKey(orgId, recorded.projectName, 1));
+    if (made !== undefined) return cloudProjectAnswer({ project: withoutKeys(made), duplicate: true });
+  }
   const defaults = dependencies.cloudProjects;
   const lookUp = dependencies.githubPullRequests.getRepositoryIdentity;
-  if (defaults === undefined || lookUp === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "creating projects is not set up in this deployment; ask Rovara support");
-  const identity = await lookUp.call(dependencies.githubPullRequests, `https://github.com/${input.owner}/${input.repositoryName}.git`, githubScope(dependencies, caller.orgId)).catch((error: unknown) => {
-    if (error instanceof TypeError) {
-      // GitHub answers a renamed or transferred repository with a redirect, which the lookup refuses (redirect: "error"): Node's fetch
-      // rejects with TypeError("fetch failed") whose cause says so. DNS and connection failures reject the same way, with other causes.
-      const cause = error.cause instanceof Error ? error.cause.message : undefined;
-      if (cause === "unexpected redirect") throw agentXError("CONFIG_INVALID", `GitHub moved or renamed ${input.owner}/${input.repositoryName}; use its current owner/name`);
-      if (error.message === "fetch failed") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub could not be reached just now; try again in a moment");
-    }
-    throw error;
-  });
-  if (identity === undefined) throw agentXError("CONFIG_INVALID", `the GitHub App cannot see ${input.owner}/${input.repositoryName}; check the name, or ask Rovara support to install the GitHub App on it`);
+  const gate = repositoryGateOf(dependencies);
+  if (defaults === undefined || lookUp === undefined || gate === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "creating projects is not set up in this deployment; ask Rovara support");
+  const { owner, repositoryName } = input;
+  const connection = await requireRepositoryConnected(gate, orgId, owner, repositoryName).catch((error: unknown) => githubReadFailure(error, owner, repositoryName));
+  const identity = await lookUp.call(dependencies.githubPullRequests, `https://github.com/${owner}/${repositoryName}.git`, githubScope(dependencies, orgId)).catch((error: unknown) => githubReadFailure(error, owner, repositoryName));
+  if (identity === undefined) throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(`${owner}/${repositoryName}`));
   const spelledOwner = identity.fullName.split("/")[0];
   if (spelledOwner === undefined || identity.defaultBranch === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not describe that repository; try again");
-  requireAllowedGithubOwner(org, spelledOwner);
-  const definition = cloudProjectDefinition({ input, repository: { fullName: identity.fullName, defaultBranch: identity.defaultBranch }, githubCredentialRef: defaults.githubCredentialRef });
+  // GitHub's spelling of the owner is the one the connection was checked for (a renamed owner would have redirected, which is refused above).
+  if (spelledOwner.toLowerCase() !== owner.toLowerCase()) throw agentXError("FORBIDDEN", `GitHub describes ${owner}/${repositoryName} under ${spelledOwner}; use its current owner/name`);
+  const definition = cloudProjectDefinition({ input, repository: { fullName: identity.fullName, defaultBranch: identity.defaultBranch }, githubCredentialRef: defaults.githubCredentialRef, connection });
+  const createdAt = new Date(nowMs).toISOString();
   const registered = await registerProjectFor(
     dependencies,
-    { orgId: caller.orgId, ownerKey: caller.developerId },
+    { orgId, ownerKey: caller.developerId },
     { definition, runtimeBinding: defaults.runtimeBinding },
-    { creatorMembership: "none" },
-  ).catch((error: unknown) => {
-    // Only the immutable-revision refusal is a name clash; the catalog-contention refusals keep their own words.
-    if (error instanceof AgentXError && error.code === "PROJECT_REVISION_MISMATCH" && error.message.includes("are immutable")) {
-      throw agentXError("PROJECT_REVISION_MISMATCH", `a project named ${definition.name} already exists with other settings (another repository, or settings that changed); choose another --name`);
-    }
-    throw error;
-  });
-  // The grant is idempotent, so an identical request after a failed grant repairs it.
-  await grantProjectAccess(
-    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, limitDefaults: { member: 0, organization: 0 }, now: Date.now },
-    caller.orgId,
-    { issuer: dependencies.developer?.issuer ?? dependencies.issuer, subject: caller.developerId },
-    definition.name,
-    caller.developerId,
+    {
+      creatorMembership: "developer", requireNewName: true, ...(input.description === undefined ? {} : { description: input.description }),
+      extraItems: [{ Put: {
+        TableName: dependencies.tableName,
+        Item: { ...requestKey, entityType: "PROJECT_CREATE_REQUEST", bodyHash, projectName: definition.name, createdAt, expiresAt: Math.floor(nowMs / 1000) + PROJECT_CREATE_REQUEST_SECONDS },
+        ConditionExpression: "attribute_not_exists(pk) OR expiresAt < :now",
+        ExpressionAttributeValues: { ":now": Math.floor(nowMs / 1000) },
+      } }],
+    },
   );
-  console.log(JSON.stringify({ component: "broker", event: "developer.project_created", orgId: caller.orgId, project: definition.name, duplicate: registered.duplicate }));
+  console.log(JSON.stringify({ component: "broker", event: "developer.project_created", orgId, project: definition.name, duplicate: registered.duplicate }));
   return cloudProjectAnswer(registered);
 }
 

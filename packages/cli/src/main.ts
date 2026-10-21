@@ -29,7 +29,6 @@ import { Command, Option } from "commander";
 import { authorizeCredential, expectedAccountEmail, secretsManagerAuthorizeSecrets, type AuthorizeSecrets } from "./admin/authorize.js";
 import { budgetText, parseBudgetUsd, setOrgBudget } from "./admin/budget.js";
 import { decideEgress, decisionText, listPendingEgress, parseOwnerArgument, pendingText } from "./admin/egress.js";
-import { githubOwnerText, setOrgGithubOwner } from "./admin/github-owner.js";
 import { listCredentials, registerCredential } from "./admin/credential.js";
 import { requestRuntimeInstallChallenge, submitRuntimeInstallProposal } from "./admin/runtime-installation.js";
 import { cliRuntimeBinding, registerProject } from "./admin/register.js";
@@ -874,22 +873,6 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       services.stdout.write(globals.json ? formatSuccess(result, true) : budgetText(result.budget));
     });
 
-  const adminOrg = admin.command("org").description("organizations on Rovara Cloud");
-  adminOrg
-    .command("github-owner")
-    .description("the one GitHub account or organization whose repositories an organization's owners and admins may create projects for")
-    .command("set")
-    .description("set an organization's allowed GitHub owner (Rovara Cloud operators only)")
-    .option("--org <org-id>", "the organization's ID")
-    .option("--owner <login>", "the GitHub account or organization login, such as acme-corp")
-    .action(async (options: { org?: string; owner?: string }, command: Command) => {
-      const globals = globalOptions(command);
-      if (options.org === undefined || options.owner === undefined) throw agentXError("CONFIG_INVALID", "name the organization and the GitHub owner: --org <org-id> --owner <login>");
-      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
-      const result = await setOrgGithubOwner({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, orgId: options.org, githubOwner: options.owner }, services.fetchImplementation);
-      services.stdout.write(globals.json ? formatSuccess(result, true) : githubOwnerText(result.org));
-    });
-
   const adminEgress = admin.command("egress").description("domains projects ask to reach; on Rovara Cloud a new one is served only after Rovara staff approve it");
   adminEgress
     .command("pending")
@@ -1243,16 +1226,19 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   projectCommand
     .command("create")
     .description("create a project from a GitHub repository, on Rovara Cloud (an owner or admin of your organization)")
-    .option("--repository <owner/name>", "the GitHub repository, which must be under your organization's connected GitHub owner")
+    .option("--repository <owner/name>", "the GitHub repository, which your organization's GitHub connection must reach (agentx github connect)")
     .option("--name <name>", "the project's name (default: the repository's)")
+    .option("--description <text>", "what the project is, up to 280 characters")
     .option("--setup-command <command>", "the setup command, or \"\" for none")
     .option("--test-command <command>", "the test command, or \"\" for none")
-    .action(async (options: { repository?: string; name?: string; setupCommand?: string; testCommand?: string }, command: Command) => {
+    .action(async (options: { repository?: string; name?: string; description?: string; setupCommand?: string; testCommand?: string }, command: Command) => {
       const globals = globalOptions(command);
       if (options.repository === undefined) throw agentXError("CONFIG_INVALID", "name the repository: --repository <owner/name>");
       const result = await createDeveloperProject(developerSession(), developerEnv(command), {
+        requestId: randomUUID(),
         repository: options.repository,
         ...(options.name === undefined ? {} : { name: options.name }),
+        ...(options.description === undefined ? {} : { description: options.description }),
         ...(options.setupCommand === undefined ? {} : { setupCommand: options.setupCommand }),
         ...(options.testCommand === undefined ? {} : { testCommand: options.testCommand }),
       });

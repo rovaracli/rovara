@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  PROJECT_REVISION_SK_PREFIX, agentXError, githubAuditKey, githubInstallationEverBoundKey, githubInstallationKey, orgGithubInstallationKey, projectPk, type GithubInstallationRecord, type OrgId,
+  PROJECT_REVISION_SK_PREFIX, agentXError, projectRevisionKey, githubAuditKey, githubInstallationEverBoundKey, githubInstallationKey, orgGithubInstallationKey, projectPk, type GithubInstallationRecord, type OrgId,
 } from "@agentx/contracts";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
 import { executeCli } from "../../packages/cli/src/main.js";
@@ -587,6 +587,15 @@ describe("the project settings seam", () => {
     const accepted = await settings("example/website");
     expect(accepted.status).toBe(200);
     expect(revisions()).toBe(before + 1);
+  });
+
+  it("Task 16: the added repository's entry pins the installation and GitHub's repository id, like a created project's", async () => {
+    const w = await world();
+    const saved = await w.dev(OMAR, "PUT", "/v1/app/projects/payments/settings", { requestId: randomUUID(), expectedRevision: 1, addRepositories: ["example/website"] });
+    expect(saved.status).toBe(200);
+    const revision = w.db.get(projectRevisionKey(TEST_ORG, "payments", 2));
+    const repositories = (revision as { definition: { repositories: Array<Record<string, unknown>> } }).definition.repositories;
+    expect(repositories.find((entry) => entry.name === "website")).toMatchObject({ installationId: 55, githubRepositoryId: 9001 });
   });
 });
 

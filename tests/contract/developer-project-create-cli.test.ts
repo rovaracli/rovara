@@ -34,13 +34,14 @@ async function signedIn(answer: () => Response) {
   return { out, err, run, requests, fetchImplementation };
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const created = (duplicate = false) => Response.json({ duplicate, project: { definition: { name: "web", revision: 1 }, runtimeBinding: {} } }, { status: duplicate ? 200 : 201 });
 
 describe("agentx project create", () => {
-  it("sends the repository to POST /v1/dev/projects with the developer session, and prints the project and the next step", async () => {
+  it("sends a request id and the repository to POST /v1/app/projects with the developer session, and prints the project and the next step", async () => {
     const h = await signedIn(created);
     expect(await h.run(["project", "create", "--repository", "acme/web"])).toBe(0);
-    expect(h.requests).toEqual([{ method: "POST", path: "/v1/dev/projects", authorization: "Bearer access", body: { repository: "acme/web" } }]);
+    expect(h.requests).toEqual([{ method: "POST", path: "/v1/app/projects", authorization: "Bearer access", body: { requestId: expect.stringMatching(UUID) as string, repository: "acme/web" } }]);
     expect(h.out.join("")).toBe([
       "Created project web in AgentX environment staging. You have access to it.",
       "Next: start a task in web from your coding tool (agentx mcp install connects it), or run agentx whoami to see your projects.",
@@ -49,16 +50,24 @@ describe("agentx project create", () => {
     expect(h.err.join("")).toBe("");
   });
 
-  it("sends the name and commands when given", async () => {
+  it("sends the name, description and commands when given", async () => {
     const h = await signedIn(created);
-    expect(await h.run(["project", "create", "--repository", "acme/web", "--name", "web-app", "--setup-command", "npm ci", "--test-command", "npm test"])).toBe(0);
-    expect(h.requests[0]?.body).toEqual({ repository: "acme/web", name: "web-app", setupCommand: "npm ci", testCommand: "npm test" });
+    expect(await h.run(["project", "create", "--repository", "acme/web", "--name", "web-app", "--description", "The web app.", "--setup-command", "npm ci", "--test-command", "npm test"])).toBe(0);
+    expect(h.requests[0]?.body).toEqual({ requestId: expect.stringMatching(UUID) as string, repository: "acme/web", name: "web-app", description: "The web app.", setupCommand: "npm ci", testCommand: "npm test" });
+  });
+
+  it("sends a new request id for each command, so a second project is not a replay", async () => {
+    const h = await signedIn(created);
+    expect(await h.run(["project", "create", "--repository", "acme/web"])).toBe(0);
+    expect(await h.run(["project", "create", "--repository", "acme/web"])).toBe(0);
+    const ids = h.requests.map((request) => (request.body as { requestId: string }).requestId);
+    expect(new Set(ids).size).toBe(2);
   });
 
   it("sends an empty command as given, so a person can say there is none", async () => {
     const h = await signedIn(created);
     expect(await h.run(["project", "create", "--repository", "acme/web", "--setup-command", ""])).toBe(0);
-    expect(h.requests[0]?.body).toEqual({ repository: "acme/web", setupCommand: "" });
+    expect(h.requests[0]?.body).toEqual({ requestId: expect.stringMatching(UUID) as string, repository: "acme/web", setupCommand: "" });
   });
 
   it("says the project already exists when the same project is created again", async () => {
@@ -74,9 +83,9 @@ describe("agentx project create", () => {
   });
 
   it("shows the server's reason when it refuses", async () => {
-    const h = await signedIn(() => Response.json({ error: { code: "FORBIDDEN", message: "your organization has no GitHub organization connected yet; ask Rovara support to connect your GitHub organization" } }, { status: 403 }));
+    const h = await signedIn(() => Response.json({ error: { code: "FORBIDDEN", message: "Rovara can't reach acme/web through your organization's GitHub connection. Connect it with: agentx github connect" } }, { status: 403 }));
     expect(await h.run(["project", "create", "--repository", "acme/web"])).not.toBe(0);
-    expect(h.err.join("")).toContain("ask Rovara support to connect your GitHub organization");
+    expect(h.err.join("")).toContain("Connect it with: agentx github connect");
   });
 
   it("asks for the repository before calling anything", async () => {
@@ -103,7 +112,7 @@ describe("whoamiText", () => {
   it("tells an owner or admin of a cloud org with no projects how to create one", () => {
     for (const provider of ["cloud", "github"] as const) {
       for (const role of ["owner", "admin"] as const) {
-        expect(text(provider, role)).toContain("Create one with: agentx project create --repository <owner/name>");
+        expect(text(provider, role)).toContain("Connect GitHub with agentx github connect, then: agentx project create --repository <owner/name>");
       }
     }
   });

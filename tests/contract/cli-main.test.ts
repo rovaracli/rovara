@@ -11,9 +11,8 @@ describe("AgentX executable command surface", () => {
     expect(subcommands(program, "github")).toEqual(["oauth", "connect", "list", "disconnect"]);
 
     const admin = program.commands.find((command) => command.name() === "admin");
-    expect(admin?.commands.map((command) => command.name())).toEqual(["project", "runtime-installation", "workspace", "budget", "org", "egress", "slack", "eval", "credential", "turns", "task", "changes"]);
+    expect(admin?.commands.map((command) => command.name())).toEqual(["project", "runtime-installation", "workspace", "budget", "egress", "slack", "eval", "credential", "turns", "task", "changes"]);
     expect(subcommands(admin, "project")).toEqual(["register", "grant", "revoke"]);
-    expect(subcommands(admin, "org")).toEqual(["github-owner"]);
     expect(subcommands(admin, "workspace")).toEqual(["list", "cancel", "stop"]);
     expect(subcommands(admin, "budget")).toEqual(["set"]);
     expect(subcommands(admin, "slack")).toEqual(["bind", "unbind"]);

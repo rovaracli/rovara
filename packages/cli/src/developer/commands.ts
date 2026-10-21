@@ -116,7 +116,7 @@ export function whoamiText(result: { env: string; url: string; projects: Develop
     // Only Rovara Cloud signs people in with these two. There an owner or admin creates the org's projects; a member asks one.
     if (developer.provider === "cloud" || developer.provider === "github") {
       lines.push(developer.orgRole === "owner" || developer.orgRole === "admin"
-        ? "You cannot use any project yet. Create one with: agentx project create --repository <owner/name>"
+        ? "Connect GitHub with agentx github connect, then: agentx project create --repository <owner/name>"
         : "You cannot use any project yet: ask your org's owner to create one.");
     } else {
       lines.push("You cannot use any project yet: join a project's Slack channel, or ask an admin for access.");
@@ -198,17 +198,22 @@ export function linkText(result: { provider: "cloud" | "github"; authorizeUrl: s
     + "When the page says it was added, run agentx whoami to see it. Only a sign-in method you removed from this account can be added back.\n";
 }
 
-/** `agentx project create` (ruling R55): the signed-in owner or admin of a cloud org creates a project from a repository. */
+/**
+ * `agentx project create` (Plan 2, Task 16): the signed-in owner or admin of a cloud org creates a project from a repository their org's
+ * GitHub connection reaches. `requestId` makes a retry of the same command answer the same project instead of a second one.
+ */
 export async function createDeveloperProject(
   deps: DeveloperSessionDeps,
   env: string | undefined,
-  input: { repository: string; name?: string; setupCommand?: string; testCommand?: string },
+  input: { requestId: string; repository: string; name?: string; description?: string; setupCommand?: string; testCommand?: string },
 ): Promise<{ env: string; url: string; created: DeveloperCreateProjectResponse }> {
-  const { env: resolved, url, body } = await developerRequest(deps, env, "/v1/dev/projects", DeveloperCreateProjectResponseSchema, {
+  const { env: resolved, url, body } = await developerRequest(deps, env, "/v1/app/projects", DeveloperCreateProjectResponseSchema, {
     method: "POST",
     body: {
+      requestId: input.requestId,
       repository: input.repository,
       ...(input.name === undefined ? {} : { name: input.name }),
+      ...(input.description === undefined ? {} : { description: input.description }),
       ...(input.setupCommand === undefined ? {} : { setupCommand: input.setupCommand }),
       ...(input.testCommand === undefined ? {} : { testCommand: input.testCommand }),
     },

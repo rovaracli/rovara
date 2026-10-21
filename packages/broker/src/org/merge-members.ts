@@ -161,6 +161,8 @@ export async function raceOrgBlocker(deps: Deps, orgId: OrgId, duplicateId: stri
   const meta = await getItem(deps, orgMetaKey(orgId));
   if (meta === undefined || meta.closedAt !== undefined) return "no open organization record";
   if (meta.createdBy !== duplicateId || meta.plan !== "trial") return "not a trial organization the duplicate created";
+  // `githubOwner` is the attribute the operator-set GitHub owner left on an org item (removed in Plan 2, Task 16; nothing writes it now).
+  // An org that still carries it was connected that way and is not disposable. A connection made since is a row of the org's partition, below.
   if (meta.githubOwner !== undefined) return "a GitHub organization is connected";
   // The org's own partition holds exactly its record and its one member: a second member or an invite request would be another row.
   const rows = (await queryPartition(deps, orgPk(orgId), undefined)).map((row) => String(row.sk)).sort();

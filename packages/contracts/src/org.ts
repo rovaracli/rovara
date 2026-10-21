@@ -22,21 +22,11 @@ export interface OrgRecord {
   trialUnlockedAt?: number;
   /** The GitHub account whose connection unlocked the trial; it can unlock no other org. */
   trialGithubUserId?: string;
-  /**
-   * Ruling R55: the one GitHub account or organization login (lower case) whose repositories an owner or admin of this cloud org may
-   * register as projects. Only an operator sets it; absent, the org cannot create projects.
-   */
-  githubOwner?: string;
   /** When the org was closed (its sole owner left, or the race org of a duplicate sign-in was retired); a closed org takes no new members. */
   closedAt?: string;
   /** Set while the sole owner's leave closes the org: from then on no invite is accepted into it. A stopped close is run again by the owner. */
   closingAt?: string;
 }
-
-/** A GitHub account or organization login, stored lower case: 1 to 39 letters, digits and single hyphens, never starting or ending with one. */
-export const GithubOwnerSchema = z.string().trim().min(1).max(39)
-  .regex(/^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/, "must be a GitHub account or organization login")
-  .transform((login) => login.toLowerCase());
 
 export interface OrgMembershipRecord {
   orgId: OrgId;
@@ -119,6 +109,11 @@ export function orgInviteKey(tokenHash: string): OrgKey {
 /** Marks that an org's invite request was served, so a replay of the same requestId is refused rather than minting a second invite. */
 export function orgInviteRequestKey(orgId: OrgId, requestId: string): OrgKey {
   return { pk: orgPk(orgId), sk: `INVITE_REQUEST#${requestId}` };
+}
+
+/** Marks that an org's project creation request was served (a day), so a replay of the same requestId answers the project it made. */
+export function projectCreateRequestKey(orgId: OrgId, requestId: string): OrgKey {
+  return { pk: orgScoped(orgId, "PROJECT_CREATE_REQUEST"), sk: requestId };
 }
 
 export function slackTeamOrgKey(teamId: string): OrgKey {

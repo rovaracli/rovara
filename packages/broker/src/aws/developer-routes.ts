@@ -59,7 +59,6 @@ import {
   UnlinkableSignInMethodSchema,
   type LinkedIdentity,
   type OrgId,
-  type OrgRecord,
   type OrgRole,
   OrgIdSchema,
   OrgRoleSchema,
@@ -81,7 +80,7 @@ import { updateProjectSettings, type ProjectSettingsDependencies } from "../org/
 import { effectiveProjectRole, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
 import { DEFAULT_ROVARA_WEB_ORIGIN, inviteUrl } from "../org/invite-url.js";
-import { parseCreateProjectBody, requireAllowedGithubOwner, type CreateProjectInput } from "../org/cloud-projects.js";
+import { parseCreateProjectBody, type CreateProjectInput } from "../org/cloud-projects.js";
 import { changeBudgets, ensureSynced, memberLimitOf, type BudgetDependencies, type OrgBudgetSettings } from "../org/budget.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import type { OrgStore } from "../org/store.js";
@@ -170,10 +169,11 @@ export interface DeveloperRouteDependencies {
   /** A cloud install (ruling R42): trial lock and machine-time allowance apply to its orgs. */
   cloud?: boolean;
   /**
-   * Ruling R55: registers a project in the caller's org and grants the caller access, through the broker's registration. The route has
-   * already checked the install, the caller's role and the repository's owner against the org's allowed GitHub owner.
+   * Plan 2, Task 16: creates a project in the caller's org from a repository the org's GitHub connection reaches, through the broker's
+   * registration, and grants the caller access; a replay of the same request answers the same project with `duplicate: true`. The route
+   * has already checked the install, the caller's role and the body.
    */
-  createProject?: (caller: DeveloperCaller, input: CreateProjectInput, org: Pick<OrgRecord, "githubOwner">) => Promise<{ duplicate: boolean }>;
+  createProject?: (caller: DeveloperCaller, input: CreateProjectInput) => Promise<{ duplicate: boolean }>;
   /**
    * Plan 2, Task 17: what `PUT /v1/app/projects/{name}/settings` needs from the broker: registering a revision, and (for an added repository)
    * GitHub's view of it. Without it the route answers NOT_FOUND.
@@ -1239,7 +1239,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
     return deps.githubConnect.cancelRequest(caller, githubRequestRoute[1]!);
   }
-  if (request.method === "POST" && url.pathname === "/v1/dev/projects") return createProject(deps, caller, jsonBody(request));
+  if (request.method === "POST" && (url.pathname === "/v1/app/projects" || url.pathname === "/v1/dev/projects")) return createProject(deps, caller, jsonBody(request));
   if (request.method === "GET" && url.pathname === "/v1/dev/workspaces") return listWorkspaces(deps, caller);
   if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);
   if (request.method === "POST" && (url.pathname === "/v1/dev/org/invites" || url.pathname === "/v1/app/org/invites")) return createOrganizationInvite(deps, caller, jsonBody(request));
@@ -1264,18 +1264,16 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
 }
 
 /**
- * Ruling R55: an owner or admin of a cloud org creates a project from a repository under the org's allowed GitHub owner, which only an
- * operator sets. Any other install registers projects through an administrator.
+ * `POST /v1/app/projects` (and its alias `POST /v1/dev/projects`): an owner or admin of a cloud org creates a project from a repository its
+ * own GitHub connection reaches. Order: the install, the role, the body; then (the broker, in this order) a replay of the request, whether the
+ * connection reaches the repository, GitHub's description of it, the registration as a new name, and the record of the request. Any other
+ * install registers projects through an administrator.
  */
 async function createProject(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<StatusReply> {
   if (deps.cloud !== true) throw agentXError("FORBIDDEN", "projects on this install are created by an administrator; ask an administrator to run agentx project add");
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can create a project; ask your organization's owner");
-  if (deps.orgs === undefined || deps.createProject === undefined) throw agentXError("NOT_FOUND", "project creation is not set up in this deployment");
-  const input = parseCreateProjectBody(body);
-  const org = await deps.orgs.getOrg(caller.orgId);
-  if (org === undefined) throw agentXError("NOT_FOUND", "your organization was not found");
-  requireAllowedGithubOwner(org, input.owner);
-  const created = await deps.createProject(caller, input, org);
+  if (deps.createProject === undefined) throw agentXError("NOT_FOUND", "project creation is not set up in this deployment");
+  const created = await deps.createProject(caller, parseCreateProjectBody(body));
   return new StatusReply(created.duplicate ? 200 : 201, created);
 }
 

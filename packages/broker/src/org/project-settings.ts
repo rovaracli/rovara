@@ -188,7 +188,12 @@ async function changedRepositories(
   }
   // Every added repository must be reached through the org's own GitHub connection before GitHub is asked anything about it.
   const connected = deps.requireRepositoryConnected ?? ((orgId, owner, repository) => requireRepositoryConnectedByRecords(deps, orgId, owner, repository));
-  for (const { owner, name } of added) await connected(caller.orgId, owner, name);
+  const connections = new Map<number, { installationId: number; githubRepositoryId: number }>();
+  for (const { index, owner, name } of added) {
+    const answer = await connected(caller.orgId, owner, name) as { installationId?: unknown; githubRepositoryId?: unknown } | undefined;
+    // What the connection answered is pinned on the entry (Task 16), as for a created project; the by-records default answers nothing to pin.
+    if (typeof answer?.installationId === "number" && typeof answer.githubRepositoryId === "number") connections.set(index, { installationId: answer.installationId, githubRepositoryId: answer.githubRepositoryId });
+  }
   const entries: Repository[] = [];
   for (const { index, owner, name } of added) {
     const identity = await identityOf(deps, caller.orgId, `${owner}/${name}`);
@@ -196,7 +201,8 @@ async function changedRepositories(
     if (identity.defaultBranch === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not describe that repository; try again");
     const githubCredentialRef = deps.githubCredentialRef;
     if (githubCredentialRef === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "adding a repository is not set up in this deployment; ask Rovara support");
-    entries.push(cloudRepositoryEntry({ repositoryName: name, repository: { fullName: identity.fullName, defaultBranch: identity.defaultBranch }, githubCredentialRef }));
+    const connection = connections.get(index);
+    entries.push(cloudRepositoryEntry({ repositoryName: name, repository: { fullName: identity.fullName, defaultBranch: identity.defaultBranch }, githubCredentialRef, ...(connection === undefined ? {} : { connection }) }));
   }
   return { repositories: [...current.filter((repository) => !removed.includes(repository)), ...entries], removed };
 }
