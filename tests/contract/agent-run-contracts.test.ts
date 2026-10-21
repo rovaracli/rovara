@@ -13,6 +13,8 @@ import {
 import {
   AgentStepPayloadSchema,
   AGENT_STEP_FEATURE,
+  AGENT_STEP_INPUTS_MAX_BYTES,
+  AGENT_STEP_INSTRUCTIONS_MAX_BYTES,
   AGENT_RUN_FEATURE,
   MODEL_ROUTE_FEATURE,
   ModelRouteSchema,
@@ -245,6 +247,48 @@ describe("AgentStepPayloadSchema", () => {
     expect(AgentStepPayloadSchema.safeParse({ ...agent, tools: ["read"] }).success).toBe(false);
     expect(AgentStepPayloadSchema.safeParse({ ...agent, promptSection: "x" }).success).toBe(false);
   });
+});
+
+describe("the size of an agent-step invocation", () => {
+  // DynamoDB's item limit, 400 KB (409,600 bytes). The invocation is stored inline in the outbox item
+  // (OutboxRecordBase.invocation, packages/broker/src/aws/lambda.ts), which has no constant for it, so it is mirrored here.
+  const DYNAMODB_ITEM_LIMIT_BYTES = 409_600;
+  // The worker refuses a larger /invocations body (MAX_INVOCATION_BYTES in packages/worker/src/server.ts).
+  const WORKER_BODY_LIMIT_BYTES = 1_048_576;
+
+  it("fixes the bounds", () => {
+    expect(AGENT_STEP_INPUTS_MAX_BYTES).toBe(262_144);
+    expect(AGENT_STEP_INSTRUCTIONS_MAX_BYTES).toBe(65_536);
+  });
+
+  it("refuses inputs and instructions one byte over their bounds", () => {
+    const step = { kind: "agent", agentId: "ticket-triage", version: 1, stepId: "triage", workspace: "none" };
+    expect(AgentStepPayloadSchema.safeParse({ ...step, instructions: "i", inputs: "a".repeat(262_144) }).success).toBe(true);
+    expect(AgentStepPayloadSchema.safeParse({ ...step, instructions: "i", inputs: "a".repeat(262_145) }).success).toBe(false);
+    expect(AgentStepPayloadSchema.safeParse({ ...step, instructions: "a".repeat(65_536), inputs: "i" }).success).toBe(true);
+    expect(AgentStepPayloadSchema.safeParse({ ...step, instructions: "a".repeat(65_537), inputs: "i" }).success).toBe(false);
+  });
+
+  for (const [name, fill] of [["ASCII", "a"], ["three-byte characters", "€"]] as const) {
+    it(`keeps a worst-case invocation (${name}) under the outbox item and the worker body limit`, () => {
+      const fit = (limit: number) => fill.repeat(Math.floor(limit / bytes(fill)));
+      const agentStep = {
+        kind: "agent", agentId: `agt_${"b".repeat(20)}`, version: 999_999, stepId: "a".repeat(24), workspace: "read", timeoutMs: 14_400_000,
+        instructions: fit(AGENT_STEP_INSTRUCTIONS_MAX_BYTES), inputs: fit(AGENT_STEP_INPUTS_MAX_BYTES),
+        skills: Array.from({ length: 20 }, (_, index) => ({ skillId: `skl_${String(index).padStart(20, "0")}`, digest: "d".repeat(64) })),
+        resultContract: { branches: Array.from({ length: 8 }, (_, index) => ({ id: `branch_${index}`, description: "d".repeat(200) })) },
+      };
+      const invocation = {
+        protocolVersion: 1, kind: "task", operationId: "11111111-1111-4111-8111-111111111111", workspaceId: "22222222-2222-4222-8222-222222222222",
+        fence: 1, projectRevision: 1, callbackCapability: "c".repeat(8192),
+        payload: { conversationId: "33333333-3333-4333-8333-333333333333", prompt: "p".repeat(1024), agentStep, modelRoute: { alias: "a".repeat(512), api: "openai-responses", catalog: "c".repeat(256) } },
+      };
+      expect(WorkerInvocationSchema.safeParse(invocation).success).toBe(true);
+      const size = bytes(JSON.stringify(invocation));
+      expect(size).toBeLessThan(DYNAMODB_ITEM_LIMIT_BYTES);
+      expect(size).toBeLessThan(WORKER_BODY_LIMIT_BYTES);
+    });
+  }
 });
 
 describe("ModelRouteSchema", () => {

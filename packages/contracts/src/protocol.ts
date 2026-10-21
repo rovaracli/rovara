@@ -90,8 +90,14 @@ const utf8Encoder = new TextEncoder();
 /** Text of at most `max` UTF-8 bytes (`.max` would count UTF-16 units instead). */
 const textUpTo = (max: number) => z.string().refine((value) => utf8Encoder.encode(value).byteLength <= max, `must be at most ${max} UTF-8 bytes`);
 
-/** The most bytes of rendered run input and earlier reports one agent step is given. */
-export const AGENT_STEP_INPUTS_MAX_BYTES = 1_048_576;
+/**
+ * The most bytes of rendered run input and earlier reports one agent step is given, and of its instructions. An
+ * invocation is stored inline in the DynamoDB outbox item (400 KB, `OutboxRecordBase.invocation` in broker/aws/lambda.ts)
+ * and the worker refuses a body over 1 MiB, so both together stay well under the item limit. Task 22 shortens reports
+ * (and the run input's context) to fit; it never relies on a larger payload.
+ */
+export const AGENT_STEP_INPUTS_MAX_BYTES = 262_144;
+export const AGENT_STEP_INSTRUCTIONS_MAX_BYTES = 65_536;
 /** The longest a step may run: the check step's 240 minutes. */
 export const AGENT_STEP_TIMEOUT_MAX_MS = 240 * 60_000;
 
@@ -118,7 +124,7 @@ export const AgentStepPayloadSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("agent"),
     ...AgentStepBase,
-    instructions: textUpTo(DEVELOPER_INSTRUCTIONS_MAX_BYTES),
+    instructions: textUpTo(AGENT_STEP_INSTRUCTIONS_MAX_BYTES),
     workspace: z.enum(["none", "read"]),
     inputs: textUpTo(AGENT_STEP_INPUTS_MAX_BYTES).pipe(z.string().min(1)),
     timeoutMs: AgentStepTimeoutSchema.optional(),

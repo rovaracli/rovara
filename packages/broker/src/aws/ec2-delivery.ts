@@ -192,7 +192,8 @@ async function forWorker(
   const carriesPullRequestUpdate = invocation.kind === "maintain" && invocation.payload.workflowCandidateTreeSha !== undefined;
   const carriesChatGpt = invocation.kind === "task" && invocation.payload.chatgpt !== undefined;
   const carriesProjectSetupSmoke = invocation.kind === "project-setup-smoke";
-  const carriesAgentStep = invocation.kind === "task" && invocation.payload.agentStep !== undefined;
+  const agentStep = invocation.kind === "task" ? invocation.payload.agentStep : undefined;
+  const carriesAgentStep = agentStep !== undefined;
   const carriesModelRoute = invocation.kind === "task" && invocation.payload.modelRoute !== undefined;
   if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute) return invocation;
   let features: readonly string[] = [];
@@ -223,8 +224,7 @@ async function forWorker(
   }
   // An agent step changes what the operation is allowed to do and a model route changes where its model comes from,
   // so neither is ever dropped; the agent kind (a step with no coding workflow) also needs task.agentRun.
-  if (invocation.kind === "task" && invocation.payload.agentStep !== undefined
-    && !(features.includes(AGENT_STEP_FEATURE) && (invocation.payload.agentStep.kind !== "agent" || features.includes(AGENT_RUN_FEATURE)))) {
+  if (agentStep !== undefined && !(features.includes(AGENT_STEP_FEATURE) && (agentStep.kind !== "agent" || features.includes(AGENT_RUN_FEATURE)))) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   if (carriesModelRoute && !features.includes(MODEL_ROUTE_FEATURE)) {
