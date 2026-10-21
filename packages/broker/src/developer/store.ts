@@ -16,7 +16,11 @@ import { ownerKeyForSubject } from "../aws/lambda.js";
 import { pkceChallengeMatches, randomToken, sha256Hex } from "./tokens.js";
 
 export interface AuthRequestRecord { id: string; clientRedirectUri: string; clientState: string; codeChallenge: string; nonce: string; method?: DeveloperSignInMethod; consumedAt?: string; expiresAt: number; browserReturnTo?: string; inviteToken?: string }
-export interface DeveloperRecord { developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string; displayName: string; email?: string; slackUserId?: string; firstSignInAt: string; lastSignInAt: string; revoked: boolean; sessionsEndedAt?: string }
+export interface DeveloperRecord { developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string; displayName: string; email?: string; slackUserId?: string; firstSignInAt: string; lastSignInAt: string; revoked: boolean; sessionsEndedAt?: string;
+  /** Plan 2, Task 3: the developer this one was merged into (a duplicate member of the same person); its sign-in identity is linked there. */
+  mergedInto?: string; mergedAt?: string }
+/** One item of a TransactWriteItems request, for a transaction that also writes another table. */
+export type SignInTransactItem = NonNullable<ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]>[number];
 /**
  * One sign-in identity's link to a developer (Plan 2, Task 2). `identityKey` is `ownerKeyForSubject(issuer, subject)`. The forward item
  * (`SIGNIN_IDENTITY#<identityKey>`) answers "which developer is this sign-in"; the reverse item (`DEVELOPER#<developerId>` /
@@ -272,6 +276,30 @@ export class DeveloperSignInStore {
     if (isActiveLink(current, identityKey)) return { developerId: current.developerId, created: false };
     if (own) return undefined;
     throw agentXError("AUTH_REQUIRED", "this sign-in was unlinked from that account and can only start its own; run agentx login again");
+  }
+
+  /**
+   * The sign-in table's items for merging a duplicate developer into `survivorId` (Plan 2, Task 3), for a caller whose one transaction also
+   * writes the State table: the duplicate's identity is linked to the survivor, and the duplicate's record says where it went and when.
+   * The link is written only if the identity has none; the record is marked only if it exists and was not merged before.
+   */
+  mergeItems(input: { duplicate: DeveloperRecord; duplicateIdentityKey: string; survivorId: string; at: string; email?: string; login?: string }): SignInTransactItem[] {
+    const { duplicate, duplicateIdentityKey: identityKey, survivorId, at } = input;
+    const email = input.email ?? duplicate.email;
+    const body = {
+      entityType: "IDENTITY_LINK", developerId: survivorId, provider: duplicate.provider, issuer: duplicate.issuer, subject: duplicate.subject,
+      ...(email === undefined ? {} : { email }),
+      ...(input.login === undefined ? {} : { login: input.login }),
+      linkedAt: at, lastSignInAt: at,
+    };
+    return [
+      { Put: { TableName: this.input.tableName, Item: { ...signInIdentityKey(identityKey), ...body }, ConditionExpression: "attribute_not_exists(pk)" } },
+      { Put: { TableName: this.input.tableName, Item: { ...developerIdentityKey(survivorId, identityKey), ...body } } },
+      { Update: {
+        TableName: this.input.tableName, Key: { pk: `DEVELOPER#${duplicate.developerId}`, sk: META }, UpdateExpression: "SET mergedInto = :survivor, mergedAt = :at",
+        ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(mergedInto)", ExpressionAttributeValues: { ":survivor": survivorId, ":at": at },
+      } },
+    ];
   }
 
   /** The identities linked to a developer, oldest link first. Issuer and subject never leave the store. */
