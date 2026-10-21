@@ -300,7 +300,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   async function joinJson(query: URLSearchParams): Promise<HttpResult> {
     const token = inviteTokenIn(query);
     const invite = token === undefined ? undefined : await deps.orgs.describeInvite(token);
-    const answer = (statusCode: number, body: unknown): HttpResult => ({ ...jsonResult(statusCode, body), headers: { ...JSON_HEADERS, vary: "accept", "referrer-policy": "no-referrer" } });
+    const answer = (statusCode: number, body: unknown): HttpResult => ({ ...jsonResult(statusCode, body), headers: { ...JSON_HEADERS, vary: "accept", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff" } });
     if (invite === undefined) return answer(404, { state: "unknown" });
     if (invite.state === "expired" || invite.state === "used") return answer(410, { state: invite.state });
     return answer(200, { orgName: invite.orgName, role: invite.role, state: "open" });

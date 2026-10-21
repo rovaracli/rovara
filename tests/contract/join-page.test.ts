@@ -159,6 +159,7 @@ describe("GET /v1/auth/join as JSON (agentx login --invite)", () => {
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.headers["referrer-policy"]).toBe("no-referrer");
     expect(response.headers.vary).toBe("accept");
+    expect(response.headers["x-content-type-options"]).toBe("nosniff");
     for (const secret of [token, "priya", "Maya", "acme.dev", OWNER]) expect(response.body).not.toContain(secret);
   });
 

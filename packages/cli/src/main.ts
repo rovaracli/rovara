@@ -46,7 +46,7 @@ import { resolveDeveloperEnvironment } from "./developer/config.js";
 import { orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
 import { LOOPBACK_HOSTS, developerLogin } from "./developer/login.js";
-import { INVITE_QUESTION, askYesByDefault, fetchCurrentOrg, fetchInviteSummary, inviteConfirmationLine, inviteOutcomeText, parseInviteLink, resolveInviteCell } from "./developer/invite-link.js";
+import { INVITE_QUESTION, INVITE_QUESTION_NO_BROWSER, askYesByDefault, fetchCurrentOrg, fetchInviteSummary, inviteConfirmationLine, inviteOutcomeText, parseInviteLink, resolveInviteCell } from "./developer/invite-link.js";
 import { fetchDeveloperWorkspaces, type DeveloperWorkspacesResult } from "./developer/workspaces.js";
 import { runWorkspacesCommand } from "./workspaces-ui/index.js";
 import { listAdminWorkspaces } from "./admin/workspaces.js";
@@ -337,7 +337,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         const cell = base.origin + base.pathname.replace(/\/+$/, "");
         const summary = await fetchInviteSummary(cell, invite, services.fetchImplementation);
         services.stderr.write(`${inviteConfirmationLine(summary, cell)}\n`);
-        if (!options.yes && !await inviteConfirmer()(INVITE_QUESTION)) throw agentXError("CONFIRMATION_DECLINED", "you chose not to join; nothing changed");
+        if (!options.yes && !await inviteConfirmer()(options.browser ? INVITE_QUESTION : INVITE_QUESTION_NO_BROWSER)) throw agentXError("CONFIRMATION_DECLINED", "you chose not to join; nothing changed");
         url = cell;
       }
       if (url !== undefined) {
@@ -353,18 +353,18 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
           ...(invite === undefined ? {} : { invite }),
           ...(command.getOptionValueSource("callbackPort") === "cli" ? { callbackPort: options.callbackPort } : {}),
         });
-        // What happened to the invite: joined, or the exact words for why not. The sign-in itself succeeded either way.
-        let inviteResult: { outcome: string; message: string } | undefined;
-        if (invite !== undefined) {
-          const outcome = result.inviteError ?? "joined";
-          const org = outcome === "INVITE_WRONG_EMAIL" || outcome === "INVITE_INVALID" ? undefined : await fetchCurrentOrg(developerSession(), result.env);
-          inviteResult = { outcome, message: inviteOutcomeText(outcome, org) };
+        // What happened to the invite. The sign-in itself succeeded and its session is kept, but a join that did not happen is a failure:
+        // the exact words for why go out as the error (exit 1, and ok: false with the code under --json).
+        if (invite !== undefined && result.inviteError !== undefined) {
+          const org = result.inviteError === "ALREADY_IN_ORG" ? await fetchCurrentOrg(developerSession(), result.env) : undefined;
+          throw agentXError(result.inviteError, inviteOutcomeText(result.inviteError, org));
         }
+        const joined = invite === undefined ? undefined : { outcome: "joined", message: inviteOutcomeText("joined", await fetchCurrentOrg(developerSession(), result.env)) };
         const projects = await fetchDeveloperProjects(developerSession(), result.env);
         if (globals.json) {
-          services.stdout.write(formatSuccess({ env: projects.env, url: projects.url, ...projects.projects, ...(inviteResult === undefined ? {} : { invite: inviteResult }) }, true));
+          services.stdout.write(formatSuccess({ env: projects.env, url: projects.url, ...projects.projects, ...(joined === undefined ? {} : { invite: joined }) }, true));
         } else {
-          if (inviteResult !== undefined) services.stdout.write(`${inviteResult.message}\n`);
+          if (joined !== undefined) services.stdout.write(`${joined.message}\n`);
           services.stdout.write(whoamiText({ ...projects, identities: await fetchLinkedIdentities(developerSession(), result.env) }));
         }
         return;

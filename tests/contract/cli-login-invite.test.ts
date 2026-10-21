@@ -1,11 +1,13 @@
 // Plan 2, Task 6: `agentx login --invite <link>`. Reading the three kinds of invite link, finding the cell, the question asked before a
 // browser opens (ruling R19), the invite riding the authorize URL, and the exact words for every way the invite can end.
+import { Readable } from "node:stream";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { INVITE_WRONG_EMAIL_MESSAGE } from "@agentx/contracts";
 import { ROVARA_DIRECTORY_ORIGIN, inviteOutcomeText, parseInviteLink, resolveInviteCell } from "../../packages/cli/src/developer/invite-link.js";
+import { readDeveloperConfig } from "../../packages/cli/src/developer/config.js";
 import { developerLogin } from "../../packages/cli/src/developer/login.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";
@@ -97,6 +99,10 @@ describe("inviteOutcomeText", () => {
     expect(inviteOutcomeText("INVITE_WRONG_EMAIL")).toBe(INVITE_WRONG_EMAIL_MESSAGE);
     expect(inviteOutcomeText("INVITE_INVALID")).toBe("That invite can no longer be used; ask for a new one.");
   });
+  it("names no organization it could not read, and says so in a sentence that still reads", () => {
+    expect(inviteOutcomeText("ALREADY_IN_ORG")).toBe("You're already in another Rovara organization. For now, a person can belong to one Rovara organization: sign in with a different email address, or ask an owner of that organization to remove you. If it is a team you made by mistake and no one else is in it, run agentx org leave and try the invite again.");
+    expect(inviteOutcomeText("joined")).toBe("You joined the organization.");
+  });
   it("strips terminal escapes from names the server sent", () => {
     expect(inviteOutcomeText("joined", { name: "Ac\u001b[2Jme", role: "member" })).toBe("You joined Ac[2Jme as member.");
   });
@@ -116,7 +122,7 @@ interface World {
   cell?: string;
 }
 
-async function world(options: World = {}, confirm: (question: string) => Promise<boolean> = async () => true) {
+async function world(options: World = {}, confirm: (question: string) => Promise<boolean> = async () => true, ask: { noConfirm?: boolean } = {}) {
   const home = await mkdtemp(join(tmpdir(), "rovara-login-invite-"));
   dirs.push(home);
   const cell = options.cell ?? CELL;
@@ -157,10 +163,10 @@ async function world(options: World = {}, confirm: (question: string) => Promise
   const run = (argv: string[]) => executeCli(argv, {
     fetchImplementation, tokenStore: new InMemoryTokenStore(), environments: { home },
     stdout: { write: (text: string) => { events.push("out"); out.push(text); } }, stderr: { write: (text: string) => { events.push(`err:${text.trim()}`); err.push(text); } },
-    confirm: async (question) => { questions.push(question); events.push("question"); return confirm(question); },
+    ...(ask.noConfirm === true ? { stdin: Readable.from([]) } : { confirm: async (question: string) => { questions.push(question); events.push("question"); return confirm(question); } }),
     login: { openBrowser },
   });
-  return { run, out, err, events, requests, authorizeUrls, questions, openBrowser, fetchImplementation };
+  return { home, run, out, err, events, requests, authorizeUrls, questions, openBrowser, fetchImplementation };
 }
 
 const rovaraLink = `https://rovara.dev/join#invite=${TOKEN}`;
@@ -263,18 +269,50 @@ describe("agentx login --invite", () => {
     expect(w.err.join("")).toContain("This invite is for Ac[2Jme (as admin) on");
   });
 
-  it("prints the exact line for each inviteError the sign-in comes back with", async () => {
-    const lines: Record<string, string> = {
-      ALREADY_IN_ORG: "You're already in Bea's team. For now, a person can belong to one Rovara organization: sign in with a different email address, or ask an owner of Bea's team to remove you. If Bea's team is a team you made by mistake and no one else is in it, run agentx org leave and try the invite again.",
-      INVITE_WRONG_EMAIL: INVITE_WRONG_EMAIL_MESSAGE,
-      INVITE_INVALID: "That invite can no longer be used; ask for a new one.",
-    };
-    for (const [inviteError, line] of Object.entries(lines)) {
-      const w = await world({ callback: { inviteError }, org: { name: "Bea's team", role: "owner" } });
-      expect(await w.run(["login", "--invite", rovaraLink, "--yes"])).toBe(0);
-      expect(w.out.join("")).toContain(`${line}\n`);
-      expect(w.out.join("")).not.toContain("You joined");
-    }
+  const outcomes: Array<[string, string]> = [
+    ["ALREADY_IN_ORG", "You're already in Bea's team. For now, a person can belong to one Rovara organization: sign in with a different email address, or ask an owner of Bea's team to remove you. If Bea's team is a team you made by mistake and no one else is in it, run agentx org leave and try the invite again."],
+    ["INVITE_WRONG_EMAIL", INVITE_WRONG_EMAIL_MESSAGE],
+    ["INVITE_INVALID", "That invite can no longer be used; ask for a new one."],
+  ];
+
+  it.each(outcomes)("%s: prints the exact line once, exits 1, and keeps the session that was issued", async (inviteError, line) => {
+    const w = await world({ callback: { inviteError }, org: { name: "Bea's team", role: "owner" } });
+    expect(await w.run(["login", "--invite", rovaraLink, "--yes"])).toBe(1);
+    expect(w.err.join("").split(line)).toHaveLength(2);
+    expect(w.err.join("")).toContain(`AgentX error [${inviteError}]: ${line}\n`);
+    expect(w.out.join("")).not.toContain("You joined");
+    expect(w.out.join("")).toBe("");
+    // The sign-in itself worked: its token was exchanged and the environment saved.
+    expect(w.requests.some((request) => request.url === `${ISSUER}/token`)).toBe(true);
+    expect(await readDeveloperConfig(w.home)).toMatchObject({ environments: { staging: { url: CELL } } });
+  });
+
+  it.each(outcomes)("%s: --json reports ok: false with the code and the line", async (inviteError, line) => {
+    const w = await world({ callback: { inviteError }, org: { name: "Bea's team", role: "owner" } });
+    expect(await w.run(["--json", "login", "--invite", rovaraLink, "--yes"])).toBe(1);
+    expect(JSON.parse(w.err.join("").trim().split("\n").at(-1) ?? "")).toEqual({ ok: false, error: { code: inviteError, message: line } });
+    expect(w.out.join("")).toBe("");
+  });
+
+  it("ALREADY_IN_ORG names no organization when the current one cannot be read", async () => {
+    const w = await world({ callback: { inviteError: "ALREADY_IN_ORG" }, org: "fails" });
+    expect(await w.run(["login", "--invite", rovaraLink, "--yes"])).toBe(1);
+    expect(w.err.join("")).toContain("You're already in another Rovara organization.");
+  });
+
+  it("asks for a terminal, and opens nothing, when there is none and no --yes", async () => {
+    const w = await world({}, undefined, { noConfirm: true });
+    expect(await w.run(["login", "--invite", rovaraLink])).not.toBe(0);
+    expect(w.err.join("")).toContain("[CONFIRMATION_UNAVAILABLE]");
+    expect(w.openBrowser).not.toHaveBeenCalled();
+    expect(w.requests.some((request) => request.url.endsWith("/token") || request.url.includes("agentx-configuration"))).toBe(false);
+    expect(await w.run(["login", "--invite", rovaraLink, "--yes"])).toBe(0);
+  });
+
+  it("with --no-browser the question does not promise a browser", async () => {
+    const w = await world({}, async () => false);
+    expect(await w.run(["login", "--invite", rovaraLink, "--no-browser"])).not.toBe(0);
+    expect(w.questions).toEqual(["Continue to join? (Y/n)"]);
   });
 
   it("ignores an inviteError it does not know", async () => {

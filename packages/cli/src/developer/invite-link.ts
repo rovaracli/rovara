@@ -104,6 +104,8 @@ export async function fetchInviteSummary(cellUrl: string, token: string, fetchIm
 export const inviteConfirmationLine = (summary: InviteSummary, cellUrl: string): string =>
   `This invite is for ${sanitizeServerText(summary.orgName)} (as ${summary.role}) on ${new URL(cellUrl).host}.`;
 export const INVITE_QUESTION = "Open the browser to join? (Y/n)";
+/** With --no-browser nothing opens, so the question does not say it will. */
+export const INVITE_QUESTION_NO_BROWSER = "Continue to join? (Y/n)";
 
 /** How a sign-in with an invite ended when the invite was not used (the sign-in itself still succeeded). */
 export const InviteOutcomeSchema = z.enum(["ALREADY_IN_ORG", "INVITE_INVALID", "INVITE_WRONG_EMAIL"]);
@@ -111,12 +113,14 @@ export type InviteOutcome = z.infer<typeof InviteOutcomeSchema>;
 
 /** What to tell the person once the browser step is over: the joined line, or the exact words for why the invite was not used. `org` is the organization they are in now. */
 export function inviteOutcomeText(outcome: "joined" | InviteOutcome, org?: { name: string; role: string }): string {
-  const name = org === undefined ? "your organization" : sanitizeServerText(org.name);
   switch (outcome) {
     case "joined":
-      return org === undefined ? "You joined the organization." : `You joined ${name} as ${sanitizeServerText(org.role)}.`;
-    case "ALREADY_IN_ORG":
+      return org === undefined ? "You joined the organization." : `You joined ${sanitizeServerText(org.name)} as ${sanitizeServerText(org.role)}.`;
+    case "ALREADY_IN_ORG": {
+      if (org === undefined) return "You're already in another Rovara organization. For now, a person can belong to one Rovara organization: sign in with a different email address, or ask an owner of that organization to remove you. If it is a team you made by mistake and no one else is in it, run agentx org leave and try the invite again.";
+      const name = sanitizeServerText(org.name);
       return `You're already in ${name}. For now, a person can belong to one Rovara organization: sign in with a different email address, or ask an owner of ${name} to remove you. If ${name} is a team you made by mistake and no one else is in it, run agentx org leave and try the invite again.`;
+    }
     case "INVITE_WRONG_EMAIL":
       return INVITE_WRONG_EMAIL_MESSAGE;
     case "INVITE_INVALID":
