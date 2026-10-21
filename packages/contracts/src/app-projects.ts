@@ -6,11 +6,24 @@ import { isPublicSuffix } from "./public-suffix.js";
 export const ProjectRoleSchema = z.enum(["maintainer", "contributor", "viewer"]);
 export type ProjectRole = z.infer<typeof ProjectRoleSchema>;
 
-/** What a project role may do. A union (not an enum of the schema) so a later plan extends it with its own actions. */
-export type ProjectPermission = "view" | "start_tasks" | "edit_settings" | "manage_members" | "archive" | "setup_check";
+/**
+ * What a project role may do. A union (not an enum of the schema) so a later plan extends it with its own actions.
+ * Plan 3 Task 3b adds the agent actions: manage the project's agents, approve spend and writes, and see spend (maintainers only).
+ */
+export type ProjectPermission =
+  | "view"
+  | "start_tasks"
+  | "edit_settings"
+  | "manage_members"
+  | "archive"
+  | "setup_check"
+  | "manage_agents"
+  | "approve_spend"
+  | "approve_writes"
+  | "view_spend";
 
 export const PROJECT_PERMISSIONS: Record<ProjectRole, ReadonlyArray<ProjectPermission>> = {
-  maintainer: ["view", "start_tasks", "edit_settings", "manage_members", "archive", "setup_check"],
+  maintainer: ["view", "start_tasks", "edit_settings", "manage_members", "archive", "setup_check", "manage_agents", "approve_spend", "approve_writes", "view_spend"],
   contributor: ["view", "start_tasks"],
   viewer: ["view"],
 };

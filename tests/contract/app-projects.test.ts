@@ -59,8 +59,12 @@ describe("project roles and the contract schemas", () => {
   it("gives each role its permissions", () => {
     expect(PROJECT_PERMISSIONS.viewer).toEqual(["view"]);
     expect(PROJECT_PERMISSIONS.contributor).toEqual(["view", "start_tasks"]);
-    expect([...PROJECT_PERMISSIONS.maintainer].sort()).toEqual(["archive", "edit_settings", "manage_members", "setup_check", "start_tasks", "view"]);
-    const all: ProjectPermission[] = ["view", "start_tasks", "edit_settings", "manage_members", "archive", "setup_check"];
+    expect([...PROJECT_PERMISSIONS.maintainer].sort()).toEqual([
+      "approve_spend", "approve_writes", "archive", "edit_settings", "manage_agents", "manage_members", "setup_check", "start_tasks", "view", "view_spend",
+    ]);
+    const all: ProjectPermission[] = [
+      "view", "start_tasks", "edit_settings", "manage_members", "archive", "setup_check", "manage_agents", "approve_spend", "approve_writes", "view_spend",
+    ];
     for (const role of ["maintainer", "contributor", "viewer"] as ProjectRole[]) {
       for (const action of all) expect(projectAllows(role, action), `${role} ${action}`).toBe(PROJECT_PERMISSIONS[role].includes(action));
     }

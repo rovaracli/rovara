@@ -31,6 +31,7 @@ import {
   TriggerSpecSchema,
 } from "../../packages/contracts/src/agent-recipe.js";
 import { AgentXErrorCodeSchema, errorStatus } from "../../packages/contracts/src/errors.js";
+import { PROJECT_PERMISSIONS, projectAllows } from "../../packages/contracts/src/app-projects.js";
 import { canonicalModelName, modelCompany } from "../../packages/contracts/src/models.js";
 import { OrgIdSchema, orgScoped } from "../../packages/contracts/src/org.js";
 import {
@@ -247,6 +248,17 @@ describe("ResolvedRecipeSchema", () => {
     expect(ResolvedRecipeSchema.safeParse({ ...resolved, skills: Array.from({ length: 21 }, () => skill) }).success).toBe(false);
     expect(ResolvedRecipeSchema.safeParse({ ...resolved, skills: Array.from({ length: 20 }, () => skill) }).success).toBe(true);
     expect(ResolvedRecipeSchema.safeParse({ ...resolved, allowMentions: undefined }).success).toBe(false);
+  });
+});
+
+describe("project permissions for agents (Task 3b)", () => {
+  it("grants the agent permissions to maintainers only", () => {
+    for (const action of ["manage_agents", "approve_spend", "approve_writes", "view_spend"] as const) {
+      expect(projectAllows("maintainer", action), action).toBe(true);
+      expect(projectAllows("contributor", action), action).toBe(false);
+      expect(projectAllows("viewer", action), action).toBe(false);
+    }
+    expect(PROJECT_PERMISSIONS.contributor).not.toContain("approve_writes");
   });
 });
 
