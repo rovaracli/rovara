@@ -457,6 +457,15 @@ export interface AuditExportView {
 
 const metaKey = (orgId: string, exportId: string): { pk: string; sk: string } => ({ pk: orgScoped(orgId, `AUDIT_EXPORT#${exportId}`), sk: "META" });
 
+/** Whole sequence numbers from 1, `from` not after `to`, and at most AUDIT_EXPORT_MAX_RECORDS records: else AUDIT_RANGE_INVALID. */
+export function assertExportRange(fromSeq: unknown, toSeq: unknown): void {
+  const wholeNumber = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
+  if (!wholeNumber(fromSeq) || !wholeNumber(toSeq) || fromSeq < 1 || fromSeq > toSeq || toSeq - fromSeq + 1 > AUDIT_EXPORT_MAX_RECORDS) throw rangeInvalid();
+}
+
+/** Whether `value` has the shape of an export id (`aex_` and 32 hex): anything else names no export. */
+export const isAuditExportId = (value: string): boolean => EXPORT_ID.test(value);
+
 export function auditExportId(orgId: string, requestId: string): string {
   return `aex_${createHash("sha256").update(`rovara-audit-export-v1\n${orgId}\n${requestId}`).digest("hex").slice(0, 32)}`;
 }
@@ -498,8 +507,7 @@ export async function getAuditExport(deps: AuditExportBase, orgId: string, expor
 export async function startAuditExport(deps: AuditExportClientDeps, requester: AuditExportRequester, request: AuditExportRequest): Promise<{ exportId: string; status: AuditExportStatus }> {
   const orgId = checkedOrgId(requester.orgId);
   const { fromSeq, toSeq } = request;
-  const wholeNumber = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
-  if (!wholeNumber(fromSeq) || !wholeNumber(toSeq) || fromSeq < 1 || fromSeq > toSeq || toSeq - fromSeq + 1 > AUDIT_EXPORT_MAX_RECORDS) throw rangeInvalid();
+  assertExportRange(fromSeq, toSeq);
   if (typeof request.requestId !== "string" || request.requestId === "" || request.requestId.length > 200) throw agentXError("CONFIG_INVALID", "Give each export request an id of 1 to 200 characters.");
   const exportId = auditExportId(orgId, request.requestId);
   const now = new Date(deps.now()).toISOString();

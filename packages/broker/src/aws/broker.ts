@@ -244,6 +244,7 @@ import { healthProbes } from "./health-probes.js";
 import { runAuditDrain } from "../audit/drain.js";
 import type { AuditExportClientDeps } from "../audit/export.js";
 import { exportInvoker, exportLinkSigner } from "../audit/export-wiring.js";
+import { routeAuditAdminRequest } from "../audit/admin-routes.js";
 import { AuditKeyring } from "../audit/keyring.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
@@ -1293,6 +1294,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
           registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : url => dependencies.githubPullRequests.getRepositoryIdentity!(url),
           createProject: (caller, input, org) => createCloudProject(dependencies, caller, input, org),
+          ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
           refreshTaskFeedback: taskId => refreshTaskFeedbackForOwnerDecision(dependencies, taskId) }, request, url);
         return answer instanceof StatusReply ? json(answer.body, request.requestId, answer.statusCode) : json(answer, request.requestId);
       }
@@ -1320,6 +1322,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Spec 025 phase 25d: the admin read routes (FR-038), each behind the admin claim (A2).
       const adminRead = await routeAdminRead(adminReads, identity, request, url);
       if (adminRead !== undefined) return json(adminRead, request.requestId);
+      // Task 12: Rovara staff reading an org's audit log. Fail-closed: the staff read is recorded before anything is read.
+      const staffAudit = await routeAuditAdminRequest(
+        { ledger: dependencies.auditLedger, orgExists: async (orgId) => (await orgStoreOf(dependencies).getOrg(orgId)) !== undefined },
+        identity, { method: request.method, body, requestId: request.requestId }, url);
+      if (staffAudit !== undefined) return json(staffAudit.body, request.requestId, staffAudit.status);
 
       if (request.method === "POST" && url.pathname === "/v1/admin/runtime-installation/challenges") {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");

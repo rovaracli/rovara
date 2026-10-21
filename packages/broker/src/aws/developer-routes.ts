@@ -63,6 +63,8 @@ import { parseCreateProjectBody, requireAllowedGithubOwner, type CreateProjectIn
 import { changeBudgets, ensureSynced, memberLimitOf, type BudgetDependencies, type OrgBudgetSettings } from "../org/budget.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import type { OrgStore } from "../org/store.js";
+import type { AuditExportClientDeps } from "../audit/export.js";
+import { isAuditOrgPath, routeAuditRequest } from "../audit/routes.js";
 import { checkTaskPersonIdentity, registerTaskChannelPeople, resolveTaskPickerPersonWithId, type ProjectAccessSubject, type TaskPersonIdentityDependencies } from "../developer/task-person-identity.js";
 import { taskPeopleDisplayAdmission, type TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
 import { META, endedByAdmin, methodSince, startedBeforeMethodOn, type DeveloperRecord, type SessionRecord } from "../developer/store.js";
@@ -141,6 +143,8 @@ export interface DeveloperRouteDependencies {
    * already checked the install, the caller's role and the repository's owner against the org's allowed GitHub owner.
    */
   createProject?: (caller: DeveloperCaller, input: CreateProjectInput, org: Pick<OrgRecord, "githubOwner">) => Promise<{ duplicate: boolean }>;
+  /** The Audit Ledger's reader and export client (Task 12). Absent on an install with no ledger: the audit routes then answer NOT_FOUND. */
+  auditLedger?: AuditExportClientDeps;
 }
 
 /** A route's answer with a status other than 200; the broker's handler writes the status and the body. */
@@ -929,6 +933,12 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   if (url.pathname === CHATGPT_CONNECTION_PATH || url.pathname === `${CHATGPT_CONNECTION_PATH}/finish`) {
     return routeChatGptConnection(deps, caller, request, url);
+  }
+  // The audit log: the org is the session's, and owners and admins only (the route checks the role before it says anything else).
+  if (isAuditOrgPath(url.pathname)) {
+    const reply = await routeAuditRequest(deps.auditLedger, { developerId: caller.developerId, orgId: caller.orgId, orgRole: caller.orgRole },
+      { method: request.method, body: request.method === "POST" ? jsonBody(request) : {}, requestId: request.requestId }, url);
+    return reply.status === 200 ? reply.body : new StatusReply(reply.status, reply.body);
   }
   throw agentXError("NOT_FOUND", "route not found");
 }
