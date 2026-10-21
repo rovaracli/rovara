@@ -1,18 +1,19 @@
 // Plan 3 Task 10: which agents work on a project (the roster), and how the agent a run uses is chosen and checked. The routes go through
 // the broker's handler; `resolveAgentForTask` and `resolveAgentForAutonomousRun` are called with the same dependencies the routes use.
 import { randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import type { ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import type { AgentCaller } from "../../packages/broker/src/agents/access.js";
 import { writeGuardrails } from "../../packages/broker/src/agents/guardrails.js";
-import { resolveAgentForAutonomousRun, resolveAgentForTask } from "../../packages/broker/src/agents/roster.js";
+import { requireRecipeAllowed, resolveAgentForAutonomousRun, resolveAgentForTask } from "../../packages/broker/src/agents/roster.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
+import { agentXError } from "@agentx/contracts";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import type { AgentId } from "../../packages/contracts/src/agent.js";
 import { DEFAULT_AGENT_GUARDRAILS, type AgentGuardrails } from "../../packages/contracts/src/agent-guardrails.js";
 import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
-import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
+import { recipeDigest, type RecipeOverlay, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe.js";
 import type { ModelIdentifier } from "../../packages/contracts/src/models.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { agentRequestKey, orgProjectCatalogKey, projectAgentKey, projectMetaKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -47,9 +48,12 @@ const callerOf = (who: Developer, orgRole: OrgRole = "member"): AgentCaller => (
 /** The refusal a promise ends in: its code and its message without the `CODE: ` prefix the error class adds. */
 const refusal = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
 
-async function setup() {
+async function setup(options: { builtins?: ConstructorParameters<typeof AgentStore>[0]["builtins"] } = {}) {
   const members = new FakeProjectMembers();
-  const h = await createDeveloperTaskBroker({ orgResolver, register: false, brokerExtra: { agents: { projectMembers: members } } });
+  const h = await createDeveloperTaskBroker({
+    orgResolver, register: false,
+    brokerExtra: { agents: { projectMembers: members, ...(options.builtins === undefined ? {} : { builtins: options.builtins }) } },
+  });
   const enroll = async (who: Developer, role: OrgRole) => {
     h.db.set({ pk: `SESSION#${who.sessionId}`, sk: "META", sessionId: who.sessionId, developerId: who.developerId, amr: who.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
     h.db.set({ pk: `DEVELOPER#${who.developerId}`, sk: "META", developerId: who.developerId, provider: who.provider, displayName: who.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
@@ -66,7 +70,7 @@ async function setup() {
   }
   // `old` is archived: it refuses new work and any change of who works on it.
   h.db.set({ ...projectMetaKey(TEST_ORG, "old"), entityType: "PROJECT_META", name: "old", status: "archived", createdAt: "2026-01-01T00:00:00.000Z", createdBy: DANA.developerId, archivedAt: "2026-02-01T00:00:00.000Z", archivedBy: DANA.developerId });
-  const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now });
+  const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now, ...(options.builtins === undefined ? {} : { builtins: options.builtins }) });
   const deps: ApprovalDependencies = {
     store, projectMembers: members, documentClient: h.db, tableName: "state", now: Date.now, confirmOrigin: "https://cell.example.com",
     signInStore: new DeveloperSignInStore({ documentClient: h.db, tableName: "signin", now: Date.now }),
@@ -538,5 +542,127 @@ describe("resolveAgentForAutonomousRun", () => {
     const before = members.calls.length;
     await resolveAgentForAutonomousRun(deps, { orgId: TEST_ORG, project: "web", agentId });
     expect(members.calls.slice(before)).toEqual([]);
+  });
+});
+
+// ---- fix round 1
+
+/** ticket-triage with a second release that adds a read_write grant: what an admin has to adopt before anyone runs it. */
+function twoReleases() {
+  const shipped = BUILTIN_AGENTS["ticket-triage"].versions[0]!.recipe;
+  const widened: ResolvedRecipe = { ...structuredClone(shipped), tools: [...structuredClone(shipped.tools), { connector: { name: "docs" }, access: "read_write" }] };
+  const state = { latest: 1 };
+  return {
+    state,
+    source: {
+      currentVersion: (id: string) => (id === "ticket-triage" ? state.latest : 1),
+      recipe: (id: string, version: number) => {
+        const found = id === "ticket-triage" ? [undefined, shipped, widened][version] : BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].versions[version - 1]?.recipe;
+        if (found === undefined) throw agentXError("NOT_FOUND", `${id} has no version ${String(version)}`);
+        return structuredClone(found);
+      },
+      name: (id: string) => BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].name,
+    },
+  };
+}
+
+describe("a built-in runs only at a version the company has adopted", () => {
+  const unadopted = (name: string, version: number) => ({
+    code: "FORBIDDEN", message: `${name} version ${String(version)} hasn't been adopted by your company yet. An org admin can adopt it first.`,
+  });
+
+  it("refuses a release above the company's pin for a person and for an autonomous run, and allows the pin and anything below it", async () => {
+    const { source, state } = twoReleases();
+    const { deps, store } = await setup({ builtins: source });
+    // The company is pinned to release 1 before release 2 ships.
+    await store.ensureBuiltinSettings(TEST_ORG, "ticket-triage");
+    state.latest = 2;
+    const name = BUILTIN_AGENTS["ticket-triage"].name;
+    expect(await refusal(resolveAgentForTask(deps, callerOf(CARL), { project: "web", agent: { agentId: "ticket-triage", version: 2 } }))).toEqual(unadopted(name, 2));
+    expect(await refusal(resolveAgentForAutonomousRun(deps, { orgId: TEST_ORG, project: "web", agentId: "ticket-triage", version: 2 }))).toEqual(unadopted(name, 2));
+    // A release that does not exist is still not found.
+    expect((await refusal(resolveAgentForTask(deps, callerOf(CARL), { project: "web", agent: { agentId: "ticket-triage", version: 9 } })))?.code).toBe("NOT_FOUND");
+    expect((await resolveAgentForTask(deps, callerOf(CARL), { project: "web", agent: { agentId: "ticket-triage", version: 1 } })).ref.version).toBe(1);
+    expect((await resolveAgentForTask(deps, callerOf(CARL), { project: "web", agent: { agentId: "ticket-triage" } })).ref.version).toBe(1);
+
+    await store.adoptBuiltinVersion({ orgId: TEST_ORG, agentId: "ticket-triage", version: 2, expectedPinnedVersion: 1, by: DANA.developerId });
+    expect((await resolveAgentForTask(deps, callerOf(CARL), { project: "web", agent: { agentId: "ticket-triage", version: 2 } })).ref.version).toBe(2);
+    expect((await resolveAgentForAutonomousRun(deps, { orgId: TEST_ORG, project: "web", agentId: "ticket-triage", version: 1 })).ref.version).toBe(1);
+  });
+});
+
+describe("the roster list shows only what the caller can see", () => {
+  it("leaves out an agent shared with someone else, with no placeholder, and shows it to those who can see it", async () => {
+    const { create, call, addToRoster, rosterOf } = await setup();
+    const hidden = await create(CARL, SAFE, "Private to Carl and Max");
+    await call(CARL, "PUT", `/v1/app/agents/${hidden}/shares`, { shares: [{ principal: { kind: "member", developerId: MAX.developerId }, level: "use" }] });
+    const added = await addToRoster(MAX, "web", hidden);
+    expect(added.status, JSON.stringify(added.body)).toBe(200);
+    for (const who of [MAX, CARL, DANA]) expect((await rosterOf(who)).some((entry) => entry.agentId === hidden), who.name).toBe(true);
+    const seen = await rosterOf(VIV);
+    expect(seen.some((entry) => entry.agentId === hidden)).toBe(false);
+    expect(JSON.stringify(seen)).not.toContain("Private to Carl and Max");
+    // Nothing tells Viv how many were left out.
+    expect(seen).toHaveLength(Object.keys(BUILTIN_AGENTS).length);
+  });
+});
+
+describe("a draft test run reads the draft once", () => {
+  it("uses one read of the draft for the revision it records and the recipe it resolves", async () => {
+    const { deps, store, create } = await setup();
+    const agentId = await create(CARL);
+    const read = vi.spyOn(store, "getDraft");
+    const resolved = await resolveAgentForTask(deps, callerOf(CARL), { project: "web", agent: { agentId, version: "draft" } });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(resolved.ref.draftRevision).toBe(1);
+  });
+});
+
+describe("an autonomous run needs the project to exist", () => {
+  it("refuses a project that is not in the company, for a built-in too", async () => {
+    const { deps } = await setup();
+    for (const agentId of ["rovara-code", "ticket-triage"] as const) {
+      expect((await refusal(resolveAgentForAutonomousRun(deps, { orgId: TEST_ORG, project: "gone", agentId })))?.code, agentId).toBe("PROJECT_NOT_FOUND");
+    }
+    expect((await refusal(resolveAgentForAutonomousRun(deps, { orgId: ORG_B, project: "web", agentId: "rovara-code" })))?.code).toBe("PROJECT_NOT_FOUND");
+  });
+});
+
+describe("a repeated roster request that changed nothing is still remembered", () => {
+  it("does not let a retried add put an agent back after someone else removed it", async () => {
+    const { sharedWithWeb, addToRoster, dev, db, rosterOf } = await setup();
+    const agentId = await sharedWithWeb();
+    await addToRoster(DANA, "web", agentId);
+    const body = { requestId: randomUUID() };
+    const first = await dev(MAX, "PUT", WEB_AGENT_PATH(agentId), body);
+    expect(first.status).toBe(200);
+    expect(db.get(agentRequestKey(TEST_ORG, MAX.developerId, body.requestId))).toBeDefined();
+    expect((await dev(DANA, "DELETE", WEB_AGENT_PATH(agentId), { requestId: randomUUID() })).status).toBe(200);
+    expect((await dev(MAX, "PUT", WEB_AGENT_PATH(agentId), body)).status).toBe(200);
+    expect((await rosterOf(MAX)).some((entry) => entry.agentId === agentId)).toBe(false);
+  });
+
+  it("does not let a retried removal take out an agent someone added since", async () => {
+    const { sharedWithWeb, addToRoster, dev, db, rosterOf } = await setup();
+    const agentId = await sharedWithWeb();
+    const body = { requestId: randomUUID() };
+    expect((await dev(MAX, "DELETE", WEB_AGENT_PATH(agentId), body)).body).toMatchObject({ removed: false });
+    expect(db.get(agentRequestKey(TEST_ORG, MAX.developerId, body.requestId))).toBeDefined();
+    await addToRoster(DANA, "web", agentId);
+    expect((await dev(MAX, "DELETE", WEB_AGENT_PATH(agentId), body)).body).toMatchObject({ removed: false });
+    expect((await rosterOf(MAX)).some((entry) => entry.agentId === agentId)).toBe(true);
+  });
+});
+
+describe("requireRecipeAllowed, for a check made again while a task runs", () => {
+  it("gives MODEL_NOT_ALLOWED for a forbidden model and CONFIG_INVALID for another problem, and passes a recipe that is allowed", async () => {
+    const { deps, setGuardrails } = await setup();
+    const recipe = await resolveAgent(deps.store, TEST_ORG, "rovara-code", "current");
+    await expect(requireRecipeAllowed(deps, TEST_ORG, "web", "Rovara Code", recipe)).resolves.toBeUndefined();
+    const withModel: ResolvedRecipe = { ...recipe, steps: [{ id: "work", name: "Work", kind: "agent", workspace: "none", settings: { instructions: [], model: OPUS } }] };
+    await setGuardrails({ forbiddenModels: [OPUS] });
+    expect(await refusal(requireRecipeAllowed(deps, TEST_ORG, "web", "Helper", withModel))).toEqual({
+      code: "MODEL_NOT_ALLOWED", message: "Helper's Work step uses anthropic/claude-opus-4-7, which isn't allowed on web. Ask the agent's owner to pick another model.",
+    });
   });
 });

@@ -9,7 +9,9 @@ import {
   BUILTIN_AGENTS,
   ROVARA_CODE_AGENT_ID,
   agentXError,
+  atLeast,
   isBuiltinAgentId,
+  orgProjectCatalogKey,
   projectAgentKey,
   projectAllows,
   recipeDigest,
@@ -25,7 +27,7 @@ import type { ApprovalDependencies } from "./approvals.js";
 import { resolveRecipe } from "./changes.js";
 import { requireAgentEnabled, validateRecipeForOrg } from "./guardrails.js";
 import { EXISTS, coded, commit, putNew, strip, type Item, type RequestMark, type TransactItem } from "./table-writes.js";
-import type { AgentRecord } from "./store.js";
+import type { AgentDraft, AgentRecord } from "./store.js";
 
 /** What the roster and the run-start checks need: the agent routes' dependencies, and optionally Plan 2's project access check. */
 export interface RosterDependencies extends ApprovalDependencies {
@@ -105,11 +107,15 @@ const rosterConflict = () => coded("AGENT_REVISION_CONFLICT", "Someone else chan
 
 /**
  * Puts the agent on the project's roster, in one transaction with the request's item (R18). An agent already there is left as it is, with
- * the person and time that put it there, and nothing is written. Who may, and that the agent exists, are the caller's checks (`checkRosterChange`).
+ * the person and time that put it there; only the request's item is written. Who may, and that the agent exists, are the caller's checks (`checkRosterChange`).
  */
 export async function addToRoster(deps: RosterDependencies, input: { orgId: OrgId; project: string; agentId: AgentId; by: string; request?: RequestMark }): Promise<RosterEntry> {
   const existing = await readEntry(deps, input.orgId, input.project, input.agentId);
-  if (existing !== undefined) return existing;
+  if (existing !== undefined) {
+    // Nothing to change, but the request is still remembered: a retry must not undo what someone did after it.
+    if (input.request !== undefined) await commit(deps, [], () => undefined, input.request, existing);
+    return existing;
+  }
   const entry: RosterEntry = { orgId: input.orgId, project: input.project, agentId: input.agentId, addedBy: input.by, addedAt: new Date(deps.now()).toISOString() };
   const { orgId: _orgId, project: _project, agentId: _agentId, ...fields } = entry; // eslint-disable-line @typescript-eslint/no-unused-vars -- the key carries them; the item repeats them for reading
   const item = putNew(deps, projectAgentKey(input.orgId, input.project, input.agentId), "PROJECT_AGENT", { orgId: input.orgId, project: input.project, agentId: input.agentId, ...fields });
@@ -117,9 +123,12 @@ export async function addToRoster(deps: RosterDependencies, input: { orgId: OrgI
   return entry;
 }
 
-/** Takes the agent off the project's roster, in one transaction with the request's item. False, and nothing written, when it was not on it. */
+/** Takes the agent off the project's roster, in one transaction with the request's item. False when it was not on it (only the request's item is written). */
 export async function removeFromRoster(deps: RosterDependencies, input: { orgId: OrgId; project: string; agentId: AgentId; request?: RequestMark }): Promise<boolean> {
-  if (await readEntry(deps, input.orgId, input.project, input.agentId) === undefined) return false;
+  if (await readEntry(deps, input.orgId, input.project, input.agentId) === undefined) {
+    if (input.request !== undefined) await commit(deps, [], () => undefined, input.request, { removed: false });
+    return false;
+  }
   const drop: TransactItem = { Delete: { TableName: deps.tableName, Key: projectAgentKey(input.orgId, input.project, input.agentId), ConditionExpression: EXISTS } };
   await commit(deps, [drop], () => rosterConflict(), input.request, { removed: true });
   return true;
@@ -149,16 +158,19 @@ export async function checkRosterChange(deps: RosterDependencies, caller: AgentC
   if (!("add" in change)) return undefined;
   const { agent } = await requireAgentAccess(deps, caller, agentId, "use");
   if (!("owner" in agent)) throw agentXError("NOT_FOUND", "no agent has that ID");
-  if (agent.status === "archived") throw agentXError("AGENT_UNAVAILABLE", `${agent.name} is archived, so it can't start new work.`);
+  requireNotArchived(agent);
   return agent;
 }
 
-/** One roster entry as the caller sees it, or undefined when the agent is gone. */
+/** One roster entry as the caller sees it, or undefined when the agent is gone or the caller cannot at least view it. */
 export async function rosterAgentView(deps: RosterDependencies, caller: AgentCaller, entry: RosterEntry): Promise<RosterAgentView | undefined> {
   const agent = await deps.store.get(caller.orgId, entry.agentId);
   if (agent === undefined) return undefined;
+  // An agent the caller cannot see is left out entirely: nothing of it, not even that it is there.
+  const access = await agentAccess(deps, caller, agent);
+  if (!atLeast(access, "view")) return undefined;
   return {
-    agentId: agent.agentId, name: agent.name, description: agent.description, builtin: false, status: agent.status, access: await agentAccess(deps, caller, agent),
+    agentId: agent.agentId, name: agent.name, description: agent.description, builtin: false, status: agent.status, access,
     ...(agent.currentVersion === undefined ? {} : { currentVersion: agent.currentVersion }), addedBy: entry.addedBy, addedAt: entry.addedAt,
   };
 }
@@ -191,7 +203,7 @@ const MODEL_PROBLEM = /^steps\.(\d+)\.settings\.(model|fallbackModel)$/;
  * Refuses a recipe the company's guardrails now forbid: the first problem with a step's model or fallback model is `MODEL_NOT_ALLOWED`
  * and names the step and model; any other problem is `CONFIG_INVALID` at its path. Nothing when the recipe still passes.
  */
-async function requireRecipeAllowed(deps: RosterDependencies, orgId: OrgId, project: string, agentName: string, recipe: ResolvedRecipe): Promise<void> {
+export async function requireRecipeAllowed(deps: RosterDependencies, orgId: OrgId, project: string, agentName: string, recipe: ResolvedRecipe): Promise<void> {
   const problems = await validateRecipeForOrg(deps, orgId, recipe);
   for (const problem of problems) {
     const found = MODEL_PROBLEM.exec(problem.path);
@@ -222,25 +234,42 @@ async function resolveChosen(
   const { agentId, agent } = chosen;
   let version: number | "draft";
   let draftRevision: number | undefined;
+  let draft: AgentDraft | undefined;
   if (agent === undefined) {
-    // A built-in runs the version the company pinned (the first use pins the release of the day), unless a release is named.
-    version = typeof chosen.version === "number" ? chosen.version : (await deps.store.ensureBuiltinSettings(orgId, agentId)).pinnedVersion;
+    // A built-in runs the version the company pinned (the first use pins the release of the day). A release can be named, but not one
+    // above the pin: an org admin adopts a release first (adoptBuiltinVersion), which is where a less-safe one is confirmed.
+    const pinned = (await deps.store.ensureBuiltinSettings(orgId, agentId)).pinnedVersion;
+    version = typeof chosen.version === "number" ? chosen.version : pinned;
+    if (version > pinned) {
+      const name = deps.store.builtinName(agentId);
+      if (version > deps.store.builtinLatestVersion(agentId)) throw agentXError("NOT_FOUND", `${name} has no version ${String(version)}`);
+      throw agentXError("FORBIDDEN", `${name} version ${String(version)} hasn't been adopted by your company yet. An org admin can adopt it first.`);
+    }
   } else if (chosen.version === "draft") {
     version = "draft";
-    draftRevision = (await deps.store.getDraft(orgId, agentId))?.revision;
+    draft = await deps.store.getDraft(orgId, agentId);
+    if (draft === undefined) throw agentXError("NOT_FOUND", "no agent has that ID");
+    draftRevision = draft.revision;
   } else {
     const current = chosen.version ?? agent.currentVersion;
     if (current === undefined) throw agentXError("AGENT_UNAVAILABLE", `${agent.name} has no published version yet, so it can't start new work.`);
     version = current;
   }
-  const recipe = await resolveRecipe(deps, orgId, agentId, version);
+  // The draft read above is the one resolved, so the revision recorded is the revision of the recipe.
+  const recipe = await resolveRecipe(deps, orgId, agentId, version, draft);
   const name = agent === undefined ? deps.store.builtinName(agentId) : (recipe.chain.at(-1)?.name ?? agent.name);
   await requireRecipeAllowed(deps, orgId, project, name, recipe);
   const digest = recipeDigest(recipe);
   return { recipe, digest, ref: { agentId, name, version, builtin: agent === undefined, ...(draftRevision === undefined ? {} : { draftRevision }), digest } };
 }
 
-/** The archived-agent refusal, for a run that starts new work. */
+/** Whether the project is in the company's catalog. */
+async function projectExists(deps: RosterDependencies, orgId: OrgId, project: string): Promise<boolean> {
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgProjectCatalogKey(orgId, project), ConsistentRead: true })) as { Item?: unknown };
+  return response.Item !== undefined;
+}
+
+/** The archived-agent refusal, for a run or a roster change that starts new work. */
 function requireNotArchived(agent: AgentRecord): void {
   if (agent.status === "archived") throw agentXError("AGENT_UNAVAILABLE", `${agent.name} is archived, so it can't start new work.`);
 }
@@ -283,6 +312,7 @@ export async function resolveAgentForAutonomousRun(
   deps: RosterDependencies,
   input: { orgId: OrgId; project: string; agentId: AgentId; version?: number },
 ): Promise<{ recipe: ResolvedRecipe; digest: string; ref: TaskAgentRef }> {
+  if (!await projectExists(deps, input.orgId, input.project)) throw projectNotFound(input.project);
   await requireNewWorkAllowed(deps, input.orgId, input.project, "contributor", "task");
   await requireAgentEnabled(deps, input.orgId, input.agentId);
   let agent: AgentRecord | undefined;

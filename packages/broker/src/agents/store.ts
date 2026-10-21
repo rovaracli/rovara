@@ -771,6 +771,8 @@ export class AgentStore {
 export interface ResolveOptions {
   /** Looks up an added skill's name and digest. Without it, the org's skill registry (`store.skills`) does. */
   resolveSkill?: (ref: SkillRef) => ResolvedSkill | Promise<ResolvedSkill>;
+  /** The draft of the agent being resolved, already read: used for `"draft"` in place of reading it again (a base layer's draft is never used). */
+  draft?: AgentDraft;
 }
 
 /** A recipe that can't run: `CONFIG_INVALID` with every problem in the message, and the problems themselves on `problems` (the publish route reports the first). */
@@ -809,7 +811,7 @@ export async function resolveAgent(
 
     let content: { overlay: RecipeOverlay; extends?: BaseRef; name: string; version: number | "draft" };
     if (wanted === "draft") {
-      const draft = await store.getDraft(orgId, id);
+      const draft = trail.length === 0 && options.draft !== undefined ? options.draft : await store.getDraft(orgId, id);
       if (draft === undefined) throw notFound();
       content = { overlay: draft.overlay, ...(draft.extends === undefined ? {} : { extends: draft.extends }), name: agent.name, version: "draft" };
     } else {

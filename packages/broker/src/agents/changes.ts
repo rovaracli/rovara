@@ -32,7 +32,7 @@ import {
 } from "./approvals.js";
 import { lessSafeGuardrailChanges, readGuardrailsWithRevision, requireAgentEnabled, validateRecipeForOrg, writeGuardrails, type StoredGuardrails } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
-import { GUARDRAILS_CONFLICT_TEXT, resolveAgent, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
+import { GUARDRAILS_CONFLICT_TEXT, resolveAgent, type AgentDraft, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
 
 /** What a route answers for a change: done, or waiting on the page. */
 export type ChangeResult<T> =
@@ -42,9 +42,9 @@ export type ChangeResult<T> =
 const isOrgAdmin = (orgRole: string): boolean => orgRole === "owner" || orgRole === "admin";
 
 /** Resolves a recipe, reporting a recipe that can't run by its first problem, `<path>: <message>`. */
-export async function resolveRecipe(deps: ApprovalDependencies, orgId: OrgId, agentId: AgentId, version: number | "current" | "draft"): Promise<ResolvedRecipe> {
+export async function resolveRecipe(deps: ApprovalDependencies, orgId: OrgId, agentId: AgentId, version: number | "current" | "draft", draft?: AgentDraft): Promise<ResolvedRecipe> {
   try {
-    return await resolveAgent(deps.store, orgId, agentId, version, deps.resolveSkill === undefined ? {} : { resolveSkill: deps.resolveSkill });
+    return await resolveAgent(deps.store, orgId, agentId, version, { ...(deps.resolveSkill === undefined ? {} : { resolveSkill: deps.resolveSkill }), ...(draft === undefined ? {} : { draft }) });
   } catch (error) {
     const first = (error as Partial<RecipeProblemsError>).problems?.[0];
     if (first !== undefined) throw agentXError("CONFIG_INVALID", `${first.path}: ${first.message}`);
