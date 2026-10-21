@@ -31,6 +31,8 @@ const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 /** One `key: value` line of the front matter; anything indented, a list item or a comment doesn't match. */
 const FRONT_MATTER_LINE = /^([A-Za-z][A-Za-z0-9_-]*):(?:[ \t]+(.*?))?[ \t]*$/;
+/** A plain value a YAML parser would read as something other than text: a number, true, false or null. */
+const YAML_TYPED = /^(?:[-+]?(?:\d[\d_]*(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|0x[0-9a-fA-F]+|0o[0-7]+|[-+]?\.(?:inf|nan)|true|false|null|~)$/i;
 const ALLOWED_KEYS = ["name", "description"] as const;
 
 export interface SkillRecord {
@@ -81,6 +83,11 @@ function scalar(key: string, raw: string, line: number): string {
   }
   // Characters that start YAML syntax we do not read: block scalars, lists, maps, anchors, tags and comments.
   if (/^[>|[\]{}&*!%@`#]/.test(raw)) throw refuse();
+  // A plain value must read the same in a YAML parser as here: the same text, not a number, a boolean, a comment or a nested key.
+  const quote = (reason: string) => invalid(`front matter line ${String(line)}: put the ${key} in quotes, because YAML would read it as ${reason}`);
+  if (YAML_TYPED.test(raw)) throw quote("a number, true, false or null");
+  if (/(^|[ \t])#/.test(raw)) throw quote("the start of a comment");
+  if (/:([ \t]|$)/.test(raw)) throw quote("a key with a value");
   return raw;
 }
 
@@ -101,6 +108,8 @@ export function parseSkillMarkdown(content: unknown): { name: string; descriptio
   for (let index = 1; index < close; index += 1) {
     const text = lines[index] ?? "";
     if (text.trim() === "") continue;
+    // YAML reads U+0085 as a line break, so a parser would see a second line where this sees one.
+    if (text.includes("\u0085")) throw invalid(`front matter line ${String(index + 1)} contains U+0085, which YAML reads as a line break`);
     const matched = FRONT_MATTER_LINE.exec(text);
     if (matched === null) throw invalid(`front matter line ${String(index + 1)} isn't "key: value" (nested values, lists, comments and values over several lines aren't allowed)`);
     found.push({ key: matched[1]!, raw: matched[2] ?? "", line: index + 1 });
@@ -116,7 +125,9 @@ export function parseSkillMarkdown(content: unknown): { name: string; descriptio
   if (name === undefined) throw invalid("the front matter needs a name");
   if (description === undefined) throw invalid("the front matter needs a description");
   if (!NAME_PATTERN.test(name)) throw invalid("name must be 1 to 64 lowercase letters, digits or hyphens, starting with a letter or digit");
-  if (description.length < 1 || description.length > SKILL_DESCRIPTION_MAX) throw invalid(`description must be 1 to ${String(SKILL_DESCRIPTION_MAX)} characters`);
+  // Counted in characters (code points), as people count them; `ResolvedRecipeSchema` and the worker count the same way.
+  const characters = [...description].length;
+  if (characters < 1 || characters > SKILL_DESCRIPTION_MAX) throw invalid(`description must be 1 to ${String(SKILL_DESCRIPTION_MAX)} characters`);
   return { name, description };
 }
 
@@ -188,8 +199,10 @@ export class SkillStore {
     return { skillId: ref.skillId, name, description, digest };
   }
 
-  /** Refuses, as `skills: unknown skill`, any reference the org does not have. */
+  /** Refuses, as `skills: unknown skill`, any reference the org does not have, and a skill listed twice. */
   async requireRefs(orgId: OrgId, refs: readonly SkillRef[] | undefined): Promise<void> {
+    // One skill once: a recipe lists it once, and the publish transaction can touch a skill's item only once.
+    if (new Set((refs ?? []).map((ref) => ref.skillId)).size !== (refs ?? []).length) throw coded("CONFIG_INVALID", "skills.add: a skill is listed twice");
     await Promise.all((refs ?? []).map((ref) => this.resolve(orgId, ref)));
   }
 
@@ -201,7 +214,11 @@ export class SkillStore {
   async pin(orgId: OrgId, refs: readonly SkillRef[], expected: Readonly<Record<string, string>> = {}): Promise<{ refs: SkillRef[]; checks: TransactItem[] }> {
     const pinned: SkillRef[] = [];
     const checks: TransactItem[] = [];
+    const seen = new Set<string>();
     for (const ref of refs) {
+      // A skill listed twice (a draft saved before that was refused) is pinned once: the transaction may check an item only once.
+      if (seen.has(ref.skillId)) continue;
+      seen.add(ref.skillId);
       const digest = ref.digest ?? expected[ref.skillId] ?? (await this.get(orgId, ref.skillId))?.currentDigest;
       if (digest === undefined) throw unknownSkill();
       await this.resolve(orgId, { skillId: ref.skillId, digest });

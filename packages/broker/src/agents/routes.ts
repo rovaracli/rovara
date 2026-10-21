@@ -544,12 +544,8 @@ async function requireSkill(deps: AgentRouteDependencies, caller: AgentCaller, r
 async function createSkill(deps: AgentRouteDependencies, caller: AgentCaller, body: unknown): Promise<StatusReply> {
   const input = parseBody(SkillCreateBodySchema, body);
   const { mark, replay } = await markRequest(deps, caller, "skill-create", "", input);
-  if (replay !== undefined) {
-    // The skill as it is now: a repeat is answered, but the skill is not frozen at its first content.
-    const skill = await deps.store.skills.get(caller.orgId, (replay.result as SkillRecord).skillId);
-    if (skill === undefined) throw skillNotFound();
-    return new StatusReply(201, { skill: skillView(skill) });
-  }
+  // R18: a repeat is answered with what the first request returned.
+  if (replay !== undefined) return new StatusReply(201, { skill: skillView(replay.result as SkillRecord) });
   const owner = await requireOwnerAllowed(deps, caller, input.owner ?? { kind: "member", developerId: caller.developerId }, undefined, "a skill");
   const skill = await deps.store.skills.create({
     orgId: caller.orgId, content: input.content, owner, by: caller.developerId, request: mark,

@@ -542,7 +542,7 @@ export class AgentStore {
       publishedAt,
       ...(input.note === undefined ? {} : { note: input.note }),
     };
-    await this.commit([
+    const written: TransactItem[] = [
       this.put(agentKey(input.orgId, input.agentId, agentVersionSk(version)), "AGENT_VERSION", published as unknown as Item),
       this.update(agentKey(input.orgId, input.agentId, "META"), {
         set: { currentVersion: version, latestVersion: version, updatedAt: publishedAt },
@@ -555,8 +555,9 @@ export class AgentStore {
         ].join(" AND "),
       }),
       this.event(input.orgId, input.agentId, "published", input.by, { version, digest: input.digest, ...(input.note === undefined ? {} : { note: input.note }) }),
-      ...(pinned?.checks ?? []),
-    ], () => conflict(), input.request, published);
+    ];
+    // The skills' checks follow what is written; one of them failing is a skill that moved, not a draft that did.
+    await this.commit([...written, ...(pinned?.checks ?? [])], (failed) => ([...failed].some((index) => index < written.length) ? conflict() : coded("AGENT_REVISION_CONFLICT", "A skill this agent uses changed while it was being published. Publish again.")), input.request, published);
     return published;
   }
 

@@ -185,7 +185,8 @@ export const ResolvedRecipeSchema = z.object({
   skills: z.array(z.object({
     skillId: SkillIdSchema,
     name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
-    description: z.string().max(1024),
+    // At most 1024 characters (code points), as the registry counts them; `.max` would count UTF-16 units.
+    description: z.string().refine((value) => [...value].length <= 1024, "must be at most 1024 characters"),
     digest: Sha256HexSchema,
   }).strict()).max(MAX_RESOLVED_SKILLS),
   autonomy: AutonomySchema,

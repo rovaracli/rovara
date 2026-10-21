@@ -12,10 +12,10 @@ import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
 import type { AgentOwner } from "../../packages/contracts/src/agent.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import type { OrgId } from "../../packages/contracts/src/org.js";
-import { skillKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { agentKey, skillKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { AGENT_STEP_INSTRUCTIONS_MAX_BYTES, AgentStepPayloadSchema } from "../../packages/contracts/src/protocol.js";
-import { MAX_RESOLVED_SKILLS } from "../../packages/contracts/src/agent-recipe.js";
+import { MAX_RESOLVED_SKILLS, ResolvedRecipeSchema } from "../../packages/contracts/src/agent-recipe.js";
 import type { OrgRole } from "../../packages/contracts/src/org.js";
 import type { AgentId } from "../../packages/contracts/src/agent.js";
 import { orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -118,9 +118,33 @@ describe("parseSkillMarkdown", () => {
     ["a quoted value that is not closed", '---\nname: a\ndescription: "x\n---\n', /write the description as plain text or in quotes/],
     ["a comment line", "---\n# note\nname: a\ndescription: b\n---\n", /line 2/],
     ["an empty file", "", /content/],
+    ["a bare number as the name", "---\nname: 123\ndescription: b\n---\n", /put the name in quotes/],
+    ["a hexadecimal number", "---\nname: a\ndescription: 0x1F\n---\n", /put the description in quotes/],
+    ["a decimal", "---\nname: a\ndescription: -1.5e3\n---\n", /put the description in quotes/],
+    ["true", "---\nname: a\ndescription: true\n---\n", /put the description in quotes/],
+    ["False in any case", "---\nname: a\ndescription: False\n---\n", /put the description in quotes/],
+    ["null", "---\nname: a\ndescription: null\n---\n", /put the description in quotes/],
+    ["a tilde", "---\nname: a\ndescription: ~\n---\n", /put the description in quotes/],
+    ["a comment tail", "---\nname: a\ndescription: Use it # for tickets\n---\n", /put the description in quotes/],
+    ["an unquoted colon and space", "---\nname: a\ndescription: Use: it\n---\n", /put the description in quotes/],
+    ["a trailing colon", "---\nname: a\ndescription: Use it:\n---\n", /put the description in quotes/],
+    ["a next-line character", "---\nname: a\ndescription: one\u0085two\n---\n", /line 3/],
+    ["a next-line character inside quotes", '---\nname: a\ndescription: "one\u0085two"\n---\n', /line 3/],
   ])("refuses %s as CONFIG_INVALID", (_label, content, message) => {
     expect(() => parseSkillMarkdown(content)).toThrow(message);
     expect(() => parseSkillMarkdown(content)).toThrow(/^CONFIG_INVALID: content/);
+  });
+
+  it("keeps accepting what is quoted, and a # or colon that is not a comment or a key", () => {
+    expect(parseSkillMarkdown('---\nname: "123"\ndescription: "true"\n---\n')).toEqual({ name: "123", description: "true" });
+    expect(parseSkillMarkdown("---\nname: 'a'\ndescription: 'Use it # now: always'\n---\n").description).toBe("Use it # now: always");
+    expect(parseSkillMarkdown('---\nname: a\ndescription: "null"\n---\n').description).toBe("null");
+    expect(parseSkillMarkdown("---\nname: a\ndescription: Issue#12 at 10:30 and truer or nullable\n---\n").description).toBe("Issue#12 at 10:30 and truer or nullable");
+  });
+
+  it("counts the description in characters, not UTF-16 units: 1024 emoji pass and 1025 do not", () => {
+    expect(parseSkillMarkdown(skillFile("emoji", "😀".repeat(1024), "")).description).toHaveLength(2048);
+    expect(() => parseSkillMarkdown(skillFile("emoji", "😀".repeat(1025), ""))).toThrow(/description must be 1 to 1024 characters/);
   });
 
   it("allows a description of exactly 1024 characters and a file of exactly 32,768 bytes, counting UTF-8 bytes", () => {
@@ -321,6 +345,29 @@ describe("skills in agents", () => {
     expect((await store.getDraft(ORG_A, agent.agentId))!.revision).toBe(1);
   });
 
+  it("refuses the same skill listed twice in a draft, with or without a digest, when it is created or saved", async () => {
+    const { store, skill, make } = agentSetup();
+    const mine = await skill("triage-notes");
+    const twice = { code: "CONFIG_INVALID", message: "skills.add: a skill is listed twice" };
+    expect(await code(make(withSkills([{ skillId: mine.skillId }, { skillId: mine.skillId }])))).toEqual(twice);
+    expect(await code(make(withSkills([{ skillId: mine.skillId }, { skillId: mine.skillId, digest: mine.currentDigest }])))).toEqual(twice);
+    const agent = await make(withSkills([{ skillId: mine.skillId }]));
+    expect(await code(store.saveDraft({ orgId: ORG_A, agentId: agent.agentId, overlay: withSkills([{ skillId: mine.skillId }, { skillId: mine.skillId }]), expectedRevision: 1, by: ALICE }))).toEqual(twice);
+    expect((await store.getDraft(ORG_A, agent.agentId))!.revision).toBe(1);
+  });
+
+  it("publishes a draft that already holds a duplicate (saved before the refusal) with the skill pinned once", async () => {
+    const { db, store, skill, make, publish } = agentSetup();
+    const mine = await skill("triage-notes");
+    const agent = await make(withSkills([{ skillId: mine.skillId }]));
+    const key = agentKey(ORG_A, agent.agentId, "DRAFT");
+    const stored = db.get(key.pk, key.sk) as Record<string, unknown> & { overlay: RecipeOverlay };
+    db.set({ ...stored, overlay: withSkills([{ skillId: mine.skillId }, { skillId: mine.skillId }]) });
+    const version = await publish(agent.agentId);
+    expect(version.overlay.skills?.add).toEqual([{ skillId: mine.skillId, digest: mine.currentDigest }]);
+    expect((await store.getVersion(ORG_A, agent.agentId, 1))!.overlay.skills?.add).toHaveLength(1);
+  });
+
   it("resolves a draft's skills to the skill's current content", async () => {
     const { store, skill, make } = agentSetup();
     const mine = await skill("triage-notes", "Triage help");
@@ -364,7 +411,7 @@ describe("skills in agents", () => {
     await store.skills.putContent({ orgId: ORG_A, skillId: a.skillId, content: skillFile("a-skill", "Second"), expectedDigest: a.currentDigest, by: ALICE });
     const before = [...db.items.keys()].sort();
     expect(await code(publish(agent.agentId, { skillDigests: { [a.skillId]: a.currentDigest } })))
-      .toEqual({ code: "AGENT_REVISION_CONFLICT", message: "Someone else changed this agent's draft. Reload it and make your change again." });
+      .toEqual({ code: "AGENT_REVISION_CONFLICT", message: "A skill this agent uses changed while it was being published. Publish again." });
     expect([...db.items.keys()].sort()).toEqual(before);
     const current = (await store.skills.get(ORG_A, a.skillId))!.currentDigest;
     expect((await publish(agent.agentId, { skillDigests: { [a.skillId]: current } })).overlay.skills?.add).toEqual([{ skillId: a.skillId, digest: current }]);
@@ -494,6 +541,17 @@ describe("skills routes", () => {
     const forEve = await call(DANA, "POST", "/v1/app/skills", { content: skillFile("b-skill"), owner: { kind: "member", developerId: EVE.developerId } });
     expect(forEve.status).toBe(201);
     expect(errorOf(await call(CARL, "POST", "/v1/app/skills", { content: skillFile("c-skill"), owner: project })).message).toBe("Only a maintainer of web can make it a skill's owner.");
+  });
+
+  it("answers a repeated create with the outcome it stored, even after the skill was edited", async () => {
+    const { call, skills } = await routeSetup();
+    const requestId = randomUUID();
+    const first = await call(MAYA, "POST", "/v1/app/skills", { requestId, content: skillFile("triage-notes", "First") });
+    const created = first.body.skill as { skillId: string; currentDigest: string };
+    await skills.putContent({ orgId: TEST_ORG, skillId: created.skillId, content: skillFile("triage-notes", "Second"), expectedDigest: created.currentDigest, by: MAYA.developerId });
+    const again = await call(MAYA, "POST", "/v1/app/skills", { requestId, content: skillFile("triage-notes", "First") });
+    expect(again).toEqual(first);
+    expect(again.body.skill).toMatchObject({ description: "First", currentDigest: created.currentDigest });
   });
 
   it("answers a repeated request from the first one, and refuses the same id for a different request", async () => {
@@ -766,6 +824,41 @@ describe("GET /v1/internal/agent-skills", () => {
     const served = await agentSkillsSource({ controlPlaneUrl: "https://control.example.test", capability: h.grant, fetch: transport })();
     expect(served).toHaveLength(1);
     expect(served[0]!.content).toBe(content);
+  });
+
+  it("serves a skill whose description is 1024 emoji, which the snapshot schema and the worker's client both accept", async () => {
+    const h = await runningTask();
+    const description = "😀".repeat(1024);
+    const skill = await h.skills.create({ orgId: TEST_ORG, content: skillFile("emoji-skill", description, "Body.\n"), owner: MEMBER, by: ALICE });
+    h.seedSnapshot([pinnedOf(skill, description)]);
+    const transport = (async (url: string | URL, init?: RequestInit) => {
+      const reply = await callBroker(h.handler, { method: "GET", path: new URL(String(url)).pathname, headers: init?.headers as Record<string, string> });
+      return new Response(JSON.stringify(reply.body), { status: reply.status });
+    }) as typeof fetch;
+    const served = await agentSkillsSource({ controlPlaneUrl: "https://control.example.test", capability: h.grant, fetch: transport })();
+    expect(served.map((entry) => entry.description)).toEqual([description]);
+    expect(ResolvedRecipeSchema.shape.skills.safeParse([pinnedOf(skill, description)]).success).toBe(true);
+    expect(ResolvedRecipeSchema.shape.skills.safeParse([pinnedOf(skill, "😀".repeat(1025))]).success).toBe(false);
+  });
+
+  it("refuses, with 404 and no content, a task whose org is not the operation's, in either direction", async () => {
+    const h = await runningTask();
+    const skill = await h.skills.create({ orgId: TEST_ORG, content: skillFile("one-skill", "Mine", "SECRET-MINE\n"), owner: MEMBER, by: ALICE });
+    h.seedSnapshot([pinnedOf(skill, "Mine")]);
+    expect((await h.ask()).status).toBe(200);
+    const operation = h.db.get(`WORKSPACE#${h.workspaceId}`, `OPERATION#${h.operationId}`) as Record<string, unknown>;
+    expect(operation.orgId).toBe(TEST_ORG);
+    // The operation belongs to another org than its task.
+    h.db.set({ ...operation, orgId: ORG_B });
+    const answer = await h.ask();
+    expect(answer.status).toBe(404);
+    expect(JSON.stringify(answer.body)).not.toContain("SECRET-MINE");
+    // The task belongs to another org than its operation.
+    h.db.set({ ...operation, orgId: TEST_ORG });
+    h.db.set({ ...h.task, orgId: ORG_B });
+    const other = await h.ask();
+    expect(other.status).toBe(404);
+    expect(JSON.stringify(other.body)).not.toContain("SECRET-MINE");
   });
 
   it("answers an empty list for a task with no snapshot", async () => {

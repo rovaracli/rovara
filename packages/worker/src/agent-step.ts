@@ -22,7 +22,7 @@ export interface AgentSkillFile {
 const SKILL_CONTENT_MAX_BYTES = 32_768;
 const AgentSkillFileSchema = z.object({
   name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/u),
-  description: z.string().max(1024),
+  description: z.string().refine((value) => [...value].length <= 1024, "a description is at most 1024 characters"),
   digest: z.string().regex(/^[a-f0-9]{64}$/u),
   content: z.string().refine((value) => Buffer.byteLength(value, "utf8") <= SKILL_CONTENT_MAX_BYTES, `a skill is at most ${SKILL_CONTENT_MAX_BYTES} bytes`),
 });

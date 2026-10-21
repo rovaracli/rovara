@@ -4767,8 +4767,10 @@ async function handleAgentSkills(dependencies: AwsBrokerDependencies, request: A
   if (TERMINAL.has(operation.status)) throw agentXError("STALE_FENCE", "terminal operations cannot read agent skills");
   const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
   const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
-  const orgId = task?.orgId ?? operation.orgId;
+  // Read under the operation's org, and only for a task of that same org: any disagreement serves nothing.
+  const orgId = operation.orgId;
   if (orgId === undefined) throw agentXError("NOT_FOUND", "this operation belongs to no organisation");
+  if (task !== undefined && task.orgId !== orgId) throw agentXError("NOT_FOUND", "no agent snapshot belongs to this operation");
   // Task 15 writes the snapshot beside the task: `{ orgId, recipe, digest }` at `RECIPE`.
   const snapshot = task === undefined ? undefined : await getItem<{ orgId?: string; recipe?: { skills?: unknown } }>(dependencies, { pk: taskKey(task.taskId).pk, sk: "RECIPE" });
   if (snapshot?.recipe === undefined) return json({ skills: [] }, request.requestId);
