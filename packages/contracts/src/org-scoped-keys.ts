@@ -2,6 +2,7 @@
 // grant on it, the workspace limits) or that list across tenants (the usage and failure indexes).
 // Each one is prefixed with `orgScoped(orgId, ...)`, and nothing else builds these keys.
 import { canonicalInstant, indexDay } from "./admin.js";
+import type { AgentId, AgentPrincipal, SkillId } from "./agent.js";
 import { OrgIdSchema, orgScoped, type OrgId, type OrgKey } from "./org.js";
 
 const REVISION_WIDTH = 12;
@@ -168,4 +169,63 @@ const SLACK_LIMIT_PK = /^ORG#org_[0-9a-z]{20}#SLACK_LIMIT#/;
 /** Whether a partition key is a `slackLimitPk`, which decides a counter's entity type. */
 export function isSlackLimitPk(pk: string): boolean {
   return SLACK_LIMIT_PK.test(pk);
+}
+
+const AGENT_VERSION_WIDTH = 6;
+const MAX_AGENT_VERSION = 10 ** AGENT_VERSION_WIDTH - 1;
+
+export type AgentItemSk = "META" | "DRAFT" | `VERSION#${string}` | `SHARE#${string}` | `EVENT#${string}`;
+
+/** One agent's partition: its META, its DRAFT, immutable versions, shares and events. */
+export function agentKey(orgId: OrgId, agentId: AgentId, sk: AgentItemSk): OrgKey {
+  return { pk: orgScoped(orgId, `AGENT#${agentId}`), sk };
+}
+
+/** The sort key of a published version; six digits keep a query on `VERSION#` in version order. */
+export function agentVersionSk(version: number): `VERSION#${string}` {
+  if (!Number.isInteger(version) || version < 1 || version > MAX_AGENT_VERSION) throw new Error(`an agent version is a whole number from 1 to ${MAX_AGENT_VERSION}`);
+  return `VERSION#${String(version).padStart(AGENT_VERSION_WIDTH, "0")}`;
+}
+
+/** The org's agent directory: one item per custom agent, for listing without reading every partition. */
+export function agentDirectoryKey(orgId: OrgId, agentId: AgentId): OrgKey {
+  return { pk: orgScoped(orgId, "AGENT_DIRECTORY"), sk: agentId };
+}
+
+/** The item that makes an agent's name unique in its org, ignoring case and surrounding spaces. */
+export function agentNameKey(orgId: OrgId, name: string): OrgKey {
+  return { pk: orgScoped(orgId, "AGENT_NAME"), sk: name.trim().toLowerCase() };
+}
+
+/** `MEMBER#<developerId>`, `PROJECT#<project>` or `ORG`: the principal's part of a key. */
+export function principalKey(principal: AgentPrincipal): string {
+  if (principal.kind === "member") return `MEMBER#${principal.developerId}`;
+  if (principal.kind === "project") return `PROJECT#${principal.project}`;
+  return "ORG";
+}
+
+/** The index item that lists, per principal, the agents shared with it. */
+export function principalSharesKey(orgId: OrgId, principal: AgentPrincipal, agentId: AgentId): OrgKey {
+  return { pk: orgScoped(orgId, `AGENT_SHARES#${principalKey(principal)}`), sk: agentId };
+}
+
+/** The roster item that puts an agent on a project. */
+export function projectAgentKey(orgId: OrgId, project: string, agentId: AgentId): OrgKey {
+  return { pk: orgScoped(orgId, `PROJECT_AGENTS#${project}`), sk: agentId };
+}
+
+export type SkillItemSk = "META" | `VERSION#${string}`;
+
+export function skillKey(orgId: OrgId, skillId: SkillId, sk: SkillItemSk): OrgKey {
+  return { pk: orgScoped(orgId, `SKILL#${skillId}`), sk };
+}
+
+/** The index item that lists an agent's recent tasks, newest last; `createdAt` is an instant. */
+export function agentTasksKey(orgId: OrgId, agentId: AgentId, createdAt: string, taskId: string): OrgKey {
+  return { pk: orgScoped(orgId, `AGENT_TASKS#${agentId}`), sk: `${canonicalInstant(createdAt)}#${taskId}` };
+}
+
+/** An org's settings for one built-in agent: the version it pinned, its budget and its accountable person. */
+export function builtinSettingsKey(orgId: OrgId, agentId: AgentId): OrgKey {
+  return { pk: orgScoped(orgId, "BUILTIN_AGENTS"), sk: agentId };
 }
