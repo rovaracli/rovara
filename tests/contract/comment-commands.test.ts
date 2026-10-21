@@ -380,3 +380,183 @@ describe("stripMentions", () => {
     }
   });
 });
+
+describe("fix round 1: a line that starts with a slash word is always a command", () => {
+  it.each([
+    ["/deploy/production"], ["/merge/"], ["//deploy"], ["  /deploy/x"], ["\t/merge/"], ["> /merge/"], ["`/merge/`"], ["ok\n/deploy/prod"], ["ok\r\n  /deploy/prod/"],
+    ["\u200b/deploy/x"], ["／deploy／x"], ["/usr/bin"], ["///deploy"], ["\"/ship/it\""], ["*/deploy/x"], ["a\u2028/merge/"],
+  ])("%j", (text) => {
+    expect(textIsConsequential(text)).toBe(true);
+  });
+
+  it("keeps the path exemption in the middle of a line", () => {
+    for (const text of ["see /usr/bin in the log", "text\n  see /usr/bin", "ok //deploy", "x//merge", "./merge/x", "1/merge/", "https://x.test/merge/", "// not a command", "/ deploy", "/123/456", "//"]) {
+      expect(textIsConsequential(text), text).toBe(false);
+    }
+  });
+});
+
+describe("fix round 1: control characters leave a gap", () => {
+  it.each([
+    ["x\u0001/merge"], ["x\u007f/merge"], ["bors\u0001r+"], ["bo\u0000rs r+"], ["x\u0080/deploy"], ["x\u009f/deploy"], ["atlantis\u0002apply"], ["x\u001b/merge"], ["/de\u0000ploy"],
+  ])("%j", (text) => {
+    expect(textIsConsequential(text)).toBe(true);
+  });
+
+  it("normalizeForMatching still deletes them from the joined copy", () => {
+    expect(normalizeForMatching("/de\u0000ploy")).toBe("/deploy");
+  });
+});
+
+describe("fix round 1: bors is matched without \\b and across a line break", () => {
+  it.each([
+    ["_bors r+_"], ["*bors r+*"], ["**bors** r+"], ["~bors~ r+"], ["bors\nr+"], ["bors\n\nr+"], ["bors\r\nr+"], ["[bors]\nr+"], ["bors:\ntry"], ["> bors\n> r+"], ["bors\u2028r+"], ["(bors) r+"], ["_kodiak_ merge"], ["_atlantis_ apply"],
+  ])("%j", (text) => {
+    expect(textIsConsequential(text)).toBe(true);
+  });
+
+  it("stays quiet for words that only contain bors, and for a last line", () => {
+    for (const text of ["neighbors\nr+", "labors\ntry", "Thanks, ok", "borscht is good", "bors"]) expect(textIsConsequential(text), text).toBe(false);
+  });
+});
+
+describe("fix round 1: object keys are scanned too", () => {
+  it("scans keys as text", () => {
+    expect(signal(JSON.parse('{"/merge": "x"}')).consequential).toBe(true);
+    expect(signal({ fields: { "bors r+": true } }).consequential).toBe(true);
+    expect(signal({ list: [{ "/deploy": 1 }] }).consequential).toBe(true);
+    expect(signal({ body: "fine", title: "also fine", issue_number: 4 }).consequential).toBe(false);
+  });
+
+  it("treats keys under a label path as labels", () => {
+    expect(signal({ labels: { automerge: true } }, { labelPaths: ["labels"] }).consequential).toBe(true);
+    expect(signal({ labels: { Deploy: true } }, { labelPaths: ["labels"] }).consequential).toBe(true);
+    expect(signal({ labels: { bug: true } }, { labelPaths: ["labels"] }).consequential).toBe(false);
+    expect(signal({ automerge: true }, { labelPaths: ["labels"] }).consequential).toBe(false);
+  });
+
+  it("does not scan the key of a skipped path", () => {
+    expect(signal({ "/merge": "x" }, { skipPaths: ["/merge"] }).consequential).toBe(false);
+  });
+});
+
+describe("fix round 1: matching stays linear on agent text", () => {
+  const SIZE = 100_000;
+  const timed = (label: string, run: () => void) => {
+    const start = performance.now();
+    run();
+    const took = performance.now() - start;
+    expect(took, `${label} took ${Math.round(took)} ms`).toBeLessThan(200);
+  };
+  const inputs: Array<[string, string]> = [
+    ["@a then dots then b", `@a${".".repeat(SIZE)}b`],
+    ["many @ then a", `${"@".repeat(SIZE)}a`],
+    ["@a repeated", "@a".repeat(SIZE / 2)],
+    ["email-like @ run", `x${"@".repeat(SIZE)}a`],
+    ["@name with slashes", `@a${"/a".repeat(SIZE / 2)}`],
+    ["slashes", "/".repeat(SIZE)],
+    ["/a repeated", "/a".repeat(SIZE / 2)],
+    ["/a/ repeated", "/a/".repeat(SIZE / 3)],
+    ["spaces then x", `${" ".repeat(SIZE)}x`],
+    ["bors then spaces", `bors${" ".repeat(SIZE)}`],
+    ["bors then punctuation", `bors${"!".repeat(SIZE)}`],
+    ["bors repeated", "bors ".repeat(SIZE / 5)],
+    ["bors. repeated", "bors.".repeat(SIZE / 5)],
+    ["bors newline repeated", "bors\n".repeat(SIZE / 5)],
+    ["newlines", "\n".repeat(SIZE)],
+    ["short lines", "a\n".repeat(SIZE / 2)],
+    ["zero-width", "\u200b".repeat(SIZE)],
+    ["combining marks", `a${"\u0301".repeat(SIZE)}`],
+    ["controls", "\u0001".repeat(SIZE)],
+    ["tag starts", "</".repeat(SIZE / 2)],
+    ["hyphens", "a-".repeat(SIZE / 2)],
+    ["hyphens then @a", `${"-".repeat(SIZE)}@a`],
+    ["atlantis spaces", `atlantis${" ".repeat(SIZE)}`],
+    ["kodiak spaces", `kodiak${" ".repeat(SIZE)}`],
+    ["test this", "test ".repeat(SIZE / 5)],
+    ["non-ASCII letters", "й".repeat(SIZE)],
+    ["lone surrogates", "\uD800".repeat(SIZE)],
+  ];
+
+  it.each(inputs)("commentSignal on 100 KB: %s", (label, input) => {
+    timed(label, () => signal({ body: input }, { allowMentions: true, extraCommandWords: ["deploy", "ship it", "release now"], extraTriggerLabels: ["prod-*"] }));
+    timed(`${label} (as a label)`, () => signal({ labels: [input] }, { labelPaths: ["labels"] }));
+  });
+
+  it.each(inputs)("stripMentions on 100 KB: %s", (label, input) => {
+    timed(label, () => stripMentions({ body: input }));
+  });
+
+  it("matches org label globs without backtracking", () => {
+    const label = "-".repeat(200);
+    timed("multi-star glob", () => signal({ labels: [`${label}x`] }, { labelPaths: ["labels"], extraTriggerLabels: ["*-*-*-*-*-y", "*-*-*-*-*-*-*-*-*-*-*-*-z", "a*b*c*d*e*f*g*h*i*j*k"] }));
+    timed("long label", () => signal({ labels: ["deploy-".repeat(SIZE / 7)] }, { labelPaths: ["labels"], extraTriggerLabels: ["*-*-*-*-*-y"] }));
+    timed("many labels", () => signal({ labels: Array.from({ length: 2000 }, (_, index) => `label-${index}`) }, { labelPaths: ["labels"], extraTriggerLabels: ["a*-*-*-y"] }));
+  });
+
+  it("matches globs as prefix, suffix and ordered middle parts", () => {
+    const labelled = (label: string, globs: string[]) => signal({ labels: [label] }, { labelPaths: ["labels"], extraTriggerLabels: globs }).consequential;
+    expect(labelled("prod-eu", ["prod-*"])).toBe(true);
+    expect(labelled("prod-", ["prod-*"])).toBe(true);
+    expect(labelled("prod", ["prod-*"])).toBe(false);
+    expect(labelled("eu-prod", ["*-prod"])).toBe(true);
+    expect(labelled("go-eu-live", ["go-*-live"])).toBe(true);
+    expect(labelled("go-live", ["go-*-live"])).toBe(false);
+    expect(labelled("a-b-c-d", ["a*b*c*d"])).toBe(true);
+    expect(labelled("a-c-b-d", ["a*b*c*d"])).toBe(false);
+    expect(labelled("anything", ["*"])).toBe(true);
+    expect(labelled("exact", ["EXACT"])).toBe(true);
+    expect(labelled("abab", ["ab*ab"])).toBe(true);
+    expect(labelled("aba", ["ab*ab"])).toBe(false);
+  });
+
+  it("flags a label too long to check", () => {
+    const result = signal({ labels: ["x".repeat(2000)] }, { labelPaths: ["labels"] });
+    expect(result.consequential).toBe(true);
+    expect(result.reasons.join(" ")).toMatch(/too long/);
+  });
+});
+
+describe("fix round 1: mergify", () => {
+  it("lists mergify as a bot account", () => {
+    expect(KNOWN_BOT_ACCOUNTS).toContain("mergify");
+    expect(KNOWN_BOT_ACCOUNTS).toContain("mergifyio");
+  });
+
+  it.each([["@mergify queue"], ["@mergify"], ["@Mergify[bot] rebase"], ["＠mergify queue"]])("%j", (text) => {
+    expect(textIsConsequential(text)).toBe(true);
+    expect(textIsConsequential(text, { allowMentions: true })).toBe(true);
+  });
+
+  it("does not flag an email at a mergify domain", () => {
+    expect(textIsConsequential("mail x@mergify.com", { allowMentions: true })).toBe(false);
+  });
+
+  it("strips the mention", () => {
+    expect(stripMentions({ body: "@mergify queue" }).args).toEqual({ body: "mergify queue" });
+  });
+});
+
+describe("fix round 1: Cherokee, Lisu and Coptic look-alikes", () => {
+  const letters: Array<[number, string]> = [
+    [0x13aa, "a"], [0x13f4, "b"], [0x13cf, "b"], [0x13df, "c"], [0x13a0, "d"], [0x13ac, "e"], [0x13c0, "g"], [0x13bb, "h"], [0x13d6, "i"], [0x13ab, "j"],
+    [0x13e6, "k"], [0x13de, "l"], [0x13b7, "m"], [0x13e2, "p"], [0x13a1, "r"], [0x13d2, "r"], [0x13da, "s"], [0x13a2, "t"], [0x13d9, "v"], [0x13b3, "w"], [0x13c3, "z"],
+    [0xab7a, "a"], [0xab9f, "b"], [0xabaf, "c"], [0x13fc, "b"],
+    [0xa4ee, "a"], [0xa4d0, "b"], [0xa4da, "c"], [0xa4d3, "d"], [0xa4f0, "e"], [0xa4d6, "g"], [0xa4e7, "h"], [0xa4f2, "i"], [0xa4d9, "j"], [0xa4d7, "k"],
+    [0xa4df, "m"], [0xa4f3, "o"], [0xa4d1, "p"], [0xa4e3, "r"], [0xa4e2, "s"], [0xa4d4, "t"], [0xa4f4, "u"], [0xa4e6, "v"], [0xa4ea, "w"], [0xa4eb, "x"], [0xa4ec, "y"], [0xa4dc, "z"],
+    [0x2c80, "a"], [0x2c82, "b"], [0x2c88, "e"], [0x2c8e, "h"], [0x2c92, "i"], [0x2c94, "k"], [0x2c98, "m"], [0x2c9a, "n"], [0x2c9e, "o"], [0x2ca2, "p"], [0x2ca4, "c"], [0x2ca6, "t"], [0x2ca8, "y"], [0x2cac, "x"],
+  ];
+
+  it.each(letters)("U+%s folds to %s", (point, ascii) => {
+    expect(CONFUSABLE_FOLD[String.fromCodePoint(point)]).toBe(ascii);
+  });
+
+  it("catches a command written with them", () => {
+    expect(textIsConsequential("\u13CFors r+")).toBe(true); // Cherokee b
+    expect(textIsConsequential("\u13CFo\u13A1s r+")).toBe(true); // Cherokee b, o, Cherokee R, s
+    expect(textIsConsequential("\u13AAtlantis apply")).toBe(true);
+    expect(textIsConsequential("@\u13B7ergifyio queue")).toBe(true);
+    expect(textIsConsequential("@\u2C98ergify queue")).toBe(true);
+    expect(textIsConsequential("\u13A1 is not a command")).toBe(false);
+  });
+});
