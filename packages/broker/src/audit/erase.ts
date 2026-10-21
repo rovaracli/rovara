@@ -40,8 +40,11 @@ export const AUDIT_SHRED_SETTLE_MS = 30_000;
 /** The event the broker sends the export function to delete an org's export files (an erasure does this). */
 export const AUDIT_EXPORT_PURGE_SOURCE = "agentx.audit-export-purge";
 
-/** At most this many companies are shredded in one run; the rest wait for the next (every 15 minutes). */
-const SHRED_PER_RUN = 25;
+/** The due partition is read this many items to a page, and at most this many items are looked at in one run (the rest wait for the next). */
+const DUE_PAGE = 25;
+const DUE_SCANNED_MAX = 500;
+/** What a sweep keeps back from the function's remaining time: a step is not started unless this much would be left after it. */
+export const AUDIT_SHRED_MARGIN_MS = 60_000;
 /** Items per page when a partition is read to be emptied. */
 const PAGE = 100;
 /** A developer id as a key: letters, digits, `_`, `.` and `-`. Never `#`, a space or a newline, and never the org's own subject. */
@@ -63,9 +66,16 @@ export const AUDIT_DETAIL_STORES = [
   { id: "key-cache", store: "The appender's and the broker's memory", maxDays: AUDIT_KEY_CACHE_MS / 86_400_000, how: "A decrypted key stays in memory for 5 minutes. Erasure and shredding are still seen at once: they are read from the keys table on every call." },
 ] as const;
 
+/**
+ * How long, at the most, a copy of an erased person's details can still exist: an event that could not be delivered stays a pending
+ * item for its time to live (14 days) and the State table's backups then keep it for up to 35 more. The privacy notice and the
+ * answer to an erasure promise this, not the 35 days of the backups alone.
+ */
+export const AUDIT_COPIES_GONE_WITHIN_DAYS = AUDIT_PENDING_TTL_DAYS + AUDIT_TRANSIENT_COPY_DAYS;
+
 /** What the response to an erasure says, so that the person who asked can pass it on. */
 export function auditErasedMessage(name: string): string {
-  return `${name}'s details in the audit ledger can't be read any more. Copies in queues, backups and recent exports are gone within ${String(AUDIT_TRANSIENT_COPY_DAYS)} days.`;
+  return `${name}'s details in the audit ledger can't be read any more. Copies in queues, backups and recent exports are gone within ${String(AUDIT_COPIES_GONE_WITHIN_DAYS)} days.`;
 }
 
 const unavailable = () => agentXError("AUDIT_UNAVAILABLE", AUDIT_ERROR_MESSAGES.AUDIT_UNAVAILABLE);
@@ -181,12 +191,13 @@ export interface AuditPurgeDeps {
 }
 
 /** Deletes every export file of one org (its `<orgId>/` folder, nothing else) and says how many. */
-export async function purgeAuditExports(deps: AuditPurgeDeps, orgId: string): Promise<number> {
+export async function purgeAuditExports(deps: AuditPurgeDeps, orgId: string, beforePage?: () => void): Promise<number> {
   const org = checkedOrg(orgId);
   const prefix = `${org}/`;
   let deleted = 0;
   let token: string | undefined;
   do {
+    beforePage?.();
     const page = await deps.s3.send(new ListObjectsV2Command({ Bucket: deps.exportsBucket, Prefix: prefix, ...(token === undefined ? {} : { ContinuationToken: token }) }));
     for (const object of page.Contents ?? []) {
       // The list was asked for the prefix; this is the second guard before a delete.
@@ -228,6 +239,10 @@ export interface AuditShredDeps {
   log: (entry: Record<string, unknown>) => void;
   /** Pauses (the wait after SHREDDED). Defaults to a timer. */
   sleep?: (ms: number) => Promise<void>;
+  /** The clock SHREDDED is stamped with, and the 30 seconds are counted on. Defaults to the real one. */
+  now?: () => number;
+  /** How much time the function has left (Lambda's `getRemainingTimeInMillis`). Absent: no limit. A step that would not fit is deferred. */
+  remainingMs?: () => number;
 }
 
 export interface AuditShredOutcome {
@@ -240,6 +255,14 @@ export interface AuditShredOutcome {
 interface DueShred {
   orgId: OrgId;
   sk: string;
+}
+
+/** Thrown inside a sweep when the function is about to run out of time: the org is deferred, not failed. */
+class ShredDeferred extends Error {
+  constructor() {
+    super("the shred ran out of time");
+    this.name = "ShredDeferred";
+  }
 }
 
 /** The marker's time, if the org has SHREDDED (Query only: the anchor holds no GetItem on the keys table). */
@@ -274,10 +297,11 @@ async function writeMarker(deps: AuditShredDeps, orgId: OrgId, now: number): Pro
 }
 
 /** Deletes every item of the org's keys partition except the marker, page by page. */
-async function emptyKeysPartition(deps: AuditShredDeps, orgId: OrgId): Promise<void> {
+async function emptyKeysPartition(deps: AuditShredDeps, orgId: OrgId, beforePage: () => void): Promise<void> {
   const pk = `ORG#${orgId}`;
   let start: Record<string, unknown> | undefined;
   do {
+    beforePage();
     const page = await deps.documentClient.send(new QueryCommand({
       TableName: deps.keysTable,
       KeyConditionExpression: "pk = :pk",
@@ -304,31 +328,50 @@ async function emptyKeysPartition(deps: AuditShredDeps, orgId: OrgId): Promise<v
  */
 export async function processDueShreds(deps: AuditShredDeps, now: number): Promise<AuditShredOutcome> {
   const outcome: AuditShredOutcome = { shredded: [], failed: [] };
-  const due = await deps.documentClient.send(new QueryCommand({
-    TableName: deps.stateTable,
-    KeyConditionExpression: "pk = :pk AND sk BETWEEN :from AND :to",
-    ExpressionAttributeValues: { ":pk": AUDIT_SHRED_DUE_PARTITION, ":from": "0", ":to": `${new Date(now).toISOString()}#~` },
-    Limit: SHRED_PER_RUN,
-  }));
-  const queue: DueShred[] = [];
-  for (const item of due.Items ?? []) {
-    const sk = typeof item.sk === "string" ? item.sk : "";
-    const parsed = OrgIdSchema.safeParse(item.orgId);
-    const named = DUE_SORT_KEY.exec(sk);
-    // The org comes from the item and must be the one its key names; anything else is damage, left for a person to look at.
-    if (!parsed.success || named === null || named[2] !== parsed.data) {
-      deps.log({ event: "audit.shred_item_invalid", level: "error", sk: sk.slice(0, 80) });
-      continue;
-    }
-    queue.push({ orgId: parsed.data, sk });
-  }
-  if (queue.length === 0) return outcome;
+  const clock = deps.now ?? Date.now;
+  // Whether the function could not do `needed` ms more work and still leave the margin.
+  const tooLate = (needed: number): boolean => deps.remainingMs !== undefined && deps.remainingMs() < needed + AUDIT_SHRED_MARGIN_MS;
+  const defer = (orgs: number): void => { deps.log({ event: "audit.shred_deferred", level: "error", orgs }); };
 
-  // 1. The markers. After this no keyring creates a key for these orgs (it reads SHREDDED on every call).
+  // The due items, page by page: damaged items stay in the partition, and paging past them keeps the ones behind them reachable.
+  const queue: DueShred[] = [];
+  let scanned = 0;
+  let start: Record<string, unknown> | undefined;
+  do {
+    const due = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.stateTable,
+      KeyConditionExpression: "pk = :pk AND sk BETWEEN :from AND :to",
+      ExpressionAttributeValues: { ":pk": AUDIT_SHRED_DUE_PARTITION, ":from": "0", ":to": `${new Date(now).toISOString()}#~` },
+      Limit: DUE_PAGE,
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    }));
+    for (const item of due.Items ?? []) {
+      scanned += 1;
+      const sk = typeof item.sk === "string" ? item.sk : "";
+      const parsed = OrgIdSchema.safeParse(item.orgId);
+      const named = DUE_SORT_KEY.exec(sk);
+      // The org comes from the item and must be the one its key names; anything else is damage, left for a person to look at.
+      if (!parsed.success || named === null || named[2] !== parsed.data) {
+        deps.log({ event: "audit.shred_item_invalid", level: "error", sk: sk.slice(0, 80) });
+        continue;
+      }
+      queue.push({ orgId: parsed.data, sk });
+    }
+    start = due.LastEvaluatedKey;
+  } while (start !== undefined && scanned < DUE_SCANNED_MAX);
+  if (queue.length === 0) return outcome;
+  // No time to even write the markers: leave it all for the next run.
+  if (tooLate(0)) {
+    defer(queue.length);
+    return outcome;
+  }
+
+  // 1. The markers. After this no keyring creates a key for these orgs (it reads SHREDDED on every call). Stamped with the time of the
+  // write: the 30 seconds below are counted from it.
   const markers = new Map<OrgId, string>();
   for (const { orgId } of queue) {
     try {
-      markers.set(orgId, await writeMarker(deps, orgId, now));
+      markers.set(orgId, await writeMarker(deps, orgId, clock()));
     } catch (error) {
       deps.log({ event: "audit.shred_failed", level: "error", orgId, step: "marker", error: errorName(error) });
       outcome.failed.push(orgId);
@@ -338,19 +381,38 @@ export async function processDueShreds(deps: AuditShredDeps, now: number): Promi
   let wait = 0;
   for (const marker of markers.values()) {
     const at = Date.parse(marker);
-    wait = Math.max(wait, (Number.isNaN(at) ? now : at) + AUDIT_SHRED_SETTLE_MS - now);
+    wait = Math.max(wait, (Number.isNaN(at) ? clock() : at) + AUDIT_SHRED_SETTLE_MS - clock());
   }
-  if (wait > 0) await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => { setTimeout(resolve, ms); })))(wait);
+  if (wait > 0) {
+    // A wait the function cannot afford: the markers stand, and the next run (15 minutes on) sweeps without waiting.
+    if (tooLate(wait)) {
+      defer(markers.size);
+      return outcome;
+    }
+    await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => { setTimeout(resolve, ms); })))(wait);
+  }
   // 3. The sweep.
-  for (const { orgId, sk } of queue) {
-    if (!markers.has(orgId)) continue;
+  const swept = queue.filter(({ orgId }) => markers.has(orgId));
+  for (const [index, { orgId, sk }] of swept.entries()) {
+    const stop = (): void => { if (tooLate(0)) throw new ShredDeferred(); };
     try {
-      await emptyKeysPartition(deps, orgId);
-      await purgeAuditExports(deps, orgId);
-      await deps.documentClient.send(new DeleteCommand({ TableName: deps.stateTable, Key: { pk: AUDIT_SHRED_DUE_PARTITION, sk } }));
+      stop();
+      await emptyKeysPartition(deps, orgId, stop);
+      await purgeAuditExports(deps, orgId, stop);
+      // Only this org's due item: the delete names the org it was made for.
+      await deps.documentClient.send(new DeleteCommand({
+        TableName: deps.stateTable,
+        Key: { pk: AUDIT_SHRED_DUE_PARTITION, sk },
+        ConditionExpression: "orgId = :org",
+        ExpressionAttributeValues: { ":org": orgId },
+      }));
       outcome.shredded.push(orgId);
       deps.log({ event: "audit.org_shredded", orgId });
     } catch (error) {
+      if (error instanceof ShredDeferred) {
+        defer(swept.length - index);
+        break;
+      }
       deps.log({ event: "audit.shred_failed", level: "error", orgId, step: "sweep", error: errorName(error) });
       outcome.failed.push(orgId);
     }

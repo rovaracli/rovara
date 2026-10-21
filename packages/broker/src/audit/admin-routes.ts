@@ -21,7 +21,7 @@ import {
   type OrgId,
 } from "@agentx/contracts";
 import { auditErasedMessage, eraseAuditSubject, isAuditSubjectId, type AuditEraseDeps } from "./erase.js";
-import { auditExportId, isAuditExportId, startAuditExport, type AuditExportClientDeps } from "./export.js";
+import { auditExportId, isAuditExportId, refuseShreddedExport, startAuditExport, type AuditExportClientDeps } from "./export.js";
 import { auditStaffRead } from "./events.js";
 import { recordAuditEventDurably } from "./flush.js";
 import { checkReadQuery, readAuditRecords } from "./reader.js";
@@ -157,6 +157,8 @@ export async function routeAuditAdminRequest(deps: AuditAdminDependencies, calle
     noParameters(url.searchParams);
     const exportRequest = exportRequestWithout(body, STAFF_PARAMETERS);
     await requireOrg();
+    // A shredded org gets no export: refused before anything is recorded (the read would never happen).
+    await refuseShreddedExport(ledger, orgId, "start");
     await recordFirst(why, { fromSeq: exportRequest.fromSeq, toSeq: exportRequest.toSeq, count: exportRequest.toSeq - exportRequest.fromSeq + 1 }, "export", auditExportId(orgId, exportRequest.requestId));
     return startedReply(await startAuditExport(ledger, { orgId, actor }, exportRequest));
   }
@@ -166,6 +168,7 @@ export async function routeAuditAdminRequest(deps: AuditAdminDependencies, calle
     // An id of any other shape names no export: nothing to read, so nothing to record.
     if (!isAuditExportId(exportId)) throw agentXError("NOT_FOUND", "That export was not found.");
     await requireOrg();
+    await refuseShreddedExport(ledger, orgId, "download");
     await recordFirst(why, { fromSeq: 0, toSeq: 0, count: 0 }, "export-download", exportId);
     return { status: 200, body: (await exportAnswer(ledger, orgId, exportId)).body };
   }

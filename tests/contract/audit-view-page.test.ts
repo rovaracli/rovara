@@ -5,8 +5,9 @@
 // member's own. The bench is Task 12's (FakeDynamoDb for every table, the real appender, a fake KMS and intake queue); the
 // page is called directly with a session lookup the test controls, and a last group goes through the broker's handler.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AUDIT_LIMITS_COPY, AuditEventInputSchema, auditEventId, agentXError, type AuditEventInput, type OrgRole } from "@agentx/contracts";
+import { AUDIT_LIMITS_COPY, auditOperatorId, AuditEventInputSchema, auditEventId, agentXError, type AuditEventInput, type OrgRole } from "@agentx/contracts";
 import { appendEvent } from "../../packages/broker/src/audit/appender.js";
+import { eraseAuditSubject } from "../../packages/broker/src/audit/erase.js";
 import { auditExportId, exportObjectKey } from "../../packages/broker/src/audit/export.js";
 import { AUDIT_VIEW_EXPORT_PATH, AUDIT_VIEW_PATH, createAuditViewPage, isAuditViewPath, type AuditViewCaller } from "../../packages/broker/src/audit/view-page.js";
 import { AUDIT_ORG_FORBIDDEN } from "../../packages/broker/src/audit/routes.js";
@@ -309,6 +310,23 @@ describe("GET /v1/app/audit/view", () => {
     const html = (await get(`${AUDIT_VIEW_PATH}?limit=2`)).body;
     expect(html).toContain("erased");
     expect(html).not.toContain(`Person of ${A}`);
+  });
+
+  it("after a real erasure (the tombstone and its event, not a deleted key), shows the person as erased and holds their name nowhere in the page, while another org's page keeps its own", async () => {
+    const b = await world();
+    await eraseAuditSubject(
+      { documentClient: b.h.deps.documentClient, keysTable: KEYS, tableName: STATE, ...(b.deps.audit === undefined ? {} : { audit: b.deps.audit }), now: () => b.h.clock.now, log: () => undefined, purgeExports: async () => undefined },
+      { orgId: A, developerId: "dev_1", by: { kind: "operator", id: auditOperatorId("https://staff-idp.example.test", "staff-1") }, reason: "Asked to be forgotten", requestId: "view-erase-1" },
+    );
+    const mine = (await pageOf(b, admin()).get(`${AUDIT_VIEW_PATH}?limit=200`)).body;
+    expect(mine).toContain("erased");
+    expect(mine).not.toContain(`Person of ${A}`);
+    expect(mine).not.toContain("Asked to be forgotten");
+    // The erasure's own event is not in the chain yet (it is in the outbox), and the page still renders every record.
+    expect(mine).toContain("pr_1<");
+    const theirs = (await pageOf(b, admin(B)).get(`${AUDIT_VIEW_PATH}?limit=200`)).body;
+    expect(theirs).toContain(`Person of ${B}`);
+    expect(theirs).not.toContain("erased");
   });
 
   it("pages with the cursor it gives, keeping the filters", async () => {

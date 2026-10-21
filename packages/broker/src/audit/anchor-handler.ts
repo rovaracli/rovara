@@ -65,8 +65,11 @@ function productionDependencies(): AnchorDeps {
   return production;
 }
 
-export async function handler(event: AuditEpochEvent): Promise<AnchorRunResult | { status: "ignored" }> {
+export async function handler(event: AuditEpochEvent, context?: { getRemainingTimeInMillis?: () => number }): Promise<AnchorRunResult | { status: "ignored" }> {
   const base = productionDependencies();
   if (event.source !== AUDIT_EPOCH_SOURCE) return { status: "ignored" };
-  return handleAuditEpochEvent({ ...base, tsa: await timestampDependencies(base) }, event);
+  // The shred sweep runs after the epoch work and is told how much of the function's time is left (it defers what does not fit).
+  const remaining = context?.getRemainingTimeInMillis;
+  const shred = base.shred === undefined || remaining === undefined ? base.shred : { ...base.shred, remainingMs: () => remaining.call(context) };
+  return handleAuditEpochEvent({ ...base, ...(shred === undefined ? {} : { shred }), tsa: await timestampDependencies(base) }, event);
 }

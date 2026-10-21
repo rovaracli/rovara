@@ -127,6 +127,14 @@ export class AuditExportBuildError extends Error {
 
 const SHREDDED_CANNOT_EXPORT = "That organization's audit details have been deleted, so it can't be exported.";
 const SHREDDED_EXPORT_GONE = "That export was deleted with the organization's audit details.";
+/**
+ * NOT_FOUND for a shredded org: nothing is exported for it and no link is signed. The staff routes ask this BEFORE they record a staff
+ * read, so that a request that cannot happen leaves no record in the closed company's permanent log.
+ */
+export async function refuseShreddedExport(deps: Pick<AuditExportBase, "keyring">, orgId: string, what: "start" | "download"): Promise<void> {
+  if (await deps.keyring.isOrgShredded(orgId)) throw agentXError("NOT_FOUND", what === "start" ? SHREDDED_CANNOT_EXPORT : SHREDDED_EXPORT_GONE);
+}
+
 const rangeInvalid = (): Error => agentXError("AUDIT_RANGE_INVALID", AUDIT_ERROR_MESSAGES.AUDIT_RANGE_INVALID);
 const pad12 = (seq: number): string => String(seq).padStart(12, "0");
 const inconsistent = (what: string): AuditExportBuildError => new AuditExportBuildError("SEAL_INDEX_INCONSISTENT", what);
@@ -511,7 +519,7 @@ export async function startAuditExport(deps: AuditExportClientDeps, requester: A
   const { fromSeq, toSeq } = request;
   assertExportRange(fromSeq, toSeq);
   // A shredded org (task 15) gets no new export: this is the code that answers, for the org's routes and the staff path alike.
-  if (await deps.keyring.isOrgShredded(orgId)) throw agentXError("NOT_FOUND", SHREDDED_CANNOT_EXPORT);
+  await refuseShreddedExport(deps, orgId, "start");
   if (typeof request.requestId !== "string" || request.requestId === "" || request.requestId.length > 200) throw agentXError("CONFIG_INVALID", "Give each export request an id of 1 to 200 characters.");
   const exportId = auditExportId(orgId, request.requestId);
   const now = new Date(deps.now()).toISOString();
@@ -732,7 +740,7 @@ export async function exportDownloadUrl(deps: AuditExportClientDeps, orgId: stri
   const item = await readMeta(deps, orgId, exportId);
   if (item === undefined || item.status !== "ready") throw agentXError("NOT_FOUND", "That export was not found, or it is not ready yet.");
   // A shredded org's files are being deleted (or are gone): no link is signed for one, and this is the code that decides it.
-  if (await deps.keyring.isOrgShredded(orgId)) throw agentXError("NOT_FOUND", SHREDDED_EXPORT_GONE);
+  await refuseShreddedExport(deps, orgId, "download");
   // After `expiresAt` the bucket may have removed the file (NOT_FOUND is the code that fits: the export is gone).
   if (isExpired(item.expiresAt, deps.now())) throw agentXError("NOT_FOUND", "That export has expired. Request it again.");
   // The file is the one the ready record names, and only if it has exactly this org's, this export's and an attempt's name.

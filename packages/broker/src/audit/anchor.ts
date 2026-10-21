@@ -81,7 +81,7 @@ export interface AnchorDeps extends LockCheckDeps {
    * Task 15: where the shred sweep works (the keys table, the State table where the due items live, the exports bucket). Absent means
    * no sweep. It uses this client and `s3` (one client serves both buckets) and `sleep` for its 30-second wait.
    */
-  shred?: { keysTable: string; stateTable: string; exportsBucket: string };
+  shred?: { keysTable: string; stateTable: string; exportsBucket: string; now?: () => number; remainingMs?: () => number };
 }
 
 export interface AnchorEpochSummary {

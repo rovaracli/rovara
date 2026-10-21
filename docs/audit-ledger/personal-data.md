@@ -23,7 +23,7 @@ A Rovara staff member erases one person from one company (`POST /v1/admin/audit/
    person's details shown as erased.
 
 The answer says: "&lt;name&gt;'s details in the audit ledger can't be read any more. Copies in queues, backups and recent exports are
-gone within 35 days."
+gone within 49 days."
 
 ## What a shred does
 
@@ -48,15 +48,23 @@ touched.
 
 The ledger table, the seals table, the locked bucket and the logs never hold details. (Logs record ids, actions and error names only.)
 
-## The completion window to state
+## The completion window to state: 49 days
+
+The privacy notice, and the answer to an erasure, say **49 days**. This is the owner's decision, and the reason is the worst case:
+
+- An event that could not be delivered stays a pending item in the State table for its time to live, **14 days**.
+- When that item is removed, the State table's point-in-time recovery still holds its earlier states for up to **35 days**.
+- 14 + 35 = **49 days** from the day the event was made. An erasure that happens while such an event is stuck cannot make that copy go
+  sooner, so no shorter promise is true. (The code constant is `AUDIT_COPIES_GONE_WITHIN_DAYS`.)
+
+What is immediate:
 
 - The details are unreadable in the ledger **at once** when the erasure is accepted.
-- Copies in queues, pending items, backups and recent exports are gone **within 35 days**.
-- A copy can be older than the pending item's time to live only if it was never delivered (the intake queue was down for days). The
-  worst case for an undelivered event is its 14 days in the State table plus the 35 days the table's backups keep it after deletion, 49
-  days from the event. The notice says "within 35 days" of the erasure for what exists at the time; an event stuck at that moment can
-  take longer. A person who needs the worst case in writing should be given 49 days.
+- The company's export files are deleted in the same request.
 - The keys table has no point-in-time recovery, so a deleted key is gone at once, and nothing can bring it back.
+
+What takes up to 49 days: copies in the queues, in pending items, in the State table's backups and in an export that was being built
+when the erasure arrived.
 
 ## Not covered by an erasure
 
@@ -64,4 +72,4 @@ The ledger table, the seals table, the locked bucket and the logs never hold det
 - The person's name in the company's own systems (their sign-in record is not part of the ledger and is not touched by this).
 - An export that began building before the erasure and finishes after it can leave one file with the person's details in the exports
   bucket until the bucket's 7-day lifecycle removes it. The export function re-checks only for a shredded company, not for an erased
-  person; the notice's "recent exports are gone within 35 days" covers it.
+  person; the notice's 49 days covers it.

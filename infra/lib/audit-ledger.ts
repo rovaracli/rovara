@@ -156,7 +156,7 @@ export const AUDIT_CHAIN_MISMATCH_EVENTS = ["audit.chain_mismatch", "audit.versi
  * the anchor but means the delete-marker and extra-version look was skipped).
  */
 /** Task 15: the anchor's log events for a shred that did not finish, or a due item it cannot trust. */
-export const AUDIT_SHRED_FAILED_EVENTS = ["audit.shred_failed", "audit.shred_item_invalid"] as const;
+export const AUDIT_SHRED_FAILED_EVENTS = ["audit.shred_failed", "audit.shred_item_invalid", "audit.shred_deferred"] as const;
 export const AUDIT_LOCK_DRIFT_EVENTS = ["audit.lock_config_mismatch", "audit.version_drift", "audit.lock_sweep_failed"] as const;
 
 /** The anchor's log event for a timestamp that was not obtained or not accepted (Task 10): the authority's label and the problem. */
@@ -1018,7 +1018,7 @@ export class AuditLedger extends Construct {
     // again) or a due item that is damaged: one is enough, because a company's details are waiting to be erased.
     this.alarmOnAtLeastOne(
       naming, props.notifyOperator, "AuditShredFailedAlarm", "AuditShredFailed",
-      "A closed company's audit details were due to be shredded and the shred did not finish, or a due item is damaged. The next run tries again; if this repeats, check the anchor's logs for audit.shred_failed (the org, the step and the error) and audit.shred_item_invalid, and that the anchor's role can still list and delete in the keys table's partition and the exports bucket.",
+      "A closed company's audit details were due to be shredded and the shred did not finish, or a due item is damaged. The next run tries again; if this repeats, check the anchor's logs for audit.shred_failed (the org, the step and the error), audit.shred_deferred (the run ran out of time before it could finish) and audit.shred_item_invalid, and that the anchor's role can still list and delete in the keys table's partition and the exports bucket.",
       this.countedLogEvents(naming, logGroup, "AuditShredFailed", "AuditShredFailed", AUDIT_SHRED_FAILED_EVENTS),
     );
     // Task 10: a timestamp that was not obtained or not accepted. One miss is normal (an authority is slow); a miss in each of two

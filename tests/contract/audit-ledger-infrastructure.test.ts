@@ -1679,7 +1679,7 @@ describe("the audit ledger in templates", () => {
           });
           // Task 15: a shred that could not finish (or a due item that is damaged) is an erasure obligation not met: one is enough.
           expect(filter("AuditLedgerAuditShredFailedMetric")).toStrictEqual({
-            LogGroupName: { Ref: logGroupId }, FilterPattern: '{ ($.event = "audit.shred_failed") || ($.event = "audit.shred_item_invalid") }',
+            LogGroupName: { Ref: logGroupId }, FilterPattern: '{ ($.event = "audit.shred_failed") || ($.event = "audit.shred_item_invalid") || ($.event = "audit.shred_deferred") }',
             MetricTransformations: [{ MetricName: "AuditShredFailed", MetricNamespace: namespace, MetricValue: "1" }],
           });
           const alarm = (id: string) => one(synthesis.template, "AWS::CloudWatch::Alarm", id)[1].Properties;

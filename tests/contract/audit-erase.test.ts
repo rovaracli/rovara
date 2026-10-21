@@ -19,6 +19,7 @@ import {
 } from "@agentx/contracts";
 import { appendEvent, type AppenderDeps } from "../../packages/broker/src/audit/appender.js";
 import {
+  AUDIT_COPIES_GONE_WITHIN_DAYS,
   AUDIT_DETAIL_STORES,
   AUDIT_EXPORT_PURGE_SOURCE,
   AUDIT_SHRED_DUE_PARTITION,
@@ -70,7 +71,7 @@ const STAFF = { kind: "operator" as const, id: auditOperatorId("https://staff-id
 const ALICE = "Alice Example";
 const BOB = "Bob Example";
 
-interface Operation { command: string; table: string; key?: { pk: string; sk: string } }
+interface Operation { command: string; table: string; key?: { pk: string; sk: string }; condition?: string; values?: Record<string, unknown> }
 
 function bench() {
   const db = new TableScopedDynamoDb();
@@ -87,7 +88,12 @@ function bench() {
         operations.push({ command: `Transact${kind}`, table: String(action.TableName), key: (action.Key ?? action.Item) as { pk: string; sk: string } });
       }
     } else {
-      operations.push({ command: command.constructor.name, table: String(input.TableName), ...(input.Key === undefined && input.Item === undefined ? {} : { key: (input.Key ?? input.Item) as { pk: string; sk: string } }) });
+      operations.push({
+        command: command.constructor.name,
+        table: String(input.TableName),
+        ...(input.Key === undefined && input.Item === undefined ? {} : { key: (input.Key ?? input.Item) as { pk: string; sk: string } }),
+        ...(typeof input.ConditionExpression === "string" ? { condition: input.ConditionExpression, values: input.ExpressionAttributeValues as Record<string, unknown> } : {}),
+      });
     }
   };
   const keyring = (caller: "appender" | "broker" = "appender") => new AuditKeyring({ documentClient: db.client, keysTable: KEYS, kms: kms.as(caller).client, keyId: KEY_ARN, now: () => clock.now });
@@ -113,6 +119,7 @@ function bench() {
     stateTable: STATE,
     s3: bucket.client,
     exportsBucket: EXPORTS_BUCKET,
+    now: () => clock.now,
     log: (entry) => logs.push(entry),
     sleep: async (ms) => {
       sleeps.push(ms);
@@ -458,7 +465,7 @@ describe("processDueShreds", () => {
     }
     // Writes: only the marker, in the keys table.
     const puts = b.operations.filter((operation) => operation.command === "PutCommand");
-    expect(puts).toStrictEqual([{ command: "PutCommand", table: KEYS, key: { pk: `ORG#${A}`, sk: "SHREDDED", at: iso(START + 30 * DAY) } }]);
+    expect(puts.map(({ command, table, key }) => ({ command, table, key }))).toStrictEqual([{ command: "PutCommand", table: KEYS, key: { pk: `ORG#${A}`, sk: "SHREDDED", at: iso(START + 30 * DAY) } }]);
     // Every query reads one org's partition or the due partition, and nothing reads an item.
     for (const call of b.bucket.calls) expect(call.command === "ListObjectsV2" ? call.prefix : call.key).toMatch(new RegExp(`^${A}/`));
     expect(b.bucket.calls.every((call) => call.command === "ListObjectsV2" || call.command === "DeleteObject")).toBe(true);
@@ -597,6 +604,127 @@ describe("processDueShreds", () => {
   });
 });
 
+describe("processDueShreds: the fix round", () => {
+  it("deletes the due item only if it still names the org (a conditional delete)", async () => {
+    const b = bench();
+    await b.seedKeys(A);
+    await b.scheduleShred(A, START);
+    b.operations.length = 0;
+    await processDueShreds(b.shred, START + 30 * DAY);
+    const due = b.operations.filter((operation) => operation.command === "DeleteCommand" && operation.table === STATE);
+    expect(due).toHaveLength(1);
+    expect(due[0]!.condition).toBe("orgId = :org");
+    expect(due[0]!.values).toStrictEqual({ ":org": A });
+  });
+
+  it("keeps a due item that changed under it: the delete fails its condition, the org is reported failed, the next run clears it", async () => {
+    const b = bench();
+    await b.seedKeys(A);
+    await b.scheduleShred(A, START);
+    const sk = `${iso(START + 30 * DAY)}#${A}`;
+    b.hooks.onSleep = () => { b.db.set(STATE, { pk: AUDIT_SHRED_DUE_PARTITION, sk, orgId: B, closedAt: iso(START) }); };
+    const first = await processDueShreds(b.shred, START + 30 * DAY);
+    expect(first).toStrictEqual({ shredded: [], failed: [A] });
+    expect(b.db.get(STATE, AUDIT_SHRED_DUE_PARTITION, sk)).toMatchObject({ orgId: B });
+    expect(b.sorts(B)).toStrictEqual([]);
+  });
+
+  it("stamps SHREDDED with the time it is written, not the time the run began, and waits 30 seconds from that", async () => {
+    const b = bench();
+    await b.seedKeys(A);
+    await b.scheduleShred(A, START);
+    // The run began at day 30; the epoch work before the sweep took 7 seconds.
+    b.clock.now = START + 30 * DAY + 7000;
+    await processDueShreds(b.shred, START + 30 * DAY);
+    expect(b.db.get(KEYS, `ORG#${A}`, "SHREDDED")).toStrictEqual({ pk: `ORG#${A}`, sk: "SHREDDED", at: iso(START + 30 * DAY + 7000) });
+    expect(b.sleeps).toStrictEqual([AUDIT_SHRED_SETTLE_MS]);
+  });
+
+  it("writes the marker but waits for nothing when the wait does not fit, and does nothing at all when even the marker does not: it logs audit.shred_deferred and keeps the due items", async () => {
+    const b = bench();
+    await b.seedKeys(A);
+    await b.scheduleShred(A, START);
+    b.operations.length = 0;
+    // 89 s left: the marker fits, the 30 s wait plus the 60 s margin does not.
+    const outcome = await processDueShreds({ ...b.shred, remainingMs: () => 89_000 }, START + 30 * DAY);
+    expect(outcome).toStrictEqual({ shredded: [], failed: [] });
+    expect(b.logs).toContainEqual(expect.objectContaining({ event: "audit.shred_deferred", level: "error", orgs: 1 }));
+    expect(b.sleeps).toStrictEqual([]);
+    expect(b.db.get(KEYS, `ORG#${A}`, "SHREDDED")).toBeDefined();
+    expect(b.operations.filter((operation) => operation.command === "DeleteCommand")).toStrictEqual([]);
+    expect(b.sorts(A)).toHaveLength(6);
+    expect(b.dueItems()).toHaveLength(1);
+    // The next run, with time, finds the marker (older than 30 s by then) and sweeps without waiting.
+    b.clock.now += 900_000;
+    b.logs.length = 0;
+    expect(await processDueShreds(b.shred, START + 30 * DAY + 900_000)).toStrictEqual({ shredded: [A], failed: [] });
+    expect(b.sleeps).toStrictEqual([]);
+    expect(b.sorts(A)).toStrictEqual(["SHREDDED"]);
+    // And with almost nothing left, nothing is written.
+    const c = bench();
+    await c.seedKeys(A);
+    await c.scheduleShred(A, START);
+    c.operations.length = 0;
+    await processDueShreds({ ...c.shred, remainingMs: () => 10_000 }, START + 30 * DAY);
+    expect(c.db.get(KEYS, `ORG#${A}`, "SHREDDED")).toBeUndefined();
+    expect(c.operations.filter((operation) => /^(Put|Delete)Command$/.test(operation.command))).toStrictEqual([]);
+    expect(c.logs).toContainEqual(expect.objectContaining({ event: "audit.shred_deferred", orgs: 1 }));
+  });
+
+  it("stops between orgs when the time runs low: the orgs it finished are done, the rest are deferred (logged), and the next run finishes them", async () => {
+    const b = bench();
+    for (const orgId of [A, B]) { await b.seedKeys(orgId); b.putObjects(orgId, 2); await b.scheduleShred(orgId, START); }
+    let left = 10 * 60_000;
+    // The first org's sweep uses the time; by the second there is not enough left.
+    b.bucket.beforeDelete = () => { left = 30_000; };
+    const outcome = await processDueShreds({ ...b.shred, remainingMs: () => left }, START + 30 * DAY);
+    expect(outcome).toStrictEqual({ shredded: [A], failed: [] });
+    expect(b.logs).toContainEqual(expect.objectContaining({ event: "audit.shred_deferred", orgs: 1 }));
+    expect(b.sorts(A)).toStrictEqual(["SHREDDED"]);
+    expect(b.db.get(KEYS, `ORG#${B}`, "SHREDDED")).toBeDefined();
+    expect(b.dueItems().map((item) => item.orgId)).toStrictEqual([B]);
+    b.bucket.beforeDelete = undefined;
+    left = 10 * 60_000;
+    expect(await processDueShreds({ ...b.shred, remainingMs: () => left }, START + 30 * DAY + 900_000)).toStrictEqual({ shredded: [B], failed: [] });
+    expect(b.sorts(B)).toStrictEqual(["SHREDDED"]);
+    expect(b.bucket.keys()).toStrictEqual([]);
+  });
+
+  it("is not starved by damaged items at the head of the due list: it pages past any number of them", async () => {
+    const b = bench();
+    await b.seedKeys(A);
+    await b.scheduleShred(A, START + DAY);
+    for (let index = 0; index < 60; index += 1) b.db.set(STATE, { pk: AUDIT_SHRED_DUE_PARTITION, sk: `${iso(START + index * 1000)}#damaged-${String(index)}`, orgId: "damaged" });
+    const outcome = await processDueShreds(b.shred, START + 31 * DAY);
+    expect(outcome.shredded).toStrictEqual([A]);
+    expect(b.sorts(A)).toStrictEqual(["SHREDDED"]);
+    expect(b.logs.filter((entry) => entry.event === "audit.shred_item_invalid")).toHaveLength(60);
+  });
+
+  it("is not starved by orgs whose shred keeps failing: they stay at the head, and a later org is still shredded", async () => {
+    const b = bench();
+    const failing: string[] = []; void failing;
+    for (let index = 0; index < 30; index += 1) {
+      const orgId = `org_${String(index).padStart(20, "0")}`;
+      failing.push(orgId);
+      await b.scheduleShred(orgId, START);
+    }
+    await b.seedKeys(B);
+    await b.scheduleShred(B, START + DAY);
+    // Every one of the 30 fails at its first read of the keys table; B's reads are untouched.
+    b.db.fake.injectFault({
+      command: "QueryCommand",
+      match: (input) => String((input.ExpressionAttributeValues as Record<string, unknown>)[":pk"]).includes("ORG#org_0000"),
+      times: 1000,
+      error: { name: "AccessDeniedException" },
+    });
+    const outcome = await processDueShreds(b.shred, START + 31 * DAY);
+    expect(outcome.shredded).toStrictEqual([B]);
+    expect(outcome.failed).toHaveLength(30);
+    expect(b.sorts(B)).toStrictEqual(["SHREDDED"]);
+  });
+});
+
 describe("what holds a person's details, and for how long", () => {
   it("lists each store once with a window of at most 35 days, and the stores the plan names", () => {
     expect(AUDIT_DETAIL_STORES.map((store) => store.id)).toStrictEqual(["intake-queue", "dead-letter-queue", "pending-items", "pending-items-backups", "pending-items-stream", "exports-bucket", "key-cache"]);
@@ -605,6 +733,9 @@ describe("what holds a person's details, and for how long", () => {
       expect(store.maxDays, store.id).toBeLessThanOrEqual(AUDIT_TRANSIENT_COPY_DAYS);
     }
     expect(AUDIT_TRANSIENT_COPY_DAYS).toBe(35);
+    // The notice promises the worst case: an event stuck in the State table for its 14 days, then the table's 35 days of backups.
+    expect(AUDIT_COPIES_GONE_WITHIN_DAYS).toBe(49);
+    expect(AUDIT_COPIES_GONE_WITHIN_DAYS).toBe(AUDIT_PENDING_TTL_DAYS + AUDIT_TRANSIENT_COPY_DAYS);
     expect(AUDIT_DETAIL_STORES.find((store) => store.id === "key-cache")!.maxDays).toBeCloseTo(AUDIT_KEY_CACHE_MS / DAY, 6);
     expect(AUDIT_DETAIL_STORES.find((store) => store.id === "pending-items")!.maxDays).toBe(AUDIT_PENDING_TTL_DAYS);
   });
@@ -718,10 +849,21 @@ describe("after a shred: no new export, and no link for an old one", () => {
     const staff: AuditAdminCaller = { issuer: "https://staff-idp.example.test", subject: "staff-1", isAdministrator: true };
     const orgs = orgStore(b);
     const staffCall = (method: string, path: string, body?: unknown) => routeAuditAdminRequest({ ledger: x.deps, orgExists: async (orgId) => (await orgs.getOrg(orgId)) !== undefined }, staff, { method, body: body ?? {}, requestId: `s-${path}` }, new URL(path, "https://rovara.test"));
+    // A staff read that never happens is not recorded: the closed company's log is permanent, and nothing of the request (its reason,
+    // its ticket) goes into the outbox, the queue or the backups. Counted over the queue and the pending items together.
+    const staffReads = (): number => [...b.sqs.queue.map((message) => message.body), ...b.h.db.find((item) => String(item.pk).startsWith("AUDIT_PENDING#")).map((item) => JSON.stringify(item.event))].filter((text) => text.includes("audit.staff_read")).length;
+    const readsBefore = staffReads();
+    const operationsBefore = b.h.operations.length;
     await expect(staffCall("POST", `/v1/admin/audit/${ROUTES_A}/exports`, { requestId: "staff-after", fromSeq: 1, toSeq: 2, reason: "x" })).rejects.toMatchObject({ code: "NOT_FOUND", message: MISSING });
     await expect(staffCall("GET", `/v1/admin/audit/${ROUTES_A}/exports/${exportId}?reason=x`)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(staffReads()).toBe(readsBefore);
+    expect(b.h.operations.slice(operationsBefore).filter((operation) => /^(Put|Update|Delete|Transact)/.test(operation.action))).toStrictEqual([]);
     expect(b.presigned).toStrictEqual([]);
     expect(b.invocations).toStrictEqual([]);
+    // A staff read of the records does happen on a shredded org, so it is still recorded first.
+    const staffRecords = await staffCall("GET", `/v1/admin/audit/${ROUTES_A}/records?limit=1&reason=x`);
+    expect(staffRecords?.status).toBe(200);
+    expect(staffReads()).toBe(readsBefore + 1);
     // The records themselves are still read: a closed company's log is evidence, only its details are gone.
     const page = await call("GET", "/v1/app/org/audit/records?limit=2");
     expect(page.status).toBe(200);
@@ -849,7 +991,7 @@ describe("POST /v1/admin/audit/{orgId}/erase-subject", () => {
     const reply = await call(`/v1/admin/audit/${ROUTES_A}/erase-subject`);
     expect(reply.status).toBe(200);
     expect(reply.body).toMatchObject({
-      message: "Alice Example's details in the audit ledger can't be read any more. Copies in queues, backups and recent exports are gone within 35 days.",
+      message: "Alice Example's details in the audit ledger can't be read any more. Copies in queues, backups and recent exports are gone within 49 days.",
       alreadyErased: false,
     });
     expect(auditErasedMessage("Alice Example")).toBe((reply.body as { message: string }).message);
@@ -865,7 +1007,7 @@ describe("POST /v1/admin/audit/{orgId}/erase-subject", () => {
   it("names the person with a plain phrase when it has no name for them", async () => {
     const { call } = await routed();
     const reply = await call(`/v1/admin/audit/${ROUTES_A}/erase-subject`, { ...BODY, developerId: "dev_2" });
-    expect((reply.body as { message: string }).message).toBe("That person's details in the audit ledger can't be read any more. Copies in queues, backups and recent exports are gone within 35 days.");
+    expect((reply.body as { message: string }).message).toBe("That person's details in the audit ledger can't be read any more. Copies in queues, backups and recent exports are gone within 49 days.");
   });
 
   it("shows the name as plain text: control, format and bidi characters are dropped, and a name of nothing but those is the plain phrase", async () => {
@@ -974,7 +1116,7 @@ describe("through the broker's handler", () => {
     const { b, bucket, handler } = await wired();
     const answer = await adminCall(handler, { method: "POST", path: PATH, body: BODY, subject: "staff-1" });
     expect(answer.status).toBe(200);
-    expect(answer.body.message).toBe("Maya Chen's details in the audit ledger can't be read any more. Copies in queues, backups and recent exports are gone within 35 days.");
+    expect(answer.body.message).toBe("Maya Chen's details in the audit ledger can't be read any more. Copies in queues, backups and recent exports are gone within 49 days.");
     expect(b.h.db.get(`ORG#${ROUTES_A}`, "SUBJECT#dev_1")).toMatchObject({ erasedAt: iso(b.h.clock.now) });
     expect(bucket.keys()).toStrictEqual([]);
   });
@@ -1070,6 +1212,19 @@ describe("the anchor sweeps due shreds on every run", () => {
     x.h.s3.versioning = "Suspended";
     const result = await run(x.h, at(0));
     expect(["stopped", "idle"]).toContain(result.status);
+    expect(x.keys(ROUTES_A)).toStrictEqual(["SHREDDED"]);
+  });
+
+  it("tells the sweep how much of the function's time is left, and a sweep that does not fit is deferred and logged for the alarm", async () => {
+    const x = anchored();
+    x.seed(ROUTES_A);
+    x.due(ROUTES_A, at(0) - 1000);
+    x.h.deps.shred = { ...x.h.deps.shred!, remainingMs: () => 5000 };
+    await run(x.h, at(0));
+    expect(eventsOf(x.h, "audit.shred_deferred")).toMatchObject([{ level: "error", orgs: 1 }]);
+    expect(x.keys(ROUTES_A)).toStrictEqual(["DATA_KEY", "SUBJECT#dev_1"]);
+    x.h.deps.shred = { ...x.h.deps.shred, remainingMs: () => 240_000 };
+    await run(x.h, at(1));
     expect(x.keys(ROUTES_A)).toStrictEqual(["SHREDDED"]);
   });
 

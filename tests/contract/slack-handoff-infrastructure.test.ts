@@ -25,10 +25,16 @@ describe("Slack hand-off infrastructure (Task 19)", () => {
     const targets = configs.map((config) => JSON.stringify(config.Properties.FunctionName));
     expect(targets.some((target) => target.includes(idOf("AWS::Lambda::Function", "Broker")))).toBe(true);
     expect(targets.some((target) => target.includes(idOf("AWS::Lambda::Function", "SlackIngress")))).toBe(true);
-    for (const config of configs) {
+    // The audit export function (Task 11) has an invoke config of its own (one retry, a 30-minute event age) and no failure destination:
+    // its failed exports are marked failed in the State table. The other two send to the one hand-off queue.
+    const audit = configs.filter((config) => JSON.stringify(config.Properties.FunctionName).includes("AuditExport"));
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.Properties.DestinationConfig).toBeUndefined();
+    const handOff = configs.filter((config) => !audit.includes(config));
+    for (const config of handOff) {
       expect(config.Properties.DestinationConfig).toEqual({ OnFailure: { Destination: { "Fn::GetAtt": [queueId, "Arn"] } } });
     }
-    expect(configs).toHaveLength(2);
+    expect(handOff).toHaveLength(2);
   });
 
   it("alarms the operator on every lost request, not only while the queue holds one", () => {
