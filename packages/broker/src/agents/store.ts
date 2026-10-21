@@ -9,6 +9,7 @@ import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws
 import {
   AGENT_DESCRIPTION_MAX,
   AGENT_NAME_MAX,
+  INDEX_EXPIRY_ATTRIBUTE,
   BUILTIN_AGENTS,
   EMPTY_RECIPE,
   RecipeOverlaySchema,
@@ -47,6 +48,8 @@ import {
 
 /** PF28: the most custom layers a recipe can be built from; a built-in base underneath is not counted. */
 export const MAX_CUSTOM_LAYERS = 3;
+/** How long a request item answers a repeat; the State table's TTL removes it after that, and a repeat later is a new request. */
+export const REQUEST_MEMORY_DAYS = 7;
 const NOT_EXISTS = "attribute_not_exists(pk)";
 const EXISTS = "attribute_exists(pk)";
 const SHA256_HEX = /^[a-f0-9]{64}$/;
@@ -312,7 +315,20 @@ export class AgentStore {
     if (request === undefined) return this.transact(items, refuse);
     const at = items.length;
     const remembered = JSON.parse(JSON.stringify(request.result ?? result ?? null)) as unknown;
-    const mark = this.put(agentRequestKey(request.orgId, request.developerId, request.requestId), "AGENT_REQUEST", { fingerprint: request.fingerprint, result: remembered, at: this.iso() });
+    const nowSeconds = Math.floor(this.input.now() / 1000);
+    const mark: TransactItem = {
+      Put: {
+        TableName: this.input.tableName,
+        Item: {
+          ...agentRequestKey(request.orgId, request.developerId, request.requestId), entityType: "AGENT_REQUEST",
+          fingerprint: request.fingerprint, result: remembered, at: this.iso(), [INDEX_EXPIRY_ATTRIBUTE]: nowSeconds + REQUEST_MEMORY_DAYS * 86_400,
+        },
+        // An expired item the TTL has not removed yet is as good as gone.
+        ConditionExpression: "attribute_not_exists(pk) OR #expires <= :now",
+        ExpressionAttributeNames: { "#expires": INDEX_EXPIRY_ATTRIBUTE },
+        ExpressionAttributeValues: { ":now": nowSeconds },
+      },
+    };
     return this.transact([...items, mark], (failed) => (failed.has(at) ? coded("IDEMPOTENCY_CONFLICT", "This request ID is already being used for another change.") : refuse(failed)));
   }
 
@@ -321,7 +337,9 @@ export class AgentStore {
   /** What an earlier request of this developer's did, if it did anything. */
   async getRequest(orgId: OrgId, developerId: string, requestId: string): Promise<{ fingerprint: string; result: unknown } | undefined> {
     const item = await this.read(agentRequestKey(orgId, developerId, requestId));
-    return item === undefined ? undefined : { fingerprint: String(item["fingerprint"]), result: item["result"] };
+    const expires = item?.[INDEX_EXPIRY_ATTRIBUTE];
+    if (item === undefined || (typeof expires === "number" && expires <= Math.floor(this.input.now() / 1000))) return undefined;
+    return { fingerprint: String(item["fingerprint"]), result: item["result"] };
   }
 
   async get(orgId: OrgId, agentId: AgentId): Promise<AgentRecord | undefined> {

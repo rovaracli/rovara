@@ -499,6 +499,21 @@ describe("less-safe publishes wait for the page (human decision 2026-10-20)", ()
     expect((await publish(MAYA, agentId)).status).toBe(200);
   });
 
+  it("answers a retried publish after the page confirmed it with that version, not a duplicate", async () => {
+    const { call, create, seed, saveDraft, approvals, deps, store } = await setup();
+    const agentId = await create(MAYA);
+    await seed(agentId, SAFE);
+    await saveDraft(MAYA, agentId, withBase({ allowMentions: true }));
+    const body = { requestId: randomUUID(), expectedRevision: 3 };
+    expect((await call(MAYA, "POST", `/v1/app/agents/${agentId}/publish`, body)).status).toBe(202);
+    await getApprovalSubjectHandler("agent_publish")!(deps, { ...approvals()[0]!, decidedBy: DANA.developerId });
+    expect(await store.listVersions(TEST_ORG, agentId)).toHaveLength(2);
+    const retried = await call(MAYA, "POST", `/v1/app/agents/${agentId}/publish`, body);
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    expect(retried.body.version).toMatchObject({ version: 2, publishedBy: DANA.developerId });
+    expect(await store.listVersions(TEST_ORG, agentId)).toHaveLength(2);
+  });
+
   it("keeps each org's approvals apart", async () => {
     const { create, seed, saveDraft, publish, approvals, db } = await setup();
     const agentId = await create(MAYA);
@@ -904,6 +919,22 @@ describe("a repeated request answers what it answered before (R18)", () => {
     expect((await call(MAYA, "POST", "/v1/app/agents", { ...body, name: "Another name" })).status).toBe(400);
     // Another person's request with the same id is their own.
     expect((await call(DANA, "POST", "/v1/app/agents", { ...body, name: "Dana's" })).status).toBe(201);
+  });
+
+  it("answers a repeated create from the live agent, and not at all once the creator can no longer see it", async () => {
+    const { call, store } = await setup();
+    const body = { requestId: randomUUID(), name: "Moves away", overlay: SAFE };
+    const first = await call(MAYA, "POST", "/v1/app/agents", body);
+    const agentId = (first.body.agent as { agentId: AgentId }).agentId;
+    await call(MAYA, "PATCH", `/v1/app/agents/${agentId}`, { description: "Changed since" });
+    const again = await call(MAYA, "POST", "/v1/app/agents", body);
+    expect(again.status).toBe(201);
+    expect(again.body.agent).toMatchObject({ agentId, description: "Changed since", access: "manage" });
+    await call(DANA, "PUT", `/v1/app/agents/${agentId}/owner`, { owner: { kind: "member", developerId: EVE.developerId } });
+    expect((await store.get(TEST_ORG, agentId))?.owner).toMatchObject({ developerId: EVE.developerId });
+    const gone = await call(MAYA, "POST", "/v1/app/agents", body);
+    expect(gone.status).toBe(404);
+    expect(errorOf(gone).message).toBe("no agent has that ID");
   });
 
   it("answers a repeated share save without a second change", async () => {

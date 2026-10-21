@@ -327,7 +327,11 @@ async function requireAccountable(deps: AgentRouteDependencies, orgId: OrgId, pr
 async function createAgent(deps: AgentRouteDependencies, caller: AgentCaller, body: unknown): Promise<StatusReply> {
   const input = parseBody(CreateBodySchema, body);
   const { mark, replay } = await markRequest(deps, caller, "create", "", input);
-  if (replay !== undefined) return new StatusReply(201, { agent: await view(deps, caller, replay.result as AgentRecord) });
+  if (replay !== undefined) {
+    // The agent as it is now, if the caller can still see it: a repeat is not a way to read what they no longer have.
+    const { agent, access } = await requireAgentAccess(deps, caller, (replay.result as AgentRecord).agentId, "view");
+    return new StatusReply(201, { agent: await view(deps, caller, agent, access) });
+  }
   const owner: AgentOwner = input.owner ?? { kind: "member", developerId: caller.developerId };
   const stored = await requireOwnerAllowed(deps, caller, owner);
   // A project's accountable maintainer must be able to manage its agents; a member's agent has none (the store refuses one).

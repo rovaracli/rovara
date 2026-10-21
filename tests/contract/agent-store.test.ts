@@ -584,4 +584,19 @@ describe("AgentStore request marks and the publish baseline (review fix round 1)
     const first = (await store.get(ORG_A, fresh.agentId))!;
     expect((await store.publish({ orgId: ORG_A, agentId: fresh.agentId, expectedDraftRevision: first.draftRevision, digest: DIGEST, by: ALICE, expectedCurrentVersion: null })).version).toBe(1);
   });
+
+  it("gives the request item an expiry on the State table's TTL attribute, and treats an expired one as no request", async () => {
+    const { store, make, clock, db } = setup();
+    const agent = await make("Expiring", scratch("x"));
+    await store.saveDraft({ orgId: ORG_A, agentId: agent.agentId, overlay: scratch("y"), expectedRevision: 1, by: ALICE, request: mark("r1") });
+    const item = db.find((entry) => entry.entityType === "AGENT_REQUEST")[0]!;
+    expect(item["indexExpiresAt"]).toBe(Math.floor(START / 1000) + 7 * 86_400);
+    clock.now = START + 6 * 86_400_000;
+    expect(await store.getRequest(ORG_A, ALICE, "r1")).toBeDefined();
+    clock.now = START + 8 * 86_400_000;
+    // A replay after expiry is a new request: it is not answered from the old item, and it can write its own.
+    expect(await store.getRequest(ORG_A, ALICE, "r1")).toBeUndefined();
+    await store.saveDraft({ orgId: ORG_A, agentId: agent.agentId, overlay: scratch("z"), expectedRevision: 2, by: ALICE, request: mark("r1", "e".repeat(64)) });
+    expect(await store.getRequest(ORG_A, ALICE, "r1")).toMatchObject({ fingerprint: "e".repeat(64), result: { revision: 3 } });
+  });
 });

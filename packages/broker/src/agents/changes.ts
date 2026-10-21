@@ -126,6 +126,9 @@ export async function publishDraft(
   }
   const next = await resolveRecipe(deps, agent.orgId, agent.agentId, "draft");
   const digest = recipeDigest(next);
+  // A draft that is what already runs publishes nothing: a retry after the page confirmed this very draft is answered with that version.
+  const running = agent.currentVersion === undefined ? undefined : await deps.store.getVersion(agent.orgId, agent.agentId, agent.currentVersion);
+  if (running !== undefined && running.digest === digest && running.name === agent.name && running.description === agent.description) return { applied: true, value: running };
   const changes = lessSafeChanges(await runningNow(deps, agent, draft.extends), next);
   if (changes.length === 0) {
     // Only while what was compared against is still what runs: a rollback that lands in between changes the baseline.

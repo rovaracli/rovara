@@ -1,5 +1,6 @@
 // Plan 3 Task 7 (PF18): the approvals core. A pending change is one APPROVAL# record with its open and approver index items;
 // deciding it is Task 21 and Task 21a's.
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   confirmUrlFor,
@@ -116,6 +117,10 @@ describe("getApproval validates what it reads", () => {
     const { db, deps } = setup();
     const record = await createPendingChange(deps, input());
     expect(CHANGE_APPROVAL_TTL_DAYS).toBe(7);
+    // Both constants are 7 today; the source says which one a change approval's expiry follows, so the write TTL can move alone.
+    const source = readFileSync("packages/broker/src/agents/approvals.ts", "utf8");
+    expect(source).toContain("CHANGE_APPROVAL_TTL_DAYS");
+    expect(source).not.toContain("WRITE_APPROVAL_TTL_DAYS");
     db.set({ ...approvalKey(ORG_A, record.approvalId), entityType: "APPROVAL", orgId: ORG_A, approvalId: record.approvalId, kind: "change", subject: "nope", status: "SOMETHING" });
     expect(await getApproval(deps, ORG_A, record.approvalId)).toBeUndefined();
   });

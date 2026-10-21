@@ -121,6 +121,47 @@ describe("lessSafeChanges", () => {
     expect(lessSafeChanges(current, recipe({ steps: [agentStep("a", "none", ["search_*"]), approvalStep()] }))).toEqual([]);
   });
 
+  describe("a step under a new id is judged against the steps that left (review Important 1, round 2)", () => {
+    const buildStep = (id: string, tools?: string[]): ResolvedStep => ({ id, name: id.toUpperCase(), kind: "build", settings: settings(tools === undefined ? {} : { tools }) });
+    const tools = (...names: string[]) => names;
+
+    it("flags a renamed limited step that comes back unlimited, even when other steps of its kind were never limited", () => {
+      const current = recipe({ steps: [agentStep("a", "none", tools("x")), agentStep("b")] });
+      expect(lessSafeChanges(current, recipe({ steps: [agentStep("a2"), agentStep("b")] }))).toEqual(['Adds the step "A2" without the tool limit the other steps have']);
+      // The same edit with the id kept was already caught.
+      expect(lessSafeChanges(current, recipe({ steps: [agentStep("a"), agentStep("b")] }))).toEqual(['Removes the tool limit on the step "A"']);
+    });
+
+    it("flags a merge whose one step can use more than any step it replaced", () => {
+      const current = recipe({ steps: [agentStep("a", "none", tools("x")), agentStep("b", "none", tools("y"))] });
+      expect(lessSafeChanges(current, recipe({ steps: [agentStep("c", "none", tools("x", "y"))] }))).toEqual(['Allows more tools in the step "C"']);
+      expect(lessSafeChanges(current, recipe({ steps: [agentStep("c", "none", tools("x"))] }))).toEqual([]);
+    });
+
+    it("keeps the added-beside rule when nothing of that kind left", () => {
+      expect(lessSafeChanges(recipe({ steps: [agentStep("a", "none", tools("x"))] }), recipe({ steps: [agentStep("a", "none", tools("x")), agentStep("c")] }))).toEqual(['Adds the step "C" without the tool limit the other steps have']);
+      // One step of that kind was never limited, so an unlimited new one drops nothing.
+      expect(lessSafeChanges(recipe({ steps: [agentStep("a", "none", tools("x")), agentStep("b")] }), recipe({ steps: [agentStep("a", "none", tools("x")), agentStep("b"), agentStep("c")] }))).toEqual([]);
+      // An unlimited step that left may be replaced by an unlimited one.
+      expect(lessSafeChanges(recipe({ steps: [agentStep("a"), agentStep("b", "none", tools("x"))] }), recipe({ steps: [agentStep("a2"), agentStep("b", "none", tools("x"))] }))).toEqual([]);
+    });
+
+    it("flags a step of a kind the recipe did not have when it can use more tools than any step before it", () => {
+      const current = recipe({ steps: [agentStep("a", "none", tools("x"))] });
+      expect(lessSafeChanges(current, recipe({ steps: [buildStep("b")] }))).toEqual(['Adds the step "B", which can use more tools than any step before it']);
+      expect(lessSafeChanges(current, recipe({ steps: [buildStep("b", tools("x"))] }))).toEqual([]);
+      // Nothing before it, nothing to compare with: a first publish is not flagged for its steps' default tools.
+      expect(lessSafeChanges(undefined, recipe({ steps: [buildStep("b")] }))).toEqual([]);
+      expect(lessSafeChanges(recipe({ steps: [] }), recipe({ steps: [buildStep("b")] }))).toEqual([]);
+    });
+
+    it("does not flag splitting a limited step in two, or reordering steps", () => {
+      expect(lessSafeChanges(recipe({ steps: [agentStep("a", "none", tools("x"))] }), recipe({ steps: [agentStep("a1", "none", tools("x")), agentStep("a2", "none", tools("x"))] }))).toEqual([]);
+      expect(lessSafeChanges(recipe({ steps: [agentStep("a", "none", tools("x", "y"))] }), recipe({ steps: [agentStep("a1", "none", tools("x")), agentStep("a2", "none", tools("y"))] }))).toEqual([]);
+      expect(lessSafeChanges(recipe({ steps: [agentStep("a", "none", tools("x")), agentStep("b")] }), recipe({ steps: [agentStep("b"), agentStep("a", "none", tools("x"))] }))).toEqual([]);
+    });
+  });
+
   it("flags raised autonomy only", () => {
     expect(lessSafeChanges(recipe({ autonomy: "suggest" }), recipe({ autonomy: "prepare" }))).toEqual(["Raises the agent's autonomy from suggest to prepare"]);
     expect(lessSafeChanges(recipe({ autonomy: "prepare" }), recipe({ autonomy: "run" }))).toHaveLength(1);

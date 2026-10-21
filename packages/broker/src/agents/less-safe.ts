@@ -2,7 +2,7 @@
 // (human decision 2026-10-20, R9-1, R9-2, R69). Every route that changes which recipe an agent runs (publish, rollback, adopting a
 // built-in's version) compares the recipe that would run with the one that runs now. The check is deliberately blunt: a change to a
 // pattern or a selector is reported without deciding whether it narrows (R9-2), because a wrong "safe" is worse than one more click.
-import { EMPTY_RECIPE, type ResolvedRecipe, type ResolvedStep, type ToolGrant } from "@agentx/contracts";
+import { EMPTY_RECIPE, STEP_TOOLS, type ResolvedRecipe, type ResolvedStep, type ToolGrant } from "@agentx/contracts";
 
 const AUTONOMY_ORDER = ["suggest", "prepare", "run"] as const;
 
@@ -60,6 +60,38 @@ function grantChanges(current: ResolvedRecipe, next: ResolvedRecipe, found: stri
   }
 }
 
+/** What a step can use: its limit, or the most its kind may have (an agent step has Pi tools only with a workspace). */
+function effectiveTools(step: ResolvedStep): readonly string[] {
+  const limit = stepTools(step);
+  if (limit !== undefined) return limit;
+  if (step.kind === "agent") return step.workspace === "read" ? STEP_TOOLS.agent : [];
+  return (STEP_TOOLS as Record<string, readonly string[]>)[step.kind] ?? [];
+}
+
+/**
+ * A step under an id the recipe did not have is judged against what it can stand in for, so renaming a step is no way round its limit.
+ * Against the steps of its kind that left (ids missing from `next`): when every one of them was limited, it must be limited and fit
+ * inside one of their limits (so splitting a step is fine and merging two with different limits is not). With none gone, it is added
+ * beside the others: when every one of them was limited it may not be unlimited or wider than them together. A kind the recipe had no
+ * step of can use no more than the steps before it could.
+ */
+function newStepChanges(current: ResolvedRecipe, next: ResolvedRecipe, step: ResolvedStep, found: string[]): void {
+  const limit = stepTools(step);
+  const unlimited = `Adds the step "${step.name}" without the tool limit the other steps have`;
+  const wider = `Allows more tools in the step "${step.name}"`;
+  const peers = current.steps.filter((candidate) => candidate.kind === step.kind);
+  if (peers.length === 0) {
+    const before = new Set(current.steps.flatMap((candidate) => effectiveTools(candidate)));
+    if (current.steps.length > 0 && effectiveTools(step).some((tool) => !before.has(tool))) found.push(`Adds the step "${step.name}", which can use more tools than any step before it`);
+    return;
+  }
+  const left = peers.filter((peer) => !next.steps.some((candidate) => candidate.id === peer.id && candidate.kind === peer.kind));
+  const compared = left.length > 0 ? left : peers;
+  if (!compared.every((peer) => stepTools(peer) !== undefined)) return;
+  if (limit === undefined) found.push(unlimited);
+  else if (left.length > 0 ? !left.some((peer) => !addsPattern(stepTools(peer) ?? [], limit)) : addsPattern(peers.flatMap((peer) => stepTools(peer) ?? []), limit)) found.push(wider);
+}
+
 function stepChanges(current: ResolvedRecipe, next: ResolvedRecipe, found: string[]): void {
   for (const step of next.steps) {
     const before = current.steps.find((candidate) => candidate.id === step.id && candidate.kind === step.kind);
@@ -67,14 +99,7 @@ function stepChanges(current: ResolvedRecipe, next: ResolvedRecipe, found: strin
       found.push(`Gives the step "${step.name}" read access to the project's files`);
     }
     if (before === undefined) {
-      // A step under a new id (a renamed step, or one added beside the others) can't dodge the limits the steps of its kind had:
-      // it may use what they could, and when every one of them was limited, no more.
-      const peers = current.steps.filter((candidate) => candidate.kind === step.kind);
-      if (peers.length > 0 && peers.every((peer) => stepTools(peer) !== undefined)) {
-        const limit = stepTools(step);
-        if (limit === undefined) found.push(`Adds the step "${step.name}" without the tool limit the other steps have`);
-        else if (addsPattern(peers.flatMap((peer) => stepTools(peer) ?? []), limit)) found.push(`Allows more tools in the step "${step.name}"`);
-      }
+      newStepChanges(current, next, step, found);
       continue;
     }
     const tools = stepTools(step);
