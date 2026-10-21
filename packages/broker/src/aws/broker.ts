@@ -2436,6 +2436,25 @@ function githubReadFailure(error: unknown, owner: string, name: string): never {
 }
 
 /**
+ * The project an earlier identical creation request made, as that request was answered (`duplicate: true`), or undefined when no unexpired
+ * record of the request exists. The same request id with another body is IDEMPOTENCY_CONFLICT. A record past its day is no record: the id
+ * is free again (the creation's transaction replaces it).
+ */
+async function replayedProjectCreation(
+  dependencies: AwsBrokerDependencies,
+  orgId: OrgId,
+  requestKey: { pk: string; sk: string },
+  bodyHash: string,
+  nowMs: number,
+): Promise<CloudProjectCreated | undefined> {
+  const recorded = await getItem<{ bodyHash?: unknown; projectName?: unknown; expiresAt?: unknown }>(dependencies, requestKey);
+  if (recorded === undefined || typeof recorded.expiresAt !== "number" || recorded.expiresAt < Math.floor(nowMs / 1000) || typeof recorded.projectName !== "string") return undefined;
+  if (recorded.bodyHash !== bodyHash) throw agentXError("IDEMPOTENCY_CONFLICT", "this requestId was already used to create a different project");
+  const made = await getItem<RegisteredProjectRecord>(dependencies, projectRevisionKey(orgId, recorded.projectName, 1));
+  return made === undefined ? undefined : cloudProjectAnswer({ project: withoutKeys(made), duplicate: true });
+}
+
+/**
  * Plan 2, Task 16: `POST /v1/app/projects`, after the route has checked the install, the caller's role and the body.
  *
  * Order: a replay of the request (the same `requestId` and body answers the project it made; another body is IDEMPOTENCY_CONFLICT), whether the
@@ -2449,13 +2468,9 @@ async function createCloudProject(dependencies: AwsBrokerDependencies, caller: D
   const requestKey = projectCreateRequestKey(orgId, input.requestId);
   const bodyHash = projectCreateBodyHash(input);
   const nowMs = Date.now();
-  const recorded = await getItem<{ bodyHash?: unknown; projectName?: unknown; expiresAt?: unknown }>(dependencies, requestKey);
-  // A record past its day is no record: the id is free again (the transaction below replaces it).
-  if (recorded !== undefined && typeof recorded.expiresAt === "number" && recorded.expiresAt >= Math.floor(nowMs / 1000) && typeof recorded.projectName === "string") {
-    if (recorded.bodyHash !== bodyHash) throw agentXError("IDEMPOTENCY_CONFLICT", "this requestId was already used to create a different project");
-    const made = await getItem<RegisteredProjectRecord>(dependencies, projectRevisionKey(orgId, recorded.projectName, 1));
-    if (made !== undefined) return cloudProjectAnswer({ project: withoutKeys(made), duplicate: true });
-  }
+  const replayed = () => replayedProjectCreation(dependencies, orgId, requestKey, bodyHash, nowMs);
+  const earlier = await replayed();
+  if (earlier !== undefined) return earlier;
   const defaults = dependencies.cloudProjects;
   const lookUp = dependencies.githubPullRequests.getRepositoryIdentity;
   const gate = repositoryGateOf(dependencies);
@@ -2464,26 +2479,40 @@ async function createCloudProject(dependencies: AwsBrokerDependencies, caller: D
   const connection = await requireRepositoryConnected(gate, orgId, owner, repositoryName).catch((error: unknown) => githubReadFailure(error, owner, repositoryName));
   const identity = await lookUp.call(dependencies.githubPullRequests, `https://github.com/${owner}/${repositoryName}.git`, githubScope(dependencies, orgId)).catch((error: unknown) => githubReadFailure(error, owner, repositoryName));
   if (identity === undefined) throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(`${owner}/${repositoryName}`));
+  // The pin is the id the connection was checked for: a repository deleted and recreated between the two reads is not that repository.
+  if (identity.repositoryId !== connection.githubRepositoryId) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub described ${owner}/${repositoryName} differently a moment ago; try again`);
   const spelledOwner = identity.fullName.split("/")[0];
   if (spelledOwner === undefined || identity.defaultBranch === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not describe that repository; try again");
   // GitHub's spelling of the owner is the one the connection was checked for (a renamed owner would have redirected, which is refused above).
   if (spelledOwner.toLowerCase() !== owner.toLowerCase()) throw agentXError("FORBIDDEN", `GitHub describes ${owner}/${repositoryName} under ${spelledOwner}; use its current owner/name`);
   const definition = cloudProjectDefinition({ input, repository: { fullName: identity.fullName, defaultBranch: identity.defaultBranch }, githubCredentialRef: defaults.githubCredentialRef, connection });
   const createdAt = new Date(nowMs).toISOString();
-  const registered = await registerProjectFor(
-    dependencies,
-    { orgId, ownerKey: caller.developerId },
-    { definition, runtimeBinding: defaults.runtimeBinding },
-    {
-      creatorMembership: "developer", requireNewName: true, ...(input.description === undefined ? {} : { description: input.description }),
-      extraItems: [{ Put: {
-        TableName: dependencies.tableName,
-        Item: { ...requestKey, entityType: "PROJECT_CREATE_REQUEST", bodyHash, projectName: definition.name, createdAt, expiresAt: Math.floor(nowMs / 1000) + PROJECT_CREATE_REQUEST_SECONDS },
-        ConditionExpression: "attribute_not_exists(pk) OR expiresAt < :now",
-        ExpressionAttributeValues: { ":now": Math.floor(nowMs / 1000) },
-      } }],
-    },
-  );
+  const expiresAt = Math.floor(nowMs / 1000) + PROJECT_CREATE_REQUEST_SECONDS;
+  let registered: RegistrationResult;
+  try {
+    registered = await registerProjectFor(
+      dependencies,
+      { orgId, ownerKey: caller.developerId },
+      { definition, runtimeBinding: defaults.runtimeBinding },
+      {
+        creatorMembership: "developer", requireNewName: true, ...(input.description === undefined ? {} : { description: input.description }),
+        extraItems: [{ Put: {
+          TableName: dependencies.tableName,
+          // `indexExpiresAt` is the State table's TTL attribute: the record goes when its day is over.
+          Item: { ...requestKey, entityType: "PROJECT_CREATE_REQUEST", bodyHash, projectName: definition.name, createdAt, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: expiresAt },
+          ConditionExpression: "attribute_not_exists(pk) OR expiresAt < :now",
+          ExpressionAttributeValues: { ":now": Math.floor(nowMs / 1000) },
+        } }],
+      },
+    );
+  } catch (error) {
+    // An identical request in flight may have won the name a moment ago: its record is then there, and this one answers the same project.
+    if (error instanceof AgentXError && error.code === "PROJECT_NAME_TAKEN") {
+      const raced = await replayed();
+      if (raced !== undefined) return raced;
+    }
+    throw error;
+  }
   console.log(JSON.stringify({ component: "broker", event: "developer.project_created", orgId, project: definition.name, duplicate: registered.duplicate }));
   return cloudProjectAnswer(registered);
 }

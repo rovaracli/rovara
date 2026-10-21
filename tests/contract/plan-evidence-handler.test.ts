@@ -113,33 +113,54 @@ describe("the PlanEvidence job", () => {
     expect(reads.length).toBeGreaterThan(0);
   });
 
-  it("keeps the excerpts already read and the repositories on other connected installations: only the failing repository's places are unavailable, and no retry follows", async () => {
+  /** A two-repository project: demo (cited first, whose installation is gone) and web (still connected), with a base commit for each. */
+  async function twoRepositoryTask(paths: string[]) {
     const harness = await jobBroker();
-    const { taskId, artifact } = await plannedTask(harness, ["repo/web/src/page.ts", "repo/demo/src/charge.ts", "repo/demo/src/other.ts", "repo/web/src/second.ts"]);
-    // The project has a second repository, whose installation is still connected.
+    const planned = await plannedTask(harness, paths);
     const revisionKey = projectRevisionKey(TEST_ORG, "payments", 1);
     const revision = harness.db.get(revisionKey.pk, revisionKey.sk) as { definition: { repositories: Array<Record<string, unknown>> } };
     harness.db.set({ ...revision, definition: { ...revision.definition, repositories: [...revision.definition.repositories, { name: "web", url: "https://github.com/example/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }] } });
-    const task = taskRecord(harness, taskId);
-    harness.db.set({ ...task, preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }, { repositoryId: "web", baseCommitSha: "f".repeat(40) }] });
+    harness.db.set({ ...taskRecord(harness, planned.taskId), preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }, { repositoryId: "web", baseCommitSha: "f".repeat(40) }] } as never);
+    return { harness, ...planned };
+  }
+  const NOT_CONNECTED = () => agentXError("GITHUB_NOT_CONNECTED", "Rovara can't reach example/demo through your organization's GitHub connection. Connect it with: agentx github connect");
+
+  it("keeps the excerpts already read and the repositories on other connected installations: only the failing repository's places are unavailable, and no retry follows", async () => {
+    // Four demo places fill the reader's four slots and fail at once; the web places are read only after a demo read has been refused,
+    // so a job that closed every repository on the first refusal would leave them unavailable.
+    const { harness, taskId, artifact } = await twoRepositoryTask(["repo/demo/src/a.ts", "repo/demo/src/b.ts", "repo/demo/src/c.ts", "repo/demo/src/d.ts", "repo/web/src/page.ts", "repo/web/src/second.ts"]);
     const time = clock(rows(harness)[0]!.nextAttemptAt + 1_000);
     const reads: string[] = [];
+    let demoRefused = false;
     const getFile: GetFile = async (url, path) => {
       reads.push(`${url}#${path}`);
-      if (url.endsWith("/demo.git")) throw agentXError("GITHUB_NOT_CONNECTED", "Rovara can't reach example/demo through your organization's GitHub connection. Connect it with: agentx github connect");
+      if (url.endsWith("/demo.git")) { await Promise.resolve(); demoRefused = true; throw NOT_CONNECTED(); }
+      expect(demoRefused, "a web read starts only after a demo read was refused").toBe(true);
       return FILE;
     };
     expect(await runPlanEvidenceJob(jobDeps(harness, getFile, time.now), { taskId, artifactId: artifact.id })).toBe("attached");
     expect(rows(harness)).toEqual([]);
-    expect(bundleOf(harness, taskId, artifact.id).excerpts).toEqual([
-      expect.objectContaining({ claimId: "1", status: "ok", lines: ["two", "three"] }),
-      expect.objectContaining({ claimId: "2", status: "unavailable" }),
-      expect.objectContaining({ claimId: "3", status: "unavailable" }),
-      expect.objectContaining({ claimId: "4", status: "ok", lines: ["two", "three"] }),
+    expect(bundleOf(harness, taskId, artifact.id).excerpts.map((excerpt) => [excerpt.path, excerpt.status])).toEqual([
+      ["repo/demo/src/a.ts", "unavailable"], ["repo/demo/src/b.ts", "unavailable"], ["repo/demo/src/c.ts", "unavailable"], ["repo/demo/src/d.ts", "unavailable"],
+      ["repo/web/src/page.ts", "ok"], ["repo/web/src/second.ts", "ok"],
     ]);
-    // The repository that is not connected was asked once; nothing further was read from it.
-    expect(reads.filter((read) => read.includes("/demo.git")).length).toBeLessThanOrEqual(2);
     expect(reads.filter((read) => read.includes("/web.git"))).toHaveLength(2);
+  });
+
+  it("still retries a passing fault on a repository that is connected, while the disconnected one is not tried again", async () => {
+    const { harness, taskId, artifact } = await twoRepositoryTask(["repo/demo/src/a.ts", "repo/web/src/page.ts"]);
+    const time = clock(rows(harness)[0]!.nextAttemptAt + 1_000);
+    const getFile: GetFile = async (url) => { if (url.endsWith("/demo.git")) throw NOT_CONNECTED(); throw new Error("GitHub is down"); };
+    expect(await runPlanEvidenceJob(jobDeps(harness, getFile, time.now), { taskId, artifactId: artifact.id })).toBe("retry");
+    expect(rows(harness)[0]).toMatchObject({ attempts: 1, nextAttemptAt: time.state.t + MINUTE });
+    expect(pointerOf(harness, taskId, artifact.id)).toBeUndefined();
+    // The retry reads web again; with it healthy the job attaches web's lines and leaves demo's place unavailable, with no further run.
+    time.state.t = rows(harness)[0]!.nextAttemptAt;
+    const reads: string[] = [];
+    const healthy: GetFile = async (url, path) => { reads.push(url); if (url.endsWith("/demo.git")) throw NOT_CONNECTED(); expect(path).toBe("src/page.ts"); return FILE; };
+    expect(await runPlanEvidenceJob(jobDeps(harness, healthy, time.now), { taskId, artifactId: artifact.id })).toBe("attached");
+    expect(rows(harness)).toEqual([]);
+    expect(bundleOf(harness, taskId, artifact.id).excerpts.map((excerpt) => excerpt.status)).toEqual(["unavailable", "ok"]);
   });
 
   it("counts a thrown error as an attempt", async () => {

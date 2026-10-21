@@ -123,12 +123,17 @@ describe("the health route's grants (A13)", () => {
     const brokerUses = broker.split("\n").filter((line) => /indexExpiresAt\(|INDEX_EXPIRY_ATTRIBUTE\]/.test(line));
     expect(brokerUses).toEqual([
       "        slackUserId: user.data, channelId: thread.data.channelId, threadTs: thread.data.threadTs, message, at, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(at) },",
+      // Plan 2, Task 16: a project creation request's record, which expires with its day (it holds the same instant as its expiresAt).
+      "          Item: { ...requestKey, entityType: \"PROJECT_CREATE_REQUEST\", bodyHash, projectName: definition.name, createdAt, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: expiresAt },",
       "      [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(operation.createdAt),",
     ]);
     // Task 19: a refused Slack press's private note, delivered within the hour and then dead weight.
     const refusal = broker.slice(broker.indexOf("async function recordSlackWorkflowRefusal("), broker.indexOf("async function answerSlackWorkflowEvent("));
     expect(refusal).toContain('entityType: "WORKFLOW_ACTION_REFUSAL"');
     expect(refusal).toContain(brokerUses.shift());
+    const projectCreation = broker.slice(broker.indexOf("async function createCloudProject("), broker.indexOf("async function createProjectSetupAdmissionRows("));
+    expect(projectCreation).toContain('entityType: "PROJECT_CREATE_REQUEST"');
+    expect(projectCreation).toContain(brokerUses.shift());
     const channelOperation = broker.slice(broker.indexOf("function channelOperation("), broker.indexOf("function requesterOf("));
     expect(channelOperation).toContain('entityType: "CHANNEL_OPERATION"');
     expect(channelOperation).toContain(brokerUses[0]);

@@ -231,9 +231,21 @@ describe("POST /v1/app/projects", () => {
     const h = await cloudInstall();
     // The connection's check passes (as for the first lookup), then GitHub describes the repository under another owner.
     h.github.getRepositoryIdentity.mockResolvedValueOnce({ repositoryId: 101, fullName: "acme/web", defaultBranch: "main" });
-    h.github.getRepositoryIdentity.mockResolvedValueOnce({ repositoryId: 9, fullName: "rival/web", defaultBranch: "main" });
+    h.github.getRepositoryIdentity.mockResolvedValueOnce({ repositoryId: 101, fullName: "rival/web", defaultBranch: "main" });
     expect(await h.create(MAYA, { requestId: REQUEST, repository: "acme/web" })).toMatchObject({ status: 403, body: { error: { code: "FORBIDDEN" } } });
     expect(h.written()).toEqual([]);
+  });
+
+  it("refuses when the second read of the repository is not the repository the connection was checked for, and writes nothing", async () => {
+    const h = await cloudInstall();
+    h.github.getRepositoryIdentity.mockResolvedValueOnce({ repositoryId: 101, fullName: "acme/web", defaultBranch: "main" });
+    h.github.getRepositoryIdentity.mockResolvedValueOnce({ repositoryId: 999, fullName: "acme/web", defaultBranch: "main" });
+    const refused = await h.create(MAYA, { requestId: REQUEST, repository: "acme/web" });
+    expect(refused).toMatchObject({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE" } } });
+    expect(error(refused).message).toContain("try again");
+    expect(h.written()).toEqual([]);
+    // Asked again, with GitHub steady, it creates.
+    expect((await h.create(MAYA, { requestId: REQUEST, repository: "acme/web" })).status).toBe(201);
   });
 
   it("answers two orgs' projects as each org's alone: both create web on repositories their own connection reaches", async () => {
@@ -322,6 +334,8 @@ describe("replaying a creation", () => {
     expect(record.bodyHash).toMatch(/^[0-9a-f]{64}$/);
     expect(typeof record.createdAt).toBe("string");
     expect(typeof record.expiresAt).toBe("number");
+    // The State table deletes it when the day is over: its TTL attribute holds the same instant.
+    expect(record.indexExpiresAt).toBe(record.expiresAt);
     expect(Number(record.expiresAt) - Math.floor(Date.parse(String(record.createdAt)) / 1000)).toBe(86400);
     const before = h.written().length;
     const lookups = h.github.installationForRepository.mock.calls.length;
@@ -333,6 +347,30 @@ describe("replaying a creation", () => {
     expect(h.github.installationForRepository.mock.calls).toHaveLength(lookups);
     // The same body spelled with another case of the repository is the same body.
     expect((await h.create(MAYA, { requestId: REQUEST, repository: "ACME/Web", name: "web-app", description: "The web app." })).status).toBe(200);
+  });
+
+  it("answers the race of two identical requests as a duplicate: the one that lost the name re-reads the record and answers 200", async () => {
+    const h = await cloudInstall();
+    const first = await h.create(MAYA, { requestId: REQUEST, repository: "acme/web" });
+    expect(first.status).toBe(201);
+    // The second request's replay check ran before the first one's transaction landed: it reads no record, then loses the name.
+    const key = projectCreateRequestKey(TEST_ORG, REQUEST);
+    const send = h.db.send.bind(h.db);
+    let hidden = false;
+    h.db.send = async (command) => {
+      const asked = (command as { input?: { Key?: { pk?: string; sk?: string } } }).input?.Key;
+      if (!hidden && asked?.pk === key.pk && asked.sk === key.sk) { hidden = true; return { Item: undefined }; }
+      return send(command);
+    };
+    const before = h.written().length;
+    const second = await h.create(MAYA, { requestId: REQUEST, repository: "acme/web" });
+    expect(hidden).toBe(true);
+    expect(second).toMatchObject({ status: 200, body: { duplicate: true } });
+    expect(second.body.project).toEqual(first.body.project);
+    expect(h.written()).toHaveLength(before);
+    // The same race with another body under the same id loses with the conflict, not the name.
+    hidden = false;
+    expect(error(await h.create(MAYA, { requestId: REQUEST, repository: "acme/web", description: "Other words." })).code).toBe("IDEMPOTENCY_CONFLICT");
   });
 
   it("refuses the same requestId with another body as IDEMPOTENCY_CONFLICT, and changes nothing", async () => {

@@ -61,7 +61,7 @@ export interface ProjectSettingsDependencies<Caller extends ProjectSettingsCalle
    * Whether the org's GitHub connection reaches a repository; throws GITHUB_NOT_CONNECTED when not. Defaults to
    * `requireRepositoryConnectedByRecords`; Plan 2, Task 15's `requireRepositoryConnected` replaces it.
    */
-  requireRepositoryConnected?(orgId: OrgId, owner: string, repository: string): Promise<unknown>;
+  requireRepositoryConnected?(orgId: OrgId, owner: string, repository: string): Promise<{ installationId: number; githubRepositoryId?: number }>;
 }
 
 export const SETTINGS_STALE_MESSAGE = "someone changed this project's settings; reload and try again";
@@ -187,12 +187,12 @@ async function changedRepositories(
     if (!removed.includes(repository)) removed.push(repository);
   }
   // Every added repository must be reached through the org's own GitHub connection before GitHub is asked anything about it.
-  const connected = deps.requireRepositoryConnected ?? ((orgId, owner, repository) => requireRepositoryConnectedByRecords(deps, orgId, owner, repository));
+  const connected: NonNullable<ProjectSettingsDependencies["requireRepositoryConnected"]> = deps.requireRepositoryConnected ?? ((orgId, owner, repository) => requireRepositoryConnectedByRecords(deps, orgId, owner, repository));
   const connections = new Map<number, { installationId: number; githubRepositoryId: number }>();
   for (const { index, owner, name } of added) {
-    const answer = await connected(caller.orgId, owner, name) as { installationId?: unknown; githubRepositoryId?: unknown } | undefined;
-    // What the connection answered is pinned on the entry (Task 16), as for a created project; the by-records default answers nothing to pin.
-    if (typeof answer?.installationId === "number" && typeof answer.githubRepositoryId === "number") connections.set(index, { installationId: answer.installationId, githubRepositoryId: answer.githubRepositoryId });
+    const answer = await connected(caller.orgId, owner, name);
+    // What the connection answered is pinned on the entry (Task 16), as for a created project; the by-records default answers no repository id, so pins nothing.
+    if (answer.githubRepositoryId !== undefined) connections.set(index, { installationId: answer.installationId, githubRepositoryId: answer.githubRepositoryId });
   }
   const entries: Repository[] = [];
   for (const { index, owner, name } of added) {

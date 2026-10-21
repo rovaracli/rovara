@@ -158,9 +158,12 @@ export async function runPlanEvidenceJob(deps: PlanEvidenceRunDependencies, even
       deadlineMs: RESOLVE_DEADLINE_MS,
       now: deps.now,
     });
-    // Retrying cannot help a repository the org has disconnected: its places stay `unavailable`, the excerpts read are kept, and the job ends here.
+    // Retrying cannot help a repository the org has disconnected: its places stay `unavailable` and the excerpts read are kept. A place on a
+    // repository that is still connected and could not be read this time keeps the normal retry.
     if (notConnected.size > 0) log({ event: "plan_evidence.github_not_connected", taskId, artifactId, attempt, repositories: notConnected.size });
-    else if (bundle.excerpts.some((excerpt) => excerpt.status === "unavailable") && attempt < PLAN_EVIDENCE_MAX_ATTEMPTS) {
+    const repositories = planEvidenceSources(project, task).repositories;
+    const disconnected = (path: string) => repositories.some((repository) => notConnected.has(repository.url) && path.startsWith(`${repository.path}/`));
+    if (bundle.excerpts.some((excerpt) => excerpt.status === "unavailable" && !disconnected(excerpt.path)) && attempt < PLAN_EVIDENCE_MAX_ATTEMPTS) {
       await reschedule(deps.now() + RETRY_MINUTES[attempt - 1]! * MS_PER_MINUTE);
       log({ event: "plan_evidence.retry", taskId, artifactId, attempt, reason: "unavailable" });
       return "retry";
