@@ -30,4 +30,14 @@ export default tseslint.config(
       "@typescript-eslint/require-await": "off"
     },
   },
+  {
+    // The static rovara.dev/join forwarder (Plan 2, Task 6): plain browser scripts, outside the TypeScript projects.
+    files: ["web/**/*.js"],
+    ...tseslint.configs.disableTypeChecked,
+    languageOptions: {
+      sourceType: "script",
+      parserOptions: { project: false },
+      globals: { document: "readonly", fetch: "readonly", history: "readonly", location: "readonly", URL: "readonly", URLSearchParams: "readonly" },
+    },
+  },
 );

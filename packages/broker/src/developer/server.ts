@@ -292,8 +292,24 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     return { token, invite, inviterName };
   }
 
+  /**
+   * The JSON form of the join page, for `agentx login --invite` (Plan 2, Task 6), which shows the person what they are about to join before
+   * a browser opens. It says no more than the HTML page: the organization and role of an open invite, and only the state of any other
+   * (no inviter, no address, not even masked, and no token). Reads only, like the page.
+   */
+  async function joinJson(query: URLSearchParams): Promise<HttpResult> {
+    const token = inviteTokenIn(query);
+    const invite = token === undefined ? undefined : await deps.orgs.describeInvite(token);
+    const answer = (statusCode: number, body: unknown): HttpResult => ({ ...jsonResult(statusCode, body), headers: { ...JSON_HEADERS, vary: "accept", "referrer-policy": "no-referrer" } });
+    if (invite === undefined) return answer(404, { state: "unknown" });
+    if (invite.state === "expired" || invite.state === "used") return answer(410, { state: invite.state });
+    return answer(200, { orgName: invite.orgName, role: invite.role, state: "open" });
+  }
+
   /** `GET /v1/auth/join?invite=`: the invite, or why it cannot be used. Reads only; creates nothing. */
-  async function joinPage(query: URLSearchParams): Promise<HttpResult> {
+  async function joinPage(query: URLSearchParams, headers: Record<string, string | undefined>): Promise<HttpResult> {
+    const accept = headers.accept ?? "";
+    if (/application\/json/i.test(accept) && !/text\/html/i.test(accept)) return joinJson(query);
     const found = await joinInvite(query);
     if ("page" in found) return found.page;
     const { token, invite, inviterName } = found;
@@ -699,7 +715,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
         case "/v1/auth/browser/authorize":
           return authorizeBrowser(url.searchParams);
         case "/v1/auth/join":
-          return joinPage(url.searchParams);
+          return joinPage(url.searchParams, headers);
         case "/v1/auth/join/start":
           return joinStart(url.searchParams);
         case "/v1/auth/join/done":

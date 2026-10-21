@@ -145,6 +145,63 @@ describe("GET /v1/auth/join", () => {
   });
 });
 
+describe("GET /v1/auth/join as JSON (agentx login --invite)", () => {
+  const getJson = (h: Harness, path: string, accept = "application/json"): Promise<HttpResult> => h.http({ ...httpEvent("GET", path), headers: { accept } });
+
+  it("answers an open invite with its organization and role, and nothing else", async () => {
+    const h = identityHarness({ cloud: {}, oidcUsers: [] });
+    const orgId = await acme(h);
+    const token = await inviteTo(h, orgId, { role: "admin", email: "priya@acme.dev" });
+    const response = await getJson(h, `/v1/auth/join?invite=${token}`);
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ orgName: "Acme", role: "admin", state: "open" });
+    expect(response.headers["content-type"]).toBe("application/json");
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["referrer-policy"]).toBe("no-referrer");
+    expect(response.headers.vary).toBe("accept");
+    for (const secret of [token, "priya", "Maya", "acme.dev", OWNER]) expect(response.body).not.toContain(secret);
+  });
+
+  it("answers an expired invite 410 and a used one 410, with only the state", async () => {
+    const h = identityHarness({ cloud: {}, oidcUsers: [] });
+    const orgId = await acme(h);
+    const expired = await inviteTo(h, orgId, { ttlSeconds: 60 });
+    const used = await inviteTo(h, orgId);
+    await h.orgs.acceptInvite({ tokenHash: inviteTokenHash(used), developerId: "c".repeat(64) });
+    h.tick(61_000);
+    const first = await getJson(h, `/v1/auth/join?invite=${expired}`);
+    const second = await getJson(h, `/v1/auth/join?invite=${used}`);
+    expect([first.statusCode, JSON.parse(first.body)]).toEqual([410, { state: "expired" }]);
+    expect([second.statusCode, JSON.parse(second.body)]).toEqual([410, { state: "used" }]);
+  });
+
+  it.each([["an unknown token", "A".repeat(43)], ["a malformed one", "short"], ["none at all", ""]])("answers 404 with state unknown for %s", async (_name, token) => {
+    const h = identityHarness({ cloud: {}, oidcUsers: [] });
+    const response = await getJson(h, token === "" ? "/v1/auth/join" : `/v1/auth/join?invite=${token}`);
+    expect([response.statusCode, JSON.parse(response.body)]).toEqual([404, { state: "unknown" }]);
+  });
+
+  it("gives the page to a browser, and to a request that does not ask for JSON", async () => {
+    const h = identityHarness({ cloud: {}, oidcUsers: [] });
+    const orgId = await acme(h);
+    const token = await inviteTo(h, orgId);
+    for (const accept of ["text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8", "*/*", "text/html"]) {
+      const response = await getJson(h, `/v1/auth/join?invite=${token}`, accept);
+      expect(response.headers["content-type"]).toBe("text/html; charset=utf-8");
+    }
+    expect((await get(h, `/v1/auth/join?invite=${token}`)).headers["content-type"]).toBe("text/html; charset=utf-8");
+  });
+
+  it("creates and changes nothing", async () => {
+    const h = identityHarness({ cloud: {}, oidcUsers: [] });
+    const orgId = await acme(h);
+    const token = await inviteTo(h, orgId);
+    const before = everything(h);
+    await getJson(h, `/v1/auth/join?invite=${token}`);
+    expect(everything(h)).toBe(before);
+  });
+});
+
 describe("the join sign-in", () => {
   it("joins a new cloud identity: the done page says so, the invite is used, the person is a member, and no session or code exists", async () => {
     const h = identityHarness({ cloud: {}, oidcUsers: [bea], slack: false });

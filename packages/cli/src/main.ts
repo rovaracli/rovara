@@ -45,7 +45,8 @@ import { createDeveloperProject, createProjectText, developerLogout, fetchDevelo
 import { resolveDeveloperEnvironment } from "./developer/config.js";
 import { orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
-import { developerLogin } from "./developer/login.js";
+import { LOOPBACK_HOSTS, developerLogin } from "./developer/login.js";
+import { INVITE_QUESTION, askYesByDefault, fetchCurrentOrg, fetchInviteSummary, inviteConfirmationLine, inviteOutcomeText, parseInviteLink, resolveInviteCell } from "./developer/invite-link.js";
 import { fetchDeveloperWorkspaces, type DeveloperWorkspacesResult } from "./developer/workspaces.js";
 import { runWorkspacesCommand } from "./workspaces-ui/index.js";
 import { listAdminWorkspaces } from "./admin/workspaces.js";
@@ -152,6 +153,8 @@ export interface CliDependencies {
     isInteractive?: () => boolean;
     port?: number;
   };
+  /** `agentx login` overrides, for tests: never open a browser. */
+  login?: { openBrowser?: (url: string) => Promise<void> };
   /** `chatgpt connect` overrides, for tests: another port, no browser, and no terminal check. */
   chatgpt?: { port?: number; openBrowser?: (url: string) => Promise<void>; isInteractive?: () => boolean };
   /** `rovara loop` overrides, for tests: every outside program (gh, git, tmux, claude) and how to run this CLI. */
@@ -307,11 +310,35 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .argument("[url]", "your AgentX URL, for developer sign-in")
     .option("--admin", "sign in as an administrator with the admin identity provider (the default when no URL is given)", false)
     .option("--no-browser", "developer sign-in: print the sign-in link instead of opening a browser")
+    .option("--invite <link>", "join an organization with an invite link (or its code, with the URL): shows what you are joining and asks before opening the browser")
+    .option("--yes", "with --invite: open the browser without asking", false)
     .option("--callback-port <port>", "fixed loopback callback port registered with the OIDC client", parsePort, DEFAULT_CALLBACK_PORT)
-    .action(async (url: string | undefined, options: { admin: boolean; browser: boolean; callbackPort: number }, command: Command) => {
+    .action(async (explicitUrl: string | undefined, options: { admin: boolean; browser: boolean; invite?: string; yes: boolean; callbackPort: number }, command: Command) => {
       const globals = globalOptions(command);
-      if (url !== undefined && options.admin) {
-        throw agentXError("CONFIG_INVALID", "use either agentx login <url> (developer sign-in) or agentx login --admin, not both");
+      if ((explicitUrl !== undefined || options.invite !== undefined) && options.admin) {
+        throw agentXError("CONFIG_INVALID", options.invite !== undefined ? "use either agentx login --invite <link> (joining an organization) or agentx login --admin, not both" : "use either agentx login <url> (developer sign-in) or agentx login --admin, not both");
+      }
+      // An invite link names the cell to sign in to (an explicit URL wins), and the person is told what they are joining before a browser opens (ruling R19).
+      let url = explicitUrl;
+      let invite: string | undefined;
+      if (options.invite !== undefined) {
+        const parsed = parseInviteLink(options.invite);
+        invite = parsed.token;
+        const chosen = explicitUrl ?? await resolveInviteCell(parsed, services.fetchImplementation);
+        let base: URL;
+        try {
+          base = new URL(chosen);
+        } catch {
+          throw agentXError("CONFIG_INVALID", `${chosen} is not a URL; pass your Rovara URL, for example https://abc123.execute-api.us-west-2.amazonaws.com`);
+        }
+        if (base.protocol !== "https:" && !(globals.allowLoopback && base.protocol === "http:" && LOOPBACK_HOSTS.has(base.hostname))) {
+          throw agentXError("CONFIG_INVALID", "your Rovara URL must use https; plain http is allowed only for 127.0.0.1, localhost or ::1 with --allow-loopback");
+        }
+        const cell = base.origin + base.pathname.replace(/\/+$/, "");
+        const summary = await fetchInviteSummary(cell, invite, services.fetchImplementation);
+        services.stderr.write(`${inviteConfirmationLine(summary, cell)}\n`);
+        if (!options.yes && !await inviteConfirmer()(INVITE_QUESTION)) throw agentXError("CONFIRMATION_DECLINED", "you chose not to join; nothing changed");
+        url = cell;
       }
       if (url !== undefined) {
         const result = await developerLogin({
@@ -322,10 +349,24 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
           tokenStore: services.tokenStore,
           fetch: services.fetchImplementation,
           write: (line) => { services.stderr.write(`${line}\n`); },
+          ...(dependencies.login?.openBrowser === undefined ? {} : { openBrowser: dependencies.login.openBrowser }),
+          ...(invite === undefined ? {} : { invite }),
           ...(command.getOptionValueSource("callbackPort") === "cli" ? { callbackPort: options.callbackPort } : {}),
         });
+        // What happened to the invite: joined, or the exact words for why not. The sign-in itself succeeded either way.
+        let inviteResult: { outcome: string; message: string } | undefined;
+        if (invite !== undefined) {
+          const outcome = result.inviteError ?? "joined";
+          const org = outcome === "INVITE_WRONG_EMAIL" || outcome === "INVITE_INVALID" ? undefined : await fetchCurrentOrg(developerSession(), result.env);
+          inviteResult = { outcome, message: inviteOutcomeText(outcome, org) };
+        }
         const projects = await fetchDeveloperProjects(developerSession(), result.env);
-        services.stdout.write(globals.json ? formatSuccess({ env: projects.env, url: projects.url, ...projects.projects }, true) : whoamiText({ ...projects, identities: await fetchLinkedIdentities(developerSession(), result.env) }));
+        if (globals.json) {
+          services.stdout.write(formatSuccess({ env: projects.env, url: projects.url, ...projects.projects, ...(inviteResult === undefined ? {} : { invite: inviteResult }) }, true));
+        } else {
+          if (inviteResult !== undefined) services.stdout.write(`${inviteResult.message}\n`);
+          services.stdout.write(whoamiText({ ...projects, identities: await fetchLinkedIdentities(developerSession(), result.env) }));
+        }
         return;
       }
       // A bare login (or --admin) is today's admin login, unchanged.
@@ -601,6 +642,15 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const result = await submitRuntimeInstallProposal({ controlPlaneUrl: settings.controlPlaneUrl, accessToken: session.accessToken, proposalFile: options.proposalFile }, services.fetchImplementation);
       services.stdout.write(formatSuccess(result, globals.json));
     });
+
+  /** The question before an invite's browser opens: (Y/n), so a plain Enter joins. It needs a terminal, or --yes. */
+  const inviteConfirmer = (): ((question: string) => Promise<boolean>) => {
+    if (dependencies.confirm !== undefined) return (question) => dependencies.confirm!(question);
+    const stdin: NodeJS.ReadableStream & { isTTY?: boolean } = dependencies.stdin ?? process.stdin;
+    if (stdin.isTTY !== true) throw agentXError("CONFIRMATION_UNAVAILABLE", "this needs a yes before the browser opens: run the command in a terminal to answer, or pass --yes; nothing changed");
+    const output = new NodeWritable({ write(chunk: Buffer | string, _encoding, done) { services.stderr.write(chunk.toString()); done(); } });
+    return (question) => askYesByDefault(question, { input: stdin, output, signals: process });
+  };
 
   // Spec 025 E17 (Q6): a person typing the command is the confirmation; --yes answers for them.
   // Without --yes the prompt needs a terminal, checked before anything is planned.

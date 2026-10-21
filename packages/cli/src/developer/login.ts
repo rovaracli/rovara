@@ -3,12 +3,15 @@ import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXConfigurationSchema, DEVE
 import { createCallbackListener, createPkceParameters, openSystemBrowser } from "../auth.js";
 import type { TokenStore } from "../token-store.js";
 import { developerTokenKey, saveDeveloperEnvironment } from "./config.js";
+import { InviteOutcomeSchema, type InviteOutcome } from "./invite-link.js";
 import { serverReason } from "./session.js";
 
-export interface DeveloperLoginOptions { url: string; allowLoopback: boolean; browser: boolean; home: string; tokenStore: TokenStore; fetch: typeof fetch; openBrowser?: (url: string) => Promise<void>; write: (line: string) => void; timeoutMs?: number; callbackPort?: number }
+export interface DeveloperLoginOptions { url: string; allowLoopback: boolean; browser: boolean; home: string; tokenStore: TokenStore; fetch: typeof fetch; openBrowser?: (url: string) => Promise<void>; write: (line: string) => void; timeoutMs?: number; callbackPort?: number;
+  /** An invite token (Plan 2, Task 6): it rides the authorize URL, and the sign-in joins the organization it is for. */
+  invite?: string }
 
 /** The only hosts --allow-loopback lets use plain http (URL.hostname keeps the brackets on IPv6). */
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+export const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
 /** Reads and checks the environment's sign-in configuration before anything is sent to it. */
 async function readConfiguration(options: DeveloperLoginOptions, base: URL, url: string): Promise<AgentXConfiguration> {
@@ -31,7 +34,7 @@ async function readConfiguration(options: DeveloperLoginOptions, base: URL, url:
   return configuration;
 }
 
-export async function developerLogin(options: DeveloperLoginOptions): Promise<{ env: string; configuration: AgentXConfiguration }> {
+export async function developerLogin(options: DeveloperLoginOptions): Promise<{ env: string; configuration: AgentXConfiguration; inviteError?: InviteOutcome }> {
   let base: URL;
   try {
     base = new URL(options.url);
@@ -57,13 +60,14 @@ export async function developerLogin(options: DeveloperLoginOptions): Promise<{ 
       response_type: "code", client_id: AGENTX_CLI_CLIENT_ID, redirect_uri: listener.redirectUri, state: pkce.state,
       code_challenge: pkce.challenge, code_challenge_method: "S256",
     })) authorize.searchParams.set(key, value);
+    if (options.invite !== undefined) authorize.searchParams.set("invite", options.invite);
     if (options.browser) {
       options.write(`Opening your browser to sign in to AgentX environment ${configuration.env}. If it does not open, open this link: ${authorize.toString()}`);
       await (options.openBrowser ?? openSystemBrowser)(authorize.toString()).catch(() => undefined);
     } else {
       options.write(`Open this link in a browser on this computer to sign in to AgentX environment ${configuration.env}: ${authorize.toString()}`);
     }
-    const code = await listener.code;
+    const { code, inviteError } = await listener.code;
     let response: Response;
     try {
       response = await options.fetch(configuration.tokenEndpoint, {
@@ -85,7 +89,8 @@ export async function developerLogin(options: DeveloperLoginOptions): Promise<{ 
       accessToken: tokens.data.access_token, refreshToken: tokens.data.refresh_token, expiresAt: Date.now() + tokens.data.expires_in * 1000,
     });
     await saveDeveloperEnvironment(options.home, configuration.env, { url, issuer: configuration.issuer, tokenEndpoint: configuration.tokenEndpoint, revocationEndpoint: configuration.revocationEndpoint });
-    return { env: configuration.env, configuration };
+    const unused = InviteOutcomeSchema.safeParse(inviteError);
+    return { env: configuration.env, configuration, ...(options.invite !== undefined && unused.success ? { inviteError: unused.data } : {}) };
   } finally {
     listener.close();
   }
