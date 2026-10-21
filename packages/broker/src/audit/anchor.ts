@@ -46,6 +46,7 @@ import {
   type LockedObjectV1,
   type OrgSealV1,
 } from "@agentx/contracts";
+import { processDueShreds } from "./erase.js";
 import { currentLockState, enforceObjectLock, runLockChecks, type LockCheckDeps } from "./lock-check.js";
 import { TsaError, checkGenTime, randomNonce, requestTimestamp, type TsaDeps, type TsaSettings, type TsaTarget } from "./tsa-client.js";
 
@@ -76,6 +77,11 @@ export interface AnchorDeps extends LockCheckDeps {
   sleep?: (ms: number) => Promise<void>;
   /** Task 10: the timestamp authorities. Absent means none: epochs are sealed without a token (`AUDIT_TSA_KIND=off`). */
   tsa?: TsaDeps;
+  /**
+   * Task 15: where the shred sweep works (the keys table, the State table where the due items live, the exports bucket). Absent means
+   * no sweep. It uses this client and `s3` (one client serves both buckets) and `sleep` for its 30-second wait.
+   */
+  shred?: { keysTable: string; stateTable: string; exportsBucket: string };
 }
 
 export interface AnchorEpochSummary {
@@ -1353,6 +1359,27 @@ function logEpoch(ctx: Context, summary: AnchorEpochSummary): void {
  * run the hourly backstop, and, if any org has new records, open the epoch of this slot and seal it.
  */
 export async function runAuditEpoch(deps: AnchorDeps, now: number): Promise<AnchorRunResult> {
+  try {
+    return await runEpochs(deps, now);
+  } finally {
+    // Task 15: the shreds that have come due, after the sealing, whether or not the epoch work finished: an erasure that is due must
+    // not wait on a lock mismatch or a stuck timestamp. Its errors are logged for the alarm and never fail the run.
+    await sweepDueShreds(deps, now);
+  }
+}
+
+/** Shreds the companies whose time has come (erase.ts). Never throws: a failure is the `audit.shred_failed` alarm's to report. */
+async function sweepDueShreds(deps: AnchorDeps, now: number): Promise<void> {
+  const settings = deps.shred;
+  if (settings === undefined) return;
+  try {
+    await processDueShreds({ documentClient: deps.documentClient, s3: deps.s3, log: deps.log, ...(deps.sleep === undefined ? {} : { sleep: deps.sleep }), ...settings }, now);
+  } catch (error) {
+    deps.log({ event: "audit.shred_failed", level: "error", step: "run", error: errorName(error) });
+  }
+}
+
+async function runEpochs(deps: AnchorDeps, now: number): Promise<AnchorRunResult> {
   const ctx: Context = { deps, now, nowIso: new Date(now).toISOString(), stampRequests: new Map(), lastStampRequestAt: new Map(), lastRecordedAt: new Map(), settled: new Set() };
   const epochs: AnchorEpochSummary[] = [];
   const finish = (reason?: string): AnchorRunResult => {

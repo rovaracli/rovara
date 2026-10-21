@@ -6,7 +6,8 @@
 import { InvokeCommand, type LambdaClient } from "@aws-sdk/client-lambda";
 import { GetObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { agentXError } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@agentx/contracts";
+import { AUDIT_EXPORT_PURGE_SOURCE } from "./erase.js";
 import type { AuditExportClientDeps, AuditExportEvent } from "./export.js";
 
 /** A link with less than this left of the signing credentials is not handed out: it would be dead before it could be used. */
@@ -30,5 +31,17 @@ export function exportLinkSigner(s3: S3Client, now: () => number = Date.now): Au
       lifetime = Math.min(lifetime, left);
     }
     return { url: await getSignedUrl(s3, new GetObjectCommand({ Bucket: bucket, Key: key }), { expiresIn: lifetime }), expiresInSeconds: lifetime };
+  };
+}
+
+/**
+ * Deleting an org's export files is the export function's job (its role holds the bucket's list and delete grants; the broker's does
+ * not). The broker waits for the answer, because an erasure must say whether the files are gone: a function error, or any status but
+ * 200, is a failure, and the erasure's caller is told to send the request again.
+ */
+export function exportPurger(lambda: Pick<LambdaClient, "send">, functionName: string): (orgId: OrgId) => Promise<void> {
+  return async (orgId) => {
+    const response = await lambda.send(new InvokeCommand({ FunctionName: functionName, InvocationType: "RequestResponse", Payload: Buffer.from(JSON.stringify({ source: AUDIT_EXPORT_PURGE_SOURCE, orgId })) }));
+    if (response.StatusCode !== 200 || response.FunctionError !== undefined) throw new Error(`audit export purge answered ${String(response.StatusCode)}${response.FunctionError === undefined ? "" : ` with ${response.FunctionError}`}`);
   };
 }

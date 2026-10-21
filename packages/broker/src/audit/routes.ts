@@ -62,7 +62,7 @@ export const configInvalid = (message: string): Error => agentXError("CONFIG_INV
 // Fixed text: a message never repeats a parameter or field name the client chose.
 const UNKNOWN_PARAMETER = "This request has a parameter that this route does not take.";
 const REPEATED_PARAMETER = "A parameter was given more than once.";
-const UNKNOWN_FIELD = "This request has a field that this route does not take.";
+export const UNKNOWN_FIELD = "This request has a field that this route does not take.";
 
 const QUERY_PARAMETERS = ["fromSeq", "toSeq", "from", "to", "action", "actorId", "cursor", "limit"] as const;
 

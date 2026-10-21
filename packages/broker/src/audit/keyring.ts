@@ -129,6 +129,14 @@ export class AuditKeyring {
     return shredded;
   }
 
+  /**
+   * Whether the org has been shredded (read consistently). The export code asks this before it starts, builds or signs anything for
+   * an org: a shredded company's details are gone for good, and nothing may be handed out as if they were not.
+   */
+  async isOrgShredded(orgId: string): Promise<boolean> {
+    return this.isShredded(orgId);
+  }
+
   private remember(orgId: string, key: Buffer): Buffer {
     // Keep a warm Lambda's memory bounded: forget every key whose time is up.
     for (const [cachedOrg, entry] of this.cache) if (this.now() >= entry.expiresAt) this.cache.delete(cachedOrg);

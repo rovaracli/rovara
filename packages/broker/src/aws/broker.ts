@@ -243,7 +243,8 @@ import { ZodError, z } from "zod";
 import { healthProbes } from "./health-probes.js";
 import { runAuditDrain } from "../audit/drain.js";
 import type { AuditExportClientDeps } from "../audit/export.js";
-import { exportInvoker, exportLinkSigner } from "../audit/export-wiring.js";
+import { exportInvoker, exportLinkSigner, exportPurger } from "../audit/export-wiring.js";
+import type { AuditEraseDeps } from "../audit/erase.js";
 import { routeAuditAdminRequest } from "../audit/admin-routes.js";
 import { isAuditViewPath } from "../audit/view-page.js";
 import { AuditKeyring } from "../audit/keyring.js";
@@ -444,6 +445,8 @@ interface AwsBrokerDependencies {
   audit?: AuditRuntime;
   /** What reading the Audit Ledger and starting its exports needs (Task 11); absent on a legacy install. The broker builds no export: its own function does. */
   auditLedger?: AuditExportClientDeps;
+  /** What erasing a person's audit details needs (Task 15); absent on a legacy install, where the staff erase route does not exist. */
+  auditErase?: AuditEraseDeps;
   s3: S3Client;
   /** Starts deleting an ec2-ebs workspace's instance and volume (#84). */
   deleteEc2Session?: (workspaceId: string) => Promise<void>;
@@ -622,6 +625,14 @@ async function putOrgGithubOwner(dependencies: AwsBrokerDependencies, identity: 
   await orgStoreOf(dependencies).setGithubOwner(parsed.data.orgId, parsed.data.githubOwner);
   console.log(JSON.stringify({ component: "broker", event: "admin.org_github_owner_changed", orgId: parsed.data.orgId, githubOwner: parsed.data.githubOwner }));
   return { org: { orgId: parsed.data.orgId, githubOwner: parsed.data.githubOwner } };
+}
+
+/** A person's name from their sign-in record, for the answer to an erasure (read before their details are erased). */
+async function developerDisplayName(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "developer">, developerId: string): Promise<string | undefined> {
+  const table = dependencies.developer?.signInTableName;
+  if (table === undefined) return undefined;
+  const out = await dependencies.documentClient.send(new GetCommand({ TableName: table, Key: { pk: `DEVELOPER#${developerId}`, sk: "META" } })) as { Item?: { displayName?: unknown } };
+  return typeof out.Item?.displayName === "string" ? out.Item.displayName : undefined;
 }
 
 function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">): OrgStore {
@@ -1327,7 +1338,12 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (adminRead !== undefined) return json(adminRead, request.requestId);
       // Task 12: Rovara staff reading an org's audit log. Fail-closed: the staff read is recorded before anything is read.
       const staffAudit = await routeAuditAdminRequest(
-        { ledger: dependencies.auditLedger, orgExists: async (orgId) => (await orgStoreOf(dependencies).getOrg(orgId)) !== undefined },
+        {
+          ledger: dependencies.auditLedger,
+          orgExists: async (orgId) => (await orgStoreOf(dependencies).getOrg(orgId)) !== undefined,
+          ...(dependencies.auditErase === undefined ? {} : { erase: dependencies.auditErase }),
+          personName: (developerId) => developerDisplayName(dependencies, developerId),
+        },
         identity, { method: request.method, body, requestId: request.requestId }, url);
       if (staffAudit !== undefined) return json(staffAudit.body, request.requestId, staffAudit.status);
 
@@ -12227,10 +12243,23 @@ const auditLedger: AuditExportClientDeps | undefined = auditLedgerTable === unde
   presign: exportLinkSigner(s3),
 };
 
+// Erasing a person's details (Task 15): the tombstone goes in the keys table with the audit.subject_erased event, in one transaction made
+// with the broker's own client; the export files are deleted by the export function (its role holds that grant), which the broker asks.
+const auditErase: AuditEraseDeps | undefined = auditLedger === undefined ? undefined : {
+  documentClient,
+  keysTable: requiredEnvironment("AUDIT_KEYS_TABLE_NAME"),
+  tableName: requiredEnvironment("STATE_TABLE_NAME"),
+  ...(audit === undefined ? {} : { audit }),
+  now: Date.now,
+  log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
+  purgeExports: exportPurger(lambdaClient, requiredEnvironment("AUDIT_EXPORT_FUNCTION_NAME")),
+};
+
 export const handler = createAwsBrokerHandler({
   documentClient,
   ...(audit === undefined ? {} : { audit }),
   ...(auditLedger === undefined ? {} : { auditLedger }),
+  ...(auditErase === undefined ? {} : { auditErase }),
   s3,
   tableName: requiredEnvironment("STATE_TABLE_NAME"),
   artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"),

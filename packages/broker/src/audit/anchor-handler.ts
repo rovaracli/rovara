@@ -58,6 +58,8 @@ function productionDependencies(): AnchorDeps {
     bucket: requiredEnvironment("AUDIT_LEDGER_BUCKET_NAME"),
     // The deployed profile, mode, days and policy hash, and the identity the bucket policy is normalized with. The floor itself is in code.
     lock: lockSettingsFromEnvironment(process.env),
+    // Task 15: the shred sweep every run makes. The State table holds the due items; the keys table and the exports bucket are swept.
+    shred: { keysTable: requiredEnvironment("AUDIT_KEYS_TABLE_NAME"), stateTable: requiredEnvironment("STATE_TABLE_NAME"), exportsBucket: requiredEnvironment("AUDIT_EXPORTS_BUCKET_NAME") },
     log: (entry) => { console.log(JSON.stringify({ component: "audit-anchor", ...entry })); },
   };
   return production;

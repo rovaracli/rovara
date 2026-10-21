@@ -155,6 +155,8 @@ export const AUDIT_CHAIN_MISMATCH_EVENTS = ["audit.chain_mismatch", "audit.versi
  * sweep and from the checks before a write; `audit.lock_sweep_failed` when the sweep itself could not run, which does not stop
  * the anchor but means the delete-marker and extra-version look was skipped).
  */
+/** Task 15: the anchor's log events for a shred that did not finish, or a due item it cannot trust. */
+export const AUDIT_SHRED_FAILED_EVENTS = ["audit.shred_failed", "audit.shred_item_invalid"] as const;
 export const AUDIT_LOCK_DRIFT_EVENTS = ["audit.lock_config_mismatch", "audit.version_drift", "audit.lock_sweep_failed"] as const;
 
 /** The anchor's log event for a timestamp that was not obtained or not accepted (Task 10): the authority's label and the problem. */
@@ -531,7 +533,8 @@ export class AuditLedger extends Construct {
    *  - `dynamodb:PutItem` (the staff-read put, and the pending item inside the action's transaction), `Query` (the drain),
    *    `UpdateItem` (the drain's attempt count and its once-only failure mark) and `DeleteItem` (the flush and the drain),
    *    on the State table with `dynamodb:LeadingKeys` restricted to `AUDIT_PENDING#*`. The pending code never reads a
-   *    single item, so there is no `GetItem`. The ledger, seals and keys tables, the bucket and the key get nothing.
+   *    single item, so there is no `GetItem`. The ledger, seals and keys tables, the bucket and the key get nothing;
+   *  - `dynamodb:PutItem` on the State table for `AUDIT_SHRED_DUE` alone (Task 15): the due item of a closed org's shred.
    * The broker already holds read and write on the State table (`grantReadWriteData`), so this statement narrows nothing
    * today; it states and pins what the outbox needs, and it is the grant that would remain if that broader one is
    * ever cut back. It is a separate policy so that it is easy to find and to take out of snapshots.
@@ -552,6 +555,14 @@ export class AuditLedger extends Construct {
           actions: ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:DeleteItem"],
           resources: [props.stateTable.tableArn],
           conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT_PENDING#*"] } },
+        }),
+        // Task 15: closing an org puts the shred's due item in the same transaction as the close (closeOrg, Task 18). Put only, and
+        // only in this partition: the anchor reads and clears the due items, the broker never does.
+        new iam.PolicyStatement({
+          sid: "ScheduleShred",
+          actions: ["dynamodb:PutItem"],
+          resources: [props.stateTable.tableArn],
+          conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT_SHRED_DUE"] } },
         }),
       ],
     });
@@ -613,6 +624,7 @@ export class AuditLedger extends Construct {
    *    it is asked about; the broker is not a writer there, so there is no leading-key restriction to pin);
    *  - `dynamodb:GetItem` on the keys table, to open a person's details (the KMS decrypt itself is allowed by the key policy
    *    alone, under the encryption context, so there is no KMS statement here);
+   *  - `dynamodb:PutItem` on the keys table (Task 15): the tombstone that erases a person's details;
    *  - `s3:GetObject` on the exports bucket's objects: a presigned download is signed with this role, and the link can do no more
    *    than the role can (the export function writes the files);
    *  - `lambda:InvokeFunction` on the export function and nothing else: starting an export is an asynchronous invoke of it.
@@ -638,6 +650,14 @@ export class AuditLedger extends Construct {
         new iam.PolicyStatement({
           sid: "ReadKeys",
           actions: ["dynamodb:GetItem"],
+          resources: [this.keysTable.tableArn],
+        }),
+        // Task 15: erasing a person writes their tombstone over their key item (one PutItem, in a transaction with the audit event).
+        // IAM cannot limit a PutItem to one sort key, so the grant is the whole table's PutItem and nothing else (no DeleteItem, no
+        // UpdateItem): the code writes the tombstone only under `SUBJECT#<id>` and only where none exists, and a test pins that.
+        new iam.PolicyStatement({
+          sid: "EraseSubjects",
+          actions: ["dynamodb:PutItem"],
           resources: [this.keysTable.tableArn],
         }),
         new iam.PolicyStatement({
@@ -791,6 +811,10 @@ export class AuditLedger extends Construct {
    *    writes, and sweeps the sealed keys), and, on the bucket, the three reads of its own configuration that the drift check
    *    makes each run: `GetBucketObjectLockConfiguration`, `GetBucketVersioning` and `GetBucketPolicy`. Never a delete, `PutObjectRetention`, `PutObjectLegalHold`, `BypassGovernanceRetention`, a bucket-level write
    *    or anything of KMS (the bucket uses S3-managed encryption);
+   *  - Task 15, the shred sweep it makes on every run: the keys table's `Query`, `PutItem` (the SHREDDED marker) and `DeleteItem`
+   *    (it empties one company's partition); the State table's `Query` and `DeleteItem` for `AUDIT_SHRED_DUE` alone (the due
+   *    items); and, on the exports bucket, `ListBucket` and `DeleteObject` (the company's folder). No `GetItem` or `UpdateItem` on the
+   *    keys table, no write to the State table, and no read or write of an export file;
    *  - Task 10, on a `custom` install only: `ssm:GetParameter` on the one parameter that holds the timestamp authorities' roots.
    *    The function is outside any VPC, like the broker, so a public authority is reached over the internet with no NAT or
    *    endpoint of ours.
@@ -820,6 +844,10 @@ export class AuditLedger extends Construct {
         AUDIT_LEDGER_TABLE_NAME: this.ledgerTable.tableName,
         AUDIT_SEALS_TABLE_NAME: this.sealsTable.tableName,
         AUDIT_LEDGER_BUCKET_NAME: this.ledgerBucket.bucketName,
+        // Task 15: what the shred sweep works on (the keys table, the State table's due items, the exports bucket).
+        AUDIT_KEYS_TABLE_NAME: this.keysTable.tableName,
+        STATE_TABLE_NAME: props.stateTable.tableName,
+        AUDIT_EXPORTS_BUCKET_NAME: this.exportsBucket.bucketName,
         // Task 9. The floor is in code (lockFloor): from the name, this profile and the ratchet. The mode and days are what the
         // stack deployed, which the drift check compares the bucket with; the hash is the synthesized policy's, per profile.
         AUDIT_ENV_NAME: env,
@@ -882,6 +910,31 @@ export class AuditLedger extends Construct {
           sid: "LedgerBucketConfiguration",
           actions: ["s3:GetBucketObjectLockConfiguration", "s3:GetBucketVersioning", "s3:GetBucketPolicy"],
           resources: [this.ledgerBucket.bucketArn],
+        }),
+        // Task 15, the shred sweep (run every time the anchor runs): a closed company's keys partition is emptied (Query, then DeleteItem
+        // for each item) after the SHREDDED marker is written (PutItem); the due items it reads and clears are the State table's
+        // AUDIT_SHRED_DUE partition alone; and the company's folder of export files is listed and deleted. No GetItem or UpdateItem on the
+        // keys table, no Put in the State table, and no read or write of an export file.
+        new iam.PolicyStatement({
+          sid: "ShredKeys",
+          actions: ["dynamodb:Query", "dynamodb:PutItem", "dynamodb:DeleteItem"],
+          resources: [this.keysTable.tableArn],
+        }),
+        new iam.PolicyStatement({
+          sid: "ShredDueItems",
+          actions: ["dynamodb:Query", "dynamodb:DeleteItem"],
+          resources: [props.stateTable.tableArn],
+          conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT_SHRED_DUE"] } },
+        }),
+        new iam.PolicyStatement({
+          sid: "ShredExportObjects",
+          actions: ["s3:DeleteObject"],
+          resources: [this.exportsBucket.arnForObjects("*")],
+        }),
+        new iam.PolicyStatement({
+          sid: "ShredListExports",
+          actions: ["s3:ListBucket"],
+          resources: [this.exportsBucket.bucketArn],
         }),
         // Task 10, custom authorities only: the one parameter that holds their root certificates, read at cold start. A public or
         // `off` install has no SSM grant at all.
@@ -960,6 +1013,13 @@ export class AuditLedger extends Construct {
       naming, props.notifyOperator, "AuditLockDriftAlarm", "AuditLockDrift",
       "The ledger bucket's Object Lock no longer meets the floor, or its versioning, its default retention or its policy differs from what was deployed, an object came back with a weaker lock than the floor, or a sealed key holds a delete marker, a second version or another version. Sealing stops (or the affected org is not finalized) until a person looks. See the anchor's logs for audit.lock_config_mismatch and audit.version_drift, and docs/runbooks/audit-object-conflict.md.",
       this.countedLogEvents(naming, logGroup, "AuditLockDrift", "AuditLockDrift", AUDIT_LOCK_DRIFT_EVENTS),
+    );
+    // Task 15: an erasure obligation that was not met. A shred that stopped on an error (its due item stays and the next run tries
+    // again) or a due item that is damaged: one is enough, because a company's details are waiting to be erased.
+    this.alarmOnAtLeastOne(
+      naming, props.notifyOperator, "AuditShredFailedAlarm", "AuditShredFailed",
+      "A closed company's audit details were due to be shredded and the shred did not finish, or a due item is damaged. The next run tries again; if this repeats, check the anchor's logs for audit.shred_failed (the org, the step and the error) and audit.shred_item_invalid, and that the anchor's role can still list and delete in the keys table's partition and the exports bucket.",
+      this.countedLogEvents(naming, logGroup, "AuditShredFailed", "AuditShredFailed", AUDIT_SHRED_FAILED_EVENTS),
     );
     // Task 10: a timestamp that was not obtained or not accepted. One miss is normal (an authority is slow); a miss in each of two
     // consecutive 15-minute periods means an authority has been failing for half an hour. Sealing is not held back; the epochs

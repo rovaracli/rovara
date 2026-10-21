@@ -8,6 +8,8 @@
 //   POST /v1/admin/audit/{orgId}/exports                  { requestId, fromSeq, toSeq, withDetails?, reason, ticket? }
 //   GET  /v1/admin/audit/{orgId}/exports/{exportId}?reason=...&ticket=...   (the status and the link: itself a staff read)
 //
+//   POST /v1/admin/audit/{orgId}/erase-subject            { requestId, developerId, reason }   (Task 15: erase one person's details)
+//
 // The org comes from the path and nowhere else, and must be an org that exists: a mistyped id would otherwise start a chain
 // for an org that is not there, in a ledger that cannot be corrected. Nothing below builds an object key.
 import {
@@ -18,17 +20,22 @@ import {
   type AuditActor,
   type OrgId,
 } from "@agentx/contracts";
+import { auditErasedMessage, eraseAuditSubject, isAuditSubjectId, type AuditEraseDeps } from "./erase.js";
 import { auditExportId, isAuditExportId, startAuditExport, type AuditExportClientDeps } from "./export.js";
 import { auditStaffRead } from "./events.js";
 import { recordAuditEventDurably } from "./flush.js";
 import { checkReadQuery, readAuditRecords } from "./reader.js";
-import { configInvalid, exportAnswer, exportRequestWithout, isRecord, noParameters, notFound, pageSizeOf, readQueryOf, startedReply, type AuditRouteReply, type AuditRouteRequest } from "./routes.js";
+import { UNKNOWN_FIELD, configInvalid, exportAnswer, exportRequestWithout, isRecord, noParameters, notFound, pageSizeOf, readQueryOf, startedReply, type AuditRouteReply, type AuditRouteRequest } from "./routes.js";
 
 export interface AuditAdminDependencies {
   /** Absent on an install with no ledger (a legacy install). */
   ledger: AuditExportClientDeps | undefined;
   /** Whether the org exists (its record is in the State table). Asked before anything is recorded. */
   orgExists: (orgId: OrgId) => Promise<boolean>;
+  /** Task 15: what the erase route needs; the route does not exist without it. */
+  erase?: AuditEraseDeps;
+  /** The person's name for the erase route's answer (their developer record), if there is one. Asked before the details are erased. */
+  personName?: (developerId: string) => Promise<string | undefined>;
 }
 
 /** The staff member, from the admin pool's claims. */
@@ -41,7 +48,7 @@ export interface AuditAdminCaller {
 const REASON_MAX = 300;
 const TICKET_MAX = 64;
 const STAFF_PARAMETERS = ["reason", "ticket"] as const;
-const STAFF_PATH = /^\/v1\/admin\/audit\/([^/]+)\/(records|exports)(?:\/([^/]+))?$/;
+const STAFF_PATH = /^\/v1\/admin\/audit\/([^/]+)\/(records|exports|erase-subject)(?:\/([^/]+))?$/;
 
 interface Justification {
   reason: string;
@@ -67,6 +74,16 @@ function justification(reason: unknown, ticket: unknown): Justification {
     throw configInvalid(`The ticket is 1 to ${String(TICKET_MAX)} printable ASCII characters without spaces, or leave it out.`);
   }
   return { reason: why, ticket };
+}
+
+const ERASE_FIELDS = ["requestId", "developerId", "reason"] as const;
+const REQUEST_ID_MAX = 200;
+const NAME_MAX = 100;
+
+/** A name for the answer: plain text only (no control, format or bidi character), cut to a sensible length; undefined if nothing is left. */
+function plainName(name: string | undefined): string | undefined {
+  const cleaned = (name ?? "").replace(/[\p{Cc}\p{Cf}]/gu, "").trim().slice(0, NAME_MAX).trim();
+  return cleaned === "" ? undefined : cleaned;
 }
 
 /** The reason and ticket of a GET: each at most once. More than one `reason` is no reason; more than one `ticket` is refused. */
@@ -108,6 +125,22 @@ export async function routeAuditAdminRequest(deps: AuditAdminDependencies, calle
     if (!(await deps.orgExists(orgId))) throw agentXError("NOT_FOUND", "That organization was not found.");
   };
 
+  if (request.method === "POST" && kind === "erase-subject" && exportId === undefined) {
+    const erase = deps.erase;
+    if (erase === undefined) throw agentXError("NOT_FOUND", "the audit log is not set up in this deployment");
+    const body = isRecord(request.body) ? request.body : {};
+    const why = justification(body.reason, undefined);
+    noParameters(url.searchParams);
+    if (Object.keys(body).some((name) => !(ERASE_FIELDS as readonly string[]).includes(name))) throw configInvalid(UNKNOWN_FIELD);
+    const { requestId, developerId } = body;
+    if (typeof requestId !== "string" || requestId.length < 1 || requestId.length > REQUEST_ID_MAX) throw configInvalid(`Give each erasure request an id of 1 to ${String(REQUEST_ID_MAX)} characters.`);
+    if (!isAuditSubjectId(developerId)) throw configInvalid("Name the person by their developer id.");
+    await requireOrg();
+    // The name is read now: after this the person's details cannot be read any more.
+    const name = plainName(await deps.personName?.(developerId));
+    const erased = await eraseAuditSubject(erase, { orgId, developerId, by: actor, reason: why.reason, requestId });
+    return { status: 200, body: { message: auditErasedMessage(name ?? "That person"), erasedAt: erased.erasedAt, alreadyErased: erased.alreadyErased } };
+  }
   if (request.method === "GET" && kind === "records" && exportId === undefined) {
     const why = justificationOfQuery(url.searchParams);
     const query = readQueryOf(url.searchParams, STAFF_PARAMETERS);

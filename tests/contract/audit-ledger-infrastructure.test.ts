@@ -827,8 +827,8 @@ describe("the audit ledger in templates", () => {
       }
       const synthesis = custom("https://tsa.example.test/ts");
       expect(ssmStatements(synthesis)).toStrictEqual([{ Sid: "TimestampRoots", Effect: "Allow", Action: "ssm:GetParameter", Resource: PARAMETER_ARN }]);
-      // The role's other statements are the same seven as without it, plus the log group's.
-      expect(ownStatements(synthesis).map((statement) => statement.Sid)).toStrictEqual(["SealsTable", "LockRatchet", "LedgerRead", "LedgerDirtyMarkers", "LedgerBucketObjects", "LedgerBucketVersions", "LedgerBucketConfiguration", "TimestampRoots"]);
+      // The role's other statements are the same eleven as without it, plus the log group's.
+      expect(ownStatements(synthesis).map((statement) => statement.Sid)).toStrictEqual(["SealsTable", "LockRatchet", "LedgerRead", "LedgerDirtyMarkers", "LedgerBucketObjects", "LedgerBucketVersions", "LedgerBucketConfiguration", "ShredKeys", "ShredDueItems", "ShredExportObjects", "ShredListExports", "TimestampRoots"]);
     });
 
     it("a parameter name without a leading slash gets the same kind of ARN", () => {
@@ -886,7 +886,7 @@ describe("the audit ledger in templates", () => {
       describe(env, () => {
         const synthesis = named(env);
 
-        it("gives the broker's role exactly two statements for the outbox, in a policy of their own", () => {
+        it("gives the broker's role exactly three statements for the outbox and the shred schedule, in a policy of their own", () => {
           const own = policies(synthesis).filter(({ withoutHash }) => withoutHash === "AuditLedgerAuditBrokerOutboxPolicy");
           expect(own).toHaveLength(1);
           const brokerRoleId = one(synthesis.template, "AWS::IAM::Role", BROKER_ROLE)[0];
@@ -898,6 +898,11 @@ describe("the audit ledger in templates", () => {
               Action: ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:DeleteItem"],
               Resource: "State.Arn",
               Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT_PENDING#*"] } },
+            },
+            // Task 15: closeOrg's transaction puts the due item for the shred, and nothing else in that partition (no read, no delete).
+            {
+              Sid: "ScheduleShred", Effect: "Allow", Action: "dynamodb:PutItem", Resource: "State.Arn",
+              Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT_SHRED_DUE"] } },
             },
           ]);
         });
@@ -918,10 +923,14 @@ describe("the audit ledger in templates", () => {
             "AuditLedgerAuditAnchorPolicy/LedgerRead",
             "AuditLedgerAuditAnchorPolicy/LockRatchet",
             "AuditLedgerAuditAnchorPolicy/SealsTable",
+            "AuditLedgerAuditAnchorPolicy/ShredExportObjects",
+            "AuditLedgerAuditAnchorPolicy/ShredKeys",
+            "AuditLedgerAuditAnchorPolicy/ShredListExports",
             "AuditLedgerAuditAppenderPolicy/KeysTable",
             "AuditLedgerAuditAppenderPolicy/LedgerTable",
             "AuditLedgerAuditBrokerOutboxPolicy/SendAuditEvents",
             "AuditLedgerAuditBrokerReadPolicy/DownloadExports",
+            "AuditLedgerAuditBrokerReadPolicy/EraseSubjects",
             "AuditLedgerAuditBrokerReadPolicy/ReadKeys",
             "AuditLedgerAuditBrokerReadPolicy/ReadLedgerAndSeals",
             "AuditLedgerAuditExportPolicy/ExportObjects",
@@ -1031,7 +1040,7 @@ describe("the audit ledger in templates", () => {
       const own = ofType(template, "AWS::IAM::Policy").filter(([id]) => id.startsWith("AuditLedgerAuditBrokerOutboxPolicy"));
       expect(own).toHaveLength(1);
       const sids = ((own[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => statement.Sid);
-      expect(sids).toStrictEqual(["SendAuditEvents", "AuditPendingItems"]);
+      expect(sids).toStrictEqual(["SendAuditEvents", "AuditPendingItems", "ScheduleShred"]);
     });
 
     it("a legacy template has no audit alarm, schedule or environment variable", () => {
@@ -1324,6 +1333,8 @@ describe("the audit ledger in templates", () => {
               AUDIT_LEDGER_TABLE_NAME: "Ref:AuditLedgerAuditLedgerTable",
               AUDIT_SEALS_TABLE_NAME: "Ref:AuditLedgerAuditSealsTable",
               AUDIT_LEDGER_BUCKET_NAME: "Ref:AuditLedgerAuditLedgerBucket",
+              AUDIT_KEYS_TABLE_NAME: "Ref:AuditLedgerAuditKeysTable",
+              AUDIT_EXPORTS_BUCKET_NAME: "Ref:AuditLedgerAuditExportsBucket",
               AUDIT_ENV_NAME: env,
               AUDIT_LOCK_PROFILE: profile,
               AUDIT_LOCK_MODE: lockProfiles[profile].mode,
@@ -1339,7 +1350,15 @@ describe("the audit ledger in templates", () => {
           }
           // The default profile is the one the environment's own settings give.
           expect(audit().AUDIT_LOCK_PROFILE).toBe(lockProfiles.default);
-          expect(JSON.stringify(variables)).not.toMatch(/alias\/|KeysTable|VaultKey/);
+          expect(JSON.stringify(variables)).not.toMatch(/alias\/|VaultKey/);
+        });
+
+        it("is given, for the shred sweep, the keys table's name, the State table's and the exports bucket's, and no key", () => {
+          const variables = (functionOf(synthesis)[1].Properties.Environment as { Variables: Json }).Variables;
+          expect(concreteAws(variables.AUDIT_KEYS_TABLE_NAME)).toBe("Ref:AuditLedgerAuditKeysTable");
+          expect(concreteAws(variables.STATE_TABLE_NAME)).toBe("Ref:State");
+          expect(concreteAws(variables.AUDIT_EXPORTS_BUCKET_NAME)).toBe("Ref:AuditLedgerAuditExportsBucket");
+          expect(Object.keys(variables)).not.toContain("AUDIT_VAULT_KEY_ARN");
         });
 
         it("is, with the broker (the seals table, to read) and the export function (both, to read), the only function given the seals table or the ledger bucket", () => {
@@ -1372,20 +1391,30 @@ describe("the audit ledger in templates", () => {
               Sid: "LedgerBucketConfiguration", Effect: "Allow",
               Action: ["s3:GetBucketObjectLockConfiguration", "s3:GetBucketVersioning", "s3:GetBucketPolicy"], Resource: LEDGER_BUCKET,
             },
+            // Task 15, the shred sweep: it empties one company's keys partition (Query, then DeleteItem per item) after writing the
+            // SHREDDED marker (PutItem); the due items it reads and clears are in the State table's AUDIT_SHRED_DUE partition alone;
+            // and it lists and deletes that company's folder of export files. It has no GetItem or UpdateItem on the keys table.
+            { Sid: "ShredKeys", Effect: "Allow", Action: ["dynamodb:Query", "dynamodb:PutItem", "dynamodb:DeleteItem"], Resource: KEYS },
+            {
+              Sid: "ShredDueItems", Effect: "Allow", Action: ["dynamodb:Query", "dynamodb:DeleteItem"], Resource: STATE,
+              Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT_SHRED_DUE"] } },
+            },
+            { Sid: "ShredExportObjects", Effect: "Allow", Action: "s3:DeleteObject", Resource: `${EXPORTS_BUCKET}/*` },
+            { Sid: "ShredListExports", Effect: "Allow", Action: "s3:ListBucket", Resource: EXPORTS_BUCKET },
           ]);
-          // The whole identity of the role: those seven and the log group's write actions. No managed policy.
+          // The whole identity of the role: those eleven and the log group's write actions. No managed policy.
           expect(sortedBySid(identity(synthesis))).toStrictEqual(sortedBySid([
             ...(ownStatements(synthesis) as IamStatement[]),
             { Effect: "Allow", Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: "AuditLedgerAuditAnchorLogs.Arn" },
           ]));
-          expect(identity(synthesis)).toHaveLength(8);
+          expect(identity(synthesis)).toHaveLength(12);
         });
 
         it("names no NotAction, no NotResource and no wildcard resource", () => {
           for (const statement of identity(synthesis)) {
             expect(statement.NotAction).toBeUndefined();
             expect(statement.NotResource).toBeUndefined();
-            expect([statement.Resource].flat().join(",").replace(`${LEDGER_BUCKET}/*`, "")).not.toContain("*");
+            expect([statement.Resource].flat().join(",").replace(`${LEDGER_BUCKET}/*`, "").replace(`${EXPORTS_BUCKET}/*`, "")).not.toContain("*");
             expect(statement.Effect).toBe("Allow");
           }
         });
@@ -1444,10 +1473,18 @@ describe("the audit ledger in templates", () => {
             }
           });
 
-          it("has nothing on the keys table, the State table, the queues or the vault key", () => {
+          it("has nothing on the queues or the vault key, and on the keys and State tables only the shred sweep's actions", () => {
             for (const resource of [KEYS, STATE]) {
-              for (const action of ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:DeleteItem"]) expect(request(action, resource, ["ORG#x"]).allowed, `${action} ${resource}`).toBe(false);
+              for (const action of ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:Scan", "dynamodb:BatchWriteItem", "dynamodb:BatchGetItem", "dynamodb:DeleteTable", "dynamodb:*"]) expect(request(action, resource, ["ORG#x"]).allowed, `${action} ${resource}`).toBe(false);
             }
+            // The State table: only the due items' partition, to query and delete; never to put or read an item.
+            for (const action of ["dynamodb:Query", "dynamodb:DeleteItem"]) {
+              expect(request(action, STATE, ["AUDIT_SHRED_DUE"]).allowed, action).toBe(true);
+              for (const keys of [["ORG#org_aaaaaaaaaaaaaaaaaaaa"], ["AUDIT_PENDING#1"], ["AUDIT_SHRED_DUE", "AUDIT_PENDING#1"], ["AUDIT_SHRED_DUE#x"]]) expect(request(action, STATE, keys).allowed, `${action} ${keys.join(",")}`).toBe(false);
+            }
+            expect(request("dynamodb:PutItem", STATE, ["AUDIT_SHRED_DUE"]).allowed).toBe(false);
+            // The keys table: Query, PutItem (the SHREDDED marker) and DeleteItem (the sweep), whatever the partition (the code builds it from the org id).
+            for (const action of ["dynamodb:Query", "dynamodb:PutItem", "dynamodb:DeleteItem"]) expect(request(action, KEYS, ["ORG#org_aaaaaaaaaaaaaaaaaaaa"]).allowed, action).toBe(true);
             for (const resource of [QUEUE, DLQ]) {
               for (const action of ["sqs:SendMessage", "sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:PurgeQueue"]) expect(request(action, resource).allowed, `${action} ${resource}`).toBe(false);
             }
@@ -1479,8 +1516,24 @@ describe("the audit ledger in templates", () => {
             // Not the bucket's listing of versions on an object resource, and nothing on the exports bucket.
             expect(request("s3:ListBucketVersions", object).allowed).toBe(false);
             for (const resource of [EXPORTS_BUCKET, `${EXPORTS_BUCKET}/x`]) {
-              for (const action of ["s3:GetObject", "s3:PutObject", "s3:ListBucketVersions", "s3:DeleteObject"]) expect(request(action, resource).allowed, `${action} ${resource}`).toBe(false);
+              for (const action of ["s3:GetObject", "s3:PutObject", "s3:ListBucketVersions", "s3:DeleteObjectVersion", "s3:PutObjectAcl", "s3:*"]) expect(request(action, resource).allowed, `${action} ${resource}`).toBe(false);
             }
+          });
+
+          it("lists the exports bucket and deletes its objects (the shred sweep), and does not read or write them", () => {
+            const object = `${EXPORTS_BUCKET}/${org}/aex_x.0123456789abcdef.rovara-audit.json.gz`;
+            expect(request("s3:ListBucket", EXPORTS_BUCKET).allowed).toBe(true);
+            expect(request("s3:DeleteObject", object).allowed).toBe(true);
+            // A list is of the bucket and a delete is of an object, not the other way round.
+            expect(request("s3:ListBucket", object).allowed).toBe(false);
+            expect(request("s3:DeleteObject", EXPORTS_BUCKET).allowed).toBe(false);
+            for (const action of ["s3:GetObject", "s3:PutObject", "s3:PutBucketPolicy", "s3:PutLifecycleConfiguration", "s3:DeleteBucket", "s3:GetBucketPolicy"]) {
+              expect(request(action, object).allowed, action).toBe(false);
+              expect(request(action, EXPORTS_BUCKET).allowed, action).toBe(false);
+            }
+            // The ledger bucket is not deletable through it.
+            expect(request("s3:DeleteObject", `${LEDGER_BUCKET}/orgs/${org}/seals/000000000001.json`).allowed).toBe(false);
+            expect(request("s3:ListBucket", LEDGER_BUCKET).allowed).toBe(false);
           });
 
           it("the simulator sees the conditions: without them the same statements would allow other partitions", () => {
@@ -1603,7 +1656,7 @@ describe("the audit ledger in templates", () => {
           expect(epochs).toHaveLength(1);
         });
 
-        it("raises five alarms: seals overdue, a chain mismatch (or version drift), an object conflict, lock drift (Task 9) and a timestamp failure (Task 10)", () => {
+        it("raises six alarms: seals overdue, a chain mismatch (or version drift), an object conflict, lock drift (Task 9), a timestamp failure (Task 10) and a shred that did not finish (Task 15)", () => {
           const topicId = one(synthesis.template, "AWS::SNS::Topic", "OperatorAlerts")[0];
           const logGroupId = one(synthesis.template, "AWS::Logs::LogGroup", "AuditLedgerAuditAnchorLogs")[0];
           const namespace = environmentNaming(env).metricsNamespace;
@@ -1624,6 +1677,11 @@ describe("the audit ledger in templates", () => {
             LogGroupName: { Ref: logGroupId }, FilterPattern: '{ ($.event = "audit.lock_config_mismatch") || ($.event = "audit.version_drift") || ($.event = "audit.lock_sweep_failed") }',
             MetricTransformations: [{ MetricName: "AuditLockDrift", MetricNamespace: namespace, MetricValue: "1" }],
           });
+          // Task 15: a shred that could not finish (or a due item that is damaged) is an erasure obligation not met: one is enough.
+          expect(filter("AuditLedgerAuditShredFailedMetric")).toStrictEqual({
+            LogGroupName: { Ref: logGroupId }, FilterPattern: '{ ($.event = "audit.shred_failed") || ($.event = "audit.shred_item_invalid") }',
+            MetricTransformations: [{ MetricName: "AuditShredFailed", MetricNamespace: namespace, MetricValue: "1" }],
+          });
           const alarm = (id: string) => one(synthesis.template, "AWS::CloudWatch::Alarm", id)[1].Properties;
           expect(filter("AuditLedgerAuditTimestampFailedMetric")).toStrictEqual({
             LogGroupName: { Ref: logGroupId }, FilterPattern: '{ $.event = "audit.timestamp_failed" }',
@@ -1640,19 +1698,19 @@ describe("the audit ledger in templates", () => {
             // Three 15-minute periods with fewer than one completed epoch each: 45 minutes. A missing period counts.
             Period: 900, EvaluationPeriods: 3, DatapointsToAlarm: 3, Threshold: 1, ComparisonOperator: "LessThanThreshold", TreatMissingData: "breaching",
           });
-          for (const [id, name] of [["AuditLedgerAuditChainMismatchAlarm", "AuditChainMismatch"], ["AuditLedgerAuditObjectConflictAlarm", "AuditObjectConflict"], ["AuditLedgerAuditLockDriftAlarm", "AuditLockDrift"]] as const) {
+          for (const [id, name] of [["AuditLedgerAuditChainMismatchAlarm", "AuditChainMismatch"], ["AuditLedgerAuditObjectConflictAlarm", "AuditObjectConflict"], ["AuditLedgerAuditLockDriftAlarm", "AuditLockDrift"], ["AuditLedgerAuditShredFailedAlarm", "AuditShredFailed"]] as const) {
             expect(alarm(id)).toMatchObject({
               AlarmName: `agentx-${env}-${name}`, MetricName: name, Namespace: namespace, Statistic: "Sum",
               Period: 300, EvaluationPeriods: 1, Threshold: 1, ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
             });
           }
-          for (const id of ["AuditLedgerAuditSealOverdueAlarm", "AuditLedgerAuditChainMismatchAlarm", "AuditLedgerAuditObjectConflictAlarm", "AuditLedgerAuditLockDriftAlarm", "AuditLedgerAuditTimestampFailedAlarm"]) {
+          for (const id of ["AuditLedgerAuditSealOverdueAlarm", "AuditLedgerAuditChainMismatchAlarm", "AuditLedgerAuditObjectConflictAlarm", "AuditLedgerAuditLockDriftAlarm", "AuditLedgerAuditTimestampFailedAlarm", "AuditLedgerAuditShredFailedAlarm"]) {
             expect(alarm(id).AlarmActions).toStrictEqual([{ Ref: topicId }]);
           }
         });
 
         it("names its alarms in the list the health route reads", () => {
-          for (const suffix of ["AuditSealOverdue", "AuditChainMismatch", "AuditObjectConflict", "AuditLockDrift", "AuditTimestampFailed"]) expect(HEALTH_ALARM_SUFFIXES).toContain(suffix);
+          for (const suffix of ["AuditSealOverdue", "AuditChainMismatch", "AuditObjectConflict", "AuditLockDrift", "AuditTimestampFailed", "AuditShredFailed"]) expect(HEALTH_ALARM_SUFFIXES).toContain(suffix);
         });
 
         it("keeps its log group a month", () => {
@@ -1691,6 +1749,12 @@ describe("the audit ledger in templates", () => {
       return own[0]![1].Properties;
     };
     const ownStatements = (synthesis: Synth): Statement[] => ((ownPolicy(synthesis).PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => concreteAws(statement) as Statement);
+    /** The statements of one of the broker's audit policies, by its logical id without the hash. */
+    const ownPolicyOf = (synthesis: Synth, name: string): Statement[] => {
+      const own = ofType(synthesis.template, "AWS::IAM::Policy").filter(([id]) => withoutHash(id) === name);
+      expect(own).toHaveLength(1);
+      return ((own[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => concreteAws(statement) as Statement);
+    };
     /** Everything the broker's role is allowed, from every policy that lists the role: the broker has many other grants, and none of them may reach the ledger. */
     const identity = (synthesis: Synth): IamStatement[] => {
       const roleId = one(synthesis.template, "AWS::IAM::Role", BROKER_ROLE)[0];
@@ -1709,6 +1773,9 @@ describe("the audit ledger in templates", () => {
           expect(ownStatements(synthesis)).toStrictEqual([
             { Sid: "ReadLedgerAndSeals", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query"], Resource: [LEDGER, SEALS] },
             { Sid: "ReadKeys", Effect: "Allow", Action: "dynamodb:GetItem", Resource: KEYS },
+            // Task 15: the tombstone of an erased person is one PutItem (in a transaction with its audit event). IAM cannot limit it to
+            // one sort key; the code writes it with a condition and a test pins that.
+            { Sid: "EraseSubjects", Effect: "Allow", Action: "dynamodb:PutItem", Resource: KEYS },
             { Sid: "DownloadExports", Effect: "Allow", Action: "s3:GetObject", Resource: `${EXPORTS_BUCKET}/*` },
             { Sid: "StartExports", Effect: "Allow", Action: "lambda:InvokeFunction", Resource: EXPORT_FUNCTION },
           ]);
@@ -1740,12 +1807,30 @@ describe("the audit ledger in templates", () => {
             expect(request("dynamodb:Query", KEYS).allowed).toBe(false);
           });
 
-          it("writes nothing to the ledger, seals or keys tables, and scans, batches and administers none of them", () => {
-            for (const table of [LEDGER, SEALS, KEYS]) {
+          it("writes nothing to the ledger or seals tables, and scans, batches and administers none of the three", () => {
+            for (const table of [LEDGER, SEALS]) {
               for (const action of ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:ConditionCheckItem", "dynamodb:BatchWriteItem", "dynamodb:Scan", "dynamodb:BatchGetItem", "dynamodb:DeleteTable", "dynamodb:UpdateTable", "dynamodb:*"]) {
                 expect(request(action, table).allowed, `${action} ${table}`).toBe(false);
               }
             }
+            for (const action of ["dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:ConditionCheckItem", "dynamodb:BatchWriteItem", "dynamodb:Scan", "dynamodb:BatchGetItem", "dynamodb:DeleteTable", "dynamodb:UpdateTable", "dynamodb:*"]) {
+              expect(request(action, KEYS).allowed, `${action} ${KEYS}`).toBe(false);
+            }
+          });
+
+          it("may put into the keys table (a person's tombstone, Task 15) and nowhere else on it: it cannot delete a key, update one, or query the table", () => {
+            expect(request("dynamodb:PutItem", KEYS).allowed).toBe(true);
+            for (const action of ["dynamodb:DeleteItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:BatchWriteItem"]) expect(request(action, KEYS).allowed, action).toBe(false);
+            // A put into the other two tables of the ledger stays denied.
+            for (const table of [LEDGER, SEALS]) expect(request("dynamodb:PutItem", table).allowed, table).toBe(false);
+          });
+
+          it("may put the shred's due item into the State table under AUDIT_SHRED_DUE alone, by its own statement: no read, no delete, no other partition", () => {
+            const statement = ownPolicyOf(synthesis, "AuditLedgerAuditBrokerOutboxPolicy").find((entry) => entry.Sid === "ScheduleShred")!;
+            const alone = (action: string, keys: string[]) => simulateIam([statement], { action, resource: "State.Arn", context: { "dynamodb:LeadingKeys": keys } }).allowed;
+            expect(alone("dynamodb:PutItem", ["AUDIT_SHRED_DUE"])).toBe(true);
+            for (const keys of [["AUDIT_PENDING#1"], ["AUDIT_SHRED_DUE", "AUDIT_PENDING#1"], ["ORG#org_aaaaaaaaaaaaaaaaaaaa"], ["AUDIT_SHRED"], ["audit_shred_due"]]) expect(alone("dynamodb:PutItem", keys), keys.join(",")).toBe(false);
+            for (const action of ["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:Scan"]) expect(alone(action, ["AUDIT_SHRED_DUE"]), action).toBe(false);
           });
 
           it("has nothing on the ledger bucket: it reads no sealed object, and cannot write, delete, relock or list it", () => {
@@ -1789,7 +1874,7 @@ describe("the audit ledger in templates", () => {
       const template = Template.fromStack(stack).toJSON() as TemplateJson;
       const own = ofType(template, "AWS::IAM::Policy").filter(([id]) => id.startsWith("AuditLedgerAuditBrokerReadPolicy"));
       expect(own).toHaveLength(1);
-      expect(((own[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => statement.Sid)).toStrictEqual(["ReadLedgerAndSeals", "ReadKeys", "DownloadExports", "StartExports"]);
+      expect(((own[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => statement.Sid)).toStrictEqual(["ReadLedgerAndSeals", "ReadKeys", "EraseSubjects", "DownloadExports", "StartExports"]);
     });
 
     it("a legacy template has none of it", () => {

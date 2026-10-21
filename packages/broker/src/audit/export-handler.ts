@@ -7,8 +7,9 @@ import { KMSClient } from "@aws-sdk/client-kms";
 import { S3Client } from "@aws-sdk/client-s3";
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { AUDIT_SDK_REQUEST_TIMEOUT_MS, defaultAnchors } from "@agentx/contracts";
+import { AUDIT_SDK_REQUEST_TIMEOUT_MS, OrgIdSchema, defaultAnchors } from "@agentx/contracts";
 import { requiredEnvironment } from "../aws/lambda.js";
+import { AUDIT_EXPORT_PURGE_SOURCE, purgeAuditExports } from "./erase.js";
 import { AUDIT_EXPORT_SOURCE, runAuditExport, type AuditExportDeps, type AuditExportOutcome } from "./export.js";
 import { AuditKeyring } from "./keyring.js";
 
@@ -19,7 +20,13 @@ export interface AuditExportInvokeEvent {
   exportId?: unknown;
 }
 
-export async function handleAuditExportEvent(deps: AuditExportDeps, event: AuditExportInvokeEvent): Promise<{ outcome: AuditExportOutcome } | { status: "ignored" }> {
+export async function handleAuditExportEvent(deps: AuditExportDeps, event: AuditExportInvokeEvent): Promise<{ outcome: AuditExportOutcome } | { purged: number } | { status: "ignored" }> {
+  // Task 15: the broker asks (synchronously) for an org's export files to be deleted when it erases a person. This function's role is
+  // the one that may list and delete in the exports bucket. The org id is parsed by purgeAuditExports; anything else is ignored.
+  if (event.source === AUDIT_EXPORT_PURGE_SOURCE) {
+    if (typeof event.orgId !== "string" || !OrgIdSchema.safeParse(event.orgId).success) return { status: "ignored" };
+    return { purged: await purgeAuditExports(deps, event.orgId) };
+  }
   if (event.source !== AUDIT_EXPORT_SOURCE || typeof event.orgId !== "string" || typeof event.exportId !== "string") return { status: "ignored" };
   try {
     return { outcome: await runAuditExport(deps, { orgId: event.orgId, exportId: event.exportId }) };
@@ -66,6 +73,6 @@ function productionDependencies(): AuditExportDeps {
   return production;
 }
 
-export async function handler(event: AuditExportInvokeEvent): Promise<{ outcome: AuditExportOutcome } | { status: "ignored" }> {
+export async function handler(event: AuditExportInvokeEvent): Promise<{ outcome: AuditExportOutcome } | { purged: number } | { status: "ignored" }> {
   return handleAuditExportEvent(productionDependencies(), event);
 }

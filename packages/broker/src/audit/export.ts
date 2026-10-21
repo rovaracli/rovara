@@ -125,6 +125,8 @@ export class AuditExportBuildError extends Error {
   }
 }
 
+const SHREDDED_CANNOT_EXPORT = "That organization's audit details have been deleted, so it can't be exported.";
+const SHREDDED_EXPORT_GONE = "That export was deleted with the organization's audit details.";
 const rangeInvalid = (): Error => agentXError("AUDIT_RANGE_INVALID", AUDIT_ERROR_MESSAGES.AUDIT_RANGE_INVALID);
 const pad12 = (seq: number): string => String(seq).padStart(12, "0");
 const inconsistent = (what: string): AuditExportBuildError => new AuditExportBuildError("SEAL_INDEX_INCONSISTENT", what);
@@ -508,6 +510,8 @@ export async function startAuditExport(deps: AuditExportClientDeps, requester: A
   const orgId = checkedOrgId(requester.orgId);
   const { fromSeq, toSeq } = request;
   assertExportRange(fromSeq, toSeq);
+  // A shredded org (task 15) gets no new export: this is the code that answers, for the org's routes and the staff path alike.
+  if (await deps.keyring.isOrgShredded(orgId)) throw agentXError("NOT_FOUND", SHREDDED_CANNOT_EXPORT);
   if (typeof request.requestId !== "string" || request.requestId === "" || request.requestId.length > 200) throw agentXError("CONFIG_INVALID", "Give each export request an id of 1 to 200 characters.");
   const exportId = auditExportId(orgId, request.requestId);
   const now = new Date(deps.now()).toISOString();
@@ -591,6 +595,11 @@ export async function runAuditExport(deps: AuditExportDeps, event: { orgId: stri
     await failExport(deps, orgId, exportId, { code: "TIMED_OUT" });
     return "failed";
   }
+  // A queued export of an org that has since been shredded builds nothing.
+  if (await deps.keyring.isOrgShredded(orgId)) {
+    await failExport(deps, orgId, exportId, { code: "ORG_SHREDDED" });
+    return "failed";
+  }
   const range = item.range as { fromSeq: number; toSeq: number };
   const withDetails = item.withDetails === true;
 
@@ -631,6 +640,18 @@ export async function runAuditExport(deps: AuditExportDeps, event: { orgId: stri
       if (!isRequestConflict(error) || attempt >= PUT_CONFLICT_RETRIES) throw error;
       await new Promise<void>((resolve) => { setTimeout(resolve, 50 * 2 ** attempt); });
     }
+  }
+
+  // A shred that began while this run built: the file just written must not outlive the marker. Looking after the put means the
+  // marker was written before the look, or the file was there before it: the shred's sweep (30 s after the marker) then finds it.
+  if (await deps.keyring.isOrgShredded(orgId)) {
+    try {
+      await deps.s3.send(new DeleteObjectCommand({ Bucket: deps.exportsBucket, Key: key }));
+    } catch {
+      // The shred's sweep and the bucket's lifecycle remove it.
+    }
+    await failExport(deps, orgId, exportId, { code: "ORG_SHREDDED" });
+    return "failed";
   }
 
   const all = [...bundle.records, ...bundle.unsealed];
@@ -710,6 +731,8 @@ export async function exportDownloadUrl(deps: AuditExportClientDeps, orgId: stri
   checkedOrgId(orgId);
   const item = await readMeta(deps, orgId, exportId);
   if (item === undefined || item.status !== "ready") throw agentXError("NOT_FOUND", "That export was not found, or it is not ready yet.");
+  // A shredded org's files are being deleted (or are gone): no link is signed for one, and this is the code that decides it.
+  if (await deps.keyring.isOrgShredded(orgId)) throw agentXError("NOT_FOUND", SHREDDED_EXPORT_GONE);
   // After `expiresAt` the bucket may have removed the file (NOT_FOUND is the code that fits: the export is gone).
   if (isExpired(item.expiresAt, deps.now())) throw agentXError("NOT_FOUND", "That export has expired. Request it again.");
   // The file is the one the ready record names, and only if it has exactly this org's, this export's and an attempt's name.
