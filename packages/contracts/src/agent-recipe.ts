@@ -128,7 +128,7 @@ export type ConnectorSelector = z.infer<typeof ConnectorSelectorSchema>;
 export const ToolGrantSchema = z.object({
   connector: ConnectorSelectorSchema,
   access: z.enum(["read", "read_write"]),
-  tools: z.array(ToolPatternSchema).max(64).optional(),
+  tools: z.array(ToolPatternSchema).min(1).max(64).optional(),
 }).strict();
 export type ToolGrant = z.infer<typeof ToolGrantSchema>;
 

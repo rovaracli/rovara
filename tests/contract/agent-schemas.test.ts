@@ -211,6 +211,11 @@ describe("tool grants and approval rules", () => {
     expect(ToolGrantSchema.safeParse({ connector: { type: "github" }, access: "read", extra: 1 }).success).toBe(false);
   });
 
+  it("refuses a tool grant with an empty tools list and accepts one with a tool", () => {
+    expect(ToolGrantSchema.safeParse({ connector: { type: "github" }, access: "read", tools: [] }).success).toBe(false);
+    expect(ToolGrantSchema.safeParse({ connector: { type: "github" }, access: "read", tools: ["list_issues"] }).success).toBe(true);
+  });
+
   it("limits always-ask rules", () => {
     expect(ApprovalRulesSchema.parse({ alwaysAsk: ["delete_*"] })).toEqual({ alwaysAsk: ["delete_*"] });
     expect(ApprovalRulesSchema.safeParse({ alwaysAsk: Array.from({ length: 33 }, (_, index) => `t${index}`) }).success).toBe(false);
