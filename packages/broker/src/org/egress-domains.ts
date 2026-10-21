@@ -33,8 +33,8 @@ export interface EgressDomainsDependencies {
   /** Rovara Cloud: a new domain waits for staff. Anywhere else it is approved when it is saved. */
   cloud: boolean;
   now: () => Date;
-  /** Pushes the approved union to the DNS firewall (Task 19's `syncCellAllowList`). `{ ok: false }` leaves the marker dirty for the schedule. */
-  sync: () => Promise<{ ok: boolean }>;
+  /** Pushes the approved union to the DNS firewall (Task 19's `syncCellAllowList`, wired by the broker). `{ ok: false }` leaves the marker dirty for the schedule. */
+  sync: () => Promise<{ ok: boolean; domains?: number }>;
 }
 
 type Reader = Pick<EgressDomainsDependencies, "documentClient" | "tableName">;
@@ -55,7 +55,16 @@ interface Plan<T> {
   result: T;
 }
 
-const cancelled = (error: unknown) => error instanceof Error && error.name === "TransactionCanceledException";
+/** How a cancelled transaction reads: a condition on the item failed (someone changed it), or something else did (a concurrent transaction on the shared sync marker, throttling). */
+function cancellation(error: unknown): "changed" | "other" | undefined {
+  if (!(error instanceof Error) || error.name !== "TransactionCanceledException") return undefined;
+  const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+  // A cancellation that names no reasons is taken for a failed condition, the safe reading.
+  return reasons === undefined || reasons.some((reason) => reason.Code === "ConditionalCheckFailed") ? "changed" : "other";
+}
+
+/** The attempts a write gets: one retry after the item changed under it, and a few more for cancellations that were not about the item. */
+const MAX_ATTEMPTS = 4;
 
 function parseItem(raw: unknown): EgressDomainsItem | undefined {
   if (raw === undefined) return undefined;
@@ -76,15 +85,17 @@ async function readItem(deps: Reader, key: OrgKey): Promise<EgressDomainsItem | 
 
 /**
  * Reads the item, plans the change, and writes it with its audit items in one transaction that holds only while the item is as it was read.
- * A refused condition reads again and plans again, once; a second refusal is IDEMPOTENCY_CONFLICT. `updatedAt` always moves forward, so two
- * writes in one millisecond are never taken for one.
+ * A refused condition (the item changed) reads again and plans again, once; a second refusal is IDEMPOTENCY_CONFLICT. A cancellation for any
+ * other reason (a concurrent transaction on the shared sync marker, throttling) is retried quietly and, if it persists, is RUNTIME_UNAVAILABLE:
+ * it says nothing about the allowed domains having changed. `updatedAt` always moves forward, so two writes in one millisecond are never taken for one.
  */
 async function mutate<T>(
   deps: EgressDomainsDependencies,
   key: OrgKey,
   planFor: (current: EgressDomainsItem | undefined, at: string) => Plan<T>,
 ): Promise<{ result: T; dirty: boolean; changed: boolean }> {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  let changedUnderUs = 0;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     const current = await readItem(deps, key);
     const at = new Date(Math.max(deps.now().getTime(), current === undefined ? 0 : Date.parse(current.updatedAt) + 1)).toISOString();
     const plan = planFor(current, at);
@@ -98,8 +109,9 @@ async function mutate<T>(
     const marker = plan.dirty ? [{
       Update: {
         TableName: deps.tableName, Key: EGRESS_SYNC_KEY,
-        UpdateExpression: "SET dirtyAt = :dirtyAt, entityType = :entity",
-        ExpressionAttributeValues: { ":dirtyAt": at, ":entity": "EGRESS_SYNC" },
+        // `dirtySeq` counts changes, so the sync clears exactly the changes it read: `dirtyAt` can repeat across two items in one millisecond.
+        UpdateExpression: "SET dirtyAt = :dirtyAt, entityType = :entity, dirtySeq = if_not_exists(dirtySeq, :zero) + :one",
+        ExpressionAttributeValues: { ":dirtyAt": at, ":entity": "EGRESS_SYNC", ":zero": 0, ":one": 1 },
       },
     }] : [];
     const write = plan.next === "delete"
@@ -109,9 +121,13 @@ async function mutate<T>(
     try {
       await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [write, ...marker, ...audits.slice(0, room)] }));
     } catch (error) {
-      if (cancelled(error) && attempt === 0) continue;
-      if (cancelled(error)) throw agentXError("IDEMPOTENCY_CONFLICT", EGRESS_CONFLICT_MESSAGE);
-      throw error;
+      const reason = cancellation(error);
+      if (reason === undefined) throw error;
+      if (reason === "changed") {
+        changedUnderUs += 1;
+        if (changedUnderUs >= 2) throw agentXError("IDEMPOTENCY_CONFLICT", EGRESS_CONFLICT_MESSAGE);
+      }
+      continue;
     }
     // More audit items than one transaction holds (replacing most of a 50-domain list): the change stands, the rest follow.
     for (let start = room; start < audits.length; start += TRANSACTION_ACTIONS) {
@@ -119,7 +135,7 @@ async function mutate<T>(
     }
     return { result: plan.result, dirty: plan.dirty, changed: true };
   }
-  throw agentXError("IDEMPOTENCY_CONFLICT", EGRESS_CONFLICT_MESSAGE);
+  throw agentXError("RUNTIME_UNAVAILABLE", "the allowed domains could not be saved just now; try again");
 }
 
 /** Asks the firewall to follow; a failure (or a throw) leaves the marker dirty for the schedule, and the caller is told. */
@@ -146,6 +162,8 @@ export async function putEgressDomains(
   owner: EgressOwner,
   domains: readonly string[],
   actor?: { developerId: string },
+  /** `ownerActive: false` when the owner is archived: an item created now starts inactive, so its approvals stay out of the union until the owner is restored. */
+  options: { ownerActive?: boolean } = {},
 ): Promise<{ warning?: string; pending: string[] }> {
   const who: Actor = actor === undefined ? SYSTEM_ACTOR : { kind: "developer", id: actor.developerId };
   const wanted = [...new Set(domains)];
@@ -169,7 +187,7 @@ export async function putEgressDomains(
     }
     const pending = entries.filter((entry) => entry.status === "pending").map((entry) => entry.domain);
     if (audits.length === 0) return { audits, dirty: false, result: pending };
-    const active = current?.active ?? true;
+    const active = current?.active ?? options.ownerActive ?? true;
     return { next: { orgId, owner, active, domains: entries, updatedAt: at }, audits, dirty: served && active, result: pending };
   });
   if (!dirty) return { pending: result };
