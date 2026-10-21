@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
-import { AgentXError, WORKER_INVOCATION_FEATURES, WORKER_PING_FEATURES_FIELD, WorkerInvocationSchema, redactText, type WorkerInvocation, type WorkerInvocationFeature } from "@agentx/contracts";
+import { AgentXError, WORKER_PING_FEATURES_FIELD, WorkerInvocationSchema, redactText, type WorkerInvocation, type WorkerInvocationFeature } from "@agentx/contracts";
+import { WORKER_IMPLEMENTED_FEATURES } from "./implemented-features.js";
 import type { OperationJournal } from "./journal.js";
 import { WorkerOperationCancelledError } from "./cancel.js";
 import {
@@ -60,7 +61,7 @@ export function createWorkerServerState(
     executor,
     callbacks,
     activeOperations: new Set(),
-    invocationFeatures: [...WORKER_INVOCATION_FEATURES, ...(executor.invocationFeatures ?? [])],
+    invocationFeatures: [...WORKER_IMPLEMENTED_FEATURES, ...(executor.invocationFeatures ?? [])],
     ...(executor.invocationFeatureDiagnostics === undefined ? {} : { invocationFeatureDiagnostics: executor.invocationFeatureDiagnostics }),
     ...(invokeAuthentication === undefined ? {} : { invokeAuthentication }),
   };

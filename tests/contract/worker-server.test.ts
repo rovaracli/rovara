@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { WorkerInvocation } from "@agentx/contracts";
+import { WORKER_INVOCATION_FEATURES, type WorkerInvocation } from "@agentx/contracts";
 import { inspectContainedRuntimeReadinessForHost } from "@agentx/verifier";
 import {
   type JournalStatus,
@@ -117,7 +117,19 @@ describe("worker HTTP contract", () => {
     // Spec 053: what this build parses, so the dispatcher sends the thinking level only to it; spec 051 adds readiness,
     // and publish's reportChecks (P-2), so only this build is asked to publish despite a failing check.
     await expect((await handleWorkerRequest(new Request("http://worker/ping"), state)).json())
-      .resolves.toMatchObject({ invocationFeatures: ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.agentStep", "task.agentRun", "model.route"] });
+      .resolves.toMatchObject({ invocationFeatures: ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission"] });
+  });
+
+  it("advertises only the invocation features it implements, not those it merely parses", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agentx-features-"));
+    const state = createWorkerServerState(new OperationJournal(root), { execute: async () => undefined });
+    const body = await (await handleWorkerRequest(new Request("http://worker/ping"), state)).json() as { invocationFeatures: string[] };
+    // Task 16a knows these three; Tasks 18, 23 and 26 each add their own feature here when the worker implements it.
+    for (const feature of ["task.agentStep", "task.agentRun", "model.route"]) {
+      expect(WORKER_INVOCATION_FEATURES).toContain(feature);
+      expect(body.invocationFeatures).not.toContain(feature);
+    }
+    for (const feature of body.invocationFeatures) expect(WORKER_INVOCATION_FEATURES as readonly string[]).toContain(feature);
   });
 
   // The journal reads SUCCEEDED a moment before the operation leaves the active set: the write lands,
