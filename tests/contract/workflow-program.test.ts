@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { SLACK_TEAM } from "../support/slack-broker.js";
+import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { getTaskDocumentView } from "../../packages/broker/src/aws/developer-tasks.js";
 import { EMPTY_RECIPE, codingProgram, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe.js";
 import {
@@ -471,7 +473,7 @@ describe("the broker following a program", () => {
     expect(workflowOf(harness, taskId)).toMatchObject({ stage: "CLOSED", state: "COMPLETE", outcome: "PASSED", candidate: { digest: candidate.digest } });
     expect(harness.db.find((item) => item.pk === "WORKFLOW_DISPATCH")).toEqual([]);
     expect(operations(harness, workspaceId).filter((item) => item.kind === "publish")).toEqual([]);
-    // Finished with its changes unpublished: the workspace is kept for the idle reaper, not released at once.
+    // Finished with its changes unpublished: the workspace and the owner's task slot are kept until the owner closes the task.
     expect((harness.db.get(`DEVTASK#${taskId}`, "META") as unknown as { releasedAt?: string }).releasedAt).toBeUndefined();
     expect(harness.db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ status: "READY" });
   });
@@ -576,7 +578,52 @@ describe("the broker following a program", () => {
       const page = await getTaskDocumentView({ orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
         checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
       { orgId: TEST_ORG, developerId: record.developerId } as never, taskId);
-      expect(page).toMatchObject({ status: "Finished every step", nextStep: "The changes are in this task's workspace; open a pull request from it, or it will be cleaned up when idle." });
+      expect(page).toMatchObject({ status: "Finished every step", nextStep: "The changes are kept in this task's workspace until you close the task." });
+    });
+  });
+
+  describe("closing a task whose program finished with no pull request", () => {
+    /** A task whose program has no pull request step and whose last review passed: finished, CLOSED / COMPLETE / PASSED. */
+    async function finishedWithoutPullRequest() {
+      const program = programOf(recipeOf([build("code"), check(), review("review", ["code", "security"])]));
+      const started = await startedWith(program);
+      const { harness, taskId, workspaceId } = started;
+      await harness.finish(workspaceId, String(byMode(harness, workspaceId, "IMPLEMENT")[0]!.id), "SUCCEEDED", codingResult);
+      if (byMode(harness, workspaceId, "REVIEW").length === 0) await sweep(harness);
+      const [reviewing] = byMode(harness, workspaceId, "REVIEW");
+      const reports = ["CRITIC", "SECURITY"].map((role) => ({ operationId: reviewing!.id, candidateDigest: candidate.digest, role, provider: "t", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: new Date().toISOString() }));
+      await harness.finish(workspaceId, String(reviewing!.id), "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowReviews: reports } });
+      expect(workflowOf(harness, taskId)).toMatchObject({ stage: "CLOSED", state: "COMPLETE", outcome: "PASSED" });
+      const active = () => String((harness.db.get(`WORKSPACE#${workspaceId}`, "META") as unknown as { activeOperationId: string }).activeOperationId);
+      const member = () => harness.db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`);
+      const close = (discard = false) => harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/close`, { requestId: randomUUID(), ...(discard ? { discard_unpublished: true } : {}) });
+      return { ...started, active, member, close };
+    }
+
+    it("lets the owner close it: the workspace is released and the task slot freed", async () => {
+      const { harness, taskId, workspaceId, active, member, close } = await finishedWithoutPullRequest();
+      // Finished, not released: the slot and the workspace are still held.
+      expect(member()).toMatchObject({ count: 1 });
+      expect((await close()).body).toMatchObject({ closed: false, task: { closing: true } });
+      await harness.finish(workspaceId, active(), "SUCCEEDED", { result: { safeToClose: true, repositories: [] } });
+      expect(harness.db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ status: "CLOSED" });
+      expect(harness.db.get(`DEVTASK#${taskId}`, "META")).toHaveProperty("closedAt");
+      expect(member()).toMatchObject({ count: 0 });
+      expect(harness.deleteEc2Session).toHaveBeenCalledWith(workspaceId);
+    });
+
+    it("closes it when the owner agrees to discard the unpublished changes, and not before", async () => {
+      const { harness, taskId, workspaceId, active, member, close } = await finishedWithoutPullRequest();
+      const unpublished = { result: { safeToClose: false, repositories: [{ name: "demo", reasons: ["worktree_changes"] }] } };
+      await close();
+      await harness.finish(workspaceId, active(), "SUCCEEDED", unpublished);
+      expect(harness.db.get(`DEVTASK#${taskId}`, "META")).not.toHaveProperty("closedAt");
+      expect(member()).toMatchObject({ count: 1 });
+      await close(true);
+      await harness.finish(workspaceId, active(), "SUCCEEDED", unpublished);
+      expect(harness.db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ status: "CLOSED" });
+      expect(harness.db.get(`DEVTASK#${taskId}`, "META")).toHaveProperty("closedAt");
+      expect(member()).toMatchObject({ count: 0 });
     });
   });
 

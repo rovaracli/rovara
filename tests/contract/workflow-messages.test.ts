@@ -178,10 +178,10 @@ describe("workflow Slack messages", () => {
     }
   });
 
-  it("tells the owner a finished sequence kept its changes in the workspace, and never says the plan was rejected", () => {
+  it("tells the owner a finished sequence kept its changes until the task is closed, and never says the plan was rejected or promises a pull request", () => {
     const message = workflowMessage({ taskId, workflow: snapshot("CLOSED", "COMPLETE", { outcome: "PASSED" }) })!;
-    expect(visibleSlackText(message.text)).toBe("Rovara finished every step. The changes are in this task's workspace; open a pull request from it, or it will be cleaned up when idle.");
-    expect(message.text).not.toMatch(/reject/i);
+    expect(visibleSlackText(message.text)).toBe("Rovara finished every step. The changes are kept in this task's workspace until you close the task.");
+    expect(message.text).not.toMatch(/reject|pull request/i);
   });
 
   it("acknowledges each owner decision by what it was, not by the stage alone", () => {

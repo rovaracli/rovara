@@ -3190,9 +3190,9 @@ const removedReasonOf = (task: DeveloperTaskRecord) => (task.outcome === "creato
 
 /** Where a workflow task stands and what happens next, in the words the task page shows. */
 function taskPageStage(workflow: WorkflowSnapshot | undefined, closed: boolean, owner: boolean, publication: "failed" | "retrying" | undefined = undefined, removedReason: string | undefined = undefined): { status: string; nextStep: string } {
-  // A custom sequence with no pull request step ran every step; its changes wait, unpublished, in the workspace.
+  // A custom sequence with no pull request step ran every step; its changes wait, unpublished, until the owner closes the task.
   if (!closed && workflow?.stage === "CLOSED" && workflow.state === "COMPLETE" && workflow.outcome === "PASSED") {
-    return { status: "Finished every step", nextStep: "The changes are in this task's workspace; open a pull request from it, or it will be cleaned up when idle." };
+    return { status: "Finished every step", nextStep: "The changes are kept in this task's workspace until you close the task." };
   }
   if (closed || workflow?.stage === "CLOSED") return { status: "Closed", nextStep: "Nothing; this task is closed." };
   // Ruling R60: the creator was removed from the org, so the task ended; no step is waiting.
@@ -5217,7 +5217,7 @@ export async function finishTaskClose(
  * Whether a workflow task is finished and gives its workspace back at once: all its pull requests merged, or its workflow
  * ended in the CLOSED stage (the owner rejected its plan). Nothing changes either after. A custom sequence that ran every
  * step and has no pull request step also ends CLOSED, with the outcome PASSED, but its code was never published: it is
- * not released here, and its workspace is left to the idle reaper like any task whose changes are unpublished.
+ * not released here: its workspace and the owner's task slot are kept until the owner closes the task (an owner action, which works on this ending).
  */
 export function workflowTaskFinished(task: Pick<DeveloperTaskRecord, "workflow">): boolean {
   const workflow = task.workflow;
