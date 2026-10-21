@@ -76,7 +76,8 @@ const SENDER = /^(?:[^<>]+?\s*<([^<>@\s,]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+))>
 /** The sender as Cognito will show it, and the domain Amazon SES must have verified; the address is the part after the last @. */
 function parseSender(value: string): { from: string; domain: string } {
   const from = value.trim();
-  const match = SENDER.exec(from);
+  // A line break or other control character in the sender would reach the email's From header.
+  const match = /\p{Cc}/u.test(from) ? null : SENDER.exec(from);
   const domain = (match?.[2] ?? match?.[4])?.toLowerCase();
   if (domain === undefined) throw agentXError("CONFIG_INVALID", `--email-from ${JSON.stringify(value)} is not "Name <address>" or an address with a domain, for example "Rovara <signin@rovara.dev>"`);
   return { from, domain };

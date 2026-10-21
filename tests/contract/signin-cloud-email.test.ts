@@ -165,7 +165,9 @@ describe("agentx signin cloud --email-from", () => {
 
   it.each([
     ["no address", "Rovara"],
-    ["an empty name", "<signin@rovara.dev>x"],
+    ["trailing text after the address", "<signin@rovara.dev>x"],
+    ["a name with a line break", "Rovara\nBcc: x <signin@rovara.dev>"],
+    ["a name with a control character", "Rovara\u0007 <signin@rovara.dev>"],
     ["two addresses", "a@rovara.dev, b@rovara.dev"],
     ["an address with no domain dot", "signin@localhost"],
     ["a name with an angle bracket", "Ro<vara <signin@rovara.dev>"],
