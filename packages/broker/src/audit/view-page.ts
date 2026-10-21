@@ -197,6 +197,7 @@ function exportPanel(content: string): string {
 /** The export panel for a view of the export, with its link when it is ready. */
 function exportStatus(view: AuditExportView, link: AuditExportLink | undefined, exportId: string): string {
   const range = `Records ${plain(view.range.fromSeq)} to ${plain(view.range.toSeq)}${view.withDetails ? ", with details" : ""}.`;
+  // Defence in depth: exportAnswer only signs a link for a ready export, so the status check is redundant today.
   if (view.status === "ready" && link !== undefined) {
     const minutes = Math.max(1, Math.round(link.expiresInSeconds / 60));
     return exportPanel(`<p>Your export is ready. ${range}${view.summary === undefined ? "" : ` ${plain(view.summary.records)} records.`}</p>`
@@ -225,7 +226,12 @@ function formFields(body: string | undefined, allowed: readonly string[]): Map<s
 
 const FORM_FIELDS = ["csrf", "requestId", "fromSeq", "toSeq", "withDetails"] as const;
 
-const sameToken = (left: string, right: string): boolean => left.length === right.length && timingSafeEqual(Buffer.from(left), Buffer.from(right));
+/** Both sides are checked as CSRF tokens first, so the byte lengths match whenever the character counts do. */
+const sameToken = (left: string, right: string): boolean => {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && timingSafeEqual(a, b);
+};
 
 /** A whole number from a form field; anything else is NaN, which the export request's check refuses as a bad range. */
 const wholeNumberField = (value: string | undefined): number => (value !== undefined && /^\d{1,15}$/.test(value) ? Number(value) : Number.NaN);
@@ -295,7 +301,7 @@ export function createAuditViewPage(deps: AuditViewPageDependencies): (request: 
     // The guards come first and say the same thing whichever one fails: nothing about the session, the token or the origin.
     const cookie = parseCookie(request.headers, CSRF_COOKIE);
     const field = new URLSearchParams(request.body ?? "").get("csrf");
-    if (request.headers.origin !== cellOrigin || !isCsrfToken(cookie) || field === null || !sameToken(field, cookie)) return messagePage(403, "Request refused", REFUSED);
+    if (request.headers.origin !== cellOrigin || !isCsrfToken(cookie) || field === null || !isCsrfToken(field) || !sameToken(field, cookie)) return messagePage(403, "Request refused", REFUSED);
     const caller = await signedIn(request);
     if (caller === undefined) return messagePage(401, "Sign in again", SIGN_IN_AGAIN, `<p><a href="${escapeHtml(signInLocation(AUDIT_VIEW_PATH))}">Sign in</a></p>`);
     const refused = notAllowed(caller);

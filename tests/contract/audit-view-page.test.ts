@@ -125,7 +125,7 @@ describe("sign-in", () => {
     expect(ledgerOperations(b, before)).toStrictEqual([]);
   });
 
-  it("keeps the filters through sign-in", async () => {
+  it("sends a signed-out filtered view to the fixed sign-in path, dropping the filters", async () => {
     const b = await world();
     const { call } = pageOf(b, admin());
     const response = await call({ method: "GET", path: `${AUDIT_VIEW_PATH}?action=pull_request.opened&limit=5`, headers: {} });
@@ -622,6 +622,15 @@ describe("the export POST's guards: each refusal starts nothing", () => {
     const { post } = pageOf(b, admin());
     const response = await post(exportForm("c1"), { csrf: false });
     expect(response.statusCode).toBe(403);
+    expectNothingStarted(b);
+  });
+
+  it("refuses a CSRF field of the right length in non-ASCII characters with the page, not a 500", async () => {
+    const b = await world();
+    const { post } = pageOf(b, admin());
+    const response = await post(exportForm("c1b", { csrf: "é".repeat(CSRF.length) }));
+    expect(response.statusCode).toBe(403);
+    expect(response.headers["referrer-policy"]).toBe("same-origin");
     expectNothingStarted(b);
   });
 
