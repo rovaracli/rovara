@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UnlinkIdentityRequest } from "@agentx/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import type { DeveloperApiConfiguration } from "../../packages/broker/src/aws/developer-routes.js";
-import { IDENTITY_NOTICE_SUBJECT, sendIdentityLinkedNotice } from "../../packages/broker/src/developer/identity-notice.js";
-import { UNLINK_FIRST_IDENTITY, UNLINK_ONLY_IDENTITY, DeveloperSignInStore, developerIdentityKey, endedByUnlink, signInIdentityKey } from "../../packages/broker/src/developer/store.js";
+import { IDENTITY_NOTICE_SUBJECT, NOTICE_SEND_TIMEOUT_MS, sendIdentityLinkedNotice } from "../../packages/broker/src/developer/identity-notice.js";
+import { UNLINK_FIRST_IDENTITY, UNLINK_ONLY_IDENTITY, DeveloperSignInStore, type DeveloperMarks, developerIdentityKey, endedByUnlink, signInIdentityKey } from "../../packages/broker/src/developer/store.js";
 import { developerTokenVerifier } from "../../packages/broker/src/developer/verify-token.js";
 import { createAdminBroker } from "../support/admin-broker.js";
 import { ISSUER, identityHarness, type FakeGithubUser, type FakeOidcUser } from "../support/developer-fakes.js";
@@ -80,6 +80,8 @@ async function brokerCall(h: Harness, method: string, path: string, token: strin
   return { status: response.statusCode, body: JSON.parse(response.body) as Record<string, unknown> };
 }
 
+/** A developer item as the marks the store wrote on it. */
+const marksOf = (item: Record<string, unknown>) => item as DeveloperMarks;
 const emailsSent = (ses: ReturnType<typeof fakeSes>) => ses.sent.map((command) => command.input);
 
 describe("the notice of a newly linked sign-in method", () => {
@@ -170,6 +172,29 @@ describe("the notice of a newly linked sign-in method", () => {
   });
 });
 
+describe("the notice's send is capped", () => {
+  it("passes an abort signal of at most 3 s, and a send that never answers still lets the sign-in succeed, logged without the address", async () => {
+    expect(NOTICE_SEND_TIMEOUT_MS).toBeLessThanOrEqual(3000);
+    const signals: Array<AbortSignal | undefined> = [];
+    const hanging = {
+      send: vi.fn((_command: unknown, options?: { abortSignal?: AbortSignal }) => new Promise((_resolve, reject) => {
+        signals.push(options?.abortSignal);
+        options?.abortSignal?.addEventListener("abort", () => reject(new Error("aborted")));
+      })),
+    } as never;
+    const h = identityHarness({ cloud: {}, oidcUsers: [priya], github: { users: [octo] }, notice: { ses: hanging, from: FROM, cellUrl: CELL } });
+    await signIn(h, "cloud", priya.sub);
+    const started = performance.now();
+    const github = await signIn(h, "github", "4711");
+    expect(github.claims).toMatchObject({ sub: cloudId, amr: "github" });
+    expect(performance.now() - started).toBeLessThan(NOTICE_SEND_TIMEOUT_MS + 1500);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(true);
+    expect(h.logs).toContainEqual({ event: "signin.identity_link_notice_failed", provider: "github", error: "Error" });
+    expect(JSON.stringify(h.logs)).not.toContain("priya@acme.dev");
+  }, 15_000);
+});
+
 describe("unlinking a sign-in method", () => {
   it("ends the unlinked method's sessions and only those; the next sign-in with it starts its own developer", async () => {
     const h = identityHarness({ cloud: {}, oidcUsers: [priya], github: { users: [octo] } });
@@ -205,7 +230,7 @@ describe("unlinking a sign-in method", () => {
     expect(h.db.get(signInIdentityKey(githubId))).toMatchObject({ developerId: githubId, unlinkedFrom: cloudId });
     expect(h.db.get(developerIdentityKey(cloudId, githubId))).toBeUndefined();
     expect((await brokerCall(h, "GET", "/v1/app/me", again.token)).status).toBe(200);
-    // And that new session is not caught by the old developer's mark.
+    // The cloud session is still the old developer's and is not caught by the GitHub mark.
     expect((await brokerCall(h, "GET", "/v1/app/me", cloud.token)).status).toBe(200);
   });
 
@@ -220,6 +245,52 @@ describe("unlinking a sign-in method", () => {
     expect(exchanged.status).toBe(400);
     expect(exchanged.body.error).toBe("invalid_grant");
     expect(h.db.find((item) => item.entityType === "SESSION" && item.amr === "github")).toEqual([]);
+  });
+
+  it("a session created after the unlink (from a link read before it) is refused at refresh and on the route, even in the same millisecond", async () => {
+    const h = identityHarness({ cloud: {}, oidcUsers: [priya], github: { users: [octo] } });
+    await signIn(h, "cloud", priya.sub);
+    await signIn(h, "github", "4711");
+    h.tick(1000);
+    expect(await h.handler({ kind: "unlink-identity", developerId: cloudId, provider: "github" })).toEqual({ ok: true });
+    for (const wait of [0, 5000]) {
+      h.tick(wait);
+      // What a sign-in that resolved its link before the unlink does: it creates its session afterwards, for the old developer.
+      const stale = await h.deps.store.createSession({ developerId: cloudId, amr: "github", identityKey: githubId });
+      expect(Date.parse(stale.session.startedAt)).toBeGreaterThanOrEqual(T0 + 1000);
+      const refused = await h.refresh(stale.refreshToken);
+      expect(refused.status).toBe(400);
+      expect(String(refused.body.error_description)).toContain("this sign-in method was removed from your account");
+    }
+  });
+
+  it("a session of the unlinked identity created in the very millisecond of the unlink is refused on the route", async () => {
+    const h = identityHarness({ cloud: {}, oidcUsers: [priya], github: { users: [octo] } });
+    await signIn(h, "cloud", priya.sub);
+    const github = await signIn(h, "github", "4711");
+    // No tick: the unlink and the session below share a millisecond with the sign-in that made `github`.
+    expect(await h.handler({ kind: "unlink-identity", developerId: cloudId, provider: "github" })).toEqual({ ok: true });
+    const refused = await brokerCall(h, "GET", "/v1/app/me", github.token);
+    expect(refused.status).toBe(401);
+    const stale = await h.deps.store.createSession({ developerId: cloudId, amr: "github", identityKey: githubId });
+    expect(stale.session.startedAt).toBe(h.db.get(`DEVELOPER#${cloudId}`, "META")![`identityUnlinked#${githubId}`]);
+    expect((await h.refresh(stale.refreshToken)).status).toBe(400);
+  });
+
+  it("unlink, then the same account signs in again: it has its own developer and its sessions work, and the old developer's mark stays", async () => {
+    const h = identityHarness({ cloud: {}, oidcUsers: [priya], github: { users: [octo] } });
+    const cloud = await signIn(h, "cloud", priya.sub);
+    const first = await signIn(h, "github", "4711");
+    h.tick(1000);
+    expect(await h.handler({ kind: "unlink-identity", developerId: cloudId, provider: "github" })).toEqual({ ok: true });
+    h.tick(1000);
+    const again = await signIn(h, "github", "4711");
+    expect(again.claims).toMatchObject({ sub: githubId, amr: "github" });
+    expect((await brokerCall(h, "GET", "/v1/app/me", again.token)).status).toBe(200);
+    expect((await h.refresh(again.refresh)).status).toBe(200);
+    expect((await brokerCall(h, "GET", "/v1/app/me", first.token)).status).toBe(401);
+    expect((await brokerCall(h, "GET", "/v1/app/me", cloud.token)).status).toBe(200);
+    expect(h.db.get(`DEVELOPER#${cloudId}`, "META")).toHaveProperty(`identityUnlinked#${githubId}`);
   });
 
   it("refuses the only way to sign in, and the sign-in the account was created with, in exact words", async () => {
@@ -312,18 +383,43 @@ describe("DeveloperSignInStore.unlinkIdentity", () => {
     expect(db.get(signInIdentityKey(cloudId))).not.toHaveProperty("unlinkedFrom");
   });
 
-  it("endedByUnlink: a session of the unlinked identity that started before the mark is ended; a later one, another identity's, and a legacy one of another method are not", async () => {
+  it("endedByUnlink: a session of the unlinked identity is ended whenever it started (before, at, or after the mark); another identity's, and a legacy one of another method, are not", async () => {
     const { db, store } = setup();
     await store.unlinkIdentity({ developerId: cloudId, provider: "github" });
     const developer = db.get(`DEVELOPER#${cloudId}`, "META")!;
     const before = new Date(T0).toISOString();
     const after = new Date(T0 + 6000).toISOString();
-    expect(endedByUnlink({ startedAt: before, amr: "github", identityKey: githubId }, developer)).toBe(true);
-    expect(endedByUnlink({ startedAt: after, amr: "github", identityKey: githubId }, developer)).toBe(false);
-    expect(endedByUnlink({ startedAt: before, amr: "cloud", identityKey: cloudId }, developer)).toBe(false);
+    expect(endedByUnlink({ startedAt: before, amr: "github", identityKey: githubId }, marksOf(developer))).toBe(true);
+    // A session created from a link read before the unlink starts after the mark, or in the same millisecond: it is ended all the same.
+    expect(endedByUnlink({ startedAt: after, amr: "github", identityKey: githubId }, marksOf(developer))).toBe(true);
+    expect(endedByUnlink({ startedAt: new Date(T0 + 5000).toISOString(), amr: "github", identityKey: githubId }, marksOf(developer))).toBe(true);
+    expect(endedByUnlink({ startedAt: before, amr: "cloud", identityKey: cloudId }, marksOf(developer))).toBe(false);
     // A session from before sessions recorded an identity is matched by its method.
-    expect(endedByUnlink({ startedAt: before, amr: "github" }, developer)).toBe(true);
-    expect(endedByUnlink({ startedAt: before, amr: "cloud" }, developer)).toBe(false);
+    expect(endedByUnlink({ startedAt: before, amr: "github" }, marksOf(developer))).toBe(true);
+    expect(endedByUnlink({ startedAt: before, amr: "cloud" }, marksOf(developer))).toBe(false);
+    // The method mark stays a start-time comparison: a legacy session started after the unlink is not the unlinked one's.
+    expect(endedByUnlink({ startedAt: after, amr: "github" }, marksOf(developer))).toBe(false);
+  });
+
+  it("a link written after the unlink's mark (relinking the identity) removes the unlink mark and keeps the sessions from before it ended", async () => {
+    const { db, store } = setup();
+    await store.unlinkIdentity({ developerId: cloudId, provider: "github" });
+    // The identity's own developer (the only one an unlinked identity may link to) carries the mark here, as it would after an earlier
+    // unlink from it; linking the identity again must not leave it ended.
+    const marked = { ...db.get(`DEVELOPER#${cloudId}`, "META")! };
+    db.set({ ...marked, pk: `DEVELOPER#${githubId}`, developerId: githubId });
+    const relinkedAt = new Date(T0 + 9000).toISOString();
+    const later = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now: () => T0 + 9000 });
+    expect(await later.linkIdentity({ identityKey: githubId, developerId: githubId, provider: "github", issuer: GITHUB_ISSUER, subject: "4711" })).toEqual({ developerId: githubId, created: true });
+    const record = db.get(`DEVELOPER#${githubId}`, "META")!;
+    expect(record).not.toHaveProperty(`identityUnlinked#${githubId}`);
+    expect(record).toHaveProperty(`sessionsEndedByIdentity#${githubId}`, relinkedAt);
+    // Sessions from before the link stay ended; the ones after it live.
+    expect(endedByUnlink({ startedAt: new Date(T0).toISOString(), amr: "github", identityKey: githubId }, marksOf(record))).toBe(true);
+    expect(endedByUnlink({ startedAt: relinkedAt, amr: "github", identityKey: githubId }, marksOf(record))).toBe(false);
+    expect(endedByUnlink({ startedAt: new Date(T0 + 12_000).toISOString(), amr: "github", identityKey: githubId }, marksOf(record))).toBe(false);
+    // The original developer is untouched.
+    expect(db.get(`DEVELOPER#${cloudId}`, "META")).toHaveProperty(`identityUnlinked#${githubId}`);
   });
 
   it("unlinks every identity of a method when two are linked, and keeps the others", async () => {

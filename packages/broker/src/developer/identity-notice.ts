@@ -6,8 +6,8 @@ import { SendEmailCommand, type SESv2Client } from "@aws-sdk/client-sesv2";
 import type { DeveloperSignInMethod } from "@agentx/contracts";
 
 export const IDENTITY_NOTICE_SUBJECT = "A new way to sign in to your Rovara account";
-/** How long a send may take; a sign-in is waiting on it. */
-const SEND_TIMEOUT_MS = 5000;
+/** How long a send may take; a sign-in is waiting on it, inside the function's 15 s, so a slow SES call must not use that budget up. */
+export const NOTICE_SEND_TIMEOUT_MS = 2500;
 /** A login (only GitHub has one): letters, digits and hyphens, at most 39 characters. Anything else is left out of the email rather than quoted in it. */
 const GITHUB_LOGIN = /^[A-Za-z0-9-]{1,39}$/;
 
@@ -54,7 +54,7 @@ export async function sendIdentityLinkedNotice(
         Html: { Data: `<p>${escapeHtml(text)}</p>`, Charset: "UTF-8" },
       },
     } },
-  }), { abortSignal: AbortSignal.timeout(SEND_TIMEOUT_MS) });
+  }), { abortSignal: AbortSignal.timeout(NOTICE_SEND_TIMEOUT_MS) });
   deps.log({ event: "signin.identity_linked", provider: input.provider });
   return "sent";
 }

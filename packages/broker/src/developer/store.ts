@@ -31,7 +31,16 @@ export interface JoinResultRecord {
   inviterName: string; codeChallenge: string; expiresAt: number;
 }
 export const JOIN_RESULT_SECONDS = 600;
-export interface DeveloperRecord { developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string; displayName: string; email?: string; slackUserId?: string; firstSignInAt: string; lastSignInAt: string; revoked: boolean; sessionsEndedAt?: string;
+/**
+ * Plan 2, Task 8: the marks an unlink (and a later relink) leaves on a developer's record, one attribute per identity or method
+ * (see `endedByUnlink`). They are written by the store, never by a profile, and read from the item as stored.
+ */
+export type DeveloperMarks = {
+  [attribute: `sessionsEndedByIdentity#${string}`]: string | undefined;
+  [attribute: `identityUnlinked#${string}`]: string | undefined;
+  [attribute: `sessionsEndedByMethod#${string}`]: string | undefined;
+};
+export interface DeveloperRecord extends DeveloperMarks { developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string; displayName: string; email?: string; slackUserId?: string; firstSignInAt: string; lastSignInAt: string; revoked: boolean; sessionsEndedAt?: string;
   /** Plan 2, Task 3: the developer this one was merged into (a duplicate member of the same person); its sign-in identity is linked there. */
   mergedInto?: string; mergedAt?: string }
 /** One item of a TransactWriteItems request, for a transaction that also writes another table. */
@@ -102,16 +111,25 @@ const isActiveLink = (link: Pick<IdentityLinkRecord, "developerId" | "unlinkedFr
   link.unlinkedFrom === undefined || link.developerId === identityKey;
 /**
  * Plan 2, Task 8: unlinking a sign-in method ends that method's sessions without touching the person's others. The sessions are not
- * listed (the table has no index of them); the unlink marks the developer's record instead, and every session check compares its start
- * with the mark: a session of the unlinked identity (`sessionsEndedByIdentity#<identityKey>`), or a session from before sessions
- * recorded their identity, by method (`sessionsEndedByMethod#<provider>`). The marks are separate attributes, so one unlink is one
- * atomic update beside the unlink itself, and no new kind of access to the table.
+ * listed (the table has no index of them); the unlink marks the developer's record instead, and every session check reads the marks.
+ * A session that recorded its identity is ended for as long as `identityUnlinked#<identityKey>` is present, whenever it started: an
+ * unlinked identity can never be active for this developer again, and a session created from a link read just before the unlink
+ * (a sign-in that was already running) starts after the mark yet must not live. Linking the identity again removes that mark and
+ * leaves `sessionsEndedByIdentity#<identityKey>` as the link time, so sessions from before the link stay ended and later ones live.
+ * A session from before sessions recorded their identity is ended by method (`sessionsEndedByMethod#<provider>`), by start time. The
+ * marks are separate attributes, so one unlink is one atomic update beside the unlink itself, and no new kind of access to the table.
  */
-export const identitySessionsEndedAttribute = (identityKey: string): string => `sessionsEndedByIdentity#${identityKey}`;
-export const methodSessionsEndedAttribute = (provider: DeveloperSignInMethod): string => `sessionsEndedByMethod#${provider}`;
-/** Whether the person unlinked this session's sign-in method after the session started. `developer` is the developer record as stored. */
-export function endedByUnlink(session: Pick<SessionRecord, "startedAt" | "amr" | "identityKey">, developer: Record<string, unknown>): boolean {
-  const mark = developer[session.identityKey === undefined ? methodSessionsEndedAttribute(session.amr) : identitySessionsEndedAttribute(session.identityKey)];
+export const identitySessionsEndedAttribute = (identityKey: string): `sessionsEndedByIdentity#${string}` => `sessionsEndedByIdentity#${identityKey}`;
+export const identityUnlinkedAttribute = (identityKey: string): `identityUnlinked#${string}` => `identityUnlinked#${identityKey}`;
+export const methodSessionsEndedAttribute = (provider: DeveloperSignInMethod): `sessionsEndedByMethod#${string}` => `sessionsEndedByMethod#${provider}`;
+/** Whether the person unlinked this session's sign-in method after the session started (or, for its identity, at all since). `developer` is the developer record as stored. */
+export function endedByUnlink(session: Pick<SessionRecord, "startedAt" | "amr" | "identityKey">, developer: DeveloperMarks): boolean {
+  if (session.identityKey !== undefined) {
+    if (typeof developer[identityUnlinkedAttribute(session.identityKey)] === "string") return true;
+    const relinked = developer[identitySessionsEndedAttribute(session.identityKey)];
+    return typeof relinked === "string" && endedByAdmin(session.startedAt, relinked);
+  }
+  const mark = developer[methodSessionsEndedAttribute(session.amr)];
   return typeof mark === "string" && endedByAdmin(session.startedAt, mark);
 }
 /** Refusals of an unlink, in the person's words. */
@@ -289,9 +307,19 @@ export class DeveloperSignInStore {
       ...(current?.unlinkedAt === undefined ? {} : { unlinkedAt: current.unlinkedAt }),
     };
     const body = { entityType: "IDENTITY_LINK", ...link };
+    // An identity that was unlinked from this developer and now links to it again stops being ended by that unlink: the mark that ended
+    // every session of the identity goes in the same transaction, and sessions from before the link stay ended by its time.
+    const marked = current === undefined ? undefined : await this.getDeveloper(developerId);
+    const clearsUnlink = marked !== undefined && marked[identityUnlinkedAttribute(identityKey)] !== undefined;
     try {
       await this.input.documentClient.send(new TransactWriteCommand({
         TransactItems: [
+          ...(clearsUnlink ? [{ Update: {
+            TableName: this.input.tableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #ended = :at REMOVE #unlinked",
+            ConditionExpression: "attribute_exists(pk)",
+            ExpressionAttributeNames: { "#ended": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey) },
+            ExpressionAttributeValues: { ":at": at },
+          } }] : []),
           { Put: {
             TableName: this.input.tableName, Item: { ...signInIdentityKey(identityKey), ...body },
             // Writes when nothing is linked, or (for the identity's own developer) over an item that was unlinked.
@@ -422,8 +450,11 @@ export class DeveloperSignInStore {
     if (keys.includes(developerId)) throw agentXError("CONFIG_INVALID", UNLINK_FIRST_IDENTITY);
     const at = new Date(input.now ?? this.input.now()).toISOString();
     const TableName = this.input.tableName;
+    const merged = new Map<string, string | undefined>();
+    for (const key of keys) merged.set(key, key === developerId ? undefined : (await this.getDeveloper(key))?.mergedInto);
     for (const [index, link] of targets.entries()) {
       const identityKey = keys[index]!;
+      const mergedAway = (key: string): boolean => merged.get(key) === developerId;
       // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the reverse item's keys
       const { pk: _pk, sk: _sk, entityType: _type, ...fields } = link as typeof link & { pk: string; entityType?: string };
       try {
@@ -438,11 +469,17 @@ export class DeveloperSignInStore {
               ConditionExpression: "attribute_exists(pk) AND developerId = :d AND attribute_not_exists(unlinkedFrom)", ExpressionAttributeValues: { ":d": developerId },
             } },
             { Update: {
-              TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #identity = :at, #method = :at",
+              TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #identity = :at, #unlinked = :at, #method = :at",
               ConditionExpression: "attribute_exists(pk)",
-              ExpressionAttributeNames: { "#identity": identitySessionsEndedAttribute(identityKey), "#method": methodSessionsEndedAttribute(link.provider) },
+              ExpressionAttributeNames: { "#identity": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey), "#method": methodSessionsEndedAttribute(link.provider) },
               ExpressionAttributeValues: { ":at": at },
             } },
+            // An identity merged in by rule 1b is keyed to the developer that was merged away. Unlinked, it starts that developer again
+            // (rule 3), so the record stops saying the developer went into the survivor.
+            ...(mergedAway(identityKey) ? [{ Update: {
+              TableName, Key: { pk: `DEVELOPER#${identityKey}`, sk: META }, UpdateExpression: "REMOVE mergedInto, mergedAt",
+              ConditionExpression: "mergedInto = :d", ExpressionAttributeValues: { ":d": developerId },
+            } }] : []),
           ],
         }));
       } catch (error) {

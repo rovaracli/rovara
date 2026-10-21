@@ -647,7 +647,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       await revoke(session.sessionId, "ended_by_admin");
       return oauthError(400, "invalid_grant", "an AgentX admin ended your sign-in; sign in again with agentx login");
     }
-    if (endedByUnlink(session, developer as unknown as Record<string, unknown>)) {
+    if (endedByUnlink(session, developer)) {
       await revoke(session.sessionId, "identity_unlinked");
       return oauthError(400, "invalid_grant", "this sign-in method was removed from your account; sign in again with agentx login");
     }

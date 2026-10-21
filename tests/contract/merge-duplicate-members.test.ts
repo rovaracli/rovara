@@ -5,7 +5,7 @@ import { developerOrgKey, memberGrantsPk, orgEmailKey, orgMemberKey, orgMetaKey,
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from "../../packages/broker/src/developer/identities.js";
 import type { ProviderIdentity } from "../../packages/broker/src/developer/providers.js";
-import { DeveloperSignInStore, endedByAdmin, signInIdentityKey } from "../../packages/broker/src/developer/store.js";
+import { DeveloperSignInStore, endedByAdmin, endedByUnlink, signInIdentityKey } from "../../packages/broker/src/developer/store.js";
 import { duplicateMerger, mergeDuplicateMember } from "../../packages/broker/src/org/merge-members.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { identityHarness, type FakeGithubUser, type FakeOidcUser } from "../support/developer-fakes.js";
@@ -262,6 +262,35 @@ describe("rule 1b of resolveSignInDeveloper", () => {
     w.db.set({ ...signInIdentityKey(D2), entityType: "IDENTITY_LINK", developerId: D2, provider: "github", issuer: GITHUB_ISSUER, subject: "4711", linkedAt: "x", lastSignInAt: "x", unlinkedFrom: D1, unlinkedAt: "y" });
     expect(await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity })).toMatchObject({ developerId: D2, link: "existing" });
     expect(memberItems(w.db, w.orgId)).toHaveLength(2);
+  });
+
+  it("unlinking a merged-in identity starts its own developer again: the merged-away record stops saying it went into the survivor", async () => {
+    const w = await world();
+    w.db.set(grant(w.orgId, D2, "api", "grant-api"));
+    await w.store.linkIdentity({ identityKey: D1, developerId: D1, provider: "cloud", issuer: OIDC_ISSUER, subject: "priya-cloud-1" });
+    const session = await w.store.createSession({ developerId: D1, amr: "github", identityKey: D2 });
+    w.tick(1000);
+    expect(await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity })).toEqual({ developerId: D1, identityKey: D2, link: "new-linked" });
+    expect(await w.store.getDeveloper(D2)).toMatchObject({ mergedInto: D1 });
+
+    w.tick(1000);
+    expect(await w.store.unlinkIdentity({ developerId: D1, provider: "github" })).toEqual({ identityKey: D2 });
+
+    // The survivor lost the identity and ends its sessions; the merged-away developer is a plain developer again.
+    expect((await w.store.identitiesOf(D1)).map((identity) => identity.provider)).toEqual(["cloud"]);
+    expect(endedByUnlink(session.session, (await w.store.getDeveloper(D1))!)).toBe(true);
+    const restored = await w.store.getDeveloper(D2);
+    expect(restored).toBeDefined();
+    expect(restored).not.toHaveProperty("mergedInto");
+    expect(restored).not.toHaveProperty("mergedAt");
+    expect(restored?.sessionsEndedAt).toBeDefined();
+    expect(await w.store.getIdentityLink(D2)).toMatchObject({ developerId: D1, unlinkedFrom: D1 });
+
+    // Its next sign-in is its own developer's, never merged back, and the record is a valid survivor/duplicate again.
+    w.tick(1000);
+    expect(await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity })).toEqual({ developerId: D2, identityKey: D2, link: "new-self" });
+    expect(await w.store.identitiesOf(D1)).toHaveLength(1);
+    expect(await w.store.getDeveloper(D2)).not.toHaveProperty("mergedInto");
   });
 
   it("merges a disposable race org into the email's member and closes it, with or without self-links (Task 2 race)", async () => {

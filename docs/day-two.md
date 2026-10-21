@@ -269,6 +269,9 @@ managed, so a Python project's setup command should make a virtual environment
 - `agentx --env <env> signin disable slack|oidc`: turns a method off; everyone signed in with it
   is signed out at once.
 - `agentx --env <env> signin check`: checks every piece sign-in needs, and says what to fix.
+- `agentx --env <env> signin unlink cloud|github`: removes that sign-in method from your own account and signs out
+  its sessions; your other methods keep working. The method your account was created with, and your only method,
+  cannot be removed.
 
 Developers need no AWS credentials: they run `npx @preplabsai/rovara-code login <control plane URL>`.
 To hand tasks to Rovara from Claude Code, Codex or Cursor, and to share them to Slack, they follow
