@@ -85,6 +85,14 @@ describe("deploy parameters", () => {
       expect(Object.keys(stackParameters(part, answers(), outputs, { packages: true }))).not.toEqual(expect.arrayContaining(["AnthropicSecretArn"]));
     }
   });
+  it("passes the foundation's DNS firewall project list to the control plane on the hosted cloud only (Plan 2, Task 19)", () => {
+    const withList = { ...outputs, foundation: { ...outputs.foundation, ProjectAllowListId: "rslvr-fdl-0123456789abcdef" } };
+    expect(stackParameters("control-plane", { ...answers(), cloud: true }, withList, { packages: true }).ProjectAllowListId).toBe("rslvr-fdl-0123456789abcdef");
+    // Another install has no firewall list, so its control plane template declares no such parameter and none is passed.
+    expect(stackParameters("control-plane", answers(), withList, { packages: true })).not.toHaveProperty("ProjectAllowListId");
+    // A cloud install whose foundation has not been deployed with the list yet is told which output is missing.
+    expect(() => stackParameters("control-plane", { ...answers(), cloud: true }, outputs, { packages: true })).toThrow(/ProjectAllowListId/);
+  });
   it("passes the alert topic to the Slack stack, and the budget to the control plane only when there is one", () => {
     expect(stackParameters("slack", answers(), outputs, { packages: true }).OperatorAlertsTopicArn).toBe(outputs["control-plane"].OperatorAlertsTopicArn);
     expect(stackParameters("control-plane", answers(), outputs, { packages: true }).BudgetMonthlyUsd).toBeUndefined();

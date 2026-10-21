@@ -209,6 +209,25 @@ export class ControlPlaneStack extends Stack {
       resources: [this.formatArn({ service: "codebuild", resource: "project", resourceName: "agentx-*" })],
     }));
     if (naming.env !== undefined) broker.addEnvironment("CONNECTOR_SECRET_PREFIX", naming.connectorSecretPrefix);
+    // Plan 2, Task 19 (cloud installs): the broker keeps the DNS firewall's "ProjectAllowList" equal to the approved egress domains. The list lives
+    // in the foundation stack; its id arrives the way the VPC's does, as a foundation output the deploy passes on as this parameter. The broker may
+    // update and read that one list and nothing else in Route 53 Resolver, and no other role here has these actions.
+    let projectAllowListArn: string | undefined;
+    if (props?.cloud === true && naming.env !== undefined) {
+      const projectAllowListId = new CfnParameter(this, "ProjectAllowListId", { type: "String", description: "The foundation's DNS firewall project allow list (rule priority 150), which the broker updates with the approved egress domains" }).valueAsString;
+      broker.addEnvironment("AGENT_PROJECT_ALLOW_LIST_ID", projectAllowListId);
+      projectAllowListArn = this.formatArn({ service: "route53resolver", resource: "firewall-domain-list", resourceName: projectAllowListId });
+      // A policy of its own, not the broker's default one: that policy is already near the size where CDK moves statements into a managed
+      // policy, which the service role has no permission to create (tests/contract/access-stack.test.ts). The role's inline policies together
+      // stay far under IAM's 10,240-character limit.
+      new iam.Policy(this, "BrokerProjectAllowListPolicy", {
+        roles: [broker.role!],
+        statements: [new iam.PolicyStatement({
+          actions: ["route53resolver:UpdateFirewallDomains", "route53resolver:GetFirewallDomainList"],
+          resources: [projectAllowListArn],
+        })],
+      });
+    }
     // Spec 043: SWE-bench runs. The broker reads the optional eval stack's settings, the runner image
     // and the worker model per request, and starts the eval state machine by its fixed name; both
     // exist only once the eval stack is deployed, and until then a run is refused as not installed.
@@ -806,6 +825,21 @@ export class ControlPlaneStack extends Stack {
         retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
       },
     });
+    // Plan 2, Task 19: the firewall list follows the approved egress domains. A change syncs at once; this run is the retry for one that could not,
+    // and the one-off backfill of requests for domains stored before approvals existed. It does nothing while the sync marker is clean.
+    if (projectAllowListArn !== undefined) {
+      new scheduler.CfnSchedule(this, "EgressDomainsSyncSchedule", {
+        flexibleTimeWindow: { mode: "OFF" },
+        scheduleExpression: "rate(5 minutes)",
+        state: "ENABLED",
+        target: {
+          arn: broker.functionArn,
+          roleArn: githubRecoveryRole.roleArn,
+          input: JSON.stringify({ source: "agentx.egress-domains-sync" }),
+          retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
+        },
+      });
+    }
     new scheduler.CfnSchedule(this, "WorkflowMergeRecoverySchedule", {
       flexibleTimeWindow: { mode: "OFF" },
       scheduleExpression: "rate(1 minute)",

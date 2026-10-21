@@ -232,7 +232,7 @@ describe("syncCellAllowList", () => {
     const [update, read] = t.resolver.send.mock.calls.map(([command]) => command);
     expect(update).toBeInstanceOf(UpdateFirewallDomainsCommand);
     expect(read).toBeInstanceOf(GetFirewallDomainListCommand);
-    expect((read as GetFirewallDomainListCommand).input).toEqual({ FirewallDomainListId: LIST_ID });
+    expect((read as { input: unknown }).input).toEqual({ FirewallDomainListId: LIST_ID });
   });
 });
 

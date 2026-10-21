@@ -323,6 +323,8 @@ export function stackParameters(part: DeployPart, answers: InstallAnswers, outpu
         ...Object.fromEntries([...CONTROL_PLANE_FOUNDATION_PARAMETERS, ...MODEL_PROXY_FOUNDATION_PARAMETERS, ...CLOUD_PROJECT_FOUNDATION_PARAMETERS].map((name) => [name, required(outputs, "foundation", name, answers.env)])),
         ...(answers.slackAppPostedMessages === undefined ? {} : { SlackAppPostedMessages: answers.slackAppPostedMessages }),
         ...(answers.cloud === true ? cloudSignInParameters(answers.cloudSignIn) : {}),
+        // Plan 2, Task 19: the hosted cloud's foundation has the DNS firewall, and the broker keeps its project list current.
+        ...(answers.cloud === true ? { ProjectAllowListId: required(outputs, "foundation", "ProjectAllowListId", answers.env) } : {}),
         ...(answers.budget === undefined ? {} : { BudgetMonthlyUsd: String(answers.budget.monthlyUsd), BudgetScope: answers.budget.scope }),
         // F24: only when a stored sign-in choice is actually given; the template's own defaults
         // (sign-in off) are otherwise left untouched, and only the seven keys the control-plane

@@ -9,7 +9,7 @@ export const EGRESS_ALLOW_DOMAINS_CONTEXT_KEY = "agentxEgressAllowDomains";
 
 /**
  * The priority of the rule group's association with the VPC. This is a different scale from the rule
- * priorities inside the group (100 and 200). Resolver rejects 100 and 9900 as reserved: "[RSLVR-02017]
+ * priorities inside the group (100, 150 and 200). Resolver rejects 100 and 9900 as reserved: "[RSLVR-02017]
  * The priority value you provided is reserved. Provide a number between "100" and "9900"", with both
  * bounds exclusive, so a valid association priority is 101..9899.
  */
@@ -47,8 +47,16 @@ export interface AgentDnsFirewallProps {
 
 /**
  * A Route 53 Resolver DNS Firewall for the install VPC, so agent machines resolve only an allowlist of
- * websites. Rule group, in order: priority 100 ALLOW the domain list, priority 200 BLOCK `*` with
- * NXDOMAIN. Every query is logged to /agentx/<env>/dns-firewall (30 days).
+ * websites. Rule group, in order: priority 100 ALLOW the default domain list, priority 150 ALLOW the
+ * project list, priority 200 BLOCK `*` with NXDOMAIN. Every query is logged to
+ * /agentx/<env>/dns-firewall (30 days).
+ *
+ * The project list holds the domains Rovara staff approved for projects (and, in Plan 3, model
+ * sources): one cell-wide union, which the broker keeps equal to the approved egress items with
+ * UpdateFirewallDomains (packages/broker/src/aws/egress-domains-sync.ts). It is declared with no
+ * `domains` property on purpose: the template never owns its contents, so a stack update cannot
+ * reset them to empty. Scoping each workspace to its own project's additions needs the per-project
+ * egress proxy, which comes after launch.
  *
  * It governs the whole VPC, not only the workers: the model proxy, the ModelAccessFunction and the
  * Slack orchestrator resolve through it too, so a host any of them needs must be on the allowlist.
@@ -64,6 +72,8 @@ export class AgentDnsFirewall extends Construct {
   /** The query log group; Task 18 builds a metric filter on it. */
   readonly logGroup: logs.LogGroup;
   readonly ruleGroup: resolver.CfnFirewallRuleGroup;
+  /** The id of the project list (rule priority 150), for the control plane's broker. */
+  readonly projectAllowListId: string;
   readonly allowDomains: readonly string[];
 
   constructor(scope: Construct, id: string, props: AgentDnsFirewallProps) {
@@ -74,6 +84,11 @@ export class AgentDnsFirewall extends Construct {
       name: `agentx-${props.env}-allow`,
       domains: [...this.allowDomains],
     });
+    // No `domains`: the broker owns the contents (see above).
+    const projectAllowList = new resolver.CfnFirewallDomainList(this, "ProjectAllowList", {
+      name: `agentx-${props.env}-project-allow`,
+    });
+    this.projectAllowListId = projectAllowList.attrId;
     const blockList = new resolver.CfnFirewallDomainList(this, "BlockAllList", {
       name: `agentx-${props.env}-block-all`,
       domains: ["*"],
@@ -84,6 +99,8 @@ export class AgentDnsFirewall extends Construct {
         // An allowed name may CNAME to a CDN name not on the list (auth.docker.io -> *.cdn.cloudflare.net, found live
         // on staging); trust the chain only for names this rule already allowed. Everything else still meets BLOCK.
         { action: "ALLOW", priority: 100, firewallDomainListId: allowList.attrId, firewallDomainRedirectionAction: "TRUST_REDIRECTION_DOMAIN" },
+        // The same trust for the names staff approved (ruling R59): an approved name may CNAME to a CDN name that is not on any list.
+        { action: "ALLOW", priority: 150, firewallDomainListId: projectAllowList.attrId, firewallDomainRedirectionAction: "TRUST_REDIRECTION_DOMAIN" },
         { action: "BLOCK", blockResponse: "NXDOMAIN", priority: 200, firewallDomainListId: blockList.attrId },
       ],
     });
