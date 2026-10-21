@@ -26,9 +26,12 @@ import {
   newPrefixedId,
   orgScoped,
   overlayProblems,
+  principalKey,
+  principalSharesKey,
   recipeProblems,
   type AgentId,
   type AgentOwner,
+  type AgentPrincipal,
   type AgentXErrorCode,
   type BaseRef,
   type OrgId,
@@ -59,6 +62,8 @@ export interface AgentRecord {
   currentVersion?: number;
   latestVersion: number;
   draftRevision: number;
+  /** Counts the writes of the agent's share set (Task 6b); a share save applies only to the count it read. Absent until the first share. */
+  sharesRevision?: number;
   status: "active" | "archived";
   monthlyBudgetUsd?: number;
   maxPerRunUsd?: number;
@@ -86,6 +91,23 @@ export interface AgentVersion {
   publishedAt: string;
   note?: string;
 }
+
+/** What a share gives: `view` sees the agent, `use` runs it, `edit` changes its draft. Owning it (`manage`) is not something a share gives. */
+export type AgentShareLevel = "view" | "use" | "edit";
+
+/** One principal's share of one agent, as stored at `SHARE#<principal>`; the share-index item beside it carries the same level. */
+export interface AgentShareRecord {
+  principal: AgentPrincipal;
+  level: AgentShareLevel;
+  grantedBy: string;
+  grantedAt: string;
+}
+
+/**
+ * A transaction holds at most 100 items. A save of shares writes two per share it adds, changes or drops (the share and its index
+ * item) plus the agent's revision and one event, so it can change at most 49.
+ */
+export const MAX_SHARE_CHANGES_PER_SAVE = 49;
 
 export interface BuiltinSettings {
   pinnedVersion: number;
@@ -131,6 +153,7 @@ const SHIPPED_BUILTINS: BuiltinSource = {
 const coded = (code: AgentXErrorCode, message: string) => agentXError(code, message);
 const notFound = () => coded("NOT_FOUND", "no agent has that ID");
 const conflict = () => coded("AGENT_REVISION_CONFLICT", "Someone else changed this agent's draft. Reload it and make your change again.");
+const sharesConflict = () => coded("AGENT_REVISION_CONFLICT", "Someone else changed who this agent is shared with. Reload it and make your change again.");
 const nameTaken = (name: string) => coded("CONFIG_INVALID", `name: another agent in your company is called ${name}`);
 
 const errorName = (error: unknown) => (error instanceof Error ? error.name : undefined);
@@ -303,6 +326,12 @@ export class AgentStore {
     const directory = await this.queryAll(orgScoped(orgId, "AGENT_DIRECTORY"));
     const agents = await Promise.all(directory.map((entry) => this.get(orgId, entry.sk as AgentId)));
     return agents.filter((agent): agent is AgentRecord => agent !== undefined);
+  }
+
+  /** Who the agent is shared with, in the order of their keys. */
+  async listShares(orgId: OrgId, agentId: AgentId): Promise<AgentShareRecord[]> {
+    const items = await this.queryAll(agentKey(orgId, agentId, "META").pk, "SHARE#");
+    return items.map((item) => strip(item) as unknown as AgentShareRecord);
   }
 
   /** Every event of one agent (a built-in's included), oldest first. */
@@ -688,6 +717,49 @@ export class AgentStore {
       this.event(input.orgId, input.agentId, "base_updated", input.by, { base: target.agentId, from: draft.extends.version, to: target.version }),
     ], () => conflict());
     return { ...draft, extends: target, revision, updatedBy: input.by, updatedAt };
+  }
+
+  /**
+   * Changes the agent's share set in one transaction: each `upsert` writes the share and its index item, each `remove` deletes
+   * both, and one `shared` event records it. It applies only while the agent's `sharesRevision` is still `expectedSharesRevision`
+   * (0 before the first share), so of two concurrent saves one wins and the other conflicts. Who may share, and that the principals
+   * exist, are the caller's checks (access.ts).
+   */
+  async replaceShares(input: {
+    orgId: OrgId;
+    agentId: AgentId;
+    upsert: Array<{ principal: AgentPrincipal; level: AgentShareLevel }>;
+    remove: AgentPrincipal[];
+    expectedSharesRevision: number;
+    by: string;
+  }): Promise<void> {
+    if (input.upsert.length + input.remove.length > MAX_SHARE_CHANGES_PER_SAVE) {
+      throw coded("CONFIG_INVALID", `shares: change at most ${String(MAX_SHARE_CHANGES_PER_SAVE)} people or groups in one save`);
+    }
+    const at = this.iso();
+    const expected = input.expectedSharesRevision;
+    const items: TransactItem[] = [
+      this.update(agentKey(input.orgId, input.agentId, "META"), {
+        set: { sharesRevision: expected + 1 },
+        when: (a) => (expected === 0 ? `${EXISTS} AND attribute_not_exists(${a.name("sharesRevision")})` : `${a.name("sharesRevision")} = ${a.value(expected)}`),
+      }),
+    ];
+    const write = (key: OrgKey, entityType: string, fields: Item): TransactItem => ({ Put: { TableName: this.input.tableName, Item: { ...key, entityType, ...fields } } });
+    const drop = (key: OrgKey): TransactItem => ({ Delete: { TableName: this.input.tableName, Key: key } });
+    for (const { principal, level } of input.upsert) {
+      items.push(
+        write(agentKey(input.orgId, input.agentId, `SHARE#${principalKey(principal)}`), "AGENT_SHARE", { orgId: input.orgId, agentId: input.agentId, principal, level, grantedBy: input.by, grantedAt: at }),
+        write(principalSharesKey(input.orgId, principal, input.agentId), "AGENT_SHARE_INDEX", { agentId: input.agentId, principal, level, grantedAt: at }),
+      );
+    }
+    for (const principal of input.remove) {
+      items.push(drop(agentKey(input.orgId, input.agentId, `SHARE#${principalKey(principal)}`)), drop(principalSharesKey(input.orgId, principal, input.agentId)));
+    }
+    items.push(this.event(input.orgId, input.agentId, "shared", input.by, {
+      shared: input.upsert.map(({ principal, level }) => ({ principal: principalKey(principal), level })),
+      unshared: input.remove.map((principal) => principalKey(principal)),
+    }));
+    await this.transact(items, () => sharesConflict());
   }
 }
 
