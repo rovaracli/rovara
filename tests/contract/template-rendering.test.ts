@@ -7,7 +7,11 @@ import { ENVIRONMENT_PLACEHOLDER, EnvironmentNameSchema, renderTemplate } from "
 import { buildAgentXApp } from "../../infra/lib/app.js";
 
 function templates(env: string): Map<string, string> {
-  const assembly = buildAgentXApp({ agentxEnv: env, agentxSynthesizer: "legacy" }).synth();
+  // A published template is the placeholder environment's, with the name replaced. The audit ledger's Object Lock
+  // default depends on the name (governance for staging, test and dev*, compliance for the rest), which a text
+  // replacement cannot follow, so the published template always carries the safe default: compliance, 1,096 days.
+  // Pinning it for the direct synth keeps this test about what it checks, the fidelity of the name replacement.
+  const assembly = buildAgentXApp({ agentxEnv: env, agentxSynthesizer: "legacy", agentxAuditLockMode: "COMPLIANCE", agentxAuditRetentionDays: 1096 }).synth();
   const byPart = new Map<string, string>();
   for (const stack of assembly.stacks) {
     const part = stack.stackName.replace(`agentx-${env}-`, "");
