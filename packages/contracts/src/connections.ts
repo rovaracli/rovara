@@ -35,17 +35,23 @@ export type OrgConnection = z.infer<typeof OrgConnectionSchema>;
 /** A key or token goes in an HTTP header, so it is printable ASCII with no space or line break. */
 const SecretText = z.string().regex(/^[\x21-\x7e]{1,8192}$/, "must be 1 to 8192 printable characters with no space");
 
-/** What a secret holds, by connection type: a Linear API key, a Jira API token, an MCP bearer token. Write-only: nothing returns it. */
+/**
+ * The Atlassian account email a Jira Cloud API token belongs to. Jira Cloud's REST API takes `Basic base64(email:apiToken)`, so
+ * the email identifies the credential and lives in the secret with the token. No ":" (it splits the pair) and no whitespace.
+ */
+const AtlassianEmail = z.string().max(254).regex(/^[^\s:@]+@[^\s:@]+\.[^\s:@]+$/, "must be the Atlassian account email, such as name@company.com");
+
+/** What a secret holds, by connection type: a Linear API key, a Jira account email and API token, an MCP bearer token. Write-only: nothing returns it. */
 export const ConnectionSecretSchemas = {
   linear: z.object({ apiKey: SecretText }).strict(),
-  jira: z.object({ apiToken: SecretText }).strict(),
+  jira: z.object({ email: AtlassianEmail, apiToken: SecretText }).strict(),
   mcp: z.object({ token: SecretText }).strict(),
 } as const;
 
 export const ConnectionSecretSchema = z.union([ConnectionSecretSchemas.linear, ConnectionSecretSchemas.jira, ConnectionSecretSchemas.mcp]);
 export type ConnectionSecret = z.infer<typeof ConnectionSecretSchema>;
 
-/** The secret's one value, whatever the type calls it. */
+/** The secret's one value the runtime sends, whatever the type calls it (a Jira connection's email is only for its check). */
 export function connectionSecretToken(type: ConnectionType, secret: ConnectionSecret): string {
   return type === "linear" ? (secret as { apiKey: string }).apiKey : type === "jira" ? (secret as { apiToken: string }).apiToken : (secret as { token: string }).token;
 }

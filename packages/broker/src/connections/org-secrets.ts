@@ -157,7 +157,8 @@ export class OrgSecrets {
   private async assume(org: OrgId): Promise<Session> {
     const response = await this.input.sts.send(new AssumeRoleCommand({
       RoleArn: this.input.roleArn,
-      RoleSessionName: "rovara-org-connectors",
+      // The org id is in the name so CloudTrail shows which org a session served (AWS allows [\w+=,.@-], 2 to 64 characters).
+      RoleSessionName: `org-${org}`,
       DurationSeconds: SESSION_SECONDS,
       Tags: [{ Key: ORG_TAG_KEY, Value: org }],
     }));

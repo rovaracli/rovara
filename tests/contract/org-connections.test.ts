@@ -33,6 +33,7 @@ const ENV = "staging";
 const CON_A = "con_aaaaaaaaaaaaaaaaaaaa";
 const CON_B = "con_bbbbbbbbbbbbbbbbbbbb";
 const ALICE = "a".repeat(64);
+const JIRA_EMAIL = "agentx-service@acme.com";
 const LINEAR_KEY = "lin_api_SECRETKEYVALUE0123456789";
 const START = Date.parse("2026-10-21T09:00:00.000Z");
 
@@ -71,7 +72,11 @@ describe("connection contracts", () => {
 
   it("holds one secret shape per type", () => {
     expect(ConnectionSecretSchema.safeParse({ apiKey: LINEAR_KEY }).success).toBe(true);
-    expect(ConnectionSecretSchema.safeParse({ apiToken: "t" }).success).toBe(true);
+    expect(ConnectionSecretSchema.safeParse({ email: "svc@acme.com", apiToken: "t" }).success).toBe(true);
+    // Jira Cloud needs the account email with the token (Basic auth), and the email cannot hold the ":" that splits them.
+    expect(ConnectionSecretSchema.safeParse({ apiToken: "t" }).success).toBe(false);
+    expect(ConnectionSecretSchema.safeParse({ email: "not-an-email", apiToken: "t" }).success).toBe(false);
+    expect(ConnectionSecretSchema.safeParse({ email: "a:b@acme.com", apiToken: "t" }).success).toBe(false);
     expect(ConnectionSecretSchema.safeParse({ token: "t" }).success).toBe(true);
     expect(ConnectionSecretSchema.safeParse({ token: "t", apiKey: "k" }).success).toBe(false);
     expect(ConnectionSecretSchema.safeParse({ token: "has a\nline" }).success).toBe(false);
@@ -203,6 +208,9 @@ describe("OrgSecrets", () => {
     await secrets.put(ORG_A, nameA(), "v");
     const input = send.mock.calls[0]![0].input;
     expect(input).toMatchObject({ RoleArn: FAKE_CONNECTOR_ROLE_ARN, DurationSeconds: 900, Tags: [{ Key: "rovara:org", Value: ORG_A }] });
+    // CloudTrail shows which org a session served; the name stays within AWS's 2-64 characters of [\w+=,.@-].
+    expect(input.RoleSessionName).toBe(`org-${ORG_A}`);
+    expect(input.RoleSessionName).toMatch(/^[\w+=,.@-]{2,64}$/);
     expect(input.TransitiveTagKeys).toBeUndefined();
   });
 
@@ -429,16 +437,81 @@ describe("OrgConnectionStore", () => {
     expect(JSON.stringify(await store.list(ORG_A))).not.toContain("lin-user-1");
   });
 
-  it("records the Jira account id on check from GET <siteUrl>/rest/api/3/myself", async () => {
+  it("records the Jira account id on check from GET <siteUrl>/rest/api/3/myself with Basic email:apiToken", async () => {
     const { deps } = setup();
     const fetchImplementation = fetchOk({ accountId: "5b10ac8d82e05b22cc7d4ef5" });
     const store = storeOf(deps, { fetch: fetchImplementation as unknown as typeof fetch });
-    await store.put({ orgId: ORG_A, connection: JIRA, secret: { apiToken: "jira-token-value" }, by: ALICE });
+    await store.put({ orgId: ORG_A, connection: JIRA, secret: { email: JIRA_EMAIL, apiToken: "jira-token-value" }, by: ALICE });
     expect(await store.check(ORG_A, CON_A)).toEqual({ ok: true });
     const [url, init] = fetchImplementation.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://acme.atlassian.net/rest/api/3/myself");
     expect(init.method ?? "GET").toBe("GET");
+    expect((init.headers as Record<string, string>).authorization).toBe(`Basic ${Buffer.from(`${JIRA_EMAIL}:jira-token-value`).toString("base64")}`);
     expect(await connectionActorIds(deps, ORG_A, "jira")).toEqual(new Set(["5b10ac8d82e05b22cc7d4ef5"]));
+  });
+
+  it("does not put the Jira email or token in a failed check's message, the record or the logs", async () => {
+    const { deps, db } = setup();
+    const logs = [vi.spyOn(console, "log"), vi.spyOn(console, "error"), vi.spyOn(console, "warn"), vi.spyOn(console, "info")];
+    const fetchImplementation = vi.fn(async () => new Response(JSON.stringify({ message: `bad ${JIRA_EMAIL} jira-token-value` }), { status: 401 }));
+    const store = storeOf(deps, { fetch: fetchImplementation as unknown as typeof fetch });
+    await store.put({ orgId: ORG_A, connection: JIRA, secret: { email: JIRA_EMAIL, apiToken: "jira-token-value" }, by: ALICE });
+    const result = await store.check(ORG_A, CON_A);
+    expect(result.ok).toBe(false);
+    for (const text of [JSON.stringify(result), JSON.stringify(db.get(connectionKey(ORG_A, CON_A))), JSON.stringify(logs.map((spy) => spy.mock.calls))]) {
+      expect(text).not.toContain(JIRA_EMAIL);
+      expect(text).not.toContain("jira-token-value");
+    }
+  });
+
+  it("forgets the vendor account when the secret is replaced, and keeps it when only the settings change", async () => {
+    const { deps, db, clock } = setup();
+    const fetchImplementation = fetchOk({ data: { viewer: { id: "lin-user-1" } } });
+    const store = storeOf(deps, { fetch: fetchImplementation as unknown as typeof fetch });
+    await store.put({ orgId: ORG_A, connection: LINEAR, secret: { apiKey: LINEAR_KEY }, by: ALICE });
+    await store.check(ORG_A, CON_A);
+    expect(await connectionActorIds(deps, ORG_A, "linear")).toEqual(new Set(["lin-user-1"]));
+    clock.now += 1_000;
+    await store.put({ orgId: ORG_A, connection: { ...LINEAR, label: "Renamed" }, by: ALICE });
+    expect(await connectionActorIds(deps, ORG_A, "linear")).toEqual(new Set(["lin-user-1"]));
+    expect(db.get(connectionKey(ORG_A, CON_A))).toMatchObject({ lastCheck: { ok: true } });
+    clock.now += 1_000;
+    await store.put({ orgId: ORG_A, connection: LINEAR, secret: { apiKey: "lin_api_rotated" }, by: ALICE });
+    expect(await connectionActorIds(deps, ORG_A, "linear")).toEqual(new Set());
+    expect(db.get(connectionKey(ORG_A, CON_A))).not.toHaveProperty("lastCheck");
+    expect(db.get(connectionKey(ORG_A, CON_A))).not.toHaveProperty("actorId");
+    expect(db.get(connectionKey(ORG_A, CON_A))).toMatchObject({ hasSecret: true });
+  });
+
+  it("stops reading a check response at the size cap even when it declares no length", async () => {
+    const { deps } = setup();
+    let pulled = 0;
+    const chunk = new Uint8Array(100_000).fill(0x20);
+    const oversize = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        if (pulled > 50) controller.close();
+        else controller.enqueue(chunk);
+      },
+    }), { status: 200 }));
+    const store = storeOf(deps, { fetch: oversize as unknown as typeof fetch });
+    await store.put({ orgId: ORG_A, connection: LINEAR, secret: { apiKey: LINEAR_KEY }, by: ALICE });
+    const result = await store.check(ORG_A, CON_A);
+    expect(result).toMatchObject({ ok: false });
+    expect(result.message).toContain("more than a check should return");
+    // 1,000,000 bytes is 10 chunks; the reader stops soon after, not after all 50.
+    expect(pulled).toBeLessThan(20);
+  });
+
+  it("still accepts a chunked response under the cap", async () => {
+    const { deps } = setup();
+    const body = new TextEncoder().encode(JSON.stringify({ data: { viewer: { id: "lin-user-1" } } }));
+    const chunked = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(body.slice(0, 10)); controller.enqueue(body.slice(10)); controller.close(); },
+    }), { status: 200 }));
+    const store = storeOf(deps, { fetch: chunked as unknown as typeof fetch });
+    await store.put({ orgId: ORG_A, connection: LINEAR, secret: { apiKey: LINEAR_KEY }, by: ALICE });
+    expect(await store.check(ORG_A, CON_A)).toEqual({ ok: true });
   });
 
   it("reports a refused key without the key, and keeps the actor it already had", async () => {
@@ -553,7 +626,7 @@ describe("orgCredentialRegistry", () => {
   it("issues the saved token for each type, and a re-saved secret takes effect", async () => {
     const { deps, clock } = setup();
     await savedStore(deps, LINEAR, { apiKey: LINEAR_KEY });
-    await savedStore(deps, { ...JIRA, connectionId: "con_jjjjjjjjjjjjjjjjjjjj" }, { apiToken: "jira-token" });
+    await savedStore(deps, { ...JIRA, connectionId: "con_jjjjjjjjjjjjjjjjjjjj" }, { email: JIRA_EMAIL, apiToken: "jira-token" });
     await savedStore(deps, { ...MCP, connectionId: "con_mmmmmmmmmmmmmmmmmmmm" }, { token: "mcp-token" });
     const registry = orgCredentialRegistry(deps, ORG_A);
     expect((await registry.provider(CON_A).issue({}, "read")).token).toBe(LINEAR_KEY);

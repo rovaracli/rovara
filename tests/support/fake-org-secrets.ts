@@ -3,6 +3,18 @@
 // plane synthesizes (infra/lib/connector-secrets-policy.ts); the fake evaluates them with a small IAM engine:
 // an explicit Deny beats an Allow, no Allow is an implicit deny, and a condition operator the engine does not
 // know is an error, never a silent pass. Supported: StringEquals, StringLike, Null, ForAllValues:StringEquals.
+//
+// Simplifications. This is NOT a model of real IAM, so it is no proof of how AWS treats wildcards or variables:
+//  - A policy variable such as ${aws:PrincipalTag/rovara:org} is replaced by the session's tag value as plain text
+//    before matching. Real IAM substitutes it too, but the fake does not model what happens when the value holds a
+//    wildcard or a character a policy treats specially.
+//  - STS session-tag validation is not modelled: real STS allows only letters, digits, spaces and _ . : / = + - @ in a
+//    tag value (and rejects "*" and "?"). Here OrgSecrets pins the org id's character set before any call, so a
+//    wildcard never reaches the fake.
+//  - StringLike and resource globs treat "*" and "?" as the only special characters; there is no case-insensitive
+//    operator, no IfExists, no NotAction or NotResource, no permissions boundary and no SCP.
+//  - ForAllValues is true when the key is absent, as in real IAM, and TagSession is checked only when tags are sent.
+//  - A secret ARN is matched by name prefix; Secrets Manager's random six-character ARN suffix is not generated.
 import {
   CreateSecretCommand,
   DeleteSecretCommand,

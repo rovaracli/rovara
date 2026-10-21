@@ -13,6 +13,7 @@ import {
   connectionKey,
   connectionSecretToken,
   connectionsKey,
+  type ConnectionSecret,
   type ConnectionType,
   type OrgConnection,
   type OrgId,
@@ -165,7 +166,8 @@ export class OrgConnectionStore {
     // The secret first: a failed write leaves the record as it was.
     if (secretJson !== undefined) await this.input.secrets.put(orgId, orgConnectorSecretName(this.input.env, orgId, connection.connectionId), secretJson);
     const at = this.iso();
-    const keepsAccount = existing !== undefined && !movedHost;
+    // A new secret may belong to another vendor account, so what the last check learned is dropped with the old one.
+    const keepsAccount = existing !== undefined && !movedHost && secretJson === undefined;
     const item: Item = {
       ...connectionKey(orgId, connection.connectionId),
       entityType: "ORG_CONNECTION",
@@ -251,8 +253,9 @@ export class OrgConnectionStore {
     });
   }
 
-  private async ask(connection: OrgConnection, token: string): Promise<CheckResult & { actorId?: string }> {
+  private async ask(connection: OrgConnection, secret: ConnectionSecret): Promise<CheckResult & { actorId?: string }> {
     const fetchImplementation = this.input.fetch ?? fetch;
+    const token = connectionSecretToken(connection.type, secret);
     if (connection.type === "mcp") return this.askMcp(connection, token);
     const vendor = connection.type === "linear" ? "Linear" : "Jira";
     try {
@@ -266,14 +269,14 @@ export class OrgConnectionStore {
         })
         : await fetchImplementation(`${connection.siteUrl}/rest/api/3/myself`, {
           method: "GET",
-          headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+          headers: { authorization: `Basic ${Buffer.from(`${(secret as { email: string }).email}:${token}`).toString("base64")}`, accept: "application/json" },
           redirect: "error",
           signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
         });
       if (!response.ok) return { ok: false, message: `${vendor} refused the saved secret (HTTP ${String(response.status)})` };
-      const declared = Number(response.headers.get("content-length"));
-      if (Number.isFinite(declared) && declared > MAX_CHECK_RESPONSE_BYTES) return { ok: false, message: `${vendor} answered with more than a check should return` };
-      const body: unknown = JSON.parse(await response.text());
+      const text = await readCapped(response, MAX_CHECK_RESPONSE_BYTES);
+      if (text === undefined) return { ok: false, message: `${vendor} answered with more than a check should return` };
+      const body: unknown = JSON.parse(text);
       const actorId = connection.type === "linear"
         ? ((body as { data?: { viewer?: { id?: unknown } } })?.data?.viewer?.id)
         : (body as { accountId?: unknown })?.accountId;
@@ -306,6 +309,28 @@ export class OrgConnectionStore {
   }
 }
 
+/**
+ * The response body as text, or undefined when it is longer than `limit` bytes. It counts the bytes actually read and stops
+ * reading at the cap, so a chunked or understated response cannot be pulled into memory in full.
+ */
+async function readCapped(response: Response, limit: number): Promise<string | undefined> {
+  if (response.body === null) return "";
+  const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => undefined);
+      return undefined;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 /** The connection's settings out of a stored item. */
 function pick(item: Item): unknown {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the bookkeeping fields
@@ -313,18 +338,19 @@ function pick(item: Item): unknown {
   return settings;
 }
 
-/** The one value in a stored secret, or undefined when the secret is not the shape its type takes. */
-function parseSecret(type: ConnectionType, raw: string): string | undefined {
+/** A stored secret, or undefined when it is not the shape its type takes. */
+function parseSecret(type: ConnectionType, raw: string): ConnectionSecret | undefined {
   let json: unknown;
   try { json = JSON.parse(raw); } catch { return undefined; }
   const parsed = ConnectionSecretSchemas[type].safeParse(json);
-  return parsed.success ? connectionSecretToken(type, parsed.data) : undefined;
+  return parsed.success ? parsed.data : undefined;
 }
 
 /** Reads a connection's stored secret as its one value, for the credential registry. */
 export async function readConnectionToken(deps: OrgConnectionDeps, orgId: OrgId, connection: { connectionId: string; type: ConnectionType }): Promise<string | undefined> {
   const raw = await deps.secrets.read(orgId, orgConnectorSecretName(deps.env, orgId, connection.connectionId));
-  return raw === undefined ? undefined : parseSecret(connection.type, raw);
+  const secret = raw === undefined ? undefined : parseSecret(connection.type, raw);
+  return secret === undefined ? undefined : connectionSecretToken(connection.type, secret);
 }
 
 /** Reads one connection for the credential registry, with the fields the store keeps back from members. */

@@ -113,23 +113,32 @@ describe("ConnectorSecretsRole (named environments)", () => {
     expect(statements.flatMap((statement) => asList(statement.Action))).not.toContain("secretsmanager:*");
   });
 
-  it("is the only workload role that can read the org connector and hook secret paths", () => {
+  it("is the only workload role that can read, write, create, tag or delete the org connector and hook secret paths", () => {
     const connectorSecret = "arn:aws:secretsmanager:us-west-2:111122223333:secret:agentx/staging/org-connectors/org_aaaaaaaaaaaaaaaaaaaa/con_aaaaaaaaaaaaaaaaaaaa-AbCdEf";
     const hookSecret = "arn:aws:secretsmanager:us-west-2:111122223333:secret:agentx/staging/org-hooks/org_aaaaaaaaaaaaaaaaaaaa/hok_aaaaaaaaaaaaaaaaaaaa-AbCdEf";
-    const reaching: string[] = [];
+    // Every Secrets Manager action that reads or changes a secret, so no other role can write or delete org secrets either.
+    const actionsToCheck = ["GetSecretValue", "BatchGetSecretValue", "DescribeSecret", "PutSecretValue", "CreateSecret", "UpdateSecret", "DeleteSecret", "RestoreSecret", "RotateSecret", "TagResource", "UntagResource", "PutResourcePolicy", "ReplicateSecretToRegions"];
+    const reaching: Record<string, string[]> = Object.fromEntries(actionsToCheck.map((action) => [action, []]));
     for (const [id, resource] of Object.entries(resources)) {
       if (resource.Type !== "AWS::IAM::Role") continue;
       const statements = statementsOfRole(id).filter((statement) => statement.Effect === "Allow");
       for (const statement of statements) {
         const actions = asList(statement.Action);
-        if (!actions.some((action) => glob(action.toLowerCase(), "secretsmanager:getsecretvalue"))) continue;
         // The policy variable is the session's org: here the org of the sample secrets.
         const targets = statement.Resource === undefined ? [] : asList(statement.Resource as string | string[]).map(flatten).map((target) => target.replace(PRINCIPAL_TAG, "org_aaaaaaaaaaaaaaaaaaaa"));
-        if (targets.some((target) => glob(target, connectorSecret) || glob(target, hookSecret))) reaching.push(id);
+        if (!targets.some((target) => glob(target, connectorSecret) || glob(target, hookSecret))) continue;
+        for (const name of actionsToCheck) {
+          if (actions.some((action) => glob(action.toLowerCase(), `secretsmanager:${name.toLowerCase()}`))) reaching[name]!.push(id);
+        }
       }
       expect(JSON.stringify(resource.Properties.ManagedPolicyArns ?? []), id).not.toMatch(/SecretsManager|AdministratorAccess|PowerUser/);
     }
-    expect([...new Set(reaching)].map((id) => id.replace(/[0-9A-F]{8}$/, ""))).toEqual([roleId.replace(/[0-9A-F]{8}$/, "")]);
+    const base = (id: string) => id.replace(/[0-9A-F]{8}$/, "");
+    for (const name of actionsToCheck) {
+      // The role itself holds Allow for these four tagged-path actions and UntagResource is a Deny, so it is not reached.
+      const expected = ["GetSecretValue", "DescribeSecret", "PutSecretValue", "DeleteSecret", "CreateSecret", "TagResource"].includes(name) ? [base(roleId)] : [];
+      expect([...new Set(reaching[name])].map(base), name).toEqual(expected);
+    }
   });
 
   it("lets the broker assume the role with session tags and gives it no Secrets Manager permission on the org paths", () => {
@@ -153,6 +162,10 @@ describe("ConnectorSecretsRole (named environments)", () => {
     const variables = (broker[1].Properties as { Environment: { Variables: Record<string, unknown> } }).Environment.Variables;
     expect(variables.CONNECTOR_SECRETS_ROLE_ARN).toEqual({ "Fn::GetAtt": [roleId, "Arn"] });
     expect(variables.AGENTX_ENV).toBe("staging");
+  });
+
+  it("sits at the environment role path, because the permissions boundary names the role by that path", () => {
+    expect(role.Properties.Path).toBe("/agentx/staging/");
   });
 
   it("has a fixed name, which the default permissions boundary names as the one role a bounded role may assume", () => {
