@@ -42,6 +42,8 @@ export const ESTIMATE_MIN_SAMPLES = 5;
 
 export const SPEND_REQUEST_TTL_DAYS = 7;
 export const WRITE_APPROVAL_TTL_DAYS = 7;
+/** How long a change that waits for a person (a less-safe publish, a company-wide share) stays open. Its own constant, so the write TTL can move alone. */
+export const CHANGE_APPROVAL_TTL_DAYS = 7;
 export const OWNER_ANSWER_HOURS = 24;
 export const MAX_PENDING_APPROVALS_PER_STEP = 10;
 /** The highest autonomy an org allows its agents until an admin raises it. */

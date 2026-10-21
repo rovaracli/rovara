@@ -445,7 +445,7 @@ describe("less-safe publishes wait for the page (human decision 2026-10-20)", ()
     await publish(MAYA, agentId);
     const [record] = approvals();
     await saveDraft(MAYA, agentId, withBase({ allowMentions: true, autonomy: "run" }));
-    const error = await getApprovalSubjectHandler("agent_publish")!(deps, record!).then(() => undefined, (thrown: Error) => thrown);
+    const error = await getApprovalSubjectHandler("agent_publish")!(deps, { ...record!, decidedBy: DANA.developerId }).then(() => undefined, (thrown: Error) => thrown);
     expect(error?.message).toBe("AGENT_REVISION_CONFLICT: The draft changed after this was asked. Publish again.");
     expect((await state(agentId)).currentVersion).toBe(1);
     expect(await store.listVersions(TEST_ORG, agentId)).toHaveLength(1);
@@ -460,10 +460,43 @@ describe("less-safe publishes wait for the page (human decision 2026-10-20)", ()
     const [record] = approvals();
     const handler = getApprovalSubjectHandler("agent_publish")!;
     expect(await call(MAYA, "POST", `/v1/app/agents/${agentId}/archive`, {})).toMatchObject({ status: 200 });
-    expect((await handler(deps, record!).then(() => undefined, (thrown: Error) => thrown))?.message).toMatch(/^AGENT_UNAVAILABLE: .* is archived/);
+    expect((await handler(deps, { ...record!, decidedBy: DANA.developerId }).then(() => undefined, (thrown: Error) => thrown))?.message).toMatch(/^AGENT_UNAVAILABLE: .* is archived/);
     await call(MAYA, "POST", `/v1/app/agents/${agentId}/unarchive`, {});
     await seed(agentId, SAFE);
-    expect((await handler(deps, record!).then(() => undefined, (thrown: Error) => thrown))?.message).toMatch(/^AGENT_REVISION_CONFLICT: /);
+    expect((await handler(deps, { ...record!, decidedBy: DANA.developerId }).then(() => undefined, (thrown: Error) => thrown))?.message).toMatch(/^AGENT_REVISION_CONFLICT: /);
+  });
+
+  it("refuses to apply a change that has no decider, rather than crediting whoever asked", async () => {
+    const { create, seed, saveDraft, publish, approvals, deps, state } = await setup();
+    const agentId = await create(MAYA);
+    await seed(agentId, SAFE);
+    await saveDraft(MAYA, agentId, withBase({ allowMentions: true }));
+    await publish(MAYA, agentId);
+    const [record] = approvals();
+    for (const kind of ["agent_publish", "agent_rollback", "builtin_adopt", "agent_share"] as const) {
+      const error = await getApprovalSubjectHandler(kind)!(deps, record!).then(() => undefined, (thrown: Error) => thrown);
+      expect(error?.message, kind).toMatch(/not been decided/);
+    }
+    expect((await state(agentId)).currentVersion).toBe(1);
+  });
+
+  it("refuses to ask about a less-safe change to an archived agent, and says to unarchive it", async () => {
+    const { call, create, seed, saveDraft, publish, approvals } = await setup();
+    const agentId = await create(MAYA);
+    await seed(agentId, { ...SAFE, tools: [{ connector: { type: "linear" }, access: "read" }] });
+    await seed(agentId, SAFE);
+    await saveDraft(MAYA, agentId, withBase({ allowMentions: true }));
+    await call(MAYA, "POST", `/v1/app/agents/${agentId}/archive`, {});
+    const refused = await publish(MAYA, agentId);
+    expect(refused.status).toBe(409);
+    expect(errorOf(refused).code).toBe("AGENT_UNAVAILABLE");
+    expect(errorOf(refused).message).toMatch(/Unarchive it first/);
+    const rolled = await call(MAYA, "POST", `/v1/app/agents/${agentId}/rollback`, { version: 1 });
+    expect(errorOf(rolled).code).toBe("AGENT_UNAVAILABLE");
+    expect(approvals()).toHaveLength(0);
+    // A safe change to an archived agent still applies.
+    await saveDraft(MAYA, agentId, withBase({ instructions: "Only words." }));
+    expect((await publish(MAYA, agentId)).status).toBe(200);
   });
 
   it("keeps each org's approvals apart", async () => {
@@ -526,7 +559,7 @@ describe("rollback is compared like a publish", () => {
     const [record] = approvals();
     const handler = getApprovalSubjectHandler("agent_rollback")!;
     await seed(agentId, SAFE);
-    expect((await handler(deps, record!).then(() => undefined, (thrown: Error) => thrown))?.message).toMatch(/^AGENT_REVISION_CONFLICT: The published version changed/);
+    expect((await handler(deps, { ...record!, decidedBy: DANA.developerId }).then(() => undefined, (thrown: Error) => thrown))?.message).toMatch(/^AGENT_REVISION_CONFLICT: The published version changed/);
     expect((await state(agentId)).currentVersion).toBe(3);
     await call(MAYA, "POST", `/v1/app/agents/${agentId}/rollback`, { version: 2 });
     const fresh = await call(MAYA, "POST", `/v1/app/agents/${agentId}/rollback`, { version: 1 });
@@ -617,11 +650,25 @@ describe("adopting a built-in's version", () => {
     const [record] = approvals();
     const handler = getApprovalSubjectHandler("builtin_adopt")!;
     await store.adoptBuiltinVersion({ orgId: TEST_ORG, agentId: "ticket-triage", version: 3, expectedPinnedVersion: 1, by: DANA.developerId });
-    expect((await handler(deps, record!).then(() => undefined, (thrown: Error) => thrown))?.message).toMatch(/^AGENT_REVISION_CONFLICT: The version your company uses changed/);
+    expect((await handler(deps, { ...record!, decidedBy: DANA.developerId }).then(() => undefined, (thrown: Error) => thrown))?.message).toMatch(/^AGENT_REVISION_CONFLICT: The version your company uses changed/);
     expect((await store.getBuiltinSettings(TEST_ORG, "ticket-triage"))?.pinnedVersion).toBe(3);
     await call(DANA, "POST", "/v1/app/agents/ticket-triage/adopt", { version: 1 });
     const second = approvals().find((entry) => (entry.subject as { version: number }).version === 1);
     expect(second).toBeUndefined();
+  });
+
+  it("decides before it writes: a less-safe adoption leaves the org's settings alone and still applies when confirmed", async () => {
+    const { source, state } = release();
+    const { call, store, approvals, deps } = await setup({ builtins: source });
+    state.latest = 3;
+    // No settings yet, so the org runs the newest release; going back to the release that widened is less safe.
+    const asked = await call(DANA, "POST", "/v1/app/agents/ticket-triage/adopt", { version: 2 });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    expect(await store.getBuiltinSettings(TEST_ORG, "ticket-triage")).toBeUndefined();
+    const [record] = approvals();
+    expect(record!.subject).toMatchObject({ expectedPinnedVersion: 3, version: 2 });
+    await getApprovalSubjectHandler("builtin_adopt")!(deps, { ...record!, decidedBy: DANA.developerId });
+    expect((await store.getBuiltinSettings(TEST_ORG, "ticket-triage"))?.pinnedVersion).toBe(2);
   });
 
   it("registers org_admin for owners and admins only", async () => {
@@ -654,6 +701,21 @@ describe("update-base", () => {
     expect(stale.status).toBe(409);
     const after = (await call(MAYA, "GET", "/v1/app/agents?scope=mine")).body.agents as Array<{ agentId: string; updateAvailable?: unknown }>;
     expect(after.find((agent) => agent.agentId === child)?.updateAvailable).toBeUndefined();
+  });
+
+  it("checks `use` on the base again before moving to its new version", async () => {
+    const { call, create, seed } = await setup();
+    const base = await create(MAYA);
+    await seed(base, { ...SAFE, instructions: "Base one." });
+    await call(MAYA, "PUT", `/v1/app/agents/${base}/shares`, { shares: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "use" }] });
+    const mine = (await call(EVE, "POST", "/v1/app/agents", { name: "Eve's child", extends: base })).body.agent as { agentId: AgentId };
+    await seed(base, { ...SAFE, instructions: "Base two." });
+    await call(MAYA, "PUT", `/v1/app/agents/${base}/shares`, { shares: [] });
+    const refused = await call(EVE, "POST", `/v1/app/agents/${mine.agentId}/update-base`, { expectedRevision: 1 });
+    expect(refused.status).toBe(404);
+    // With only a view share she sees the base but can't build on it.
+    await call(MAYA, "PUT", `/v1/app/agents/${base}/shares`, { shares: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "view" }] });
+    expect((await call(EVE, "POST", `/v1/app/agents/${mine.agentId}/update-base`, { expectedRevision: 1 })).status).toBe(403);
   });
 
   it("refuses an agent built from scratch, and one the caller can't edit", async () => {
@@ -695,7 +757,7 @@ describe("sharing, owners, accountable people and archiving", () => {
     // Confirming writes exactly what was asked, and not once the shares have changed since.
     const handler = getApprovalSubjectHandler("agent_share")!;
     await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [member(EVE, "edit")] });
-    expect((await handler(deps, record!).then(() => undefined, (thrown: Error) => thrown))?.message).toMatch(/^AGENT_REVISION_CONFLICT: Who this agent is shared with changed/);
+    expect((await handler(deps, { ...record!, decidedBy: DANA.developerId }).then(() => undefined, (thrown: Error) => thrown))?.message).toMatch(/^AGENT_REVISION_CONFLICT: Who this agent is shared with changed/);
     const fresh = await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [member(EVE, "edit"), { principal: { kind: "org" }, level: "view" }] });
     expect(fresh.status).toBe(202);
     await handler(deps, { ...approvals().at(-1)!, decidedBy: DANA.developerId });
@@ -804,6 +866,116 @@ describe("sharing, owners, accountable people and archiving", () => {
     expect((await call(EVE, "PUT", `/v1/app/agents/${agentId}/draft`, { expectedRevision: 2, overlay: SAFE })).status).toBe(200);
     expect((await call(MAYA, "POST", "/v1/app/agents/rovara-code/archive", {})).status).toBe(403);
     expect((await call(DANA, "POST", "/v1/app/agents/rovara-code/archive", {})).status).toBe(400);
+  });
+});
+
+describe("a repeated request answers what it answered before (R18)", () => {
+  const events = (db: { find: (test: (item: Record<string, unknown>) => boolean) => Array<Record<string, unknown>> }, kind: string) => db.find((item) => item.entityType === "AGENT_EVENT" && item.kind === kind);
+
+  it("publishes once when a safe publish is repeated, and answers the repeat with the same version", async () => {
+    const { call, create, seed, saveDraft, store, db } = await setup();
+    const agentId = await create(MAYA);
+    await seed(agentId, SAFE);
+    await saveDraft(MAYA, agentId, { ...SAFE, instructions: "Newer words." });
+    const body = { requestId: randomUUID(), expectedRevision: 3 };
+    const first = await call(MAYA, "POST", `/v1/app/agents/${agentId}/publish`, body);
+    const again = await call(MAYA, "POST", `/v1/app/agents/${agentId}/publish`, body);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(again).toEqual(first);
+    expect(await store.listVersions(TEST_ORG, agentId)).toHaveLength(2);
+    // The seeded version and the one this request made.
+    expect(events(db, "published")).toHaveLength(2);
+    // The same request id for another body is a mistake, not a replay.
+    const other = await call(MAYA, "POST", `/v1/app/agents/${agentId}/publish`, { requestId: body.requestId, expectedRevision: 3, note: "different" });
+    expect(other.status).toBe(400);
+    expect(errorOf(other)).toEqual({ code: "CONFIG_INVALID", message: "requestId: this request ID was already used for a different request" });
+    expect(await store.listVersions(TEST_ORG, agentId)).toHaveLength(2);
+  });
+
+  it("answers a repeated create with the same agent, not a taken name", async () => {
+    const { call, store } = await setup();
+    const body = { requestId: randomUUID(), name: "Only once", overlay: SAFE };
+    const first = await call(MAYA, "POST", "/v1/app/agents", body);
+    const again = await call(MAYA, "POST", "/v1/app/agents", body);
+    expect(first.status).toBe(201);
+    expect(again.status).toBe(201);
+    expect(again.body.agent).toEqual(first.body.agent);
+    expect(await store.list(TEST_ORG)).toHaveLength(1);
+    expect((await call(MAYA, "POST", "/v1/app/agents", { ...body, name: "Another name" })).status).toBe(400);
+    // Another person's request with the same id is their own.
+    expect((await call(DANA, "POST", "/v1/app/agents", { ...body, name: "Dana's" })).status).toBe(201);
+  });
+
+  it("answers a repeated share save without a second change", async () => {
+    const { call, create, db } = await setup();
+    const agentId = await create(MAYA);
+    const body = { requestId: randomUUID(), shares: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "view" }] };
+    const first = await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, body);
+    const again = await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, body);
+    expect(first.status).toBe(200);
+    expect(again).toEqual(first);
+    expect(events(db, "shared")).toHaveLength(1);
+    expect((await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { ...body, shares: [] })).status).toBe(400);
+  });
+
+  it("answers a repeated rollback, rename, draft save, owner change, archive and update-base as before", async () => {
+    const { call, create, seed, state, store } = await setup();
+    const agentId = await create(MAYA);
+    await seed(agentId, SAFE);
+    await seed(agentId, { ...SAFE, instructions: "Two." });
+    const repeat = async (method: string, path: string, body: Record<string, unknown>) => {
+      const sent = { requestId: randomUUID(), ...body };
+      const first = await call(MAYA, method, path, sent);
+      const again = await call(MAYA, method, path, sent);
+      expect(first.status, `${path} ${JSON.stringify(first.body)}`).toBeLessThan(300);
+      expect(again, path).toEqual(first);
+    };
+    await repeat("POST", `/v1/app/agents/${agentId}/rollback`, { version: 1 });
+    expect((await state(agentId)).currentVersion).toBe(1);
+    await repeat("PATCH", `/v1/app/agents/${agentId}`, { name: "Renamed once" });
+    const draft = (await store.getDraft(TEST_ORG, agentId))!;
+    await repeat("PUT", `/v1/app/agents/${agentId}/draft`, { expectedRevision: draft.revision, overlay: { ...SAFE, instructions: "Three." } });
+    expect((await store.getDraft(TEST_ORG, agentId))!.revision).toBe(draft.revision + 1);
+    await repeat("PUT", `/v1/app/agents/${agentId}/owner`, { owner: { kind: "member", developerId: MAYA.developerId } });
+    await repeat("POST", `/v1/app/agents/${agentId}/archive`, {});
+    const base = await create(MAYA);
+    await seed(base, SAFE);
+    const child = await create(MAYA, { instructions: "Child." }, { extends: base });
+    await seed(base, { ...SAFE, instructions: "Base two." });
+    await repeat("POST", `/v1/app/agents/${child}/update-base`, { expectedRevision: 1 });
+    expect((await store.getDraft(TEST_ORG, child))!.revision).toBe(2);
+  });
+
+  it("answers a repeated company-wide share request with the same link and one record", async () => {
+    const { call, create, approvals } = await setup();
+    const agentId = await create(MAYA);
+    const body = { requestId: randomUUID(), shares: [{ principal: { kind: "org" }, level: "view" }] };
+    const first = await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, body);
+    const again = await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, body);
+    expect(again).toEqual(first);
+    expect(approvals()).toHaveLength(1);
+  });
+
+  it("leaves no mark behind when the write is refused, so the request can be sent again", async () => {
+    const { call, create, db } = await setup();
+    const agentId = await create(MAYA);
+    const requestId = randomUUID();
+    const stale = await call(MAYA, "PUT", `/v1/app/agents/${agentId}/draft`, { requestId, expectedRevision: 9, overlay: SAFE });
+    expect(stale.status).toBe(409);
+    expect(db.find((item) => item.entityType === "AGENT_REQUEST" && item.sk === requestId)).toHaveLength(0);
+    const fixed = await call(MAYA, "PUT", `/v1/app/agents/${agentId}/draft`, { requestId, expectedRevision: 1, overlay: SAFE });
+    expect(fixed.status).toBe(200);
+  });
+
+  it("checks access before answering a repeat, so a person who lost access learns nothing", async () => {
+    const { call, create } = await setup();
+    const agentId = await create(MAYA);
+    const share = { principal: { kind: "member", developerId: EVE.developerId }, level: "edit" };
+    await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [share] });
+    const body = { requestId: randomUUID(), expectedRevision: 1, overlay: SAFE };
+    expect((await call(EVE, "PUT", `/v1/app/agents/${agentId}/draft`, body)).status).toBe(200);
+    await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [] });
+    expect((await call(EVE, "PUT", `/v1/app/agents/${agentId}/draft`, body)).status).toBe(404);
   });
 });
 

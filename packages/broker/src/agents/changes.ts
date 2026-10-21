@@ -29,7 +29,7 @@ import {
   type ApproverSpec,
 } from "./approvals.js";
 import { lessSafeChanges } from "./less-safe.js";
-import { resolveAgent, type AgentRecord, type AgentVersion, type RecipeProblemsError } from "./store.js";
+import { resolveAgent, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
 
 /** What a route answers for a change: done, or waiting on the page. */
 export type ChangeResult<T> =
@@ -105,6 +105,11 @@ async function waitForPerson(
   return { applied: false, confirmUrl: confirmUrlFor(deps, record), changes: record.changes };
 }
 
+/** A change that needs a person can't be confirmed on an archived agent, so it is not asked for. */
+function requireActiveForConfirmation(agent: AgentRecord): void {
+  if (agent.status === "archived") throw agentXError("AGENT_UNAVAILABLE", `${agent.name} is archived, so a change that needs confirmation can't be made. Unarchive it first, then ask again.`);
+}
+
 // ---- publish, rollback, adopt, share
 
 /**
@@ -113,7 +118,7 @@ async function waitForPerson(
  * this draft revision and its digest.
  */
 export async function publishDraft(
-  deps: ApprovalDependencies, caller: AgentCaller, agent: AgentRecord, input: { requestId: string; expectedRevision: number; note?: string | undefined },
+  deps: ApprovalDependencies, caller: AgentCaller, agent: AgentRecord, input: { requestId: string; expectedRevision: number; note?: string | undefined; request?: RequestMark },
 ): Promise<ChangeResult<AgentVersion>> {
   const draft = await deps.store.getDraft(agent.orgId, agent.agentId);
   if (draft === undefined || draft.revision !== input.expectedRevision || agent.draftRevision !== input.expectedRevision) {
@@ -123,9 +128,14 @@ export async function publishDraft(
   const digest = recipeDigest(next);
   const changes = lessSafeChanges(await runningNow(deps, agent, draft.extends), next);
   if (changes.length === 0) {
-    const version = await deps.store.publish({ orgId: agent.orgId, agentId: agent.agentId, expectedDraftRevision: input.expectedRevision, digest, by: caller.developerId, ...(input.note === undefined ? {} : { note: input.note }) });
+    // Only while what was compared against is still what runs: a rollback that lands in between changes the baseline.
+    const version = await deps.store.publish({
+      orgId: agent.orgId, agentId: agent.agentId, expectedDraftRevision: input.expectedRevision, digest, by: caller.developerId, expectedCurrentVersion: agent.currentVersion ?? null,
+      ...(input.note === undefined ? {} : { note: input.note }), ...(input.request === undefined ? {} : { request: input.request }),
+    });
     return { applied: true, value: version };
   }
+  requireActiveForConfirmation(agent);
   const subject: AgentChangeSubject = {
     kind: "agent_publish", agentId: agent.agentId, draftRevision: input.expectedRevision, digest,
     ...(agent.currentVersion === undefined ? {} : { expectedCurrentVersion: agent.currentVersion }),
@@ -136,7 +146,7 @@ export async function publishDraft(
 
 /** Makes an earlier version current. A rollback is compared like a publish: one that makes anything less safe waits for the page. */
 export async function rollbackAgent(
-  deps: ApprovalDependencies, caller: AgentCaller, agent: AgentRecord, input: { requestId: string; version: number },
+  deps: ApprovalDependencies, caller: AgentCaller, agent: AgentRecord, input: { requestId: string; version: number; request?: RequestMark },
 ): Promise<ChangeResult<AgentRecord>> {
   if (agent.currentVersion === undefined) throw agentXError("CONFIG_INVALID", `${agent.name} has no published version to roll back from`);
   if (input.version === agent.currentVersion) throw agentXError("CONFIG_INVALID", `version: ${String(input.version)} is already the current version`);
@@ -145,23 +155,25 @@ export async function rollbackAgent(
   const target = await resolveRecipe(deps, agent.orgId, agent.agentId, input.version);
   const changes = lessSafeChanges(current, target);
   if (changes.length === 0) {
-    return { applied: true, value: await deps.store.rollback({ orgId: agent.orgId, agentId: agent.agentId, version: input.version, expectedCurrentVersion: agent.currentVersion, by: caller.developerId }) };
+    return { applied: true, value: await deps.store.rollback({ orgId: agent.orgId, agentId: agent.agentId, version: input.version, expectedCurrentVersion: agent.currentVersion, by: caller.developerId, ...(input.request === undefined ? {} : { request: input.request }) }) };
   }
+  requireActiveForConfirmation(agent);
   const subject: AgentChangeSubject = { kind: "agent_rollback", agentId: agent.agentId, version: input.version, digest: recipeDigest(target), expectedCurrentVersion: agent.currentVersion };
   return waitForPerson(deps, caller, input.requestId, subject, changes, await agentApprovers(deps, agent, "agent_publish"));
 }
 
 /** Moves the org's pin of a built-in to one of its released versions; org owners and admins only (the route checks), and a less-safe one waits for an org admin on the page. */
 export async function adoptBuiltin(
-  deps: ApprovalDependencies, caller: AgentCaller, agentId: AgentId, input: { requestId: string; version: number },
+  deps: ApprovalDependencies, caller: AgentCaller, agentId: AgentId, input: { requestId: string; version: number; request?: RequestMark },
 ): Promise<ChangeResult<{ pinnedVersion: number; changes: string[] }>> {
-  const pinned = (await deps.store.ensureBuiltinSettings(caller.orgId, agentId, caller.developerId)).pinnedVersion;
+  // Read only: whether this applies is decided before anything is written (the store pins the org on the write that adopts).
+  const pinned = await deps.store.pinnedBuiltinVersion(caller.orgId, agentId);
   const target = deps.store.builtinRecipe(agentId, input.version);
   if (input.version === pinned) return { applied: true, value: { pinnedVersion: pinned, changes: [] } };
   const current = deps.store.builtinRecipe(agentId, pinned);
   const changes = lessSafeChanges(current, target);
   if (changes.length === 0) {
-    await deps.store.adoptBuiltinVersion({ orgId: caller.orgId, agentId, version: input.version, expectedPinnedVersion: pinned, by: caller.developerId });
+    await deps.store.adoptBuiltinVersion({ orgId: caller.orgId, agentId, version: input.version, expectedPinnedVersion: pinned, by: caller.developerId, ...(input.request === undefined ? {} : { request: input.request }) });
     return { applied: true, value: { pinnedVersion: input.version, changes: diffRecipes(current, target) } };
   }
   const subject: AgentChangeSubject = { kind: "builtin_adopt", agentId, version: input.version, digest: recipeDigest(target), expectedPinnedVersion: pinned };
@@ -176,14 +188,15 @@ const SHARE_RANK = { view: 0, use: 1, edit: 2 } as const;
  * still what was shown. Any other change, lowering or removing the company share included, applies at once.
  */
 export async function shareAgent(
-  deps: ApprovalDependencies, caller: AgentCaller, agent: AgentRecord, input: { requestId: string; shares: unknown },
+  deps: ApprovalDependencies, caller: AgentCaller, agent: AgentRecord, input: { requestId: string; shares: unknown; request?: RequestMark },
 ): Promise<ChangeResult<AgentShare[]>> {
   // Refused now, not when it is confirmed: a change nobody could apply is not worth asking a person about.
   const shares = await checkShares(deps, agent.orgId, caller.developerId, input.shares);
   const wantedCompany = shares.find((share) => share.principal.kind === "org");
   const storedCompany = (await deps.store.listShares(agent.orgId, agent.agentId)).find((share) => (share.principal as { kind?: unknown } | undefined)?.kind === "org");
   const widens = wantedCompany !== undefined && (storedCompany === undefined || SHARE_RANK[wantedCompany.level] > (SHARE_RANK[storedCompany.level] ?? -1));
-  if (!widens) return { applied: true, value: await saveShares(deps, agent.orgId, caller.developerId, agent, shares) };
+  if (!widens) return { applied: true, value: await saveShares(deps, agent.orgId, caller.developerId, agent, shares, input.request) };
+  requireActiveForConfirmation(agent);
   const can = { view: "see", use: "run", edit: "change" }[wantedCompany.level];
   const subject: AgentChangeSubject = { kind: "agent_share", agentId: agent.agentId, shares, expectedSharesRevision: agent.sharesRevision ?? 0 };
   return waitForPerson(deps, caller, input.requestId, subject, [`Shares ${agent.name} with everyone in your company, who can then ${can} it`], await agentApprovers(deps, agent, "agent_manager"));
@@ -194,7 +207,11 @@ export async function shareAgent(
 const STALE_DRAFT = "The draft changed after this was asked. Publish again.";
 const stale = (message: string) => agentXError("AGENT_REVISION_CONFLICT", message);
 
-const decider = (record: ApprovalRecord): string => record.decidedBy ?? record.requestedBy;
+/** Who confirmed it. A record nobody has decided is never applied: the events would credit the person who asked. */
+function decider(record: ApprovalRecord): string {
+  if (record.decidedBy === undefined) throw agentXError("CONFIG_INVALID", "this change has not been decided by anyone, so it can't be applied");
+  return record.decidedBy;
+}
 
 async function liveAgent(deps: ApprovalDependencies, record: ApprovalRecord, agentId: AgentId): Promise<AgentRecord> {
   const agent = await deps.store.get(record.orgId, agentId);
@@ -204,6 +221,7 @@ async function liveAgent(deps: ApprovalDependencies, record: ApprovalRecord, age
 }
 
 async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord): Promise<void> {
+  const by = decider(record);
   const subject = record.subject as Extract<AgentChangeSubject, { kind: "agent_publish" }>;
   const agent = await liveAgent(deps, record, subject.agentId);
   const draft = await deps.store.getDraft(record.orgId, subject.agentId);
@@ -212,32 +230,35 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   // The draft's base is pinned, so its content can't move under the same revision; the digest still catches a changed skill.
   if (recipeDigest(await resolveRecipe(deps, record.orgId, subject.agentId, "draft")) !== subject.digest) throw stale(STALE_DRAFT);
   await deps.store.publish({
-    orgId: record.orgId, agentId: subject.agentId, expectedDraftRevision: subject.draftRevision, digest: subject.digest, by: decider(record),
+    orgId: record.orgId, agentId: subject.agentId, expectedDraftRevision: subject.draftRevision, digest: subject.digest, by, expectedCurrentVersion: subject.expectedCurrentVersion ?? null,
     ...(subject.note === undefined ? {} : { note: subject.note }),
   });
 }
 
 async function confirmRollback(deps: ApprovalDependencies, record: ApprovalRecord): Promise<void> {
+  const by = decider(record);
   const subject = record.subject as Extract<AgentChangeSubject, { kind: "agent_rollback" }>;
   const agent = await liveAgent(deps, record, subject.agentId);
   if (agent.currentVersion !== subject.expectedCurrentVersion) throw stale("The published version changed after this was asked. Roll back again.");
   if (recipeDigest(await resolveRecipe(deps, record.orgId, subject.agentId, subject.version)) !== subject.digest) throw stale("That version changed after this was asked. Roll back again.");
-  await deps.store.rollback({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedCurrentVersion: subject.expectedCurrentVersion, by: decider(record) });
+  await deps.store.rollback({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedCurrentVersion: subject.expectedCurrentVersion, by });
 }
 
 async function confirmAdopt(deps: ApprovalDependencies, record: ApprovalRecord): Promise<void> {
+  const by = decider(record);
   const subject = record.subject as Extract<AgentChangeSubject, { kind: "builtin_adopt" }>;
-  const pinned = (await deps.store.getBuiltinSettings(record.orgId, subject.agentId))?.pinnedVersion;
+  const pinned = await deps.store.pinnedBuiltinVersion(record.orgId, subject.agentId);
   if (pinned !== subject.expectedPinnedVersion) throw stale("The version your company uses changed after this was asked. Adopt again.");
   if (recipeDigest(deps.store.builtinRecipe(subject.agentId, subject.version)) !== subject.digest) throw stale("That version changed after this was asked. Adopt again.");
-  await deps.store.adoptBuiltinVersion({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedPinnedVersion: subject.expectedPinnedVersion, by: decider(record) });
+  await deps.store.adoptBuiltinVersion({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedPinnedVersion: subject.expectedPinnedVersion, by });
 }
 
 async function confirmShare(deps: ApprovalDependencies, record: ApprovalRecord): Promise<void> {
+  const by = decider(record);
   const subject = record.subject as Extract<AgentChangeSubject, { kind: "agent_share" }>;
   const agent = await liveAgent(deps, record, subject.agentId);
   if ((agent.sharesRevision ?? 0) !== subject.expectedSharesRevision) throw stale("Who this agent is shared with changed after this was asked. Share again.");
-  await saveShares(deps, record.orgId, decider(record), agent, subject.shares);
+  await saveShares(deps, record.orgId, by, agent, subject.shares);
 }
 
 /** The owner, an accountable or managing maintainer of the owning project, or an org owner or admin: whoever holds `manage` on the agent now (R68). */

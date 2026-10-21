@@ -26,7 +26,7 @@ import {
   type ProjectRole,
 } from "@agentx/contracts";
 import type { DeveloperSignInStore } from "../developer/store.js";
-import type { AgentRecord, AgentShareLevel, AgentStore } from "./store.js";
+import type { AgentRecord, AgentShareLevel, AgentStore, RequestMark } from "./store.js";
 
 /** The A3 interface Plan 2 Task 21 builds (`createProjectMembers`); until it lands, tests use `tests/support/fake-project-members.ts`. */
 export interface ProjectMembers {
@@ -342,7 +342,7 @@ async function withSurvivors(lookups: Lookups, shares: AgentShare[]): Promise<Ag
 /**
  * Makes `shares` the agent's whole share set, in one transaction with the share-index items and a `shared` event. The caller needs
  * `manage`; an unknown member or project is `CONFIG_INVALID`. A set that is already the agent's writes nothing. One save changes
- * at most 49 shares (a transaction's size), so replacing a full set of 50 takes two.
+ * at most 48 shares (a transaction's size), so replacing a full set of 50 takes two.
  */
 export async function setShares(deps: AgentAccessDeps, caller: AgentCaller, agentId: AgentId, shares: AgentShare[]): Promise<AgentShare[]> {
   if (isBuiltinAgentId(agentId)) throw invalid("Built-in agents belong to the whole company and can't be shared.");
@@ -355,7 +355,7 @@ export async function setShares(deps: AgentAccessDeps, caller: AgentCaller, agen
  * Writes the share set without asking who may: for a caller `setShares` has checked, and for a confirmed pending change, whose
  * decider the approval's rule has already checked (Task 7's `agent_share`). `by` is the developer the `shared` event names.
  */
-export async function saveShares(deps: AgentAccessDeps, orgId: OrgId, by: string, agent: AgentRecord, shares: AgentShare[]): Promise<AgentShare[]> {
+export async function saveShares(deps: AgentAccessDeps, orgId: OrgId, by: string, agent: AgentRecord, shares: AgentShare[], request?: RequestMark): Promise<AgentShare[]> {
   const wanted = await checkShares(deps, orgId, by, shares);
   // The revision is read before the shares: a save that lands in between leaves this one's revision stale, and it conflicts.
   const expectedSharesRevision = agent.sharesRevision ?? 0;
@@ -364,7 +364,7 @@ export async function saveShares(deps: AgentAccessDeps, orgId: OrgId, by: string
   const keep = new Set(wanted.map((share) => principalKey(share.principal)));
   const remove = [...current].filter(([key]) => !keep.has(key)).map(([, share]) => share.principal);
   if (upsert.length > 0 || remove.length > 0) {
-    await deps.store.replaceShares({ orgId, agentId: agent.agentId, upsert, remove, expectedSharesRevision, by });
+    await deps.store.replaceShares({ orgId, agentId: agent.agentId, upsert, remove, expectedSharesRevision, by, ...(request === undefined ? {} : { request: { ...request, result: wanted } }) });
   }
   return wanted;
 }

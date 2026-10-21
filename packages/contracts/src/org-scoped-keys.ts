@@ -255,3 +255,11 @@ export function openApprovalKey(expiresAt: string, orgId: OrgId, approvalId: App
 export function approverIndexKey(orgId: OrgId, developerId: string, approvalId: ApprovalId): OrgKey {
   return { pk: orgScoped(orgId, `APPROVER#${developerId}`), sk: approvalId };
 }
+
+/**
+ * The item that remembers what one request to change an agent did (R18): one per (org, developer, request id), written in the same
+ * transaction as the change, so a repeat of the request is answered from it and writes nothing.
+ */
+export function agentRequestKey(orgId: OrgId, developerId: string, requestId: string): OrgKey {
+  return { pk: orgScoped(orgId, `AGENT_REQUEST#${developerId}`), sk: requestId };
+}

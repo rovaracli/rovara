@@ -6,8 +6,13 @@
 // record stores or throws the reason it can no longer be applied (the record then ends `APPROVED_FAILED` with that reason).
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { z } from "zod";
 import {
-  WRITE_APPROVAL_TTL_DAYS,
+  AgentIdSchema,
+  AgentPrincipalSchema,
+  ApprovalIdSchema,
+  CHANGE_APPROVAL_TTL_DAYS,
+  OrgIdSchema,
   agentXError,
   approvalKey,
   approverIndexKey,
@@ -109,6 +114,40 @@ const DAY_MS = 86_400_000;
 
 type Item = Record<string, unknown>;
 
+const Hex64 = z.string().regex(/^[a-f0-9]{64}$/);
+const ApproverSpecSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("ids"), ids: z.array(z.string()) }).strict(),
+  z.object({ kind: z.literal("rule"), rule: z.string(), candidates: z.array(z.string()) }).strict(),
+]);
+const ChangeSubjectSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("agent_publish"), agentId: AgentIdSchema, draftRevision: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int().optional(), note: z.string().optional() }).strict(),
+  z.object({ kind: z.literal("agent_rollback"), agentId: AgentIdSchema, version: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int() }).strict(),
+  z.object({ kind: z.literal("builtin_adopt"), agentId: AgentIdSchema, version: z.number().int(), digest: Hex64, expectedPinnedVersion: z.number().int() }).strict(),
+  z.object({
+    kind: z.literal("agent_share"), agentId: AgentIdSchema, expectedSharesRevision: z.number().int(),
+    shares: z.array(z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]) }).strict()),
+  }).strict(),
+  // The other kinds carry details their own tasks type; only the kind is checked here.
+  z.object({ kind: z.enum(["guardrails", "connector_widen", "opt_out"]) }).passthrough(),
+]);
+/** What a stored change record must look like to be read; `passthrough`, so a field a later task adds is kept. */
+const ChangeApprovalRecordSchema = z.object({
+  orgId: OrgIdSchema,
+  approvalId: ApprovalIdSchema,
+  kind: z.literal("change"),
+  subject: ChangeSubjectSchema,
+  changes: z.array(z.string()),
+  approvers: ApproverSpecSchema,
+  status: z.enum(["PENDING", "EXECUTING", "APPROVED_DONE", "APPROVED_FAILED", "DECLINED", "EXPIRED"]),
+  requestedBy: z.string(),
+  decidedBy: z.string().optional(),
+  decidedAt: z.string().optional(),
+  failure: z.string().optional(),
+  createdAt: z.string(),
+  expiresAt: z.string(),
+}).passthrough();
+
+/** The record, or undefined when there is none in this org or what is stored is not a record (reported, never handed on). */
 export async function getApproval(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, orgId: OrgId, approvalId: ApprovalId): Promise<ApprovalRecord | undefined> {
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: approvalKey(orgId, approvalId), ConsistentRead: true })) as { Item?: Item };
   const item = response.Item;
@@ -116,7 +155,12 @@ export async function getApproval(deps: Pick<ApprovalStoreDependencies, "documen
   if (item === undefined || item["orgId"] !== orgId) return undefined;
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the keys
   const { pk: _pk, sk: _sk, entityType: _type, ...record } = item;
-  return record as unknown as ApprovalRecord;
+  const parsed = ChangeApprovalRecordSchema.safeParse(record);
+  if (!parsed.success) {
+    console.error(JSON.stringify({ component: "broker", level: "error", event: "approval_record_invalid", orgId, approvalId, problem: parsed.error.issues[0]?.path.join(".") ?? "record" }));
+    return undefined;
+  }
+  return parsed.data as unknown as ApprovalRecord;
 }
 
 const listedPeople = (approvers: ApproverSpec): string[] => [...new Set(approvers.kind === "ids" ? approvers.ids : approvers.candidates)].sort().slice(0, MAX_LISTED_APPROVERS);
@@ -152,7 +196,7 @@ export async function createPendingChange(
   if (before !== undefined) return before;
 
   const createdAt = new Date(deps.now()).toISOString();
-  const expiresAt = input.expiresAt ?? new Date(deps.now() + WRITE_APPROVAL_TTL_DAYS * DAY_MS).toISOString();
+  const expiresAt = input.expiresAt ?? new Date(deps.now() + CHANGE_APPROVAL_TTL_DAYS * DAY_MS).toISOString();
   const record: ApprovalRecord = {
     orgId: input.orgId, approvalId, kind: "change", subject: input.subject, changes: input.changes, approvers: input.approvers,
     status: "PENDING", requestedBy: input.requestedBy, createdAt, expiresAt,

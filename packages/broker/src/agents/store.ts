@@ -15,6 +15,7 @@ import {
   agentDirectoryKey,
   agentKey,
   agentNameKey,
+  agentRequestKey,
   agentVersionSk,
   agentXError,
   applyOverlay,
@@ -106,9 +107,9 @@ export interface AgentShareRecord {
 
 /**
  * A transaction holds at most 100 items. A save of shares writes two per share it adds, changes or drops (the share and its index
- * item) plus the agent's revision and one event, so it can change at most 49.
+ * item) plus the agent's revision and one event, and, when the request is marked, its request item, so it can change at most 48.
  */
-export const MAX_SHARE_CHANGES_PER_SAVE = 49;
+export const MAX_SHARE_CHANGES_PER_SAVE = 48;
 
 export interface BuiltinSettings {
   pinnedVersion: number;
@@ -129,6 +130,20 @@ export type AgentEventKind =
   | "owner_changed"
   | "budget_changed"
   | "base_updated";
+
+/**
+ * What makes a write repeatable (R18): the request's id and a fingerprint of what it asked. The store writes one item for it in the
+ * same transaction as the change, holding what the change returned (`result`, unless the caller gives its own), so a repeat of the
+ * request is answered from that item and writes nothing.
+ */
+export interface RequestMark {
+  orgId: OrgId;
+  developerId: string;
+  requestId: string;
+  fingerprint: string;
+  /** Overrides what is remembered, for a write that returns nothing itself. */
+  result?: unknown;
+}
 
 /** The built-in agents as the store sees them; tests replace it to add a release without editing the shipped list. */
 export interface BuiltinSource {
@@ -292,7 +307,22 @@ export class AgentStore {
     }
   }
 
+  /** `transact` with the request's own item added: the mark is written with the change or not at all. */
+  private async commit(items: TransactItem[], refuse: (failed: Set<number>) => Error | undefined, request?: RequestMark, result?: unknown): Promise<void> {
+    if (request === undefined) return this.transact(items, refuse);
+    const at = items.length;
+    const remembered = JSON.parse(JSON.stringify(request.result ?? result ?? null)) as unknown;
+    const mark = this.put(agentRequestKey(request.orgId, request.developerId, request.requestId), "AGENT_REQUEST", { fingerprint: request.fingerprint, result: remembered, at: this.iso() });
+    return this.transact([...items, mark], (failed) => (failed.has(at) ? coded("IDEMPOTENCY_CONFLICT", "This request ID is already being used for another change.") : refuse(failed)));
+  }
+
   // ---- reads
+
+  /** What an earlier request of this developer's did, if it did anything. */
+  async getRequest(orgId: OrgId, developerId: string, requestId: string): Promise<{ fingerprint: string; result: unknown } | undefined> {
+    const item = await this.read(agentRequestKey(orgId, developerId, requestId));
+    return item === undefined ? undefined : { fingerprint: String(item["fingerprint"]), result: item["result"] };
+  }
 
   async get(orgId: OrgId, agentId: AgentId): Promise<AgentRecord | undefined> {
     const item = await this.read(agentKey(orgId, agentId, "META"));
@@ -394,21 +424,22 @@ export class AgentStore {
    * Moves the org's pin of a built-in to a released version (the route limits this to org owners and admins). It applies
    * only while the pin is still `expectedPinnedVersion`, so an approval given against an older pin can't overwrite a newer one.
    */
-  async adoptBuiltinVersion(input: { orgId: OrgId; agentId: AgentId; version: number; expectedPinnedVersion: number; by: string }): Promise<BuiltinSettings> {
+  async adoptBuiltinVersion(input: { orgId: OrgId; agentId: AgentId; version: number; expectedPinnedVersion: number; by: string; request?: RequestMark }): Promise<BuiltinSettings> {
     this.requireBuiltin(input.agentId);
     if (!Number.isInteger(input.version) || input.version < 1 || input.version > this.builtins.currentVersion(input.agentId)) {
       throw coded("NOT_FOUND", `${this.builtins.name(input.agentId)} has no version ${String(input.version)}`);
     }
     const before = await this.ensureBuiltinSettings(input.orgId, input.agentId, input.by);
     const updatedAt = this.iso();
-    await this.transact([
+    const adopted: BuiltinSettings = { ...before, pinnedVersion: input.version, updatedBy: input.by, updatedAt };
+    await this.commit([
       this.update(builtinSettingsKey(input.orgId, input.agentId), {
         set: { pinnedVersion: input.version, updatedBy: input.by, updatedAt },
         when: (a) => `${a.name("pinnedVersion")} = ${a.value(input.expectedPinnedVersion)}`,
       }),
       this.event(input.orgId, input.agentId, "base_updated", input.by, { from: input.expectedPinnedVersion, to: input.version }),
-    ], () => conflict());
-    return { ...before, pinnedVersion: input.version, updatedBy: input.by, updatedAt };
+    ], () => conflict(), input.request, { settings: adopted, previous: input.expectedPinnedVersion });
+    return adopted;
   }
 
   // ---- bases
@@ -442,6 +473,7 @@ export class AgentStore {
     extends?: AgentId;
     overlay?: RecipeOverlay;
     createdBy: string;
+    request?: RequestMark;
   }): Promise<AgentRecord> {
     const name = input.name.trim();
     const description = input.description ?? "";
@@ -469,13 +501,13 @@ export class AgentStore {
       updatedAt: now,
     };
     const draft: AgentDraft = { overlay, ...(base === undefined ? {} : { extends: base }), revision: 1, updatedBy: input.createdBy, updatedAt: now };
-    await this.transact([
+    await this.commit([
       this.put(agentKey(input.orgId, agentId, "META"), "AGENT", agent as unknown as Item),
       this.put(agentKey(input.orgId, agentId, "DRAFT"), "AGENT_DRAFT", draft as unknown as Item),
       this.put(agentDirectoryKey(input.orgId, agentId), "AGENT_DIRECTORY", { agentId, createdAt: now }),
       this.put(agentNameKey(input.orgId, name), "AGENT_NAME", { agentId, createdAt: now }),
       this.event(input.orgId, agentId, "created", input.createdBy, { name, ...(base === undefined ? {} : { extends: base }) }),
-    ], (failed) => (failed.has(3) ? nameTaken(name) : undefined));
+    ], (failed) => (failed.has(3) ? nameTaken(name) : undefined), input.request, agent);
     return agent;
   }
 
@@ -483,7 +515,7 @@ export class AgentStore {
    * Saves the draft's overlay when `expectedRevision` is still its revision. `extends` picks another base (pinned to
    * its current version; the same base keeps its pin) or, as `null`, none; left out, the base stays as it is.
    */
-  async saveDraft(input: { orgId: OrgId; agentId: AgentId; overlay: RecipeOverlay; extends?: AgentId | null; expectedRevision: number; by: string }): Promise<AgentDraft> {
+  async saveDraft(input: { orgId: OrgId; agentId: AgentId; overlay: RecipeOverlay; extends?: AgentId | null; expectedRevision: number; by: string; request?: RequestMark }): Promise<AgentDraft> {
     const overlay = parseOverlay(input.overlay);
     const agent = await this.require(input.orgId, input.agentId);
     const draft = await this.getDraft(input.orgId, input.agentId);
@@ -497,7 +529,8 @@ export class AgentStore {
     }
     const revision = draft.revision + 1;
     const updatedAt = this.iso();
-    await this.transact([
+    const saved: AgentDraft = { overlay, ...(base === undefined ? {} : { extends: base }), revision, updatedBy: input.by, updatedAt };
+    await this.commit([
       this.update(agentKey(input.orgId, input.agentId, "DRAFT"), {
         set: { overlay, revision, updatedBy: input.by, updatedAt, extends: base },
         ...(base === undefined ? { remove: ["extends"] } : {}),
@@ -507,12 +540,12 @@ export class AgentStore {
         set: { draftRevision: revision, updatedAt },
         when: (a) => `${a.name("draftRevision")} = ${a.value(input.expectedRevision)}`,
       }),
-    ], () => conflict());
-    return { overlay, ...(base === undefined ? {} : { extends: base }), revision, updatedBy: input.by, updatedAt };
+    ], () => conflict(), input.request, saved);
+    return saved;
   }
 
   /** Changes the name or description. A rename swaps the name item, so the new name is checked and the old one freed together. */
-  async updateProfile(input: { orgId: OrgId; agentId: AgentId; name?: string; description?: string; by: string }): Promise<AgentRecord> {
+  async updateProfile(input: { orgId: OrgId; agentId: AgentId; name?: string; description?: string; by: string; request?: RequestMark }): Promise<AgentRecord> {
     const agent = await this.require(input.orgId, input.agentId);
     const name = input.name === undefined ? agent.name : input.name.trim();
     const description = input.description ?? agent.description;
@@ -539,15 +572,18 @@ export class AgentStore {
         },
       );
     }
-    await this.transact(items, (failed) => (failed.has(1) ? nameTaken(name) : conflict()));
-    return { ...agent, name, description, updatedAt };
+    const updated: AgentRecord = { ...agent, name, description, updatedAt };
+    await this.commit(items, (failed) => (failed.has(1) ? nameTaken(name) : conflict()), input.request, updated);
+    return updated;
   }
 
   /**
    * Publishes the draft as version `latestVersion + 1`. The version item must not exist and the agent must still be at
-   * the `latestVersion` and draft revision read here, so of two concurrent publishes one wins and the other conflicts.
+   * the `latestVersion` and draft revision read here, so of two concurrent publishes one wins and the other conflicts. With
+   * `expectedCurrentVersion` (`null` for none) it also applies only while that is the current version: what a caller compared the
+   * draft against before deciding it was safe to publish.
    */
-  async publish(input: { orgId: OrgId; agentId: AgentId; expectedDraftRevision: number; digest: string; note?: string; by: string }): Promise<AgentVersion> {
+  async publish(input: { orgId: OrgId; agentId: AgentId; expectedDraftRevision: number; digest: string; note?: string; by: string; expectedCurrentVersion?: number | null; request?: RequestMark }): Promise<AgentVersion> {
     if (!SHA256_HEX.test(input.digest)) throw coded("CONFIG_INVALID", "digest: must be the recipe's SHA-256 digest");
     const agent = await this.require(input.orgId, input.agentId);
     const draft = await this.getDraft(input.orgId, input.agentId);
@@ -567,7 +603,7 @@ export class AgentStore {
       publishedAt,
       ...(input.note === undefined ? {} : { note: input.note }),
     };
-    await this.transact([
+    await this.commit([
       this.put(agentKey(input.orgId, input.agentId, agentVersionSk(version)), "AGENT_VERSION", published as unknown as Item),
       this.update(agentKey(input.orgId, input.agentId, "META"), {
         set: { currentVersion: version, latestVersion: version, updatedAt: publishedAt },
@@ -576,10 +612,11 @@ export class AgentStore {
           `${a.name("draftRevision")} = ${a.value(input.expectedDraftRevision)}`,
           `${a.name("name")} = ${a.value(agent.name)}`,
           `${a.name("description")} = ${a.value(agent.description)}`,
+          ...(input.expectedCurrentVersion === undefined ? [] : [input.expectedCurrentVersion === null ? `attribute_not_exists(${a.name("currentVersion")})` : `${a.name("currentVersion")} = ${a.value(input.expectedCurrentVersion)}`]),
         ].join(" AND "),
       }),
       this.event(input.orgId, input.agentId, "published", input.by, { version, digest: input.digest, ...(input.note === undefined ? {} : { note: input.note }) }),
-    ], () => conflict());
+    ], () => conflict(), input.request, published);
     return published;
   }
 
@@ -587,38 +624,40 @@ export class AgentStore {
    * Makes an earlier published version the current one. Later versions stay, and the next publish still numbers after them.
    * It applies only while the current version is still `expectedCurrentVersion`, so a publish that landed since can't be undone unseen.
    */
-  async rollback(input: { orgId: OrgId; agentId: AgentId; version: number; expectedCurrentVersion: number; by: string }): Promise<AgentRecord> {
+  async rollback(input: { orgId: OrgId; agentId: AgentId; version: number; expectedCurrentVersion: number; by: string; request?: RequestMark }): Promise<AgentRecord> {
     const agent = await this.require(input.orgId, input.agentId);
     if (await this.getVersion(input.orgId, input.agentId, input.version) === undefined) throw coded("NOT_FOUND", `${agent.name} has no version ${String(input.version)}`);
     const updatedAt = this.iso();
-    await this.transact([
+    const rolled: AgentRecord = { ...agent, currentVersion: input.version, updatedAt };
+    await this.commit([
       this.update(agentKey(input.orgId, input.agentId, "META"), {
         set: { currentVersion: input.version, updatedAt },
         when: (a) => `${a.name("currentVersion")} = ${a.value(input.expectedCurrentVersion)}`,
       }),
       this.event(input.orgId, input.agentId, "rolled_back", input.by, { from: input.expectedCurrentVersion, to: input.version }),
-    ], () => conflict());
-    return { ...agent, currentVersion: input.version, updatedAt };
+    ], () => conflict(), input.request, rolled);
+    return rolled;
   }
 
-  private async setStatus(orgId: OrgId, agentId: AgentId, status: "active" | "archived", by: string): Promise<AgentRecord> {
+  private async setStatus(orgId: OrgId, agentId: AgentId, status: "active" | "archived", by: string, request?: RequestMark): Promise<AgentRecord> {
     if (isBuiltinAgentId(agentId)) throw coded("CONFIG_INVALID", `${this.builtins.name(agentId)} is built in and can't be archived`);
     const agent = await this.require(orgId, agentId);
     if (agent.status === status) return agent;
     const updatedAt = this.iso();
-    await this.transact([
+    const changed: AgentRecord = { ...agent, status, updatedAt };
+    await this.commit([
       this.update(agentKey(orgId, agentId, "META"), { set: { status, updatedAt }, when: (a) => `${a.name("status")} = ${a.value(agent.status)}` }),
       this.event(orgId, agentId, status === "archived" ? "archived" : "unarchived", by),
-    ], () => conflict());
-    return { ...agent, status, updatedAt };
+    ], () => conflict(), request, changed);
+    return changed;
   }
 
-  archive(orgId: OrgId, agentId: AgentId, by: string): Promise<AgentRecord> {
-    return this.setStatus(orgId, agentId, "archived", by);
+  archive(orgId: OrgId, agentId: AgentId, by: string, request?: RequestMark): Promise<AgentRecord> {
+    return this.setStatus(orgId, agentId, "archived", by, request);
   }
 
-  unarchive(orgId: OrgId, agentId: AgentId, by: string): Promise<AgentRecord> {
-    return this.setStatus(orgId, agentId, "active", by);
+  unarchive(orgId: OrgId, agentId: AgentId, by: string, request?: RequestMark): Promise<AgentRecord> {
+    return this.setStatus(orgId, agentId, "active", by, request);
   }
 
   /** Sets the budget limits; a number sets, `null` clears and a limit left out stays. A built-in's go on the org's settings for it. */
@@ -652,51 +691,52 @@ export class AgentStore {
    * Moves a custom agent to another owner. A project's agent needs `accountable`; a member's has none. Who may do this,
    * and whether the new owner's budget total allows it, is the route's check.
    */
-  async setOwner(orgId: OrgId, agentId: AgentId, owner: AgentOwner, by: string, accountable?: { developerId: string }): Promise<AgentRecord> {
+  async setOwner(orgId: OrgId, agentId: AgentId, owner: AgentOwner, by: string, accountable?: { developerId: string }, request?: RequestMark): Promise<AgentRecord> {
     if (isBuiltinAgentId(agentId)) throw coded("CONFIG_INVALID", `${this.builtins.name(agentId)} is built in and belongs to the whole company`);
     if (owner.kind === "project" && accountable === undefined) throw coded("CONFIG_INVALID", "accountable: a project's agent needs an accountable maintainer");
     if (owner.kind === "member" && accountable !== undefined) throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
     const agent = await this.require(orgId, agentId);
     const updatedAt = this.iso();
-    await this.transact([
+    const { accountable: _before, ...rest } = agent; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped when the new owner has none
+    const moved: AgentRecord = { ...rest, owner, ...(accountable === undefined ? {} : { accountable }), updatedAt };
+    await this.commit([
       this.update(agentKey(orgId, agentId, "META"), {
         set: { owner, accountable, updatedAt },
         ...(accountable === undefined ? { remove: ["accountable"] } : {}),
         when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)}`,
       }),
       this.event(orgId, agentId, "owner_changed", by, { from: agent.owner, to: owner, ...(accountable === undefined ? {} : { accountable }) }),
-    ], () => conflict());
-    const { accountable: _before, ...rest } = agent; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped when the new owner has none
-    return { ...rest, owner, ...(accountable === undefined ? {} : { accountable }), updatedAt };
+    ], () => conflict(), request, moved);
+    return moved;
   }
 
   /**
    * Changes the maintainer answerable for a project's agent (or the org's one for a built-in). That the new person holds
    * `manage_agents` on the project is the route's check.
    */
-  async setAccountable(orgId: OrgId, agentId: AgentId, accountable: { developerId: string }, by: string): Promise<void> {
+  async setAccountable(orgId: OrgId, agentId: AgentId, accountable: { developerId: string }, by: string, request?: RequestMark): Promise<void> {
     const updatedAt = this.iso();
     if (isBuiltinAgentId(agentId)) {
       const before = await this.ensureBuiltinSettings(orgId, agentId, by);
-      await this.transact([
+      await this.commit([
         this.update(builtinSettingsKey(orgId, agentId), { set: { accountable, updatedBy: by, updatedAt } }),
         this.event(orgId, agentId, "owner_changed", by, { accountable, ...(before.accountable === undefined ? {} : { from: before.accountable }) }),
-      ], () => undefined);
+      ], () => undefined, request, { accountable });
       return;
     }
     const agent = await this.require(orgId, agentId);
     if (agent.owner.kind !== "project") throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
-    await this.transact([
+    await this.commit([
       this.update(agentKey(orgId, agentId, "META"), { set: { accountable, updatedAt }, when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)}` }),
       this.event(orgId, agentId, "owner_changed", by, { accountable, ...(agent.accountable === undefined ? {} : { from: agent.accountable }) }),
-    ], () => conflict());
+    ], () => conflict(), request, { accountable });
   }
 
   /**
    * Moves the draft's base to the version it would be pinned to today: a custom base's current version, or the org's pin
    * of a built-in. The draft changes (and its revision with it); nothing is published.
    */
-  async updateBase(input: { orgId: OrgId; agentId: AgentId; expectedRevision: number; by: string }): Promise<AgentDraft> {
+  async updateBase(input: { orgId: OrgId; agentId: AgentId; expectedRevision: number; by: string; request?: RequestMark }): Promise<AgentDraft> {
     const agent = await this.require(input.orgId, input.agentId);
     const draft = await this.getDraft(input.orgId, input.agentId);
     if (draft === undefined) throw notFound();
@@ -706,7 +746,8 @@ export class AgentStore {
     if (target.version === draft.extends.version) return draft;
     const revision = draft.revision + 1;
     const updatedAt = this.iso();
-    await this.transact([
+    const moved: AgentDraft = { ...draft, extends: target, revision, updatedBy: input.by, updatedAt };
+    await this.commit([
       this.update(agentKey(input.orgId, input.agentId, "DRAFT"), {
         set: { extends: target, revision, updatedBy: input.by, updatedAt },
         when: (a) => `${a.name("revision")} = ${a.value(input.expectedRevision)}`,
@@ -716,8 +757,8 @@ export class AgentStore {
         when: (a) => `${a.name("draftRevision")} = ${a.value(input.expectedRevision)}`,
       }),
       this.event(input.orgId, input.agentId, "base_updated", input.by, { base: target.agentId, from: draft.extends.version, to: target.version }),
-    ], () => conflict());
-    return { ...draft, extends: target, revision, updatedBy: input.by, updatedAt };
+    ], () => conflict(), input.request, { draft: moved, previous: draft.extends });
+    return moved;
   }
 
   /**
@@ -733,6 +774,7 @@ export class AgentStore {
     remove: AgentPrincipal[];
     expectedSharesRevision: number;
     by: string;
+    request?: RequestMark;
   }): Promise<void> {
     if (input.upsert.length + input.remove.length > MAX_SHARE_CHANGES_PER_SAVE) {
       throw coded("CONFIG_INVALID", `shares: change at most ${String(MAX_SHARE_CHANGES_PER_SAVE)} people or groups in one save`);
@@ -760,7 +802,7 @@ export class AgentStore {
       shared: input.upsert.map(({ principal, level }) => ({ principal: principalKey(principal), level })),
       unshared: input.remove.map((principal) => principalKey(principal)),
     }));
-    await this.transact(items, () => sharesConflict());
+    await this.commit(items, () => sharesConflict(), input.request, input.upsert);
   }
 }
 

@@ -434,8 +434,8 @@ describe("setShares", () => {
     for (const developerId of people) db.set({ ...orgMemberKey(ORG_A, developerId), entityType: "ORG_MEMBER", orgId: ORG_A, developerId, role: "member", joinedAt: "x" });
     const everyone = (level: "view" | "use"): AgentShare[] => people.map((developerId) => ({ principal: { kind: "member", developerId }, level }));
     // 50 new shares: 100 items plus the agent and the event would be too many for one transaction, so it is refused in words.
-    expect(await code(share(agent, everyone("view")))).toEqual({ code: "CONFIG_INVALID", message: "shares: change at most 49 people or groups in one save" });
-    expect(await share(agent, everyone("view").slice(0, 49))).toHaveLength(49);
+    expect(await code(share(agent, everyone("view")))).toEqual({ code: "CONFIG_INVALID", message: "shares: change at most 48 people or groups in one save" });
+    expect(await share(agent, everyone("view").slice(0, 48))).toHaveLength(48);
     expect(await setShares(deps, caller(ALICE), agent.agentId, everyone("view"))).toHaveLength(50);
     expect(await code(share(agent, everyone("use")))).toMatchObject({ code: "CONFIG_INVALID" });
   });

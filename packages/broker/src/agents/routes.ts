@@ -2,6 +2,7 @@
 // carries a `requestId` (R18). Each route checks access first, with `requireAgentAccess`: an agent the caller can't see answers the
 // same 404 as one that doesn't exist. A change that decides which recipe runs and makes anything less safe answers
 // `202 { status: "NEEDS_CONFIRMATION", confirmUrl, changes }` and changes nothing until a person confirms it on the page (changes.ts).
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   AgentIdSchema,
@@ -14,6 +15,7 @@ import {
   AgentXError,
   agentXError,
   atLeast,
+  canonicalJson,
   diffRecipes,
   isBuiltinAgentId,
   projectAllows,
@@ -21,6 +23,7 @@ import {
   type AgentAccessLevel,
   type AgentId,
   type AgentOwner,
+  type BaseRef,
   type OrgId,
   type ResolvedRecipe,
 } from "@agentx/contracts";
@@ -40,7 +43,7 @@ import {
 import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, type ChangeResult } from "./changes.js";
 import type { ApprovalDependencies } from "./approvals.js";
 import { lessSafeChanges } from "./less-safe.js";
-import { updateAvailable, type AgentRecord } from "./store.js";
+import { updateAvailable, type AgentDraft, type AgentRecord, type AgentVersion, type BuiltinSettings, type RequestMark } from "./store.js";
 
 /** What every agent route needs: the store, access, the approvals core and where the confirmation page lives. */
 export type AgentRouteDependencies = ApprovalDependencies;
@@ -286,6 +289,29 @@ async function diffAgent(deps: AgentRouteDependencies, caller: AgentCaller, agen
   return { from, to, changes: diffRecipes(before, after), lessSafe: lessSafeChanges(before, after) };
 }
 
+// ---- repeated requests (R18)
+
+/**
+ * What a request is, apart from its id: the route, the agent and the rest of the body. The same request id for a different one is a mistake.
+ */
+function fingerprintOf(route: string, agentId: string, body: { requestId: string }): string {
+  const { requestId: _requestId, ...rest } = body; // eslint-disable-line @typescript-eslint/no-unused-vars -- the id is the key, not part of what was asked
+  return createHash("sha256").update(canonicalJson({ route, agentId, body: rest }), "utf8").digest("hex");
+}
+
+/**
+ * The mark a write carries, and what it did the last time this developer sent this request (`replay`), if it did anything. The store
+ * writes the mark in the same transaction as the change, so a request that changed something is answered from it, and a refused or
+ * waiting one (an approval has its own replay) leaves none. Called after the access checks: a repeat tells nobody who lost access anything.
+ */
+async function markRequest(deps: AgentRouteDependencies, caller: AgentCaller, route: string, agentId: string, body: { requestId: string }): Promise<{ mark: RequestMark; replay?: { result: unknown } }> {
+  const mark: RequestMark = { orgId: caller.orgId, developerId: caller.developerId, requestId: body.requestId, fingerprint: fingerprintOf(route, agentId, body) };
+  const earlier = await deps.store.getRequest(caller.orgId, caller.developerId, body.requestId);
+  if (earlier === undefined) return { mark };
+  if (earlier.fingerprint !== mark.fingerprint) throw agentXError("CONFIG_INVALID", "requestId: this request ID was already used for a different request");
+  return { mark, replay: { result: earlier.result } };
+}
+
 // ---- writes
 
 /** Someone who may answer for a project's agent: in the org, holding `manage_agents` on the project. Returned as the survivor of any merge. */
@@ -300,6 +326,8 @@ async function requireAccountable(deps: AgentRouteDependencies, orgId: OrgId, pr
 
 async function createAgent(deps: AgentRouteDependencies, caller: AgentCaller, body: unknown): Promise<StatusReply> {
   const input = parseBody(CreateBodySchema, body);
+  const { mark, replay } = await markRequest(deps, caller, "create", "", input);
+  if (replay !== undefined) return new StatusReply(201, { agent: await view(deps, caller, replay.result as AgentRecord) });
   const owner: AgentOwner = input.owner ?? { kind: "member", developerId: caller.developerId };
   const stored = await requireOwnerAllowed(deps, caller, owner);
   // A project's accountable maintainer must be able to manage its agents; a member's agent has none (the store refuses one).
@@ -311,6 +339,7 @@ async function createAgent(deps: AgentRouteDependencies, caller: AgentCaller, bo
     ...(accountable === undefined ? {} : { accountable }),
     ...(input.extends === undefined ? {} : { extends: input.extends }),
     ...(input.overlay === undefined ? {} : { overlay: input.overlay }),
+    request: mark,
   });
   return new StatusReply(201, { agent: await view(deps, caller, agent) });
 }
@@ -319,8 +348,10 @@ async function patchAgent(deps: AgentRouteDependencies, caller: AgentCaller, age
   const input = parseBody(PatchBodySchema, body);
   if (input.name === undefined && input.description === undefined) throw agentXError("CONFIG_INVALID", "body: change a name or a description");
   const { access } = await requireAgentAccess(deps, caller, agentId, "edit");
+  const { mark, replay } = await markRequest(deps, caller, "patch", agentId, input);
+  if (replay !== undefined) return { agent: customView(replay.result as AgentRecord, access) };
   const agent = await deps.store.updateProfile({
-    orgId: caller.orgId, agentId, by: caller.developerId,
+    orgId: caller.orgId, agentId, by: caller.developerId, request: mark,
     ...(input.name === undefined ? {} : { name: input.name }),
     ...(input.description === undefined ? {} : { description: input.description }),
   });
@@ -337,12 +368,14 @@ async function getDraft(deps: AgentRouteDependencies, caller: AgentCaller, agent
 async function putDraft(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<Shown> {
   const input = parseBody(PutDraftBodySchema, body);
   await requireAgentAccess(deps, caller, agentId, "edit");
+  const { mark, replay } = await markRequest(deps, caller, "draft", agentId, input);
+  if (replay !== undefined) return { draft: replay.result as AgentDraft };
   // Building on another agent needs `use` on it; keeping the base it already has does not.
   if (typeof input.extends === "string" && input.extends !== (await deps.store.getDraft(caller.orgId, agentId))?.extends?.agentId) {
     await requireAgentAccess(deps, caller, input.extends, "use");
   }
   const draft = await deps.store.saveDraft({
-    orgId: caller.orgId, agentId, overlay: input.overlay, expectedRevision: input.expectedRevision, by: caller.developerId,
+    orgId: caller.orgId, agentId, overlay: input.overlay, expectedRevision: input.expectedRevision, by: caller.developerId, request: mark,
     ...(input.extends === undefined ? {} : { extends: input.extends }),
   });
   return { draft };
@@ -352,7 +385,9 @@ async function publishAgent(deps: AgentRouteDependencies, caller: AgentCaller, a
   const input = parseBody(PublishBodySchema, body);
   const { agent, access } = await requireAgentAccess(deps, caller, agentId, "edit");
   if (!("owner" in agent)) throw notFound();
-  const result = await publishDraft(deps, caller, agent, input);
+  const { mark, replay } = await markRequest(deps, caller, "publish", agentId, input);
+  if (replay !== undefined) return { version: replay.result as AgentVersion, agent: customView(await deps.store.get(caller.orgId, agentId) ?? agent, access) };
+  const result = await publishDraft(deps, caller, agent, { ...input, request: mark });
   if (!result.applied) return waiting(result);
   return { version: result.value, agent: customView(await deps.store.get(caller.orgId, agentId) ?? agent, access) };
 }
@@ -361,14 +396,18 @@ async function rollback(deps: AgentRouteDependencies, caller: AgentCaller, agent
   const input = parseBody(RollbackBodySchema, body);
   const { agent, access } = await requireAgentAccess(deps, caller, agentId, "edit");
   if (!("owner" in agent)) throw notFound();
-  const result = await rollbackAgent(deps, caller, agent, input);
+  const { mark, replay } = await markRequest(deps, caller, "rollback", agentId, input);
+  if (replay !== undefined) return { agent: customView(replay.result as AgentRecord, access) };
+  const result = await rollbackAgent(deps, caller, agent, { ...input, request: mark });
   return result.applied ? { agent: customView(result.value, access) } : waiting(result);
 }
 
 async function setArchived(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown, archive: boolean): Promise<Shown> {
-  parseBody(RequestOnlySchema, body);
+  const input = parseBody(RequestOnlySchema, body);
   const { access } = await requireAgentAccess(deps, caller, agentId, "manage");
-  const agent = archive ? await deps.store.archive(caller.orgId, agentId, caller.developerId) : await deps.store.unarchive(caller.orgId, agentId, caller.developerId);
+  const { mark, replay } = await markRequest(deps, caller, archive ? "archive" : "unarchive", agentId, input);
+  if (replay !== undefined) return { agent: customView(replay.result as AgentRecord, access) };
+  const agent = archive ? await deps.store.archive(caller.orgId, agentId, caller.developerId, mark) : await deps.store.unarchive(caller.orgId, agentId, caller.developerId, mark);
   return { agent: customView(agent, access) };
 }
 
@@ -382,7 +421,9 @@ async function putShares(deps: AgentRouteDependencies, caller: AgentCaller, agen
   if (isBuiltinAgentId(agentId)) throw agentXError("CONFIG_INVALID", "Built-in agents belong to the whole company and can't be shared.");
   const { agent } = await requireAgentAccess(deps, caller, agentId, "manage");
   if (!("owner" in agent)) throw notFound();
-  const result = await shareAgent(deps, caller, agent, input);
+  const { mark, replay } = await markRequest(deps, caller, "shares", agentId, input);
+  if (replay !== undefined) return { shares: replay.result };
+  const result = await shareAgent(deps, caller, agent, { ...input, request: mark });
   return result.applied ? { shares: result.value } : waiting(result);
 }
 
@@ -390,16 +431,20 @@ async function putOwner(deps: AgentRouteDependencies, caller: AgentCaller, agent
   const input = parseBody(OwnerBodySchema, body);
   const { agent, access } = await requireAgentAccess(deps, caller, agentId, "manage");
   if (!("owner" in agent)) throw agentXError("CONFIG_INVALID", `${deps.store.builtinName(agentId)} is built in and belongs to the whole company`);
+  const { mark, replay } = await markRequest(deps, caller, "owner", agentId, input);
+  if (replay !== undefined) return { agent: customView(replay.result as AgentRecord, access) };
   // Store the owner this returns, not the one asked for: a member who was merged into another is named by the survivor.
   const owner = await requireOwnerAllowed(deps, caller, input.owner, agent.owner);
   const accountable = input.accountable === undefined ? undefined : owner.kind === "project" ? await requireAccountable(deps, caller.orgId, owner.project, input.accountable.developerId) : input.accountable;
-  const updated = await deps.store.setOwner(caller.orgId, agentId, owner, caller.developerId, accountable);
+  const updated = await deps.store.setOwner(caller.orgId, agentId, owner, caller.developerId, accountable, mark);
   return { agent: customView(updated, access) };
 }
 
 async function putAccountable(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<Shown> {
   const input = parseBody(AccountableBodySchema, body);
   const { agent } = await requireAgentAccess(deps, caller, agentId, "manage");
+  const { mark, replay } = await markRequest(deps, caller, "accountable", agentId, input);
+  if (replay !== undefined) return replay.result as Shown;
   let accountable: { developerId: string };
   if (!("owner" in agent)) {
     // A built-in has no project: its accountable person is one of the org's owners or admins.
@@ -412,18 +457,24 @@ async function putAccountable(deps: AgentRouteDependencies, caller: AgentCaller,
   } else {
     throw agentXError("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
   }
-  await deps.store.setAccountable(caller.orgId, agentId, accountable, caller.developerId);
+  await deps.store.setAccountable(caller.orgId, agentId, accountable, caller.developerId, mark);
   return { accountable };
 }
 
 async function updateBase(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<Shown> {
   const input = parseBody(UpdateBaseBodySchema, body);
   await requireAgentAccess(deps, caller, agentId, "edit");
+  const { mark, replay } = await markRequest(deps, caller, "update-base", agentId, input);
+  const answer = async (draft: AgentDraft, previous: BaseRef | undefined): Promise<Shown> => {
+    const moved = previous !== undefined && draft.extends !== undefined && draft.extends.version !== previous.version;
+    return { draft, changes: moved ? diffRecipes(await resolveBase(deps, caller.orgId, previous), await resolveBase(deps, caller.orgId, draft.extends)) : [] };
+  };
+  if (replay !== undefined) return answer((replay.result as { draft: AgentDraft }).draft, (replay.result as { previous?: BaseRef }).previous);
   const before = (await deps.store.getDraft(caller.orgId, agentId))?.extends;
-  const draft = await deps.store.updateBase({ orgId: caller.orgId, agentId, expectedRevision: input.expectedRevision, by: caller.developerId });
-  const moved = before !== undefined && draft.extends !== undefined && draft.extends.version !== before.version;
-  const changes = moved ? diffRecipes(await resolveBase(deps, caller.orgId, before), await resolveBase(deps, caller.orgId, draft.extends)) : [];
-  return { draft, changes };
+  // The base was needed to build on it once; moving to its newer version needs `use` on it still.
+  if (before !== undefined) await requireAgentAccess(deps, caller, before.agentId, "use");
+  const draft = await deps.store.updateBase({ orgId: caller.orgId, agentId, expectedRevision: input.expectedRevision, by: caller.developerId, request: mark });
+  return answer(draft, before);
 }
 
 async function adopt(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<unknown> {
@@ -431,7 +482,12 @@ async function adopt(deps: AgentRouteDependencies, caller: AgentCaller, agentId:
   if (!isBuiltinAgentId(agentId)) throw agentXError("CONFIG_INVALID", "only a built-in agent has versions to adopt");
   // `manage` on a built-in is held by org owners and admins only.
   await requireAgentAccess(deps, caller, agentId, "manage");
-  const result = await adoptBuiltin(deps, caller, agentId, input);
+  const { mark, replay } = await markRequest(deps, caller, "adopt", agentId, input);
+  if (replay !== undefined) {
+    const { settings, previous } = replay.result as { settings: BuiltinSettings; previous: number };
+    return { pinnedVersion: settings.pinnedVersion, changes: diffRecipes(deps.store.builtinRecipe(agentId, previous), deps.store.builtinRecipe(agentId, settings.pinnedVersion)) };
+  }
+  const result = await adoptBuiltin(deps, caller, agentId, { ...input, request: mark });
   return result.applied ? result.value : waiting(result);
 }
 

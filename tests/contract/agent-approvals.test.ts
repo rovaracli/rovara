@@ -15,7 +15,7 @@ import {
 } from "../../packages/broker/src/agents/approvals.js";
 import type { OrgId } from "../../packages/contracts/src/org.js";
 import { approvalKey, approverIndexKey, openApprovalKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { WRITE_APPROVAL_TTL_DAYS } from "../../packages/contracts/src/spend.js";
+import { CHANGE_APPROVAL_TTL_DAYS } from "../../packages/contracts/src/spend.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const START = Date.parse("2026-10-20T09:00:00.000Z");
@@ -51,7 +51,7 @@ describe("createPendingChange", () => {
       createdAt: "2026-10-20T09:00:00.000Z",
     });
     expect(record.approvalId).toMatch(/^apr_[0-9a-z]{20}$/);
-    expect(Date.parse(record.expiresAt) - START).toBe(WRITE_APPROVAL_TTL_DAYS * 86_400_000);
+    expect(Date.parse(record.expiresAt) - START).toBe(CHANGE_APPROVAL_TTL_DAYS * 86_400_000);
     expect(db.get(approvalKey(ORG_A, record.approvalId))).toMatchObject({ entityType: "APPROVAL", approvalId: record.approvalId, status: "PENDING" });
     expect(db.get(openApprovalKey(record.expiresAt, ORG_A, record.approvalId))).toMatchObject({ orgId: ORG_A, approvalId: record.approvalId });
     for (const developerId of [ALICE, BOB, CAROL]) {
@@ -108,6 +108,16 @@ describe("createPendingChange", () => {
     expect(record.expiresAt).toBe("2026-10-21T00:00:00.000Z");
     // The record still names every candidate: the index only decides who sees it listed.
     expect((record.approvers as Extract<ApproverSpec, { kind: "rule" }>).candidates).toHaveLength(120);
+  });
+});
+
+describe("getApproval validates what it reads", () => {
+  it("answers a record that is not shaped like an approval as missing", async () => {
+    const { db, deps } = setup();
+    const record = await createPendingChange(deps, input());
+    expect(CHANGE_APPROVAL_TTL_DAYS).toBe(7);
+    db.set({ ...approvalKey(ORG_A, record.approvalId), entityType: "APPROVAL", orgId: ORG_A, approvalId: record.approvalId, kind: "change", subject: "nope", status: "SOMETHING" });
+    expect(await getApproval(deps, ORG_A, record.approvalId)).toBeUndefined();
   });
 });
 

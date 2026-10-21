@@ -547,3 +547,41 @@ describe("archive, budget, owner, accountable and events", () => {
     expect(await store.list(ORG_B)).toHaveLength(1);
   });
 });
+
+describe("AgentStore request marks and the publish baseline (review fix round 1)", () => {
+  const mark = (requestId: string, fingerprint = "f".repeat(64)) => ({ orgId: ORG_A, developerId: ALICE, requestId, fingerprint });
+
+  it("writes the request item in the same transaction as the write, and not when the write is refused", async () => {
+    const { store, make } = setup();
+    const agent = await make("Marked", scratch("x"));
+    const first = await store.saveDraft({ orgId: ORG_A, agentId: agent.agentId, overlay: scratch("y"), expectedRevision: 1, by: ALICE, request: mark("r1") });
+    expect(await store.getRequest(ORG_A, ALICE, "r1")).toMatchObject({ fingerprint: "f".repeat(64), result: { revision: 2 } });
+    expect(first.revision).toBe(2);
+    await expect(store.saveDraft({ orgId: ORG_A, agentId: agent.agentId, overlay: scratch("z"), expectedRevision: 1, by: ALICE, request: mark("r2") })).rejects.toThrow(/AGENT_REVISION_CONFLICT/);
+    expect(await store.getRequest(ORG_A, ALICE, "r2")).toBeUndefined();
+    // Another person's, or another org's, same request id is its own.
+    expect(await store.getRequest(ORG_A, BOB, "r1")).toBeUndefined();
+    expect(await store.getRequest(ORG_B, ALICE, "r1")).toBeUndefined();
+  });
+
+  it("refuses a second write under the same request id as already in progress", async () => {
+    const { store, make } = setup();
+    const agent = await make("Marked", scratch("x"));
+    await store.saveDraft({ orgId: ORG_A, agentId: agent.agentId, overlay: scratch("y"), expectedRevision: 1, by: ALICE, request: mark("r1") });
+    await expect(store.saveDraft({ orgId: ORG_A, agentId: agent.agentId, overlay: scratch("z"), expectedRevision: 2, by: ALICE, request: mark("r1") })).rejects.toThrow(/IDEMPOTENCY_CONFLICT/);
+  });
+
+  it("publishes only while the current version is still the one compared against", async () => {
+    const { store, make, publish } = setup();
+    const agent = await make("Baseline", scratch("x"));
+    await publish(agent.agentId);
+    const draft = (await store.getDraft(ORG_A, agent.agentId))!;
+    await publish(agent.agentId);
+    await expect(store.publish({ orgId: ORG_A, agentId: agent.agentId, expectedDraftRevision: draft.revision, digest: DIGEST, by: ALICE, expectedCurrentVersion: 1 })).rejects.toThrow(/AGENT_REVISION_CONFLICT/);
+    await expect(store.publish({ orgId: ORG_A, agentId: agent.agentId, expectedDraftRevision: draft.revision, digest: DIGEST, by: ALICE, expectedCurrentVersion: null })).rejects.toThrow(/AGENT_REVISION_CONFLICT/);
+    expect((await store.publish({ orgId: ORG_A, agentId: agent.agentId, expectedDraftRevision: draft.revision, digest: DIGEST, by: ALICE, expectedCurrentVersion: 2 })).version).toBe(3);
+    const fresh = await make("First", scratch("x"));
+    const first = (await store.get(ORG_A, fresh.agentId))!;
+    expect((await store.publish({ orgId: ORG_A, agentId: fresh.agentId, expectedDraftRevision: first.draftRevision, digest: DIGEST, by: ALICE, expectedCurrentVersion: null })).version).toBe(1);
+  });
+});

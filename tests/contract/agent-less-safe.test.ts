@@ -105,6 +105,22 @@ describe("lessSafeChanges", () => {
     expect(lessSafeChanges(recipe({ steps: [agentStep("a")] }), recipe({ steps: [agentStep("a", "none", ["search_*"])] }))).toEqual([]);
   });
 
+  it("flags a step that replaces a limited step under a new id, and a new step with no limit (review Important 1)", () => {
+    const current = recipe({ steps: [agentStep("a", "none", ["search_*"])] });
+    // The same step renamed, the limit gone: it now uses every tool the grants allow.
+    expect(lessSafeChanges(current, recipe({ steps: [agentStep("a2")] }))).toEqual(['Adds the step "A2" without the tool limit the other steps have']);
+    // Added beside the limited one.
+    expect(lessSafeChanges(current, recipe({ steps: [agentStep("a", "none", ["search_*"]), agentStep("b")] }))).toEqual(['Adds the step "B" without the tool limit the other steps have']);
+    // A new step inside the limits already there is no wider; one that allows more is.
+    expect(lessSafeChanges(current, recipe({ steps: [agentStep("a", "none", ["search_*"]), agentStep("b", "none", ["search_*"])] }))).toEqual([]);
+    expect(lessSafeChanges(current, recipe({ steps: [agentStep("b", "none", ["search_*", "write_*"])] }))).toEqual(['Allows more tools in the step "B"']);
+    // Nothing was limited before, so nothing is dropped; a first publish is not flagged for it.
+    expect(lessSafeChanges(recipe({ steps: [agentStep("a")] }), recipe({ steps: [agentStep("a"), agentStep("b")] }))).toEqual([]);
+    expect(lessSafeChanges(undefined, recipe({ steps: [agentStep("b")] }))).toEqual([]);
+    // A step of another kind does not borrow the limits of this kind.
+    expect(lessSafeChanges(current, recipe({ steps: [agentStep("a", "none", ["search_*"]), approvalStep()] }))).toEqual([]);
+  });
+
   it("flags raised autonomy only", () => {
     expect(lessSafeChanges(recipe({ autonomy: "suggest" }), recipe({ autonomy: "prepare" }))).toEqual(["Raises the agent's autonomy from suggest to prepare"]);
     expect(lessSafeChanges(recipe({ autonomy: "prepare" }), recipe({ autonomy: "run" }))).toHaveLength(1);

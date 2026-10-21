@@ -66,7 +66,17 @@ function stepChanges(current: ResolvedRecipe, next: ResolvedRecipe, found: strin
     if (isAgentStep(step) && step.workspace === "read" && !(before !== undefined && isAgentStep(before) && before.workspace === "read")) {
       found.push(`Gives the step "${step.name}" read access to the project's files`);
     }
-    if (before === undefined) continue;
+    if (before === undefined) {
+      // A step under a new id (a renamed step, or one added beside the others) can't dodge the limits the steps of its kind had:
+      // it may use what they could, and when every one of them was limited, no more.
+      const peers = current.steps.filter((candidate) => candidate.kind === step.kind);
+      if (peers.length > 0 && peers.every((peer) => stepTools(peer) !== undefined)) {
+        const limit = stepTools(step);
+        if (limit === undefined) found.push(`Adds the step "${step.name}" without the tool limit the other steps have`);
+        else if (addsPattern(peers.flatMap((peer) => stepTools(peer) ?? []), limit)) found.push(`Allows more tools in the step "${step.name}"`);
+      }
+      continue;
+    }
     const tools = stepTools(step);
     const was = stepTools(before);
     if (was !== undefined && tools === undefined) found.push(`Removes the tool limit on the step "${step.name}"`);
