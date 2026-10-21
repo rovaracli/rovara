@@ -4,7 +4,7 @@
 //   buildAuditBundle   the org's records and seals for a range, widened to whole seals; every sealed object (seal, records,
 //                      epoch statement, leaves, timestamp tokens) is read by the VERSION ID the anchor recorded, so a later
 //                      version or delete marker at the same key changes nothing; records after the last seal come from the table
-//   startAuditExport   records the request (`running`) and starts the build in the background (the broker invokes itself)
+//   startAuditExport   records the request (`running`) and starts the build in the background (an async invoke of the export function)
 //   runAuditExport     builds, runs `verifyBundle` exactly as an auditor would, and only then writes the file and marks `ready`
 //                      in one transaction with the `audit.exported` pending item; a bundle that does not verify is `failed`, no file
 //   getAuditExport, exportDownloadUrl   status and a short-lived download link
@@ -74,21 +74,31 @@ const SEAL_READ_CONCURRENCY = 4;
 /** How far back a covering chain is followed (a few epochs a day: this is years). */
 const COVER_WALK_MAX = 100_000;
 
-export interface AuditExportDeps extends AuditReadDeps, AuditDeps {
+/** What every export function needs: the tables the reader reads, the State table where export records live, and the outbox. */
+export interface AuditExportBase extends AuditReadDeps, AuditDeps {
+  /** The State table: the export records live here, beside the pending audit items. */
+  tableName: string;
+  now: () => number;
+  log: (entry: Record<string, unknown>) => void;
+}
+
+/** The broker's side: record a request, start the build, read its status and hand out a link. The broker builds nothing itself. */
+export interface AuditExportClientDeps extends AuditExportBase {
+  exportsBucket: string;
+  /** Starts `runAuditExport` in the export function (an asynchronous invoke of it). */
+  invokeExport: (event: AuditExportEvent) => Promise<void>;
+  /** A presigned GET URL for one object of the exports bucket. */
+  presign: (input: { bucket: string; key: string; expiresInSeconds: number }) => Promise<string>;
+}
+
+/** The export function's side: build, verify and store. */
+export interface AuditExportDeps extends AuditExportBase {
   /** The ledger bucket (reads by version id only) and the exports bucket (put, get, delete, list). One client for both. */
   s3: S3Client;
   ledgerBucket: string;
   exportsBucket: string;
-  /** The State table: the export records live here, beside the pending audit items. */
-  tableName: string;
   /** The roots tokens are checked against, per authority label. A label without roots is reported, not failed (`unverifiedAuthorities`). */
   anchors: Readonly<Record<string, readonly X509Certificate[]>>;
-  now: () => number;
-  log: (entry: Record<string, unknown>) => void;
-  /** Starts `runAuditExport` in the background (the broker's own asynchronous invoke). */
-  invokeExport: (event: AuditExportEvent) => Promise<void>;
-  /** A presigned GET URL for one object of the exports bucket. */
-  presign: (input: { bucket: string; key: string; expiresInSeconds: number }) => Promise<string>;
 }
 
 export interface AuditBundleRange {
@@ -443,14 +453,14 @@ function viewOf(item: Record<string, unknown>, now: number): AuditExportView {
   return result;
 }
 
-async function readMeta(deps: AuditExportDeps, orgId: string, exportId: string): Promise<Record<string, unknown> | undefined> {
+async function readMeta(deps: AuditExportBase, orgId: string, exportId: string): Promise<Record<string, unknown> | undefined> {
   if (!EXPORT_ID.test(exportId)) return undefined;
   const out = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: metaKey(orgId, exportId), ConsistentRead: true }));
   return out.Item;
 }
 
 /** The export's record, or undefined when this org has no such export (another org's export id is unknown here). */
-export async function getAuditExport(deps: AuditExportDeps, orgId: string, exportId: string): Promise<AuditExportView | undefined> {
+export async function getAuditExport(deps: AuditExportBase, orgId: string, exportId: string): Promise<AuditExportView | undefined> {
   checkedOrgId(orgId);
   const item = await readMeta(deps, orgId, exportId);
   return item === undefined ? undefined : viewOf(item, deps.now());
@@ -460,7 +470,7 @@ export async function getAuditExport(deps: AuditExportDeps, orgId: string, expor
  * Records the request as `running` and starts the build in the background. The same `requestId` for the same org is the same
  * export: a repeat returns it and starts nothing. A range of more than AUDIT_EXPORT_MAX_RECORDS is refused up front.
  */
-export async function startAuditExport(deps: AuditExportDeps, requester: AuditExportRequester, request: AuditExportRequest): Promise<{ exportId: string; status: AuditExportStatus }> {
+export async function startAuditExport(deps: AuditExportClientDeps, requester: AuditExportRequester, request: AuditExportRequest): Promise<{ exportId: string; status: AuditExportStatus }> {
   const orgId = checkedOrgId(requester.orgId);
   const { fromSeq, toSeq } = request;
   const wholeNumber = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
@@ -501,7 +511,7 @@ export async function startAuditExport(deps: AuditExportDeps, requester: AuditEx
   return { exportId, status: "running" };
 }
 
-async function failExport(deps: AuditExportDeps, orgId: string, exportId: string, failure: NonNullable<AuditExportView["failure"]>): Promise<void> {
+async function failExport(deps: AuditExportBase, orgId: string, exportId: string, failure: NonNullable<AuditExportView["failure"]>): Promise<void> {
   try {
     await deps.documentClient.send(new UpdateCommand({
       TableName: deps.tableName,
@@ -630,7 +640,7 @@ export async function runAuditExport(deps: AuditExportDeps, event: { orgId: stri
 }
 
 /** A link to download a finished export, valid for AUDIT_EXPORT_URL_SECONDS. NOT_FOUND for an export this org does not have or one that is not ready. */
-export async function exportDownloadUrl(deps: AuditExportDeps, orgId: string, exportId: string): Promise<{ url: string; expiresInSeconds: number }> {
+export async function exportDownloadUrl(deps: AuditExportClientDeps, orgId: string, exportId: string): Promise<{ url: string; expiresInSeconds: number }> {
   checkedOrgId(orgId);
   const item = await readMeta(deps, orgId, exportId);
   if (item === undefined || item.status !== "ready") throw agentXError("NOT_FOUND", "That export was not found, or it is not ready yet.");

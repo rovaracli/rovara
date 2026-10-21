@@ -441,7 +441,7 @@ describe("the audit ledger in templates", () => {
     });
 
     for (const env of ["production", "staging", "acme"]) {
-      it(`${env} has the five statements exactly`, () => {
+      it(`${env} has the six statements exactly`, () => {
         const synthesis = named(env);
         const cloudFormation = `arn:aws:iam::${ACCOUNT}:role/${environmentNaming(env).cloudFormationRoleName}`;
         expect(policyOf(synthesis)).toStrictEqual([
@@ -464,6 +464,10 @@ describe("the audit ledger in templates", () => {
           },
           {
             Sid: "BrokerUse", Effect: "Allow", Principal: { AWS: `${roleIdOf(synthesis, "BrokerServiceRole")}.Arn` },
+            Action: "kms:Decrypt", Resource: "*", Condition: contextConditions,
+          },
+          {
+            Sid: "ExportUse", Effect: "Allow", Principal: { AWS: `${roleIdOf(synthesis, "AuditLedgerAuditExportRole")}.Arn` },
             Action: "kms:Decrypt", Resource: "*", Condition: contextConditions,
           },
         ]);
@@ -584,9 +588,9 @@ describe("the audit ledger in templates", () => {
         expect(wildcards.every(({ stack, where }) => baseline(stack, where))).toBe(true);
       });
 
-      it("inside the key policy only AppenderUse and BrokerUse allow use, each naming one role", () => {
+      it("inside the key policy only AppenderUse, BrokerUse and ExportUse allow use, each naming one role", () => {
         const allowingUse = policyOf(production).filter((statement) => statement.Effect === "Allow" && grantsUse(statement));
-        expect(allowingUse.map((statement) => statement.Sid)).toStrictEqual(["AppenderUse", "BrokerUse"]);
+        expect(allowingUse.map((statement) => statement.Sid)).toStrictEqual(["AppenderUse", "BrokerUse", "ExportUse"]);
         expect(allowingUse.every((statement) => typeof (statement.Principal as { AWS: unknown }).AWS === "string" && (statement.Principal as { AWS: string }).AWS.endsWith(".Arn"))).toBe(true);
       });
 
@@ -915,22 +919,26 @@ describe("the audit ledger in templates", () => {
             "AuditLedgerAuditAppenderPolicy/KeysTable",
             "AuditLedgerAuditAppenderPolicy/LedgerTable",
             "AuditLedgerAuditBrokerOutboxPolicy/SendAuditEvents",
-            "AuditLedgerAuditBrokerReadPolicy/ExportObjects",
-            "AuditLedgerAuditBrokerReadPolicy/ListExports",
+            "AuditLedgerAuditBrokerReadPolicy/DownloadExports",
             "AuditLedgerAuditBrokerReadPolicy/ReadKeys",
             "AuditLedgerAuditBrokerReadPolicy/ReadLedgerAndSeals",
-            "AuditLedgerAuditBrokerReadPolicy/ReadSealedObjects",
+            "AuditLedgerAuditExportPolicy/ExportObjects",
+            "AuditLedgerAuditExportPolicy/ListExports",
+            "AuditLedgerAuditExportPolicy/ReadKeys",
+            "AuditLedgerAuditExportPolicy/ReadLedgerAndSeals",
+            "AuditLedgerAuditExportPolicy/ReadSealedObjects",
+            "AuditLedgerAuditExportPolicy/SendAuditEvents",
           ]);
           for (const [, role] of ofType(synthesis.template, "AWS::IAM::Role")) {
             expect(JSON.stringify(role.Properties.Policies ?? [])).not.toMatch(/AuditLedger(Audit)?(IntakeQueue|LedgerTable|SealsTable|KeysTable|LedgerBucket)/);
           }
         });
 
-        it("gives the broker, and no other function, the intake queue's URL", () => {
+        it("gives the broker and the export function (which flushes its audit.exported item) the intake queue's URL, and no other function", () => {
           const functions = ofType(synthesis.template, "AWS::Lambda::Function");
           const withUrl = functions.filter(([, fn]) => (fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables?.AUDIT_INTAKE_QUEUE_URL !== undefined);
-          expect(withUrl.map(([id]) => withoutHash(id))).toStrictEqual(["Broker"]);
-          const variables = (withUrl[0]![1].Properties.Environment as { Variables: Json }).Variables;
+          expect(withUrl.map(([id]) => withoutHash(id)).sort()).toStrictEqual(["AuditLedgerAuditExport", "Broker"]);
+          const variables = (withUrl.find(([id]) => withoutHash(id) === "Broker")![1].Properties.Environment as { Variables: Json }).Variables;
           expect(concreteAws(variables.AUDIT_INTAKE_QUEUE_URL)).toBe("Ref:AuditLedgerAuditIntakeQueue");
         });
 
@@ -1069,8 +1077,8 @@ describe("the audit ledger in templates", () => {
           expect(JSON.stringify(variables)).not.toContain("alias/");
         });
 
-        it("is, with the broker (which only reads, pinned in \"the broker reads the ledger\"), the only function given the keys table's name or the vault key, and only it, the anchor and the broker are given the ledger table", () => {
-          const others = ofType(synthesis.template, "AWS::Lambda::Function").filter(([id]) => !["AuditLedgerAuditAppender", "AuditLedgerAuditAnchor", "Broker"].includes(withoutHash(id)));
+        it("is, with the broker (which only reads) and the export function (pinned in \"the export function\"), the only function given the keys table's name or the vault key, and only it, the anchor, the broker and the export function are given the ledger table", () => {
+          const others = ofType(synthesis.template, "AWS::Lambda::Function").filter(([id]) => !["AuditLedgerAuditAppender", "AuditLedgerAuditAnchor", "AuditLedgerAuditExport", "Broker"].includes(withoutHash(id)));
           for (const [id, fn] of others) {
             const variables = JSON.stringify((fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables ?? {});
             expect(variables, id).not.toMatch(/AuditLedgerAudit(LedgerTable|KeysTable|SealsTable|VaultKey|LedgerBucket)/);
@@ -1332,11 +1340,11 @@ describe("the audit ledger in templates", () => {
           expect(JSON.stringify(variables)).not.toMatch(/alias\/|KeysTable|VaultKey/);
         });
 
-        it("is, with the broker (which only reads), the only function given the seals table or the ledger bucket", () => {
+        it("is, with the broker (the seals table, to read) and the export function (both, to read), the only function given the seals table or the ledger bucket", () => {
           const withSeals = ofType(synthesis.template, "AWS::Lambda::Function").filter(([, fn]) => JSON.stringify((fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables ?? {}).includes("AuditLedgerAuditSealsTable"));
-          expect(withSeals.map(([id]) => withoutHash(id)).sort()).toStrictEqual(["AuditLedgerAuditAnchor", "Broker"]);
+          expect(withSeals.map(([id]) => withoutHash(id)).sort()).toStrictEqual(["AuditLedgerAuditAnchor", "AuditLedgerAuditExport", "Broker"]);
           const withBucket = ofType(synthesis.template, "AWS::Lambda::Function").filter(([, fn]) => JSON.stringify((fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables ?? {}).includes("AuditLedgerAuditLedgerBucket"));
-          expect(withBucket.map(([id]) => withoutHash(id)).sort()).toStrictEqual(["AuditLedgerAuditAnchor", "Broker"]);
+          expect(withBucket.map(([id]) => withoutHash(id)).sort()).toStrictEqual(["AuditLedgerAuditAnchor", "AuditLedgerAuditExport"]);
         });
 
         it("has exactly the pinned statements, in a policy of its own, and the log group's write actions", () => {
@@ -1666,7 +1674,7 @@ describe("the audit ledger in templates", () => {
     });
   });
 
-  describe("the broker reads the ledger (Task 11)", () => {
+  describe("the broker reads the ledger and starts exports (Task 11)", () => {
     const BROKER_ROLE = "BrokerServiceRole";
     const LEDGER = "AuditLedgerAuditLedgerTable.Arn";
     const KEYS = "AuditLedgerAuditKeysTable.Arn";
@@ -1674,6 +1682,7 @@ describe("the audit ledger in templates", () => {
     const LEDGER_BUCKET = "AuditLedgerAuditLedgerBucket.Arn";
     const EXPORTS_BUCKET = "AuditLedgerAuditExportsBucket.Arn";
     const VAULT_KEY = "AuditLedgerAuditVaultKey.Arn";
+    const EXPORT_FUNCTION = "AuditLedgerAuditExport.Arn";
     const ownPolicy = (synthesis: Synth) => {
       const own = ofType(synthesis.template, "AWS::IAM::Policy").filter(([id]) => withoutHash(id) === "AuditLedgerAuditBrokerReadPolicy");
       expect(own).toHaveLength(1);
@@ -1698,14 +1707,12 @@ describe("the audit ledger in templates", () => {
           expect(ownStatements(synthesis)).toStrictEqual([
             { Sid: "ReadLedgerAndSeals", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query"], Resource: [LEDGER, SEALS] },
             { Sid: "ReadKeys", Effect: "Allow", Action: "dynamodb:GetItem", Resource: KEYS },
-            { Sid: "ReadSealedObjects", Effect: "Allow", Action: ["s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectRetention"], Resource: `${LEDGER_BUCKET}/*` },
-            { Sid: "ExportObjects", Effect: "Allow", Action: ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"], Resource: `${EXPORTS_BUCKET}/*` },
-            { Sid: "ListExports", Effect: "Allow", Action: "s3:ListBucket", Resource: EXPORTS_BUCKET },
-            { Sid: "StartExports", Effect: "Allow", Action: "lambda:InvokeFunction", Resource: "Broker.Arn" },
+            { Sid: "DownloadExports", Effect: "Allow", Action: "s3:GetObject", Resource: `${EXPORTS_BUCKET}/*` },
+            { Sid: "StartExports", Effect: "Allow", Action: "lambda:InvokeFunction", Resource: EXPORT_FUNCTION },
           ]);
         });
 
-        it("gives the broker the names it reads the ledger by, and the vault key by ARN, and no other function but the appender and anchor their own", () => {
+        it("gives the broker the names it reads the ledger by, the export function's name and the vault key's ARN, and not the ledger bucket", () => {
           const [, broker] = one(synthesis.template, "AWS::Lambda::Function", "Broker");
           const variables = (broker.Properties.Environment as { Variables: Json }).Variables;
           const audit = Object.fromEntries(Object.entries(variables).filter(([name]) => name.startsWith("AUDIT_")).map(([name, value]) => [name, concreteAws(value)]));
@@ -1714,13 +1721,10 @@ describe("the audit ledger in templates", () => {
             AUDIT_LEDGER_TABLE_NAME: "Ref:AuditLedgerAuditLedgerTable",
             AUDIT_SEALS_TABLE_NAME: "Ref:AuditLedgerAuditSealsTable",
             AUDIT_KEYS_TABLE_NAME: "Ref:AuditLedgerAuditKeysTable",
-            AUDIT_LEDGER_BUCKET_NAME: "Ref:AuditLedgerAuditLedgerBucket",
             AUDIT_EXPORTS_BUCKET_NAME: "Ref:AuditLedgerAuditExportsBucket",
+            AUDIT_EXPORT_FUNCTION_NAME: "Ref:AuditLedgerAuditExport",
             AUDIT_VAULT_KEY_ARN: "AuditLedgerAuditVaultKey.Arn",
           });
-          // Only the broker has the exports bucket; the key policy, not IAM, is what lets it decrypt.
-          const withExports = ofType(synthesis.template, "AWS::Lambda::Function").filter(([, fn]) => JSON.stringify((fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables ?? {}).includes("AuditLedgerAuditExportsBucket"));
-          expect(withExports.map(([id]) => withoutHash(id))).toStrictEqual(["Broker"]);
         });
 
         describe("what IAM lets the broker do on the ledger (all of its policies simulated)", () => {
@@ -1742,9 +1746,8 @@ describe("the audit ledger in templates", () => {
             }
           });
 
-          it("reads the ledger bucket's objects, by version, with their retention, and cannot write, delete, relock or list it", () => {
-            for (const action of ["s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectRetention"]) expect(request(action, LEDGER_OBJECT).allowed, action).toBe(true);
-            for (const action of ["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:PutObjectRetention", "s3:PutObjectLegalHold", "s3:BypassGovernanceRetention", "s3:*"]) {
+          it("has nothing on the ledger bucket: it reads no sealed object, and cannot write, delete, relock or list it", () => {
+            for (const action of ["s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectRetention", "s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:PutObjectRetention", "s3:PutObjectLegalHold", "s3:BypassGovernanceRetention", "s3:*"]) {
               expect(request(action, LEDGER_OBJECT).allowed, action).toBe(false);
             }
             for (const action of ["s3:ListBucket", "s3:ListBucketVersions", "s3:PutBucketPolicy", "s3:PutBucketObjectLockConfiguration", "s3:PutBucketVersioning", "s3:DeleteBucket", "s3:PutLifecycleConfiguration"]) {
@@ -1752,22 +1755,21 @@ describe("the audit ledger in templates", () => {
             }
           });
 
-          it("puts, gets and deletes the exports bucket's objects and lists the bucket, and changes nothing about it", () => {
-            for (const action of ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"]) expect(request(action, EXPORT_OBJECT).allowed, action).toBe(true);
-            expect(request("s3:ListBucket", EXPORTS_BUCKET).allowed).toBe(true);
+          it("can read an export's file (so that it can sign a download link for it) and cannot write, delete or list the exports bucket", () => {
+            expect(request("s3:GetObject", EXPORT_OBJECT).allowed).toBe(true);
+            expect(request("s3:GetObject", EXPORTS_BUCKET).allowed).toBe(false);
+            for (const action of ["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:PutObjectRetention", "s3:PutObjectAcl", "s3:GetObjectVersion", "s3:*"]) expect(request(action, EXPORT_OBJECT).allowed, action).toBe(false);
+            for (const action of ["s3:ListBucket", "s3:PutBucketPolicy", "s3:DeleteBucket", "s3:PutLifecycleConfiguration", "s3:PutBucketPublicAccessBlock"]) expect(request(action, EXPORTS_BUCKET).allowed, action).toBe(false);
             expect(request("s3:ListBucket", EXPORT_OBJECT).allowed).toBe(false);
-            for (const action of ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]) expect(request(action, EXPORTS_BUCKET).allowed, `${action} on the bucket itself`).toBe(false);
-            for (const action of ["s3:PutObjectRetention", "s3:DeleteObjectVersion", "s3:PutObjectAcl", "s3:*"]) expect(request(action, EXPORT_OBJECT).allowed, action).toBe(false);
-            for (const action of ["s3:PutBucketPolicy", "s3:DeleteBucket", "s3:PutLifecycleConfiguration", "s3:PutBucketPublicAccessBlock"]) expect(request(action, EXPORTS_BUCKET).allowed, action).toBe(false);
           });
 
           it("has no KMS permission of its own: the key policy is what lets it decrypt a person's details", () => {
             for (const action of ["kms:Decrypt", "kms:GenerateDataKey", "kms:Encrypt", "kms:CreateGrant"]) expect(request(action, VAULT_KEY).allowed, action).toBe(false);
           });
 
-          it("may invoke itself (an export is built by the broker invoking itself) and neither the anchor nor the appender", () => {
-            expect(request("lambda:InvokeFunction", "Broker.Arn").allowed).toBe(true);
-            for (const other of ["AuditLedgerAuditAnchor.Arn", "AuditLedgerAuditAppender.Arn"]) expect(request("lambda:InvokeFunction", other).allowed, other).toBe(false);
+          it("may invoke the export function, and not itself, the anchor or the appender", () => {
+            expect(request("lambda:InvokeFunction", EXPORT_FUNCTION).allowed).toBe(true);
+            for (const other of ["Broker.Arn", "AuditLedgerAuditAnchor.Arn", "AuditLedgerAuditAppender.Arn"]) expect(request("lambda:InvokeFunction", other).allowed, other).toBe(false);
           });
 
           it("the simulator sees the resource lists: with the ledger table dropped, its reads would be denied", () => {
@@ -1785,13 +1787,162 @@ describe("the audit ledger in templates", () => {
       const template = Template.fromStack(stack).toJSON() as TemplateJson;
       const own = ofType(template, "AWS::IAM::Policy").filter(([id]) => id.startsWith("AuditLedgerAuditBrokerReadPolicy"));
       expect(own).toHaveLength(1);
-      expect(((own[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => statement.Sid)).toStrictEqual(["ReadLedgerAndSeals", "ReadKeys", "ReadSealedObjects", "ExportObjects", "ListExports", "StartExports"]);
+      expect(((own[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => statement.Sid)).toStrictEqual(["ReadLedgerAndSeals", "ReadKeys", "DownloadExports", "StartExports"]);
     });
 
     it("a legacy template has none of it", () => {
       const legacy = Template.fromStack(buildAgentXApp().node.children.filter((child): child is Stack => Stack.isStack(child)).find((stack) => stack.stackName === "AgentXControlPlane")!).toJSON();
-      expect(JSON.stringify(legacy)).not.toMatch(/AUDIT_EXPORTS_BUCKET_NAME|AUDIT_LEDGER_TABLE_NAME|AuditBrokerReadPolicy/);
+      expect(JSON.stringify(legacy)).not.toMatch(/AUDIT_EXPORTS_BUCKET_NAME|AUDIT_EXPORT_FUNCTION_NAME|AUDIT_LEDGER_TABLE_NAME|AuditBrokerReadPolicy|AuditExport/);
     });
+  });
+
+  describe("the export function (Task 11)", () => {
+    const ROLE = "AuditLedgerAuditExportRole";
+    const LEDGER = "AuditLedgerAuditLedgerTable.Arn";
+    const KEYS = "AuditLedgerAuditKeysTable.Arn";
+    const SEALS = "AuditLedgerAuditSealsTable.Arn";
+    const LEDGER_BUCKET = "AuditLedgerAuditLedgerBucket.Arn";
+    const EXPORTS_BUCKET = "AuditLedgerAuditExportsBucket.Arn";
+    const QUEUE = "AuditLedgerAuditIntakeQueue.Arn";
+    const DLQ = "AuditLedgerAuditIntakeDeadLetterQueue.Arn";
+    const VAULT_KEY = "AuditLedgerAuditVaultKey.Arn";
+    const STATE = "State.Arn";
+    const functionOf = (synthesis: Synth) => one(synthesis.template, "AWS::Lambda::Function", "AuditLedgerAuditExport");
+    const identity = (synthesis: Synth): IamStatement[] => roleStatements(synthesis.template, one(synthesis.template, "AWS::IAM::Role", ROLE)[0], concreteAws);
+    const ownStatements = (synthesis: Synth): Statement[] => {
+      const own = ofType(synthesis.template, "AWS::IAM::Policy").filter(([id]) => withoutHash(id) === "AuditLedgerAuditExportPolicy");
+      expect(own).toHaveLength(1);
+      return ((own[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => concreteAws(statement) as Statement);
+    };
+
+    for (const env of ["production", "staging", "acme"]) {
+      describe(env, () => {
+        const synthesis = named(env);
+
+        it("is a Node 22 function with 15 minutes, 1,024 MB and a reserved concurrency of 5, on its own role, outside any VPC", () => {
+          const [, fn] = functionOf(synthesis);
+          expect(fn.Properties).toMatchObject({ Runtime: "nodejs22.x", Timeout: 900, MemorySize: 1024, ReservedConcurrentExecutions: 5, Handler: "index.handler" });
+          expect(concreteAws(fn.Properties.Role)).toBe(`${ROLE}.Arn`);
+          expect(fn.Properties.VpcConfig).toBeUndefined();
+          // The only other reserved concurrency is the anchor's.
+          const reserved = ofType(synthesis.template, "AWS::Lambda::Function").filter(([, other]) => other.Properties.ReservedConcurrentExecutions !== undefined).map(([id]) => withoutHash(id)).sort();
+          expect(reserved).toStrictEqual(["AuditLedgerAuditAnchor", "AuditLedgerAuditExport"]);
+        });
+
+        it("is given the tables, buckets, queue and key it uses, and the State table", () => {
+          const [, fn] = functionOf(synthesis);
+          const variables = (fn.Properties.Environment as { Variables: Json }).Variables;
+          expect(Object.fromEntries(Object.entries(variables).map(([name, value]) => [name, concreteAws(value)]))).toStrictEqual({
+            STATE_TABLE_NAME: "Ref:State",
+            AUDIT_LEDGER_TABLE_NAME: "Ref:AuditLedgerAuditLedgerTable",
+            AUDIT_SEALS_TABLE_NAME: "Ref:AuditLedgerAuditSealsTable",
+            AUDIT_KEYS_TABLE_NAME: "Ref:AuditLedgerAuditKeysTable",
+            AUDIT_LEDGER_BUCKET_NAME: "Ref:AuditLedgerAuditLedgerBucket",
+            AUDIT_EXPORTS_BUCKET_NAME: "Ref:AuditLedgerAuditExportsBucket",
+            AUDIT_INTAKE_QUEUE_URL: "Ref:AuditLedgerAuditIntakeQueue",
+            AUDIT_VAULT_KEY_ARN: "AuditLedgerAuditVaultKey.Arn",
+          });
+        });
+
+        it("has exactly the pinned statements, in a policy of its own, and the log group's write actions", () => {
+          expect(ownStatements(synthesis)).toStrictEqual([
+            { Sid: "ReadLedgerAndSeals", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query"], Resource: [LEDGER, SEALS] },
+            { Sid: "ReadKeys", Effect: "Allow", Action: "dynamodb:GetItem", Resource: KEYS },
+            { Sid: "ReadSealedObjects", Effect: "Allow", Action: ["s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectRetention"], Resource: `${LEDGER_BUCKET}/*` },
+            { Sid: "ExportObjects", Effect: "Allow", Action: ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"], Resource: `${EXPORTS_BUCKET}/*` },
+            { Sid: "ListExports", Effect: "Allow", Action: "s3:ListBucket", Resource: EXPORTS_BUCKET },
+            {
+              Sid: "ExportRecords", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:UpdateItem"], Resource: STATE,
+              Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ORG#*#AUDIT_EXPORT#*"] } },
+            },
+            {
+              Sid: "AuditPendingItems", Effect: "Allow", Action: ["dynamodb:PutItem", "dynamodb:DeleteItem"], Resource: STATE,
+              Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT_PENDING#*"] } },
+            },
+            { Sid: "SendAuditEvents", Effect: "Allow", Action: "sqs:SendMessage", Resource: QUEUE },
+          ]);
+          // The whole identity of the role: those, and the log group's write actions.
+          const identityStatements = identity(synthesis);
+          expect(identityStatements).toHaveLength(9);
+          expect(identityStatements.filter((statement) => statement.Sid === undefined)).toStrictEqual([
+            { Effect: "Allow", Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: "AuditLedgerAuditExportLogs.Arn" },
+          ]);
+          for (const statement of identityStatements) {
+            expect(statement.NotAction).toBeUndefined();
+            expect(statement.NotResource).toBeUndefined();
+            // A bucket's objects as `<bucket ARN>/*` is the only wildcard a resource has.
+            expect([statement.Resource].flat().map((resource) => String(resource).replace(/\/\*$/, "")).join(",")).not.toContain("*");
+            expect(statement.Effect).toBe("Allow");
+          }
+        });
+
+        describe("what IAM lets it do (the policies simulated)", () => {
+          const request = (action: string, resource: string, leadingKeys?: string[]) => simulateIam(identity(synthesis), { action, resource, ...(leadingKeys === undefined ? {} : { context: { "dynamodb:LeadingKeys": leadingKeys } }) });
+          const ORG = "org_aaaaaaaaaaaaaaaaaaaa";
+          const LEDGER_OBJECT = `${LEDGER_BUCKET}/orgs/${ORG}/seals/000000000001.json`;
+          const EXPORT_OBJECT = `${EXPORTS_BUCKET}/${ORG}/aex_1.rovara-audit.json.gz`;
+
+          it("reads the ledger, seals and keys tables and writes none of them", () => {
+            for (const table of [LEDGER, SEALS]) for (const action of ["dynamodb:GetItem", "dynamodb:Query"]) expect(request(action, table).allowed, `${action} ${table}`).toBe(true);
+            expect(request("dynamodb:GetItem", KEYS).allowed).toBe(true);
+            for (const table of [LEDGER, SEALS, KEYS]) {
+              for (const action of ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:ConditionCheckItem", "dynamodb:BatchWriteItem", "dynamodb:Scan"]) expect(request(action, table, [`AUDIT#${ORG}`]).allowed, `${action} ${table}`).toBe(false);
+            }
+            expect(request("dynamodb:Query", KEYS).allowed).toBe(false);
+          });
+
+          it("on the State table updates only export records and puts and deletes only pending audit items", () => {
+            const record = [`ORG#${ORG}#AUDIT_EXPORT#aex_1`];
+            for (const action of ["dynamodb:GetItem", "dynamodb:UpdateItem"]) expect(request(action, STATE, record).allowed, action).toBe(true);
+            for (const action of ["dynamodb:PutItem", "dynamodb:DeleteItem"]) expect(request(action, STATE, ["AUDIT_PENDING#3"]).allowed, action).toBe(true);
+            // Not an export record, not a pending item, or one of them beside another key: refused.
+            for (const keys of [[`ORG#${ORG}`], [`ORG#${ORG}#PROJECT#web`], ["AUDIT_PENDING#3", `ORG#${ORG}`], ["THREAD#1"]]) {
+              for (const action of ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]) {
+                const mixed = keys.every((key) => key.startsWith("AUDIT_PENDING#")) && ["dynamodb:PutItem", "dynamodb:DeleteItem"].includes(action);
+                if (!mixed) expect(request(action, STATE, keys).allowed, `${action} ${keys.join(",")}`).toBe(false);
+              }
+            }
+            for (const action of ["dynamodb:Query", "dynamodb:Scan", "dynamodb:BatchWriteItem", "dynamodb:ConditionCheckItem"]) expect(request(action, STATE, record).allowed, action).toBe(false);
+          });
+
+          it("reads sealed objects by version with their retention but cannot write, delete, relock or list the ledger bucket", () => {
+            for (const action of ["s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectRetention"]) expect(request(action, LEDGER_OBJECT).allowed, action).toBe(true);
+            for (const action of ["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:PutObjectRetention", "s3:PutObjectLegalHold", "s3:BypassGovernanceRetention", "s3:*"]) expect(request(action, LEDGER_OBJECT).allowed, action).toBe(false);
+            for (const action of ["s3:ListBucket", "s3:ListBucketVersions", "s3:PutBucketPolicy", "s3:PutBucketObjectLockConfiguration", "s3:DeleteBucket"]) expect(request(action, LEDGER_BUCKET).allowed, action).toBe(false);
+          });
+
+          it("puts, gets and deletes the exports bucket's objects and lists the bucket, and changes nothing about it", () => {
+            for (const action of ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"]) expect(request(action, EXPORT_OBJECT).allowed, action).toBe(true);
+            expect(request("s3:ListBucket", EXPORTS_BUCKET).allowed).toBe(true);
+            expect(request("s3:ListBucket", EXPORT_OBJECT).allowed).toBe(false);
+            for (const action of ["s3:PutObjectRetention", "s3:DeleteObjectVersion", "s3:PutObjectAcl", "s3:*"]) expect(request(action, EXPORT_OBJECT).allowed, action).toBe(false);
+            for (const action of ["s3:PutBucketPolicy", "s3:DeleteBucket", "s3:PutLifecycleConfiguration", "s3:PutBucketPublicAccessBlock"]) expect(request(action, EXPORTS_BUCKET).allowed, action).toBe(false);
+          });
+
+          it("sends to the intake queue and nothing else on SQS, and invokes no function", () => {
+            expect(request("sqs:SendMessage", QUEUE).allowed).toBe(true);
+            for (const action of ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:PurgeQueue"]) expect(request(action, QUEUE).allowed, action).toBe(false);
+            expect(request("sqs:SendMessage", DLQ).allowed).toBe(false);
+            expect(identity(synthesis).some((statement) => [statement.Action].flat().some((action) => String(action).startsWith("lambda:")))).toBe(false);
+          });
+
+          it("has no KMS permission of its own: the key policy's ExportUse is what lets it decrypt", () => {
+            for (const action of ["kms:Decrypt", "kms:GenerateDataKey", "kms:Encrypt", "kms:CreateGrant"]) expect(request(action, VAULT_KEY).allowed, action).toBe(false);
+            const keyStatements = ((one(synthesis.template, "AWS::KMS::Key", "AuditLedgerAuditVaultKey")[1].Properties.KeyPolicy as { Statement: Statement[] }).Statement).map((statement) => concreteAws(statement) as IamStatement);
+            const asExport = (action: string, context: Record<string, string | string[]>) => simulateIam(keyStatements, { action, resource: "*", principal: `${ROLE}.Arn`, context });
+            const good = { "kms:EncryptionContext:rovara:purpose": "audit-details", "kms:EncryptionContextKeys": ["rovara:org"] };
+            expect(asExport("kms:Decrypt", good).allowed).toBe(true);
+            expect(asExport("kms:GenerateDataKey", good).allowed).toBe(false);
+            expect(asExport("kms:Decrypt", { ...good, "kms:EncryptionContext:rovara:purpose": "other" }).allowed).toBe(false);
+            expect(asExport("kms:Decrypt", { "kms:EncryptionContext:rovara:purpose": "audit-details", "kms:EncryptionContextKeys": ["other"] }).allowed).toBe(false);
+          });
+        });
+
+        it("keeps its log group a month", () => {
+          expect(one(synthesis.template, "AWS::Logs::LogGroup", "AuditLedgerAuditExportLogs")[1].Properties.RetentionInDays).toBe(30);
+        });
+      });
+    }
   });
 
   it("no resource name or description carries an em dash", () => {

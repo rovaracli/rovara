@@ -16,6 +16,7 @@ import {
   type TransactWriteCommandInput,
 } from "@aws-sdk/lib-dynamodb";
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
@@ -215,7 +216,6 @@ import {
   type AdminChangeOutcome,
   type AdminChangePressEvent,
   AUDIT_SDK_REQUEST_TIMEOUT_MS,
-  defaultAnchors,
   INDEX_EXPIRY_ATTRIBUTE,
   indexExpiresAt,
   WORKFLOW_RESOLVE_FINDINGS_MAX,
@@ -243,10 +243,9 @@ import type { AdminChangeHandlers, PlanDependencies } from "./admin-change-plans
 import { ZodError, z } from "zod";
 import { healthProbes } from "./health-probes.js";
 import { runAuditDrain } from "../audit/drain.js";
-import { AUDIT_EXPORT_SOURCE, runAuditExport, type AuditExportDeps, type AuditExportEvent } from "../audit/export.js";
+import type { AuditExportClientDeps } from "../audit/export.js";
 import { AuditKeyring } from "../audit/keyring.js";
 import type { AuditRuntime } from "../audit/outbox.js";
-import { presignGetObject } from "../audit/presign.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
 import { releaseFailedPreparation, slackThreadKey } from "./failed-preparation.js";
 import { releaseFailedCancelWorkspace } from "./failed-cancel-release.js";
@@ -441,8 +440,8 @@ interface AwsBrokerDependencies {
   documentClient: DynamoDBDocumentClient;
   /** The Audit Ledger's outbox (named environments only); absent on a legacy install, where every audit function does nothing. */
   audit?: AuditRuntime;
-  /** What reading and exporting the Audit Ledger needs (Task 11); absent on a legacy install. */
-  auditLedger?: AuditExportDeps;
+  /** What reading the Audit Ledger and starting its exports needs (Task 11); absent on a legacy install. The broker builds no export: its own function does. */
+  auditLedger?: AuditExportClientDeps;
   s3: S3Client;
   /** Starts deleting an ec2-ebs workspace's instance and volume (#84). */
   deleteEc2Session?: (workspaceId: string) => Promise<void>;
@@ -937,7 +936,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   const tasks = developerTaskActions(dependencies);
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
-  return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.audit-drain" } | AuditExportEvent, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
+  return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.audit-drain" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
     // Spec 025 E14: a Slack Confirm or Cancel press, invoked directly by the ingress (never through API Gateway).
     if (isAdminChangePressEvent(event)) {
       if (adminChanges === undefined) return json({ error: { code: "NOT_FOUND", message: "admin changes are not set up in this deployment" } }, "slack-ingress", 404);
@@ -954,16 +953,6 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "audit.drain_failed", level: "error", error: error instanceof Error ? error.name : "unknown" }));
         return json({ error: "drain_failed" }, "audit-drain", 500);
-      }
-    }
-    // The Audit Ledger's export (Task 11): the broker invoked itself, asynchronously, from startAuditExport. A failure that a retry may
-    // cure (a throttled read, a failed commit) is thrown, so the platform retries the invoke; the build is made again from the start.
-    if (isAuditExportEvent(event)) {
-      if (dependencies.auditLedger === undefined) return json({ error: "audit_ledger_not_configured" }, "audit-export", 404);
-      try { return json({ outcome: await runAuditExport(dependencies.auditLedger, event) }, "audit-export"); }
-      catch (error) {
-        console.log(JSON.stringify({ component: "broker", event: "audit.export_failed", level: "error", orgId: event.orgId, exportId: event.exportId, error: error instanceof Error ? error.name : "unknown" }));
-        throw error;
       }
     }
     if (isGithubWebhookRecoveryEvent(event)) {
@@ -9408,13 +9397,6 @@ function isAuditDrainEvent(event: unknown): event is { source: "agentx.audit-dra
   return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.audit-drain";
 }
 
-/** Only a direct invoke carries this shape: an API Gateway event has a `requestContext` and no `source` of this value. */
-function isAuditExportEvent(event: unknown): event is AuditExportEvent {
-  if (event === null || typeof event !== "object") return false;
-  const candidate = event as { source?: unknown; orgId?: unknown; exportId?: unknown };
-  return candidate.source === AUDIT_EXPORT_SOURCE && typeof candidate.orgId === "string" && typeof candidate.exportId === "string";
-}
-
 function isGithubWebhookRecoveryEvent(event: unknown): event is { source: "agentx.github-webhook-recovery" } {
   return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.github-webhook-recovery";
 }
@@ -12217,35 +12199,25 @@ const audit: AuditRuntime | undefined = auditQueueUrl === undefined || auditQueu
   log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
 };
 
-// The Audit Ledger's reader and export builder (Task 11): named environments only. The broker reads the ledger, the seals and the
-// keys tables and the locked bucket and writes none of them; its exports go to a bucket of their own. The key is the vault key's ARN.
+// The Audit Ledger's reader and export client (Task 11): named environments only. The broker reads the ledger, the seals and the keys
+// tables (the key is the vault key's ARN) and writes none of them; it starts an export by invoking the export function
+// asynchronously, and signs the download link for a finished one. The export function (audit/export-handler.ts) builds it.
 const auditLedgerTable = process.env.AUDIT_LEDGER_TABLE_NAME;
-const auditLedger: AuditExportDeps | undefined = auditLedgerTable === undefined || auditLedgerTable === "" ? undefined : {
+const auditLedger: AuditExportClientDeps | undefined = auditLedgerTable === undefined || auditLedgerTable === "" ? undefined : {
   documentClient,
   ledgerTable: auditLedgerTable,
   sealsTable: requiredEnvironment("AUDIT_SEALS_TABLE_NAME"),
   keyring: new AuditKeyring({ documentClient, keysTable: requiredEnvironment("AUDIT_KEYS_TABLE_NAME"), kms: new KMSClient(awsClientConfiguration), keyId: requiredEnvironment("AUDIT_VAULT_KEY_ARN"), now: Date.now }),
-  s3,
-  ledgerBucket: requiredEnvironment("AUDIT_LEDGER_BUCKET_NAME"),
   exportsBucket: requiredEnvironment("AUDIT_EXPORTS_BUCKET_NAME"),
   tableName: requiredEnvironment("STATE_TABLE_NAME"),
   ...(audit === undefined ? {} : { audit }),
-  // The public authorities' pinned roots. A customer's own authority has none here (its roots are the anchor's to read), so its
-  // tokens are listed as unverified in an export's summary and the auditor passes --trust.
-  anchors: defaultAnchors(),
   now: Date.now,
   log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
   invokeExport: async (event) => {
-    const response = await lambdaClient.send(new InvokeCommand({ FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME, InvocationType: "Event", Payload: Buffer.from(JSON.stringify(event)) }));
+    const response = await lambdaClient.send(new InvokeCommand({ FunctionName: requiredEnvironment("AUDIT_EXPORT_FUNCTION_NAME"), InvocationType: "Event", Payload: Buffer.from(JSON.stringify(event)) }));
     if (response.StatusCode !== 202) throw new Error(`audit export start answered ${String(response.StatusCode)}`);
   },
-  presign: async ({ bucket, key, expiresInSeconds }) => {
-    const credentials = await s3.config.credentials();
-    return presignGetObject({
-      bucket, key, expiresInSeconds, region: await s3.config.region(), now: new Date(),
-      credentials: { accessKeyId: credentials.accessKeyId, secretAccessKey: credentials.secretAccessKey, sessionToken: credentials.sessionToken },
-    });
-  },
+  presign: ({ bucket, key, expiresInSeconds }) => getSignedUrl(s3, new GetObjectCommand({ Bucket: bucket, Key: key }), { expiresIn: expiresInSeconds }),
 };
 
 export const handler = createAwsBrokerHandler({

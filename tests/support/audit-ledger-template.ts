@@ -35,17 +35,22 @@ export function withoutAuditLedger(template: unknown): unknown {
     "AWS::IAM::Policy AuditLedgerAuditAppenderPolicy",
     "AWS::IAM::Policy AuditLedgerAuditBrokerOutboxPolicy",
     "AWS::IAM::Policy AuditLedgerAuditBrokerReadPolicy",
+    "AWS::IAM::Policy AuditLedgerAuditExportPolicy",
+    "AWS::IAM::Policy AuditLedgerAuditExportRoleDefaultPolicy",
     "AWS::IAM::Role AuditAppenderRole",
     "AWS::IAM::Role AuditLedgerAuditAnchorRole",
     "AWS::IAM::Role AuditLedgerAuditDrainSchedulerRole",
     "AWS::IAM::Role AuditLedgerAuditEpochSchedulerRole",
+    "AWS::IAM::Role AuditLedgerAuditExportRole",
     "AWS::KMS::Alias AuditLedgerAuditVaultKeyAlias",
     "AWS::KMS::Key AuditLedgerAuditVaultKey",
     "AWS::Lambda::EventSourceMapping AuditLedgerAuditAppenderSqsEventSource",
     "AWS::Lambda::Function AuditLedgerAuditAnchor",
     "AWS::Lambda::Function AuditLedgerAuditAppender",
+    "AWS::Lambda::Function AuditLedgerAuditExport",
     "AWS::Logs::LogGroup AuditLedgerAuditAnchorLogs",
     "AWS::Logs::LogGroup AuditLedgerAuditAppenderLogs",
+    "AWS::Logs::LogGroup AuditLedgerAuditExportLogs",
     "AWS::Logs::MetricFilter AuditLedgerAuditChainMismatchMetric",
     "AWS::Logs::MetricFilter AuditLedgerAuditEpochSealedMetric",
     "AWS::Logs::MetricFilter AuditLedgerAuditLockDriftMetric",
@@ -77,7 +82,7 @@ export function withoutAuditLedger(template: unknown): unknown {
   const brokers = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::Lambda::Function" && /^Broker[0-9A-F]{8}$/.test(id));
   expect(brokers).toHaveLength(1);
   const variables = (brokers[0]![1].Properties as { Environment: { Variables: Record<string, unknown> } }).Environment.Variables;
-  const added = ["AUDIT_INTAKE_QUEUE_URL", "AUDIT_LEDGER_TABLE_NAME", "AUDIT_SEALS_TABLE_NAME", "AUDIT_KEYS_TABLE_NAME", "AUDIT_LEDGER_BUCKET_NAME", "AUDIT_EXPORTS_BUCKET_NAME", "AUDIT_VAULT_KEY_ARN"];
+  const added = ["AUDIT_INTAKE_QUEUE_URL", "AUDIT_LEDGER_TABLE_NAME", "AUDIT_SEALS_TABLE_NAME", "AUDIT_KEYS_TABLE_NAME", "AUDIT_EXPORT_FUNCTION_NAME", "AUDIT_EXPORTS_BUCKET_NAME", "AUDIT_VAULT_KEY_ARN"];
   expect(Object.keys(variables).filter((name) => name.startsWith("AUDIT_")).sort()).toStrictEqual([...added].sort());
   for (const name of added) delete variables[name];
   return template;

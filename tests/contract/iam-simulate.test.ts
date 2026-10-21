@@ -58,6 +58,15 @@ describe("simulateIam", () => {
       expect(put(["AUDIT#org_a", "AUDIT_EPOCH"]).allowed).toBe(false);
     });
 
+    it("StringLike takes a wildcard in the middle of a pattern: the export records' keys ORG#<org>#AUDIT_EXPORT#<id>", () => {
+      const records = allow({ Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ORG#*#AUDIT_EXPORT#*"] } } });
+      const get = (keys: string[]) => simulateIam([records], { action: "dynamodb:PutItem", resource: "table", context: { "dynamodb:LeadingKeys": keys } }).allowed;
+      expect(get(["ORG#org_a#AUDIT_EXPORT#aex_1"])).toBe(true);
+      expect(get(["ORG#org_a"])).toBe(false);
+      expect(get(["ORG#org_a#PROJECT#web"])).toBe(false);
+      expect(get(["ORG#org_a#AUDIT_EXPORT#aex_1", "ORG#org_a"])).toBe(false);
+    });
+
     it("ForAllValues passes when the request carries no value, as IAM does", () => {
       expect(put(undefined).allowed).toBe(true);
     });

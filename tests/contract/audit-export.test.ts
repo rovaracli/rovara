@@ -8,7 +8,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
-import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { describe, expect, it } from "vitest";
 import { parseBundle, verifyBundle, type AuditBundleV1, type AuditRecordV1 } from "@rovara/audit-verifier";
 import { runCli } from "../../packages/audit-verifier/src/cli.js";
@@ -32,14 +33,14 @@ import {
   getAuditExport,
   runAuditExport,
   startAuditExport,
+  type AuditExportClientDeps,
   type AuditExportDeps,
   type AuditExportEvent,
 } from "../../packages/broker/src/audit/export.js";
 import { AuditKeyring } from "../../packages/broker/src/audit/keyring.js";
-import { presignGetObject } from "../../packages/broker/src/audit/presign.js";
+import { handleAuditExportEvent } from "../../packages/broker/src/audit/export-handler.js";
 import { decodeAuditCursor, readAuditRecords, readAuditStatus, type AuditReadDeps } from "../../packages/broker/src/audit/reader.js";
 import { leavesObjectKey, recordsObjectKey, sealObjectKey, statementObjectKey } from "../../packages/broker/src/audit/anchor.js";
-import { createAdminBroker } from "../support/admin-broker.js";
 import { FakeAuditSqs } from "../support/fake-audit-sqs.js";
 import { FakeKms } from "../support/fake-kms.js";
 import { makePki } from "../support/fake-tsa.js";
@@ -91,7 +92,7 @@ class FakeExportsBucket {
 interface Bench {
   h: Harness;
   kms: FakeKms;
-  deps: AuditExportDeps;
+  deps: AuditExportDeps & AuditExportClientDeps;
   readDeps: AuditReadDeps;
   appender: AppenderDeps;
   exportsBucket: FakeExportsBucket;
@@ -116,7 +117,7 @@ function bench(options: { anchors?: Record<string, readonly X509Certificate[]>; 
   const invocations: AuditExportEvent[] = [];
   const s3 = { send: (command: { input: { Bucket?: string } }) => (command.input.Bucket === EXPORTS_BUCKET ? exportsBucket.send(command) : h.s3.client.send(command as never)) } as unknown as S3Client;
   const readDeps: AuditReadDeps = { documentClient: h.deps.documentClient, ledgerTable: LEDGER, sealsTable: SEALS, keyring: keyring("broker") };
-  const deps: AuditExportDeps = {
+  const deps: AuditExportDeps & AuditExportClientDeps = {
     ...readDeps,
     s3,
     ledgerBucket: BUCKET,
@@ -578,24 +579,20 @@ describe("exportDownloadUrl", () => {
   });
 });
 
-describe("presignGetObject", () => {
-  const credentials = { accessKeyId: "AKIAIOSFODNN7EXAMPLE", secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" };
-
-  it("gives the signature of AWS's documented example for a presigned GET", () => {
-    const url = presignGetObject({ bucket: "examplebucket", key: "test.txt", region: "us-east-1", credentials, expiresInSeconds: 86400, now: new Date("2013-05-24T00:00:00Z"), host: "examplebucket.s3.amazonaws.com" });
-    expect(url).toBe(
-      "https://examplebucket.s3.amazonaws.com/test.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20130524%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20130524T000000Z&X-Amz-Expires=86400&X-Amz-SignedHeaders=host&X-Amz-Signature=aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404",
-    );
-  });
-
-  it("signs a role session's token, the regional host and a key with a slash, and refuses a lifetime outside 1 second to 7 days", () => {
-    const url = presignGetObject({ bucket: "agentx-acme-exports", key: "org_a/aex_1.rovara-audit.json.gz", region: "eu-west-1", credentials: { ...credentials, sessionToken: "token/with+chars=" }, expiresInSeconds: 900, now: new Date("2026-10-20T12:00:00.123Z") });
-    expect(url.startsWith("https://agentx-acme-exports.s3.eu-west-1.amazonaws.com/org_a/aex_1.rovara-audit.json.gz?")).toBe(true);
-    expect(url).toContain("X-Amz-Date=20261020T120000Z");
-    expect(url).toContain("X-Amz-Security-Token=token%2Fwith%2Bchars%3D");
-    expect(url).toContain("X-Amz-Expires=900");
-    expect(url).toMatch(/&X-Amz-Signature=[0-9a-f]{64}$/);
-    for (const seconds of [0, 604_801, 1.5]) expect(() => presignGetObject({ bucket: "b", key: "k", region: "us-east-1", credentials, expiresInSeconds: seconds, now: new Date() })).toThrow(RangeError);
+describe("the download link", () => {
+  it("is the SDK's presigned GET for the export's object, for the lifetime the export asks", async () => {
+    // What the broker passes as `presign`: the SDK's presigner over its S3 client (no request is made).
+    const client = new S3Client({ region: "us-east-1", credentials: { accessKeyId: "AKIAIOSFODNN7EXAMPLE", secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", sessionToken: "token" } });
+    const b = await world();
+    b.deps.presign = ({ bucket, key, expiresInSeconds }) => getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), { expiresIn: expiresInSeconds });
+    const { exportId } = await startAuditExport(b.deps, requester(), { requestId: "link", fromSeq: 1, toSeq: 4 });
+    await runAuditExport(b.deps, { orgId: A, exportId });
+    const { url } = await exportDownloadUrl(b.deps, A, exportId);
+    const parsed = new URL(url);
+    expect(parsed.hostname).toBe(`${EXPORTS_BUCKET}.s3.us-east-1.amazonaws.com`);
+    expect(parsed.pathname).toBe(`/${A}/${exportId}.rovara-audit.json.gz`);
+    expect(parsed.searchParams.get("X-Amz-Expires")).toBe("900");
+    expect(parsed.searchParams.get("X-Amz-Signature")).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 
@@ -822,27 +819,25 @@ describe("timestamps in what the reader and the export report", () => {
   });
 });
 
-describe("the broker's handler", () => {
-  it("builds an export when it is invoked with the export event, retries a failure that may pass, and answers 404 where there is no ledger", async () => {
+describe("the export function's handler", () => {
+  it("builds an export when it is invoked with the export event, throws a failure that a retry may cure, and ignores any other event", async () => {
     const b = await world();
     const { exportId } = await startAuditExport(b.deps, requester(), { requestId: "handler", fromSeq: 1, toSeq: 12 });
-    const { handler } = await createAdminBroker({ extra: { auditLedger: b.deps } });
-    const event = { source: AUDIT_EXPORT_SOURCE, orgId: A, exportId };
+    const event = { source: AUDIT_EXPORT_SOURCE, orgId: A, exportId } as const;
 
     // A commit that fails is thrown, so the platform retries the invoke.
     b.h.hooks.before = (command) => {
       if (command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes("AUDIT_EXPORT#")) throw Object.assign(new Error("the process died"), { name: "ProcessDied" });
     };
-    await expect(handler(event)).rejects.toMatchObject({ name: "ProcessDied" });
+    await expect(handleAuditExportEvent(b.deps, event)).rejects.toMatchObject({ name: "ProcessDied" });
+    expect(b.logs.filter((entry) => entry.event === "audit.export_failed")).toMatchObject([{ orgId: A, exportId, error: "ProcessDied" }]);
     b.h.hooks.before = undefined;
-    const response = await handler(event);
-    expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.body)).toMatchObject({ outcome: "ready" });
+    expect(await handleAuditExportEvent(b.deps, event)).toStrictEqual({ outcome: "ready" });
     expect(b.h.db.get(`ORG#${A}#AUDIT_EXPORT#${exportId}`, "META")).toMatchObject({ status: "ready" });
 
-    const { handler: bare } = await createAdminBroker();
-    expect((await bare(event)).statusCode).toBe(404);
-    // An event that merely looks like one (no ids) is not an export event.
-    expect((await handler({ source: AUDIT_EXPORT_SOURCE })).statusCode).not.toBe(200);
+    // Nothing but an export event runs an export.
+    for (const other of [{ source: "agentx.audit-drain" }, { source: AUDIT_EXPORT_SOURCE }, { orgId: A, exportId }]) {
+      expect(await handleAuditExportEvent(b.deps, other)).toStrictEqual({ status: "ignored" });
+    }
   });
 });

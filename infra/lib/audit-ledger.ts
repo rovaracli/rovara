@@ -223,6 +223,8 @@ export class AuditLedger extends Construct {
   readonly appender: lambda.Function;
   /** The anchor (Task 8): seals each org's new records into the locked bucket every 15 minutes; the only writer of the seals table. */
   readonly anchor: lambda.Function;
+  /** The export builder (Task 11): builds an org's export bundle in the background when the broker invokes it; its role holds the export grants. */
+  readonly exportFunction: lambda.Function;
   readonly ledgerBucket: s3.Bucket;
   readonly exportsBucket: s3.Bucket;
   /** The settings of each lock profile, and the one the `AuditLockProfile` parameter defaults to. */
@@ -254,6 +256,12 @@ export class AuditLedger extends Construct {
     const env = naming.env;
     const stack = Stack.of(this);
     const context = (name: string): unknown => this.node.tryGetContext(name) as unknown;
+
+    // The export function's role is made first because the vault key policy names it (as the appender's is).
+    const exportRole = new iam.Role(this, "AuditExportRole", {
+      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+      description: "The Rovara audit ledger export builder: reads the ledger and writes export files",
+    });
 
     this.lock = auditLockSettings(naming, { lockMode: context("agentxAuditLockMode"), retentionDays: context("agentxAuditRetentionDays") });
     this.tsa = auditTsaSettings({ tsa: context("agentxAuditTsa"), tsaUrls: context("agentxAuditTsaUrls"), tsaRootsParameter: context("agentxAuditTsaRootsParameter") });
@@ -365,6 +373,14 @@ export class AuditLedger extends Construct {
             resources: ["*"],
             conditions: encryptionContext,
           }),
+          new iam.PolicyStatement({
+            // The export builder opens a person's details to put them in an export, under the same context as the broker's reads.
+            sid: "ExportUse",
+            principals: [new iam.ArnPrincipal(exportRole.roleArn)],
+            actions: ["kms:Decrypt"],
+            resources: ["*"],
+            conditions: encryptionContext,
+          }),
         ],
       }),
     });
@@ -467,6 +483,7 @@ export class AuditLedger extends Construct {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
+    this.exportFunction = this.addExport(props, exportRole);
     this.addBrokerOutbox(props, brokerRole);
     this.addBrokerReader(props, brokerRole);
     this.appender = this.addAppender(props);
@@ -590,30 +607,93 @@ export class AuditLedger extends Construct {
   }
 
   /**
-   * The broker's side of reading and exporting the ledger (Task 11). It reads; it writes none of the ledger's tables or its
-   * locked bucket. Every grant goes to the broker's role in a policy of its own:
+   * The broker's side of reading the ledger and handing out exports (Task 11). It reads; it writes none of the ledger's tables or
+   * its locked bucket, and it builds no export itself. Every grant goes to the broker's role in a policy of its own:
    *  - `dynamodb:GetItem` and `Query` on the ledger and seals tables, for any key (the code builds every key from the org
    *    it is asked about; the broker is not a writer there, so there is no leading-key restriction to pin);
    *  - `dynamodb:GetItem` on the keys table, to open a person's details (the KMS decrypt itself is allowed by the key policy
    *    alone, under the encryption context, so there is no KMS statement here);
-   *  - `s3:GetObject`, `s3:GetObjectVersion` and `s3:GetObjectRetention` on the ledger bucket's objects: the sealed objects are
-   *    read by the version id the anchor recorded;
-   *  - `s3:PutObject`, `s3:GetObject` and `s3:DeleteObject` on the exports bucket's objects, and `s3:ListBucket` on the bucket
-   *    itself (a presigned download is signed with this role's GetObject; the lifecycle keeps a file seven days);
-   *  - `lambda:InvokeFunction` on the broker itself: an export is built by the broker invoking itself asynchronously.
-   * The policy is a separate resource so that its reference to the function's ARN is not a cycle with the function's role.
+   *  - `s3:GetObject` on the exports bucket's objects: a presigned download is signed with this role, and the link can do no more
+   *    than the role can (the export function writes the files);
+   *  - `lambda:InvokeFunction` on the export function and nothing else: starting an export is an asynchronous invoke of it.
+   * The policy is a separate resource so that its references to other resources are not cycles with the function's role.
    */
   private addBrokerReader(props: AuditLedgerProps, brokerRole: iam.IRole): void {
     const { broker } = props;
     broker.addEnvironment("AUDIT_LEDGER_TABLE_NAME", this.ledgerTable.tableName);
     broker.addEnvironment("AUDIT_SEALS_TABLE_NAME", this.sealsTable.tableName);
     broker.addEnvironment("AUDIT_KEYS_TABLE_NAME", this.keysTable.tableName);
-    broker.addEnvironment("AUDIT_LEDGER_BUCKET_NAME", this.ledgerBucket.bucketName);
     broker.addEnvironment("AUDIT_EXPORTS_BUCKET_NAME", this.exportsBucket.bucketName);
+    broker.addEnvironment("AUDIT_EXPORT_FUNCTION_NAME", this.exportFunction.functionName);
     // The key's ARN, never the alias: kms:Update* and kms:CreateAlias let an administrator repoint the alias.
     broker.addEnvironment("AUDIT_VAULT_KEY_ARN", this.vaultKey.keyArn);
     new iam.Policy(this, "AuditBrokerReadPolicy", {
       roles: [brokerRole],
+      statements: [
+        new iam.PolicyStatement({
+          sid: "ReadLedgerAndSeals",
+          actions: ["dynamodb:GetItem", "dynamodb:Query"],
+          resources: [this.ledgerTable.tableArn, this.sealsTable.tableArn],
+        }),
+        new iam.PolicyStatement({
+          sid: "ReadKeys",
+          actions: ["dynamodb:GetItem"],
+          resources: [this.keysTable.tableArn],
+        }),
+        new iam.PolicyStatement({
+          sid: "DownloadExports",
+          actions: ["s3:GetObject"],
+          resources: [this.exportsBucket.arnForObjects("*")],
+        }),
+        new iam.PolicyStatement({
+          sid: "StartExports",
+          actions: ["lambda:InvokeFunction"],
+          resources: [this.exportFunction.functionArn],
+        }),
+      ],
+    });
+  }
+
+  /**
+   * The export builder (Task 11). The broker invokes it asynchronously with { source: "agentx.audit-export", orgId, exportId }; it
+   * builds the bundle, checks it with the verifier, writes the file and marks the export ready in one transaction with its
+   * audit.exported pending item. It has its own role (made in the constructor, because the vault key policy names it) with exactly:
+   *  - the ledger and seals tables: GetItem and Query; the keys table: GetItem; the vault key through the key policy (ExportUse);
+   *  - the ledger bucket's objects: GetObject, GetObjectVersion, GetObjectRetention (sealed objects are read by version id);
+   *  - the exports bucket's objects: PutObject, GetObject, DeleteObject, and ListBucket on the bucket;
+   *  - the State table, for the export's record and the pending audit item: GetItem and UpdateItem on `ORG#*#AUDIT_EXPORT#*` keys,
+   *    PutItem and DeleteItem on `AUDIT_PENDING#*` keys (the transaction and the flush after it);
+   *  - `sqs:SendMessage` on the intake queue (the flush), and its log group's write actions.
+   * Fifteen minutes, 1,024 MB, and a reserved concurrency of 5, so a burst of exports cannot take the account's concurrency.
+   */
+  private addExport(props: AuditLedgerProps, role: iam.Role): lambda.Function {
+    const logGroup = new logs.LogGroup(this, "AuditExportLogs", { retention: logs.RetentionDays.ONE_MONTH, removalPolicy: RemovalPolicy.DESTROY });
+    const fn = new lambdaNodejs.NodejsFunction(this, "AuditExport", {
+      description: "Builds an organization's audit export, checks it with the verifier and stores the file",
+      runtime: lambda.Runtime.NODEJS_22_X,
+      entry: resolve(process.cwd(), "packages/broker/src/audit/export-handler.ts"),
+      handler: "handler",
+      timeout: Duration.minutes(15),
+      memorySize: 1024,
+      reservedConcurrentExecutions: 5,
+      role,
+      logGroup,
+      environment: {
+        STATE_TABLE_NAME: props.stateTable.tableName,
+        AUDIT_LEDGER_TABLE_NAME: this.ledgerTable.tableName,
+        AUDIT_SEALS_TABLE_NAME: this.sealsTable.tableName,
+        AUDIT_KEYS_TABLE_NAME: this.keysTable.tableName,
+        AUDIT_LEDGER_BUCKET_NAME: this.ledgerBucket.bucketName,
+        AUDIT_EXPORTS_BUCKET_NAME: this.exportsBucket.bucketName,
+        AUDIT_INTAKE_QUEUE_URL: this.intakeQueue.queueUrl,
+        // The key's ARN, never the alias.
+        AUDIT_VAULT_KEY_ARN: this.vaultKey.keyArn,
+      },
+      bundling: { externalModules: [], minify: true, sourceMap: true, target: "node22" },
+    });
+    logGroup.grantWrite(role);
+    new iam.Policy(this, "AuditExportPolicy", {
+      roles: [role],
       statements: [
         new iam.PolicyStatement({
           sid: "ReadLedgerAndSeals",
@@ -641,12 +721,25 @@ export class AuditLedger extends Construct {
           resources: [this.exportsBucket.bucketArn],
         }),
         new iam.PolicyStatement({
-          sid: "StartExports",
-          actions: ["lambda:InvokeFunction"],
-          resources: [broker.functionArn],
+          sid: "ExportRecords",
+          actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+          resources: [props.stateTable.tableArn],
+          conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ORG#*#AUDIT_EXPORT#*"] } },
+        }),
+        new iam.PolicyStatement({
+          sid: "AuditPendingItems",
+          actions: ["dynamodb:PutItem", "dynamodb:DeleteItem"],
+          resources: [props.stateTable.tableArn],
+          conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT_PENDING#*"] } },
+        }),
+        new iam.PolicyStatement({
+          sid: "SendAuditEvents",
+          actions: ["sqs:SendMessage"],
+          resources: [this.intakeQueue.queueArn],
         }),
       ],
     });
+    return fn;
   }
 
   /** A metric that counts the log events whose `$.event` is one of `events`, in the group (one metric filter, `<id>Metric`). */
