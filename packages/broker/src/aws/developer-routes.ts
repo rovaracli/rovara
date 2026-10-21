@@ -64,6 +64,7 @@ import { changeBudgets, ensureSynced, memberLimitOf, type BudgetDependencies, ty
 import type { ModelAccess } from "../model-proxy/access.js";
 import type { OrgStore } from "../org/store.js";
 import type { AuditExportClientDeps } from "../audit/export.js";
+import type { AuditRuntime } from "../audit/outbox.js";
 import { isAuditOrgPath, routeAuditRequest } from "../audit/routes.js";
 import { createAuditViewPage, isAuditViewPath } from "../audit/view-page.js";
 import { checkTaskPersonIdentity, registerTaskChannelPeople, resolveTaskPickerPersonWithId, type ProjectAccessSubject, type TaskPersonIdentityDependencies } from "../developer/task-person-identity.js";
@@ -146,6 +147,8 @@ export interface DeveloperRouteDependencies {
   createProject?: (caller: DeveloperCaller, input: CreateProjectInput, org: Pick<OrgRecord, "githubOwner">) => Promise<{ duplicate: boolean }>;
   /** The Audit Ledger's reader and export client (Task 12). Absent on an install with no ledger: the audit routes then answer NOT_FOUND. */
   auditLedger?: AuditExportClientDeps;
+  /** The Audit Ledger's outbox: what a route's audited action adds its pending item through. Absent on a legacy install, where nothing is recorded. */
+  audit?: AuditRuntime;
 }
 
 /** A route's answer with a status other than 200; the broker's handler writes the status and the body. */
@@ -1001,7 +1004,7 @@ async function createOrganizationInvite(deps: DeveloperRouteDependencies, caller
 
 function budgetDependencies(deps: DeveloperRouteDependencies): BudgetDependencies {
   if (deps.modelAccess === undefined) throw agentXError("NOT_FOUND", "budgets are not set up in this deployment");
-  return { documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, cloud: deps.cloud === true };
+  return { documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, cloud: deps.cloud === true, ...(deps.audit === undefined ? {} : { audit: deps.audit }) };
 }
 
 /** What the caller and their org have spent this month, and their limits: LiteLLM's figures (ruling R22), which a soft cap can leave over the limit (ruling R23). */

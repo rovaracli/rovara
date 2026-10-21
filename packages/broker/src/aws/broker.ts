@@ -215,6 +215,7 @@ import {
   type AdminChangeOutcome,
   type AdminChangePressEvent,
   AUDIT_SDK_REQUEST_TIMEOUT_MS,
+  auditOperatorId,
   INDEX_EXPIRY_ATTRIBUTE,
   indexExpiresAt,
   WORKFLOW_RESOLVE_FINDINGS_MAX,
@@ -248,13 +249,15 @@ import type { AuditEraseDeps } from "../audit/erase.js";
 import { routeAuditAdminRequest } from "../audit/admin-routes.js";
 import { isAuditViewPath } from "../audit/view-page.js";
 import { AuditKeyring } from "../audit/keyring.js";
-import type { AuditRuntime } from "../audit/outbox.js";
+import { auditPending, auditTransact, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPullRequestId, auditPullRequestOpened } from "../audit/events.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
 import { releaseFailedPreparation, slackThreadKey } from "./failed-preparation.js";
 import { releaseFailedCancelWorkspace } from "./failed-cancel-release.js";
 import { assertNoUntrustedRoutingFields, authorizeWorkspace } from "../authorization.js";
 import type { GitHubAppCredentialProvider } from "../github-app.js";
-import { GithubMergeRateLimitError, isWebhookSecretMissing } from "../github-app.js";
+import { GithubMergeRateLimitError, isWebhookSecretMissing, parseGitHubRepository } from "../github-app.js";
 import { createGitHubAppCredentials } from "./github-credentials.js";
 import { GITHUB_WEBHOOK_SIGNATURE_INVALID, GithubWebhookRefusal, GithubWebhookRetryableError, authorizeLinkedGithubWebhook, handleGithubWebhook, listDueGithubWebhookDeliveries, processGithubWebhookDelivery, reconcileTaskPullRequestFeedback, verifyTaskPullRequestFeedbackCurrent, type ReceivedGithubWebhook } from "./github-webhooks.js";
 import { CatalogCache, CredentialUnavailable } from "@agentx/gateway";
@@ -600,8 +603,9 @@ async function putInstallBudget(dependencies: AwsBrokerDependencies, identity: A
   // The install's org is created on first use; an operator may set its budgets before anyone has signed in.
   await orgs.ensureOrg(orgId, brokerEnvironmentName(dependencies));
   const budget = await changeBudgets(
-    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, orgs },
-    { orgId, body, updatedBy: `operator:${identity.subject}`, at: new Date().toISOString() },
+    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, orgs, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) },
+    // The chain names an operator by a pseudonymous id, never by their identity.
+    { orgId, body, updatedBy: `operator:${identity.subject}`, at: new Date().toISOString(), actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) } },
   );
   console.log(JSON.stringify({ component: "broker", event: "admin.org_budget_changed", orgId, overrides: Object.keys(budget.memberOverrides).length }));
   return { budget };
@@ -1123,6 +1127,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
           registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : url => dependencies.githubPullRequests.getRepositoryIdentity!(url),
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
+          ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
           refreshTaskFeedback: taskId => refreshTaskFeedbackForOwnerDecision(dependencies, taskId) }, request, url) as { statusCode: number; headers: Record<string, string>; body: string };
       }
       // The /v1/dev route has no API Gateway authorizer, so what it carries goes to the developer API or nowhere.
@@ -1309,6 +1314,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : url => dependencies.githubPullRequests.getRepositoryIdentity!(url),
           createProject: (caller, input, org) => createCloudProject(dependencies, caller, input, org),
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
+          ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
           refreshTaskFeedback: taskId => refreshTaskFeedbackForOwnerDecision(dependencies, taskId) }, request, url);
         return answer instanceof StatusReply ? json(answer.body, request.requestId, answer.statusCode) : json(answer, request.requestId);
       }
@@ -8456,8 +8462,13 @@ async function reconcilePullRequest(
       throw agentXError("CALLBACK_FORBIDDEN", "the opened pull request is not the checked code");
     }
   }
+  // A worker that asks again (its answer was lost) is the same occurrence: on a ledger it keeps the first attempt's time, so the
+  // retry overwrites that attempt's pending audit item instead of adding a second one (R1-1).
+  const recordKey = pullRequestKey(operation.workspaceId, expected.repository, pullRequest.number);
+  const earlier = dependencies.audit === undefined ? undefined : await getItem<PullRequestRecord>(dependencies, recordKey);
+  const openedAt = earlier?.createdByOperationId === operation.id ? earlier.updatedAt : new Date().toISOString();
   const record: PullRequestRecord = {
-    ...pullRequestKey(operation.workspaceId, expected.repository, pullRequest.number),
+    ...recordKey,
     entityType: "PULL_REQUEST",
     workspaceId: operation.workspaceId,
     repository: expected.repository,
@@ -8474,8 +8485,20 @@ async function reconcilePullRequest(
     ...(expected.mode === "replace" && expected.targetPullRequestNumber !== undefined
       ? { replacementFor: expected.targetPullRequestNumber }
       : {}),
-    updatedAt: new Date().toISOString(),
+    updatedAt: openedAt,
   };
+  const opened = await tryAuditEvent(dependencies, async () => {
+    const repository = parseGitHubRepository(expected.repositoryUrl);
+    const repositoryFullName = `${repository.owner}/${repository.name}`;
+    const requester = operation.requestedBy;
+    return auditPullRequestOpened({
+      orgId: await orgOfRecord(dependencies, await getItem<Record<string, unknown>>(dependencies, workspaceKey(operation.workspaceId)) ?? {}),
+      actor: requester === undefined ? { kind: "system", id: "rovara" } : { kind: "member", id: "kind" in requester ? requester.developerId : developerIdForSlackUser(requester.userId) },
+      occurredAt: openedAt, occurrence: operation.id,
+      pullRequestId: auditPullRequestId(repositoryFullName, pullRequest.number), number: pullRequest.number,
+      details: [{ subject: "org", fields: { repository: repositoryFullName } }],
+    });
+  });
   if (expected.mode === "replace" && expected.targetPullRequestNumber !== undefined) {
     const original = await requirePullRequest(
       dependencies,
@@ -8497,13 +8520,12 @@ async function reconcilePullRequest(
     await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
       { Put: { TableName: dependencies.tableName, Item: record } },
       { Put: { TableName: dependencies.tableName, Item: linkedOriginal } },
+      ...(opened === undefined ? [] : auditPending(dependencies, opened)),
     ] }));
   } else {
-    await dependencies.documentClient.send(new PutCommand({
-      TableName: dependencies.tableName,
-      Item: record,
-    }));
+    await auditTransact(dependencies, { Put: { TableName: dependencies.tableName, Item: record } }, opened === undefined ? [] : [opened]);
   }
+  if (opened !== undefined) await flushAuditEvents(dependencies, [opened]);
   // Ruling Z: the worker's result says whether the pull request is a draft, so the reply can say so.
   return { ...pullRequest, draft: draft === true };
 }
@@ -9185,7 +9207,7 @@ export async function processGithubWorkflowEvent(
       commitParents: (url: string, commit: string) => dependencies.githubPullRequests.getCommitParents!(url, commit),
     }),
     // A fix push taken for failed but landed: recorded as its result would have, together or not at all.
-    saveLandedPushes: async (taskId, expectedRevision, workflow, pushes) => {
+    saveLandedPushes: async (taskId, expectedRevision, workflow, pushes, extraItems = []) => {
       await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
         { Update: {
           TableName: dependencies.tableName, Key: taskKey(taskId),
@@ -9209,6 +9231,7 @@ export async function processGithubWorkflowEvent(
             ExpressionAttributeValues: { ":head": push.headSha, ":previous": push.previousHeadSha, ":state": push.state, ":now": workflow.updatedAt },
           } },
         ]),
+        ...extraItems,
       ] }));
       console.log(JSON.stringify({ component: "broker", event: "workflow.landed_fix_push_recorded", taskId, pullRequests: pushes.map((push) => push.number) }));
       // The fix is on the pull request as if its result had come: its description lists it too.
@@ -9247,15 +9270,23 @@ export async function processGithubWorkflowEvent(
       }
       return objectKey;
     },
-    saveWorkflow: async (taskId, expectedRevision, workflow) => {
-      await dependencies.documentClient.send(new UpdateCommand({
+    saveWorkflow: async (taskId, expectedRevision, workflow, extraItems = []) => {
+      const update = {
         TableName: dependencies.tableName, Key: taskKey(taskId),
         UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
         ConditionExpression: "workflow.revision = :revision AND attribute_not_exists(closedAt)",
         ExpressionAttributeValues: { ":workflow": workflow, ":now": workflow.updatedAt, ":revision": expectedRevision },
-      }));
+      };
+      // Pending audit items commit with the update or not at all; with none (no ledger, or nothing to record) it is the plain update.
+      // A cancelled transaction is a lost race like a failed condition: the caller reads the task again.
+      if (extraItems.length === 0) await dependencies.documentClient.send(new UpdateCommand(update));
+      else await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Update: update }, ...extraItems] }));
     },
     measure: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
+    ...(dependencies.audit === undefined ? {} : {
+      audit: dependencies.audit,
+      auditOrgId: async (taskId: string) => orgOfRecord(dependencies, await getItem<Record<string, unknown>>(dependencies, taskKey(taskId)) ?? {}),
+    }),
     now: new Date().toISOString(),
   });
   const linked = await getItem<GithubWorkflowPullRequestRecord>(dependencies, githubWorkflowPullRequestKey(event.fullName, event.number));

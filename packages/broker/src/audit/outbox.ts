@@ -9,10 +9,7 @@ import {
   TransactWriteCommand,
   UpdateCommand,
   type DynamoDBDocumentClient,
-  type PutCommandInput,
-  type DeleteCommandInput,
   type TransactWriteCommandInput,
-  type UpdateCommandInput,
 } from "@aws-sdk/lib-dynamodb";
 import {
   AUDIT_ACTIONS,
@@ -150,6 +147,28 @@ export function auditPending(deps: AuditDeps, event: AuditEventInput): TransactI
   return [{ Put: { TableName: audit.tableName, Item: auditPendingItem(parsed.data, audit.now()) } }];
 }
 
+/**
+ * Events for a hook site, built where a failure must not reach the action: `[]` on an install with no ledger (nothing is
+ * built or looked up), and `[]` with an `audit.record_invalid` log (the error's name only, never its message, which could
+ * quote a value) when the builder or a lookup it needs throws. The action then goes on without an event, as it does for an
+ * event that fails validation (`auditPending`).
+ */
+export async function tryAuditEvents(deps: AuditDeps, build: () => AuditEventInput[] | Promise<AuditEventInput[]>): Promise<AuditEventInput[]> {
+  const audit = deps.audit;
+  if (audit === undefined) return [];
+  try {
+    return await build();
+  } catch (error) {
+    try { audit.log({ event: "audit.record_invalid", level: "error", reason: "builder_failed", error: error instanceof Error ? error.name : "unknown" }); } catch { /* nothing more can be done */ }
+    return [];
+  }
+}
+
+/** `tryAuditEvents` for a site with one event. */
+export async function tryAuditEvent(deps: AuditDeps, build: () => AuditEventInput | Promise<AuditEventInput>): Promise<AuditEventInput | undefined> {
+  return (await tryAuditEvents(deps, async () => [await build()]))[0];
+}
+
 export type AuditWrite =
   | { Put: NonNullable<TransactItem["Put"]> }
   | { Update: NonNullable<TransactItem["Update"]> }
@@ -170,20 +189,20 @@ function firstConditionFailed(error: unknown): boolean {
  * cancellation reasons are rethrown as they are. With no ledger, or no valid event, the write is made alone.
  */
 export async function auditTransact(
-  deps: AuditDeps & { documentClient: DynamoDBDocumentClient },
+  deps: AuditDeps & { documentClient: { send(command: unknown): Promise<unknown> } },
   write: AuditWrite,
   events: AuditEventInput[],
 ): Promise<void> {
   const seen = new Set<string>();
   const pending = events.filter((event) => !seen.has(event.eventId) && seen.add(event.eventId)).flatMap((event) => auditPending(deps, event));
   if (pending.length === 0) {
-    if ("Put" in write) await deps.documentClient.send(new PutCommand(write.Put as PutCommandInput));
-    else if ("Update" in write) await deps.documentClient.send(new UpdateCommand(write.Update as UpdateCommandInput));
-    else await deps.documentClient.send(new DeleteCommand(write.Delete as DeleteCommandInput));
+    if ("Put" in write) await deps.documentClient.send(new PutCommand(write.Put));
+    else if ("Update" in write) await deps.documentClient.send(new UpdateCommand(write.Update));
+    else await deps.documentClient.send(new DeleteCommand(write.Delete));
     return;
   }
   try {
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [write as TransactItem, ...pending] }));
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [write, ...pending] }));
   } catch (error) {
     if (firstConditionFailed(error)) {
       throw new ConditionalCheckFailedException({ message: "The conditional request failed", $metadata: (error as { $metadata?: Record<string, unknown> }).$metadata ?? {} });
