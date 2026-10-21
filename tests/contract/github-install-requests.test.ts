@@ -777,6 +777,44 @@ describe("the notice outbox: the owners' notice and the trial unlock survive a f
     expect(w.notices).toEqual([]);
   });
 
+  it("a sweep whose read came before another worker released (owners narrowed) acts on the claim's item: nobody is emailed twice", async () => {
+    const w = world();
+    const { delivery } = await bindWith(w, dieBeforeSending(w));
+    const key = githubInstallNoticeOutboxKey(delivery);
+    // Worker A holds a live claim (attempts 1) when the sweep reads the partition.
+    Object.assign(w.db.get(key) as Record<string, unknown>, { attempts: 1, claimedAt: w.now() });
+    w.advance(HOUR);
+    const stale: GithubConnectionDependencies = {
+      ...w.deps,
+      documentClient: { send: async (command: unknown) => {
+        const { constructor, input } = command as { constructor: { name: string }; input: { ExpressionAttributeValues?: Record<string, unknown> } };
+        const result = await w.db.send(command as never);
+        if (constructor.name === "QueryCommand" && input.ExpressionAttributeValues?.[":pk"] === GITHUB_INSTALL_NOTICE_OUTBOX_PK) {
+          // A told Olive, then failed on Sam and released: the item now narrows to Sam, and the attempts count did not move.
+          const item = w.db.get(key) as Record<string, unknown>;
+          delete item.claimedAt;
+          item.pendingOwners = [OWNER2];
+        }
+        return result;
+      } },
+    };
+    expect(await drainInstallNoticeOutbox(stale)).toEqual({ drained: 1 });
+    expect(w.notices.map((notice) => notice.to)).toEqual(["sam@acme.test"]);
+    expect(OUTBOX(w)).toEqual([]);
+  });
+
+  it("the sweep pages through the whole outbox: more than one page of items are all run", async () => {
+    const w = world();
+    for (let index = 0; index < 230; index += 1) {
+      w.db.set({
+        ...githubInstallNoticeOutboxKey(`d-${String(index).padStart(3, "0")}`), entityType: "GITHUB_INSTALL_NOTICE_OUTBOX", orgId: TEST_ORG, requesterDeveloperId: R,
+        requesterGithubUserId: String(R_ID), requesterLogin: R_LOGIN, accountLogin: "acme", approverLogin: APPROVER.login, createdAt: w.now(), attempts: 0, trialPending: false, pendingOwners: [],
+      });
+    }
+    expect(await drainInstallNoticeOutbox(w.deps)).toEqual({ drained: 230 });
+    expect(OUTBOX(w)).toEqual([]);
+  });
+
   it("through the broker: the scheduled event also drains the outbox, and the answer says how many", async () => {
     const sent: Array<{ input: { Destination?: { ToAddresses?: string[] } } }> = [];
     const harness = await createDeveloperTaskBroker({

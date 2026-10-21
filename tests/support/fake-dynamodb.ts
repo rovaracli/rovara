@@ -206,6 +206,12 @@ export class FakeDynamoDb {
       case "UpdateCommand":
       case "DeleteCommand":
         this.commit([toAction(command.constructor.name.replace("Command", "") as WriteAction["kind"], input)], "ConditionalCheckFailedException");
+        // ReturnValues "ALL_NEW" on an update hands back the item as written, as DynamoDB does.
+        if (command.constructor.name === "UpdateCommand" && input.ReturnValues === "ALL_NEW") {
+          const key = input.Key as { pk: string; sk: string };
+          const written = this.get(key.pk, key.sk);
+          return { Attributes: written === undefined ? undefined : this.readClone(written) };
+        }
         return {};
       case "TransactWriteCommand": {
         const entries = input.TransactItems as Array<Record<string, Record<string, unknown>>>;

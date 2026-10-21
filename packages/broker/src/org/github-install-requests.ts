@@ -353,7 +353,8 @@ export async function bindRequestedInstallation(
 const OUTBOX_LEASE_MS = 15 * 60_000;
 /** After this many tries an item is dropped (and logged), so one address that always bounces is not retried forever. */
 const OUTBOX_MAX_ATTEMPTS = 5;
-const OUTBOX_SWEEP_LIMIT = 100;
+/** The sweep reads this many items a page, and keeps paging until the partition is done. */
+const OUTBOX_SWEEP_PAGE = 100;
 
 /**
  * Does what an outbox item says, at most once for each step that succeeds: the item is claimed first (conditional, so two workers never both
@@ -361,17 +362,23 @@ const OUTBOX_SWEEP_LIMIT = 100;
  * nothing is left, or after OUTBOX_MAX_ATTEMPTS tries, the item is deleted. False when another worker holds the claim. Throws only when
  * DynamoDB does, before anything was sent.
  */
-async function deliverOutboxItem(deps: GithubConnectionDependencies, deliveryId: string, item: GithubInstallNoticeOutboxRecord): Promise<boolean> {
+async function deliverOutboxItem(deps: GithubConnectionDependencies, deliveryId: string, seen: GithubInstallNoticeOutboxRecord): Promise<boolean> {
   const key = githubInstallNoticeOutboxKey(deliveryId);
   const claimedAt = deps.now();
-  const attempts = item.attempts + 1;
+  const attempts = seen.attempts + 1;
+  let item: GithubInstallNoticeOutboxRecord;
   try {
-    await deps.documentClient.send(new UpdateCommand({
+    // The caller's copy may be stale (another worker may have released after it was read, with fewer owners left): work from the item
+    // as the claim wrote it, never from the earlier read.
+    const claimed = await deps.documentClient.send(new UpdateCommand({
       TableName: deps.tableName, Key: key,
       UpdateExpression: "SET claimedAt = :claimedAt, attempts = :attempts",
       ConditionExpression: "attempts = :seen AND (attribute_not_exists(claimedAt) OR claimedAt < :stale)",
-      ExpressionAttributeValues: { ":claimedAt": claimedAt, ":attempts": attempts, ":seen": item.attempts, ":stale": claimedAt - OUTBOX_LEASE_MS },
-    }));
+      ExpressionAttributeValues: { ":claimedAt": claimedAt, ":attempts": attempts, ":seen": seen.attempts, ":stale": claimedAt - OUTBOX_LEASE_MS },
+      ReturnValues: "ALL_NEW",
+    })) as { Attributes?: GithubInstallNoticeOutboxRecord };
+    if (claimed.Attributes === undefined) return false;
+    item = claimed.Attributes;
   } catch (error) {
     if (conditionFailed(error)) return false;
     throw error;
@@ -419,18 +426,23 @@ async function deliverOutboxItem(deps: GithubConnectionDependencies, deliveryId:
  */
 export async function drainInstallNoticeOutbox(deps: GithubConnectionDependencies): Promise<{ drained: number }> {
   if (!deps.cloud) return { drained: 0 };
-  const page = await deps.documentClient.send(new QueryCommand({
-    TableName: deps.tableName, KeyConditionExpression: "pk = :pk",
-    ExpressionAttributeValues: { ":pk": GITHUB_INSTALL_NOTICE_OUTBOX_PK }, ConsistentRead: true, Limit: OUTBOX_SWEEP_LIMIT,
-  })) as { Items?: Array<GithubInstallNoticeOutboxRecord & { sk: string }> };
   let drained = 0;
-  for (const entry of page.Items ?? []) {
-    try {
-      if (await deliverOutboxItem(deps, entry.sk, entry)) drained += 1;
-    } catch (error) {
-      log(deps, { event: "github.install_request_notice_failed", orgId: entry.orgId, error: errorName(error) });
+  let start: Record<string, unknown> | undefined;
+  do {
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk",
+      ExpressionAttributeValues: { ":pk": GITHUB_INSTALL_NOTICE_OUTBOX_PK }, ConsistentRead: true, Limit: OUTBOX_SWEEP_PAGE,
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Array<GithubInstallNoticeOutboxRecord & { sk: string }>; LastEvaluatedKey?: Record<string, unknown> };
+    for (const entry of page.Items ?? []) {
+      try {
+        if (await deliverOutboxItem(deps, entry.sk, entry)) drained += 1;
+      } catch (error) {
+        log(deps, { event: "github.install_request_notice_failed", orgId: entry.orgId, error: errorName(error) });
+      }
     }
-  }
+    start = page.LastEvaluatedKey;
+  } while (start !== undefined);
   return { drained };
 }
 
