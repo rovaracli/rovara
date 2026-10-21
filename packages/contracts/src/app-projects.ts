@@ -66,22 +66,50 @@ const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 // A real top-level name is letters (at least two) or punycode. A last label of digits (an IPv4 address) or with no letters never is one.
 const TOP_LEVEL_LABEL = /^(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$/;
 
+/** The labels of a lower-cased entry's host (without a leading `*.`) when it is a hostname of at least two labels and up to 253 characters. */
+function hostLabelsOf(value: string): string[] | undefined {
+  if (value.length > 253) return undefined;
+  const labels = (value.startsWith("*.") ? value.slice(2) : value).split(".");
+  // A single label (`localhost`, `com`, and so `*` and `*.com`) names no site of one owner.
+  // A real top-level name is letters or punycode, so an IPv4 literal never has the shape.
+  return labels.length >= 2 && labels.every((label) => DNS_LABEL.test(label)) && TOP_LEVEL_LABEL.test(labels.at(-1)!) ? labels : undefined;
+}
+
 /** Whether a lower-cased entry is a hostname, or `*.` and a hostname, that is not a public suffix and does not sit over one. */
 function isAllowedDomain(value: string): boolean {
-  if (value.length > 253) return false;
-  const host = value.startsWith("*.") ? value.slice(2) : value;
-  const labels = host.split(".");
-  // A single label (`localhost`, `com`, and so `*` and `*.com`) names no site of one owner.
-  if (labels.length < 2 || !labels.every((label) => DNS_LABEL.test(label))) return false;
-  if (!TOP_LEVEL_LABEL.test(labels.at(-1)!)) return false;
+  const labels = hostLabelsOf(value);
+  if (labels === undefined) return false;
+  const host = labels.join(".");
   // `github.io` and `*.github.io` are every GitHub Pages site; `*.s3.amazonaws.com` is every bucket. Their owners are not this project's.
-  return !isPublicSuffix(host);
+  if (isPublicSuffix(host)) return false;
+  // `*.sch.uk` is every child of `sch.uk`, and the list says each one is a suffix (a `*.sch.uk` rule): the wildcard is as wide as `*.com`.
+  // A child that is not a suffix (an exception rule, as `city.kawasaki.jp`) leaves a name of one owner, so only a child's own suffix test counts.
+  return !(value.startsWith("*.") && isPublicSuffix(`x.${host}`));
 }
 
 /**
- * A domain a project's machines may reach: a hostname, lower-cased, of up to 253 characters, with an optional leading `*.` (subdomains
- * only, as the DNS firewall reads it). Refused: `*` alone, IP address literals, single-label names, a public suffix, and a wildcard over
- * a public suffix. The Public Suffix List decides the last two (`amazonaws.com` is not one, `s3.amazonaws.com` is).
+ * A domain as a stored revision holds it: lower-cased and shaped like a hostname, with an optional leading `*.`. The Public Suffix List is
+ * not consulted: it is checked when a domain is written (`AllowedDomainSchema`), so a later refresh of the list cannot make a stored
+ * project unreadable.
+ */
+export const StoredAllowedDomainSchema = z.string().transform((value, context) => {
+  const domain = value.toLowerCase();
+  if (hostLabelsOf(domain) !== undefined) return domain;
+  context.addIssue({ code: "custom", message: ALLOWED_DOMAIN_MESSAGE });
+  return z.NEVER;
+});
+
+/** The index of the first entry a write refuses (the list check `AllowedDomainSchema` makes), or undefined when every entry passes. */
+export function firstRefusedDomainIndex(domains: ReadonlyArray<string>): number | undefined {
+  const index = domains.findIndex((domain) => !isAllowedDomain(domain.toLowerCase()));
+  return index === -1 ? undefined : index;
+}
+
+/**
+ * A domain a project's machines may reach, as written: a hostname, lower-cased, of up to 253 characters, with an optional leading `*.`
+ * (subdomains only, as the DNS firewall reads it). Refused: `*` alone, IP address literals, single-label names, a public suffix, and a
+ * wildcard over a public suffix or over names that are all public suffixes. The Public Suffix List decides the last three
+ * (`amazonaws.com` is not one, `s3.amazonaws.com` is, and `*.sch.uk` covers only suffixes).
  */
 export const AllowedDomainSchema = z.string().transform((value, context) => {
   const domain = value.toLowerCase();

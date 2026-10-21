@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
-  AllowedDomainSchema, DEFAULT_AGENT_ALLOW_DOMAINS, ProjectNetworkSchema, ProjectSettingsBodySchema, StoredProjectDefinitionSchema, githubInstallationKey, orgGithubInstallationKey,
+  AllowedDomainSchema, DEFAULT_AGENT_ALLOW_DOMAINS, ProjectDefinitionSchema, ProjectNetworkSchema, ProjectSettingsBodySchema, StoredProjectDefinitionSchema, githubInstallationKey, orgGithubInstallationKey,
   orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, workerProjectDefinition, type GithubInstallationRecord, type OrgId, type OrgRole,
 } from "../../packages/contracts/src/index.js";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
@@ -231,7 +231,7 @@ describe("commands", () => {
 });
 
 describe("allowed domains", () => {
-  const REFUSED = ["*", "*.com", "10.0.0.1", "localhost", "*.github.io", "github.io", "*.s3.amazonaws.com", "a..b"];
+  const REFUSED = ["*", "*.com", "10.0.0.1", "localhost", "*.github.io", "github.io", "*.s3.amazonaws.com", "a..b", "*.sch.uk", "*.kawasaki.jp", "*.0emm.com"];
 
   it.each(REFUSED)("refuses %s with its field and index, and no revision", async (bad) => {
     const h = await install();
@@ -302,10 +302,14 @@ describe("AllowedDomainSchema and ProjectNetworkSchema", () => {
     expect(AllowedDomainSchema.parse("*.Acme.Co.UK")).toBe("*.acme.co.uk");
     expect(AllowedDomainSchema.parse("amazonaws.com")).toBe("amazonaws.com");
     expect(AllowedDomainSchema.parse("*.amazonaws.com")).toBe("*.amazonaws.com");
-    for (const bad of ["com", "co.uk", "*.co.uk", "github.io", "*.s3.amazonaws.com", "s3.amazonaws.com", "10.0.0.1", "localhost", "*", "a..b"]) {
+    for (const bad of ["com", "co.uk", "*.co.uk", "github.io", "*.s3.amazonaws.com", "s3.amazonaws.com", "10.0.0.1", "localhost", "*", "a..b", "*.sch.uk", "*.kawasaki.jp", "*.0emm.com", "*.compute.amazonaws.com", "*.ck"]) {
       const result = AllowedDomainSchema.safeParse(bad);
       expect(result.success, bad).toBe(false);
       expect(result.error!.issues.map((issue) => issue.message), bad).toEqual(["must be a domain name such as artifacts.acme.dev or *.acme.dev"]);
+    }
+    // A wildcard over a name whose every child is a suffix is refused (a `*.X` rule), but the exception rule's name, and a bare X, are names.
+    for (const good of ["sch.uk", "city.kawasaki.jp", "*.city.kawasaki.jp", "www.ck", "*.www.ck", "0emm.com", "*.a.acme.sch.uk"]) {
+      expect(AllowedDomainSchema.safeParse(good).success, good).toBe(true);
     }
     expect(AllowedDomainSchema.safeParse(7).success).toBe(false);
     expect(ProjectNetworkSchema.parse({ allowedDomains: ["Artifacts.acme.dev"] })).toEqual({ allowedDomains: ["artifacts.acme.dev"] });
@@ -317,6 +321,21 @@ describe("AllowedDomainSchema and ProjectNetworkSchema", () => {
     const base = { name: "web", revision: 1, repositories: [{ name: "web", url: "https://github.com/acme/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }], setup: [], readiness: [], orchestratorInstructions: "x" };
     expect(StoredProjectDefinitionSchema.parse({ ...base, network: { allowedDomains: ["a.acme.dev"] } })).toMatchObject({ network: { allowedDomains: ["a.acme.dev"] } });
     expect(StoredProjectDefinitionSchema.safeParse({ ...base, network: { allowedDomains: ["com"] } }).success).toBe(false);
+  });
+
+  it("reads a stored domain that a newer suffix list would refuse, but refuses it when a definition is written", () => {
+    const base = { name: "web", revision: 1, repositories: [{ name: "web", url: "https://github.com/acme/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }], setup: [], readiness: [], orchestratorInstructions: "x" };
+    for (const domain of ["*.sch.uk", "*.kawasaki.jp", "github.io", "*.github.io", "s3.amazonaws.com"]) {
+      const network = { allowedDomains: [domain] };
+      expect(StoredProjectDefinitionSchema.parse({ ...base, network }), domain).toMatchObject({ network });
+      expect(ProjectNetworkSchema.parse(network), domain).toEqual(network);
+      expect(ProjectDefinitionSchema.safeParse({ ...base, network }).success, domain).toBe(false);
+    }
+    expect(ProjectDefinitionSchema.safeParse({ ...base, network: { allowedDomains: ["a.acme.dev", "*.acme.dev"] } }).success).toBe(true);
+    // The read check is still a hostname's shape.
+    for (const bad of ["*", "com", "10.0.0.1", "a..b", "https://acme.dev", ""]) {
+      expect(StoredProjectDefinitionSchema.safeParse({ ...base, network: { allowedDomains: [bad] } }).success, bad).toBe(false);
+    }
     expect(StoredProjectDefinitionSchema.parse(base)).not.toHaveProperty("network");
   });
 
@@ -446,8 +465,24 @@ describe("repositories", () => {
   it("replaces a repository in one save, adding the new one before removing the old", async () => {
     const h = await install();
     seedInstallation(h.db, 55, "acme");
-    expect((await h.put(OMAR, { addRepositories: ["acme/api"], removeRepositories: ["web"] })).status).toBe(200);
+    expect((await h.put(OMAR, { addRepositories: ["acme/api"], removeRepositories: ["web"], setupCommands: [], testCommands: [] })).status).toBe(200);
     expect((h.revision(2)!.definition.repositories as Array<{ name: string }>).map((repository) => repository.name)).toEqual(["api"]);
+  });
+});
+
+describe("removing a repository that commands run in", () => {
+  it("is refused while a kept command runs there, and allowed when the same save replaces the commands", async () => {
+    const h = await install();
+    seedInstallation(h.db, 55, "acme");
+    await h.put(OMAR, { setupCommands: ["npm ci"], testCommands: ["npm run check"] });
+    const refused = await h.put(OMAR, { addRepositories: ["acme/api"], removeRepositories: ["web"], setupCommands: ["npm ci"], expectedRevision: 2 });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toMatchObject({ code: "CONFIG_INVALID", message: "removeRepositories.0: commands run in it; replace setupCommands and testCommands in the same save" });
+    const revisions = 2;
+    expect(h.revisions()).toHaveLength(revisions);
+    const replaced = await h.put(OMAR, { addRepositories: ["acme/api"], removeRepositories: ["web"], setupCommands: ["npm ci"], testCommands: ["npm run check"], expectedRevision: revisions });
+    expect(replaced.status).toBe(200);
+    expect((h.revision(revisions + 1)!.definition.setup as Array<{ cwd: string }>)[0]!.cwd).toBe((h.revision(revisions + 1)!.definition.repositories as Array<{ path: string }>)[0]!.path);
   });
 });
 
@@ -491,8 +526,8 @@ describe("a project with an E2E policy", () => {
     const h = await install();
     seedProject(h.db, TEST_ORG, "web", {}, { setupApproval: { proposalRef: "project-setup-proposals/x/y.json", proposalSha256: "a".repeat(64), candidateDigest: "b".repeat(64), decision: "decline" } });
     const refused = await h.put(OMAR, { testCommands: ["npm run check"] });
-    expect(refused.status).toBe(400);
-    expect(refused.body.error).toMatchObject({ code: "CONFIG_INVALID", message: "this project has an end-to-end policy; ask an administrator to change it with agentx admin project register" });
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "FORBIDDEN", message: "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with agentx admin project register" });
     expect(h.revisions()).toHaveLength(1);
   });
 });

@@ -44,6 +44,19 @@ describe("isPublicSuffix", () => {
     expect(registrableDomain("a.foo.ck")).toBe("a.foo.ck");
   });
 
+  it("follows wildcard rules whose bare name has no rule: *.sch.uk, *.kawasaki.jp, *.0emm.com", () => {
+    for (const name of ["x.sch.uk", "foo.kawasaki.jp", "anything.0emm.com", "a.compute.amazonaws.com"]) expect(isPublicSuffix(name), name).toBe(true);
+    for (const name of ["sch.uk", "kawasaki.jp", "0emm.com", "a.x.sch.uk", "a.foo.kawasaki.jp"]) expect(isPublicSuffix(name), name).toBe(false);
+    expect(registrableDomain("a.x.sch.uk")).toBe("a.x.sch.uk");
+    expect(registrableDomain("x.sch.uk")).toBeUndefined();
+  });
+
+  it("lets an exception rule beat the wildcard it sits under: !city.kawasaki.jp", () => {
+    expect(isPublicSuffix("city.kawasaki.jp")).toBe(false);
+    expect(registrableDomain("www.city.kawasaki.jp")).toBe("city.kawasaki.jp");
+    expect(registrableDomain("foo.kawasaki.jp")).toBeUndefined();
+  });
+
   it("reads a name without regard to case or a trailing dot, and treats an invalid name as no suffix", () => {
     expect(isPublicSuffix("CO.UK")).toBe(true);
     expect(isPublicSuffix("co.uk.")).toBe(true);

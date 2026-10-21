@@ -7,7 +7,7 @@ import type { GitHubConnectorConfig } from "./connectors.js";
 import type { GitHubMcpPolicy } from "./github-mcp.js";
 import { ProjectModelsSchema } from "./models.js";
 import { redactText } from "./redaction.js";
-import { AllowedDomainSchema } from "./app-projects.js";
+import { ALLOWED_DOMAIN_MESSAGE, StoredAllowedDomainSchema, firstRefusedDomainIndex } from "./app-projects.js";
 
 import { AGENTX_NAME_PATTERN } from "./names.js";
 import { E2EPolicySchema, E2E_PROJECT_CHECK_ID } from "./e2e.js";
@@ -247,8 +247,10 @@ export const DevcontainerDefinitionSchema = z
  * The websites a project's machines may reach beyond the install-wide defaults (Plan 2, Task 17). The revision stores what a maintainer
  * asked for; whether each is approved is the egress item's to say (Task 18). Control-plane only: a worker never reads it, so the broker
  * leaves it out of every invocation (`workerProjectDefinition`), and a worker of an earlier release, whose definition is strict, still parses one.
+ * Only the shape of a domain is checked here, so a stored revision stays readable when the Public Suffix List is refreshed; the list is
+ * checked wherever a definition is written (`ProjectDefinitionSchema`).
  */
-export const ProjectNetworkSchema = z.object({ allowedDomains: z.array(AllowedDomainSchema).max(50) }).strict();
+export const ProjectNetworkSchema = z.object({ allowedDomains: z.array(StoredAllowedDomainSchema).max(50) }).strict();
 export type ProjectNetwork = z.infer<typeof ProjectNetworkSchema>;
 
 export const DEFAULT_DEVCONTAINER_CONFIG_PATH = ".devcontainer/devcontainer.json";
@@ -392,6 +394,11 @@ export const ProjectDefinitionSchema = projectDefinitionObject(ConnectorsSchema)
     if ((project.e2e?.targets ?? []).some((target) => target.targetId === E2E_PROJECT_CHECK_ID)) {
       context.addIssue({ code: "custom", path: ["e2e", "targets"], message: "project-e2e is a reserved check identity, not a target ID" });
     }
+  })
+  // Registration and settings saves: the Public Suffix List is consulted when a domain is written, never when a stored revision is read.
+  .superRefine((project, context) => {
+    const index = firstRefusedDomainIndex(project.network?.allowedDomains ?? []);
+    if (index !== undefined) context.addIssue({ code: "custom", path: ["network", "allowedDomains", index], message: ALLOWED_DOMAIN_MESSAGE });
   })
   // Runs wherever ProjectDefinitionSchema parses a project: registration, the developer CLI's
   // local project-file check, and the local broker. A stored revision is read with

@@ -219,7 +219,7 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   const current = latest.definition;
   if (current.revision !== body.expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", SETTINGS_STALE_MESSAGE);
   if (current.e2e !== undefined || latest.setupApproval !== undefined) {
-    throw invalid("this project has an end-to-end policy; ask an administrator to change it with agentx admin project register");
+    throw agentXError("FORBIDDEN", "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with agentx admin project register");
   }
 
   const { repositories, removed } = await changedRepositories(deps, caller, current.repositories, body);
@@ -253,6 +253,14 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   });
   if (body.setupCommands !== undefined) next.setup = commands("setupCommands", SETUP_TIMEOUT);
   if (body.testCommands !== undefined) next.readiness = commands("testCommands", TEST_TIMEOUT);
+  // A command the save keeps still runs where it did; one whose repository is removed would run in a directory that is gone.
+  for (const [index, entry] of (body.removeRepositories ?? []).entries()) {
+    const path = resolveRepository(current.repositories, entry)!.path;
+    const kept = [...(next.setup as Array<{ cwd: string }>), ...(next.readiness as Array<{ cwd: string }>)];
+    if (kept.some((command) => command.cwd === path || command.cwd.startsWith(`${path}/`))) {
+      throw invalid(`removeRepositories.${String(index)}: commands run in it; replace setupCommands and testCommands in the same save`);
+    }
+  }
   const domains = body.allowedDomains === undefined ? undefined : [...new Set(body.allowedDomains)];
   if (domains !== undefined) {
     if (domains.length === 0) delete next.network;
