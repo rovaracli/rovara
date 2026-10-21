@@ -32,6 +32,7 @@ import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { ec2Binding } from "../packages/cli/src/setup/project-add.js";
 import { environmentSettingsPrefix, environmentStackName } from "../packages/contracts/src/environments.js";
 import {
+  BOOT_STAGE2_SHA256_PARAMETER,
   E2E_QUALIFICATION_PROFILE_ID,
   Ec2RuntimeBindingSchema,
   WORKER_SETTING_PARAMETERS,
@@ -58,6 +59,8 @@ const READY_TIMEOUT_MS = 20 * 60_000;
 
 export interface QualificationSettings {
   workerImage: string;
+  /** The SHA-256 of the stage 2 boot script the worker image carries (Task 10); boot.sh refuses a worker whose image holds another. */
+  bootStage2Sha256?: string | undefined;
   /** Required to qualify, though optional in the worker settings: the web/API runtime needs it. */
   executorImage?: string | undefined;
   modelProvider: string;
@@ -205,12 +208,16 @@ export function renderQualificationUserData(
   if (settings.executorImage === undefined) {
     throw new Error("the worker settings have no executor image, which the web/API runtime needs; deploy it first (test-deploy --only executor-image)");
   }
+  if (settings.bootStage2Sha256 === undefined) {
+    throw new Error("the worker settings have no boot stage 2 hash (SSM worker-boot-stage2-sha256), which the worker's boot checks its image against; deploy the worker image with its hash first");
+  }
   return ec2WorkerUserData({
     workspaceId: run.workspaceId,
     generation: 1,
     volumeId: run.volumeId,
     expectNewVolume: true,
     workerImage: settings.workerImage,
+    bootStage2Sha256: settings.bootStage2Sha256,
     executorImage: settings.executorImage,
     invokePublicKey: facts.invokePublicKey,
     controlPlaneUrl: facts.controlPlaneUrl,
@@ -582,7 +589,8 @@ function createAwsEffects(args: QualifyArgs, runner: Runner): QualificationEffec
 
       const prefix = environmentSettingsPrefix(args.env);
       const names = Object.fromEntries(Object.entries(WORKER_SETTING_PARAMETERS).map(([key, name]) => [key, `${prefix}${name}`]));
-      const found = new Map(((await ssm.send(new GetParametersCommand({ Names: Object.values(names) }))).Parameters ?? []).map((parameter) => [parameter.Name, parameter.Value]));
+      const bootStage2Name = `${prefix}${BOOT_STAGE2_SHA256_PARAMETER}`;
+      const found = new Map(((await ssm.send(new GetParametersCommand({ Names: [...Object.values(names), bootStage2Name] }))).Parameters ?? []).map((parameter) => [parameter.Name, parameter.Value]));
       const value = (key: keyof typeof WORKER_SETTING_PARAMETERS) => found.get(names[key] ?? "");
       const required = (key: keyof typeof WORKER_SETTING_PARAMETERS) => {
         const setting = value(key);
@@ -630,6 +638,7 @@ function createAwsEffects(args: QualifyArgs, runner: Runner): QualificationEffec
         volumeSizeGiB: binding.volumeSizeGiB,
         settings: {
           workerImage: required("workerImage"),
+          bootStage2Sha256: found.get(bootStage2Name) === "none" ? undefined : found.get(bootStage2Name),
           executorImage,
           modelProvider: required("modelProvider"),
           modelId: required("modelId"),

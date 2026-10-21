@@ -41,10 +41,11 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
     .option("--allow-replace <logical-id>", "accept replacing or deleting this table, user pool, bucket, key or secret; repeat for each", collect, [])
     .option("--export <dir>", "write the upgrade for a platform team's pipeline instead of deploying it")
     .option("--worker-image <digest-ref>", "worker image by digest; an agentx built from source needs it with --engine cdk when the tag has no published release.json")
+    .option("--boot-stage2-sha256 <hex>", "with --worker-image: the SHA-256 of packages/worker/ec2/boot-stage2.sh in the release source that image was built from (a release supplies its own)")
     .option("--slack-image <digest-ref>", "Slack service image by digest; an agentx built from source needs it with --engine cdk when the tag has no published release.json")
     .option("--yes", "apply without asking; every change and the release notes are still printed", false)
     .option("--region <region>", "AWS region of the environment; defaults to your AWS configuration")
-    .action(async (options: { to?: string; release?: string; source?: string; allowReplace: string[]; export?: string; workerImage?: string; slackImage?: string; yes: boolean; region?: string }, command: Command) => {
+    .action(async (options: { to?: string; release?: string; source?: string; allowReplace: string[]; export?: string; workerImage?: string; slackImage?: string; bootStage2Sha256?: string; yes: boolean; region?: string }, command: Command) => {
       const globals = command.optsWithGlobals<{ env: string; json: boolean; configDir: string }>();
       const overrides = context.overrides ?? {};
       const aws = options.region === undefined ? {} : { region: options.region };
@@ -73,8 +74,9 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         now: overrides.now ?? Date.now,
         cliVersion: "cliVersion" in overrides ? overrides.cliVersion : RELEASE_VERSION,
       };
-      const images = options.workerImage === undefined && options.slackImage === undefined ? undefined : {
+      const images = options.workerImage === undefined && options.slackImage === undefined && options.bootStage2Sha256 === undefined ? undefined : {
         ...(options.workerImage === undefined ? {} : { worker: options.workerImage }), ...(options.slackImage === undefined ? {} : { slack: options.slackImage }),
+        ...(options.bootStage2Sha256 === undefined ? {} : { bootStage2Sha256: options.bootStage2Sha256 }),
       };
       const result = await runUpgrade({
         env: globals.env, yes: options.yes, allowReplace: options.allowReplace,

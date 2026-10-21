@@ -62,6 +62,9 @@ export const ReleaseManifestSchema = z
       .refine((documents) => documents === undefined || new Set(documents.map((document) => document.file)).size === documents.length,
         "legal document files must be unique"),
     images: z.object({ worker: ImageDigest.optional(), slack: ImageDigest.optional(), executor: ImageDigest.optional() }).strict(),
+    // Task 10: the SHA-256 of packages/worker/ec2/boot-stage2.sh in this release's source, which is the stage 2 boot script the worker image
+    // carries. A deploy writes it as the BootStage2Sha256 setting beside the worker image. Absent from releases before the boot split.
+    bootStage2Sha256: Sha256.optional(),
   })
   .strict();
 

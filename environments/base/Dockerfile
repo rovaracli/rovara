@@ -86,6 +86,9 @@ COPY --from=build /opt/agentx/packages/model-runtime ./packages/model-runtime
 COPY --from=build /opt/agentx/packages/contracts ./packages/contracts
 COPY --from=build /opt/agentx/packages/verifier ./packages/verifier
 COPY --from=build /opt/agentx/packages/worker ./packages/worker
+# Stage 2 of the EC2 boot (Task 10): boot.sh reads this file out of the image it pulled by digest and runs it only if its SHA-256 is the one
+# the control plane launched the worker with. Read-only, owned by root, and the same bytes the release records the hash of.
+COPY --chown=root:root --chmod=0444 packages/worker/ec2/boot-stage2.sh /opt/agentx/boot/stage2.sh
 
 # AGENTX_WORKER_PROCESS_SCOPE: this container is the worker's own process namespace, so before a push every other
 # process of the worker's user in it is stopped (packages/worker/src/workspace-processes.ts).

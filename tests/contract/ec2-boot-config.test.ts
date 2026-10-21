@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
+  AGENTX_BOOT_STAGE2_SHA256,
   EC2_USER_DATA_MAX_BYTES,
   Ec2WorkerBootConfigSchema,
   ec2WorkerBootScript,
@@ -14,9 +15,13 @@ import {
 } from "../../packages/contracts/src/session.js";
 import { SECRET_ARN_MAX_LENGTH } from "../../packages/contracts/src/model-providers.js";
 
+// A named environment's boot is two files (Task 10): boot.sh is user data (stage 1), boot-stage2.sh ships in the worker image. The user data
+// tests render boot.sh; the tests about what the boot does read both.
 const bootScript = readFileSync(new URL("../../packages/worker/ec2/boot.sh", import.meta.url), "utf8");
-const qualificationScript = /cat >\/usr\/local\/libexec\/agentx-e2e-qualification <<'QUALIFICATION'\n([\s\S]*?)\nQUALIFICATION/.exec(bootScript)?.[1] ?? "";
-const workerLauncher = /cat >\/usr\/local\/libexec\/agentx-worker-start <<'LAUNCHER'\n([\s\S]*?)\nLAUNCHER/.exec(bootScript)?.[1] ?? "";
+const stage2Script = readFileSync(new URL("../../packages/worker/ec2/boot-stage2.sh", import.meta.url), "utf8");
+const bootText = `${bootScript}\n${stage2Script}`;
+const qualificationScript = /cat >\/usr\/local\/libexec\/agentx-e2e-qualification <<'QUALIFICATION'\n([\s\S]*?)\nQUALIFICATION/.exec(stage2Script)?.[1] ?? "";
+const workerLauncher = /cat >\/usr\/local\/libexec\/agentx-worker-start <<'LAUNCHER'\n([\s\S]*?)\nLAUNCHER/.exec(stage2Script)?.[1] ?? "";
 
 const config: Ec2WorkerBootConfig = {
   workspaceId: randomUUID(),
@@ -35,23 +40,23 @@ const config: Ec2WorkerBootConfig = {
 describe("EC2 worker user data", () => {
   it("passes OpenRouter references to the container and rejects secrets or shell injection", () => {
     const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/openrouter-AbCdEf";
-    const rendered = ec2WorkerBootScript({ ...config, openRouterSecretArn: secretArn, openRouterProviders: "anthropic,openai" }, bootScript);
+    const rendered = ec2WorkerBootScript({ ...config, openRouterSecretArn: secretArn, openRouterProviders: "anthropic,openai" }, bootText);
     expect(rendered).toContain(`export AGENTX_OPENROUTER_SECRET_ARN='${secretArn}'`);
     expect(rendered).toContain("for name in AGENTX_OPENROUTER_SECRET_ARN AGENTX_ANTHROPIC_SECRET_ARN AGENTX_OPENAI_SECRET_ARN; do");
     expect(rendered).not.toContain("OPENROUTER_API_KEY");
-    expect(() => ec2WorkerBootScript({ ...config, openRouterSecretArn: "sk-key" }, bootScript)).toThrow();
-    expect(() => ec2WorkerBootScript({ ...config, openRouterProviders: "anthropic';touch /tmp/bad" }, bootScript)).toThrow();
+    expect(() => ec2WorkerBootScript({ ...config, openRouterSecretArn: "sk-key" }, bootText)).toThrow();
+    expect(() => ec2WorkerBootScript({ ...config, openRouterProviders: "anthropic';touch /tmp/bad" }, bootText)).toThrow();
   });
   it.each([["anthropicSecretArn", "AGENTX_ANTHROPIC_SECRET_ARN", "ANTHROPIC_API_KEY"], ["openaiSecretArn", "AGENTX_OPENAI_SECRET_ARN", "OPENAI_API_KEY"]] as const)(
     "passes the %s reference to the container, never a key", (field, variable, keyVariable) => {
       const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/direct-AbCdEf";
-      const rendered = ec2WorkerBootScript({ ...config, [field]: secretArn }, bootScript);
+      const rendered = ec2WorkerBootScript({ ...config, [field]: secretArn }, bootText);
       expect(rendered).toContain(`export ${variable}='${secretArn}'`);
       expect(rendered).toContain(variable);
       expect(rendered).not.toContain(keyVariable);
-      expect(ec2WorkerBootScript(config, bootScript)).not.toContain(`export ${variable}=`);
-      expect(() => ec2WorkerBootScript({ ...config, [field]: "sk-ant-api03-key" }, bootScript)).toThrow();
-      expect(() => ec2WorkerBootScript({ ...config, [field]: `${secretArn}';touch /tmp/bad` }, bootScript)).toThrow();
+      expect(ec2WorkerBootScript(config, bootText)).not.toContain(`export ${variable}=`);
+      expect(() => ec2WorkerBootScript({ ...config, [field]: "sk-ant-api03-key" }, bootText)).toThrow();
+      expect(() => ec2WorkerBootScript({ ...config, [field]: `${secretArn}';touch /tmp/bad` }, bootText)).toThrow();
     });
   // Task 14: with a model proxy the worker holds no provider secret reference; it is told where the proxy is.
   describe("with a model proxy", () => {
@@ -60,7 +65,7 @@ describe("EC2 worker user data", () => {
     const writeEnvironment = (environment: Record<string, string>) => {
       const directory = mkdtempSync(join(tmpdir(), "boot-env-"));
       const file = join(directory, "etc", "worker.env");
-      const fn = /^write_worker_environment\(\) \{[\s\S]*?^\}$/m.exec(bootScript)?.[0] ?? "";
+      const fn = /^write_worker_environment\(\) \{[\s\S]*?^\}$/m.exec(stage2Script)?.[0] ?? "";
       expect(fn).not.toBe("");
       const run = spawnSync("bash", ["-c", `readonly WORKER_ENV_FILE=${file} MOUNT_PATH=/mnt/workspace\n${fn}\nwrite_worker_environment us-east-1`], {
         encoding: "utf8",
@@ -98,7 +103,7 @@ describe("EC2 worker user data", () => {
     const image = `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-test/worker@sha256:${"c".repeat(64)}`;
     const directory = mkdtempSync(join(tmpdir(), "boot-env-"));
     const file = join(directory, "etc", "worker.env");
-    const fn = /^write_worker_environment\(\) \{[\s\S]*?^\}$/m.exec(bootScript)?.[0] ?? "";
+    const fn = /^write_worker_environment\(\) \{[\s\S]*?^\}$/m.exec(stage2Script)?.[0] ?? "";
     for (const proxy of [{}, { AGENTX_MODEL_PROXY_URL: "http://proxy.test:4000" }]) {
       const run = spawnSync("bash", ["-c", `readonly WORKER_ENV_FILE=${file} MOUNT_PATH=/mnt/workspace\n${fn}\nwrite_worker_environment us-east-1`], {
         encoding: "utf8",
@@ -115,8 +120,9 @@ describe("EC2 worker user data", () => {
   it("prepends every boot value to the script as a quoted export", () => {
     const userData = ec2WorkerBootScript(config, bootScript);
     expect(userData.startsWith("#!/bin/bash\n")).toBe(true);
-    expect(userData.match(/^#!/gm)).toHaveLength(2);
-    expect(userData).toContain("cat >/usr/local/libexec/agentx-worker-start <<'LAUNCHER'\n#!/bin/bash");
+    // Only this script's own shebang: the worker launcher it writes lives in stage 2, in the worker image.
+    expect(userData.match(/^#!/gm)).toHaveLength(1);
+    expect(userData).not.toContain("<<'LAUNCHER'");
     expect(userData).toContain(`export AGENTX_WORKSPACE_ID='${config.workspaceId}'`);
     expect(userData).toContain("export AGENTX_SESSION_GENERATION='2'");
     expect(userData).toContain("export AGENTX_EXPECT_NEW_VOLUME='false'");
@@ -142,8 +148,12 @@ describe("EC2 worker user data", () => {
     };
     const lower = (length: number) => noise(length).toLowerCase();
     const secretPrefix = "arn:aws:secretsmanager:us-east-1:123456789012:secret:";
+    // A named environment's worker: stage 2 ships in its image, so the user data carries boot.sh and the stage 2 hash alone.
     const worstCase = Ec2WorkerBootConfigSchema.parse({
       ...config,
+      environmentKind: "named",
+      bootStage2Sha256: [...randomBytes(32)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+      modelProxyUrl: `https://${lower(63)}.${lower(63)}.${lower(63)}.${lower(63)}.${lower(63)}.${lower(63)}.${lower(63)}.${lower(56)}`,
       generation: Number.MAX_SAFE_INTEGER,
       invokePublicKey: noise(1_024),
       controlPlaneUrl: `https://${lower(63)}.${lower(63)}.${lower(63)}.${lower(63)}.${lower(63)}.${lower(63)}.${lower(63)}.${lower(56)}`,
@@ -157,14 +167,16 @@ describe("EC2 worker user data", () => {
       executorImage: `111122223333.dkr.ecr.us-east-1.amazonaws.com/${lower(120)}@sha256:${"e".repeat(64)}`,
     });
     expect(worstCase.controlPlaneUrl).toHaveLength(512);
+    expect(worstCase.modelProxyUrl).toHaveLength(512);
     expect(worstCase.openRouterProviders).toHaveLength(512);
     expect(worstCase.anthropicSecretArn).toHaveLength(SECRET_ARN_MAX_LENGTH);
     const compressed = Buffer.from(ec2WorkerUserData(worstCase, bootScript), "base64").length;
-    // EC2 measures user data before base64 encoding; at least 1.5 KB of it stays free for boot changes. It was 4 KB until the opt-in
-    // TEST qualification hook (about 1.5 KB compressed) and the executor image setting were added, then 2 KB until the container firewall
-    // rules (about 330 bytes compressed) landed: this worst case sets every value at its maximum at once, which no real worker's
-    // configuration does.
-    expect(compressed).toBeLessThanOrEqual(EC2_USER_DATA_MAX_BYTES - 1_536);
+    // EC2 measures user data before base64 encoding. Moving the long tail of the boot into the worker image (Task 10) freed about 3.5 KB
+    // compressed: the same values leave 1,654 bytes with the legacy single-file boot (boot-legacy.sh, unchanged) and 5,219 with boot.sh.
+    // Measured over 40 random draws of this named worst case, which also carries a maximal model proxy URL and the stage 2 hash: at most
+    // 11,644 bytes compressed, so at least 4,740 bytes (4.6 KB) stay free for boot changes (4,754 on average); the bound is 4.5 KB. The
+    // case sets every value at its maximum at once, which no real worker's configuration does.
+    expect(compressed).toBeLessThanOrEqual(EC2_USER_DATA_MAX_BYTES - 4_608);
   });
 
   it("measures the limit on the compressed user data, not the script (#229)", () => {
@@ -180,7 +192,7 @@ describe("EC2 worker user data", () => {
   });
 
   it("exports AGENTX_ENVIRONMENT_KIND only for a named environment, and refuses any other value", () => {
-    expect(ec2WorkerBootScript({ ...config, environmentKind: "named" }, bootScript)).toContain("export AGENTX_ENVIRONMENT_KIND='named'");
+    expect(ec2WorkerBootScript({ ...config, environmentKind: "named", bootStage2Sha256: "ab".repeat(32) }, bootScript)).toContain("export AGENTX_ENVIRONMENT_KIND='named'");
     expect(ec2WorkerBootScript(config, bootScript)).not.toContain("export AGENTX_ENVIRONMENT_KIND=");
     expect(() => ec2WorkerBootScript({ ...config, environmentKind: "legacy" as "named" }, bootScript)).toThrow();
   });
@@ -193,15 +205,15 @@ describe("EC2 worker user data", () => {
   });
 
   it("gives the worker the host's Docker and keeps Docker's data on the workspace volume (#121)", () => {
-    expect(bootScript).toContain("readonly DOCKER_DATA_ROOT=$MOUNT_PATH/.docker");
-    expect(bootScript).toContain(`printf '{"data-root": "%s"}\\n' "$DOCKER_DATA_ROOT" >/etc/docker/daemon.json`);
+    expect(bootText).toContain("readonly DOCKER_DATA_ROOT=$MOUNT_PATH/.docker");
+    expect(bootText).toContain(`printf '{"data-root": "%s"}\\n' "$DOCKER_DATA_ROOT" >/etc/docker/daemon.json`);
     // The daemon starts only after the workspace is mounted, so its data root is on the volume.
-    expect(bootScript.indexOf("mount_workspace \"$device\"")).toBeLessThan(bootScript.indexOf("  ensure_docker\n"));
+    expect(bootText.indexOf("mount_workspace \"$device\"")).toBeLessThan(bootText.indexOf("  ensure_docker\n"));
     expect(workerLauncher).toContain('args=(run --rm --name "$WORKER_CONTAINER" "${network_args[@]}" --env-file "$WORKER_ENV_FILE" --volume "$MOUNT_PATH:$MOUNT_PATH")');
     expect(workerLauncher).toContain('args+=(--volume "$RUNTIME_ROOT:$RUNTIME_ROOT" --env CONTAINED_FOUNDATION_EVIDENCE_DIR="$RUNTIME_ROOT/evidence" --env TMPDIR="$RUNTIME_ROOT/tmp")');
     expect(workerLauncher).toContain("args+=(--env TMPDIR=/tmp)");
-    expect(bootScript).toContain("ExecStart=/usr/local/libexec/agentx-worker-start");
-    expect(bootScript).toContain("RequiresMountsFor=$MOUNT_PATH");
+    expect(bootText).toContain("ExecStart=/usr/local/libexec/agentx-worker-start");
+    expect(bootText).toContain("RequiresMountsFor=$MOUNT_PATH");
   });
 
   // Task 25 Part B (F2): the worker leaves the host network, and the instance metadata service is closed to containers and
@@ -261,7 +273,7 @@ describe("EC2 worker user data", () => {
       const written = (kind?: string) => {
         const directory = mkdtempSync(join(tmpdir(), "boot-env-"));
         const file = join(directory, "etc", "worker.env");
-        const fn = /^write_worker_environment\(\) \{[\s\S]*?^\}$/m.exec(bootScript)?.[0] ?? "";
+        const fn = /^write_worker_environment\(\) \{[\s\S]*?^\}$/m.exec(stage2Script)?.[0] ?? "";
         const run = spawnSync("bash", ["-c", `readonly WORKER_ENV_FILE=${file} MOUNT_PATH=/mnt/workspace\n${fn}\nwrite_worker_environment us-east-1`], {
           encoding: "utf8",
           env: { PATH: process.env.PATH ?? "", AGENTX_CONTROL_PLANE_URL: "https://c.test", AGENTX_MODEL_PROVIDER: "amazon-bedrock", AGENTX_MODEL_ID: "m", PI_CACHE_RETENTION: "short",
@@ -326,49 +338,49 @@ exit 0
   });
 
   it("prepares fixed private EBS runtime paths and retries the pinned contained image before starting the worker", () => {
-    expect(bootScript).toContain('readonly RUNTIME_SOURCE=$MOUNT_PATH/.agentx-runtime');
-    expect(bootScript).toContain('readonly RUNTIME_ROOT=/mnt/agentx-runtime');
-    expect(bootScript).toContain('mount --bind "$RUNTIME_SOURCE" "$RUNTIME_ROOT"');
-    expect(bootScript).toContain('readonly CANDIDATE_SCRATCH_ROOT=$RUNTIME_ROOT/candidates');
-    expect(bootScript).toContain('readonly EVIDENCE_ROOT=$RUNTIME_ROOT/evidence');
-    expect(bootScript).toContain('readonly CONTAINED_STATE_ROOT=$RUNTIME_ROOT/state');
-    expect(bootScript).toContain('install -d -o "$WORKER_UID" -g "$WORKER_GID" -m 0700 "$RUNTIME_SOURCE/$path"');
-    expect(bootScript).toContain('verifier unavailable; setup smoke withheld');
-    expect(bootScript).toContain("printf 'TMPDIR=/tmp\\n'");
+    expect(bootText).toContain('readonly RUNTIME_SOURCE=$MOUNT_PATH/.agentx-runtime');
+    expect(bootText).toContain('readonly RUNTIME_ROOT=/mnt/agentx-runtime');
+    expect(bootText).toContain('mount --bind "$RUNTIME_SOURCE" "$RUNTIME_ROOT"');
+    expect(bootText).toContain('readonly CANDIDATE_SCRATCH_ROOT=$RUNTIME_ROOT/candidates');
+    expect(bootText).toContain('readonly EVIDENCE_ROOT=$RUNTIME_ROOT/evidence');
+    expect(bootText).toContain('readonly CONTAINED_STATE_ROOT=$RUNTIME_ROOT/state');
+    expect(bootText).toContain('install -d -o "$WORKER_UID" -g "$WORKER_GID" -m 0700 "$RUNTIME_SOURCE/$path"');
+    expect(bootText).toContain('verifier unavailable; setup smoke withheld');
+    expect(bootText).toContain("printf 'TMPDIR=/tmp\\n'");
     expect(workerLauncher).toContain('args+=(--volume "$RUNTIME_ROOT:$RUNTIME_ROOT" --env CONTAINED_FOUNDATION_EVIDENCE_DIR="$RUNTIME_ROOT/evidence" --env TMPDIR="$RUNTIME_ROOT/tmp")');
     expect(workerLauncher).toContain("args+=(--env TMPDIR=/tmp)");
-    expect(bootScript).toContain('docker pull "$CONTAINED_IMAGE"');
-    expect(bootScript).toContain('optional verifier image unavailable; worker continues');
-    expect(bootScript).toContain('pull_contained_image || true');
-    expect(bootScript.indexOf('prepare_contained_runtime_directories')).toBeLessThan(bootScript.indexOf('pull_worker_image "$region"'));
-    expect(bootScript.indexOf('pull_contained_image')).toBeLessThan(bootScript.indexOf('write_worker_unit "$region"'));
+    expect(bootText).toContain('docker pull "$CONTAINED_IMAGE"');
+    expect(bootText).toContain('optional verifier image unavailable; worker continues');
+    expect(bootText).toContain('pull_contained_image || true');
+    expect(bootText.indexOf('prepare_contained_runtime_directories')).toBeLessThan(bootText.indexOf('pull_worker_image "$region"'));
+    expect(bootText.indexOf('pull_contained_image')).toBeLessThan(bootText.indexOf('write_worker_unit "$region"'));
   });
 
   it("walls untrusted containers off from the host and private networks and pulls the executor image after the worker image", () => {
     // The rules live in one heredoc that CI extracts and runs as is (tests/contract/container-firewall.test.ts runs it against a fake iptables).
-    expect(bootScript).toContain("<<'FIREWALL'");
-    expect(bootScript).toContain('f() { local c=$1; shift; $c -C "$@" 2>/dev/null || $c -I "$@"; }');
-    expect(bootScript).toContain("f iptables DOCKER-USER -d 169.254.169.254/32 -j DROP");
+    expect(bootText).toContain("<<'FIREWALL'");
+    expect(bootText).toContain('f() { local c=$1; shift; $c -C "$@" 2>/dev/null || $c -I "$@"; }');
+    expect(bootText).toContain("f iptables DOCKER-USER -d 169.254.169.254/32 -j DROP");
     // A failure to install the rules stops the boot.
-    expect(bootScript).toContain('|| fail "could not wall containers off from the host and private networks"');
+    expect(bootText).toContain('|| fail "could not wall containers off from the host and private networks"');
     // DOCKER-USER exists only once the daemon is running.
-    expect(bootScript.indexOf("systemctl restart docker.service")).toBeLessThan(bootScript.indexOf("  wall_off_containers\n}\n"));
+    expect(bootText.indexOf("systemctl restart docker.service")).toBeLessThan(bootText.indexOf("  wall_off_containers\n}\n"));
     // The rules are also a oneshot unit, so they return after a reboot (Docker rebuilds its chains) and land before the worker starts.
-    expect(bootScript).toContain("readonly FIREWALL_UNIT=rovara-container-firewall.service");
-    expect(bootScript).toContain("Type=oneshot");
-    expect(bootScript).toContain("RemainAfterExit=yes");
-    expect(bootScript).toMatch(/\[Unit\][^]*?After=docker\.service network-online\.target systemd-resolved\.service\nWants=network-online\.target\nBefore=\$WORKER_UNIT/);
-    expect(bootScript).toContain("ExecStart=/bin/bash /usr/local/libexec/rovara-container-firewall");
+    expect(bootText).toContain("readonly FIREWALL_UNIT=rovara-container-firewall.service");
+    expect(bootText).toContain("Type=oneshot");
+    expect(bootText).toContain("RemainAfterExit=yes");
+    expect(bootText).toMatch(/\[Unit\][^]*?After=docker\.service network-online\.target systemd-resolved\.service\nWants=network-online\.target\nBefore=\$WORKER_UNIT/);
+    expect(bootText).toContain("ExecStart=/bin/bash /usr/local/libexec/rovara-container-firewall");
     // A worker must not start unless the rules are in place: it requires and follows the firewall unit.
-    expect(bootScript).toContain("Requires=docker.service $FIREWALL_UNIT\nAfter=docker.service $FIREWALL_UNIT network-online.target");
-    expect(bootScript).toContain('systemctl enable "$FIREWALL_UNIT" && bash /usr/local/libexec/rovara-container-firewall || fail');
-    expect(bootScript).not.toContain("rovara-imds-drop");
-    expect(bootScript).toContain('docker pull "$EXECUTOR_IMAGE"');
+    expect(bootText).toContain("Requires=docker.service $FIREWALL_UNIT\nAfter=docker.service $FIREWALL_UNIT network-online.target");
+    expect(bootText).toContain('systemctl enable "$FIREWALL_UNIT" && bash /usr/local/libexec/rovara-container-firewall || fail');
+    expect(bootText).not.toContain("rovara-imds-drop");
+    expect(bootText).toContain('docker pull "$EXECUTOR_IMAGE"');
     // Unset until the control plane sets it: the pull is skipped, never a boot failure.
-    expect(bootScript).toContain('[[ -n "${EXECUTOR_IMAGE:-}" ]] || return 0');
-    expect(bootScript).toContain("pull_executor_image || true");
-    expect(bootScript.indexOf('pull_worker_image "$region"')).toBeLessThan(bootScript.indexOf("pull_executor_image || true"));
-    expect(bootScript.indexOf("pull_executor_image || true")).toBeLessThan(bootScript.indexOf('write_worker_unit "$region"'));
+    expect(bootText).toContain('[[ -n "${EXECUTOR_IMAGE:-}" ]] || return 0');
+    expect(bootText).toContain("pull_executor_image || true");
+    expect(bootText.indexOf('pull_worker_image "$region"')).toBeLessThan(bootText.indexOf("pull_executor_image || true"));
+    expect(bootText.indexOf("pull_executor_image || true")).toBeLessThan(bootText.indexOf('write_worker_unit "$region"'));
   });
 
   it("renders a script bash accepts", () => {
@@ -392,6 +404,20 @@ exit 0
     expect(() => ec2WorkerUserData({ ...config, ...override } as Ec2WorkerBootConfig, bootScript)).toThrow();
   });
 
+  it("takes the stage 2 hash as 64 lower-case hex digits, exports it for a named environment, and requires it there", () => {
+    const sha = "ab".repeat(32);
+    expect(AGENTX_BOOT_STAGE2_SHA256).toBe("AGENTX_BOOT_STAGE2_SHA256");
+    const named = { ...config, environmentKind: "named" as const, bootStage2Sha256: sha };
+    expect(ec2WorkerBootScript(named, bootScript)).toContain(`export AGENTX_BOOT_STAGE2_SHA256='${sha}'`);
+    expect(ec2WorkerBootScript(config, bootScript)).not.toContain("export AGENTX_BOOT_STAGE2_SHA256=");
+    for (const bad of ["", "AB".repeat(32), "ab".repeat(31), "ab".repeat(33), `${"ab".repeat(31)}a'`, `${"a".repeat(63)};`, "none"]) {
+      expect(() => Ec2WorkerBootConfigSchema.parse({ ...named, bootStage2Sha256: bad }), JSON.stringify(bad)).toThrow();
+    }
+    // A named environment boots stage 2 from its image, so it cannot launch without the hash; the legacy deployment never has one.
+    expect(() => Ec2WorkerBootConfigSchema.parse({ ...config, environmentKind: "named" })).toThrow(/bootStage2Sha256/);
+    expect(Ec2WorkerBootConfigSchema.parse({ ...config }).bootStage2Sha256).toBeUndefined();
+  });
+
   it("refuses unknown fields", () => {
     expect(() => Ec2WorkerBootConfigSchema.parse({ ...config, extra: "x" })).toThrow();
   });
@@ -408,10 +434,10 @@ const qualificationPrefix = `e2e-runtime/${roleId}:${instanceId}/`;
 
 /** Runs one shell function of the boot script on its own, with the script's own fixed paths replaced by the test's. */
 function runBootFunction(name: string, args: string[], environment: Record<string, string>, replace: Array<[string, string]> = []): { status: number | null; stdout: string; stderr: string } {
-  const start = bootScript.indexOf(`\n${name}() {`);
-  const end = bootScript.indexOf("\n}\n", start);
-  expect(start, `${name} is in boot.sh`).toBeGreaterThan(-1);
-  let text = bootScript.slice(start + 1, end + 3);
+  const start = bootText.indexOf(`\n${name}() {`);
+  const end = bootText.indexOf("\n}\n", start);
+  expect(start, `${name} is in boot.sh or boot-stage2.sh`).toBeGreaterThan(-1);
+  let text = bootText.slice(start + 1, end + 3);
   for (const [from, to] of replace) text = text.split(from).join(to);
   const program = `log() { printf 'agentx-boot: %s\\n' "$*" >&2; }\n${text}\n${name} "$@"`;
   const ran = spawnSync("bash", ["-c", program, "bash", ...args], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", ...environment } });
@@ -458,7 +484,7 @@ describe("the opt-in TEST qualification hook", () => {
     expect(rendered).toContain("export AGENTX_E2E_QUALIFICATION_PROFILE='linux-arm64-web-api-v1'");
     expect(rendered).toContain(`export AGENTX_E2E_QUALIFICATION_BUCKET='${qualification.bucket}'`);
     // The boot script itself carries no bucket name: it comes from this configuration.
-    expect(bootScript).not.toMatch(/control-artifacts|agentxlivetest/);
+    expect(bootText).not.toMatch(/control-artifacts|agentxlivetest/);
     expect(ec2WorkerBootScript(config, bootScript)).not.toContain("export AGENTX_E2E_QUALIFICATION");
     for (const bad of [
       { ...qualification, roleId: "" },
@@ -501,8 +527,8 @@ describe("the opt-in TEST qualification hook", () => {
     expect(failed.status).toBe(0);
     expect(failed.stderr).toContain("could not start the E2E qualification");
     // It starts after the worker unit does, and a failure to start it is only logged.
-    expect(bootScript).toContain('start_e2e_qualification "$region" "$instance_id" || log "the E2E qualification did not start"');
-    expect(bootScript.indexOf('systemctl enable --now "$WORKER_UNIT"')).toBeLessThan(bootScript.indexOf('start_e2e_qualification "$region" "$instance_id" ||'));
+    expect(bootText).toContain('start_e2e_qualification "$region" "$instance_id" || log "the E2E qualification did not start"');
+    expect(bootText.indexOf('systemctl enable --now "$WORKER_UNIT"')).toBeLessThan(bootText.indexOf('start_e2e_qualification "$region" "$instance_id" ||'));
   });
 
   it("carries a hook script bash accepts, with every path quoted, that logs and uploads no secret", () => {

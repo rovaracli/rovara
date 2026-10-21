@@ -58,6 +58,8 @@ const facts: QualificationFacts = {
   settings: {
     workerImage: `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-test/worker@sha256:${"a".repeat(64)}`,
     executorImage: `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-test/executor@sha256:${"e".repeat(64)}`,
+    // Task 10: stage 2 of the boot ships in the worker image; boot.sh checks it against this hash.
+    bootStage2Sha256: "5a".repeat(32),
     modelProvider: "amazon-bedrock",
     modelId: "us.anthropic.claude-sonnet-4-6",
     promptCacheRetention: "long",
@@ -147,7 +149,7 @@ describe("the qualification instance's user data", () => {
   it("is the worker's normal boot with only the validated qualification variables added", () => {
     const rendered = decode(renderQualificationUserData(facts, { workspaceId: WORKSPACE_ID, volumeId: "vol-0123456789abcdef0", qualification }, bootScript));
     const normal = ec2WorkerBootScript({
-      workspaceId: WORKSPACE_ID, generation: 1, volumeId: "vol-0123456789abcdef0", expectNewVolume: true, workerImage: facts.settings.workerImage, executorImage: facts.settings.executorImage,
+      workspaceId: WORKSPACE_ID, generation: 1, volumeId: "vol-0123456789abcdef0", expectNewVolume: true, workerImage: facts.settings.workerImage, executorImage: facts.settings.executorImage, bootStage2Sha256: facts.settings.bootStage2Sha256,
       invokePublicKey: facts.invokePublicKey, controlPlaneUrl: facts.controlPlaneUrl, modelProvider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6",
       promptCacheRetention: "long", logGroupName: facts.logGroupName,
     }, bootScript);
@@ -159,6 +161,7 @@ describe("the qualification instance's user data", () => {
     // The bucket comes from the live stack, and the executor image is on the worker for the qualifier to read.
     expect(rendered).toContain(`export AGENTX_E2E_QUALIFICATION_BUCKET='${facts.artifactBucket}'`);
     expect(rendered).toContain(`export EXECUTOR_IMAGE='${facts.settings.executorImage}'`);
+    expect(rendered).toContain(`export AGENTX_BOOT_STAGE2_SHA256='${"5a".repeat(32)}'`);
     // A new volume, the first generation: the same values the provisioner gives a new workspace.
     expect(rendered).toContain("export AGENTX_EXPECT_NEW_VOLUME='true'");
     expect(rendered).toContain("export AGENTX_SESSION_GENERATION='1'");
@@ -177,6 +180,7 @@ describe("the qualification instance's user data", () => {
     const render = (settings: Partial<QualificationFacts["settings"]>) =>
       renderQualificationUserData({ ...facts, settings: { ...facts.settings, ...settings } }, { workspaceId: WORKSPACE_ID, volumeId: "vol-0123456789abcdef0", qualification }, bootScript);
     expect(() => render({ executorImage: undefined })).toThrow(/executor image/);
+    expect(() => render({ bootStage2Sha256: undefined })).toThrow(/boot stage 2 hash/);
     expect(() => render({ executorImage: "111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-test/executor:latest" })).toThrow();
   });
 });

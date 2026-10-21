@@ -1312,6 +1312,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--slack-signing-secret-file <path>", "file holding the Slack signing secret")
     .option("--slack-signing-secret-env <NAME>", "environment variable holding the Slack signing secret")
     .option("--worker-image <digest-ref>", "worker image by digest; an agentx built from source needs it with --engine cdk when the tag has no published release.json")
+    .option("--boot-stage2-sha256 <hex>", "with --worker-image: the SHA-256 of packages/worker/ec2/boot-stage2.sh in the release source that image was built from (a release supplies its own)")
     .option("--slack-image <digest-ref>", "Slack service image by digest; an agentx built from source needs it with --engine cdk when the tag has no published release.json")
     .option("--admin-email <email>", "Cognito: your email, for the AgentX admin user")
     .option("--repository <owner/name>", "the first project's repository")
@@ -1585,7 +1586,7 @@ interface InitCommandOptions extends SignInCommandOptions {
   githubAppId?: string; githubInstallationId?: string; githubPrivateKeyFile?: string; githubPrivateKeyEnv?: string;
   slackAppName?: string; slackAppPostedMessages?: "accept" | "ignore"; slackInstall?: "installed" | "approval";
   slackBotTokenFile?: string; slackBotTokenEnv?: string; slackSigningSecretFile?: string; slackSigningSecretEnv?: string;
-  workerImage?: string; slackImage?: string;
+  workerImage?: string; slackImage?: string; bootStage2Sha256?: string;
   rovaraCloud?: boolean; googleClientId?: string; googleClientSecretArn?: string; cloudDomainPrefix?: string;
   githubSignInClientId?: string; githubSignInClientSecretArn?: string;
   /** --signin: which developer sign-in methods agentx init's developer-signin step enables. */
@@ -1638,7 +1639,7 @@ function initOptions(globals: GlobalOptions, options: InitCommandOptions, comman
     budget: options.budget, budgetScope: options.budgetScope,
     githubAccount: options.githubAccount, githubAccountType: options.githubAccountType, githubAppName: options.githubAppName,
     slackAppName: options.slackAppName, slackAppPostedMessages: options.slackAppPostedMessages,
-    workerImage: options.workerImage, slackImage: options.slackImage,
+    workerImage: options.workerImage, slackImage: options.slackImage, bootStage2Sha256: options.bootStage2Sha256,
     rovaraCloud: options.rovaraCloud, googleClientId: options.googleClientId, googleClientSecretArn: options.googleClientSecretArn, cloudDomainPrefix: options.cloudDomainPrefix,
     githubSignInClientId: options.githubSignInClientId, githubSignInClientSecretArn: options.githubSignInClientSecretArn,
   });
