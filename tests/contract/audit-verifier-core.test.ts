@@ -53,14 +53,31 @@ describe("canonicalJson (RFC 8785 subset)", () => {
     expect(() => canonicalJson({ nested: [1, { deep: 0.1 }] })).toThrow(RangeError);
   });
 
-  it("throws on undefined and other values JSON cannot hold", () => {
-    expect(() => canonicalJson(undefined as unknown as JsonValue)).toThrow();
-    expect(() => canonicalJson({ a: undefined } as unknown as JsonValue)).toThrow();
-    expect(() => canonicalJson([undefined] as unknown as JsonValue)).toThrow();
-    expect(() => canonicalJson(Array(2) as unknown as JsonValue)).toThrow();
-    expect(() => canonicalJson(10n as unknown as JsonValue)).toThrow();
-    expect(() => canonicalJson(new Date(0) as unknown as JsonValue)).toThrow();
-    expect(() => canonicalJson(new Map() as unknown as JsonValue)).toThrow();
+  it("throws a TypeError on undefined and other values JSON cannot hold", () => {
+    expect(() => canonicalJson(undefined as unknown as JsonValue)).toThrow(TypeError);
+    expect(() => canonicalJson({ a: undefined } as unknown as JsonValue)).toThrow(TypeError);
+    expect(() => canonicalJson([undefined] as unknown as JsonValue)).toThrow(TypeError);
+    expect(() => canonicalJson(Array(2) as unknown as JsonValue)).toThrow(TypeError);
+    expect(() => canonicalJson(10n as unknown as JsonValue)).toThrow(TypeError);
+    expect(() => canonicalJson(new Date(0) as unknown as JsonValue)).toThrow(TypeError);
+    expect(() => canonicalJson(new Map() as unknown as JsonValue)).toThrow(TypeError);
+    expect(() => canonicalJson({ [Symbol("s")]: 1 })).toThrow(TypeError);
+  });
+
+  it("refuses a lone surrogate in a string, an array member or a key (RFC 8785 3.2.2.2)", () => {
+    for (const bad of ["\ud800", "\udc00", "a\ud800b", "x\udc00\ud800y", "\ud83d"]) {
+      expect(() => canonicalJson(bad), JSON.stringify(bad)).toThrow(TypeError);
+      expect(() => canonicalJson([bad])).toThrow(TypeError);
+      expect(() => canonicalJson({ k: { v: bad } })).toThrow(TypeError);
+      expect(() => canonicalJson({ [bad]: 1 })).toThrow(TypeError);
+    }
+    // A valid pair is fine, in a value and in a key.
+    expect(canonicalJson({ "\u{1F600}": "\u{1F600}" })).toBe('{"\u{1F600}":"\u{1F600}"}');
+  });
+
+  it("keeps an own __proto__ key as an ordinary member", () => {
+    const parsed = JSON.parse('{"b":1,"__proto__":{"x":2},"a":0}') as JsonValue;
+    expect(canonicalJson(parsed)).toBe('{"__proto__":{"x":2},"a":0,"b":1}');
   });
 });
 
@@ -114,6 +131,35 @@ describe("record and seal hashes", () => {
     expect(sealHash(FIXED_SEAL)).toBe(PINNED_SEAL_HASH);
   });
 
+  it("refuses an orgId that is not well-formed Unicode instead of hashing U+FFFD", () => {
+    expect(() => genesisHash("org\ud800")).toThrow(TypeError);
+    expect(() => genesisHash("org\udc00x")).toThrow(TypeError);
+    expect(genesisHash("org\u{1F600}")).toBe(sha256Hex("rovara-audit-genesis-v1\norg\u{1F600}"));
+  });
+
+  it("hashes an own __proto__ field, so tampering with it is detected", () => {
+    const parsed = JSON.parse(JSON.stringify(FIXED_BODY)) as Omit<AuditRecordV1, "hash">;
+    expect(recordHash(parsed)).toBe(PINNED_RECORD_HASH);
+    const withPrimitive = JSON.parse(`${JSON.stringify(FIXED_BODY).slice(0, -1)},"__proto__":"x"}`) as Omit<AuditRecordV1, "hash">;
+    expect(Object.keys(withPrimitive)).toContain("__proto__");
+    expect(recordHash(withPrimitive)).not.toBe(PINNED_RECORD_HASH);
+    const withObject = JSON.parse(`${JSON.stringify(FIXED_BODY).slice(0, -1)},"__proto__":{"a":1}}`) as Omit<AuditRecordV1, "hash">;
+    expect(recordHash(withObject)).not.toBe(PINNED_RECORD_HASH);
+    expect(recordHash(withObject)).not.toBe(recordHash(withPrimitive));
+  });
+
+  it("checkChain reports a record with an extra own __proto__ field as hash, without throwing", () => {
+    const chain = makeChain(3);
+    for (const extra of ['"x"', '{"a":1}']) {
+      const tampered = JSON.parse(`${JSON.stringify(chain[1]).slice(0, -1)},"__proto__":${extra}}`) as AuditRecordV1;
+      expect(checkChain([chain[0]!, tampered, chain[2]!], { seq: 0, hash: genesisHash(ORG) })).toEqual({
+        ok: false,
+        seq: 2,
+        problem: "hash",
+      });
+    }
+  });
+
   it("recordHash ignores an existing hash field", () => {
     expect(recordHash({ ...FIXED_BODY, hash: "ff".repeat(32) })).toBe(PINNED_RECORD_HASH);
   });
@@ -136,6 +182,12 @@ describe("record and seal hashes", () => {
 });
 
 describe("detailCommit", () => {
+  it("refuses a salt shorter than 16 bytes", () => {
+    expect(() => detailCommit(new Uint8Array(0), "sub_1", {})).toThrow(RangeError);
+    expect(() => detailCommit(new Uint8Array(15), "sub_1", {})).toThrow(RangeError);
+    expect(() => detailCommit(new Uint8Array(16), "sub_1", {})).not.toThrow();
+  });
+
   it("is sha256(salt || utf8(canonical {subject, fields}))", () => {
     const salt = Uint8Array.from({ length: 16 }, (_, i) => i);
     const fields = { name: "Ada", n: 2 };
@@ -212,6 +264,15 @@ describe("checkChain", () => {
       seq: 1,
       problem: "org",
     });
+  });
+
+  it("requires a chain starting at seq 0 to start at the org's genesis", () => {
+    const chain = makeChain(2);
+    expect(checkChain(chain, { seq: 0, hash: genesisHash("org_0002") })).toEqual({ ok: false, seq: 1, problem: "link" });
+    // The same goes when the first record's prevHash is rewritten to match a made-up start.
+    const body = { ...chain[0]!, prevHash: "11".repeat(32) };
+    const rewritten = [{ ...body, hash: recordHash(body) }];
+    expect(checkChain(rewritten, { seq: 0, hash: "11".repeat(32) })).toEqual({ ok: false, seq: 1, problem: "link" });
   });
 
   it("reports a wrong prevHash as link", () => {
@@ -314,6 +375,51 @@ describe("RFC 9162 Merkle trees", () => {
     }
   });
 
+  // kSHA256Paths from merkle_tree_test.cc: [leaf (1-based), snapshot size, path]. The path
+  // elements are the reference implementation's own bytes, not produced by this package.
+  const CT_PATHS: Array<[number, number, string[]]> = [
+    [1, 1, []],
+    [
+      1,
+      8,
+      [
+        "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7",
+        "5f083f0a1a33ca076a95279832580db3e0ef4584bdff1f54c8a360f50de3031e",
+        "6b47aaf29ee3c2af9af889bc1fb9254dabd31177f16232dd6aab035ca39bf6e4",
+      ],
+    ],
+    [
+      6,
+      8,
+      [
+        "bc1a0643b12e4d2d7c77918f44e0f4f79a838b6cf9ec5b5c283e1f4d88599e6b",
+        "ca854ea128ed050b41b35ffc1b87b8eb2bde461e9e3b5596ece6b9d5975a0ae0",
+        "d37ee418976dd95753c1c73862b9398fa2a2cf9b4ff0fdfe8b30cd95209614b7",
+      ],
+    ],
+    [3, 3, ["fac54203e7cc696cf0dfcb42c92a1d9dbaf70ad9e621f4bd8d98662f00e3c125"]],
+    [
+      2,
+      5,
+      [
+        "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+        "5f083f0a1a33ca076a95279832580db3e0ef4584bdff1f54c8a360f50de3031e",
+        "bc1a0643b12e4d2d7c77918f44e0f4f79a838b6cf9ec5b5c283e1f4d88599e6b",
+      ],
+    ],
+  ];
+
+  it.each(CT_PATHS)("matches the Certificate Transparency path for leaf %i of %i", (leaf, size, path) => {
+    const leaves = CT_LEAVES.slice(0, size);
+    expect(inclusionPath(leaves, leaf - 1)).toEqual(path);
+    expect(verifyInclusion({ leafData: CT_LEAVES[leaf - 1]!, index: leaf - 1, size, path, root: CT_ROOTS[size - 1]! })).toBe(true);
+  });
+
+  it("rejects a non-empty path in a one-leaf tree and an empty path in a larger one", () => {
+    expect(verifyInclusion({ leafData: CT_LEAVES[0]!, index: 0, size: 1, path: [CT_ROOTS[0]!], root: CT_ROOTS[0]! })).toBe(false);
+    expect(verifyInclusion({ leafData: CT_LEAVES[0]!, index: 0, size: 2, path: [], root: CT_ROOTS[0]! })).toBe(false);
+  });
+
   it("verifies against the Certificate Transparency leaves", () => {
     for (let size = 1; size <= 8; size++) {
       for (let index = 0; index < size; index++) {
@@ -390,6 +496,12 @@ describe("RFC 9162 Merkle trees", () => {
     );
     const root = merkleRoot(leaves);
     expect(verifyInclusion({ leafData: leaves[3]!, index: 3, size: 4, path: inclusionPath(leaves, 3), root })).toBe(true);
+  });
+
+  it("refuses record hashes that are not 64 lowercase hex characters", () => {
+    for (const bad of ["zz", "ab".repeat(33), "AB".repeat(32), ""]) {
+      expect(() => recordLeafData([{ hash: bad }])).toThrow(TypeError);
+    }
   });
 });
 

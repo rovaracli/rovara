@@ -23,7 +23,7 @@ function write(value: unknown): string {
     case "boolean":
       return value ? "true" : "false";
     case "string":
-      return JSON.stringify(value);
+      return writeString(value);
     case "number":
       if (!Number.isSafeInteger(value)) throw new RangeError("audit json: only safe integers");
       // String() writes -0 as "0", which is what RFC 8785 requires.
@@ -34,6 +34,17 @@ function write(value: unknown): string {
       // undefined, bigint, function and symbol have no JSON form.
       throw new TypeError(`audit json: cannot write a value of type ${typeof value}`);
   }
+}
+
+/** String.prototype.isWellFormed (Node 20+); the ES2023 lib this repo compiles with predates its typing. */
+export function isWellFormed(value: string): boolean {
+  return (value as string & { isWellFormed(): boolean }).isWellFormed();
+}
+
+/** RFC 8785 3.2.2.2: a lone surrogate is an error (and would not survive a UTF-8 round trip). */
+function writeString(value: string): string {
+  if (!isWellFormed(value)) throw new TypeError("audit json: lone surrogate in string");
+  return JSON.stringify(value);
 }
 
 function writeArray(items: readonly unknown[]): string {
@@ -48,8 +59,11 @@ function writeObject(object: object): string {
   if (prototype !== Object.prototype && prototype !== null) {
     throw new TypeError("audit json: only plain objects");
   }
+  if (Object.getOwnPropertySymbols(object).length > 0) {
+    throw new TypeError("audit json: symbol keys are not allowed");
+  }
   const entries = Object.entries(object as Record<string, unknown>);
   // The default sort compares strings by UTF-16 code units, as RFC 8785 3.2.3 requires.
   entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return `{${entries.map(([key, member]) => `${JSON.stringify(key)}:${write(member)}`).join(",")}}`;
+  return `{${entries.map(([key, member]) => `${writeString(key)}:${write(member)}`).join(",")}}`;
 }

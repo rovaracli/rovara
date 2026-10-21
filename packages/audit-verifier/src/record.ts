@@ -1,4 +1,4 @@
-import { canonicalJson, type JsonValue } from "./canonical-json.js";
+import { canonicalJson, isWellFormed, type JsonValue } from "./canonical-json.js";
 import { sha256Hex } from "./hash.js";
 
 export type AuditRecordV1 = {
@@ -40,15 +40,18 @@ const GENESIS_PREFIX = "rovara-audit-genesis-v1\n";
 
 /** sha256 of the record prefix and the canonical record without its `hash` field. */
 export function recordHash(record: Omit<AuditRecordV1, "hash"> & { hash?: string }): string {
-  const body: Record<string, JsonValue> = {};
-  for (const [key, value] of Object.entries(record)) {
-    if (key !== "hash") body[key] = value;
-  }
+  // fromEntries defines own properties, so a parsed record's own "__proto__" field is hashed
+  // (plain assignment would hit the prototype setter and drop it).
+  const body: Record<string, JsonValue> = Object.fromEntries(
+    Object.entries(record).filter(([key]) => key !== "hash"),
+  );
   return sha256Hex(RECORD_PREFIX + canonicalJson(body));
 }
 
 /** The `prevHash` of an org's first record and the `prevSealHash` of its first seal. */
 export function genesisHash(orgId: string): string {
+  // Hashing a lone surrogate as UTF-8 would turn it into U+FFFD and collide with other ids.
+  if (!isWellFormed(orgId)) throw new TypeError("audit record: orgId is not well-formed Unicode");
   return sha256Hex(GENESIS_PREFIX + orgId);
 }
 
@@ -58,7 +61,11 @@ export function sealHash(seal: OrgSealV1): string {
 
 /** A batch's Merkle leaf data: each record hash's 32 bytes, in the order given (`seq` order). */
 export function recordLeafData(records: readonly Pick<AuditRecordV1, "hash">[]): Uint8Array[] {
-  return records.map((record) => Uint8Array.from(Buffer.from(record.hash, "hex")));
+  return records.map((record) => {
+    // Buffer.from(.., "hex") truncates silently, so check the shape first.
+    if (!/^[0-9a-f]{64}$/.test(record.hash)) throw new TypeError("audit record: hash is not 32 bytes of hex");
+    return Uint8Array.from(Buffer.from(record.hash, "hex"));
+  });
 }
 
 /** A seal's Merkle leaf data (the leaves of an epoch): the UTF-8 canonical JSON of the seal. */
@@ -84,6 +91,10 @@ export function checkChain(
     if (record.orgId !== orgId) return { ok: false, seq: record.seq, problem: "org" };
     expectedSeq += 1;
     if (record.seq !== expectedSeq) return { ok: false, seq: record.seq, problem: "gap" };
+    // A chain that starts at seq 0 must start at the org's genesis, whatever the caller passed.
+    if (previous.seq === 0 && record.seq === 1 && previous.hash !== genesisHash(orgId)) {
+      return { ok: false, seq: record.seq, problem: "link" };
+    }
     if (record.prevHash !== expectedPrevHash) return { ok: false, seq: record.seq, problem: "link" };
     if (recordHash(record) !== record.hash) return { ok: false, seq: record.seq, problem: "hash" };
     expectedPrevHash = record.hash;
@@ -97,6 +108,7 @@ export function detailCommit(
   subject: string,
   fields: Record<string, JsonValue>,
 ): string {
+  if (salt.length < 16) throw new RangeError("audit record: detail salt must be at least 16 bytes");
   const body = new TextEncoder().encode(canonicalJson({ subject, fields }));
   const input = new Uint8Array(salt.length + body.length);
   input.set(salt, 0);
