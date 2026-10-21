@@ -1,0 +1,20 @@
+{
+  "rovara-code": {
+    "1": "1f3d988f8f6c4ae406aca2a61c7afbc378a08f14d3ce47e8037228d9195c989b"
+  },
+  "ticket-triage": {
+    "1": "b7a25dbd49ee2169ba1defcd50e7df8e82dc91ebf011eacac436f2601b74b05b"
+  },
+  "root-cause-analyst": {
+    "1": "9ff6a38bb4e3de7b842a2cd6abd72daafb0194ed131f5152ec3f9b30c9f3ac83"
+  },
+  "code-reviewer": {
+    "1": "00da81337f272ea916a5fa5a33b9a8cdd3ffed3cf69b5271ffd392537aaec35f"
+  },
+  "deploy-reviewer": {
+    "1": "57c5e9ee0b6c458a9432bd2d792fb822b7c0c280c29217bcfa00602698032aea"
+  },
+  "service-reviewer": {
+    "1": "c7dc3ed17a1f45e4d6bbbc692d2198e7c1abe2cef948011408118dd84ed0ff56"
+  }
+}
