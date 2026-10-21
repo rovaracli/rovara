@@ -4563,7 +4563,10 @@ async function taskOperationParts(
     workspaceId: workspace.id,
     fence,
     projectRevision: workspace.projectRevision,
-    callbackCapability: issueCapability(dependencies, workspace.id, operationId, fence, false, input.workflowMode === "FEEDBACK_REVIEW", input.workflowFeedbackApproval !== undefined, chatgpt !== undefined, input.workflowMode === "IMPLEMENT", input.workflowE2EAdmission !== undefined, dependencies.modelAccess !== undefined),
+    callbackCapability: issueCapability(dependencies, workspace.id, operationId, fence, {
+      feedbackBundles: input.workflowMode === "FEEDBACK_REVIEW", feedbackApproval: input.workflowFeedbackApproval !== undefined, chatGptToken: chatgpt !== undefined,
+      candidateExport: input.workflowMode === "IMPLEMENT", workflowE2E: input.workflowE2EAdmission !== undefined, modelAccess: dependencies.modelAccess !== undefined,
+    }),
     payload: {
       conversationId: input.conversationId,
       prompt,
@@ -5090,7 +5093,7 @@ async function acceptPullRequest(
     workspaceId,
     fence,
     projectRevision: workspace.projectRevision,
-    callbackCapability: issueCapability(dependencies, workspaceId, operationId, fence, true),
+    callbackCapability: issueCapability(dependencies, workspaceId, operationId, fence, { pullRequest: true }),
     payload: {
       mode: "create",
       project: workerProjectDefinition(project.definition),
@@ -5347,7 +5350,7 @@ async function acceptPullRequestLifecycle(
       workspaceId,
       fence,
       projectRevision: workspace.projectRevision,
-      callbackCapability: issueCapability(dependencies, workspaceId, operationId, fence, true),
+      callbackCapability: issueCapability(dependencies, workspaceId, operationId, fence, { pullRequest: true }),
       payload: {
         mode: request.action,
         project: workerProjectDefinition(project.definition),
@@ -5423,7 +5426,7 @@ async function acceptPullRequestLifecycle(
     workspaceId,
     fence,
     projectRevision: workspace.projectRevision,
-    callbackCapability: issueCapability(dependencies, workspaceId, operationId, fence, true),
+    callbackCapability: issueCapability(dependencies, workspaceId, operationId, fence, { pullRequest: true }),
     payload: {
       action: request.action,
       project: workerProjectDefinition(project.definition),

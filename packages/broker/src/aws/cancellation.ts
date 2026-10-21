@@ -111,7 +111,7 @@ export interface CallbackClaims {
   workspaceId: string;
   operationId: string;
   fence: number;
-  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "e2e-admission" | "e2e-evidence" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-access">;
+  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "e2e-admission" | "e2e-evidence" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-access" | "agent-skills">;
   expiresAt: number;
 }
 
@@ -208,18 +208,31 @@ export function outboxRecord(
   }
 }
 
+/**
+ * What a callback capability may do beyond the three every operation has (events, artifacts, result). Each flag adds its own actions;
+ * a flag left out, or false, adds none.
+ */
+export interface CapabilityOptions {
+  /** Open or update the task's pull request and run its CodeBuild checks. */
+  pullRequest?: boolean;
+  feedbackBundles?: boolean;
+  feedbackApproval?: boolean;
+  /** #341, #342: only a task that runs on its owner's ChatGPT plan may ask for the owner's access token, and say why it stopped using that plan. */
+  chatGptToken?: boolean;
+  candidateExport?: boolean;
+  workflowE2E?: boolean;
+  /** Ruling R29: ask for the key the operation calls models with, where the deployment has a model proxy. */
+  modelAccess?: boolean;
+  /** Plan 3 Task 9: read the skills of the operation's task snapshot (`GET /v1/internal/agent-skills`). */
+  agentSkills?: boolean;
+}
+
 export function issueCapability(
   dependencies: { callbackSigningKey: string },
   workspaceId: string,
   operationId: string,
   fence: number,
-  allowPullRequest = false,
-  allowFeedbackBundles = false,
-  allowFeedbackApproval = false,
-  allowChatGptToken = false,
-  allowCandidateExport = false,
-  allowWorkflowE2E = false,
-  allowModelAccess = false,
+  options: CapabilityOptions = {},
 ): string {
   const claims: CallbackClaims = {
     workspaceId,
@@ -229,18 +242,16 @@ export function issueCapability(
       "artifacts",
       "events",
       "result",
-      ...(allowCandidateExport ? ["candidate-export" as const] : []),
-      ...(allowWorkflowE2E ? ["e2e-admission" as const, "e2e-evidence" as const] : []),
-      ...(allowFeedbackBundles ? ["feedback-bundles" as const] : []),
-      ...(allowFeedbackApproval ? ["feedback-approval" as const] : []),
-      // #341: only a task that runs on its owner's ChatGPT plan may ask for the owner's access token.
-      // #342: and tell the control plane why it stopped using that plan.
-      ...(allowChatGptToken ? ["chatgpt-token" as const, "chatgpt-status" as const] : []),
-      // Ruling R29: a task operation may ask for the key it calls models with, where the deployment has a model proxy.
-      ...(allowModelAccess ? ["model-access" as const] : []),
-      ...(allowPullRequest
+      ...(options.candidateExport === true ? ["candidate-export" as const] : []),
+      ...(options.workflowE2E === true ? ["e2e-admission" as const, "e2e-evidence" as const] : []),
+      ...(options.feedbackBundles === true ? ["feedback-bundles" as const] : []),
+      ...(options.feedbackApproval === true ? ["feedback-approval" as const] : []),
+      ...(options.chatGptToken === true ? ["chatgpt-token" as const, "chatgpt-status" as const] : []),
+      ...(options.modelAccess === true ? ["model-access" as const] : []),
+      ...(options.pullRequest === true
         ? ["pull-request" as const, "pull-request-update" as const, "codebuild" as const]
         : []),
+      ...(options.agentSkills === true ? ["agent-skills" as const] : []),
     ],
     expiresAt: Math.floor(Date.now() / 1_000) + 32_400,
   };
