@@ -244,6 +244,10 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
     { Sid: "EcsFailureEventsRule", Effect: "Allow", Action: ["events:*"], Resource: ecsFailureRuleArn(scope) },
     // The operator's identity check.
     { Sid: "CallerIdentity", Effect: "Allow", Action: ["sts:GetCallerIdentity"], Resource: "*" },
+    // The sign-in function's notice of a newly linked sign-in method (Plan 2, Task 8) sends from a verified SES identity: ses:SendEmail
+    // by name, on this account's identities only. The region is any, since it sends in the region of the sender's identity ARN. Named, not
+    // ses:*, so a bounded role cannot reach SES's other actions.
+    { Sid: "SesSendNotice", Effect: "Allow", Action: ["ses:SendEmail"], Resource: `arn:${partition}:ses:*:${account}:identity/*` },
     // The broker assumes the ConnectorSecretsRole, with an org session tag, and no other role (sts:* would let a bounded role
     // assume any same-account role that trusts the account, escaping the boundary).
     {
