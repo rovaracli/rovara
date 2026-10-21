@@ -5,7 +5,7 @@
 // on changes nothing until the agent's owner takes the update. `resolveAgent` follows those pins down to a
 // built-in version or the empty recipe and applies each layer's overlay on the way back up.
 import { randomBytes } from "node:crypto";
-import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AGENT_DESCRIPTION_MAX,
   AGENT_NAME_MAX,
@@ -19,7 +19,6 @@ import {
   agentNameKey,
   agentRequestKey,
   agentVersionSk,
-  agentXError,
   applyOverlay,
   builtinRecipe,
   builtinSettingsKey,
@@ -37,7 +36,6 @@ import {
   type AgentOwner,
   type AgentPrincipal,
   type AgentXError,
-  type AgentXErrorCode,
   type BaseRef,
   type OrgId,
   type OrgKey,
@@ -47,17 +45,15 @@ import {
   type ResolvedSkill,
   type SkillRef,
 } from "@agentx/contracts";
+import {
+  Aliases, EXISTS, NOT_EXISTS, REQUEST_MEMORY_DAYS, coded, commit as commitTransaction, errorName, putNew, strip, transact as sendTransaction, updateItem, withoutUndefined,
+  type Item, type RequestMark, type TransactItem,
+} from "./table-writes.js";
 
 /** PF28: the most custom layers a recipe can be built from; a built-in base underneath is not counted. */
 export const MAX_CUSTOM_LAYERS = 3;
-/** How long a request item answers a repeat; the State table's TTL removes it after that, and a repeat later is a new request. */
-export const REQUEST_MEMORY_DAYS = 7;
-const NOT_EXISTS = "attribute_not_exists(pk)";
-const EXISTS = "attribute_exists(pk)";
+export { REQUEST_MEMORY_DAYS, type RequestMark };
 const SHA256_HEX = /^[a-f0-9]{64}$/;
-
-type Item = Record<string, unknown>;
-type TransactItem = NonNullable<ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]>[number];
 
 export interface AgentRecord {
   orgId: OrgId;
@@ -136,20 +132,6 @@ export type AgentEventKind =
   | "budget_changed"
   | "base_updated";
 
-/**
- * What makes a write repeatable (R18): the request's id and a fingerprint of what it asked. The store writes one item for it in the
- * same transaction as the change, holding what the change returned (`result`, unless the caller gives its own), so a repeat of the
- * request is answered from that item and writes nothing.
- */
-export interface RequestMark {
-  orgId: OrgId;
-  developerId: string;
-  requestId: string;
-  fingerprint: string;
-  /** Overrides what is remembered, for a write that returns nothing itself. */
-  result?: unknown;
-}
-
 /** The built-in agents as the store sees them; tests replace it to add a release without editing the shipped list. */
 export interface BuiltinSource {
   currentVersion(id: AgentId): number;
@@ -171,7 +153,6 @@ const SHIPPED_BUILTINS: BuiltinSource = {
   name: (id) => BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].name,
 };
 
-const coded = (code: AgentXErrorCode, message: string) => agentXError(code, message);
 const notFound = () => coded("NOT_FOUND", "no agent has that ID");
 const conflict = () => coded("AGENT_REVISION_CONFLICT", "Someone else changed this agent's draft. Reload it and make your change again.");
 const sharesConflict = () => coded("AGENT_REVISION_CONFLICT", "Someone else changed who this agent is shared with. Reload it and make your change again.");
@@ -179,49 +160,6 @@ const sharesConflict = () => coded("AGENT_REVISION_CONFLICT", "Someone else chan
 export const GUARDRAILS_CONFLICT_TEXT = "Someone else changed the company's agent guardrails. Reload them and make your change again.";
 const guardrailsConflict = () => coded("AGENT_REVISION_CONFLICT", GUARDRAILS_CONFLICT_TEXT);
 const nameTaken = (name: string) => coded("CONFIG_INVALID", `name: another agent in your company is called ${name}`);
-
-const errorName = (error: unknown) => (error instanceof Error ? error.name : undefined);
-
-/** The indexes of the TransactItems whose own condition failed; undefined when the error is not a cancellation. */
-function failedIndexes(error: unknown): Set<number> | undefined {
-  if (errorName(error) !== "TransactionCanceledException") return undefined;
-  const reasons = (error as { CancellationReasons?: unknown }).CancellationReasons;
-  if (!Array.isArray(reasons)) return undefined;
-  const failed = new Set<number>();
-  reasons.forEach((reason: { Code?: string } | undefined, index) => {
-    if (reason?.Code === "ConditionalCheckFailed") failed.add(index);
-  });
-  return failed;
-}
-
-function strip<T extends Item>(item: T): Omit<T, "pk" | "sk" | "entityType"> {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the keys
-  const { pk: _pk, sk: _sk, entityType: _type, ...rest } = item;
-  return rest;
-}
-
-/** Collects the `#name` and `:value` aliases of one expression, so no attribute name can hit a reserved word. */
-class Aliases {
-  readonly names: Record<string, string> = {};
-  readonly values: Record<string, unknown> = {};
-  private next = 0;
-
-  name(attribute: string): string {
-    const existing = Object.entries(this.names).find(([, name]) => name === attribute);
-    if (existing) return existing[0];
-    const alias = `#n${String(this.next++)}`;
-    this.names[alias] = attribute;
-    return alias;
-  }
-
-  value(value: unknown): string {
-    const alias = `:v${String(this.next++)}`;
-    this.values[alias] = value;
-    return alias;
-  }
-}
-
-const withoutUndefined = <T extends Item>(item: T): T => Object.fromEntries(Object.entries(item).filter(([, value]) => value !== undefined)) as T;
 
 function parseOverlay(overlay: unknown): RecipeOverlay {
   const parsed = RecipeOverlaySchema.safeParse(overlay);
@@ -276,26 +214,12 @@ export class AgentStore {
   }
 
   private put(key: OrgKey, entityType: string, fields: Item): TransactItem {
-    return { Put: { TableName: this.input.tableName, Item: { ...key, entityType, ...withoutUndefined(fields) }, ConditionExpression: NOT_EXISTS } };
+    return putNew(this.input, key, entityType, fields);
   }
 
   /** An Update of one item: `set` values (undefined skipped), `remove` attributes and a condition built from the same aliases. */
   private update(key: OrgKey, change: { set?: Item; remove?: string[]; when?: (aliases: Aliases) => string }): TransactItem {
-    const aliases = new Aliases();
-    const sets = Object.entries(change.set ?? {}).filter(([, value]) => value !== undefined).map(([name, value]) => `${aliases.name(name)} = ${aliases.value(value)}`);
-    const removes = (change.remove ?? []).map((name) => aliases.name(name));
-    const expression = [sets.length > 0 ? `SET ${sets.join(", ")}` : "", removes.length > 0 ? `REMOVE ${removes.join(", ")}` : ""].filter(Boolean).join(" ");
-    const condition = change.when?.(aliases) ?? EXISTS;
-    return {
-      Update: {
-        TableName: this.input.tableName,
-        Key: key,
-        UpdateExpression: expression,
-        ConditionExpression: condition,
-        ExpressionAttributeNames: aliases.names,
-        ...(Object.keys(aliases.values).length > 0 ? { ExpressionAttributeValues: aliases.values } : {}),
-      },
-    };
+    return updateItem(this.input, key, change);
   }
 
   /** The one EVENT# item a write leaves. The sequence keeps one process's events in order; the random tail keeps two processes' apart. */
@@ -305,36 +229,13 @@ export class AgentStore {
     return this.put(agentKey(orgId, agentId, `EVENT#${at}#${tail}`), "AGENT_EVENT", { orgId, agentId, kind, at, by, ...detail });
   }
 
-  private async transact(items: TransactItem[], refuse: (failed: Set<number>) => Error | undefined): Promise<void> {
-    try {
-      await this.input.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
-    } catch (error) {
-      const failed = failedIndexes(error);
-      const refusal = failed === undefined ? undefined : refuse(failed);
-      throw refusal ?? error;
-    }
+  private transact(items: TransactItem[], refuse: (failed: Set<number>) => Error | undefined): Promise<void> {
+    return sendTransaction(this.input, items, refuse);
   }
 
   /** `transact` with the request's own item added: the mark is written with the change or not at all. */
-  private async commit(items: TransactItem[], refuse: (failed: Set<number>) => Error | undefined, request?: RequestMark, result?: unknown): Promise<void> {
-    if (request === undefined) return this.transact(items, refuse);
-    const at = items.length;
-    const remembered = JSON.parse(JSON.stringify(request.result ?? result ?? null)) as unknown;
-    const nowSeconds = Math.floor(this.input.now() / 1000);
-    const mark: TransactItem = {
-      Put: {
-        TableName: this.input.tableName,
-        Item: {
-          ...agentRequestKey(request.orgId, request.developerId, request.requestId), entityType: "AGENT_REQUEST",
-          fingerprint: request.fingerprint, result: remembered, at: this.iso(), [INDEX_EXPIRY_ATTRIBUTE]: nowSeconds + REQUEST_MEMORY_DAYS * 86_400,
-        },
-        // An expired item the TTL has not removed yet is as good as gone.
-        ConditionExpression: "attribute_not_exists(pk) OR #expires <= :now",
-        ExpressionAttributeNames: { "#expires": INDEX_EXPIRY_ATTRIBUTE },
-        ExpressionAttributeValues: { ":now": nowSeconds },
-      },
-    };
-    return this.transact([...items, mark], (failed) => (failed.has(at) ? coded("IDEMPOTENCY_CONFLICT", "This request ID is already being used for another change.") : refuse(failed)));
+  private commit(items: TransactItem[], refuse: (failed: Set<number>) => Error | undefined, request?: RequestMark, result?: unknown): Promise<void> {
+    return commitTransaction(this.input, items, refuse, request, result);
   }
 
   // ---- reads

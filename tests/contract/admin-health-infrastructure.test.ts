@@ -114,7 +114,8 @@ describe("the health route's grants (A13)", () => {
       // The GitHub connect state row (Plan 2, Task 12): single-use, minutes long, and deleted by the TTL a retention period after it lapses.
       "packages/broker/src/org/github-connection.ts",
       // The agent request items (Plan 3, Task 7): one per marked write, kept 7 days so a retry is answered, then deleted by the TTL.
-      "packages/broker/src/agents/store.ts",
+      // table-writes.ts writes them for the agent store and the skill store; store.ts reads them back.
+      "packages/broker/src/agents/store.ts", "packages/broker/src/agents/table-writes.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);
