@@ -151,9 +151,10 @@ export const AUDIT_CHAIN_MISMATCH_EVENTS = ["audit.chain_mismatch", "audit.versi
 /**
  * The anchor's log events that mean the bucket's Object Lock, versioning or policy is not what it should be, or a sealed key
  * was changed (Task 9: `audit.lock_config_mismatch` from the drift check and the object check, `audit.version_drift` from the
- * sweep and from the checks before a write).
+ * sweep and from the checks before a write; `audit.lock_sweep_failed` when the sweep itself could not run, which does not stop
+ * the anchor but means the delete-marker and extra-version look was skipped).
  */
-export const AUDIT_LOCK_DRIFT_EVENTS = ["audit.lock_config_mismatch", "audit.version_drift"] as const;
+export const AUDIT_LOCK_DRIFT_EVENTS = ["audit.lock_config_mismatch", "audit.version_drift", "audit.lock_sweep_failed"] as const;
 
 /** A string that is a CDK token (a template value resolved at deploy time), not the text it will become. */
 export type TemplateTokenString = string & { readonly __templateToken: true };
@@ -613,9 +614,13 @@ export class AuditLedger extends Construct {
    * chains the epoch to the one before it. It is the only writer of the seals table. Its role is made here (nothing else
    * names it) and holds exactly these statements, plus the log group's write actions:
    *  - the seals table: `GetItem`, `PutItem`, `UpdateItem` and `Query`, for the partitions it keeps (`EPOCH#`, `EPOCH_HEAD`,
-   *    `SEALED#`, `SEALS#`, `BACKSTOP`, and since Task 9 `AUDIT_LOCK`: the one-way lock ratchet and the sweep's cursor). A
-   *    transaction authorizes each item by its own action, so these four cover the finalize. No `DeleteItem` (it never deletes
-   *    seal state or the ratchet), no `ConditionCheckItem`, no batch or scan action;
+   *    `SEALED#`, `SEALS#`, `BACKSTOP`, and since Task 9 `AUDIT_SWEEP`: the sweep's cursor). A transaction authorizes each
+   *    item by its own action, so these four cover the finalize. No `DeleteItem` (it never deletes seal state), no
+   *    `ConditionCheckItem`, no batch or scan action;
+   *  - the lock ratchet (`AUDIT_LOCK`, Task 9) in a statement of its own: `GetItem` and `PutItem` only. No `UpdateItem`, no
+   *    `DeleteItem`, no `Query`. IAM has no condition key for a condition expression, so that the put can only create the
+   *    item is the code's rule (`attribute_not_exists`, pinned by a test); what IAM removes is every other way of changing or
+   *    deleting it, and the code treats any existing item as the ratchet whatever it says;
    *  - the ledger table: `GetItem` and `Query` (the chain and the lists it reads), and `PutItem` and `DeleteItem` only for the
    *    dirty markers (`AUDIT_DIRTY`): the finalize deletes a marker, the hourly backstop puts one back. It cannot write a
    *    record, a head or a claim;
@@ -672,7 +677,13 @@ export class AuditLedger extends Construct {
           sid: "SealsTable",
           actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"],
           resources: [this.sealsTable.tableArn],
-          conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["EPOCH#*", "EPOCH_HEAD", "SEALED#*", "SEALS#*", "BACKSTOP", "AUDIT_LOCK"] } },
+          conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["EPOCH#*", "EPOCH_HEAD", "SEALED#*", "SEALS#*", "BACKSTOP", "AUDIT_SWEEP"] } },
+        }),
+        new iam.PolicyStatement({
+          sid: "LockRatchet",
+          actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
+          resources: [this.sealsTable.tableArn],
+          conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT_LOCK"] } },
         }),
         new iam.PolicyStatement({
           sid: "LedgerRead",

@@ -834,6 +834,7 @@ describe("the audit ledger in templates", () => {
             "AuditLedgerAuditAnchorPolicy/LedgerBucketVersions",
             "AuditLedgerAuditAnchorPolicy/LedgerDirtyMarkers",
             "AuditLedgerAuditAnchorPolicy/LedgerRead",
+            "AuditLedgerAuditAnchorPolicy/LockRatchet",
             "AuditLedgerAuditAnchorPolicy/SealsTable",
             "AuditLedgerAuditAppenderPolicy/KeysTable",
             "AuditLedgerAuditAppenderPolicy/LedgerTable",
@@ -1195,7 +1196,7 @@ describe("the audit ledger in templates", () => {
     const LEDGER_BUCKET = "AuditLedgerAuditLedgerBucket.Arn";
     const EXPORTS_BUCKET = "AuditLedgerAuditExportsBucket.Arn";
     const STATE = "State.Arn";
-    const SEAL_PARTITIONS = ["EPOCH#*", "EPOCH_HEAD", "SEALED#*", "SEALS#*", "BACKSTOP", "AUDIT_LOCK"];
+    const SEAL_PARTITIONS = ["EPOCH#*", "EPOCH_HEAD", "SEALED#*", "SEALS#*", "BACKSTOP", "AUDIT_SWEEP"];
     const functionOf = (synthesis: Synth) => one(synthesis.template, "AWS::Lambda::Function", "AuditLedgerAuditAnchor");
     const identity = (synthesis: Synth): IamStatement[] => roleStatements(synthesis.template, one(synthesis.template, "AWS::IAM::Role", ROLE)[0], concreteAws);
     const ownStatements = (synthesis: Synth): Statement[] => {
@@ -1261,6 +1262,10 @@ describe("the audit ledger in templates", () => {
               Resource: SEALS,
               Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": SEAL_PARTITIONS } },
             },
+            {
+              Sid: "LockRatchet", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Resource: SEALS,
+              Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT_LOCK"] } },
+            },
             { Sid: "LedgerRead", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query"], Resource: LEDGER },
             {
               Sid: "LedgerDirtyMarkers", Effect: "Allow", Action: ["dynamodb:PutItem", "dynamodb:DeleteItem"], Resource: LEDGER,
@@ -1273,12 +1278,12 @@ describe("the audit ledger in templates", () => {
               Action: ["s3:GetBucketObjectLockConfiguration", "s3:GetBucketVersioning", "s3:GetBucketPolicy"], Resource: LEDGER_BUCKET,
             },
           ]);
-          // The whole identity of the role: those six and the log group's write actions. No managed policy.
+          // The whole identity of the role: those seven and the log group's write actions. No managed policy.
           expect(sortedBySid(identity(synthesis))).toStrictEqual(sortedBySid([
             ...(ownStatements(synthesis) as IamStatement[]),
             { Effect: "Allow", Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: "AuditLedgerAuditAnchorLogs.Arn" },
           ]));
-          expect(identity(synthesis)).toHaveLength(7);
+          expect(identity(synthesis)).toHaveLength(8);
         });
 
         it("names no NotAction, no NotResource and no wildcard resource", () => {
@@ -1302,12 +1307,20 @@ describe("the audit ledger in templates", () => {
             }
           });
 
-          it("keeps the lock ratchet and the sweep's cursor under AUDIT_LOCK: read and written, never deleted", () => {
+          it("lets it read and create the lock ratchet under AUDIT_LOCK and nothing else there: no UpdateItem, no DeleteItem, no query", () => {
             for (const action of ["dynamodb:GetItem", "dynamodb:PutItem"]) expect(request(action, SEALS, ["AUDIT_LOCK"]).allowed, action).toBe(true);
-            expect(request("dynamodb:DeleteItem", SEALS, ["AUDIT_LOCK"]).allowed).toBe(false);
-            for (const keys of [["AUDIT_LOCKS"], ["AUDIT_LOC"], ["audit_lock"], ["AUDIT_LOCK", "AUDIT_DIRTY"]]) expect(request("dynamodb:PutItem", SEALS, keys).allowed, keys.join(",")).toBe(false);
+            for (const action of ["dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:ConditionCheckItem", "dynamodb:Scan", "dynamodb:BatchWriteItem", "dynamodb:*"]) {
+              expect(request(action, SEALS, ["AUDIT_LOCK"]).allowed, action).toBe(false);
+            }
+            for (const keys of [["AUDIT_LOCKS"], ["AUDIT_LOC"], ["audit_lock"], ["AUDIT_LOCK", "AUDIT_DIRTY"], ["AUDIT_LOCK", "EPOCH_HEAD"]]) expect(request("dynamodb:PutItem", SEALS, keys).allowed, keys.join(",")).toBe(false);
             // The ledger table has no such partition for it.
             expect(request("dynamodb:PutItem", LEDGER, ["AUDIT_LOCK"]).allowed).toBe(false);
+            // IAM cannot say "only with a condition expression"; the code writes it with attribute_not_exists and a test pins that.
+          });
+
+          it("keeps the sweep's cursor in a partition of its own (AUDIT_SWEEP), where it may be read, moved and queried, never deleted", () => {
+            for (const action of ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]) expect(request(action, SEALS, ["AUDIT_SWEEP"]).allowed, action).toBe(true);
+            expect(request("dynamodb:DeleteItem", SEALS, ["AUDIT_SWEEP"]).allowed).toBe(false);
           });
 
           it("denies the seals table to every other action, and its partitions to any other key", () => {
@@ -1513,7 +1526,7 @@ describe("the audit ledger in templates", () => {
             MetricTransformations: [{ MetricName: "AuditObjectConflict", MetricNamespace: namespace, MetricValue: "1" }],
           });
           expect(filter("AuditLedgerAuditLockDriftMetric")).toStrictEqual({
-            LogGroupName: { Ref: logGroupId }, FilterPattern: '{ ($.event = "audit.lock_config_mismatch") || ($.event = "audit.version_drift") }',
+            LogGroupName: { Ref: logGroupId }, FilterPattern: '{ ($.event = "audit.lock_config_mismatch") || ($.event = "audit.version_drift") || ($.event = "audit.lock_sweep_failed") }',
             MetricTransformations: [{ MetricName: "AuditLockDrift", MetricNamespace: namespace, MetricValue: "1" }],
           });
           const alarm = (id: string) => one(synthesis.template, "AWS::CloudWatch::Alarm", id)[1].Properties;

@@ -84,12 +84,12 @@ export const AuditLockProfileSchema = z.enum(["production", "trial"]);
 export type AuditLockProfileAnswer = z.infer<typeof AuditLockProfileSchema>;
 
 /**
- * The profile an install of this name starts with when nobody chooses one: `trial` for staging, test and dev* (the names
+ * The profile an install of this name starts with when nobody chooses one: `trial` for staging, test, dev and dev-<suffix> (the names
  * the infrastructure's auditLockSettings gives a 1 day governance lock), `production` for every other name. Keep this in
  * step with isTrialEnvironment in infra/lib/audit-settings.ts.
  */
 export function defaultAuditLockProfile(env: string): AuditLockProfileAnswer {
-  return env === "staging" || env === "test" || env.startsWith("dev") ? "trial" : "production";
+  return /^(?:staging|test|dev|dev-.+)$/.test(env) ? "trial" : "production";
 }
 
 /** What the CLI says when a move from production to trial is asked for (the ledger's records are locked for 3 years). */

@@ -42,7 +42,7 @@ import {
   type LockedObjectV1,
   type OrgSealV1,
 } from "@agentx/contracts";
-import { currentFloor, enforceObjectLock, runLockChecks, type LockCheckDeps } from "./lock-check.js";
+import { currentLockState, enforceObjectLock, runLockChecks, type LockCheckDeps } from "./lock-check.js";
 
 /** The event the schedule sends (EventBridge Scheduler, every 15 minutes). */
 export const AUDIT_EPOCH_SOURCE = "agentx.audit-epoch";
@@ -692,13 +692,13 @@ async function writeEpochObjects(ctx: Context, meta: EpochMeta, statement: Epoch
  * as `audit.lock_config_mismatch` with the object.
  */
 async function enforceEpochLocks(ctx: Context, meta: EpochMeta): Promise<void> {
-  const floor = await currentFloor(ctx.deps);
+  const { floor, ratchetSince } = await currentLockState(ctx.deps);
   const epochObjects = meta.objects === undefined ? [] : [meta.objects.statement, meta.objects.leaves];
-  const epoch = await enforceObjectLock(ctx.deps, epochObjects, ctx.now, { floor, context: { epochId: meta.epochId } });
+  const epoch = await enforceObjectLock(ctx.deps, epochObjects, ctx.now, { floor, ratchetSince, context: { epochId: meta.epochId } });
   if (!epoch.ok) throw new StopRun("lock_config_mismatch", undefined);
   const pending = (await readIntents(ctx, meta.epochId)).filter((intent) => intent.seal !== undefined && intent.objects !== undefined && !intent.finalized && intent.skipped === undefined && intent.blocked === undefined);
   await eachPage(pending, async (intent) => {
-    const checked = await enforceObjectLock(ctx.deps, [intent.objects!.records, intent.objects!.seal], ctx.now, { floor, context: { orgId: intent.orgId, epochId: meta.epochId } });
+    const checked = await enforceObjectLock(ctx.deps, [intent.objects!.records, intent.objects!.seal], ctx.now, { floor, ratchetSince, context: { orgId: intent.orgId, epochId: meta.epochId } });
     if (!checked.ok) await blockIntent(ctx, meta, intent, "lock_config_mismatch");
   });
 }

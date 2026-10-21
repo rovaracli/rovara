@@ -18,7 +18,7 @@ export interface AuditLockSettings {
 
 /** Only these environments may run the ledger in governance mode for a short time; every other name is a real install. */
 function isTrialEnvironment(env: string): boolean {
-  return env === "staging" || env === "test" || env.startsWith("dev");
+  return /^(?:staging|test|dev|dev-.+)$/.test(env);
 }
 
 function parseMode(value: unknown): AuditLockMode | undefined {
@@ -36,7 +36,7 @@ function parseDays(value: unknown): number | undefined {
 
 /**
  * The Object Lock mode and retention of the ledger bucket. The context (`agentxAuditLockMode`,
- * `agentxAuditRetentionDays`) wins; otherwise `staging`, `test` and `dev*` get governance for one day and every
+ * `agentxAuditRetentionDays`) wins; otherwise `staging`, `test`, `dev` and `dev-<suffix>` get governance for one day and every
  * other environment compliance for 1,096 days. A setting below the environment's floor throws at synth.
  */
 export function auditLockSettings(naming: AgentXNaming, context: { lockMode?: unknown; retentionDays?: unknown }): AuditLockSettings {

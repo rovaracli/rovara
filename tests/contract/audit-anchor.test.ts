@@ -1127,7 +1127,7 @@ describe("the anchor's use of DynamoDB stays inside its grants", () => {
     }
     // Only the seals table's own partitions are ever written there, and only with actions the pinned policy names.
     expect(new Set(onSeals.map((operation) => operation.action))).toStrictEqual(new Set(["GetItem", "Query", "PutItem", "UpdateItem"]));
-    for (const operation of onSeals) expect(operation.pk, operation.pk).toMatch(/^(EPOCH#|EPOCH_HEAD$|SEALED#|SEALS#|BACKSTOP$|AUDIT_LOCK$)/);
+    for (const operation of onSeals) expect(operation.pk, operation.pk).toMatch(/^(EPOCH#|EPOCH_HEAD$|SEALED#|SEALS#|BACKSTOP$|AUDIT_LOCK$|AUDIT_SWEEP$)/);
     expect(h.operations.every((operation) => [LEDGER, SEALS].includes(operation.table))).toBe(true);
     // The appender's partitions are only ever read.
     for (const operation of onLedger.filter((entry) => entry.pk.startsWith("AUDIT#") || entry.pk === "AUDIT_ORGS")) expect(["GetItem", "Query"]).toContain(operation.action);

@@ -10,6 +10,8 @@ import { AUDIT_VERSION_SWEEP_KEYS_PER_RUN, ENVIRONMENT_PLACEHOLDER } from "@agen
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import type { AuditLedger } from "../../infra/lib/audit-ledger.js";
 import { auditLockSettings } from "../../infra/lib/audit-settings.js";
+import { defaultAuditLockProfile } from "../../packages/cli/src/deploy/answer-schemas.js";
+import { AUDIT_LOCK_DRIFT_EVENTS } from "../../infra/lib/audit-ledger.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { recordsObjectKey, sealObjectKey, statementObjectKey } from "../../packages/broker/src/audit/anchor.js";
 import {
@@ -24,7 +26,7 @@ import {
   type LockFloor,
 } from "../../packages/broker/src/audit/lock-check.js";
 import {
-  A, ACCOUNT, B, C, E0, E1, PARTITION, REGION, START, at, appendRecords, bucketPolicyText, epochHead, eventsOf, harness, intentOf, metaOf, run, stateOf, type Harness,
+  A, ACCOUNT, B, BUCKET, C, E0, E1, PARTITION, REGION, START, at, appendRecords, bucketPolicyText, epochHead, eventsOf, harness, intentOf, metaOf, run, stateOf, type Harness,
 } from "../support/audit-anchor-harness.js";
 import { evaluate } from "../support/cfn-evaluate.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
@@ -41,7 +43,7 @@ const policyContext = (envName: string) => ({ envName, partition: PARTITION, acc
 
 describe("lockFloor: in code, from the environment's name, the profile and the ratchet", () => {
   it("is governance for one day for staging, test and dev*, whatever the profile says", () => {
-    for (const env of ["staging", "test", "dev", "dev-eu", "development"]) {
+    for (const env of ["staging", "test", "dev", "dev-eu", "dev-a-b"]) {
       for (const profile of ["production", "trial"] as const) expect(lockFloor(env, profile), `${env} ${profile}`).toStrictEqual({ mode: "GOVERNANCE", days: 1 });
     }
   });
@@ -50,6 +52,19 @@ describe("lockFloor: in code, from the environment's name, the profile and the r
     for (const env of ["production", "acme", "ops-team", "stagingx", "tester"]) {
       expect(lockFloor(env), env).toStrictEqual({ mode: "COMPLIANCE", days: 365 });
       expect(lockFloor(env, "production"), env).toStrictEqual({ mode: "COMPLIANCE", days: 365 });
+    }
+  });
+
+  it("knows the test names exactly: staging, test, dev, or dev-<suffix>, and nothing that merely starts with dev", () => {
+    for (const env of ["devices", "devco", "development", "dev-", "dev_eu", "Dev", "staging-eu", "testing", "stagin"]) {
+      expect(lockFloor(env), env).toStrictEqual({ mode: "COMPLIANCE", days: 365 });
+      expect(lockFloor(env, "production"), env).toStrictEqual({ mode: "COMPLIANCE", days: 365 });
+    }
+    // The infrastructure and the CLI use the same rule.
+    for (const env of ["devices", "devco", "dev", "dev-eu", "staging", "test", "acme"]) {
+      const { floor } = auditLockSettings(environmentNaming(env), {});
+      expect(lockFloor(env, floor.mode === "GOVERNANCE" ? "trial" : "production"), env).toStrictEqual(floor);
+      expect(defaultAuditLockProfile(env), env).toBe(floor.mode === "GOVERNANCE" ? "trial" : "production");
     }
   });
 
@@ -64,6 +79,17 @@ describe("lockFloor: in code, from the environment's name, the profile and the r
     }
     // A test name keeps its one day, but not its governance.
     expect(lockFloor("staging", "trial", true)).toStrictEqual({ mode: "COMPLIANCE", days: 1 });
+  });
+
+  it("is never lowered by the environment's name once the ratchet recorded its days: a test name after a 365-day ratchet still needs 365", () => {
+    for (const env of ["staging", "test", "dev", "dev-eu"]) {
+      for (const profile of ["production", "trial"] as const) expect(lockFloor(env, profile, true, 365), `${env} ${profile}`).toStrictEqual({ mode: "COMPLIANCE", days: 365 });
+    }
+    // A test name's own ratchet keeps its one day; a stored value above the name's floor wins, one below it does not.
+    expect(lockFloor("staging", "trial", true, 1)).toStrictEqual({ mode: "COMPLIANCE", days: 1 });
+    expect(lockFloor("acme", "production", true, 1096)).toStrictEqual({ mode: "COMPLIANCE", days: 1096 });
+    expect(lockFloor("acme", "production", true, 30)).toStrictEqual({ mode: "COMPLIANCE", days: 365 });
+    for (const garbage of [undefined, 0, -5, Number.NaN, Number.POSITIVE_INFINITY]) expect(lockFloor("acme", "trial", true, garbage), String(garbage)).toStrictEqual({ mode: "COMPLIANCE", days: 365 });
   });
 
   it("agrees with the floor the infrastructure refuses to synthesize below", () => {
@@ -231,12 +257,85 @@ describe("checkLockDrift (each run)", () => {
   });
 
   describe("the one-way ratchet (controller ruling 1)", () => {
-    it("writes a marker the first time it sees COMPLIANCE, once, and never moves it", async () => {
+    it("writes a marker the first time it sees COMPLIANCE, with the floor's days and the bucket's name, once, and never moves it", async () => {
       const h = harness();
       await checkLockDrift(h.deps, START);
-      expect(h.db.get("AUDIT_LOCK", "RATCHET")).toMatchObject({ mode: "COMPLIANCE", since: new Date(START).toISOString() });
+      expect(h.db.get("AUDIT_LOCK", "RATCHET")).toStrictEqual({ pk: "AUDIT_LOCK", sk: "RATCHET", mode: "COMPLIANCE", days: 365, bucket: BUCKET, since: new Date(START).toISOString() });
       await checkLockDrift(h.deps, at(10));
-      expect(h.db.get("AUDIT_LOCK", "RATCHET")).toMatchObject({ mode: "COMPLIANCE", since: new Date(START).toISOString() });
+      expect(h.db.get("AUDIT_LOCK", "RATCHET")).toMatchObject({ mode: "COMPLIANCE", days: 365, bucket: BUCKET, since: new Date(START).toISOString() });
+    });
+
+    it("records a test name's own days (one) when that is its floor", async () => {
+      const h = harness({ envName: "staging", profile: "production", retention: { mode: "COMPLIANCE", days: 1 } });
+      await checkLockDrift(h.deps, START);
+      expect(h.db.get("AUDIT_LOCK", "RATCHET")).toMatchObject({ mode: "COMPLIANCE", days: 1, bucket: BUCKET });
+    });
+
+    it("can only be created: every write to the ratchet over many runs is a PutItem with attribute_not_exists, never an update or an unconditional put", async () => {
+      const h = harness();
+      const writes: Array<{ name: string; condition: unknown }> = [];
+      h.hooks.before = (command) => {
+        const input = command.input as { Item?: { pk?: string; sk?: string }; Key?: { pk?: string; sk?: string } };
+        const target = input.Item ?? input.Key;
+        if (target?.pk === "AUDIT_LOCK" && target.sk === "RATCHET" && command.constructor.name !== "GetCommand") writes.push({ name: command.constructor.name, condition: command.input.ConditionExpression });
+      };
+      appendRecords(h, A, 2);
+      await run(h, at(0));
+      h.clock.now = at(1);
+      appendRecords(h, A, 2);
+      await run(h, at(1));
+      await run(h, at(2));
+      expect(writes).toStrictEqual([{ name: "PutCommand", condition: "attribute_not_exists(pk)" }]);
+      // The sweep's cursor lives under AUDIT_SWEEP, so the only thing the anchor ever writes under AUDIT_LOCK is that one create-only put.
+      expect(h.operations.filter((operation) => operation.pk === "AUDIT_LOCK").map((operation) => operation.action).filter((action) => action !== "GetItem")).toStrictEqual(["PutItem"]);
+    });
+
+    it("treats any existing marker as ratcheted, whatever its mode field says (a corrupted or rewritten marker fails closed)", async () => {
+      for (const marker of [{ mode: "GOVERNANCE" }, { mode: "" }, {}, { mode: 7 }, { mode: "COMPLIANCE", days: "x" }]) {
+        const h = harness({ retention: { mode: "GOVERNANCE", days: 1 }, profile: "trial" });
+        h.db.set({ pk: "AUDIT_LOCK", sk: "RATCHET", bucket: BUCKET, since: "2026-01-01T00:00:00.000Z", ...marker });
+        h.logs.length = 0;
+        const status = await checkLockDrift(h.deps, START);
+        expect(status, JSON.stringify(marker)).toStrictEqual({ ok: false, floor: { mode: "COMPLIANCE", days: 365 }, ratcheted: true });
+        expect(mismatches(h), JSON.stringify(marker)).toContainEqual(expect.objectContaining({ check: "default_retention_floor", expected: { mode: "COMPLIANCE", days: 365 } }));
+        expect(await currentFloor(h.deps), JSON.stringify(marker)).toStrictEqual({ mode: "COMPLIANCE", days: 365 });
+      }
+    });
+
+    it("is not lowered by AUDIT_ENV_NAME: a staging, test or dev name after a production ratchet still requires COMPLIANCE for 365 days", async () => {
+      for (const envName of ["staging", "test", "dev", "dev-eu"]) {
+        const h = harness();
+        await checkLockDrift(h.deps, START);
+        // A template edit renames the environment and a governance or short compliance bucket goes with it.
+        h.deps.lock = { ...h.deps.lock, envName, profile: "trial" };
+        h.s3.setDefaultRetention("COMPLIANCE", 1);
+        h.logs.length = 0;
+        expect(await checkLockDrift(h.deps, at(1)), envName).toMatchObject({ ok: false, floor: { mode: "COMPLIANCE", days: 365 }, ratcheted: true });
+        expect(mismatches(h), envName).toContainEqual(expect.objectContaining({ check: "default_retention_floor", expected: { mode: "COMPLIANCE", days: 365 }, actual: { mode: "COMPLIANCE", days: 1 } }));
+        h.s3.setDefaultRetention("GOVERNANCE", 1);
+        expect(await checkLockDrift(h.deps, at(2)), envName).toMatchObject({ ok: false });
+        expect(await currentFloor(h.deps), envName).toStrictEqual({ mode: "COMPLIANCE", days: 365 });
+      }
+    });
+
+    it("logs audit.lock_config_mismatch and blocks when the ratchet names another bucket than the configured one", async () => {
+      const h = harness();
+      h.db.set({ pk: "AUDIT_LOCK", sk: "RATCHET", mode: "COMPLIANCE", days: 365, bucket: "some-other-bucket", since: "2026-01-01T00:00:00.000Z" });
+      const status = await checkLockDrift(h.deps, START);
+      expect(status).toMatchObject({ ok: false, ratcheted: true });
+      expect(mismatches(h)).toStrictEqual([expect.objectContaining({ level: "error", check: "ratchet_bucket", expected: BUCKET, actual: "some-other-bucket" })]);
+      // The anchor does not finalize anything either.
+      const blocked = harness();
+      blocked.db.set({ pk: "AUDIT_LOCK", sk: "RATCHET", mode: "COMPLIANCE", days: 365, bucket: "some-other-bucket", since: "2026-01-01T00:00:00.000Z" });
+      appendRecords(blocked, A, 3);
+      expect(await run(blocked, at(0))).toMatchObject({ status: "stopped", reason: "lock_config_mismatch", epochs: [] });
+      expect(blocked.s3.putCalls()).toHaveLength(0);
+      expect(stateOf(blocked, A)).toBeUndefined();
+      // A marker with no bucket name at all is the same (it fails closed).
+      const nameless = harness();
+      nameless.db.set({ pk: "AUDIT_LOCK", sk: "RATCHET", mode: "COMPLIANCE", days: 365, since: "2026-01-01T00:00:00.000Z" });
+      expect(await checkLockDrift(nameless.deps, START)).toMatchObject({ ok: false });
+      expect(mismatches(nameless)).toContainEqual(expect.objectContaining({ check: "ratchet_bucket", expected: BUCKET }));
     });
 
     it("keeps the floor at compliance when a later deploy says trial, and alarms on the governance bucket", async () => {
@@ -263,14 +362,14 @@ describe("checkLockDrift (each run)", () => {
 
     it("is written with a condition, so a second writer cannot move the since date, and reads strongly consistently", async () => {
       const h = harness();
-      h.db.set({ pk: "AUDIT_LOCK", sk: "RATCHET", mode: "COMPLIANCE", since: "2026-01-01T00:00:00.000Z" });
+      h.db.set({ pk: "AUDIT_LOCK", sk: "RATCHET", mode: "COMPLIANCE", days: 365, bucket: BUCKET, since: "2026-01-01T00:00:00.000Z" });
       await checkLockDrift(h.deps, START);
       expect(h.db.get("AUDIT_LOCK", "RATCHET")).toMatchObject({ since: "2026-01-01T00:00:00.000Z" });
       // A marker written between the read and the write is the same ratchet.
       const raced = harness();
       raced.hooks.before = (command) => {
         if (command.constructor.name === "PutCommand" && (command.input.Item as { pk?: string }).pk === "AUDIT_LOCK") {
-          raced.db.set({ pk: "AUDIT_LOCK", sk: "RATCHET", mode: "COMPLIANCE", since: "2026-02-02T00:00:00.000Z" });
+          raced.db.set({ pk: "AUDIT_LOCK", sk: "RATCHET", mode: "COMPLIANCE", days: 365, bucket: BUCKET, since: "2026-02-02T00:00:00.000Z" });
         }
       };
       expect(await checkLockDrift(raced.deps, START)).toMatchObject({ ok: true, ratcheted: true });
@@ -416,6 +515,47 @@ describe("enforceObjectLock", () => {
     expect(await enforceObjectLock(h.deps, [seal], at(0))).toMatchObject({ ok: false });
   });
 
+  describe("an object is judged by the profile in force when it was written (a trial install that became production)", () => {
+    const ratchetAt = (h: Harness, sinceMs: number) => h.db.set({ pk: "AUDIT_LOCK", sk: "RATCHET", mode: "COMPLIANCE", days: 365, bucket: BUCKET, since: new Date(sinceMs).toISOString() });
+
+    it("holds an object written before the ratchet to the trial floor it was written under, and one written after it to the ratchet", async () => {
+      const h = harness({ envName: "acme", profile: "trial", retention: { mode: "GOVERNANCE", days: 1 } });
+      const { records, seal } = await sealed(h);
+      // The stack is updated to production: the bucket is compliance from now on, the ratchet is set by the next run.
+      h.s3.setDefaultRetention("COMPLIANCE", 1096);
+      h.deps.lock = { ...h.deps.lock, profile: "production", deployed: { mode: "COMPLIANCE", days: 1096 } };
+      expect(await checkLockDrift(h.deps, at(1))).toMatchObject({ ok: true, ratcheted: true });
+      expect(await enforceObjectLock(h.deps, [records, seal], at(1))).toStrictEqual({ ok: true, failed: [] });
+      // An object that is written under the ratchet carries the ratchet's floor.
+      h.clock.now = at(2);
+      h.s3.forceVersion("late-key", "late");
+      const lateVersion = h.s3.versionsOf("late-key")[0]!;
+      h.s3.setObjectLock("late-key", lateVersion.versionId, { mode: "GOVERNANCE", retainUntil: at(2) + DAY });
+      const lateObject = { key: "late-key", versionId: lateVersion.versionId, lastModified: new Date(at(2)).toISOString(), lockMode: "GOVERNANCE" as const, retainUntil: new Date(at(2) + DAY).toISOString() };
+      expect(await enforceObjectLock(h.deps, [lateObject], at(2))).toMatchObject({ ok: false });
+    });
+
+    it("still refuses an old object that has no lock at all", async () => {
+      const h = harness({ envName: "acme", profile: "trial", retention: { mode: "GOVERNANCE", days: 1 } });
+      const { seal } = await sealed(h);
+      ratchetAt(h, at(1));
+      h.s3.setObjectLock(seal.key, seal.versionId, { retainUntil: at(0) - DAY });
+      expect(await enforceObjectLock(h.deps, [seal], at(1))).toMatchObject({ ok: false });
+    });
+
+    it("uses a margin around the ratchet's time: an object written within seconds of it (S3 truncates to the second) gets the ratchet's floor", async () => {
+      const h = harness({ envName: "acme", profile: "trial", retention: { mode: "GOVERNANCE", days: 1 } });
+      const { seal } = await sealed(h);
+      const writtenAt = h.s3.versionsOf(seal.key)[0]!.lastModified;
+      ratchetAt(h, writtenAt + 1000);
+      expect(await enforceObjectLock(h.deps, [seal], at(1))).toMatchObject({ ok: false });
+      ratchetAt(h, writtenAt);
+      expect(await enforceObjectLock(h.deps, [seal], at(1))).toMatchObject({ ok: false });
+      ratchetAt(h, writtenAt + 60_000);
+      expect(await enforceObjectLock(h.deps, [seal], at(1))).toMatchObject({ ok: true });
+    });
+  });
+
   it("calls an object that is gone a mismatch, and lets any other error out", async () => {
     const h = harness();
     const { records, seal } = await sealed(h);
@@ -545,6 +685,43 @@ describe("the anchor does not finalize when the lock is wrong", () => {
     expect(mismatches(h)).toContainEqual(expect.objectContaining({ check: "default_retention_floor", expected: { mode: "COMPLIANCE", days: 365 }, actual: { mode: "GOVERNANCE", days: 1 } }));
     expect(stateOf(h, A)).toMatchObject({ sealedSeq: 3 });
     expect(h.s3.putCalls().filter((call) => (call.key ?? "").includes(E1))).toHaveLength(0);
+  });
+
+  it("a trial install upgraded to production while an epoch is open finishes that epoch (its objects keep their trial floor), then seals under compliance", async () => {
+    const h = harness({ envName: "acme", profile: "trial", retention: { mode: "GOVERNANCE", days: 1 } });
+    appendRecords(h, A, 3);
+    appendRecords(h, B, 2);
+    // The run dies before any org is finalized: the epoch stays open with GOVERNANCE/1 objects.
+    h.hooks.before = (command) => {
+      if (command.constructor.name !== "TransactWriteCommand") return;
+      const items = command.input.TransactItems as Array<Record<string, { Item?: { pk?: string } }>>;
+      if (items.some((entry) => entry.Put?.Item?.pk?.startsWith("SEALED#") === true)) throw Object.assign(new Error("the process died"), { name: "ProcessDied" });
+    };
+    await expect(run(h, at(0))).rejects.toThrow("the process died");
+    h.hooks.before = undefined;
+    expect(epochHead(h)).toMatchObject({ openEpochId: E0 });
+    expect(h.db.get("AUDIT_LOCK", "RATCHET")).toBeUndefined();
+
+    // The stack is updated to production: compliance bucket, the production profile.
+    h.s3.setDefaultRetention("COMPLIANCE", 1096);
+    h.deps.lock = { ...h.deps.lock, profile: "production", deployed: { mode: "COMPLIANCE", days: 1096 } };
+    h.clock.now = at(1);
+    h.logs.length = 0;
+    expect(await run(h, at(1))).toMatchObject({ status: "sealed", epochs: [expect.objectContaining({ epochId: E0, resumed: true, orgs: 2, blocked: 0 })] });
+    expect(h.db.get("AUDIT_LOCK", "RATCHET")).toMatchObject({ mode: "COMPLIANCE", days: 365, bucket: BUCKET });
+    expect(stateOf(h, A)).toMatchObject({ sealedSeq: 3 });
+    expect(stateOf(h, B)).toMatchObject({ sealedSeq: 2 });
+    expect(lockLogs(h)).toStrictEqual([]);
+
+    // The objects written from now on carry the ratchet's floor: a governance seal is refused.
+    h.clock.now = at(2);
+    appendRecords(h, A, 2);
+    h.s3.after = (call) => {
+      if (call.command === "PutObject" && call.key === sealObjectKey(A, 4)) h.s3.setObjectLock(call.key, h.s3.versionsOf(call.key)[0]!.versionId, { mode: "GOVERNANCE" });
+    };
+    await run(h, at(2));
+    expect(mismatches(h)).toStrictEqual([expect.objectContaining({ check: "object", key: sealObjectKey(A, 4), orgId: A })]);
+    expect(stateOf(h, A)).toMatchObject({ sealedSeq: 3 });
   });
 
   it("a bucket whose versioning was suspended blocks the run", async () => {
@@ -679,7 +856,35 @@ describe("sweepSealedVersions", () => {
     }
     const found = new Set(drifts(h).map((entry) => entry.key));
     expect(found).toStrictEqual(new Set([A, B, C].map((org) => sealObjectKey(org, 1))));
-    expect(h.db.get("AUDIT_LOCK", "SWEEP")).toBeDefined();
+    expect(h.db.get("AUDIT_SWEEP", "CURSOR")).toBeDefined();
+  });
+
+  it("a sweep that fails (a throttled ListObjectVersions, an unreadable cursor) is logged and alarmed but does not fail the run, which seals as usual", async () => {
+    const throttled = Object.assign(new Error("slow down"), { name: "SlowDown", $metadata: { httpStatusCode: 503 } });
+    const h = harness();
+    appendRecords(h, A, 2);
+    await run(h, at(0));
+    h.clock.now = at(1);
+    appendRecords(h, A, 2);
+    appendRecords(h, B, 2);
+    h.logs.length = 0;
+    h.s3.before = (call) => {
+      // Only the sweep's listing (it passes MaxKeys); the anchor's own look before a write must still work.
+      if (call.command === "ListObjectVersions" && call.input.MaxKeys !== undefined) throw throttled;
+    };
+    const result = await run(h, at(1));
+    expect(result).toMatchObject({ status: "sealed" });
+    expect(stateOf(h, A)).toMatchObject({ sealedSeq: 4 });
+    expect(stateOf(h, B)).toMatchObject({ sealedSeq: 2 });
+    expect(eventsOf(h, "audit.lock_sweep_failed")).toStrictEqual([expect.objectContaining({ level: "error", error: "SlowDown" })]);
+    expect(AUDIT_LOCK_DRIFT_EVENTS).toContain("audit.lock_sweep_failed");
+    // The configuration checks stay fatal: a failing read of the bucket's settings still stops the run.
+    h.s3.before = (call) => {
+      if (call.command === "GetBucketVersioning") throw throttled;
+    };
+    h.clock.now = at(2);
+    appendRecords(h, A, 1);
+    await expect(run(h, at(2))).rejects.toThrow("slow down");
   });
 
   it("alerts on drift in a run that goes on to seal, and does not touch the sealed state", async () => {

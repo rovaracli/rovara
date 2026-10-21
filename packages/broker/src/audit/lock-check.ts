@@ -5,8 +5,11 @@
 //  - `lockFloor` is the weakest lock this install may run with. It is in code, from the environment's NAME and the lock
 //    profile the stack was deployed with, never from the deploy values (those can be edited by a raw CloudFormation update).
 //    The ratchet makes the floor one-way: the first time the bucket's default retention is seen in COMPLIANCE mode, a marker
-//    is written to the seals table (`AUDIT_LOCK / RATCHET`, create-only). From then on the floor is COMPLIANCE whatever the
-//    profile parameter says, so a stack update to `trial` cannot quietly weaken a production install.
+//    is written to the seals table (`AUDIT_LOCK / RATCHET`, with the floor's days, the bucket's name and the time). It is
+//    written with `attribute_not_exists` and never again: the anchor's role holds GetItem and PutItem on that key and no
+//    UpdateItem or DeleteItem, and the code has no other write to it. ANY item at that key counts as ratcheted (a marker that
+//    is corrupted or rewritten fails closed). From then on the floor is COMPLIANCE for at least the recorded days whatever the
+//    profile parameter or the environment's name says, and a marker that names another bucket than the configured one blocks.
 //  - `checkLockDrift` (each run) reads the bucket's default retention, its versioning and its policy. A default retention
 //    below the floor, or versioning that is not Enabled, blocks the run (`ok: false`). A default retention that differs from
 //    the deployed mode and days while still meeting the floor, and a policy whose hash differs from the synthesized one,
@@ -55,24 +58,41 @@ const AFTER_ALL_SEALS = "~";
 /** Where the ratchet and the sweep's cursor live in the seals table. */
 const LOCK_PARTITION = "AUDIT_LOCK";
 const RATCHET_SORT_KEY = "RATCHET";
-const SWEEP_SORT_KEY = "SWEEP";
+/** The sweep's cursor has a partition of its own: the anchor's role may only read and create the ratchet's (`AUDIT_LOCK`), and moves this one. */
+const SWEEP_PARTITION = "AUDIT_SWEEP";
+const SWEEP_SORT_KEY = "CURSOR";
 
-/** Only these environments may run in governance mode for a short time; every other name is a real install. */
+/** Only these environments may run in governance mode for a short time: `staging`, `test`, `dev` and `dev-<suffix>`. Every other name is a real install. */
+const TEST_NAME = /^(?:staging|test|dev|dev-.+)$/;
 function isTestName(envName: string): boolean {
-  return envName === "staging" || envName === "test" || envName.startsWith("dev");
+  return TEST_NAME.test(envName);
 }
 
 /**
- * The weakest lock this install may run with. `staging`, `test` and `dev*` run governance for one day whatever the
- * profile says. Any other name runs compliance for 365 days, unless it was deployed with the `trial` profile (a trial
- * install created from a published template), which runs governance for one day. Once the ratchet is set (the bucket has
- * been seen in compliance mode) the floor is compliance whatever the profile says: for a test name it keeps its one day.
+ * The weakest lock this install may run with. `staging`, `test`, `dev` and `dev-<suffix>` run governance for one day
+ * whatever the profile says. Any other name runs compliance for 365 days, unless it was deployed with the `trial` profile
+ * (a trial install created from a published template), which runs governance for one day. Once the ratchet is set (the
+ * bucket has been seen in compliance mode) the floor is compliance whatever the profile says, for the days the ratchet
+ * recorded (`ratchetDays`) or the name's own days if that is more: renaming the environment never lowers it.
  */
-export function lockFloor(envName: string, profile: AuditLockProfileName = "production", ratcheted = false): LockFloor {
-  if (isTestName(envName)) return ratcheted ? { mode: "COMPLIANCE", days: AUDIT_GOVERNANCE_RETENTION_DAYS } : { mode: "GOVERNANCE", days: AUDIT_GOVERNANCE_RETENTION_DAYS };
-  if (profile === "trial" && !ratcheted) return { mode: "GOVERNANCE", days: AUDIT_GOVERNANCE_RETENTION_DAYS };
+export function lockFloor(envName: string, profile: AuditLockProfileName = "production", ratcheted = false, ratchetDays?: number): LockFloor {
+  if (ratcheted) {
+    const ofName = isTestName(envName) ? AUDIT_GOVERNANCE_RETENTION_DAYS : AUDIT_RETENTION_DAYS_MIN_COMPLIANCE;
+    const recorded = typeof ratchetDays === "number" && Number.isFinite(ratchetDays) && ratchetDays > 0 ? ratchetDays : 0;
+    return { mode: "COMPLIANCE", days: Math.max(ofName, recorded) };
+  }
+  if (isTestName(envName) || profile === "trial") return { mode: "GOVERNANCE", days: AUDIT_GOVERNANCE_RETENTION_DAYS };
   return { mode: "COMPLIANCE", days: AUDIT_RETENTION_DAYS_MIN_COMPLIANCE };
 }
+
+/** What every object written before the ratchet was held to: only a trial install or a test name can have written one. */
+const PRE_RATCHET_FLOOR: LockFloor = { mode: "GOVERNANCE", days: AUDIT_GOVERNANCE_RETENTION_DAYS };
+/**
+ * An object counts as written before the ratchet only when its LastModified is this far before the ratchet's time. S3 reports
+ * whole seconds, and the anchor writes the ratchet before any object of its run, so an object of the run that set the ratchet
+ * never falls in this margin by mistake.
+ */
+const RATCHET_GRACE_MS = 5_000;
 
 /** What the stack deployed, as environment variables of the anchor. Nothing here lowers the floor (`lockFloor` decides that). */
 export interface LockSettings {
@@ -217,28 +237,65 @@ function mismatch(deps: LockCheckDeps, check: string, expected: unknown, actual:
 
 // ---- the ratchet --------------------------------------------------------------------------------------------------
 
-async function readRatchet(deps: LockCheckDeps): Promise<boolean> {
-  const out = await deps.documentClient.send(new GetCommand({ TableName: deps.sealsTable, Key: { pk: LOCK_PARTITION, sk: RATCHET_SORT_KEY }, ConsistentRead: true }));
-  return out.Item?.mode === "COMPLIANCE";
+/** What the ratchet item says. Its existence is the ratchet: every field is only read for what it adds. */
+interface Ratchet {
+  /** The floor's days when it was set; undefined when the item has no usable number. */
+  days: number | undefined;
+  /** The bucket it was set for; undefined when the item does not name one. */
+  bucket: string | undefined;
+  /** When it was set (ms); undefined when the item has no usable time. */
+  sinceMs: number | undefined;
 }
 
-/** One-way and create-only: the marker is never moved or removed by the anchor (it has no delete grant on this table). */
-async function setRatchet(deps: LockCheckDeps, now: number): Promise<void> {
+function ratchetOf(item: Record<string, unknown>): Ratchet {
+  const since = typeof item.since === "string" ? Date.parse(item.since) : Number.NaN;
+  return {
+    days: typeof item.days === "number" && Number.isFinite(item.days) && item.days > 0 ? item.days : undefined,
+    bucket: typeof item.bucket === "string" ? item.bucket : undefined,
+    sinceMs: Number.isNaN(since) ? undefined : since,
+  };
+}
+
+/** Any item at the key is a ratchet, whatever its `mode` says: a marker that was corrupted or rewritten must not read as "not ratcheted". */
+async function readRatchet(deps: LockCheckDeps): Promise<Ratchet | undefined> {
+  const out = await deps.documentClient.send(new GetCommand({ TableName: deps.sealsTable, Key: { pk: LOCK_PARTITION, sk: RATCHET_SORT_KEY }, ConsistentRead: true }));
+  return out.Item === undefined ? undefined : ratchetOf(out.Item);
+}
+
+/**
+ * Create-only (`attribute_not_exists`): the one write the anchor ever makes to the ratchet. There is no update and no
+ * overwrite, and its role has no UpdateItem or DeleteItem on this key. Returns the ratchet that stands afterwards: this one,
+ * or the one another run set first.
+ */
+async function setRatchet(deps: LockCheckDeps, now: number): Promise<Ratchet> {
+  const floor = lockFloor(deps.lock.envName, deps.lock.profile, true);
   try {
     await deps.documentClient.send(new PutCommand({
       TableName: deps.sealsTable,
-      Item: { pk: LOCK_PARTITION, sk: RATCHET_SORT_KEY, mode: "COMPLIANCE", since: new Date(now).toISOString() },
+      Item: { pk: LOCK_PARTITION, sk: RATCHET_SORT_KEY, mode: "COMPLIANCE", days: floor.days, bucket: deps.bucket, since: new Date(now).toISOString() },
       ConditionExpression: "attribute_not_exists(pk)",
     }));
+    return { days: floor.days, bucket: deps.bucket, sinceMs: now };
   } catch (error) {
-    // Another run (or an earlier one) set it first.
+    // Another run (or an earlier one) set it first: that one stands.
     if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+    return (await readRatchet(deps)) ?? { days: floor.days, bucket: deps.bucket, sinceMs: now };
   }
 }
 
-/** The floor in force now: the environment's name, the deployed profile and the ratchet. */
+function floorOf(deps: LockCheckDeps, ratchet: Ratchet | undefined): LockFloor {
+  return lockFloor(deps.lock.envName, deps.lock.profile, ratchet !== undefined, ratchet?.days);
+}
+
+/** The floor in force now (the environment's name, the deployed profile and the ratchet), and when the ratchet was set. */
+export async function currentLockState(deps: LockCheckDeps): Promise<{ floor: LockFloor; ratchetSince: number | undefined }> {
+  const ratchet = await readRatchet(deps);
+  return { floor: floorOf(deps, ratchet), ratchetSince: ratchet?.sinceMs };
+}
+
+/** The floor in force now. */
 export async function currentFloor(deps: LockCheckDeps): Promise<LockFloor> {
-  return lockFloor(deps.lock.envName, deps.lock.profile, await readRatchet(deps));
+  return (await currentLockState(deps)).floor;
 }
 
 // ---- the drift check ----------------------------------------------------------------------------------------------
@@ -290,14 +347,18 @@ async function readPolicyHash(deps: LockCheckDeps): Promise<string> {
  * be made (an error other than "this is not configured") is thrown, never read as a pass.
  */
 export async function checkLockDrift(deps: LockCheckDeps, now: number): Promise<LockStatus> {
-  let ratcheted = await readRatchet(deps);
+  let ratchet = await readRatchet(deps);
   const retention = await readDefaultRetention(deps);
-  if (retention?.mode === "COMPLIANCE" && !ratcheted) {
-    await setRatchet(deps, now);
-    ratcheted = true;
-  }
-  const floor = lockFloor(deps.lock.envName, deps.lock.profile, ratcheted);
+  if (retention?.mode === "COMPLIANCE" && ratchet === undefined) ratchet = await setRatchet(deps, now);
+  const ratcheted = ratchet !== undefined;
+  const floor = floorOf(deps, ratchet);
   let ok = true;
+
+  // The ratchet belongs to one bucket. Another name (or none) is not this install's history: nothing is finalized until a person looks.
+  if (ratchet !== undefined && ratchet.bucket !== deps.bucket) {
+    ok = false;
+    mismatch(deps, "ratchet_bucket", deps.bucket, ratchet.bucket ?? "none");
+  }
 
   if (retention === undefined || !meetsFloor(retention, floor)) {
     ok = false;
@@ -324,6 +385,12 @@ export async function checkLockDrift(deps: LockCheckDeps, now: number): Promise<
 export interface EnforceOptions {
   /** The floor to hold the objects to. Default: the floor in force now. */
   floor?: LockFloor;
+  /**
+   * When the ratchet was set (ms). An object whose LastModified is before it was written under the profile of that time (a trial
+   * install that has since become production), so it is held to the trial floor it was written under, not to the ratchet's.
+   * Default: when `floor` is not given, the ratchet's own time; when `floor` is given without it, no object is judged that way.
+   */
+  ratchetSince?: number | undefined;
   /** Added to every log entry (for example the org and the epoch). */
   context?: Record<string, unknown>;
 }
@@ -332,25 +399,30 @@ function isMissing(error: unknown): boolean {
   return ["NotFound", "NoSuchKey", "NoSuchVersion"].includes(errorName(error)) || httpStatus(error) === 404;
 }
 
-type ObjectVerdict = { ok: true } | { ok: false; actual: unknown };
+type ObjectVerdict = { ok: true } | { ok: false; actual: unknown; expected: LockFloor };
 
-async function checkObject(deps: LockCheckDeps, object: LockedObjectV1, floor: LockFloor, now: number): Promise<ObjectVerdict> {
+async function checkObject(deps: LockCheckDeps, object: LockedObjectV1, floorNow: LockFloor, ratchetSince: number | undefined, now: number): Promise<ObjectVerdict> {
   let head;
   try {
     head = await deps.s3.send(new HeadObjectCommand({ Bucket: deps.bucket, Key: object.key, VersionId: object.versionId }));
   } catch (error) {
-    if (isMissing(error)) return { ok: false, actual: "missing" };
+    if (isMissing(error)) return { ok: false, actual: "missing", expected: floorNow };
     throw error;
   }
+  // An object written before the ratchet was set was written under the profile of that time: a trial install (or a test name)
+  // that has since become production keeps the floor its open epoch was written under. Everything else is held to the floor now.
+  const writtenAt = head.LastModified?.getTime();
+  const beforeRatchet = ratchetSince !== undefined && writtenAt !== undefined && writtenAt + RATCHET_GRACE_MS < ratchetSince;
+  const floor = beforeRatchet ? PRE_RATCHET_FLOOR : floorNow;
   const mode = head.ObjectLockMode;
   const until = head.ObjectLockRetainUntilDate;
-  if ((mode !== "COMPLIANCE" && mode !== "GOVERNANCE") || until === undefined) return { ok: false, actual: { mode: mode ?? "none", retainUntil: null } };
+  if ((mode !== "COMPLIANCE" && mode !== "GOVERNANCE") || until === undefined) return { ok: false, actual: { mode: mode ?? "none", retainUntil: null }, expected: floor };
   // The retention counts from when the object was locked (its LastModified), never from a later `now`: an epoch that was stopped
   // for days must still be finishable. One day of slack, as the brief allows.
   const lockedAt = Math.min(now, head.LastModified === undefined ? now : head.LastModified.getTime());
   const retainUntil = new Date(until).getTime();
   const fits = rank(mode) >= rank(floor.mode) && retainUntil >= lockedAt + (floor.days - 1) * DAY_MS;
-  return fits ? { ok: true } : { ok: false, actual: { mode, retainUntil: new Date(retainUntil).toISOString() } };
+  return fits ? { ok: true } : { ok: false, actual: { mode, retainUntil: new Date(retainUntil).toISOString() }, expected: floor };
 }
 
 /**
@@ -359,16 +431,23 @@ async function checkObject(deps: LockCheckDeps, object: LockedObjectV1, floor: L
  * returned in `failed`; the anchor does not finalize the org or epoch the object belongs to.
  */
 export async function enforceObjectLock(deps: LockCheckDeps, objects: readonly LockedObjectV1[], now: number, options: EnforceOptions = {}): Promise<{ ok: boolean; failed: LockedObjectV1[] }> {
-  const floor = options.floor ?? await currentFloor(deps);
+  let floor = options.floor;
+  let ratchetSince = options.ratchetSince;
+  if (floor === undefined) {
+    const state = await currentLockState(deps);
+    floor = state.floor;
+    ratchetSince ??= state.ratchetSince;
+  }
+  const held = floor;
   const failed: LockedObjectV1[] = [];
   for (let offset = 0; offset < objects.length; offset += CHECK_CONCURRENCY) {
     const slice = objects.slice(offset, offset + CHECK_CONCURRENCY);
-    const verdicts = await Promise.all(slice.map((object) => checkObject(deps, object, floor, now)));
+    const verdicts = await Promise.all(slice.map((object) => checkObject(deps, object, held, ratchetSince, now)));
     verdicts.forEach((verdict, index) => {
       if (verdict.ok) return;
       const object = slice[index]!;
       failed.push(object);
-      mismatch(deps, "object", floor, verdict.actual, { key: object.key, versionId: object.versionId, ...(options.context ?? {}) });
+      mismatch(deps, "object", verdict.expected, verdict.actual, { key: object.key, versionId: object.versionId, ...(options.context ?? {}) });
     });
   }
   return { ok: failed.length === 0, failed };
@@ -475,7 +554,7 @@ export async function sweepSealedVersions(deps: LockCheckDeps, cursor: SweepCurs
 }
 
 async function loadSweepCursor(deps: LockCheckDeps): Promise<SweepCursor | undefined> {
-  const out = await deps.documentClient.send(new GetCommand({ TableName: deps.sealsTable, Key: { pk: LOCK_PARTITION, sk: SWEEP_SORT_KEY }, ConsistentRead: true }));
+  const out = await deps.documentClient.send(new GetCommand({ TableName: deps.sealsTable, Key: { pk: SWEEP_PARTITION, sk: SWEEP_SORT_KEY }, ConsistentRead: true }));
   const item = out.Item;
   return typeof item?.orgId === "string" && typeof item.after === "string" ? { orgId: item.orgId, after: item.after } : undefined;
 }
@@ -483,14 +562,23 @@ async function loadSweepCursor(deps: LockCheckDeps): Promise<SweepCursor | undef
 async function saveSweepCursor(deps: LockCheckDeps, cursor: SweepCursor | undefined, now: number): Promise<void> {
   await deps.documentClient.send(new PutCommand({
     TableName: deps.sealsTable,
-    Item: { pk: LOCK_PARTITION, sk: SWEEP_SORT_KEY, updatedAt: new Date(now).toISOString(), ...(cursor === undefined ? {} : { orgId: cursor.orgId, after: cursor.after }) },
+    Item: { pk: SWEEP_PARTITION, sk: SWEEP_SORT_KEY, updatedAt: new Date(now).toISOString(), ...(cursor === undefined ? {} : { orgId: cursor.orgId, after: cursor.after }) },
   }));
 }
 
-/** The checks of every run: the drift check, then the next slice of the sweep. Returns the drift check's verdict. */
+/**
+ * The checks of every run: the drift check, then the next slice of the sweep. Returns the drift check's verdict. The drift
+ * check is fatal when it cannot be made (it is what lets anything be finalized). The sweep only detects: an error in it is
+ * logged as `audit.lock_sweep_failed` (counted by the audit-lock-drift alarm) and the run goes on; the next run takes up the
+ * same slice again.
+ */
 export async function runLockChecks(deps: LockCheckDeps, now: number): Promise<LockStatus> {
   const status = await checkLockDrift(deps, now);
-  const result = await sweepSealedVersions(deps, await loadSweepCursor(deps));
-  await saveSweepCursor(deps, result.next, now);
+  try {
+    const result = await sweepSealedVersions(deps, await loadSweepCursor(deps));
+    await saveSweepCursor(deps, result.next, now);
+  } catch (error) {
+    deps.log({ event: "audit.lock_sweep_failed", level: "error", error: errorName(error) });
+  }
   return status;
 }
