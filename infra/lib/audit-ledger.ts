@@ -1,17 +1,22 @@
 // The Audit Ledger's storage (Task 5 of the Audit Ledger plan): the intake queue, three tables, the vault key with an
-// explicit key policy, and the Object Lock bucket with its policy. The appender, the anchor and their grants arrive in
-// later tasks, each pinned in its own test. Named environments only (the caller gates on naming.env); every stateful
-// resource is kept when the stack goes.
+// explicit key policy, and the Object Lock bucket with its policy; and (Task 6) the broker's side of the outbox: its
+// grants, the drain schedule and the two alarms on its log. The appender, the anchor and their grants arrive in later
+// tasks, each pinned in its own test. Named environments only (the caller gates on naming.env); every stateful resource
+// is kept when the stack goes.
 import { createHash } from "node:crypto";
 import {
   Aws,
   Duration,
   RemovalPolicy,
   Stack,
+  aws_cloudwatch as cloudwatch,
   aws_dynamodb as dynamodb,
   aws_iam as iam,
   aws_kms as kms,
+  type aws_lambda as lambda,
+  aws_logs as logs,
   aws_s3 as s3,
+  aws_scheduler as scheduler,
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
@@ -120,10 +125,22 @@ export function auditBucketPolicyStatements(inputs: AuditBucketPolicyInputs): Po
   ];
 }
 
+/** The log events the outbox writes that need a person: an event that could not be recorded, or a pending item the drain cannot deliver. */
+export const AUDIT_RECORD_FAILED_EVENTS = ["audit.record_failed", "audit.record_invalid"] as const;
+export const AUDIT_PENDING_STUCK_EVENT = "audit.pending_stuck";
+
 export interface AuditLedgerProps {
   readonly naming: AgentXNaming;
-  /** The broker function's role: may read details back (Decrypt) under the encryption context, and nothing else on the key. */
-  readonly brokerRole: iam.IRole;
+  /**
+   * The broker function. Its role may read details back (Decrypt) under the encryption context, and nothing else on the
+   * key. The outbox runs inside it (Task 6): the construct gives it the intake queue's URL and exactly the SQS and
+   * DynamoDB actions the outbox performs, invokes it every minute to drain, and alarms on its log.
+   */
+  readonly broker: lambda.Function;
+  /** The State table, where the pending items live. */
+  readonly stateTable: dynamodb.Table;
+  /** Notifies the operator (the alerts topic) when an audit alarm fires. */
+  readonly notifyOperator: cloudwatch.IAlarmAction;
   /**
    * The appender function's role (Task 7 builds the function on it): may generate data keys and decrypt under the
    * encryption context. It is an input because the key policy names it, and it has no permissions of its own here.
@@ -152,6 +169,8 @@ export class AuditLedger extends Construct {
     super(scope, id);
     const { naming } = props;
     if (naming.env === undefined) throw new Error("audit ledger: the ledger exists for named environments only");
+    const brokerRole = props.broker.role;
+    if (brokerRole === undefined) throw new Error("audit ledger: the broker function needs a role");
     const env = naming.env;
     const stack = Stack.of(this);
     const context = (name: string): unknown => this.node.tryGetContext(name) as unknown;
@@ -261,7 +280,7 @@ export class AuditLedger extends Construct {
           }),
           new iam.PolicyStatement({
             sid: "BrokerUse",
-            principals: [new iam.ArnPrincipal(props.brokerRole.roleArn)],
+            principals: [new iam.ArnPrincipal(brokerRole.roleArn)],
             actions: ["kms:Decrypt"],
             resources: ["*"],
             conditions: encryptionContext,
@@ -319,6 +338,8 @@ export class AuditLedger extends Construct {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
+    this.addBrokerOutbox(props, brokerRole);
+
     // The second copy, in a separate account: only with both context values (auditReplicaSettings throws on the ARN alone).
     if (this.replica !== undefined) {
       const destination = this.replica.bucketArn;
@@ -351,5 +372,107 @@ export class AuditLedger extends Construct {
         }],
       };
     }
+  }
+
+  /**
+   * The broker's side of the outbox (Task 6). The outbox code runs inside the broker function, so every grant here goes
+   * to the broker's role and to no other function:
+   *  - `sqs:SendMessage` on the intake queue: the flush, the drain and the customer-read fallback call SendMessageBatch,
+   *    which needs this one action. Nothing on the dead-letter queue, and no receive or delete.
+   *  - `dynamodb:PutItem` (the staff-read put, and the pending item inside the action's transaction), `Query` (the drain),
+   *    `UpdateItem` (the drain's attempt count and its once-only failure mark) and `DeleteItem` (the flush and the drain),
+   *    on the State table with `dynamodb:LeadingKeys` restricted to `AUDIT_PENDING#*`. The pending code never reads a
+   *    single item, so there is no `GetItem`. The ledger, seals and keys tables, the bucket and the key get nothing.
+   * The broker already holds read and write on the State table (`grantReadWriteData`), so this statement narrows nothing
+   * today; it states and pins what the outbox needs, and it is the grant that would remain if that broader one is
+   * ever cut back. It is a separate policy so that it is easy to find and to take out of snapshots.
+   */
+  private addBrokerOutbox(props: AuditLedgerProps, brokerRole: iam.IRole): void {
+    const { naming, broker } = props;
+    broker.addEnvironment("AUDIT_INTAKE_QUEUE_URL", this.intakeQueue.queueUrl);
+    new iam.Policy(this, "AuditBrokerOutboxPolicy", {
+      roles: [brokerRole],
+      statements: [
+        new iam.PolicyStatement({
+          sid: "SendAuditEvents",
+          actions: ["sqs:SendMessage"],
+          resources: [this.intakeQueue.queueArn],
+        }),
+        new iam.PolicyStatement({
+          sid: "AuditPendingItems",
+          actions: ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:DeleteItem"],
+          resources: [props.stateTable.tableArn],
+          conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT_PENDING#*"] } },
+        }),
+      ],
+    });
+
+    // The drain: the broker, invoked every minute with { source: "agentx.audit-drain" }. A missed run is covered by the
+    // next one (the drain is idempotent), so a failed invocation is not retried. The scheduler may assume the role only
+    // for this account's schedules in the default group (confused-deputy guard, as the recovery schedules).
+    const drainRole = new iam.Role(this, "AuditDrainSchedulerRole", {
+      assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com", {
+        conditions: {
+          StringEquals: {
+            "aws:SourceAccount": Aws.ACCOUNT_ID,
+            "aws:SourceArn": `arn:${Aws.PARTITION}:scheduler:${Aws.REGION}:${Aws.ACCOUNT_ID}:schedule-group/default`,
+          },
+        },
+      }),
+      description: "Lets the EventBridge scheduler invoke the broker to drain the audit outbox",
+      inlinePolicies: {
+        InvokeBroker: new iam.PolicyDocument({
+          statements: [new iam.PolicyStatement({ sid: "InvokeBroker", actions: ["lambda:InvokeFunction"], resources: [broker.functionArn] })],
+        }),
+      },
+    });
+    new scheduler.CfnSchedule(this, "AuditDrainSchedule", {
+      description: "Sends the audit events the flush after a commit did not deliver",
+      flexibleTimeWindow: { mode: "OFF" },
+      scheduleExpression: "rate(1 minute)",
+      state: "ENABLED",
+      target: {
+        arn: broker.functionArn,
+        roleArn: drainRole.roleArn,
+        input: JSON.stringify({ source: "agentx.audit-drain" }),
+        retryPolicy: { maximumRetryAttempts: 0, maximumEventAgeInSeconds: 60 },
+      },
+    });
+
+    // The two audit alarms, on the broker's log. Their names end in a suffix the health route lists
+    // (HEALTH_ALARM_SUFFIXES), because the app refuses to synthesize an alarm the probe would not read.
+    const counted = (id: string, metricName: string, events: readonly string[]): cloudwatch.Metric => {
+      new logs.MetricFilter(this, `${id}Metric`, {
+        logGroup: broker.logGroup,
+        filterPattern: logs.FilterPattern.any(...events.map((event) => logs.FilterPattern.stringValue("$.event", "=", event))),
+        metricNamespace: naming.metricsNamespace,
+        metricName,
+        metricValue: "1",
+      });
+      return new cloudwatch.Metric({ namespace: naming.metricsNamespace, metricName, statistic: "Sum", period: Duration.minutes(5) });
+    };
+    const alarm = (id: string, suffix: string, description: string, metric: cloudwatch.Metric) => {
+      new cloudwatch.Alarm(this, id, {
+        alarmName: naming.alarmName(suffix),
+        alarmDescription: description,
+        metric,
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      }).addAlarmAction(props.notifyOperator);
+    };
+    alarm(
+      "AuditRecordFailedAlarm",
+      "AuditRecordFailed",
+      "An audit event could not be recorded: it was invalid, or it was never delivered before its pending item was due to expire. The action it describes happened; its record is missing. Check the broker logs for audit.record_failed and audit.record_invalid.",
+      counted("AuditRecordFailed", "AuditRecordFailed", AUDIT_RECORD_FAILED_EVENTS),
+    );
+    alarm(
+      "AuditPendingStuckAlarm",
+      "AuditPendingStuck",
+      "An audit event has waited more than 10 minutes in the outbox: the drain cannot deliver it. Check the intake queue and the broker logs for audit.pending_stuck and audit.drain_failed.",
+      counted("AuditPendingStuck", "AuditPendingStuck", [AUDIT_PENDING_STUCK_EVENT]),
+    );
   }
 }

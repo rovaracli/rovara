@@ -1,0 +1,266 @@
+// Pure builders for every audited action. Each takes the action's facts plus the `occurrence` that makes this occurrence
+// unique (what to pass is pinned per builder below and in the plan's Task 6 table), and returns an AuditEventInput whose
+// id is `auditEventId(action, occurrence, ...parts)`: a retry of one occurrence gets the same id, a later occurrence with
+// the same facts gets a different one. Personal data (names, emails, logins, repository and project names, domains,
+// reasons) goes only in `details`, or in a name-keyed target `{ kind, name }`, which the appender pseudonymizes.
+import { auditEventId, type AuditAction, type AuditActor, type AuditDetailPart, type AuditEventInput, type AuditProof, type AuditTarget } from "@agentx/contracts";
+
+export interface AuditBuilderBase {
+  orgId: string;
+  actor: AuditActor;
+  occurredAt: string;
+  /** What makes this occurrence unique. Compose several values with `auditOccurrence`. */
+  occurrence: string;
+  related?: string[];
+  proof?: AuditProof;
+  details?: AuditDetailPart[];
+}
+
+/** One occurrence value from several: `JSON.stringify(parts)`, so ("a|b", "c") and ("a", "b|c") stay different and no part can hold a newline. */
+export function auditOccurrence(...parts: string[]): string {
+  return JSON.stringify(parts);
+}
+
+type Fact = string | number | boolean | undefined;
+
+function build(action: AuditAction, input: AuditBuilderBase, target: AuditTarget, facts: Record<string, Fact> = {}, parts: string[] = []): AuditEventInput {
+  const present = Object.entries(facts).filter((entry): entry is [string, string | number | boolean] => entry[1] !== undefined);
+  return {
+    eventId: auditEventId(action, input.occurrence, ...parts),
+    orgId: input.orgId,
+    action,
+    actor: input.actor,
+    target,
+    occurredAt: input.occurredAt,
+    ...(input.related === undefined ? {} : { related: input.related }),
+    ...(present.length === 0 ? {} : { facts: Object.fromEntries(present) }),
+    ...(input.proof === undefined ? {} : { proof: input.proof }),
+    ...(input.details === undefined ? {} : { details: input.details }),
+  };
+}
+
+// Approvals, writes and spend requests -----------------------------------------------------------------------------------
+
+/** `occurrence`: the approval id. Also part of the id: the decision. */
+export function auditApprovalDecided(input: AuditBuilderBase & { approvalId: string; kind: string; decision: string; subjectKind: string; class?: string }): AuditEventInput {
+  return build("approval.decided", input, { kind: "approval", id: input.approvalId }, { kind: input.kind, decision: input.decision, subjectKind: input.subjectKind, class: input.class }, [input.decision]);
+}
+
+/** `occurrence`: the approval id. */
+export function auditApprovalExpired(input: AuditBuilderBase & { approvalId: string; kind: string; subjectKind: string }): AuditEventInput {
+  return build("approval.expired", input, { kind: "approval", id: input.approvalId }, { kind: input.kind, subjectKind: input.subjectKind });
+}
+
+/** `occurrence`: the approval id. Also part of the id: the terminal status. */
+export function auditWriteExecuted(input: AuditBuilderBase & { approvalId: string; connectorType: string; tool: string; status: string; argumentsHash: string }): AuditEventInput {
+  return build("write.executed", input, { kind: "approval", id: input.approvalId }, { connectorType: input.connectorType, tool: input.tool, status: input.status, argumentsHash: input.argumentsHash }, [input.status]);
+}
+
+interface SpendRequestFacts { spendRequestId: string; kind: string; scopeKind: string; amountCents: number; newLimitCents?: number; decision?: string }
+const spendFacts = (input: SpendRequestFacts): Record<string, Fact> => ({ kind: input.kind, scopeKind: input.scopeKind, amountCents: input.amountCents, newLimitCents: input.newLimitCents, decision: input.decision });
+
+/** `occurrence`: the spend request id. */
+export function auditSpendRequestCreated(input: AuditBuilderBase & SpendRequestFacts): AuditEventInput {
+  return build("spend_request.created", input, { kind: "spend_request", id: input.spendRequestId }, spendFacts(input));
+}
+
+/** `occurrence`: the spend request id. Also part of the id: the decision. */
+export function auditSpendRequestDecided(input: AuditBuilderBase & SpendRequestFacts & { decision: string }): AuditEventInput {
+  return build("spend_request.decided", input, { kind: "spend_request", id: input.spendRequestId }, spendFacts(input), [input.decision]);
+}
+
+/** `occurrence`: the spend request id. */
+export function auditSpendRequestExpired(input: AuditBuilderBase & SpendRequestFacts): AuditEventInput {
+  return build("spend_request.expired", input, { kind: "spend_request", id: input.spendRequestId }, spendFacts(input));
+}
+
+// Budgets and policy -----------------------------------------------------------------------------------------------------
+
+/**
+ * `occurrence`: the request's `requestId`; for Plan 1's `writeBudgets`, `auditOccurrence(at, updatedBy)`; on a store path,
+ * the store's `EVENT#` sort key. `target` is the budget's scope (`{ kind: "budget", id }`, or a name for a project).
+ */
+export function auditBudgetChanged(input: AuditBuilderBase & { target: AuditTarget; scopeKind: string; field: string; fromCents: number; toCents: number }): AuditEventInput {
+  return build("budget.changed", input, input.target, { scopeKind: input.scopeKind, field: input.field, fromCents: input.fromCents, toCents: input.toCents });
+}
+
+/** `occurrence`: as `auditBudgetChanged`. `from` and `to` are integers (cents, or hundredths for the multiplier). */
+export function auditSpendPolicyChanged(input: AuditBuilderBase & { field: string; from: number; to: number }): AuditEventInput {
+  return build("spend_policy.changed", input, { kind: "spend_policy", id: input.orgId }, { field: input.field, from: input.from, to: input.to });
+}
+
+// Pull requests ----------------------------------------------------------------------------------------------------------
+
+/** `occurrence`: the publish operation id. `pullRequestId` is an opaque id; the repository name goes in `details`. */
+export function auditPullRequestOpened(input: AuditBuilderBase & { pullRequestId: string; number: number }): AuditEventInput {
+  return build("pull_request.opened", input, { kind: "pull_request", id: input.pullRequestId }, { number: input.number });
+}
+
+/** `occurrence`: `auditOccurrence(repository, number)` (a pull request merges once). */
+export function auditPullRequestMerged(input: AuditBuilderBase & { pullRequestId: string; number: number }): AuditEventInput {
+  return build("pull_request.merged", input, { kind: "pull_request", id: input.pullRequestId }, { number: input.number });
+}
+
+// Members ----------------------------------------------------------------------------------------------------------------
+
+/** `occurrence`: the invite's token hash, or `auditOccurrence(developerId, joinedAt)`. */
+export function auditMemberJoined(input: AuditBuilderBase & { memberId: string; role: string; via: string }): AuditEventInput {
+  return build("member.joined", input, { kind: "member", id: input.memberId }, { role: input.role, via: input.via });
+}
+
+/** `occurrence`: the request's `requestId`. */
+export function auditMemberRoleChanged(input: AuditBuilderBase & { memberId: string; fromRole: string; toRole: string }): AuditEventInput {
+  return build("member.role_changed", input, { kind: "member", id: input.memberId }, { fromRole: input.fromRole, toRole: input.toRole });
+}
+
+/** `occurrence`: the request's `requestId`. */
+export function auditMemberRemoved(input: AuditBuilderBase & { memberId: string; role: string }): AuditEventInput {
+  return build("member.removed", input, { kind: "member", id: input.memberId }, { role: input.role });
+}
+
+/** `occurrence`: the request's `requestId`. */
+export function auditMemberLeft(input: AuditBuilderBase & { memberId: string; role: string }): AuditEventInput {
+  return build("member.left", input, { kind: "member", id: input.memberId }, { role: input.role });
+}
+
+/** `occurrence`: the request's `requestId`. The project is name-keyed; the member is related by id. */
+export function auditProjectMemberChanged(input: AuditBuilderBase & { projectName: string; memberId: string; fromRole?: string; toRole: string }): AuditEventInput {
+  return build("project_member.changed", { ...input, related: [input.memberId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { fromRole: input.fromRole, toRole: input.toRole });
+}
+
+/** `occurrence`: the request's `requestId`. */
+export function auditProjectMemberRemoved(input: AuditBuilderBase & { projectName: string; memberId: string; role: string }): AuditEventInput {
+  return build("project_member.removed", { ...input, related: [input.memberId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { role: input.role });
+}
+
+/** `occurrence`: `auditOccurrence(identityKey, createdAt of the link item)`. */
+export function auditIdentityLinked(input: AuditBuilderBase & { memberId: string; provider: string }): AuditEventInput {
+  return build("identity.linked", input, { kind: "member", id: input.memberId }, { provider: input.provider });
+}
+
+/** `occurrence`: `auditOccurrence(identityKey, unlink requestId)`. */
+export function auditIdentityUnlinked(input: AuditBuilderBase & { memberId: string; provider: string }): AuditEventInput {
+  return build("identity.unlinked", input, { kind: "member", id: input.memberId }, { provider: input.provider });
+}
+
+/** `occurrence`: `closedAt`. */
+export function auditOrgClosed(input: AuditBuilderBase & { plan: string }): AuditEventInput {
+  return build("org.closed", input, { kind: "org", id: input.orgId }, { plan: input.plan });
+}
+
+// Agents, chains and published definitions ------------------------------------------------------------------------------
+
+/** `occurrence`: the store's `EVENT#` sort key. `scope` picks `agent.owner_changed` or `chain.owner_changed`. */
+export function auditOwnerChanged(input: AuditBuilderBase & { scope: "agent" | "chain"; targetId: string; field: string }): AuditEventInput {
+  return build(input.scope === "agent" ? "agent.owner_changed" : "chain.owner_changed", input, { kind: input.scope, id: input.targetId }, { field: input.field });
+}
+
+/** `occurrence`: the store's `EVENT#` sort key. `scope` picks `agent.published` or `chain.published`. */
+export function auditPublished(input: AuditBuilderBase & { scope: "agent" | "chain"; targetId: string; version: number; safety: string }): AuditEventInput {
+  return build(input.scope === "agent" ? "agent.published" : "chain.published", input, { kind: input.scope, id: input.targetId }, { version: input.version, safety: input.safety });
+}
+
+/** `occurrence`: the store's `EVENT#` sort key. `scope` picks `agent.rolled_back` or `chain.rolled_back`. */
+export function auditRolledBack(input: AuditBuilderBase & { scope: "agent" | "chain"; targetId: string; fromVersion: number; toVersion: number }): AuditEventInput {
+  return build(input.scope === "agent" ? "agent.rolled_back" : "chain.rolled_back", input, { kind: input.scope, id: input.targetId }, { fromVersion: input.fromVersion, toVersion: input.toVersion });
+}
+
+/** `occurrence`: the store's `EVENT#` sort key. */
+export function auditBuiltinAdopted(input: AuditBuilderBase & { agentId: string; version: number }): AuditEventInput {
+  return build("builtin.adopted", input, { kind: "agent", id: input.agentId }, { version: input.version });
+}
+
+// Connections, connectors, guardrails ------------------------------------------------------------------------------------
+
+/** `occurrence`: the request's `requestId`. */
+export function auditConnectionSaved(input: AuditBuilderBase & { connectionId: string; connectorType: string }): AuditEventInput {
+  return build("connection.saved", input, { kind: "connection", id: input.connectionId }, { connectorType: input.connectorType });
+}
+
+/** `occurrence`: the request's `requestId`. */
+export function auditConnectionRemoved(input: AuditBuilderBase & { connectionId: string; connectorType: string }): AuditEventInput {
+  return build("connection.removed", input, { kind: "connection", id: input.connectionId }, { connectorType: input.connectorType });
+}
+
+/** `occurrence`: `auditOccurrence(project, new revision number)`. The project name goes in `details`. */
+export function auditProjectConnectorChanged(input: AuditBuilderBase & { connectorId: string; connectorType: string; revision: number; change: string }): AuditEventInput {
+  return build("project_connector.changed", input, { kind: "connector", id: input.connectorId }, { connectorType: input.connectorType, revision: input.revision, change: input.change });
+}
+
+/** `occurrence`: the request's `requestId`, or the approval id when confirmed on the page. */
+export function auditGuardrailsChanged(input: AuditBuilderBase & { guardrailsId: string; revision: number; widened: boolean }): AuditEventInput {
+  return build("guardrails.changed", input, { kind: "guardrails", id: input.guardrailsId }, { revision: input.revision, widened: input.widened });
+}
+
+/** `occurrence`: the approval id. The repository is a name-keyed target. */
+export function auditOptOutApplied(input: AuditBuilderBase & { repositoryName: string; scope: string }): AuditEventInput {
+  return build("comment_trigger_opt_out.applied", input, { kind: "repository", name: input.repositoryName }, { scope: input.scope });
+}
+
+/** `occurrence`: `auditOccurrence(repository, old digest, new digest)`. */
+export function auditOptOutLapsed(input: AuditBuilderBase & { repositoryName: string; scope: string }): AuditEventInput {
+  return build("comment_trigger_opt_out.lapsed", input, { kind: "repository", name: input.repositoryName }, { scope: input.scope });
+}
+
+/** `occurrence`: the request's `requestId`. The domain is a name-keyed target. */
+export function auditEgressDecided(input: AuditBuilderBase & { domain: string; decision: string }): AuditEventInput {
+  return build("egress_domain.decided", input, { kind: "domain", name: input.domain }, { decision: input.decision });
+}
+
+// Triggers ---------------------------------------------------------------------------------------------------------------
+
+/** `occurrence`: the approval id. */
+export function auditTriggerEnabled(input: AuditBuilderBase & { triggerId: string; source: string; type: string; targetKind: string }): AuditEventInput {
+  return build("trigger.enabled", input, { kind: "trigger", id: input.triggerId }, { source: input.source, type: input.type, targetKind: input.targetKind });
+}
+
+/** `occurrence`: `auditOccurrence(triggerId, the record's new updatedAt)`. `cause`: person, requirements, archive or owner_removed. */
+export function auditTriggerDisabled(input: AuditBuilderBase & { triggerId: string; cause: string; source: string; type: string; targetKind: string }): AuditEventInput {
+  return build("trigger.disabled", input, { kind: "trigger", id: input.triggerId }, { cause: input.cause, source: input.source, type: input.type, targetKind: input.targetKind });
+}
+
+// GitHub -----------------------------------------------------------------------------------------------------------------
+
+/** `occurrence`: the connect state hash, or the webhook delivery id. */
+export function auditGithubConnected(input: AuditBuilderBase & { installationId: string; accountType: string; result: string }): AuditEventInput {
+  return build("github.connected", input, { kind: "github_installation", id: input.installationId }, { accountType: input.accountType, result: input.result });
+}
+
+/** `occurrence`: the request's `requestId`. */
+export function auditGithubDisconnected(input: AuditBuilderBase & { installationId: string; accountType: string }): AuditEventInput {
+  return build("github.disconnected", input, { kind: "github_installation", id: input.installationId }, { accountType: input.accountType });
+}
+
+/** `occurrence`: the webhook delivery id. */
+export function auditGithubInstallationChanged(input: AuditBuilderBase & { installationId: string; status: string; accountType: string }): AuditEventInput {
+  return build("github.installation_changed", input, { kind: "github_installation", id: input.installationId }, { status: input.status, accountType: input.accountType });
+}
+
+// The ledger itself ------------------------------------------------------------------------------------------------------
+
+interface ReadFacts { fromSeq: number; toSeq: number; count: number; via: string }
+
+/** `occurrence`: the API Gateway `requestContext.requestId`. */
+export function auditRead(input: AuditBuilderBase & ReadFacts): AuditEventInput {
+  return build("audit.read", input, { kind: "audit", id: input.orgId }, { fromSeq: input.fromSeq, toSeq: input.toSeq, count: input.count, via: input.via });
+}
+
+/** `occurrence`: the API Gateway `requestContext.requestId`. */
+export function auditStaffRead(input: AuditBuilderBase & ReadFacts): AuditEventInput {
+  return build("audit.staff_read", input, { kind: "audit", id: input.orgId }, { fromSeq: input.fromSeq, toSeq: input.toSeq, count: input.count, via: input.via });
+}
+
+/** `occurrence`: the export id. */
+export function auditExported(input: AuditBuilderBase & { exportId: string; fromSeq: number; toSeq: number; withDetails: boolean }): AuditEventInput {
+  return build("audit.exported", input, { kind: "audit", id: input.exportId }, { fromSeq: input.fromSeq, toSeq: input.toSeq, withDetails: input.withDetails });
+}
+
+/** `occurrence`: the erasure request id. `subject` is a developer id. */
+export function auditSubjectErased(input: AuditBuilderBase & { subject: string }): AuditEventInput {
+  return build("audit.subject_erased", input, { kind: "member", id: input.subject });
+}
+
+/** `occurrence`: `closedAt`. */
+export function auditShredScheduled(input: AuditBuilderBase & { shredAfterDays: number }): AuditEventInput {
+  return build("audit.org_shred_scheduled", input, { kind: "org", id: input.orgId }, { shredAfterDays: input.shredAfterDays });
+}

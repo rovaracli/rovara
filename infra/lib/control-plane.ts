@@ -972,9 +972,10 @@ export class ControlPlaneStack extends Stack {
       }));
     }
 
-    // The Audit Ledger's storage and vault key (Task 5), named environments only: the legacy template is unchanged.
-    // The appender's role is created bare here because the vault key policy names it; Task 7 builds the appender
-    // function on it and gives it its grants.
+    // The Audit Ledger's storage and vault key (Task 5) and the broker's side of its outbox (Task 6: queue URL, grants,
+    // drain schedule, alarms), named environments only: the legacy template is unchanged. The appender's role is
+    // created bare here because the vault key policy names it; Task 7 builds the appender function on it and gives
+    // it its grants.
     if (naming.env !== undefined) {
       const auditAppenderRole = new iam.Role(this, "AuditAppenderRole", {
         assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
@@ -982,7 +983,9 @@ export class ControlPlaneStack extends Stack {
       });
       new AuditLedger(this, "AuditLedger", {
         naming,
-        brokerRole: broker.role!,
+        broker,
+        stateTable: state,
+        notifyOperator,
         appenderRole: auditAppenderRole,
         ...(props?.deploymentRegion === undefined ? {} : { deploymentRegion: props.deploymentRegion }),
       });

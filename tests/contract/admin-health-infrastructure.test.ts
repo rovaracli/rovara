@@ -100,7 +100,7 @@ describe("the health route's grants (A13)", () => {
 
   // 25c note 2 (owner answer, 2026-09-30): NOTICE (the notifier) and CHANNEL_OPERATION (broker.ts) items expire on it too.
   // Spec 025 phase 25e: pending admin changes and their audit records expire on it as well.
-  it("names indexExpiresAt only where index, notice, channel-operation and admin-change items are written or read, so the TTL deletes nothing else", () => {
+  it("names indexExpiresAt only where index, notice, channel-operation, admin-change and audit-pending items are written or read, so the TTL deletes nothing else", () => {
     const allowed = new Set([
       "packages/contracts/src/admin.ts", "packages/broker/src/aws/activity-index.ts", "packages/broker/src/aws/admin-reads.ts", "infra/lib/control-plane.ts",
       "packages/broker/src/aws/developer-task-notifier.ts", "packages/broker/src/aws/broker.ts",
@@ -111,6 +111,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/developer/plan-evidence-jobs.ts",
       // Retired and quarantined recovery rows only; active retries remove the due/lease fields without TTL.
       "packages/broker/src/aws/workflow-merge-recovery.ts",
+      // The audit outbox's AUDIT_PENDING# items (Audit Ledger, Task 6) expire on it too; the drain only reads them.
+      "packages/broker/src/audit/outbox.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

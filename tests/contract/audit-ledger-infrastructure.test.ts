@@ -2,7 +2,7 @@
 // Task 5 of the Audit Ledger plan: queues, tables, the vault key and its explicit policy, and the Object Lock
 // bucket with its policy. Nothing here is deployed; every check reads a synthesized template.
 import { createHash } from "node:crypto";
-import { App, ArnFormat, Stack, aws_iam as iam } from "aws-cdk-lib";
+import { App, ArnFormat, Stack, aws_cloudwatch_actions as cloudwatchActions, aws_dynamodb as dynamodb, aws_iam as iam, aws_lambda as lambda, aws_sns as sns } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { AUDIT_INTAKE_MAX_RECEIVES, canonicalJson } from "@agentx/contracts";
@@ -42,7 +42,7 @@ function one(template: TemplateJson, type: string, prefix: string): [string, Res
 }
 const withoutHash = (logicalId: string) => logicalId.replace(/[0-9A-F]{8}$/, "");
 
-/** A template value with pseudo parameters filled in and GetAtt turned into readable "<id>.<attribute>" text. */
+/** A template value with pseudo parameters filled in, GetAtt turned into readable "<id>.<attribute>" text and a Ref to a resource into "Ref:<id>". */
 function concrete(value: unknown, pseudo: Record<string, string> = {}): unknown {
   const readable = (node: unknown): unknown => {
     if (Array.isArray(node)) return node.map(readable);
@@ -52,6 +52,7 @@ function concrete(value: unknown, pseudo: Record<string, string> = {}): unknown 
       const [id, attribute] = entries[0]![1] as [string, string];
       return `${withoutHash(id)}.${attribute}`;
     }
+    if (entries.length === 1 && entries[0]![0] === "Ref" && !String(entries[0]![1]).startsWith("AWS::")) return `Ref:${withoutHash(String(entries[0]![1]))}`;
     return Object.fromEntries(entries.map(([key, entry]) => [key, readable(entry)]));
   };
   return evaluate(readable(value), { parameters: {}, conditions: {}, pseudo });
@@ -59,6 +60,16 @@ function concrete(value: unknown, pseudo: Record<string, string> = {}): unknown 
 const concreteAws = (value: unknown) => concrete(value, { "AWS::AccountId": ACCOUNT, "AWS::Region": REGION, "AWS::Partition": "aws" });
 
 const named = (env: string, extra: Record<string, unknown> = {}) => synth({ agentxEnv: env, ...extra });
+
+/** What the ledger needs from the control plane, as a scratch stack provides it: a broker function, the State table and an alarm action. */
+function scratchProps(stack: Stack) {
+  return {
+    naming: environmentNaming("acme"),
+    broker: new lambda.Function(stack, "Broker", { runtime: lambda.Runtime.NODEJS_22_X, handler: "index.handler", code: lambda.Code.fromInline("exports.handler = async () => ({});") }),
+    stateTable: new dynamodb.Table(stack, "State", { partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING }, sortKey: { name: "sk", type: dynamodb.AttributeType.STRING } }),
+    notifyOperator: new cloudwatchActions.SnsAction(new sns.Topic(stack, "Alerts")),
+  };
+}
 
 describe("auditLockSettings", () => {
   const settings = (env: string, context: { lockMode?: unknown; retentionDays?: unknown } = {}) => auditLockSettings(environmentNaming(env), context);
@@ -352,7 +363,7 @@ describe("the audit ledger in templates", () => {
           const template = Template.fromStack(stack).toJSON() as TemplateJson;
           for (const [id, resource] of Object.entries(template.Resources)) {
             const documents: unknown[] = [];
-            const properties = resource.Properties;
+            const properties = resource.Properties ?? {};
             if (properties.PolicyDocument !== undefined) documents.push(properties.PolicyDocument);
             if (properties.KeyPolicy !== undefined) documents.push(properties.KeyPolicy);
             if (Array.isArray(properties.Policies)) for (const inline of properties.Policies as Array<{ PolicyDocument?: unknown }>) if (inline.PolicyDocument !== undefined) documents.push(inline.PolicyDocument);
@@ -404,7 +415,7 @@ describe("the audit ledger in templates", () => {
         for (const stack of stacks) {
           const template = Template.fromStack(stack).toJSON() as TemplateJson;
           for (const [id, resource] of Object.entries(template.Resources)) {
-            if (!["AWS::IAM::Role", "AWS::IAM::User", "AWS::IAM::Group"].includes(resource.Type) || !Array.isArray(resource.Properties.ManagedPolicyArns)) continue;
+            if (!["AWS::IAM::Role", "AWS::IAM::User", "AWS::IAM::Group"].includes(resource.Type) || !Array.isArray(resource.Properties?.ManagedPolicyArns)) continue;
             for (const entry of resource.Properties.ManagedPolicyArns as unknown[]) {
               if (typeof entry === "object" && entry !== null && "Ref" in entry) continue;
               if (!HARMLESS_MANAGED.some((name) => pattern(entry).endsWith(`:iam::aws:policy/${name}`))) found.push(`${stack.stackName}/${id}`);
@@ -445,7 +456,7 @@ describe("the audit ledger in templates", () => {
       function planted(plant: (stack: Stack, ledger: AuditLedger) => void): string[] {
         const stack = new Stack(new App(), "Scratch");
         const role = (id: string) => new iam.Role(stack, id, { assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com") });
-        const ledger = new AuditLedger(stack, "AuditLedger", { naming: environmentNaming("acme"), brokerRole: role("BrokerRole"), appenderRole: role("AppenderRole") });
+        const ledger = new AuditLedger(stack, "AuditLedger", { ...scratchProps(stack), appenderRole: role("AppenderRole") });
         plant(stack, ledger);
         return offenders([stack]).map((entry) => entry.replace(/[0-9A-F]{8}$/, ""));
       }
@@ -641,6 +652,149 @@ describe("the audit ledger in templates", () => {
       const synthesis = named("acme", { agentxAuditTsa: "custom", agentxAuditTsaUrls: "https://tsa.example.com", agentxAuditTsaRootsParameter: "/agentx/acme/tsa-roots" });
       expect(synthesis.ledger.tsa).toStrictEqual({ kind: "custom", urls: ["https://tsa.example.com"], rootsParameter: "/agentx/acme/tsa-roots" });
       expect(production.ledger.tsa).toStrictEqual({ kind: "public" });
+    });
+  });
+
+  describe("the broker's side of the outbox (Task 6)", () => {
+    const BROKER_ROLE = "BrokerServiceRole";
+    const policies = (synthesis: Synth) => ofType(synthesis.template, "AWS::IAM::Policy").map(([id, resource]) => ({ id, withoutHash: withoutHash(id), properties: resource.Properties }));
+    const rawStatements = (properties: Json) => ((properties.PolicyDocument as { Statement: Statement[] }).Statement);
+    const statementsOf = (properties: Json) => rawStatements(properties).map((statement) => concreteAws(statement) as Statement);
+    const ARN_OF_QUEUE = "AuditLedgerAuditIntakeQueue.Arn";
+
+    for (const env of ["production", "staging", "acme"]) {
+      describe(env, () => {
+        const synthesis = named(env);
+
+        it("gives the broker's role exactly two statements for the outbox, in a policy of their own", () => {
+          const own = policies(synthesis).filter(({ withoutHash }) => withoutHash === "AuditLedgerAuditBrokerOutboxPolicy");
+          expect(own).toHaveLength(1);
+          const brokerRoleId = one(synthesis.template, "AWS::IAM::Role", BROKER_ROLE)[0];
+          expect(own[0]!.properties.Roles).toStrictEqual([{ Ref: brokerRoleId }]);
+          expect(statementsOf(own[0]!.properties)).toStrictEqual([
+            { Sid: "SendAuditEvents", Effect: "Allow", Action: "sqs:SendMessage", Resource: ARN_OF_QUEUE },
+            {
+              Sid: "AuditPendingItems", Effect: "Allow",
+              Action: ["dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:DeleteItem"],
+              Resource: "State.Arn",
+              Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT_PENDING#*"] } },
+            },
+          ]);
+        });
+
+        it("grants nothing on the intake queue, the DLQ, the ledger, seals and keys tables or the buckets to any role but through the pinned statements", () => {
+          const watched = ["AuditLedgerAuditIntakeQueue", "AuditLedgerAuditIntakeDeadLetterQueue", "AuditLedgerAuditLedgerTable", "AuditLedgerAuditSealsTable", "AuditLedgerAuditKeysTable", "AuditLedgerAuditLedgerBucket", "AuditLedgerAuditExportsBucket"];
+          const mentions = policies(synthesis).flatMap(({ withoutHash: policy, properties }) => rawStatements(properties)
+            .filter((statement) => watched.some((name) => JSON.stringify([statement.Resource, statement.NotResource]).includes(name)))
+            .map((statement) => `${policy}/${statement.Sid ?? "?"}`));
+          // Task 7 and later tasks add their own functions' statements here; Task 6 adds exactly the broker's send.
+          expect(mentions).toStrictEqual(["AuditLedgerAuditBrokerOutboxPolicy/SendAuditEvents"]);
+          for (const [, role] of ofType(synthesis.template, "AWS::IAM::Role")) {
+            expect(JSON.stringify(role.Properties.Policies ?? [])).not.toMatch(/AuditLedger(Audit)?(IntakeQueue|LedgerTable|SealsTable|KeysTable|LedgerBucket)/);
+          }
+        });
+
+        it("gives the broker, and no other function, the intake queue's URL", () => {
+          const functions = ofType(synthesis.template, "AWS::Lambda::Function");
+          const withUrl = functions.filter(([, fn]) => (fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables?.AUDIT_INTAKE_QUEUE_URL !== undefined);
+          expect(withUrl.map(([id]) => withoutHash(id))).toStrictEqual(["Broker"]);
+          const variables = (withUrl[0]![1].Properties.Environment as { Variables: Json }).Variables;
+          expect(concreteAws(variables.AUDIT_INTAKE_QUEUE_URL)).toBe("Ref:AuditLedgerAuditIntakeQueue");
+        });
+
+        it("drains every minute: one schedule, invoking the broker through a scheduler role with { source: agentx.audit-drain }", () => {
+          const [, schedule] = one(synthesis.template, "AWS::Scheduler::Schedule", "AuditLedgerAuditDrainSchedule");
+          const brokerId = one(synthesis.template, "AWS::Lambda::Function", "Broker")[0];
+          expect(concreteAws(schedule.Properties)).toStrictEqual({
+            Description: "Sends the audit events the flush after a commit did not deliver",
+            FlexibleTimeWindow: { Mode: "OFF" },
+            ScheduleExpression: "rate(1 minute)",
+            State: "ENABLED",
+            Target: {
+              Arn: `${withoutHash(brokerId)}.Arn`,
+              RoleArn: "AuditLedgerAuditDrainSchedulerRole.Arn",
+              Input: JSON.stringify({ source: "agentx.audit-drain" }),
+              RetryPolicy: { MaximumEventAgeInSeconds: 60, MaximumRetryAttempts: 0 },
+            },
+          });
+          const drains = ofType(synthesis.template, "AWS::Scheduler::Schedule").filter(([, other]) => JSON.stringify(other.Properties).includes("agentx.audit-drain"));
+          expect(drains).toHaveLength(1);
+        });
+
+        it("the scheduler role trusts the scheduler for this account's default group only, and may invoke the broker only", () => {
+          const [, role] = one(synthesis.template, "AWS::IAM::Role", "AuditLedgerAuditDrainSchedulerRole");
+          const brokerId = one(synthesis.template, "AWS::Lambda::Function", "Broker")[0];
+          expect(concreteAws(role.Properties.AssumeRolePolicyDocument)).toStrictEqual({
+            Version: "2012-10-17",
+            Statement: [{
+              Effect: "Allow", Action: "sts:AssumeRole", Principal: { Service: "scheduler.amazonaws.com" },
+              Condition: { StringEquals: { "aws:SourceAccount": ACCOUNT, "aws:SourceArn": `arn:aws:scheduler:${REGION}:${ACCOUNT}:schedule-group/default` } },
+            }],
+          });
+          const inline = role.Properties.Policies as Array<{ PolicyName: string; PolicyDocument: { Statement: Statement[] } }>;
+          expect(inline).toHaveLength(1);
+          expect(inline[0]!.PolicyDocument.Statement.map((statement) => concreteAws(statement))).toStrictEqual([
+            { Sid: "InvokeBroker", Effect: "Allow", Action: "lambda:InvokeFunction", Resource: `${withoutHash(brokerId)}.Arn` },
+          ]);
+          expect(role.Properties.ManagedPolicyArns).toBeUndefined();
+        });
+
+        it("counts audit.record_failed and audit.record_invalid on the broker's log, and alarms at one in five minutes", () => {
+          const logGroupId = one(synthesis.template, "AWS::Logs::LogGroup", "BrokerLogs")[0];
+          const [, filter] = one(synthesis.template, "AWS::Logs::MetricFilter", "AuditLedgerAuditRecordFailedMetric");
+          expect(filter.Properties).toStrictEqual({
+            LogGroupName: { Ref: logGroupId },
+            FilterPattern: '{ ($.event = "audit.record_failed") || ($.event = "audit.record_invalid") }',
+            MetricTransformations: [{ MetricName: "AuditRecordFailed", MetricNamespace: environmentNaming(env).metricsNamespace, MetricValue: "1" }],
+          });
+          const [, alarm] = one(synthesis.template, "AWS::CloudWatch::Alarm", "AuditLedgerAuditRecordFailedAlarm");
+          expect(alarm.Properties).toMatchObject({
+            AlarmName: `agentx-${env}-AuditRecordFailed`,
+            MetricName: "AuditRecordFailed", Namespace: environmentNaming(env).metricsNamespace, Statistic: "Sum",
+            Period: 300, EvaluationPeriods: 1, Threshold: 1,
+            ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
+          });
+          expect((alarm.Properties.AlarmActions as unknown[])).toHaveLength(1);
+        });
+
+        it("counts audit.pending_stuck and alarms at one", () => {
+          const logGroupId = one(synthesis.template, "AWS::Logs::LogGroup", "BrokerLogs")[0];
+          const [, filter] = one(synthesis.template, "AWS::Logs::MetricFilter", "AuditLedgerAuditPendingStuckMetric");
+          expect(filter.Properties).toStrictEqual({
+            LogGroupName: { Ref: logGroupId },
+            FilterPattern: '{ $.event = "audit.pending_stuck" }',
+            MetricTransformations: [{ MetricName: "AuditPendingStuck", MetricNamespace: environmentNaming(env).metricsNamespace, MetricValue: "1" }],
+          });
+          const [, alarm] = one(synthesis.template, "AWS::CloudWatch::Alarm", "AuditLedgerAuditPendingStuckAlarm");
+          expect(alarm.Properties).toMatchObject({
+            AlarmName: `agentx-${env}-AuditPendingStuck`,
+            MetricName: "AuditPendingStuck", Statistic: "Sum", Period: 300, EvaluationPeriods: 1, Threshold: 1,
+            ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
+          });
+        });
+
+        it("both alarms notify the operator alerts topic, as the other alarms do", () => {
+          const topicId = one(synthesis.template, "AWS::SNS::Topic", "OperatorAlerts")[0];
+          for (const alarm of ["AuditLedgerAuditRecordFailedAlarm", "AuditLedgerAuditPendingStuckAlarm"]) {
+            expect(one(synthesis.template, "AWS::CloudWatch::Alarm", alarm)[1].Properties.AlarmActions).toStrictEqual([{ Ref: topicId }]);
+          }
+        });
+      });
+    }
+
+    it("a scratch stack with the ledger alone has the same statements, so the test above reads the construct and not the control plane", () => {
+      const stack = new Stack(new App(), "Scratch");
+      new AuditLedger(stack, "AuditLedger", { ...scratchProps(stack), appenderRole: new iam.Role(stack, "AppenderRole", { assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com") }) });
+      const template = Template.fromStack(stack).toJSON() as TemplateJson;
+      const own = ofType(template, "AWS::IAM::Policy").filter(([id]) => id.startsWith("AuditLedgerAuditBrokerOutboxPolicy"));
+      expect(own).toHaveLength(1);
+      const sids = ((own[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => statement.Sid);
+      expect(sids).toStrictEqual(["SendAuditEvents", "AuditPendingItems"]);
+    });
+
+    it("a legacy template has no audit alarm, schedule or environment variable", () => {
+      const legacy = Template.fromStack(buildAgentXApp().node.children.filter((child): child is Stack => Stack.isStack(child)).find((stack) => stack.stackName === "AgentXControlPlane")!).toJSON();
+      expect(JSON.stringify(legacy)).not.toMatch(/AUDIT_INTAKE_QUEUE_URL|agentx\.audit-drain|AuditRecordFailed|AuditPendingStuck/);
     });
   });
 

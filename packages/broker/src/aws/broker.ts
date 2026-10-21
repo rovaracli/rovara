@@ -214,6 +214,7 @@ import {
   isAdminChangePressEvent,
   type AdminChangeOutcome,
   type AdminChangePressEvent,
+  AUDIT_SDK_REQUEST_TIMEOUT_MS,
   INDEX_EXPIRY_ATTRIBUTE,
   indexExpiresAt,
   WORKFLOW_RESOLVE_FINDINGS_MAX,
@@ -240,6 +241,8 @@ import { pressAdminChange, routeAdminChange, type AdminChangeDependencies } from
 import type { AdminChangeHandlers, PlanDependencies } from "./admin-change-plans.js";
 import { ZodError, z } from "zod";
 import { healthProbes } from "./health-probes.js";
+import { runAuditDrain } from "../audit/drain.js";
+import type { AuditRuntime } from "../audit/outbox.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
 import { releaseFailedPreparation, slackThreadKey } from "./failed-preparation.js";
 import { releaseFailedCancelWorkspace } from "./failed-cancel-release.js";
@@ -432,6 +435,8 @@ interface CodeBuildRecord {
 
 interface AwsBrokerDependencies {
   documentClient: DynamoDBDocumentClient;
+  /** The Audit Ledger's outbox (named environments only); absent on a legacy install, where every audit function does nothing. */
+  audit?: AuditRuntime;
   s3: S3Client;
   /** Starts deleting an ec2-ebs workspace's instance and volume (#84). */
   deleteEc2Session?: (workspaceId: string) => Promise<void>;
@@ -926,7 +931,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   const tasks = developerTaskActions(dependencies);
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
-  return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
+  return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.audit-drain" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
     // Spec 025 E14: a Slack Confirm or Cancel press, invoked directly by the ingress (never through API Gateway).
     if (isAdminChangePressEvent(event)) {
       if (adminChanges === undefined) return json({ error: { code: "NOT_FOUND", message: "admin changes are not set up in this deployment" } }, "slack-ingress", 404);
@@ -935,6 +940,14 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "admin_change.press_failed", changeId: event.changeId, error: error instanceof AgentXError ? error.code : error instanceof Error ? error.name : "unknown" }));
         return json({ outcome: "failed", changeId: event.changeId }, "slack-ingress", 500);
+      }
+    }
+    // The Audit Ledger's drain (R70): sends the pending audit items the flush after a commit did not deliver.
+    if (isAuditDrainEvent(event)) {
+      try { return json(await runAuditDrain(dependencies), "audit-drain"); }
+      catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "audit.drain_failed", level: "error", error: error instanceof Error ? error.name : "unknown" }));
+        return json({ error: "drain_failed" }, "audit-drain", 500);
       }
     }
     if (isGithubWebhookRecoveryEvent(event)) {
@@ -9375,6 +9388,10 @@ export async function retryGithubWebhookAsAdministrator(dependencies: AwsBrokerD
   return { deliveryId, status: "RETRY_QUEUED" as const };
 }
 
+function isAuditDrainEvent(event: unknown): event is { source: "agentx.audit-drain" } {
+  return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.audit-drain";
+}
+
 function isGithubWebhookRecoveryEvent(event: unknown): event is { source: "agentx.github-webhook-recovery" } {
   return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.github-webhook-recovery";
 }
@@ -12163,8 +12180,23 @@ const modelAccess = modelAccessFunctionName === undefined || modelAccessFunction
 const cloudWatch = new CloudWatchClient(awsClientConfiguration);
 const sqs = new SQSClient(awsClientConfiguration);
 
+// The Audit Ledger's outbox (Task 6): set only where the control plane has the intake queue (named environments). Its
+// clients give up quickly (AUDIT_SDK_REQUEST_TIMEOUT_MS, two attempts) so that auditing can never hold an action for
+// long; the action's own writes use the broker's ordinary client.
+const auditQueueUrl = process.env.AUDIT_INTAKE_QUEUE_URL;
+const auditClientConfiguration = { ...awsClientConfiguration, maxAttempts: 2, requestHandler: { requestTimeout: AUDIT_SDK_REQUEST_TIMEOUT_MS, connectionTimeout: AUDIT_SDK_REQUEST_TIMEOUT_MS } };
+const audit: AuditRuntime | undefined = auditQueueUrl === undefined || auditQueueUrl === "" ? undefined : {
+  sqs: new SQSClient(auditClientConfiguration),
+  queueUrl: auditQueueUrl,
+  documentClient: DynamoDBDocumentClient.from(new DynamoDBClient(auditClientConfiguration), { marshallOptions: { removeUndefinedValues: true } }),
+  tableName: requiredEnvironment("STATE_TABLE_NAME"),
+  now: Date.now,
+  log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
+};
+
 export const handler = createAwsBrokerHandler({
   documentClient,
+  ...(audit === undefined ? {} : { audit }),
   s3,
   tableName: requiredEnvironment("STATE_TABLE_NAME"),
   artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"),
