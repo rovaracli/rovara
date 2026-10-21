@@ -3,6 +3,7 @@ import {
   AgentXNameSchema,
   WorkerInvocationSchema,
   agentXError,
+  workerProjectDefinition,
   type WorkerInvocation,
   type WorkspaceInstance,
 } from "@agentx/contracts";
@@ -134,7 +135,7 @@ export class PreparationCoordinator {
         fence: workspace.fence,
       }),
       kind: "prepare",
-      payload: { project: registered.definition, repositoryGrant },
+      payload: { project: workerProjectDefinition(registered.definition), repositoryGrant },
     });
     const dispatch: PreparationDispatch = {
       operationId,

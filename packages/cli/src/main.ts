@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { open, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -41,7 +42,7 @@ import { disableEvalChannel, enableEvalChannel, parseMaxCostUsd, showEvalChannel
 import { exportTurns, parseSince } from "./admin/turns.js";
 import { loginWithPkce, openSystemBrowser, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
-import { createDeveloperProject, createProjectText, developerLogout, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
+import { changeDeveloperProjectSettings, createDeveloperProject, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
 import { orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
@@ -1183,6 +1184,61 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       services.stdout.write(globals.json
         ? formatSuccess({ env: result.env, url: result.url, duplicate: result.created.duplicate, project: result.created.project.definition }, true)
         : createProjectText(result));
+    });
+
+  // Plan 2, Task 17: a project's settings, with the signed-in developer's own sign-in. A maintainer changes them; anyone with access reads them.
+  projectCommand
+    .command("show")
+    .description("show a project's settings: commands, devcontainer, repositories and allowed domains, on Rovara Cloud")
+    .argument("<name>", "the project's name")
+    .action(async (name: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await showDeveloperProject(developerSession(), developerEnv(command), name);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project }, true) : projectShowText(result.project));
+    });
+  const collect = (value: string, previous: string[]) => [...previous, value];
+  projectCommand
+    .command("settings")
+    .description("change a project's settings, on Rovara Cloud (a maintainer of the project); only the settings you give change")
+    .argument("<name>", "the project's name")
+    .option("--setup-command <command>", "a setup command; give it again for each one, in order (replaces the project's setup commands)", collect, [] as string[])
+    .option("--clear-setup-commands", "remove every setup command")
+    .option("--test-command <command>", "a test command; give it again for each one, in order (replaces the project's test commands)", collect, [] as string[])
+    .option("--clear-test-commands", "remove every test command")
+    .option("--allow-domain <domain>", "a website the project's machines may reach, such as artifacts.acme.dev or *.acme.dev; give it again for each (replaces the project's list)", collect, [] as string[])
+    .option("--clear-allowed-domains", "remove every allowed domain")
+    .option("--description <text>", "the project's description, or \"\" for none")
+    .option("--add-repository <owner/name>", "add a repository of your connected GitHub account; give it again for each", collect, [] as string[])
+    .option("--remove-repository <name>", "remove a repository, by its name or owner/name; give it again for each", collect, [] as string[])
+    .option("--devcontainer-repository <name>", "the repository whose devcontainer the project's commands run in")
+    .option("--devcontainer-config <path>", "the devcontainer's configuration file in that repository (default .devcontainer/devcontainer.json)")
+    .option("--remove-devcontainer", "run the project's commands without a devcontainer")
+    .action(async (name: string, options: {
+      setupCommand: string[]; clearSetupCommands?: boolean; testCommand: string[]; clearTestCommands?: boolean; allowDomain: string[]; clearAllowedDomains?: boolean;
+      description?: string; addRepository: string[]; removeRepository: string[]; devcontainerRepository?: string; devcontainerConfig?: string; removeDevcontainer?: boolean;
+    }, command: Command) => {
+      const globals = globalOptions(command);
+      const conflicts: Array<[boolean, string]> = [
+        [options.clearSetupCommands === true && options.setupCommand.length > 0, "--setup-command and --clear-setup-commands"],
+        [options.clearTestCommands === true && options.testCommand.length > 0, "--test-command and --clear-test-commands"],
+        [options.clearAllowedDomains === true && options.allowDomain.length > 0, "--allow-domain and --clear-allowed-domains"],
+        [options.removeDevcontainer === true && (options.devcontainerRepository !== undefined || options.devcontainerConfig !== undefined), "--remove-devcontainer and the devcontainer options"],
+      ];
+      const conflict = conflicts.find(([clash]) => clash);
+      if (conflict !== undefined) throw agentXError("CONFIG_INVALID", `choose one: ${conflict[1]} contradict each other`);
+      if (options.devcontainerConfig !== undefined && options.devcontainerRepository === undefined) throw agentXError("CONFIG_INVALID", "--devcontainer-config needs --devcontainer-repository");
+      const result = await changeDeveloperProjectSettings(developerSession(), developerEnv(command), name, {
+        ...(options.clearSetupCommands === true ? { setupCommands: [] } : options.setupCommand.length > 0 ? { setupCommands: options.setupCommand } : {}),
+        ...(options.clearTestCommands === true ? { testCommands: [] } : options.testCommand.length > 0 ? { testCommands: options.testCommand } : {}),
+        ...(options.clearAllowedDomains === true ? { allowedDomains: [] } : options.allowDomain.length > 0 ? { allowedDomains: options.allowDomain } : {}),
+        ...(options.description === undefined ? {} : { description: options.description }),
+        ...(options.addRepository.length > 0 ? { addRepositories: options.addRepository } : {}),
+        ...(options.removeRepository.length > 0 ? { removeRepositories: options.removeRepository } : {}),
+        ...(options.removeDevcontainer === true ? { devcontainer: null }
+          : options.devcontainerRepository === undefined ? {}
+            : { devcontainer: { repository: options.devcontainerRepository, ...(options.devcontainerConfig === undefined ? {} : { configPath: options.devcontainerConfig }) } }),
+      }, randomUUID());
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project, warnings: result.warnings }, true) : projectSettingsText(result));
     });
 
   const envCommand = program.command("env").description("AgentX environments in this AWS account and region");

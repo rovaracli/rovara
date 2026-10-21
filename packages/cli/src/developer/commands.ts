@@ -1,5 +1,5 @@
 // agentx whoami and agentx logout (FR-011).
-import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, StartIdentityLinkAppResponseSchema, UnlinkIdentityAppResponseSchema, UnlinkableSignInMethodSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, AppProjectDetailSchema, ProjectSettingsResponseSchema, type AppProjectDetail, type ProjectSettingsBody, type ProjectSettingsResponse, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, StartIdentityLinkAppResponseSchema, UnlinkIdentityAppResponseSchema, UnlinkableSignInMethodSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerTokenKey, removeDeveloperEnvironment, resolveDeveloperEnvironment } from "./config.js";
 import { developerAccessToken, type DeveloperSessionDeps } from "./session.js";
@@ -224,6 +224,64 @@ export function createProjectText(result: { env: string; created: DeveloperCreat
     ? `Project ${name} already exists in AgentX environment ${result.env} with these settings. You have access to it.`
     : `Created project ${name} in AgentX environment ${result.env}. You have access to it.`;
   return `${first}\nNext: start a task in ${name} from your coding tool (agentx mcp install connects it), or run agentx whoami to see your projects.\n`;
+}
+
+/** `agentx project show <name>` (Plan 2, Task 17): the project as the app shows it, through `GET /v1/app/projects/{name}`. */
+export async function showDeveloperProject(deps: DeveloperSessionDeps, env: string | undefined, name: string): Promise<{ env: string; url: string; project: AppProjectDetail }> {
+  const { env: resolved, url, body } = await developerRequest(deps, env, `/v1/app/projects/${encodeURIComponent(name)}`, AppProjectDetailSchema, { explain: true });
+  return { env: resolved, url, project: body };
+}
+
+const clean = sanitizeServerText;
+
+/** What `agentx project show` prints: the revision, the people-facing settings and each domain's status. */
+export function projectShowText(project: AppProjectDetail): string {
+  const { settings } = project;
+  const lines = [
+    `${clean(project.name)}  (${project.status}, revision ${String(project.latestRevision)}, you are a ${project.myRole})`,
+    ...(project.description === undefined ? [] : [clean(project.description)]),
+    `Setup check: ${project.setup.status}${project.setup.failedStep === undefined ? "" : ` (${clean(project.setup.failedStep)})`}`,
+    "Repositories:",
+    ...project.repositories.map((repository) => `  ${clean(repository.fullName)}  (${clean(repository.defaultBranch)})`),
+    "Setup commands:",
+    ...(settings.setupCommands.length === 0 ? ["  none"] : settings.setupCommands.map((command) => `  ${clean(command)}`)),
+    "Test commands:",
+    ...(settings.testCommands.length === 0 ? ["  none"] : settings.testCommands.map((command) => `  ${clean(command)}`)),
+    `Devcontainer: ${settings.devcontainer === null ? "none" : `${clean(settings.devcontainer.repository)} (${clean(settings.devcontainer.configPath)})`}`,
+    "Allowed domains:",
+    ...(settings.allowedDomains.length === 0 ? ["  none beyond the defaults every project has"] : settings.allowedDomains.map((entry) => `  ${clean(entry.domain)}  (${entry.status})`)),
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+/** The settings `agentx project settings` was given; only a field that is present changes. */
+export type ProjectSettingsChange = Omit<ProjectSettingsBody, "requestId" | "expectedRevision">;
+
+/**
+ * `agentx project settings <name> ...` (Plan 2, Task 17): reads the project to learn the revision the person is changing (the server refuses
+ * the change if someone saved another since), then sends only the settings given through `PUT /v1/app/projects/{name}/settings`.
+ */
+export async function changeDeveloperProjectSettings(
+  deps: DeveloperSessionDeps,
+  env: string | undefined,
+  name: string,
+  change: ProjectSettingsChange,
+  requestId: string,
+): Promise<{ env: string; url: string } & ProjectSettingsResponse> {
+  if (Object.values(change).every((value) => value === undefined)) throw agentXError("CONFIG_INVALID", "give at least one setting to change; run agentx project settings --help");
+  const shown = await showDeveloperProject(deps, env, name);
+  const { url, body } = await developerRequest(deps, env, `/v1/app/projects/${encodeURIComponent(name)}/settings`, ProjectSettingsResponseSchema, {
+    method: "PUT",
+    body: { requestId, expectedRevision: shown.project.latestRevision, ...change },
+    explain: true,
+  });
+  return { env: shown.env, url, ...body };
+}
+
+/** What `agentx project settings` prints: the new revision, then any warnings. */
+export function projectSettingsText(result: ProjectSettingsResponse): string {
+  const saved = `Saved ${clean(result.project.name)}: it is at revision ${String(result.project.latestRevision)}.\n`;
+  return saved + result.warnings.map((warning) => `Note: ${clean(warning)}\n`).join("");
 }
 
 /** How the logout went at the server: revoked, not answered at all, or answered without confirming. */

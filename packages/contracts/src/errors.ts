@@ -44,6 +44,7 @@ export const AgentXErrorCodeSchema = z.enum([
   "MACHINE_TIME_EXCEEDED",
   "PROJECT_NAME_TAKEN",
   "PROJECT_ARCHIVED",
+  "GITHUB_NOT_CONNECTED",
 ]);
 
 export type AgentXErrorCode = z.infer<typeof AgentXErrorCodeSchema>;
@@ -65,7 +66,7 @@ export class AgentXError extends Error {
 export function errorStatus(code: AgentXErrorCode): number {
   if (code === "AUTH_REQUIRED") return 401;
   // The sign-in is valid but too old, or the wrong kind, for this change: 403, so a client does not treat it as a sign-in that ended.
-  if (code === "REAUTH_REQUIRED" || code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED" || code === "REMOVED_FROM_ORG") return 403;
+  if (code === "REAUTH_REQUIRED" || code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED" || code === "REMOVED_FROM_ORG" || code === "GITHUB_NOT_CONNECTED") return 403;
   if (code === "NOT_FOUND" || code === "PROJECT_NOT_FOUND" || code === "TASK_NOT_FOUND") return 404;
   if (code === "BUDGET_EXCEEDED" || code === "ORG_BUDGET_EXCEEDED" || code === "MACHINE_TIME_EXCEEDED") return 402;
   if (code === "CONFIG_INVALID") return 400;

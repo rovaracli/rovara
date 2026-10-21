@@ -100,6 +100,12 @@ export function requireAllowedGithubOwner(org: Pick<OrgRecord, "githubOwner">, r
   }
 }
 
+/** The repository entry `agentx project add` builds for a repository, from what the GitHub App says about it; settings use it for an added one. */
+export function cloudRepositoryEntry(input: { repositoryName: string; repository: { fullName: string; defaultBranch: string }; githubCredentialRef: string }): ProjectDefinition["repositories"][number] {
+  const name = agentxRepositoryName(input.repositoryName);
+  return { name, url: `https://github.com/${input.repository.fullName}.git`, path: `repo/${name}`, defaultBranch: input.repository.defaultBranch, credentialRef: input.githubCredentialRef };
+}
+
 /** The project definition `agentx project add` builds for a repository, from what the GitHub App says about it. */
 export function cloudProjectDefinition(input: {
   input: CreateProjectInput;
@@ -112,7 +118,7 @@ export function cloudProjectDefinition(input: {
   return ProjectDefinitionSchema.parse({
     name: input.input.name ?? repoName,
     revision: 1,
-    repositories: [{ name: repoName, url: `https://github.com/${input.repository.fullName}.git`, path, defaultBranch: input.repository.defaultBranch, credentialRef: input.githubCredentialRef }],
+    repositories: [cloudRepositoryEntry({ repositoryName: input.input.repositoryName, repository: input.repository, githubCredentialRef: input.githubCredentialRef })],
     setup: typed(input.input.setupCommand, SETUP_TIMEOUT),
     readiness: typed(input.input.testCommand, TEST_TIMEOUT),
     orchestratorInstructions: DEFAULT_ORCHESTRATOR_INSTRUCTIONS,

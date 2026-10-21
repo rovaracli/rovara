@@ -75,6 +75,7 @@ import {
   type TaskPeopleDisplayReadResponse,
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
+import { updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
 import { effectiveProjectRole, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
 import { DEFAULT_ROVARA_WEB_ORIGIN, inviteUrl } from "../org/invite-url.js";
@@ -169,6 +170,11 @@ export interface DeveloperRouteDependencies {
    * already checked the install, the caller's role and the repository's owner against the org's allowed GitHub owner.
    */
   createProject?: (caller: DeveloperCaller, input: CreateProjectInput, org: Pick<OrgRecord, "githubOwner">) => Promise<{ duplicate: boolean }>;
+  /**
+   * Plan 2, Task 17: what `PUT /v1/app/projects/{name}/settings` needs from the broker: registering a revision, and (for an added repository)
+   * GitHub's view of it. Without it the route answers NOT_FOUND.
+   */
+  projectSettings?: Pick<ProjectSettingsDependencies<DeveloperCaller>, "registerRevision" | "githubCredentialRef" | "repositoryIdentity" | "requireRepositoryConnected">;
 }
 
 /** A route's answer with a status other than 200; the broker's handler writes the status and the body. */
@@ -819,12 +825,29 @@ async function getAppProject(deps: DeveloperRouteDependencies, caller: Developer
       testCommands: definition.readiness.map(formatCommandLine),
       devcontainer: definition.devcontainer === undefined ? null
         : { repository: definition.devcontainer.repository, configPath: definition.devcontainer.configPath ?? DEFAULT_DEVCONTAINER_CONFIG_PATH },
-      // Until egress items exist (Plan 2, Task 18) a project stores no domains of its own to show.
-      allowedDomains: [],
+      // Until egress items exist (Plan 2, Task 18), a domain the revision stores reads as approved.
+      allowedDomains: (definition.network?.allowedDomains ?? []).map((domain) => ({ domain, status: "approved" as const })),
     },
     createdAt: meta?.createdAt ?? record.registeredAt,
     createdBy: { developerId: createdBy, name: creator?.displayName ?? "Unknown" },
   };
+}
+
+/** `PUT /v1/app/projects/{name}/settings` (Plan 2, Task 17): a maintainer's change to the project's settings, as a new revision. */
+async function putProjectSettings(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, body: unknown): Promise<{ project: AppProjectDetail; warnings: string[] }> {
+  const notFound = () => agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
+  let name: string;
+  try { name = decodeURIComponent(rawName); } catch { throw notFound(); }
+  if (!AgentXNameSchema.safeParse(name).success) throw notFound();
+  if (deps.projectSettings === undefined) throw agentXError("NOT_FOUND", "project settings are not set up in this deployment");
+  return updateProjectSettings({
+    documentClient: deps.documentClient,
+    tableName: deps.tableName,
+    cloud: deps.cloud === true,
+    ...deps.projectSettings,
+    effectiveRole: async (who, project) => (await visibleProjectRoles(deps, who, project)).get(project),
+    readProject: (who, project) => getAppProject(deps, who, project),
+  }, caller, name, body);
 }
 
 /**
@@ -1133,6 +1156,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "GET" && url.pathname === "/v1/app/projects") return listAppProjects(deps, caller, url.searchParams.get("include") === "archived");
   const appProject = /^\/v1\/app\/projects\/([^/]+)$/.exec(url.pathname);
   if (request.method === "GET" && appProject !== null) return getAppProject(deps, caller, appProject[1]!);
+  const projectSettingsRoute = /^\/v1\/app\/projects\/([^/]+)\/settings$/.exec(url.pathname);
+  if (request.method === "PUT" && projectSettingsRoute !== null) return putProjectSettings(deps, caller, projectSettingsRoute[1]!, jsonBody(request));
   if (request.method === "POST" && url.pathname === "/v1/dev/projects") return createProject(deps, caller, jsonBody(request));
   if (request.method === "GET" && url.pathname === "/v1/dev/workspaces") return listWorkspaces(deps, caller);
   if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);

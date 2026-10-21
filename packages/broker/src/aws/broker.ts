@@ -231,6 +231,7 @@ import {
   ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, ProjectSetupRunnerEnvironmentSchema, ProjectSetupRunnerToolchainSchema,
   projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey,
   WorkerInvocationSchema,
+  workerProjectDefinition,
   workflowPublicationContext,
   workflowPublicationContextDigest,
   PER_TASK_BUDGET_USD,
@@ -1302,6 +1303,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
           registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : url => dependencies.githubPullRequests.getRepositoryIdentity!(url),
           createProject: (caller, input, org) => createCloudProject(dependencies, caller, input, org),
+          projectSettings: {
+            registerRevision: async (actor, input) => { await registerProjectFor(dependencies, actor, input, { creatorMembership: "none" }); },
+            ...(dependencies.cloudProjects === undefined ? {} : { githubCredentialRef: dependencies.cloudProjects.githubCredentialRef }),
+            ...(dependencies.githubPullRequests.getRepositoryIdentity === undefined ? {} : {
+              repositoryIdentity: (url: string) => dependencies.githubPullRequests.getRepositoryIdentity!(url),
+            }),
+          },
           refreshTaskFeedback: taskId => refreshTaskFeedbackForOwnerDecision(dependencies, taskId) }, request, url);
         return answer instanceof StatusReply ? json(answer.body, request.requestId, answer.statusCode) : json(answer, request.requestId);
       }
@@ -2644,7 +2652,7 @@ async function newWorkspacePreparation(
     projectRevision,
     callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence),
     payload: {
-      project: project.definition,
+      project: workerProjectDefinition(project.definition),
       repositoryGrant: issueRepositoryGrant(
         dependencies,
         project,
@@ -3605,7 +3613,7 @@ async function startThreadPreparation(
     projectRevision,
     callbackCapability: issueCapability(dependencies, workspace.id, operationId, fence),
     payload: {
-      project: latest.definition,
+      project: workerProjectDefinition(latest.definition),
       repositoryGrant: issueRepositoryGrant(dependencies, latest, identity.ownerKey, workspace.id, operationId),
     },
   };
@@ -4227,7 +4235,7 @@ async function retryWorkspacePreparation(
     projectRevision: workspace.projectRevision,
     callbackCapability: issueCapability(dependencies, workspace.id, operationId, fence),
     payload: {
-      project: project.definition,
+      project: workerProjectDefinition(project.definition),
       repositoryGrant: issueRepositoryGrant(
         dependencies,
         project,
@@ -4927,7 +4935,7 @@ async function acceptPullRequest(
     callbackCapability: issueCapability(dependencies, workspaceId, operationId, fence, true),
     payload: {
       mode: "create",
-      project: project.definition,
+      project: workerProjectDefinition(project.definition),
       repository: repository.name,
       title: request.title,
       ...(body === undefined ? {} : { body }),
@@ -5184,7 +5192,7 @@ async function acceptPullRequestLifecycle(
       callbackCapability: issueCapability(dependencies, workspaceId, operationId, fence, true),
       payload: {
         mode: request.action,
-        project: project.definition,
+        project: workerProjectDefinition(project.definition),
         repository: record.repository,
         title,
         body,
@@ -5260,7 +5268,7 @@ async function acceptPullRequestLifecycle(
     callbackCapability: issueCapability(dependencies, workspaceId, operationId, fence, true),
     payload: {
       action: request.action,
-      project: project.definition,
+      project: workerProjectDefinition(project.definition),
       repository: record.repository,
       pullRequestNumber: record.number,
       headBranch: record.headBranch,
