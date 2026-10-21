@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -156,7 +156,9 @@ const FAKES: Record<string, string> = {
 echo "docker $*" >>"$LOG"
 case "$1" in
   create) echo cid-1 ;;
-  cp) [[ -z "\${CP_FAILS:-}" ]] || exit 1; cp "$IMAGE_STAGE2" "$3" ;;
+  cp) [[ -z "\${CP_FAILS:-}" ]] || exit 1
+    # A symlink in the image is copied as a symlink (docker cp does not follow it), pointing at a file that holds the right bytes.
+    if [[ -n "\${CP_LINKS:-}" ]]; then ln -s "$IMAGE_STAGE2" "$3"; else cp "$IMAGE_STAGE2" "$3"; fi ;;
   *) ;;
 esac
 `,
@@ -236,7 +238,7 @@ interface Run {
  * Runs boot.sh, as cloud-init would run the rendered user data, with the worker image holding `served(directory)` as its boot-stage2.sh.
  * `expected` is the hash the control plane launched the worker with; by default, that of what the image holds.
  */
-async function boot(options: { served: (directory: string) => string; expected?: string; cpFails?: boolean; noHash?: boolean }): Promise<Run> {
+async function boot(options: { served: (directory: string) => string; expected?: string; cpFails?: boolean; noHash?: boolean; cpLinks?: boolean }): Promise<Run> {
   const directory = mkdtempSync(join(tmpdir(), "boot-stage2-"));
   directories.push(directory);
   const bin = join(directory, "bin");
@@ -278,6 +280,7 @@ wall_off_containers() { echo "wall_off_containers" >>"$LOG"; }
     env: {
       PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, LOG: log, IMAGE_STAGE2: image, RESPONDER_PID: pid, AGENTX_TEST_LOG: log,
       ...(options.cpFails ? { CP_FAILS: "1" } : {}),
+      ...(options.cpLinks ? { CP_LINKS: "1" } : {}),
     },
     timeout: 60_000,
   });
@@ -359,6 +362,25 @@ describe("stage 1 runs stage 2 from the worker image", () => {
     expect(run.failure).toBe("could not read the boot steps from the worker image");
     expect(run.calls).toContain("docker rm cid-1");
     expect(run.calls.some((call) => call.startsWith("systemctl enable --now"))).toBe(false);
+  });
+
+  it("refuses a stage 2 that is a symlink in the image, even when what it points at has the right hash, and never sources it", async () => {
+    const run = await boot({ served: (directory) => `${placedStage2(directory)}\necho SOURCED >>"$AGENTX_TEST_LOG"\n`, cpLinks: true });
+    expect(run.status).toBe(1);
+    expect(run.failure).toBe("the boot steps in the worker image are not a regular file");
+    expect(run.calls).not.toContain("SOURCED");
+    expect(run.calls).toContain("docker rm cid-1");
+    expect(run.calls.some((call) => call.startsWith("systemctl enable --now"))).toBe(false);
+    expect(run.calls.some((call) => call.startsWith("docker pull node@"))).toBe(false);
+  });
+
+  it("sources the very file it hashed: one copy out of the image, held read-only for root, and no second read from the image", async () => {
+    const run = await boot({ served: placedStage2 });
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.calls.filter((call) => call.startsWith("docker cp "))).toHaveLength(1);
+    const staged = join(run.directory, "run", "agentx", "boot-stage2.sh");
+    expect(statSync(staged).isFile()).toBe(true);
+    expect(statSync(staged).mode & 0o777).toBe(0o400);
   });
 
   it("fails when the launch carries no stage 2 hash, before it creates a container", async () => {

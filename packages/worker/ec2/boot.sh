@@ -291,10 +291,14 @@ run_stage2() {
   BOOT_STEP="read the boot steps from the worker image"
   [[ -n "${AGENTX_BOOT_STAGE2_SHA256:-}" ]] || fail "AGENTX_BOOT_STAGE2_SHA256 is not set"
   install -d -o root -g root -m 0700 "${STAGE2_FILE%/*}"
+  rm -f "$STAGE2_FILE"
   id=$(docker create "$AGENTX_WORKER_IMAGE")
   docker cp "$id:/opt/agentx/boot/stage2.sh" "$STAGE2_FILE" && copied=true
   docker rm "$id" >/dev/null || true
   [[ "$copied" == true ]] || fail "could not read the boot steps from the worker image"
+  # One copy, in a root-only directory: this file is hashed and then sourced, never copied again. docker cp keeps a symlink as a symlink.
+  [[ -f "$STAGE2_FILE" && ! -L "$STAGE2_FILE" ]] || fail "the boot steps in the worker image are not a regular file"
+  chmod 0400 "$STAGE2_FILE"
   actual=$(sha256sum "$STAGE2_FILE")
   [[ "${actual%% *}" == "$AGENTX_BOOT_STAGE2_SHA256" ]] \
     || fail "the worker image's boot steps do not match this control plane; the two come from different releases, so run agentx upgrade"
