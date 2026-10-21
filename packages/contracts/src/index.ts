@@ -7,6 +7,7 @@ export * from "./comment-commands.js";
 export * from "./item-paths.js";
 export * from "./mcp-connector.js";
 export * from "./models.js";
+export * from "./model-sources.js";
 export * from "./model-providers.js";
 export * from "./errors.js";
 export * from "./connectors.js";
