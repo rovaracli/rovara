@@ -8,6 +8,7 @@ COPY package.json package-lock.json tsconfig.json tsconfig.base.json ./
 COPY packages/model-runtime/package.json packages/model-runtime/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/verifier/package.json packages/verifier/package.json
+COPY packages/audit-verifier/package.json packages/audit-verifier/package.json
 COPY packages/gateway/package.json packages/gateway/package.json
 COPY packages/model-proxy/package.json packages/model-proxy/package.json
 COPY packages/mcp/package.json packages/mcp/package.json
