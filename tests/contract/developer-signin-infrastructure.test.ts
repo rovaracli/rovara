@@ -271,17 +271,31 @@ describe("developer sign-in infrastructure (named environments)", () => {
       "DEVELOPER_SIGNIN_SLACK", "DEVELOPER_OIDC_ISSUER", "DEVELOPER_OIDC_CLIENT_ID", "DEVELOPER_OIDC_REQUIRED_CLAIM", "DEVELOPER_OIDC_REQUIRED_VALUES",
       "DEVELOPER_OIDC_DISPLAY_NAME", "DEVELOPER_OIDC_SECRET_ID", "STATE_TABLE_NAME",
     ]));
-    // A sign-in puts the developer in an org, which lives in the State table: DeveloperIdentity reads and writes only the org partition and the developer pointer there.
+    // A sign-in puts the developer in an org, which lives in the State table: DeveloperIdentity reads and writes only the org partition, the
+    // developer pointer and, to heal a duplicate member (Plan 2, Task 3), that member's grants and the org's settings there.
     const stateGrants = ofType(named, "AWS::IAM::Policy").flatMap(([, policy]) => (policy.Properties.PolicyDocument as { Statement: Array<Record<string, unknown>> }).Statement)
       .filter((statement) => JSON.stringify(statement.Condition ?? {}).includes("DEVELOPER_ORG#*"));
-    expect(stateGrants).toHaveLength(1);
-    expect(stateGrants[0]).toMatchObject({
-      Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], Effect: "Allow",
+    expect(stateGrants).toHaveLength(2);
+    const leadingKeys = (statement: Record<string, unknown> | undefined) => (statement?.Condition as Record<string, Record<string, unknown>>)["ForAllValues:StringLike"];
+    const writes = stateGrants.filter((statement) => JSON.stringify(statement.Action).includes("dynamodb:PutItem"));
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], Effect: "Allow" });
+    // Exactly the bare org partition (20 characters, an org ID's), a member's grants, the org's settings, the developer's org pointer, and the
+    // email and invite rows a sign-in reads: no other org-scoped or Slack team row, and no `ORG#*` wildcard.
+    expect(leadingKeys(writes[0])).toEqual({
+      "dynamodb:LeadingKeys": [
+        "ORG#org_????????????????????", "ORG#org_????????????????????#MEMBER#*", "ORG#org_????????????????????#SETTINGS",
+        "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*",
+      ],
     });
-    // Exactly the bare org partition (20 characters, an org ID's), the developer's org pointer, and the email and invite rows a sign-in reads: no org-scoped or Slack team row.
-    expect((stateGrants[0]!.Condition as Record<string, Record<string, unknown>>)["ForAllValues:StringLike"]).toEqual({
-      "dynamodb:LeadingKeys": ["ORG#org_????????????????????", "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*"],
+    // Deleting and querying (the duplicate merge) reach only a member's grants, the member rows, and the developer pointer.
+    const deletes = stateGrants.filter((statement) => JSON.stringify(statement.Action).includes("dynamodb:DeleteItem"));
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]).toMatchObject({ Action: ["dynamodb:Query", "dynamodb:DeleteItem"], Effect: "Allow" });
+    expect(leadingKeys(deletes[0])).toEqual({
+      "dynamodb:LeadingKeys": ["ORG#org_????????????????????#MEMBER#*", "ORG#org_????????????????????", "DEVELOPER_ORG#*"],
     });
+    for (const statement of stateGrants) expect(leadingKeys(statement)["dynamodb:LeadingKeys"]).not.toContain("ORG#*");
     // FR-045: both functions get each method's enabled-since cutoff straight from its parameter.
     const variables = (prefix: string) => (named.Resources[functionId(named, prefix)]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
     expect(variables("Broker")).toMatchObject({

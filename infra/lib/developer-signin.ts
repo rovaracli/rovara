@@ -141,12 +141,25 @@ export class DeveloperSignIn extends Construct {
     // Orgs and membership (OrgStore): the bare org partition (the org record and its member rows), the developer's org
     // pointer, the verified-email pointers that link one person's cloud sign-ins, the invites a sign-in accepts, and the
     // claim a GitHub account holds on its one free trial (unlockTrial, run when someone signs in with GitHub; cloud installs
-    // only); never an org-scoped row. Its transactions are made of Put and Update items, which IAM authorizes as
-    // PutItem and UpdateItem. The `?` matches one character each, the 20 of an org ID.
+    // only). Healing a duplicate member (mergeDuplicateMember) also reads and writes the member's project grants
+    // (`ORG#<id>#MEMBER#<developer>`) and the org's budget settings (`ORG#<id>#SETTINGS`); no other org-scoped row. Its
+    // transactions are made of Put, Update and Delete items, which IAM authorizes as PutItem, UpdateItem and DeleteItem.
+    // The `?` matches one character each, the 20 of an org ID.
+    const orgIdPattern = "org_????????????????????";
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
       resources: [props.state.tableArn],
-      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ORG#org_????????????????????", "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*", ...(cloud === undefined ? [] : ["TRIAL_GITHUB#*"])] } },
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [
+        `ORG#${orgIdPattern}`, `ORG#${orgIdPattern}#MEMBER#*`, `ORG#${orgIdPattern}#SETTINGS`,
+        "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*", ...(cloud === undefined ? [] : ["TRIAL_GITHUB#*"]),
+      ] } },
+    }));
+    // The duplicate merge lists a member's grants (Query), then deletes them, the member row and the developer's org pointer
+    // (DeleteItem, also as items of a transaction). Nothing else is ever deleted or queried here, so this is narrower than the above.
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:Query", "dynamodb:DeleteItem"],
+      resources: [props.state.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgIdPattern}#MEMBER#*`, `ORG#${orgIdPattern}`, "DEVELOPER_ORG#*"] } },
     }));
     tokenKey.grant(fn, "kms:Sign", "kms:GetPublicKey");
     tokenKey.addToResourcePolicy(new iam.PolicyStatement({

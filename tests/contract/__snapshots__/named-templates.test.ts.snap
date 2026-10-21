@@ -3850,9 +3850,33 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 "ForAllValues:StringLike": {
                   "dynamodb:LeadingKeys": [
                     "ORG#org_????????????????????",
+                    "ORG#org_????????????????????#MEMBER#*",
+                    "ORG#org_????????????????????#SETTINGS",
                     "DEVELOPER_ORG#*",
                     "ORG_EMAIL#*",
                     "ORG_INVITE#*",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": [
+                "dynamodb:Query",
+                "dynamodb:DeleteItem",
+              ],
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "ORG#org_????????????????????#MEMBER#*",
+                    "ORG#org_????????????????????",
+                    "DEVELOPER_ORG#*",
                   ],
                 },
               },

@@ -206,14 +206,14 @@ describe("the named TEST proof-only installation gate", () => {
       {
         label: "named",
         template: named,
-        withRoute: "fa0dc7f9b822a59b9766ed7d8484cb012471d5214ee6989251f6381c88c2e42d",
-        withoutRoute: "fb5e5240507d44da1195a3655f92448f6e2cefcad896e1b33fab2b5b8cbaae59",
+        withRoute: "f1b86619bb1449fe11852cd77d1243eaa57198cb3aa8a0d870b4bc93be47ddb0",
+        withoutRoute: "950612543cea79e4927f72e16a9d2a69bc890c31acb2758535d60f16f6f9103b",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "c6e154afac2e45ef410f6e83d7280eaff304cc135cfb6a8b7d054916e238fc01",
-        withoutRoute: "54fd2392064addc5ddd05454f71280dd23a3a339fa8776a4328496500b624c55",
+        withRoute: "a1afe673d4ebe61390b9a4f5b9c339552aeae023280956a8276221016626a0ae",
+        withoutRoute: "a8d59c03c11b2ea03949be1ea1958acb510e547d90f756d7b153794f08b30a42",
       },
       {
         label: "legacy",
