@@ -27,6 +27,7 @@ import {
   formatCommandLine,
   memberGrantsPk,
   orgProjectCatalogPk,
+  projectAllows,
   workspaceProjectIndexValue,
   projectPk,
   slackBindingPk,
@@ -76,6 +77,7 @@ import {
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
+import { archiveOrgProjects, archiveProject, restoreProject, type ProjectArchiveDependencies } from "../org/project-archive.js";
 import { updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
 import { effectiveProjectRole, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
@@ -161,7 +163,7 @@ export interface DeveloperRouteDependencies {
   orgs?: Pick<OrgStore, "orgForDeveloper" | "getOrg" | "createInvite" | "listMembers" | "setRole" | "removeMember" | "closeOrg">;
   /**
    * What closing an org does besides releasing its GitHub and Slack bindings: archive its projects (Task 20) and clear its egress domains
-   * (Task 18). Archiving defaults to nothing until Task 20 supplies it, and egress to `clearOrgEgress`; `POST /v1/app/org/leave` calls them when the last owner leaves.
+   * (Task 18). They default to `archiveOrgProjects` and `clearOrgEgress`; `POST /v1/app/org/leave` calls them when the last owner leaves.
    */
   closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void> };
   /** The model proxy, for budgets (ruling R28). Absent without one: budgets are not set up, and task starts are not checked against them. */
@@ -825,6 +827,13 @@ async function listAppProjects(deps: DeveloperRouteDependencies, caller: Develop
 
 const PROJECT_NOT_FOUND_IN_APP = "project not found";
 
+const ArchiveBodySchema = z.object({ requestId: z.string().uuid() }).strict();
+
+/** What archiving and restoring write and flip: the project's META, and its egress item through the same firewall sync as a settings save. */
+function archiveDepsOf(deps: DeveloperRouteDependencies): ProjectArchiveDependencies {
+  return { documentClient: deps.documentClient, tableName: deps.tableName, egress: egressDepsOf(deps), now: () => new Date(deps.now()) };
+}
+
 /** Where egress items are kept and how a change reaches the firewall (Plan 2, Task 18). */
 function egressDepsOf(deps: DeveloperRouteDependencies): EgressDomainsDependencies {
   return { documentClient: deps.documentClient, tableName: deps.tableName, cloud: deps.cloud === true, now: () => new Date(deps.now()), sync: deps.egressSync ?? (async () => ({ ok: false })) };
@@ -863,6 +872,29 @@ async function getAppProject(deps: DeveloperRouteDependencies, caller: Developer
     createdAt: meta?.createdAt ?? record.registeredAt,
     createdBy: { developerId: createdBy, name: creator?.displayName ?? "Unknown" },
   };
+}
+
+/**
+ * `POST /v1/app/projects/{name}/archive` and `.../restore` (Plan 2, Task 20): a maintainer of the project (an org owner or admin, or the
+ * project's own maintainer) archives it or brings it back, and the answer is the project as the app now shows it. No access is a 404 and a
+ * role without `archive` a 403. Repeating either call on a project already in that state answers 200 and changes nothing (it does run the
+ * firewall step again, which finishes a call that stopped half-way). Archiving refuses only new work; it stops nothing that is running.
+ */
+async function changeProjectArchive(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, body: unknown, change: "archive" | "restore"): Promise<{ project: AppProjectDetail }> {
+  const notFound = () => agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
+  let name: string;
+  try { name = decodeURIComponent(rawName); } catch { throw notFound(); }
+  if (!AgentXNameSchema.safeParse(name).success) throw notFound();
+  const role = (await visibleProjectRoles(deps, caller, name)).get(name);
+  if (role === undefined) throw notFound();
+  if (!projectAllows(role, "archive")) throw agentXError("FORBIDDEN", "only a project maintainer can archive or restore a project");
+  const parsed = ArchiveBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  if (await latestProjectRecord(deps, caller.orgId, name) === undefined) throw notFound();
+  if (change === "archive") await archiveProject(archiveDepsOf(deps), caller.orgId, name, { developerId: caller.developerId });
+  else await restoreProject(archiveDepsOf(deps), caller.orgId, name);
+  logDeveloperEvent({ event: change === "archive" ? "developer.project_archived" : "developer.project_restored", orgId: caller.orgId, project: name });
+  return { project: await getAppProject(deps, caller, name) };
 }
 
 /**
@@ -1216,6 +1248,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "GET" && appProject !== null) return getAppProject(deps, caller, appProject[1]!);
   const projectSettingsRoute = /^\/v1\/app\/projects\/([^/]+)\/settings$/.exec(url.pathname);
   if (request.method === "PUT" && projectSettingsRoute !== null) return putProjectSettings(deps, caller, projectSettingsRoute[1]!, jsonBody(request));
+  const projectArchiveRoute = /^\/v1\/app\/projects\/([^/]+)\/(archive|restore)$/.exec(url.pathname);
+  if (request.method === "POST" && projectArchiveRoute !== null) return changeProjectArchive(deps, caller, projectArchiveRoute[1]!, jsonBody(request), projectArchiveRoute[2] as "archive" | "restore");
   if (request.method === "POST" && url.pathname === "/v1/app/github/connect") {
     if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
     return deps.githubConnect.start(caller);
@@ -1467,7 +1501,7 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
   if (sole && deps.cloud !== true) throw agentXError("LAST_OWNER", "You are the only owner. Make someone else an owner first.");
   if (sole) {
     await deps.orgs.closeOrg(caller.orgId, {
-      archiveProjects: deps.closeOrgHooks?.archiveProjects ?? (async () => undefined), clearEgress: deps.closeOrgHooks?.clearEgress ?? ((orgId) => clearOrgEgress(egressDepsOf(deps), orgId)), emails,
+      archiveProjects: deps.closeOrgHooks?.archiveProjects ?? ((orgId) => archiveOrgProjects(archiveDepsOf(deps), orgId, { developerId: caller.developerId })), clearEgress: deps.closeOrgHooks?.clearEgress ?? ((orgId) => clearOrgEgress(egressDepsOf(deps), orgId)), emails,
     });
   } else {
     await deps.orgs.removeMember({ orgId: caller.orgId, developerId: caller.developerId, emails, ban: false });

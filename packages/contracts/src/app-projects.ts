@@ -56,6 +56,10 @@ export const AppProjectDetailSchema = AppProjectSummarySchema.extend({
 });
 export type AppProjectDetail = z.infer<typeof AppProjectDetailSchema>;
 
+/** The answer to archiving or restoring a project (Plan 2, Task 20): the project as the app now shows it. */
+export const ProjectArchiveResponseSchema = z.object({ project: AppProjectDetailSchema });
+export type ProjectArchiveResponse = z.infer<typeof ProjectArchiveResponseSchema>;
+
 export const AppProjectsResponseSchema = z.object({ projects: z.array(AppProjectSummarySchema) });
 export type AppProjectsResponse = z.infer<typeof AppProjectsResponseSchema>;
 

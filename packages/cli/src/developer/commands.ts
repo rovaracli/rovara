@@ -1,5 +1,5 @@
 // agentx whoami and agentx logout (FR-011).
-import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, AppProjectDetailSchema, ProjectSettingsResponseSchema, type AppProjectDetail, type ProjectSettingsBody, type ProjectSettingsResponse, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, StartIdentityLinkAppResponseSchema, UnlinkIdentityAppResponseSchema, UnlinkableSignInMethodSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, AppProjectDetailSchema, ProjectArchiveResponseSchema, ProjectSettingsResponseSchema, type AppProjectDetail, type ProjectSettingsBody, type ProjectSettingsResponse, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, StartIdentityLinkAppResponseSchema, UnlinkIdentityAppResponseSchema, UnlinkableSignInMethodSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerTokenKey, removeDeveloperEnvironment, resolveDeveloperEnvironment } from "./config.js";
 import { developerAccessToken, type DeveloperSessionDeps } from "./session.js";
@@ -288,6 +288,32 @@ export function projectSettingsText(result: ProjectSettingsResponse): string {
   const saved = `Saved ${clean(result.project.name)}: it is at revision ${String(result.project.latestRevision)}.\n`;
   return saved + result.warnings.map((warning) => `Note: ${clean(warning)}\n`).join("");
 }
+
+/** What `agentx project archive` asks before it archives: what stops, and what keeps going. */
+export const archiveProjectQuestion = (name: string) =>
+  `Archive ${clean(name)}? Nobody can start new tasks in it until it is restored. Tasks already running keep going, and its approved domains stop being allowed.`;
+
+/**
+ * `agentx project archive <name>` and `agentx project restore <name>` (Plan 2, Task 20): a maintainer of the project, through
+ * `POST /v1/app/projects/{name}/archive|restore`. Repeating one on a project already in that state is harmless; a fresh request id each time.
+ */
+export async function changeDeveloperProjectArchive(
+  deps: DeveloperSessionDeps,
+  env: string | undefined,
+  name: string,
+  change: "archive" | "restore",
+  requestId: string,
+): Promise<{ env: string; url: string; project: AppProjectDetail }> {
+  const { env: resolved, url, body } = await developerRequest(deps, env, `/v1/app/projects/${encodeURIComponent(name)}/${change}`, ProjectArchiveResponseSchema, {
+    method: "POST",
+    body: { requestId },
+    explain: true,
+  });
+  return { env: resolved, url, project: body.project };
+}
+
+export const archiveProjectText = (project: AppProjectDetail) => `Archived ${clean(project.name)}. To bring it back, run: agentx project restore ${clean(project.name)}\n`;
+export const restoreProjectText = (project: AppProjectDetail) => `Restored ${clean(project.name)}. People can start tasks in it again, and its approved domains are allowed again.\n`;
 
 /** How the logout went at the server: revoked, not answered at all, or answered without confirming. */
 export interface DeveloperLogoutResult {

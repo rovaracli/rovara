@@ -203,7 +203,12 @@ describe("a settings save on Rovara Cloud", () => {
   it("does not put an archived project's first domains in the union (Task 18 Minor 7)", async () => {
     const h = await install();
     h.db.set({ ...(h.db.get(projectMetaKey(TEST_ORG, "web")) as object), status: "archived" });
-    await h.put(["a.acme.dev"]);
+    // A settings save on an archived project is refused (Task 20); the egress write itself still starts an archived project's item inactive.
+    const refused = await h.put(["a.acme.dev"]);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatchObject({ code: "PROJECT_ARCHIVED" });
+    expect(h.item()).toBeUndefined();
+    await putEgressDomains(h.deps, TEST_ORG, WEB, ["a.acme.dev"], { developerId: OMAR.developerId });
     expect(h.item()).toMatchObject({ active: false });
     await h.decide("approve", "a.acme.dev");
     expect(await approvedUnion(h.deps)).toEqual([]);

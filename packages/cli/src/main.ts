@@ -42,7 +42,7 @@ import { disableEvalChannel, enableEvalChannel, parseMaxCostUsd, showEvalChannel
 import { exportTurns, parseSince } from "./admin/turns.js";
 import { loginWithPkce, openSystemBrowser, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
-import { changeDeveloperProjectSettings, createDeveloperProject, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
+import { archiveProjectQuestion, archiveProjectText, changeDeveloperProjectArchive, changeDeveloperProjectSettings, createDeveloperProject, restoreProjectText, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
 import { orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
@@ -1256,6 +1256,28 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const globals = globalOptions(command);
       const result = await showDeveloperProject(developerSession(), developerEnv(command), name);
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project }, true) : projectShowText(result.project));
+    });
+  // Plan 2, Task 20: a maintainer archives a project (asking first) and restores it.
+  projectCommand
+    .command("archive")
+    .description("archive a project, on Rovara Cloud (a maintainer of the project): no new tasks can start in it; running work keeps going. Asks first")
+    .argument("<name>", "the project's name")
+    .option("--yes", "archive without asking", false)
+    .action(async (name: string, options: { yes: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const confirm = changeConfirmer(options.yes);
+      if (!await confirm(archiveProjectQuestion(name))) throw agentXError("CONFIRMATION_DECLINED", `you did not archive ${name}; nothing changed`);
+      const result = await changeDeveloperProjectArchive(developerSession(), developerEnv(command), name, "archive", randomUUID());
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project }, true) : archiveProjectText(result.project));
+    });
+  projectCommand
+    .command("restore")
+    .description("restore an archived project, on Rovara Cloud (a maintainer of the project)")
+    .argument("<name>", "the project's name")
+    .action(async (name: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await changeDeveloperProjectArchive(developerSession(), developerEnv(command), name, "restore", randomUUID());
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project }, true) : restoreProjectText(result.project));
     });
   const collect = (value: string, previous: string[]) => [...previous, value];
   projectCommand

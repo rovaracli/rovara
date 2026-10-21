@@ -179,7 +179,7 @@ async function syncNow(deps: EgressDomainsDependencies): Promise<{ warning?: str
 const log = (event: string, fields: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", event: `egress.${event}`, ...fields }));
 
 /**
- * Makes the owner's domains exactly `domains` (callers validate each host with `AllowedDomainSchema` first). A domain already stored keeps its
+ * Makes the owner's domains exactly `domains`. It validates each one itself with `isAllowedDomain` and refuses the lot (CONFIG_INVALID) if any fails. A domain already stored keeps its
  * status; a new one is `pending` on cloud and `approved` (audited `auto_approved`) elsewhere; one no longer listed is dropped (audited
  * `removed`). A release is `putEgressDomains(..., [])`. Syncs when the served domains changed; `{ ok: false }` is `warning`.
  */

@@ -28,6 +28,7 @@ import {
   type ProjectSettingsBody,
   type StoredProjectDefinition,
 } from "@agentx/contracts";
+import { projectArchivedSettingsMessage, readProjectMeta } from "../developer/project-roles.js";
 import { cloudRepositoryEntry } from "./cloud-projects.js";
 import { egressStatusWarnings, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "./egress-domains.js";
 
@@ -225,6 +226,8 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   if (role === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
   if (!projectAllows(role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can change its settings");
   if (!deps.cloud) throw agentXError("FORBIDDEN", "ask an administrator to change this project with agentx admin project register");
+  // An archived project's settings are as they were when it was archived; restoring it is how they change again (Task 20).
+  if ((await readProjectMeta(deps, caller.orgId, name))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", projectArchivedSettingsMessage(name));
   const body = parseProjectSettingsBody(rawBody);
 
   const latest = await latestRevision(deps, caller.orgId, name);
