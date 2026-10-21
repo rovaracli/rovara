@@ -2,7 +2,7 @@ import { App, Stack, aws_iam as iam } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
-import { mergeRoleStatements } from "../../infra/lib/merge-role-statements.js";
+import { mergeRoleStatements, mergeRoleStatementsOnSynth } from "../../infra/lib/merge-role-statements.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
@@ -13,9 +13,17 @@ type Resource = { Type: string; Properties: { PolicyDocument?: { Statement: Stat
 
 const asList = <T>(value: T | T[] | undefined): T[] => (value === undefined ? [] : Array.isArray(value) ? value : [value]);
 
+function controlPlaneStack(env: string, props: { mergeBrokerStatements?: boolean; cloud?: boolean } = {}): Stack {
+  return new ControlPlaneStack(new App(), `Deployable-${env}`, { env: { account: "944937319445", region: "us-east-1" }, naming: environmentNaming(env), ...props });
+}
+
 function controlPlane(env: string, props: { mergeBrokerStatements?: boolean; cloud?: boolean } = {}): Record<string, Resource> {
-  const stack = new ControlPlaneStack(new App(), `Deployable-${env}`, { env: { account: "944937319445", region: "us-east-1" }, naming: environmentNaming(env), ...props });
-  return (Template.fromStack(stack).toJSON() as { Resources: Record<string, Resource> }).Resources;
+  return (Template.fromStack(controlPlaneStack(env, props)).toJSON() as { Resources: Record<string, Resource> }).Resources;
+}
+
+/** The role logical IDs a policy resource attaches to, sorted: an overflow managed policy counts as the role's own. */
+function attachedRoles(roles: unknown[] | undefined): string {
+  return JSON.stringify((roles ?? []).map((role) => (role as { Ref?: string }).Ref ?? JSON.stringify(role)).sort());
 }
 
 /** Every (effect, action, resource, condition) the stack's IAM policies grant, whatever statement or policy holds it. */
@@ -23,7 +31,7 @@ function grantedCombinations(resources: Record<string, Resource>): string[] {
   const combinations = new Set<string>();
   for (const resource of Object.values(resources)) {
     if (resource.Type !== "AWS::IAM::Policy" && resource.Type !== "AWS::IAM::ManagedPolicy") continue;
-    const roles = JSON.stringify(resource.Properties.Roles ?? null);
+    const roles = attachedRoles(resource.Properties.Roles);
     for (const statement of resource.Properties.PolicyDocument!.Statement) {
       const targets = asList(statement.Resource).map((target) => JSON.stringify(target));
       if (statement.NotResource !== undefined) targets.push(`NotResource:${JSON.stringify(statement.NotResource)}`);
@@ -46,10 +54,30 @@ describe("the merged control plane's broker policy stays deployable", () => {
     it(`${label}: merging statements leaves every grant exactly as it was`, () => {
       const merged = grantedCombinations(controlPlane(env, { cloud }));
       const unmerged = controlPlane(env, { cloud, mergeBrokerStatements: false });
-      // Unmerged, the overflow sits in a managed policy that names the role differently, so compare rows without the role.
-      const withoutRoles = (rows: string[]) => rows.map((row) => JSON.stringify((JSON.parse(row) as unknown[]).slice(1))).sort();
-      expect(new Set(withoutRoles(merged))).toEqual(new Set(withoutRoles(grantedCombinations(unmerged))));
+      // The role is part of each row (the overflow managed policy's rows count as the role it is attached to), so a pair
+      // the merge created cannot hide behind the identical grant of another role in the stack.
+      expect(new Set(merged)).toEqual(new Set(grantedCombinations(unmerged)));
+      expect(new Set(merged.map((row) => (JSON.parse(row) as string[])[0])).size).toBeGreaterThan(3);
       expect(merged.length).toBeGreaterThan(100);
+    });
+  }
+
+  for (const [label, env, cloud] of [["staging", "staging", false], ["staging with the hosted cloud", "staging", true], ["a live-test environment", "agentxlivetest123", false]] as const) {
+    it(`${label}: the broker's inline policy keeps headroom under CDK's 10,000-character split`, () => {
+      const stack = controlPlaneStack(env, { cloud });
+      Template.fromStack(stack); // synthesizes, so the merge Aspect has run
+      const policy = stack.node.findAll().find((node): node is iam.Policy => node instanceof iam.Policy && stack.getLogicalId(node.node.defaultChild as iam.CfnPolicy).startsWith("BrokerServiceRoleDefaultPolicy"));
+      expect(policy).toBeDefined();
+      // CDK splits a role's default policy once its estimate reaches 10,000 (MAX_INLINE_SIZE in aws-iam role.ts), counting each
+      // statement with PolicyStatement._estimateSize (an internal API, pinned with aws-cdk-lib like _cfnProperties in
+      // permissions-boundary.ts): 20 characters per action and 150 per unresolved token (CDK's defaults), the literal length otherwise.
+      const estimate = (policy!.document as unknown as { statements: Array<{ _estimateSize(options: { actionEstimate: number; arnEstimate: number }): number }> }).statements
+        .reduce((total, statement) => total + statement._estimateSize({ actionEstimate: 20, arnEstimate: 150 }), 0);
+      expect(
+        estimate,
+        `The broker's inline policy is estimated at ${estimate} characters; the guard allows 9,500 and CDK splits at 10,000. ` +
+          "The deploy's CloudFormation role cannot create the managed overflow policy (R53). Split the new grant onto a separate iam.Policy attached to the broker role, narrow it, or merge more statements. Do not raise the limit.",
+      ).toBeLessThanOrEqual(9500);
     });
   }
 
@@ -104,5 +132,82 @@ describe("mergeRoleStatements", () => {
       role.addToPolicy(statement({ actions: ["dynamodb:Query"], resources: ["arn:aws:dynamodb:us-east-1:1:table/v"] }));
     });
     expect(merged).toHaveLength(6);
+  });
+
+  it("reaches a fixed point through a chain of merges: A on R1 and R2, then B on both, while C on R1 alone stays separate", () => {
+    const merged = roleWith((role) => {
+      role.addToPolicy(statement({ actions: ["s3:GetObject"], resources: ["arn:aws:s3:::r1/*"] }));
+      role.addToPolicy(statement({ actions: ["s3:GetObject"], resources: ["arn:aws:s3:::r2/*"] }));
+      role.addToPolicy(statement({ actions: ["s3:PutObject"], resources: ["arn:aws:s3:::r1/*", "arn:aws:s3:::r2/*"] }));
+      role.addToPolicy(statement({ actions: ["s3:DeleteObject"], resources: ["arn:aws:s3:::r1/*"] }));
+    });
+    expect(merged).toEqual([
+      { Action: ["s3:GetObject", "s3:PutObject"], Effect: "Allow", Resource: ["arn:aws:s3:::r1/*", "arn:aws:s3:::r2/*"] },
+      { Action: "s3:DeleteObject", Effect: "Allow", Resource: "arn:aws:s3:::r1/*" },
+    ]);
+  });
+
+  it("never turns (A1,A2) on R1 plus A1 on R2 into a cross product that grants A2 on R2", () => {
+    const merged = roleWith((role) => {
+      role.addToPolicy(statement({ actions: ["s3:GetObject", "s3:PutObject"], resources: ["arn:aws:s3:::r1/*"] }));
+      role.addToPolicy(statement({ actions: ["s3:GetObject"], resources: ["arn:aws:s3:::r2/*"] }));
+    });
+    expect(merged).toEqual([
+      { Action: ["s3:GetObject", "s3:PutObject"], Effect: "Allow", Resource: "arn:aws:s3:::r1/*" },
+      { Action: "s3:GetObject", Effect: "Allow", Resource: "arn:aws:s3:::r2/*" },
+    ]);
+  });
+
+  it("does not merge conditions that differ only by operator, only by key, or only by value order", () => {
+    const resource = ["arn:aws:dynamodb:us-east-1:1:table/t"];
+    const merged = roleWith((role) => {
+      role.addToPolicy(statement({ actions: ["dynamodb:GetItem"], resources: resource, conditions: { StringLike: { "dynamodb:LeadingKeys": ["A#*"] } } }));
+      role.addToPolicy(statement({ actions: ["dynamodb:Query"], resources: resource, conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["A#*"] } } }));
+      role.addToPolicy(statement({ actions: ["dynamodb:PutItem"], resources: resource, conditions: { StringLike: { "dynamodb:Select": ["A#*"] } } }));
+      role.addToPolicy(statement({ actions: ["dynamodb:DeleteItem"], resources: resource, conditions: { StringLike: { "dynamodb:LeadingKeys": ["A#*", "B#*"] } } }));
+      role.addToPolicy(statement({ actions: ["dynamodb:UpdateItem"], resources: resource, conditions: { StringLike: { "dynamodb:LeadingKeys": ["B#*", "A#*"] } } }));
+    });
+    expect(merged).toHaveLength(5);
+  });
+
+  it("merges statements whose identical conditions were written with their keys in a different order", () => {
+    const merged = roleWith((role) => {
+      role.addToPolicy(statement({ actions: ["dynamodb:GetItem"], resources: ["arn:aws:dynamodb:us-east-1:1:table/t"], conditions: { StringLike: { "a:b": "x", "c:d": "y" } } }));
+      role.addToPolicy(statement({ actions: ["dynamodb:GetItem"], resources: ["arn:aws:dynamodb:us-east-1:1:table/u"], conditions: { StringLike: { "c:d": "y", "a:b": "x" } } }));
+    });
+    expect(merged).toHaveLength(1);
+  });
+
+  it("leaves statements with a Sid untouched, even beside an otherwise identical one", () => {
+    const merged = roleWith((role) => {
+      role.addToPolicy(statement({ sid: "One", actions: ["s3:GetObject"], resources: ["arn:aws:s3:::a/*"] }));
+      role.addToPolicy(statement({ sid: "Two", actions: ["s3:GetObject"], resources: ["arn:aws:s3:::b/*"] }));
+      role.addToPolicy(statement({ actions: ["s3:GetObject"], resources: ["arn:aws:s3:::c/*"] }));
+    });
+    expect(merged).toEqual([
+      { Action: "s3:GetObject", Effect: "Allow", Resource: "arn:aws:s3:::a/*", Sid: "One" },
+      { Action: "s3:GetObject", Effect: "Allow", Resource: "arn:aws:s3:::b/*", Sid: "Two" },
+      { Action: "s3:GetObject", Effect: "Allow", Resource: "arn:aws:s3:::c/*" },
+    ]);
+  });
+
+  it("leaves NotAction and NotResource statements untouched", () => {
+    const merged = roleWith((role) => {
+      role.addToPolicy(statement({ notActions: ["iam:*"], resources: ["*"] }));
+      role.addToPolicy(statement({ notActions: ["iam:*"], resources: ["arn:aws:s3:::a/*"] }));
+      role.addToPolicy(statement({ actions: ["s3:GetObject"], notResources: ["arn:aws:s3:::a/*"] }));
+      role.addToPolicy(statement({ actions: ["s3:GetObject"], notResources: ["arn:aws:s3:::b/*"] }));
+    });
+    expect(merged).toHaveLength(4);
+  });
+
+  it("runs on synthesis, after every grant, through the Aspect", () => {
+    const stack = new Stack(new App(), "UnitAspect");
+    const role = new iam.Role(stack, "Role", { assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com") });
+    mergeRoleStatementsOnSynth(role);
+    role.addToPolicy(statement({ actions: ["s3:GetObject"], resources: ["arn:aws:s3:::a/*"] }));
+    role.addToPolicy(statement({ actions: ["s3:GetObject"], resources: ["arn:aws:s3:::b/*"] }));
+    const policies = Object.values((Template.fromStack(stack).toJSON() as { Resources: Record<string, Resource> }).Resources).filter((resource) => resource.Type === "AWS::IAM::Policy");
+    expect(policies.map((policy) => policy.Properties.PolicyDocument!.Statement)).toEqual([[{ Action: "s3:GetObject", Effect: "Allow", Resource: ["arn:aws:s3:::a/*", "arn:aws:s3:::b/*"] }]]);
   });
 });

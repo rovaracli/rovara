@@ -278,6 +278,9 @@ service-linked roles. It explicitly denies Organizations and Account changes, an
 or groups, creating, versioning or deleting managed policies, and changing the boundary itself. A
 company-supplied boundary replaces the default entirely, so it must allow every action Rovara's
 roles need.
+That includes `ses:SendEmail` on the sign-in sender identity (the `CloudSignInEmailSourceArn` identity,
+in whichever region it lives): without it the new-sign-in-method notice fails quietly, because a
+failed notice never fails a sign-in.
 
 What this does and does not protect, plainly:
 

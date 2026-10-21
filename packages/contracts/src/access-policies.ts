@@ -247,6 +247,8 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
     // The sign-in function's notice of a newly linked sign-in method (Plan 2, Task 8) sends from a verified SES identity: ses:SendEmail
     // by name, on this account's identities only. The region is any, since it sends in the region of the sender's identity ARN. Named, not
     // ses:*, so a bounded role cannot reach SES's other actions.
+    // The boundary is only a ceiling: the sign-in function's own role policy pins the exact identity ARN (developer-signin.ts), and the
+    // effective permission is the intersection of the two. Do not narrow this to one identity here; the boundary cannot know the ARN.
     { Sid: "SesSendNotice", Effect: "Allow", Action: ["ses:SendEmail"], Resource: `arn:${partition}:ses:*:${account}:identity/*` },
     // The broker assumes the ConnectorSecretsRole, with an org session tag, and no other role (sts:* would let a bounded role
     // assume any same-account role that trusts the account, escaping the boundary).
