@@ -39,6 +39,7 @@ import {
   sealHash,
   sealLeafData,
   statementHash,
+  timestampCoversRecord,
   verifyTimeStampToken,
   type AuditRecordV1,
   type EpochStatementV1,
@@ -190,6 +191,8 @@ interface Context {
   lastStampRequestAt: Map<string, number>;
   /** The latest record time of each epoch looked up in this run (the genTime check), by epoch id. */
   lastRecordedAt: Map<string, string | undefined>;
+  /** The epochs whose covering was settled (or refused) in this run: it is not repeated within the run. */
+  settled: Set<string>;
 }
 
 /** A timestamp token kept for an epoch: where it is stored, and the time the authority vouches for. */
@@ -960,7 +963,7 @@ async function stampOne(ctx: Context, active: ActiveTsa, target: TsaTarget, epoc
     const verdict = verify(await stored.Body!.transformToByteArray());
     if (!verdict.ok) throw new TsaError(label, "stored_token_invalid");
     // A token an earlier build kept with an unbelievable time is never adopted; the epoch waits for a successor to cover it.
-    checkGenTime(label, verdict.genTime, { lastRecordedAt, nowMs: clock() });
+    checkGenTime(label, verdict.genTime, { lastRecordedAt, nowMs: clock(), notBeforeMs: Date.parse(epoch.meta.closedAt) });
     genTime = verdict.genTime;
   } else {
     await keepSpacing(ctx, active, label);
@@ -980,7 +983,7 @@ async function stampOne(ctx: Context, active: ActiveTsa, target: TsaTarget, epoc
         const verdict = verify(bytes);
         if (!verdict.ok) return false;
         try {
-          checkGenTime(label, verdict.genTime, { lastRecordedAt, nowMs: clock() });
+          checkGenTime(label, verdict.genTime, { lastRecordedAt, nowMs: clock(), notBeforeMs: Date.parse(epoch.meta.closedAt) });
         } catch {
           tooEarly = true;
           return false;
@@ -1068,14 +1071,34 @@ async function newestPending(ctx: Context): Promise<StampTarget | undefined> {
  * and stops at the first epoch that is not waiting (or was covered by this epoch before a crash). The writes go oldest first
  * but a page of them runs at once, so a crash can leave a later epoch of the page covered and an earlier one still waiting: the
  * walk passes through the epochs already covered by this epoch, and so finishes the work on a repeat.
+ *
+ * The covering is all or nothing, and only when the verifier would accept it (review N1): each waiting epoch's last record is held
+ * against the earliest time among this epoch's tokens with the verifier's own rule. If any epoch fails it, nothing is written, the
+ * refusal is logged for each such epoch, and `complete` is false: the epoch stays waiting, so the waiting epochs stay one run that
+ * ends at the head, and a later epoch with later tokens can still cover them.
  */
-async function coverOlder(ctx: Context, epochId: string, prevEpochId: string | null): Promise<number> {
+async function coverOlder(ctx: Context, epoch: EpochMeta): Promise<{ covered: number; complete: boolean }> {
+  const epochId = epoch.epochId;
   const waiting: string[] = [];
-  for (let id = prevEpochId; id !== null;) {
+  const pending: string[] = [];
+  for (let id = epoch.prevEpochId; id !== null;) {
     const item = await getItem(ctx, ctx.deps.sealsTable, `EPOCH#${id}`, "META");
     if (item === undefined || !(item.status === "stamp_pending" || item.covered_by === epochId)) break;
     waiting.push(id);
+    if (item.status === "stamp_pending") pending.push(id);
     id = typeof item.prevEpochId === "string" ? item.prevEpochId : null;
+  }
+  if (pending.length > 0) {
+    const earliest = Object.values(epoch.stamps).map((stamp) => stamp.genTime).reduce((best, time) => (Date.parse(time) < Date.parse(best) ? time : best));
+    const refused: string[] = [];
+    await eachPage(pending, async (id) => {
+      const last = await lastRecordedAtOf(ctx, id);
+      if (last !== undefined && !timestampCoversRecord(earliest, last)) refused.push(id);
+    });
+    if (refused.length > 0) {
+      for (const id of refused.sort()) ctx.deps.log({ event: "audit.timestamp_failed", level: "warn", label: "all", problem: "gen_time", epochId: id, coveredBy: epochId });
+      return { covered: 0, complete: false };
+    }
   }
   waiting.reverse();
   await eachPage(waiting, async (id) => {
@@ -1093,7 +1116,7 @@ async function coverOlder(ctx: Context, epochId: string, prevEpochId: string | n
       if (!isConditionalFailure(error)) throw error;
     }
   });
-  return waiting.length;
+  return { covered: waiting.length, complete: true };
 }
 
 /** An epoch that has every token and was waiting is sealed (after the epochs it covers, so a crash resumes the covering). */
@@ -1121,8 +1144,11 @@ async function settleStamps(ctx: Context, epochs: StampTarget[]): Promise<void> 
   if (active === undefined) return;
   for (const epoch of epochs) {
     if (!hasAllStamps(active, epoch.meta.stamps)) continue;
-    const covered = await coverOlder(ctx, epoch.meta.epochId, epoch.meta.prevEpochId);
-    await sealWaiting(ctx, epoch.meta.epochId);
+    if (ctx.settled.has(epoch.meta.epochId)) continue;
+    ctx.settled.add(epoch.meta.epochId);
+    const { covered, complete } = await coverOlder(ctx, epoch.meta);
+    // An epoch that could not cover the ones before it stays waiting with them (they are always a run that ends at the head).
+    if (complete) await sealWaiting(ctx, epoch.meta.epochId);
     if (covered > 0) ctx.deps.log({ event: "audit.timestamps_covered", epochId: epoch.meta.epochId, covered });
   }
 }
@@ -1131,7 +1157,8 @@ async function settleStamps(ctx: Context, epochs: StampTarget[]): Promise<void> 
 async function stampWaiting(ctx: Context): Promise<void> {
   if (activeTsa(ctx) === undefined) return;
   const waiting = await newestPending(ctx);
-  if (waiting === undefined) return;
+  // A head that holds every token was settled (or refused) at the start of the run by `resumeStamps`.
+  if (waiting === undefined || hasAllStamps(activeTsa(ctx) as ActiveTsa, waiting.meta.stamps)) return;
   await stampEpochs(ctx, [waiting]);
   await enforceStampLocks(ctx, [waiting]);
   await settleStamps(ctx, [waiting]);
@@ -1141,12 +1168,13 @@ async function stampWaiting(ctx: Context): Promise<void> {
 const PENDING_ALARM_MINUTES = 180;
 
 /**
- * The first thing every run does for the timestamps (I2): finish the settling a crashed run left. The newest completed epoch is the
- * head. When it holds a token from every authority, whatever it can cover is covered now and it is sealed if it was waiting; this
- * is the same idempotent step the end of a run takes, and it runs BEFORE this run opens an epoch, so a crash between
- * `completeEpoch` and the covering can never leave older epochs behind a sealed head. When the head still lacks a token and has
- * waited for longer than PENDING_ALARM_MINUTES (with the epochs before it that also wait), it is logged as a timestamp failure,
- * so the alarm fires even when no authority is asked or answers wrongly.
+ * The first thing every run does for the timestamps (I2): finish the settling a crashed run left. The newest completed epoch is
+ * the head, and the epochs that wait are always a run that ends at the head: an epoch is completed as `sealed` only when none
+ * waits before it, and otherwise as `stamp_pending` and sealed last, after it has covered them. So a sealed head means there is
+ * nothing to settle and this does nothing (one read). A waiting head that holds a token from every authority has its locks
+ * checked (N2, as in any run that stamps) and is then settled with the same idempotent step the end of a run takes. A waiting head
+ * that lacks a token and has waited, with the epochs before it, for longer than PENDING_ALARM_MINUTES is logged as a timestamp
+ * failure, so the alarm fires even when no authority is asked or answers wrongly.
  */
 async function resumeStamps(ctx: Context): Promise<void> {
   const active = activeTsa(ctx);
@@ -1154,12 +1182,13 @@ async function resumeStamps(ctx: Context): Promise<void> {
   const head = await getItem(ctx, ctx.deps.sealsTable, "EPOCH_HEAD", "HEAD");
   if (typeof head?.epochId !== "string") return;
   const meta = await readMeta(ctx, head.epochId);
-  if (meta.statement === undefined) return;
+  if (meta.statement === undefined || meta.status !== "stamp_pending") return;
   if (hasAllStamps(active, meta.stamps)) {
-    await settleStamps(ctx, [{ meta, statement: meta.statement }]);
+    const target: StampTarget = { meta, statement: meta.statement };
+    await enforceStampLocks(ctx, [target]);
+    await settleStamps(ctx, [target]);
     return;
   }
-  if (meta.status !== "stamp_pending") return;
   // The waiting epochs end at the head; the walk stops at the first one old enough to alarm, or at the first that is not waiting.
   const limit = ctx.now - PENDING_ALARM_MINUTES * 60_000;
   for (let current: EpochMeta | undefined = meta; current !== undefined && current.status === "stamp_pending";) {
@@ -1197,14 +1226,16 @@ async function driveEpoch(ctx: Context, epochId: string, resumed: boolean): Prom
   await finalizeOrgs(ctx, meta);
   const active = activeTsa(ctx);
   const stamped = active === undefined || hasAllStamps(active, meta.stamps);
-  await completeEpoch(ctx, meta, statement, stamped ? "sealed" : "stamp_pending");
+  // Sealed at once only when nothing waits before it; otherwise it is sealed last, by `settleStamps`, after it has covered them
+  // (a sealed head with waiting epochs behind it could never be found again by a later run).
+  await completeEpoch(ctx, meta, statement, stamped && (active === undefined || waiting === undefined) ? "sealed" : "stamp_pending");
   await settleStamps(ctx, targets);
 
   const intents = await readIntents(ctx, epochId);
   const sealed = intents.filter((intent) => intent.seal !== undefined && intent.skipped === undefined);
   return {
     epochId,
-    status: stamped ? "sealed" : "stamp_pending",
+    status: (await readMeta(ctx, epochId)).status === "sealed" ? "sealed" : "stamp_pending",
     orgs: sealed.length,
     skipped: intents.filter((intent) => intent.skipped !== undefined).length,
     blocked: intents.filter((intent) => intent.blocked !== undefined).length,
@@ -1306,7 +1337,7 @@ function logEpoch(ctx: Context, summary: AnchorEpochSummary): void {
  * run the hourly backstop, and, if any org has new records, open the epoch of this slot and seal it.
  */
 export async function runAuditEpoch(deps: AnchorDeps, now: number): Promise<AnchorRunResult> {
-  const ctx: Context = { deps, now, nowIso: new Date(now).toISOString(), stampRequests: new Map(), lastStampRequestAt: new Map(), lastRecordedAt: new Map() };
+  const ctx: Context = { deps, now, nowIso: new Date(now).toISOString(), stampRequests: new Map(), lastStampRequestAt: new Map(), lastRecordedAt: new Map(), settled: new Set() };
   const epochs: AnchorEpochSummary[] = [];
   const finish = (reason?: string): AnchorRunResult => {
     const status = epochs.some((epoch) => epoch.status === "stamp_pending") ? "stamp_pending" : epochs.length > 0 ? "sealed" : "idle";

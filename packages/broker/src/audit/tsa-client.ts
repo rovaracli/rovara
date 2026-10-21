@@ -59,10 +59,14 @@ export interface RequestOptions {
 /**
  * The time a token vouches for must be believable before the anchor keeps it: not more than the bundle check's skew before the
  * last record the statement covers (the very rule `verifyBundle` applies, so a token the anchor keeps never fails an export on its
- * time), and not more than that skew ahead of now (only the anchor knows the real time). Throws `TsaError(label, "gen_time")`.
+ * time), not more than that skew ahead of now (only the anchor knows the real time), and, when `notBeforeMs` is given (the moment the
+ * request was sent, or for a token found in storage the moment the epoch was closed), not more than the skew before it: a floor that
+ * holds for an epoch with no records too. Throws `TsaError(label, "gen_time")`.
  */
-export function checkGenTime(label: string, genTime: string, bounds: { lastRecordedAt?: string | undefined; nowMs: number }): void {
+export function checkGenTime(label: string, genTime: string, bounds: { lastRecordedAt?: string | undefined; nowMs: number; notBeforeMs?: number | undefined }): void {
   if (bounds.lastRecordedAt !== undefined && !timestampCoversRecord(genTime, bounds.lastRecordedAt)) throw new TsaError(label, "gen_time");
+  // A sanity floor that needs no record: the statement existed before it was sent, so a token may not predate that by more than the skew.
+  if (bounds.notBeforeMs !== undefined && !(Date.parse(genTime) >= bounds.notBeforeMs - TIMESTAMP_SKEW_MS)) throw new TsaError(label, "gen_time");
   if (!(Date.parse(genTime) <= bounds.nowMs + TIMESTAMP_SKEW_MS)) throw new TsaError(label, "gen_time");
 }
 
@@ -98,6 +102,7 @@ async function readCapped(response: Response): Promise<Uint8Array | undefined> {
  * token otherwise.
  */
 export async function requestTimestamp(fetchFn: typeof fetch, label: string, url: string, hashHex: string, options: RequestOptions): Promise<StampedToken> {
+  const startedAt = (options.clock ?? Date.now)();
   const controller = new AbortController();
   const timer = setTimeout(() => { controller.abort(); }, options.timeoutMs);
   const lost = (): TsaError => new TsaError(label, controller.signal.aborted ? "timeout" : "network");
@@ -141,7 +146,7 @@ export async function requestTimestamp(fetchFn: typeof fetch, label: string, url
   if (parsed.token === undefined) throw new TsaError(label, "malformed");
   const verdict = verifyTimeStampToken(parsed.token, { hashHex, nonce: options.nonce, anchors: options.anchors });
   if (!verdict.ok) throw new TsaError(label, verdict.problem);
-  checkGenTime(label, verdict.genTime, { lastRecordedAt: options.lastRecordedAt, nowMs: (options.clock ?? Date.now)() });
+  checkGenTime(label, verdict.genTime, { lastRecordedAt: options.lastRecordedAt, nowMs: (options.clock ?? Date.now)(), notBeforeMs: startedAt });
   return { token: parsed.token, genTime: verdict.genTime, tsa: verdict.tsa, serialHex: verdict.serialHex };
 }
 

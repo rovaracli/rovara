@@ -97,7 +97,7 @@ describe("requestTimestamp", () => {
 
   it("POSTs an application/timestamp-query for exactly the hash it is given and returns the verified token", async () => {
     const { host, fetch } = digicert();
-    const stamped = await requestTimestamp(fetch, "digicert", DIGICERT, HASH, { timeoutMs: 1000, nonce: 0x1234567890abcn, anchors: [rootOf(host)] });
+    const stamped = await requestTimestamp(fetch, "digicert", DIGICERT, HASH, { timeoutMs: 1000, nonce: 0x1234567890abcn, anchors: [rootOf(host)], clock: () => Date.parse("2026-10-20T12:00:00Z") });
     expect(host.requests).toHaveLength(1);
     expect(host.requests[0]).toMatchObject({ method: "POST", contentType: "application/timestamp-query", hashHex: HASH, nonce: 0x1234567890abcn });
     expect(stamped.genTime).toBe("2026-10-20T12:00:00.000Z");
@@ -177,13 +177,13 @@ describe("requestTimestamp", () => {
         controller.close();
       },
     }), { status: 200 })) as unknown as typeof fetch;
-    const stamped = await requestTimestamp(pieces, "digicert", DIGICERT, HASH, { timeoutMs: 1000, nonce: 9n, anchors: [rootOf(host)] });
+    const stamped = await requestTimestamp(pieces, "digicert", DIGICERT, HASH, { timeoutMs: 1000, nonce: 9n, anchors: [rootOf(host)], clock: () => Date.parse("2026-10-20T12:00:00Z") });
     expect(stamped.genTime).toBe("2026-10-20T12:00:00.000Z");
   });
 
   it("refuses a token dated more than 5 minutes before the last record it covers, or more than 5 minutes ahead of now, and keeps one inside the skew (review I1)", async () => {
     const { host, fetch } = digicert();
-    const base = { timeoutMs: 1000, nonce: 3n, anchors: [rootOf(host)] };
+    const base = { timeoutMs: 1000, nonce: 3n, anchors: [rootOf(host)], clock: () => Date.parse("2026-10-20T12:00:00Z") };
     const recorded = (offsetMs: number): string => new Date(Date.parse("2026-10-20T12:00:00Z") + offsetMs).toISOString();
     await expect(requestTimestamp(fetch, "digicert", DIGICERT, HASH, { ...base, lastRecordedAt: recorded(5 * 60_000 + 1000) })).rejects.toMatchObject({ label: "digicert", problem: "gen_time" });
     await expect(requestTimestamp(fetch, "digicert", DIGICERT, HASH, { ...base, lastRecordedAt: recorded(4 * 60_000) })).resolves.toMatchObject({ genTime: "2026-10-20T12:00:00.000Z" });
@@ -191,11 +191,18 @@ describe("requestTimestamp", () => {
     await expect(requestTimestamp(fetch, "digicert", DIGICERT, HASH, { ...base, clock: () => Date.parse("2026-10-20T11:56:00Z") })).resolves.toMatchObject({ genTime: "2026-10-20T12:00:00.000Z" });
   });
 
+  it("refuses a token dated more than 5 minutes before the request was made, with no record to compare it to (review N1: the sanity floor)", async () => {
+    const { host, fetch } = digicert();
+    const base = { timeoutMs: 1000, nonce: 3n, anchors: [rootOf(host)] };
+    await expect(requestTimestamp(fetch, "digicert", DIGICERT, HASH, { ...base, clock: () => Date.parse("2026-10-20T12:10:00Z") })).rejects.toMatchObject({ label: "digicert", problem: "gen_time" });
+    await expect(requestTimestamp(fetch, "digicert", DIGICERT, HASH, { ...base, clock: () => Date.parse("2026-10-20T12:04:00Z") })).resolves.toMatchObject({ genTime: "2026-10-20T12:00:00.000Z" });
+  });
+
   it("verifies the real DigiCert and Sectigo answers under each label's pinned root, and only under its own", async () => {
     const answer = (label: "digicert" | "sectigo") => (async () => new Response(Buffer.from(REAL_TIMESTAMP_RESPONSES[label].base64, "base64"), { status: 200 })) as unknown as typeof fetch;
     const anchors = defaultAnchors();
     for (const label of ["digicert", "sectigo"] as const) {
-      const options = { timeoutMs: 1000, nonce: REAL_TIMESTAMP_NONCE, anchors: anchors[label] };
+      const options = { timeoutMs: 1000, nonce: REAL_TIMESTAMP_NONCE, anchors: anchors[label], clock: () => Date.parse(REAL_TIMESTAMP_RESPONSES[label].genTime) };
       const stamped = await requestTimestamp(answer(label), label, AUDIT_TSA_ENDPOINTS[label], REAL_TIMESTAMP_HASH_HEX, options);
       expect(stamped.genTime).toBe(REAL_TIMESTAMP_RESPONSES[label].genTime);
       expect(parseTimeStampResponse(new Uint8Array(Buffer.from(REAL_TIMESTAMP_RESPONSES[label].base64, "base64"))).token).toBeDefined();
@@ -845,7 +852,7 @@ describe("customer-run authorities", () => {
   it("a custom token checked against the other URL's roots is rejected", async () => {
     const w = customWorld();
     const statement = statementHash({ v: 1, epochId: E0, closedAt: iso(at(0)), prevEpochId: null, prevStatementHash: null, sealsRoot: "00".repeat(32), sealCount: 0 });
-    const okNow = await requestTimestamp(w.fetch, "custom-1", URL_ONE, statement, { timeoutMs: 1000, nonce: 5n, anchors: [w.one.pki.root.x509] });
+    const okNow = await requestTimestamp(w.fetch, "custom-1", URL_ONE, statement, { timeoutMs: 1000, nonce: 5n, anchors: [w.one.pki.root.x509], clock: () => w.h.clock.now });
     expect(okNow.token.length).toBeGreaterThan(0);
     await expect(requestTimestamp(w.fetch, "custom-1", URL_ONE, statement, { timeoutMs: 1000, nonce: 5n, anchors: [w.two.pki.root.x509] })).rejects.toMatchObject({ label: "custom-1", problem: "untrusted" });
     await expect(requestTimestamp(w.fetch, "custom-2", URL_TWO, statement, { timeoutMs: 1000, nonce: 5n, anchors: [w.one.pki.root.x509] })).rejects.toMatchObject({ label: "custom-2", problem: "untrusted" });
@@ -1031,8 +1038,8 @@ describe("review I2: a crash after a stamped epoch is completed must not strand 
     appendRecords(w.h, A, 1);
     await expect(run(w.h, at(2))).rejects.toMatchObject({ name: "ProcessDied" });
     w.h.hooks.before = undefined;
-    // The new epoch is complete and the head; the older ones were not covered.
-    expect(statusOf(w.h, E2)).toBe("sealed");
+    // The new epoch is complete and the head, and it is not sealed while older epochs wait behind it.
+    expect(statusOf(w.h, E2)).toBe("stamp_pending");
     expect(epochHead(w.h)).toMatchObject({ epochId: E2 });
     expect(statusOf(w.h, E0)).toBe("stamp_pending");
     return w;
@@ -1097,6 +1104,131 @@ describe("review I2: a crash after a stamped epoch is completed must not strand 
     await run(w.h, at(13));
     expect(tooLong()).toMatchObject([{ epochId: E0, level: "error", label: "all" }]);
     expect(statusOf(w.h, E0)).toBe("stamp_pending");
+  });
+});
+
+describe("review N1: a covering token must cover every epoch it settles", () => {
+  const MINUTE = 60_000;
+  const E3 = epochIdAt(at(3));
+
+  it("a token from clocks 25 minutes behind is refused for a later epoch with old records too (the sanity floor), so it cannot cover an older pending epoch (the re-checker's probe A)", async () => {
+    const w = world();
+    w.digicert.skewMs = -25 * MINUTE;
+    w.sectigo.skewMs = -25 * MINUTE;
+    await sealFirstEpoch(w);
+    expect(statusOf(w.h, E0)).toBe("stamp_pending");
+    // An org whose records were made an hour earlier (the hourly backstop) is sealed alone in E1: its records alone would accept the token.
+    w.h.clock.now = at(1) - 60 * MINUTE;
+    appendRecords(w.h, B, 2);
+    w.h.clock.now = at(1);
+    await run(w.h, at(1));
+    expect(tokenKeys(w.h)).toStrictEqual([]);
+    expect([E0, E1].map((id) => statusOf(w.h, id))).toStrictEqual(["stamp_pending", "stamp_pending"]);
+    expect(metaOf(w.h, E0)?.covered_by).toBeUndefined();
+    expect(failures(w.h).filter((entry) => entry.epochId === E1)).toMatchObject([{ problem: "gen_time" }, { problem: "gen_time" }]);
+  });
+
+  /** E0's only org recorded its records 40 minutes ahead of the anchor's clock, so no token of the run can stamp E0 itself. */
+  async function pendingBehindALaterRecord(): Promise<World> {
+    const w = world();
+    w.h.clock.now = at(0) + 40 * MINUTE;
+    appendRecords(w.h, A, 3);
+    w.h.clock.now = at(0);
+    await run(w.h, at(0));
+    expect(statusOf(w.h, E0)).toBe("stamp_pending");
+    expect(tokenKeys(w.h)).toStrictEqual([]);
+    return w;
+  }
+
+  it("refuses to cover an epoch whose records are later than the covering token allows: nothing is covered and nothing is sealed behind it, and the refusal is logged", async () => {
+    const w = await pendingBehindALaterRecord();
+    w.h.clock.now = at(1) - 60 * MINUTE;
+    appendRecords(w.h, B, 2);
+    w.h.clock.now = at(1);
+    await run(w.h, at(1));
+    // E1 holds both of its own tokens (its records are old), but its token cannot vouch for E0's records.
+    expect(stampOf(w.h, E1, "digicert")).toBeDefined();
+    expect(stampOf(w.h, E1, "sectigo")).toBeDefined();
+    expect(metaOf(w.h, E0)).toMatchObject({ status: "stamp_pending" });
+    expect(metaOf(w.h, E0)?.covered_by).toBeUndefined();
+    expect(statusOf(w.h, E1)).toBe("stamp_pending");
+    expect(failures(w.h).filter((entry) => entry.label === "all")).toMatchObject([{ problem: "gen_time", epochId: E0, coveredBy: E1 }]);
+  });
+
+  it("a later epoch whose tokens do cover it settles everything, and the export passes the offline verifier", async () => {
+    const w = await pendingBehindALaterRecord();
+    w.h.clock.now = at(1) - 60 * MINUTE;
+    appendRecords(w.h, B, 2);
+    w.h.clock.now = at(1);
+    await run(w.h, at(1));
+    w.h.clock.now = at(3);
+    appendRecords(w.h, A, 1);
+    await run(w.h, at(3));
+    expect([E0, E1, E3].map((id) => statusOf(w.h, id))).toStrictEqual(["sealed", "sealed", "sealed"]);
+    expect(metaOf(w.h, E0)?.covered_by).toBe(E3);
+    const report = verifyBundle(exportBundle(w.h, A, w.settings), { anchors: anchorsOf(w) });
+    expect(report.ok, JSON.stringify(report.checks.filter((check) => !check.ok))).toBe(true);
+    expect(report.epochsWithoutTimestamp).toStrictEqual([]);
+  });
+
+  it("an idle run after a refused covering keeps the head pending, so no sealed epoch ever stands in front of a waiting one", async () => {
+    const w = await pendingBehindALaterRecord();
+    w.h.clock.now = at(1) - 60 * MINUTE;
+    appendRecords(w.h, B, 2);
+    w.h.clock.now = at(1);
+    await run(w.h, at(1));
+    w.h.clock.now = at(2);
+    await run(w.h, at(2));
+    expect([E0, E1].map((id) => statusOf(w.h, id))).toStrictEqual(["stamp_pending", "stamp_pending"]);
+    expect(epochHead(w.h)).toMatchObject({ epochId: E1 });
+  });
+});
+
+describe("review N2: resumed stamps pass the lock checks", () => {
+  it("a head whose tokens carry a lock below the floor stops every run, and is not sealed by the run after the one that found it", async () => {
+    const w = world({ digicert: "rejection" });
+    await sealFirstEpoch(w);
+    expect(statusOf(w.h, E0)).toBe("stamp_pending");
+    w.digicert.behavior = "grant";
+    w.h.s3.after = (call) => {
+      if (call.command === "PutObject" && call.key?.endsWith(".tsr")) w.h.s3.setObjectLock(call.key, w.h.s3.versionsOf(call.key).at(-1)!.versionId, { mode: "GOVERNANCE", retainUntil: at(1) + 86_400_000 });
+    };
+    w.h.clock.now = at(1);
+    expect(await run(w.h, at(1))).toMatchObject({ status: "stopped", reason: "lock_config_mismatch" });
+    expect(statusOf(w.h, E0)).toBe("stamp_pending");
+    w.h.s3.after = undefined;
+    const mismatches = eventsOf(w.h, "audit.lock_config_mismatch").length;
+    w.h.clock.now = at(2);
+    expect(await run(w.h, at(2))).toMatchObject({ status: "stopped", reason: "lock_config_mismatch" });
+    expect(statusOf(w.h, E0)).toBe("stamp_pending");
+    expect(eventsOf(w.h, "audit.lock_config_mismatch").length).toBeGreaterThan(mismatches);
+  });
+});
+
+describe("review N3: a run with nothing to settle does no settling work", () => {
+  it("after the head has covered the older epochs, idle runs write nothing to the epochs, read only the head's META, and do not log the covering again", async () => {
+    const w = world();
+    w.digicert.behavior = "rejection";
+    w.sectigo.behavior = "rejection";
+    for (let slot = 0; slot < 6; slot += 1) {
+      w.h.clock.now = at(slot);
+      appendRecords(w.h, A, 1);
+      await run(w.h, at(slot));
+    }
+    w.digicert.behavior = "grant";
+    w.sectigo.behavior = "grant";
+    w.h.clock.now = at(6);
+    await run(w.h, at(6));
+    expect(eventsOf(w.h, "audit.timestamps_covered")).toHaveLength(1);
+    for (const slot of [7, 8]) {
+      const before = w.h.operations.length;
+      w.h.clock.now = at(slot);
+      expect(await run(w.h, at(slot))).toMatchObject({ status: "idle" });
+      const made = w.h.operations.slice(before).filter((operation) => operation.pk.startsWith("EPOCH#"));
+      expect(made.filter((operation) => operation.action !== "GetItem")).toStrictEqual([]);
+      expect(made.length).toBeLessThanOrEqual(2);
+    }
+    expect(eventsOf(w.h, "audit.timestamps_covered")).toHaveLength(1);
   });
 });
 
