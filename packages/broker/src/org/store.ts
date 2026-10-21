@@ -34,12 +34,18 @@ import {
   type OrgRole,
 } from "@agentx/contracts";
 import { sha256Hex } from "../developer/tokens.js";
+import { INVITE_HASH_PATTERN, inviteTokenHash } from "./invite-url.js";
 
 const DEFAULT_INVITE_TTL_SECONDS = 604_800;
 const NOT_EXISTS = "attribute_not_exists(pk)";
 
 type Item = Record<string, unknown>;
 type TransactItem = NonNullable<ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]>[number];
+
+/** An invite as the join page shows it (OrgStore.describeInvite). */
+export interface InviteDescription {
+  orgId: OrgId; orgName: string; role: "admin" | "member"; createdBy: string; email?: string; state: "open" | "expired" | "used";
+}
 
 export interface OrgStoreInput {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -205,16 +211,51 @@ export class OrgStore {
     return { token };
   }
 
-  /** What an invite grants and whom it was written for, without accepting it; undefined for an unknown token. A sign-in reads this to check an email-targeted invite (ruling R7) before it accepts. */
-  async peekInvite(token: string): Promise<{ orgId: OrgId; role: OrgRole; email?: string } | undefined> {
-    const invite = await this.get(orgInviteKey(sha256Hex(token)));
+  /**
+   * The key of the invite whose token hashes to `tokenHash` (SHA-256, base64url: the form a sign-in request keeps). The item is keyed by the
+   * same SHA-256 in hex. A string that is not a canonical hash names no invite.
+   */
+  private inviteKeyOf(tokenHash: string): OrgKey | undefined {
+    if (!INVITE_HASH_PATTERN.test(tokenHash)) return undefined;
+    const bytes = Buffer.from(tokenHash, "base64url");
+    return bytes.toString("base64url") === tokenHash ? orgInviteKey(bytes.toString("hex")) : undefined;
+  }
+
+  /** What an invite grants and whom it was written for, without accepting it; undefined for an unknown invite. A sign-in reads this to check an email-targeted invite (ruling R7) before it accepts. */
+  async peekInvite(tokenHash: string): Promise<{ orgId: OrgId; role: OrgRole; email?: string } | undefined> {
+    const key = this.inviteKeyOf(tokenHash);
+    const invite = key === undefined ? undefined : await this.get(key);
     if (invite === undefined) return undefined;
     return { orgId: invite.orgId as OrgId, role: invite.role as OrgRole, ...(typeof invite.email === "string" ? { email: invite.email } : {}) };
   }
 
-  async acceptInvite(input: { token: string; developerId: string; email?: string }): Promise<{ orgId: OrgId; role: OrgRole }> {
-    const tokenHash = sha256Hex(input.token);
-    const invite = await this.get(orgInviteKey(tokenHash)) as (Item & OrgInviteRecord) | undefined;
+  /**
+   * What the join page tells a visitor about an invite: the org's name, the role, who made it, the address it is for and whether it can
+   * still be used. Reads only. Undefined for an unknown token or an invite whose org is gone.
+   */
+  async describeInvite(token: string): Promise<InviteDescription | undefined> {
+    return this.describeInviteByHash(inviteTokenHash(token));
+  }
+
+  /** `describeInvite` for a caller that holds only the token's hash (a sign-in request never keeps the token). */
+  async describeInviteByHash(tokenHash: string): Promise<InviteDescription | undefined> {
+    const key = this.inviteKeyOf(tokenHash);
+    const invite = key === undefined ? undefined : await this.get(key) as (Item & OrgInviteRecord) | undefined;
+    if (invite === undefined) return undefined;
+    const org = await this.getOrg(invite.orgId);
+    if (org === undefined) return undefined;
+    const state = invite.acceptedAt !== undefined ? "used" : invite.expiresAt <= this.iso() ? "expired" : "open";
+    return {
+      orgId: invite.orgId, orgName: org.name, role: invite.role, createdBy: invite.createdBy,
+      ...(typeof invite.email === "string" ? { email: invite.email } : {}), state,
+    };
+  }
+
+  /** `tokenHash` is the invite token's SHA-256 in base64url (inviteTokenHash): the raw token never reaches a store call past the page that read it. */
+  async acceptInvite(input: { tokenHash: string; developerId: string; email?: string }): Promise<{ orgId: OrgId; role: OrgRole }> {
+    const inviteKey = this.inviteKeyOf(input.tokenHash);
+    if (inviteKey === undefined) throw inviteInvalid();
+    const invite = await this.get(inviteKey) as (Item & OrgInviteRecord) | undefined;
     const nowIso = this.iso();
     if (invite === undefined || invite.acceptedAt !== undefined || invite.expiresAt <= nowIso) throw inviteInvalid();
     const { orgId, role } = invite;
@@ -224,7 +265,7 @@ export class OrgStore {
       {
         Update: {
           TableName: this.input.tableName,
-          Key: orgInviteKey(tokenHash),
+          Key: inviteKey,
           UpdateExpression: "SET acceptedBy = :by, acceptedAt = :at",
           ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(acceptedAt) AND expiresAt > :now",
           ExpressionAttributeValues: { ":by": input.developerId, ":at": nowIso, ":now": nowIso },

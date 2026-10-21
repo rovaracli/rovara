@@ -43,13 +43,16 @@ import {
 } from "@agentx/contracts";
 import { adaptHttpApiEvent, type HttpApiV2Event } from "../aws/lambda.js";
 import { SESSION_MAX_AGE_SECONDS } from "../aws/web-session.js";
-import { INVITE_TOKEN_PATTERN } from "../org/invite-url.js";
+import { INVITE_TOKEN_PATTERN, inviteTokenHash } from "../org/invite-url.js";
 import type { OrgStore } from "../org/store.js";
-import { resolveOrgOnSignIn, type ResolveOrgOnSignInDependencies } from "../org/sign-in.js";
+import { resolveOrgOnSignIn, type ResolveOrgOnSignInDependencies, type SignInNoOrg, type SignInOrg } from "../org/sign-in.js";
 import { resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from "./identities.js";
+import {
+  expiredInvitePage, joinDonePage, joinExpiredPage, maskEmail, openInvitePage, otherBrowserPage, unknownInvitePage, usedInvitePage, type PageSpec,
+} from "./join-page.js";
 import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderResult, type SignInProvider } from "./providers.js";
 import type { SlackDirectory } from "./slack-directory.js";
-import { endedByAdmin, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type SessionRecord } from "./store.js";
+import { endedByAdmin, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
 import { issueAccessToken, pkceChallengeMatches, type TokenSigner } from "./tokens.js";
 
 /** `since` (epoch seconds, FR-045): when the method was last turned on. A session started before it
@@ -64,7 +67,7 @@ export interface DeveloperIdentityDependencies {
   providers: Partial<Record<DeveloperSignInMethod, SignInProvider>>;
   directory: SlackDirectory;
   /** The org store: a sign-in puts the developer in an org, and the tokens carry it. */
-  orgs: ResolveOrgOnSignInDependencies["orgs"] & Pick<OrgStore, "developerForVerifiedEmail">;
+  orgs: ResolveOrgOnSignInDependencies["orgs"] & Pick<OrgStore, "developerForVerifiedEmail" | "describeInviteByHash" | "describeInvite" | "getOrg">;
   /** The install's single org (ruling R3), which a Slack or company sign-in joins as a member. */
   singleOrgId?: OrgId;
   /** Told when a sign-in created or joined an org, so the model proxy can be told its budgets (see ResolveOrgOnSignInDependencies.onOrgJoined). */
@@ -90,6 +93,10 @@ const CHALLENGE = /^[A-Za-z0-9_-]{43,128}$/;
 const REVIEW_RETURN_TO = /^\/review\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\/task(?:\?doc=(?:requirements|design|coding-plan)(?:&from=[1-9][0-9]{0,2})?)?)?$/i;
 const REVIEW_PKCE_COOKIE = "__Host-agentx_review_pkce";
 const REVIEW_SESSION_COOKIE = "__Host-agentx_review_session";
+/** The join page's own PKCE cookie: the browser that opened an invite is the only one that may read how its join ended. */
+const JOIN_PKCE_COOKIE = "__Host-rovara_join_pkce";
+/** An auth request id: 32 random bytes in base64url. */
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const JSON_HEADERS = { "content-type": "application/json", "cache-control": "no-store", pragma: "no-cache" };
 const HTML_HEADERS = {
   "content-type": "text/html; charset=utf-8",
@@ -125,6 +132,10 @@ function page(statusCode: number, title: string, paragraphs: string[], links: Ar
     + `${links.map((link) => `<a class="method" href="${escape(link.href)}">${escape(link.label)}</a>`).join("")}</main></body></html>`;
   return { statusCode, headers: { ...HTML_HEADERS }, body };
 }
+
+const render = (spec: PageSpec): HttpResult => page(spec.statusCode, spec.title, spec.paragraphs, spec.links);
+const cookieValue = (header: string | undefined, name: string): string | undefined =>
+  (header ?? "").split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1);
 
 const jsonResult = (statusCode: number, body: unknown): HttpResult => ({ statusCode, headers: { ...JSON_HEADERS }, body: JSON.stringify(body) });
 /** Public, cacheable documents (discovery, keys): no pragma, which belongs only beside no-store. */
@@ -188,6 +199,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       if (method === undefined) return page(400, "Sign-in method not available", ["Run agentx login again."]);
       const request = await store.chooseMethod(requestId, method);
       if (request === undefined) return expired();
+      if (request.purpose === "join") return joinToProvider(request.id, request.nonce, method);
       try {
         return await toProvider(request.id, request.nonce, method, request.clientRedirectUri, request.clientState);
       } catch (error) {
@@ -212,7 +224,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     }
     let request: AuthRequestRecord;
     try {
-      request = await store.createAuthRequest({ clientRedirectUri: redirectUri, clientState, codeChallenge: challenge, nonce: randomBytes(32).toString("base64url"), ...(invite === null ? {} : { inviteToken: invite }) });
+      request = await store.createAuthRequest({ clientRedirectUri: redirectUri, clientState, codeChallenge: challenge, nonce: randomBytes(32).toString("base64url"), ...(invite === null ? {} : { inviteTokenHash: inviteTokenHash(invite) }) });
       if (methods.length === 1) {
         const method = methods[0]!;
         if (await store.chooseMethod(request.id, method) === undefined) return expired();
@@ -254,6 +266,117 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       href: `${endpoint("/authorize")}?request=${encodeURIComponent(auth.id)}&method=${method}`,
       label: `Sign in with ${methodLabel(method)}`,
     }))), cookies: [cookie] };
+  }
+
+  const cellUrl = () => config.issuer.replace(/\/v1\/auth\/?$/, "");
+  const inviterNameOf = async (developerId: string): Promise<string> => {
+    const name = (await store.getDeveloper(developerId))?.displayName;
+    return name === undefined || name === "" ? "Someone" : name;
+  };
+  /** The invite token in a join URL, when it has the shape of one. */
+  const inviteTokenIn = (query: URLSearchParams): string | undefined => {
+    const token = query.get("invite") ?? "";
+    return INVITE_TOKEN_PATTERN.test(token) ? token : undefined;
+  };
+  const joinUnavailable = (cookies: string[] = []): HttpResult =>
+    ({ ...page(503, "Sign-in is unavailable", ["Try opening the invite link again in a moment."]), ...(cookies.length === 0 ? {} : { cookies }) });
+
+  /** The page for an invite that cannot be used (expired, used or unknown), or undefined for an open one. */
+  async function joinInvite(query: URLSearchParams): Promise<{ page: HttpResult } | { token: string; invite: NonNullable<Awaited<ReturnType<typeof deps.orgs.describeInvite>>>; inviterName: string }> {
+    const token = inviteTokenIn(query);
+    const invite = token === undefined ? undefined : await deps.orgs.describeInvite(token);
+    if (token === undefined || invite === undefined) return { page: render(unknownInvitePage()) };
+    const inviterName = await inviterNameOf(invite.createdBy);
+    if (invite.state === "expired") return { page: render(expiredInvitePage(inviterName)) };
+    if (invite.state === "used") return { page: render(usedInvitePage(inviterName)) };
+    return { token, invite, inviterName };
+  }
+
+  /** `GET /v1/auth/join?invite=`: the invite, or why it cannot be used. Reads only; creates nothing. */
+  async function joinPage(query: URLSearchParams): Promise<HttpResult> {
+    const found = await joinInvite(query);
+    if ("page" in found) return found.page;
+    const { token, invite, inviterName } = found;
+    return render(openInvitePage(
+      { orgName: invite.orgName, role: invite.role, inviterName, ...(invite.email === undefined ? {} : { maskedEmail: maskEmail(invite.email) }) },
+      endpoint(`/join/start?invite=${token}`), endpoint(`/join?invite=${token}`),
+    ));
+  }
+
+  /** `GET /v1/auth/join/start?invite=`: like authorizeBrowser, with the join cookie, the invite's hash and `purpose: "join"`. */
+  async function joinStart(query: URLSearchParams): Promise<HttpResult> {
+    const found = await joinInvite(query);
+    if ("page" in found) return found.page;
+    const methods = enabledMethods(deps);
+    if (methods.length === 0) return page(503, "Sign-in is unavailable", ["Ask a Rovara administrator to enable a sign-in method."]);
+    const verifier = randomBytes(32).toString("base64url");
+    const auth = await store.createAuthRequest({
+      clientRedirectUri: endpoint("/join/done"), clientState: randomBytes(24).toString("base64url"),
+      codeChallenge: createHash("sha256").update(verifier).digest("base64url"), nonce: randomBytes(32).toString("base64url"),
+      inviteTokenHash: inviteTokenHash(found.token), purpose: "join",
+    });
+    const cookie = `${JOIN_PKCE_COOKIE}=${verifier}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`;
+    if (methods.length === 1) {
+      if (await store.chooseMethod(auth.id, methods[0]!) === undefined) return joinUnavailable([cookie]);
+      return { ...await joinToProvider(auth.id, auth.nonce, methods[0]!), cookies: [cookie] };
+    }
+    return { ...page(200, `Sign in to join ${found.invite.orgName}`, [], methods.map((method) => ({
+      href: `${endpoint("/authorize")}?request=${encodeURIComponent(auth.id)}&method=${method}`,
+      label: `Sign in with ${methodLabel(method)}`,
+    }))), cookies: [cookie] };
+  }
+
+  /** Off to the provider for a join; a provider that cannot be reached is a page here, not a redirect to the CLI. */
+  async function joinToProvider(requestId: string, nonce: string, method: DeveloperSignInMethod): Promise<HttpResult> {
+    try {
+      return redirect(await provider(method).authorizeUrl({ state: requestId, nonce, redirectUri: endpoint(`/callback/${method}`) }));
+    } catch (error) {
+      deps.log({ event: "signin.join_authorize_failed", method, error: errorName(error) });
+      return joinUnavailable();
+    }
+  }
+
+  /** The callback of a join: only the browser that started it may finish it, and the end of it is a stored result, never a session or a code. */
+  async function joinCallback(method: DeveloperSignInMethod, request: AuthRequestRecord, code: string | null, headers: Record<string, string | undefined>): Promise<HttpResult> {
+    const verifier = cookieValue(headers.cookie, JOIN_PKCE_COOKIE);
+    if (verifier === undefined || !pkceChallengeMatches(verifier, request.codeChallenge)) return render(joinExpiredPage());
+    try {
+      return await completeSignIn(method, request, code);
+    } catch (error) {
+      deps.log({ event: "signin.join_error", method, error: errorName(error) });
+      return error instanceof ProviderUnavailableError || error instanceof ProviderNotConfiguredError
+        ? joinUnavailable()
+        : page(500, "Sign-in failed", ["Something went wrong on the Rovara server. Open the invite link again."]);
+    }
+  }
+
+  /** What a join leaves behind: the outcome and the facts the done page shows, kept ten minutes. Nothing else, whatever the outcome. */
+  async function finishJoin(request: AuthRequestRecord, org: SignInOrg | SignInNoOrg, described: Awaited<ReturnType<typeof deps.orgs.describeInviteByHash>>, method: DeveloperSignInMethod): Promise<JoinOutcome> {
+    const outcome: JoinOutcome = org.orgId === undefined ? org.inviteError ?? "INVITE_INVALID" : org.inviteError ?? "joined";
+    const invitedOrgName = described?.orgName ?? "";
+    const joinedOrg = outcome === "joined" || outcome === "ALREADY_IN_ORG" ? await deps.orgs.getOrg(org.orgId!) : undefined;
+    await store.putJoinResult(request.id, {
+      outcome,
+      orgName: outcome === "joined" ? joinedOrg?.name ?? invitedOrgName : invitedOrgName,
+      role: outcome === "joined" ? (org.role === "admin" ? "admin" : "member") : described?.role ?? "member",
+      ...(outcome === "ALREADY_IN_ORG" ? { currentOrgName: joinedOrg?.name ?? "your organization" } : {}),
+      invitedOrgName,
+      ...(described?.email === undefined ? {} : { maskedEmail: maskEmail(described.email) }),
+      inviterName: described === undefined ? "Someone" : await inviterNameOf(described.createdBy),
+      codeChallenge: request.codeChallenge,
+    });
+    deps.log({ event: "signin.join_completed", method, outcome });
+    return outcome;
+  }
+
+  /** `GET /v1/auth/join/done?request=`: how the join ended, for the browser whose cookie started it and nobody else. */
+  async function joinDone(query: URLSearchParams, headers: Record<string, string | undefined>): Promise<HttpResult> {
+    const id = query.get("request") ?? "";
+    const verifier = cookieValue(headers.cookie, JOIN_PKCE_COOKIE);
+    const result = verifier === undefined || !REQUEST_ID_PATTERN.test(id) ? undefined : await store.getJoinResult(id);
+    // One answer for a missing result, an old one and another browser's, so a request id tells a stranger nothing.
+    if (result === undefined || verifier === undefined || !pkceChallengeMatches(verifier, result.codeChallenge)) return render(otherBrowserPage());
+    return render(joinDonePage(result, cellUrl()));
   }
 
   /** Once the CLI's redirect URI and state are known, any failure goes back to the CLI, so it never
@@ -302,6 +425,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     // Single use: the state (and with it the nonce) is consumed before anything else happens.
     const request = await store.consumeAuthRequest(state, method);
     if (request === undefined) return page(400, "This sign-in link was already used", ["Run agentx login again."]);
+    if (request.purpose === "join") return joinCallback(method, request, query.get("code"), headers);
     if (request.browserReturnTo !== undefined) {
       const verifier = (headers.cookie ?? "").split(";").map(part => part.trim()).find(part => part.startsWith(`${REVIEW_PKCE_COOKIE}=`))?.slice(REVIEW_PKCE_COOKIE.length + 1);
       if (!REVIEW_RETURN_TO.test(request.browserReturnTo) || verifier === undefined || !pkceChallengeMatches(verifier, request.codeChallenge)) {
@@ -322,7 +446,10 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
 
   async function completeSignIn(method: DeveloperSignInMethod, request: AuthRequestRecord, code: string | null): Promise<HttpResult> {
     const client = (params: Record<string, string>) => toClient(request.clientRedirectUri, { ...params, state: request.clientState });
+    // A join (the invite page's sign-in) ends on a page and a stored result, never in a session, a code or a redirect to the CLI.
+    const join = request.purpose === "join";
     if (request.browserReturnTo !== undefined && !REVIEW_RETURN_TO.test(request.browserReturnTo)) return page(400, "Invalid review link", ["Open the review from Slack and sign in again."]);
+    if (code === null && join) return page(400, "Sign-in was cancelled", ["Open the invite link again to try again."]);
     if (code === null) return request.browserReturnTo === undefined
       ? client({ error: "access_denied", error_description: `the sign-in was cancelled at ${methodLabel(method)}; run agentx login again` })
       : browserReturn(request.browserReturnTo, false);
@@ -330,11 +457,12 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     try {
       result = await provider(method).complete({ code, nonce: request.nonce, redirectUri: endpoint(`/callback/${method}`) });
     } catch (error) {
-      if (request.browserReturnTo !== undefined) throw error;
+      if (request.browserReturnTo !== undefined || join) throw error;
       return providerFailure(error, method, request.clientRedirectUri, request.clientState);
     }
     if (!result.ok) {
       deps.log({ event: "signin.refused", method, reason: result.reason });
+      if (join) return page(403, "Sign-in was refused", [result.reason, "Open the invite link again to try another account."]);
       if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false);
       // A provider may quietly reuse the refused account's session on the next try, so say how to switch.
       const hint = result.wrongAccount === true ? `. If you signed in with the wrong account, sign out of ${methodLabel(method)} or use a private window, then try again.` : "";
@@ -347,6 +475,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     const existing = await store.getDeveloper(developerId);
     if (existing?.revoked === true) {
       deps.log({ event: "signin.refused", method, reason: "developer_revoked", developerId });
+      if (join) return page(403, "Your sign-in was turned off", ["Contact a Rovara administrator."]);
       if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false);
       return client({ error: "access_denied", error_description: "your AgentX sign-in was turned off by an admin; contact an admin" });
     }
@@ -368,22 +497,34 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     }
     // A link written just now already carries this sign-in's time.
     if (resolved.link === "existing") await store.touchIdentity(identityKey);
-    // A first sign-in puts the person in an org (ruling R2); the tokens and the browser session carry it from here.
-    let org: Awaited<ReturnType<typeof resolveOrgOnSignIn>>;
+    // A first sign-in puts the person in an org (ruling R2); the tokens and the browser session carry it from here. A join read the
+    // invite first (it is used up if the person joins), to have the names its page shows.
+    const described = join && request.inviteTokenHash !== undefined ? await deps.orgs.describeInviteByHash(request.inviteTokenHash) : undefined;
+    const orgDependencies = { orgs: deps.orgs, ...(deps.singleOrgId === undefined ? {} : { singleOrgId: deps.singleOrgId }), singleOrgName: config.env, log: deps.log,
+      ...(deps.onOrgJoined === undefined ? {} : { onOrgJoined: deps.onOrgJoined }) };
+    const orgInput = { method, developerId, displayName: identity.displayName, ...(identity.email === undefined ? {} : { email: identity.email }), emailVerified: identity.emailVerified === true,
+      ...(request.inviteTokenHash === undefined ? {} : { inviteTokenHash: request.inviteTokenHash }) };
+    let org: SignInOrg | SignInNoOrg;
     try {
-      org = await resolveOrgOnSignIn(
-        { orgs: deps.orgs, ...(deps.singleOrgId === undefined ? {} : { singleOrgId: deps.singleOrgId }), singleOrgName: config.env, log: deps.log,
-          ...(deps.onOrgJoined === undefined ? {} : { onOrgJoined: deps.onOrgJoined }) },
-        { method, developerId, displayName: identity.displayName, ...(identity.email === undefined ? {} : { email: identity.email }), emailVerified: identity.emailVerified === true,
-          ...(request.inviteToken === undefined ? {} : { inviteToken: request.inviteToken }) },
-      );
+      org = join ? await resolveOrgOnSignIn(orgDependencies, { ...orgInput, allowCreate: false }) : await resolveOrgOnSignIn(orgDependencies, orgInput);
     } catch (error) {
+      if (join) throw error;
       // A removed member (single-org ban) is told so, not shown an internal error.
       if ((error as { code?: unknown } | null)?.code !== "REMOVED_FROM_ORG") throw error;
       deps.log({ event: "signin.refused", method, reason: "removed_from_org", developerId });
       if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false);
       return client({ error: "access_denied", error_description: (error as Error).message.replace(/^REMOVED_FROM_ORG: /, "") });
     }
+    if (join) {
+      const outcome = await finishJoin(request, org, described, method);
+      // Joining an org with a GitHub sign-in unlocks that org's trial as any GitHub sign-in does; no other outcome touches an org.
+      if (outcome === "joined" && method === "github" && identity.githubUserId !== undefined && deps.onGithubSignIn !== undefined && org.orgId !== undefined) {
+        await unlockTrialBestEffort(org.orgId, identity.githubUserId);
+      }
+      return redirect(endpoint(`/join/done?request=${request.id}`));
+    }
+    // Only a join answers without an org; this sign-in created or joined one.
+    if (org.orgId === undefined) throw new Error("sign-in resolved no organization");
     if (method === "github" && identity.githubUserId !== undefined && deps.onGithubSignIn !== undefined) await unlockTrialBestEffort(org.orgId, identity.githubUserId);
     if (request.browserReturnTo !== undefined) {
       // A fixed 30 days from sign-in, with no renewal: the session record ends then, whatever the cookie says.
@@ -557,6 +698,12 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
           return authorize(url.searchParams);
         case "/v1/auth/browser/authorize":
           return authorizeBrowser(url.searchParams);
+        case "/v1/auth/join":
+          return joinPage(url.searchParams);
+        case "/v1/auth/join/start":
+          return joinStart(url.searchParams);
+        case "/v1/auth/join/done":
+          return joinDone(url.searchParams, headers);
         case "/v1/auth/callback/slack":
           return callback("slack", url.searchParams, headers);
         case "/v1/auth/callback/oidc":
@@ -572,7 +719,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     return jsonResult(404, { error: "not_found" });
   }
 
-  const isPage = (pathname: string) => pathname === "/v1/auth/authorize" || pathname === "/v1/auth/browser/authorize" || pathname.startsWith("/v1/auth/callback/");
+  const isPage = (pathname: string) => pathname === "/v1/auth/authorize" || pathname === "/v1/auth/browser/authorize" || pathname.startsWith("/v1/auth/callback/") || pathname.startsWith("/v1/auth/join");
 
   return async (
     event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | TaskPeopleDisplayReadRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | ChannelByNameRequest,

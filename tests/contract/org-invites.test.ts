@@ -6,15 +6,16 @@ import { orgInviteKey, orgInviteRequestKey } from "@agentx/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { createDeveloperApiConfiguration } from "../../packages/broker/src/aws/workflow-dependencies-configuration.js";
 import { sha256Hex } from "../../packages/broker/src/developer/tokens.js";
-import { DEFAULT_ROVARA_WEB_ORIGIN, webOriginFromEnvironment } from "../../packages/broker/src/org/invite-url.js";
-import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
+import { DEFAULT_ROVARA_WEB_ORIGIN, inviteTokenHash, webOriginFromEnvironment } from "../../packages/broker/src/org/invite-url.js";
+import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { OIDC_ISSUER, authorizeQuery, httpEvent, identityHarness, type FakeOidcUser } from "../support/developer-fakes.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 const bea: FakeOidcUser = { sub: "bea-cloud-1", name: "Bea Ortiz", email: "bea@example.com", email_verified: true };
 const carl: FakeOidcUser = { sub: "carl-cloud-1", name: "Carl Wu", email: "carl@example.com", email_verified: true };
 const claimsOf = (accessToken: unknown) => JSON.parse(Buffer.from(String(accessToken).split(".")[1]!, "base64url").toString("utf8")) as Record<string, unknown>;
-const tokenOf = (inviteUrl: unknown) => new URL(String(inviteUrl)).searchParams.get("invite")!;
+/** The token in an invite link, whether it rides the query (a private install) or the fragment (a cloud install). */
+const tokenOf = (inviteUrl: unknown) => { const url = new URL(String(inviteUrl)); return (url.searchParams.get("invite") ?? new URLSearchParams(url.hash.slice(1)).get("invite"))!; };
 
 /** The broker, with Maya an owner of the install's org (Omar stays a member). */
 async function brokerWithOwner(options: Parameters<typeof createDeveloperTaskBroker>[0] = {}) {
@@ -26,17 +27,19 @@ async function brokerWithOwner(options: Parameters<typeof createDeveloperTaskBro
 }
 
 describe("POST /v1/dev/org/invites", () => {
-  it("lets an owner create an invite link on the web origin, for the owner's own org", async () => {
+  it("lets an owner create an invite link on the cell's own join page, for the owner's own org", async () => {
     const { invite, db } = await brokerWithOwner();
     const created = await invite(MAYA);
     expect(created.status).toBe(200);
-    expect(String(created.body.inviteUrl)).toMatch(/^https:\/\/rovara\.dev\/join\?invite=[A-Za-z0-9_-]{43}$/);
+    expect(String(created.body.inviteUrl)).toMatch(new RegExp(`^${DEV_ISSUER}/join\\?invite=[A-Za-z0-9_-]{43}$`));
     expect(db.get(orgInviteKey(sha256Hex(tokenOf(created.body.inviteUrl))))).toMatchObject({ orgId: TEST_ORG, role: "member", createdBy: MAYA.developerId });
   });
 
-  it("builds the link on ROVARA_WEB_ORIGIN when the configuration names one", async () => {
-    const { invite } = await brokerWithOwner({ developerExtra: { webOrigin: "http://localhost:3000" } });
-    expect(String((await invite(MAYA)).body.inviteUrl)).toMatch(/^http:\/\/localhost:3000\/join\?invite=/);
+  it("builds a cloud install's link on the web origin, with the token in the fragment", async () => {
+    const cloud = await brokerWithOwner({ brokerExtra: { cloud: true } });
+    expect(String((await cloud.invite(MAYA)).body.inviteUrl)).toMatch(/^https:\/\/rovara\.dev\/join#invite=[A-Za-z0-9_-]{43}$/);
+    const { invite } = await brokerWithOwner({ brokerExtra: { cloud: true }, developerExtra: { webOrigin: "http://localhost:3000" } });
+    expect(String((await invite(MAYA)).body.inviteUrl)).toMatch(/^http:\/\/localhost:3000\/join#invite=/);
   });
 
   it("refuses a member with 403 FORBIDDEN and writes no invite", async () => {
@@ -172,7 +175,7 @@ describe("an invite through sign-in", () => {
     const token = await inviteFrom(broker, { email: "bea@example.com" });
     const h = identityHarness({ cloud: {}, oidcUsers: [bea, carl], state: broker.db });
     const wrong = await signInWith(h, carl, { invite: token });
-    expect(wrong.back.searchParams.get("inviteError")).toBe("INVITE_INVALID");
+    expect(wrong.back.searchParams.get("inviteError")).toBe("INVITE_WRONG_EMAIL");
     expect(wrong.claims?.org).not.toBe(TEST_ORG);
     expect(broker.db.get(orgInviteKey(sha256Hex(token)))?.acceptedAt).toBeUndefined();
     expect((await signInWith(h, bea, { invite: token })).claims).toMatchObject({ org: TEST_ORG, org_role: "member" });
@@ -188,11 +191,14 @@ describe("an invite through sign-in", () => {
     expect(h.db.find((item) => item.entityType === "AUTH_REQUEST")).toHaveLength(0);
   });
 
-  it("keeps the invite on the sign-in request until the callback, in the sign-in table", async () => {
+  it("keeps the invite's hash, never the token, on the sign-in request until the callback, in the sign-in table", async () => {
     const h = identityHarness({ cloud: {}, oidcUsers: [bea] });
     const token = "B".repeat(43);
     await h.http(httpEvent("GET", authorizeQuery({ invite: token })));
-    expect(h.db.find((item) => item.entityType === "AUTH_REQUEST")[0]).toMatchObject({ inviteToken: token });
+    const request = h.db.find((item) => item.entityType === "AUTH_REQUEST")[0]!;
+    expect(request).toMatchObject({ inviteTokenHash: inviteTokenHash(token) });
+    expect(request).not.toHaveProperty("inviteToken");
+    expect(JSON.stringify(request)).not.toContain(token);
   });
 });
 

@@ -1005,7 +1005,11 @@ async function createOrganizationInvite(deps: DeveloperRouteDependencies, caller
   if (role === "admin" && caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can invite an admin; an admin can invite members");
   const { token } = await deps.orgs.createInvite({ orgId: caller.orgId, createdBy: caller.developerId, role, requestId, ...(email === undefined ? {} : { email }) });
   logDeveloperEvent({ event: "developer.org_invite_created", orgId: caller.orgId, role, targeted: String(email !== undefined) });
-  return { inviteUrl: inviteUrl(deps.developer.webOrigin ?? DEFAULT_ROVARA_WEB_ORIGIN, token) };
+  // A cloud install shares the web app's link, with the token in the fragment so a static host never receives it. A private install's
+  // link points at its own cell, which reads the token server-side, so it keeps the query.
+  return { inviteUrl: deps.cloud === true
+    ? inviteUrl(`${deps.developer.webOrigin ?? DEFAULT_ROVARA_WEB_ORIGIN}/join`, token, "fragment")
+    : inviteUrl(`${deps.developer.issuer}/join`, token, "query") };
 }
 
 const signInStoreOf = (deps: DeveloperRouteDependencies) => new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: deps.now });

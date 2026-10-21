@@ -6,6 +6,7 @@ import { developerIdentityConfigFromEnvironment, singleOrgIdFor } from "../../pa
 import { oidcSignInProvider } from "../../packages/broker/src/developer/providers.js";
 import { membershipOrgResolver, orgResolverFromEnvironment } from "../../packages/broker/src/org/resolve.js";
 import { resolveOrgOnSignIn } from "../../packages/broker/src/org/sign-in.js";
+import { inviteTokenHash } from "../../packages/broker/src/org/invite-url.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { adminCall, adminIssuer, createAdminBroker } from "../support/admin-broker.js";
 import { OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, OIDC_ISSUER, httpEvent, identityHarness, type FakeOidcUser } from "../support/developer-fakes.js";
@@ -99,7 +100,7 @@ describe("resolveOrgOnSignIn", () => {
     const state = new FakeDynamoDb();
     return { state, orgs: new OrgStore({ documentClient: state, tableName: "state", now }) };
   };
-  const cloudInput = (developerId: string, extra: { email?: string; emailVerified?: boolean; inviteToken?: string } = {}) =>
+  const cloudInput = (developerId: string, extra: { email?: string; emailVerified?: boolean; inviteTokenHash?: string } = {}) =>
     ({ method: "cloud" as const, developerId, displayName: "Maya", emailVerified: true, ...extra });
   const inviteAccepted = (state: FakeDynamoDb, token: string) => state.get(orgInviteKey(sha256Hex(token)))?.acceptedAt !== undefined;
 
@@ -108,7 +109,7 @@ describe("resolveOrgOnSignIn", () => {
     const own = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a") });
     const other = await orgs.createOrgWithOwner({ name: "B", developerId: dev("b") });
     const { token } = await orgs.createInvite({ orgId: other, createdBy: dev("b"), role: "member" });
-    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("a"), { inviteToken: token }))).toEqual({ orgId: own, role: "owner", inviteError: "ALREADY_IN_ORG" });
+    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("a"), { inviteTokenHash: inviteTokenHash(token) }))).toEqual({ orgId: own, role: "owner", inviteError: "ALREADY_IN_ORG" });
     expect(inviteAccepted(state, token)).toBe(false);
     expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("a")))).toEqual({ orgId: own, role: "owner" });
   });
@@ -146,11 +147,11 @@ describe("resolveOrgOnSignIn", () => {
     const { state, orgs } = setup();
     const org = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a") });
     const { token } = await orgs.createInvite({ orgId: org, createdBy: dev("a"), role: "member", email: "kate@provider.dev" });
-    const result = await resolveOrgOnSignIn({ orgs }, cloudInput(dev("k"), { email: "\u212Aate@provider.dev", inviteToken: token }));
-    expect(result).toMatchObject({ role: "owner", inviteError: "INVITE_INVALID" });
+    const result = await resolveOrgOnSignIn({ orgs }, cloudInput(dev("k"), { email: "\u212Aate@provider.dev", inviteTokenHash: inviteTokenHash(token) }));
+    expect(result).toMatchObject({ role: "owner", inviteError: "INVITE_WRONG_EMAIL" });
     expect(result.orgId).not.toBe(org);
     expect(inviteAccepted(state, token)).toBe(false);
-    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("e"), { email: "Kate@Provider.dev", inviteToken: token }))).toEqual({ orgId: org, role: "member" });
+    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("e"), { email: "Kate@Provider.dev", inviteTokenHash: inviteTokenHash(token) }))).toEqual({ orgId: org, role: "member" });
   });
 
   it("rule 2: an invite accepted while the email pointer is another developer's still joins, and the pointer stays", async () => {
@@ -158,7 +159,7 @@ describe("resolveOrgOnSignIn", () => {
     await orgs.createOrgWithOwner({ name: "A", developerId: dev("a"), email: "maya@example.com" });
     const org = await orgs.createOrgWithOwner({ name: "B", developerId: dev("b") });
     const { token } = await orgs.createInvite({ orgId: org, createdBy: dev("b"), role: "member" });
-    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("c"), { email: "maya@example.com", inviteToken: token }))).toEqual({ orgId: org, role: "member" });
+    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("c"), { email: "maya@example.com", inviteTokenHash: inviteTokenHash(token) }))).toEqual({ orgId: org, role: "member" });
     expect(state.get(orgEmailKey("maya@example.com"))).toMatchObject({ developerId: dev("a") });
   });
 
@@ -173,10 +174,10 @@ describe("resolveOrgOnSignIn", () => {
     const { state, orgs } = setup();
     const org = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a") });
     const cloud = await orgs.createInvite({ orgId: org, createdBy: dev("a"), role: "admin" });
-    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("b"), { email: "bea@example.com", inviteToken: cloud.token }))).toEqual({ orgId: org, role: "admin" });
+    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("b"), { email: "bea@example.com", inviteTokenHash: inviteTokenHash(cloud.token) }))).toEqual({ orgId: org, role: "admin" });
     expect(state.get(orgEmailKey("bea@example.com"))).toMatchObject({ developerId: dev("b"), orgId: org });
     const slack = await orgs.createInvite({ orgId: org, createdBy: dev("a"), role: "member" });
-    expect(await resolveOrgOnSignIn({ orgs }, { method: "slack", developerId: dev("c"), displayName: "Cy", email: "cy@example.com", emailVerified: true, inviteToken: slack.token }))
+    expect(await resolveOrgOnSignIn({ orgs }, { method: "slack", developerId: dev("c"), displayName: "Cy", email: "cy@example.com", emailVerified: true, inviteTokenHash: inviteTokenHash(slack.token) }))
       .toEqual({ orgId: org, role: "member" });
     expect(state.get(orgEmailKey("cy@example.com"))).toBeUndefined();
   });
@@ -190,27 +191,27 @@ describe("resolveOrgOnSignIn", () => {
       [dev("c"), { email: "bea@example.com", emailVerified: false }],
       [dev("d"), {}],
     ] as const) {
-      const result = await resolveOrgOnSignIn({ orgs }, cloudInput(developerId, { ...extra, inviteToken: token }));
+      const result = await resolveOrgOnSignIn({ orgs }, cloudInput(developerId, { ...extra, inviteTokenHash: inviteTokenHash(token) }));
       // Falls through to rule 3: an org of their own.
-      expect(result).toMatchObject({ role: "owner", inviteError: "INVITE_INVALID" });
+      expect(result).toMatchObject({ role: "owner", inviteError: "INVITE_WRONG_EMAIL" });
       expect(result.orgId).not.toBe(org);
       expect(inviteAccepted(state, token)).toBe(false);
     }
-    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("e"), { email: "BEA@example.com", inviteToken: token }))).toEqual({ orgId: org, role: "member" });
+    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("e"), { email: "BEA@example.com", inviteTokenHash: inviteTokenHash(token) }))).toEqual({ orgId: org, role: "member" });
     expect(inviteAccepted(state, token)).toBe(true);
   });
 
   it("rule 2: an unknown, used or expired invite is INVITE_INVALID and falls through", async () => {
     const { orgs } = setup();
     const org = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a") });
-    const unknown = await resolveOrgOnSignIn({ orgs }, cloudInput(dev("b"), { inviteToken: "no-such-token" }));
+    const unknown = await resolveOrgOnSignIn({ orgs }, cloudInput(dev("b"), { inviteTokenHash: inviteTokenHash("no-such-token") }));
     expect(unknown).toMatchObject({ role: "owner", inviteError: "INVITE_INVALID" });
     const { token } = await orgs.createInvite({ orgId: org, createdBy: dev("a"), role: "member" });
-    await resolveOrgOnSignIn({ orgs }, cloudInput(dev("c"), { inviteToken: token }));
-    expect(await resolveOrgOnSignIn({ orgs, singleOrgId: TEST_ORG }, { method: "oidc", developerId: dev("d"), displayName: "Di", emailVerified: false, inviteToken: token }))
+    await resolveOrgOnSignIn({ orgs }, cloudInput(dev("c"), { inviteTokenHash: inviteTokenHash(token) }));
+    expect(await resolveOrgOnSignIn({ orgs, singleOrgId: TEST_ORG }, { method: "oidc", developerId: dev("d"), displayName: "Di", emailVerified: false, inviteTokenHash: inviteTokenHash(token) }))
       .toEqual({ orgId: TEST_ORG, role: "member", inviteError: "INVITE_INVALID" });
     const expired = await orgs.createInvite({ orgId: org, createdBy: dev("a"), role: "member", ttlSeconds: -1 });
-    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("e"), { inviteToken: expired.token }))).toMatchObject({ role: "owner", inviteError: "INVITE_INVALID" });
+    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("e"), { inviteTokenHash: inviteTokenHash(expired.token) }))).toMatchObject({ role: "owner", inviteError: "INVITE_INVALID" });
   });
 
   it("rule 3: creates an org named for the person, with them as owner and their verified email indexed", async () => {

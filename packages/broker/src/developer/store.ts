@@ -15,7 +15,22 @@ import {
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import { pkceChallengeMatches, randomToken, sha256Hex } from "./tokens.js";
 
-export interface AuthRequestRecord { id: string; clientRedirectUri: string; clientState: string; codeChallenge: string; nonce: string; method?: DeveloperSignInMethod; consumedAt?: string; expiresAt: number; browserReturnTo?: string; inviteToken?: string }
+export interface AuthRequestRecord { id: string; clientRedirectUri: string; clientState: string; codeChallenge: string; nonce: string; method?: DeveloperSignInMethod; consumedAt?: string; expiresAt: number; browserReturnTo?: string;
+  /** SHA-256 of the invite token in base64url. The raw token is never stored. */
+  inviteTokenHash?: string;
+  /** "join": the browser join page's sign-in (Plan 2, Task 5); its completion stores a JOIN_RESULT instead of issuing a session or code. */
+  purpose?: "join" }
+/** How a join ended (Plan 2, Task 5). Only "joined" used the invite. */
+export type JoinOutcome = "joined" | "ALREADY_IN_ORG" | "INVITE_WRONG_EMAIL" | "INVITE_INVALID";
+/**
+ * The facts the join "done" page shows, kept ten minutes under `JOIN_RESULT#<authRequestId>`. `orgName` is the org joined (or the invited
+ * one); `codeChallenge` is the join request's PKCE challenge, which the browser's cookie must satisfy to read the page. No token, no email.
+ */
+export interface JoinResultRecord {
+  outcome: JoinOutcome; orgName: string; role: "admin" | "member"; currentOrgName?: string; invitedOrgName: string; maskedEmail?: string;
+  inviterName: string; codeChallenge: string; expiresAt: number;
+}
+export const JOIN_RESULT_SECONDS = 600;
 export interface DeveloperRecord { developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string; displayName: string; email?: string; slackUserId?: string; firstSignInAt: string; lastSignInAt: string; revoked: boolean; sessionsEndedAt?: string;
   /** Plan 2, Task 3: the developer this one was merged into (a duplicate member of the same person); its sign-in identity is linked there. */
   mergedInto?: string; mergedAt?: string }
@@ -115,6 +130,15 @@ export class DeveloperSignInStore {
     const record: AuthRequestRecord = { ...input, id: randomToken(""), expiresAt: this.seconds() + DEVELOPER_AUTH_REQUEST_SECONDS };
     await this.put({ pk: `AUTHREQ#${record.id}`, sk: META, entityType: "AUTH_REQUEST", ...record }, "attribute_not_exists(pk)");
     return record;
+  }
+
+  async putJoinResult(id: string, result: Omit<JoinResultRecord, "expiresAt">): Promise<void> {
+    await this.put({ pk: `JOIN_RESULT#${id}`, sk: META, entityType: "JOIN_RESULT", ...result, expiresAt: this.seconds() + JOIN_RESULT_SECONDS }, "attribute_not_exists(pk)");
+  }
+
+  async getJoinResult(id: string): Promise<JoinResultRecord | undefined> {
+    const item = await this.get<JoinResultRecord>(`JOIN_RESULT#${id}`);
+    return item === undefined || item.expiresAt <= this.seconds() ? undefined : strip(item);
   }
 
   async getAuthRequest(id: string): Promise<AuthRequestRecord | undefined> {

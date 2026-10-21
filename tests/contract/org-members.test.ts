@@ -15,6 +15,7 @@ import { routeDeveloperTaskRequest, startTaskWorkflowPublicationFromSystem, star
 import { requireCreatorStillMember, requireWorkspaceCreatorStillMember } from "../../packages/broker/src/developer/creator-member.js";
 import { developerTaskIdentity, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { resolveOrgOnSignIn } from "../../packages/broker/src/org/sign-in.js";
+import { inviteTokenHash } from "../../packages/broker/src/org/invite-url.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { OIDC_ISSUER, identityHarness, type FakeOidcUser } from "../support/developer-fakes.js";
@@ -417,7 +418,7 @@ describe("OrgStore.closeOrg and removeMember", () => {
     const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
     const { token } = await store.createInvite({ orgId, createdBy: "owner", role: "member" });
     await store.closeOrg(orgId, { archiveProjects: async () => undefined, clearEgress: async () => undefined });
-    await expect(store.acceptInvite({ token, developerId: "late" })).rejects.toMatchObject({ code: "INVITE_INVALID" });
+    await expect(store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "late" })).rejects.toMatchObject({ code: "INVITE_INVALID" });
     expect(db.get(orgMemberKey(orgId, "late"))).toBeUndefined();
     expect(db.get(developerOrgKey("late"))).toBeUndefined();
     expect(db.find((item) => item.entityType === "ORG_INVITE")[0]).not.toHaveProperty("acceptedAt");
@@ -435,7 +436,7 @@ describe("OrgStore.closeOrg and removeMember", () => {
       const result = await realSend(command);
       if (armed && command.constructor.name === "QueryCommand" && JSON.stringify((command as { input: unknown }).input).includes("MEMBER#")) {
         armed = false;
-        await store.acceptInvite({ token, developerId: "joiner" });
+        await store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "joiner" });
       }
       return result;
     };
@@ -445,7 +446,7 @@ describe("OrgStore.closeOrg and removeMember", () => {
     expect(db.get(orgMetaKey(orgId))?.closedAt).toBeUndefined();
     expect(db.get(orgMetaKey(orgId))?.closingAt).toBeUndefined();
     const second = await store.createInvite({ orgId, createdBy: "owner", role: "member" });
-    await expect(store.acceptInvite({ token: second.token, developerId: "other" })).resolves.toMatchObject({ orgId });
+    await expect(store.acceptInvite({ tokenHash: inviteTokenHash(second.token), developerId: "other" })).resolves.toMatchObject({ orgId });
   });
 
   it("blocks joins from the moment closeOrg has checked the members (Minor 5): an invite accepted while it archives is refused", async () => {
@@ -454,7 +455,7 @@ describe("OrgStore.closeOrg and removeMember", () => {
     const { token } = await store.createInvite({ orgId, createdBy: "owner", role: "member" });
     let refused: unknown;
     await store.closeOrg(orgId, {
-      archiveProjects: async () => { refused = await store.acceptInvite({ token, developerId: "joiner" }).catch((error: unknown) => error); },
+      archiveProjects: async () => { refused = await store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "joiner" }).catch((error: unknown) => error); },
       clearEgress: async () => undefined,
     });
     expect(refused).toMatchObject({ code: "INVITE_INVALID" });
@@ -485,7 +486,7 @@ describe("a ban on a single-org install", () => {
     expect(await orgs.orgForDeveloper(maya)).toBeUndefined();
 
     const { token } = await orgs.createInvite({ orgId: TEST_ORG, createdBy: "other", role: "member" });
-    expect(await resolveOrgOnSignIn(deps, { ...input(maya), inviteToken: token })).toEqual({ orgId: TEST_ORG, role: "member" });
+    expect(await resolveOrgOnSignIn(deps, { ...input(maya), inviteTokenHash: inviteTokenHash(token) })).toEqual({ orgId: TEST_ORG, role: "member" });
     expect(db.get(orgBanKey(TEST_ORG, maya))).toBeUndefined();
     expect(await orgs.orgForDeveloper(maya)).toEqual({ orgId: TEST_ORG, role: "member" });
     // Signing in again later is an ordinary sign-in.
@@ -507,7 +508,8 @@ describe("a ban on a single-org install", () => {
   it("does not ban a cloud sign-in: the removed person gets a new org of their own (rule 3)", async () => {
     const bea: FakeOidcUser = { sub: "bea-cloud-1", name: "Bea Ortiz", email: "bea@example.com", email_verified: true };
     const harness = await org({ brokerExtra: { cloud: true } });
-    const token = new URL(String((await harness.dev(OMAR, "POST", "/v1/app/org/invites", { requestId: randomUUID(), role: "member" })).body.inviteUrl)).searchParams.get("invite")!;
+    // A cloud install's link carries the token in the fragment.
+    const token = new URLSearchParams(new URL(String((await harness.dev(OMAR, "POST", "/v1/app/org/invites", { requestId: randomUUID(), role: "member" })).body.inviteUrl)).hash.slice(1)).get("invite")!;
     const h = identityHarness({ cloud: {}, oidcUsers: [bea], state: harness.db });
     const joined = await h.exchange((await h.signIn("cloud", bea.sub, { query: { invite: token } })).searchParams.get("code")!);
     const claims = JSON.parse(Buffer.from(String(joined.body.access_token).split(".")[1]!, "base64url").toString("utf8")) as Record<string, unknown>;
@@ -819,7 +821,7 @@ describe("requireCreatorStillMember", () => {
     await store.removeMember({ orgId, developerId: "dev-1", emails: [], ban: false });
     await expect(requireCreatorStillMember({ ...deps, orgId }, task)).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED", message: expect.stringContaining("Dee Vee is no longer a member of Acme, so Rovara stopped this task.") as string });
     const { token } = await store.createInvite({ orgId, createdBy: "owner", role: "member" });
-    await store.acceptInvite({ token, developerId: "dev-1" });
+    await store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "dev-1" });
     await expect(requireCreatorStillMember({ ...deps, orgId }, task)).resolves.toBeUndefined();
   });
 

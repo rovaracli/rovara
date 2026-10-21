@@ -30,6 +30,7 @@ export const AgentXErrorCodeSchema = z.enum([
   "CHANGE_STALE",
   "ALREADY_IN_ORG",
   "INVITE_INVALID",
+  "INVITE_WRONG_EMAIL",
   "SLACK_TEAM_TAKEN",
   "REMOVED_FROM_ORG",
   "LAST_OWNER",
@@ -43,6 +44,9 @@ export const AgentXErrorCodeSchema = z.enum([
 ]);
 
 export type AgentXErrorCode = z.infer<typeof AgentXErrorCodeSchema>;
+
+/** What INVITE_WRONG_EMAIL (409) says: an email-targeted invite was presented by a sign-in whose verified email is another address. */
+export const INVITE_WRONG_EMAIL_MESSAGE = "This invite is for a different email address. Sign in with the address it was sent to, or ask for an invite to yours.";
 
 export class AgentXError extends Error {
   constructor(

@@ -30,14 +30,31 @@ export interface ResolveOrgOnSignInInput {
   email?: string;
   /** The provider vouched for `email`. An unverified email is never indexed and never satisfies an invite; a non-ASCII one is never indexed either. */
   emailVerified: boolean;
-  inviteToken?: string;
+  /** SHA-256 of the invite token in base64url (inviteTokenHash): a sign-in never holds the token itself. */
+  inviteTokenHash?: string;
+  /**
+   * false: a join. The sign-in may only join the org an invite names; creating an org (a cloud sign-in's own trial org) and joining the
+   * install's single org are both skipped, and the result is `{ noOrg: true }`. Absent or true: rules 1 to 4 as always.
+   */
+  allowCreate?: boolean;
 }
 
 export interface SignInOrg {
   orgId: OrgId;
   role: OrgRole;
-  /** An invite was presented and not used: the person already belongs to an org, or the invite is unknown, expired, used or written for another email. */
-  inviteError?: "ALREADY_IN_ORG" | "INVITE_INVALID";
+  /**
+   * An invite was presented and not used: the person already belongs to an org (ALREADY_IN_ORG), the invite is written for another email
+   * (INVITE_WRONG_EMAIL), or it is unknown, expired, used or into a closed org (INVITE_INVALID).
+   */
+  inviteError?: "ALREADY_IN_ORG" | "INVITE_INVALID" | "INVITE_WRONG_EMAIL";
+}
+
+/** What a join (`allowCreate: false`) answers when the invite did not put the person in an org: they have none, and nothing was created. */
+export interface SignInNoOrg {
+  noOrg: true;
+  orgId?: undefined;
+  role?: undefined;
+  inviteError?: "INVITE_INVALID" | "INVITE_WRONG_EMAIL";
 }
 
 export const REMOVED_FROM_ORG_MESSAGE = "You were removed from this organization. Ask an admin to invite you again.";
@@ -48,13 +65,15 @@ const sameEmail = (a: string, b: string) => {
   return left.ascii && right.ascii && left.email === right.email;
 };
 
-/** The org and role this sign-in belongs to, creating or joining one on a first sign-in. */
-export async function resolveOrgOnSignIn(deps: ResolveOrgOnSignInDependencies, input: ResolveOrgOnSignInInput): Promise<SignInOrg> {
+/** The org and role this sign-in belongs to, creating or joining one on a first sign-in. A join (`allowCreate: false`) may answer `noOrg` instead. */
+export function resolveOrgOnSignIn(deps: ResolveOrgOnSignInDependencies, input: ResolveOrgOnSignInInput & { allowCreate: false }): Promise<SignInOrg | SignInNoOrg>;
+export function resolveOrgOnSignIn(deps: ResolveOrgOnSignInDependencies, input: ResolveOrgOnSignInInput & { allowCreate?: true }): Promise<SignInOrg>;
+export async function resolveOrgOnSignIn(deps: ResolveOrgOnSignInDependencies, input: ResolveOrgOnSignInInput): Promise<SignInOrg | SignInNoOrg> {
   const { onOrgJoined } = deps;
   if (onOrgJoined === undefined) return resolveOrg(deps, input);
   const hadOrg = await deps.orgs.orgForDeveloper(input.developerId) !== undefined;
   const org = await resolveOrg(deps, input);
-  if (!hadOrg) {
+  if (!hadOrg && org.orgId !== undefined) {
     try {
       await onOrgJoined({ orgId: org.orgId, developerId: input.developerId });
     } catch (error) {
@@ -64,7 +83,7 @@ export async function resolveOrgOnSignIn(deps: ResolveOrgOnSignInDependencies, i
   return org;
 }
 
-async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOrgOnSignInInput): Promise<SignInOrg> {
+async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOrgOnSignInInput): Promise<SignInOrg | SignInNoOrg> {
   const { orgs } = deps;
   // The methods that make accounts on a cloud install: "cloud" (Cognito) and "github" behave identically here.
   const cloud = input.method === "cloud" || input.method === "github";
@@ -95,23 +114,26 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
     }
   };
 
-  const inviteGiven = input.inviteToken !== undefined;
+  const inviteGiven = input.inviteTokenHash !== undefined;
 
   // Rule 1: a person keeps the org they have.
   const existing = await orgs.orgForDeveloper(input.developerId);
   if (existing !== undefined) return withInviteError(existing, inviteGiven ? "ALREADY_IN_ORG" : undefined);
 
-  // Rule 2: an invite, which an email-targeted invite grants only to that verified email (ruling R7).
+  // Rule 2: an invite, which an email-targeted invite grants only to that verified email (ruling R7). Written for another address (or
+  // for one this sign-in cannot vouch for) is INVITE_WRONG_EMAIL, so the person is told which address to use.
   let inviteError: SignInOrg["inviteError"];
-  if (input.inviteToken !== undefined) {
-    const invite = await orgs.peekInvite(input.inviteToken);
-    if (invite === undefined || (invite.email !== undefined && (verifiedEmail === undefined || !sameEmail(invite.email, verifiedEmail)))) {
+  if (input.inviteTokenHash !== undefined) {
+    const invite = await orgs.peekInvite(input.inviteTokenHash);
+    if (invite === undefined) {
       inviteError = "INVITE_INVALID";
+    } else if (invite.email !== undefined && (verifiedEmail === undefined || !sameEmail(invite.email, verifiedEmail))) {
+      inviteError = "INVITE_WRONG_EMAIL";
     } else {
       try {
-        const token = input.inviteToken;
+        const tokenHash = input.inviteTokenHash;
         // The email is indexed only for the cloud methods, whose sign-in routes it links.
-        return await indexing((email) => orgs.acceptInvite({ token, developerId: input.developerId, ...(email === undefined ? {} : { email }) }));
+        return await indexing((email) => orgs.acceptInvite({ tokenHash, developerId: input.developerId, ...(email === undefined ? {} : { email }) }));
       } catch (error) {
         if (codeOf(error) === "INVITE_INVALID") inviteError = "INVITE_INVALID";
         else if (codeOf(error) === "ALREADY_IN_ORG") {
@@ -121,6 +143,11 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
         } else throw error;
       }
     }
+  }
+
+  // A join never creates anything: no org of its own, no seat in the install's single org. The person stays as they were.
+  if (input.allowCreate === false) {
+    return { noOrg: true, ...(inviteError === undefined || inviteError === "ALREADY_IN_ORG" ? { inviteError: "INVITE_INVALID" as const } : { inviteError }) };
   }
 
   // Rule 3: a cloud sign-in with nowhere to go starts an org of its own.

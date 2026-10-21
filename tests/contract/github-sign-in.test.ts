@@ -122,7 +122,7 @@ describe("a GitHub sign-in links by a verified email, exactly like the cloud met
     const owner = await signedIn(h, "cloud", maya.sub);
     const { token } = await h.orgs.createInvite({ orgId: owner.org as never, createdBy: owner.sub as string, role: "member", email: "eve@example.com" });
     const refused = await h.signIn("github", "101", { query: { invite: token } });
-    expect(refused.searchParams.get("inviteError")).toBe("INVITE_INVALID");
+    expect(refused.searchParams.get("inviteError")).toBe("INVITE_WRONG_EMAIL");
     const own = claimsOf((await h.exchange(refused.searchParams.get("code")!)).body.access_token);
     expect(own).toMatchObject({ org_role: "owner" });
     expect(own.org).not.toBe(owner.org);

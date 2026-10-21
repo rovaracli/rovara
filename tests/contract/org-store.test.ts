@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { OrgId } from "../../packages/contracts/src/org.js";
 import { orgInviteKey, orgMetaKey, slackTeamOrgKey } from "../../packages/contracts/src/org.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
+import { inviteTokenHash } from "../../packages/broker/src/org/invite-url.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const START = Date.parse("2026-10-18T12:00:00.000Z");
@@ -78,16 +79,16 @@ describe("OrgStore membership and invites", () => {
     const { store } = setup();
     const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
     const { token } = await store.createInvite({ orgId, createdBy: "owner", role: "admin" });
-    expect(await store.acceptInvite({ token, developerId: "dev-2", email: "dev2@example.com" })).toEqual({ orgId, role: "admin" });
+    expect(await store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "dev-2", email: "dev2@example.com" })).toEqual({ orgId, role: "admin" });
     expect(await store.orgForDeveloper("dev-2")).toEqual({ orgId, role: "admin" });
     expect(await store.developerForVerifiedEmail("dev2@example.com")).toBe("dev-2");
-    await expect(store.acceptInvite({ token, developerId: "dev-3" })).rejects.toMatchObject({ code: "INVITE_INVALID" });
+    await expect(store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "dev-3" })).rejects.toMatchObject({ code: "INVITE_INVALID" });
     expect(await store.orgForDeveloper("dev-3")).toBeUndefined();
   });
 
   it("rejects an unknown token", async () => {
     const { store } = setup();
-    await expect(store.acceptInvite({ token: "nope", developerId: "dev-2" })).rejects.toMatchObject({ code: "INVITE_INVALID" });
+    await expect(store.acceptInvite({ tokenHash: inviteTokenHash("nope"), developerId: "dev-2" })).rejects.toMatchObject({ code: "INVITE_INVALID" });
   });
 
   it("rejects an invite after seven days", async () => {
@@ -95,7 +96,7 @@ describe("OrgStore membership and invites", () => {
     const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
     const { token } = await store.createInvite({ orgId, createdBy: "owner", role: "member" });
     clock.now = START + WEEK_MS + 1000;
-    await expect(store.acceptInvite({ token, developerId: "dev-2" })).rejects.toMatchObject({ code: "INVITE_INVALID" });
+    await expect(store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "dev-2" })).rejects.toMatchObject({ code: "INVITE_INVALID" });
     expect(await store.orgForDeveloper("dev-2")).toBeUndefined();
   });
 
@@ -105,9 +106,9 @@ describe("OrgStore membership and invites", () => {
     const week = await store.createInvite({ orgId, createdBy: "owner", role: "member" });
     const short = await store.createInvite({ orgId, createdBy: "owner", role: "member", ttlSeconds: 60 });
     clock.now = START + 61_000;
-    await expect(store.acceptInvite({ token: short.token, developerId: "dev-3" })).rejects.toMatchObject({ code: "INVITE_INVALID" });
+    await expect(store.acceptInvite({ tokenHash: inviteTokenHash(short.token), developerId: "dev-3" })).rejects.toMatchObject({ code: "INVITE_INVALID" });
     clock.now = START + WEEK_MS - 1000;
-    expect(await store.acceptInvite({ token: week.token, developerId: "dev-2" })).toEqual({ orgId, role: "member" });
+    expect(await store.acceptInvite({ tokenHash: inviteTokenHash(week.token), developerId: "dev-2" })).toEqual({ orgId, role: "member" });
   });
 
   it("refuses a developer who already has an org and leaves the invite unaccepted", async () => {
@@ -115,13 +116,13 @@ describe("OrgStore membership and invites", () => {
     const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
     await store.createOrgWithOwner({ name: "Mine", developerId: "dev-2" });
     const { token } = await store.createInvite({ orgId, createdBy: "owner", role: "member" });
-    await expect(store.acceptInvite({ token, developerId: "dev-2" })).rejects.toMatchObject({ code: "ALREADY_IN_ORG" });
+    await expect(store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "dev-2" })).rejects.toMatchObject({ code: "ALREADY_IN_ORG" });
     const invites = db.find((item) => typeof item.pk === "string" && item.pk.startsWith("ORG_INVITE#"));
     expect(invites).toHaveLength(1);
     expect(invites[0]).not.toHaveProperty("acceptedAt");
     expect(invites[0]).not.toHaveProperty("acceptedBy");
     // The invite is still usable by someone else.
-    expect(await store.acceptInvite({ token, developerId: "dev-3" })).toEqual({ orgId, role: "member" });
+    expect(await store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "dev-3" })).toEqual({ orgId, role: "member" });
   });
 
   it("stores only a hash of the token, never the token", async () => {
