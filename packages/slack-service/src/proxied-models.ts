@@ -1,10 +1,10 @@
 // Task 13 and ruling R32: the model access of Slack requests when the model proxy is on. One access source is made per incoming
 // message (keyed by its event ID), so the router, the gate's classifier and the orchestrator's runtime of one message share a
 // single key request however many of them it uses, and a redelivery of the message reuses the key until it nears its end.
-import type { SlackRequestMessage } from "@agentx/contracts";
+import type { InvocationModelRoute, SlackRequestMessage } from "@agentx/contracts";
 import type { RequestRouter } from "@agentx/orchestrator/request-router";
 import type { ActionClassifier } from "@agentx/orchestrator/action-gate";
-import { turnModelAccessSource, turnModelProxy, type TurnModelAccess } from "./model-access.js";
+import { turnModelAccessSource, turnModelProxy, turnModelRoute, type TurnModelAccess } from "./model-access.js";
 import type { createHostedClassifier, createHostedRequestRouter } from "./runtime.js";
 import type { ServiceLog } from "./processor.js";
 
@@ -27,7 +27,7 @@ export interface ProxiedModels {
   /** The message's proxy; the key is requested once for the message and again only as it nears its end. */
   proxyFor(message: SlackRequestMessage): Promise<{ baseUrl: string; apiKey: () => Promise<string> }>;
   /** The proxy and the gate's classifier for the message's turn. */
-  turnModels(message: SlackRequestMessage): Promise<{ proxy: { baseUrl: string; apiKey: () => Promise<string> }; classifier: ActionClassifier }>;
+  turnModels(message: SlackRequestMessage): Promise<{ proxy: { baseUrl: string; apiKey: () => Promise<string> }; classifier: ActionClassifier; route?: InvocationModelRoute }>;
   /** The router for the message: made on first use, and unavailable (never a throw) when no key can be had. */
   routerFor(message: SlackRequestMessage): RequestRouter;
 }
@@ -52,7 +52,9 @@ export function createProxiedModels(options: ProxiedModelsOptions): ProxiedModel
     async turnModels(message) {
       const proxy = await proxyFor(message);
       const { classifier } = await options.createClassifier({ model: options.classifierModel, timeoutMs: options.classifierTimeoutMs, log: options.log, proxy });
-      return { proxy, classifier };
+      // The route is the orchestrator's alone: the gate's classifier and the router keep their own models.
+      const route = await turnModelRoute(sourceFor(message));
+      return { proxy, classifier, ...(route === undefined ? {} : { route }) };
     },
     routerFor(message) {
       let made: ReturnType<typeof options.createRouter> | undefined;

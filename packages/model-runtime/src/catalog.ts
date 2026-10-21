@@ -3,7 +3,7 @@ import { amazonBedrockProvider } from "@earendil-works/pi-ai/providers/amazon-be
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
-import type { ModelIdentifier } from "@agentx/contracts";
+import { canonicalModelName, type ModelIdentifier } from "@agentx/contracts";
 
 let catalogs: Map<string, ReadonlyMap<string, Model<Api>>> | undefined;
 
@@ -12,13 +12,44 @@ const INFERENCE_PROFILE = /^(?:us|eu|apac|jp|au|ca|us-gov|global)\./;
 
 /** The installed Pi catalogs' entry for a model, which the runtime resolves models from; undefined when neither knows it. */
 export function catalogModel(model: ModelIdentifier): Model<Api> | undefined {
+  return loadCatalogs().get(model.provider)?.get(model.modelId);
+}
+
+function loadCatalogs(): Map<string, ReadonlyMap<string, Model<Api>>> {
   catalogs ??= new Map([
     ["openrouter", new Map(openrouterProvider().getModels().map((entry) => [entry.id, entry as Model<Api>]))],
     ["amazon-bedrock", new Map(amazonBedrockProvider().getModels().map((entry) => [entry.id, entry as Model<Api>]))],
     ["anthropic", new Map(anthropicProvider().getModels().map((entry) => [entry.id, entry as Model<Api>]))],
     ["openai", new Map(openaiProvider().getModels().map((entry) => [entry.id, entry as Model<Api>]))],
   ]);
-  return catalogs.get(model.provider)?.get(model.modelId);
+  return catalogs;
+}
+
+/** The provider whose entry names a routed model, first: the model's own maker, then Bedrock's profiles, then the aggregator. */
+const ROUTE_CATALOG_ORDER = ["anthropic", "openai", "amazon-bedrock", "openrouter"] as const;
+let canonicalIndex: Map<string, { identity: ModelIdentifier; model: Model<Api> }> | undefined;
+
+/**
+ * The catalog entry a route's `catalog` names: an entry whose id is exactly that (a Bedrock inference-profile id, say), else
+ * the one whose canonical name is (`gpt-5-4` for `gpt-5.4`). Undefined when the installed catalogs do not know the model,
+ * as for a company's own model.
+ */
+export function catalogModelByName(name: string): { identity: ModelIdentifier; model: Model<Api> } | undefined {
+  const all = loadCatalogs();
+  for (const provider of ROUTE_CATALOG_ORDER) {
+    const model = all.get(provider)?.get(name);
+    if (model !== undefined) return { identity: { provider, modelId: name }, model };
+  }
+  if (canonicalIndex === undefined) {
+    canonicalIndex = new Map();
+    for (const provider of ROUTE_CATALOG_ORDER) {
+      for (const [modelId, model] of all.get(provider) ?? []) {
+        const key = canonicalModelName({ provider, modelId });
+        if (!canonicalIndex.has(key)) canonicalIndex.set(key, { identity: { provider, modelId }, model });
+      }
+    }
+  }
+  return canonicalIndex.get(canonicalModelName({ provider: "anthropic", modelId: name }));
 }
 
 /** List prices in USD per million tokens, as the catalog records them; undefined for a model it does not know. */

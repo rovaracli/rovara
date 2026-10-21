@@ -23,8 +23,8 @@ import {
   type SessionStats,
 } from "@earendil-works/pi-coding-agent";
 import { amazonBedrockProvider } from "@earendil-works/pi-ai/providers/amazon-bedrock";
-import { createModelRuntimeWithFallback, type ChatGptFallback, type ChatGptFallbackReason, type ModelProxyOptions } from "@agentx/model-runtime";
-import { AGENTX_PREAMBLE, AGENTX_WORKER_PROMPT, agentXError, isPipedTestCommand, redactText, ThinkingLevelSchema, type ThinkingLevel } from "@agentx/contracts";
+import { ROUTE_PROVIDER, createModelRuntimeWithFallback, routeUsageIdentity, type ChatGptFallback, type ChatGptFallbackReason, type ModelProxyOptions } from "@agentx/model-runtime";
+import { AGENTX_PREAMBLE, AGENTX_WORKER_PROMPT, agentXError, isPipedTestCommand, redactText, ThinkingLevelSchema, type InvocationModelRoute, type ThinkingLevel } from "@agentx/contracts";
 import { devcontainerContextFile, hostPath, type DevcontainerPaths } from "./devcontainer.js";
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "./git.js";
 import { localBashOperations } from "./task-sandbox.js";
@@ -192,7 +192,7 @@ export async function openRegisteredWorkspacePiSession(
 /** Resolves the session's model runtime; tests supply an offline one, the worker uses the default. */
 export type PiModelRuntimeResolver = (
   model: WorkspaceModelConfiguration,
-) => Promise<{ runtime: ModelRuntime; model: WorkspaceModelConfiguration }>;
+) => Promise<{ runtime: ModelRuntime; model: WorkspaceModelConfiguration; route?: InvocationModelRoute }>;
 
 /** The worker's Pi session adapter. Without `modelRuntime` it resolves the configured model as the worker always has. */
 export function createDefaultPiSessionAdapter(options: { modelRuntime?: PiModelRuntimeResolver } = {}): PiSessionAdapter {
@@ -267,7 +267,7 @@ async function workerModelRuntime(
   apiKey?: () => Promise<string>,
   chatgptFallback?: ChatGptFallback,
   proxy?: ModelProxyOptions,
-): Promise<{ runtime: ModelRuntime; model: WorkspaceModelConfiguration }> {
+): Promise<{ runtime: ModelRuntime; model: WorkspaceModelConfiguration; route?: InvocationModelRoute }> {
   const resolved = await createModelRuntimeWithFallback(configured, "worker", {
     ...(apiKey === undefined ? {} : { apiKey, ...(chatgptFallback === undefined ? {} : { chatgptFallback }) }),
     ...(proxy === undefined ? {} : { proxy }),
@@ -278,7 +278,7 @@ async function workerModelRuntime(
     modelRuntime.registerNativeProvider(executionRoleBedrockProvider());
     await modelRuntime.refresh({ allowNetwork: false, providers: ["amazon-bedrock"] });
   }
-  return { runtime: modelRuntime, model: resolved.model };
+  return { runtime: modelRuntime, model: resolved.model, ...(apiKey === undefined && proxy?.route !== undefined ? { route: proxy.route } : {}) };
 }
 
 async function createDefaultSession(
@@ -326,6 +326,14 @@ async function createDefaultSession(
       settingsManager,
       sessionManager: manager,
     });
+    const reportedModel = (): { provider: string; modelId: string } => {
+      const provider = session.model?.provider ?? resolved.model.provider;
+      if (resolved.route !== undefined && provider === ROUTE_PROVIDER) {
+        const { provider: catalogProvider, modelId } = routeUsageIdentity(resolved.route);
+        return { provider: catalogProvider, modelId };
+      }
+      return { provider, modelId: session.model?.id ?? resolved.model.modelId };
+    };
     let sessionFile: string | undefined;
     try {
       // Binding emits session_start to the extensions. A handler's error is reported, never swallowed, and never fails the turn.
@@ -349,9 +357,9 @@ async function createDefaultSession(
       // Pi 0.99 returns a disposition ("handled" | "queued"); the adapter's contract stays Promise<void>.
       steer: async (text) => { await session.steer(text); },
       abort: async () => session.abort(),
+      // A routed session runs on rovara-route under the company's alias; it is reported as the catalog model the route names (Task 27).
       getModel: () => ({
-        provider: session.model?.provider ?? resolved.model.provider,
-        modelId: session.model?.id ?? resolved.model.modelId,
+        ...reportedModel(),
         // Pi also knows "max", which AgentX does not offer: a level outside ours is left out of telemetry
         // (the key is omitted, never guessed); piThinkingLevel reports it for artifacts.
         ...(ThinkingLevelSchema.safeParse(session.thinkingLevel).success ? { thinkingLevel: session.thinkingLevel as PiThinkingLevel } : {}),

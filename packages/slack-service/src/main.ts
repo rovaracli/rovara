@@ -300,6 +300,7 @@ async function runTurn(input: TurnInput): Promise<string> {
     const runtime = await createHostedSlackRuntime(input, {
       stateDirectory: directory,
       ...(proxy === undefined ? {} : { proxy }),
+      ...(turn?.route === undefined ? {} : { modelRoute: turn.route }),
       api: new ControlPlaneApi(controlPlaneUrl, "slack-service", input.workspaceId, signedFetch),
       model,
       ...(sessionFile === undefined ? {} : { sessionFile }),

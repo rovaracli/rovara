@@ -1,5 +1,5 @@
 import { mkdir } from "node:fs/promises";
-import { createModelRuntimeWithFallback, type ModelProxyOptions } from "@agentx/model-runtime";
+import { createModelRuntimeWithFallback, routeUsageIdentity, type ModelProxyOptions } from "@agentx/model-runtime";
 import { resolve } from "node:path";
 import {
   createAgentSessionFromServices,
@@ -12,7 +12,7 @@ import {
   type InlineExtension,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { AgentXError, agentXError, type ConnectorCatalog, type ThreadConnector, type UsageStats } from "@agentx/contracts";
+import { AgentXError, agentXError, type ConnectorCatalog, type InvocationModelRoute, type ThreadConnector, type UsageStats } from "@agentx/contracts";
 import {
   RETIRED_PULL_REQUEST_TOOLS,
   assertOrchestrationOnly,
@@ -54,6 +54,11 @@ export interface OrchestratorOptions {
   modelRuntime?: ModelRuntime;
   /** Task 13: this turn's model proxy and key. Present, the runtime reads no provider secret and calls models through it. */
   proxy?: ModelProxyOptions;
+  /**
+   * Task 27: the model the broker chose for this turn (the `route` its model-access answer returned). With it the turn runs on
+   * that model through the proxy, whatever `model` says, and its record names the route's catalog model. Needs `proxy`.
+   */
+  modelRoute?: InvocationModelRoute;
   /** Issue 157: told each accepted worker task or follow-up operation before its tool waits on it. */
   onOperationAccepted?: (operationId: string) => Promise<void>;
   /** Issue 173: told the operation a recovery tool re-attaches to before it waits on it. */
@@ -107,8 +112,13 @@ export const MAX_VISIBLE_TOOLS = 40;
 export async function createOrchestratorRuntime(options: OrchestratorOptions): Promise<AgentSessionRuntime> {
   // Directories first, then the model check, then discovery: the order this function always had.
   await stateDirectories(options.stateDirectory);
+  const route = options.modelRoute;
+  if (route !== undefined && options.proxy === undefined && options.modelRuntime === undefined) {
+    throw agentXError("MODEL_PROXY_UNAVAILABLE", "this turn names a model route, but there is no model proxy to send it through");
+  }
+  const proxy = options.proxy === undefined || route === undefined ? options.proxy : { ...options.proxy, route };
   const resolved = options.modelRuntime ? { runtime: options.modelRuntime, model: options.model }
-    : await createModelRuntimeWithFallback(options.model, "orchestrator", options.proxy === undefined ? {} : { proxy: options.proxy });
+    : await createModelRuntimeWithFallback(options.model, "orchestrator", proxy === undefined ? {} : { proxy });
   options = { ...options, model: resolved.model };
   const modelRuntime = resolved.runtime;
   if (!modelRuntime.getModel(options.model.provider, options.model.modelId)) {
@@ -161,7 +171,8 @@ export async function createOrchestratorRuntime(options: OrchestratorOptions): P
         manifest,
         tools: customTools.map(({ name, description }) => ({ name, description })),
         connectorOf: new Map(catalogs.flatMap((catalog) => catalog.tools.map((tool) => [tool.name, catalog.connector] as const))),
-        model: options.model,
+        // A routed turn runs under the company's alias; its record names the catalog model, as a task's usage does.
+        model: route !== undefined && options.modelRuntime === undefined ? routeUsageIdentity(route) : options.model,
       });
     } catch {
       // Recording never breaks a turn. Without an offer, measure() also records "model was not offered".

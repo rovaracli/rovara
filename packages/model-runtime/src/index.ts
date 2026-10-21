@@ -1,10 +1,10 @@
 import { MissingProviderSecret, defaultBedrockModel, type ModelRole } from "./config.js";
 import { openRouterRouting, readProviderKey, requireKeyedModel } from "./config.js";
-import { bedrockClaudeModelIds, proxyGeographyOfModelId } from "./catalog.js";
+import { bedrockClaudeModelIds, catalogModelByName, proxyGeographyOfModelId } from "./catalog.js";
 import { ModelBudgetExhaustedError, budgetExhaustedMarker, budgetScopeOfProxyBody, type ModelBudgetScope } from "./budget.js";
 export { ModelBudgetExhaustedError, budgetExhaustedFromMarker, type ModelBudgetScope } from "./budget.js";
 export { readOpenRouterKey, readProviderKey, openRouterRouting, openRouterModel, requireKeyedModel } from "./config.js";
-import { CHATGPT_PLAN_LIMIT_ERROR, KEYED_MODEL_PROVIDERS, agentXError, isKeyedModelProvider, type KeyedModelProvider, type ModelIdentifier } from "@agentx/contracts";
+import { CHATGPT_PLAN_LIMIT_ERROR, KEYED_MODEL_PROVIDERS, agentXError, isKeyedModelProvider, type InvocationModelRoute, type KeyedModelProvider, type ModelIdentifier } from "@agentx/contracts";
 import { InMemoryCredentialStore, createAssistantMessageEventStream, type Api, type Model, type SimpleStreamOptions, type TranscriptContext, type AssistantMessage, type AssistantMessageEventStream, type AnthropicMessagesCompat, type OpenAICompletionsCompat, type OpenAIResponsesCompat } from "@earendil-works/pi-ai";
 import { streamSimple as openAICompletionsStream } from "@earendil-works/pi-ai/api/openai-completions";
 import { streamSimple as anthropicMessagesStream } from "@earendil-works/pi-ai/api/anthropic-messages";
@@ -39,6 +39,22 @@ export interface ModelProxyOptions {
   /** The proxy's origin, without a path: Pi adds /v1/messages. */
   baseUrl: string;
   apiKey: string | (() => Promise<string>);
+  /**
+   * The model the broker chose for this work (Task 27): one model under `route.alias`, spoken in `route.api`, whatever model was
+   * asked for. Without it the proxy serves its Bedrock Claude models as it always has. A ChatGPT plan's own requests ignore it.
+   */
+  route?: InvocationModelRoute;
+}
+
+/** The provider name a routed model is registered under. */
+export const ROUTE_PROVIDER = "rovara-route";
+
+/**
+ * Who a routed model's usage is reported under: the catalog entry the route names (its provider and id, which price lists and
+ * usage records know), or `rovara-route` and the catalog name for a model the installed catalogs do not know.
+ */
+export function routeUsageIdentity(route: InvocationModelRoute): ModelIdentifier {
+  return catalogModelByName(route.catalog)?.identity ?? { provider: ROUTE_PROVIDER, modelId: route.catalog };
 }
 
 /** Why a ChatGPT task stopped using its plan (#342). */
@@ -72,6 +88,9 @@ function chatGptRefusal(status: number, body: string): ChatGptFallbackReason | u
 
 /** Resolve missing-credential fallback before creating a session, so its model and usage agree. */
 export async function createModelRuntimeWithFallback<T extends ModelIdentifier>(selected: T, role: ModelRole, options: ModelRuntimeOptions = {}) {
+  const route = options.apiKey === undefined ? options.proxy?.route : undefined;
+  // A routed task runs the route's model whatever was configured, so what it reports is the route's, not the configured model.
+  if (route !== undefined) return { runtime: await createConfiguredModelRuntime(selected, options), model: { ...selected, provider: ROUTE_PROVIDER, modelId: route.alias } };
   try {
     return { runtime: await createConfiguredModelRuntime(selected, options), model: selected };
   } catch (error) {
@@ -95,6 +114,7 @@ const TRANSPORTS = {
  * environment variable, and the stored key wins over those variables if they are set.
  */
 export async function createConfiguredModelRuntime(selected: ModelIdentifier & { thinkingLevel?: string }, options: ModelRuntimeOptions = {}): Promise<ModelRuntime> {
+  if (options.proxy?.route !== undefined && options.apiKey === undefined) return createRoutedModelRuntime(selected, options, options.proxy, options.proxy.route);
   if (options.proxy !== undefined && options.apiKey === undefined) return createProxiedModelRuntime(selected, options, options.proxy);
   if (!isKeyedModelProvider(selected.provider)) return ModelRuntime.create({ refreshOnCreate: false });
   const provider = selected.provider;
@@ -152,6 +172,51 @@ async function createProxiedModelRuntime(selected: ModelIdentifier & { thinkingL
   return runtime;
 }
 
+/** What a model the installed catalogs do not know (a company's own) is given: no reasoning, no images, a modest window. */
+const UNLISTED_ROUTED_MODEL = { reasoning: false, input: ["text"] as ("text" | "image")[], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 16_384 };
+
+/**
+ * A runtime whose one model is the route's (Task 27): the proxy alias, spoken in the route's API, with the limits of the
+ * catalog entry the route names. Pi sends the alias as the request model and the proxy's key as the credential; the usage
+ * record names the catalog entry, so a price list and the spend reports see the model and not the company's alias.
+ */
+async function createRoutedModelRuntime(selected: ModelIdentifier & { thinkingLevel?: string }, options: ModelRuntimeOptions, proxy: ModelProxyOptions, route: InvocationModelRoute): Promise<ModelRuntime> {
+  const catalog = catalogModelByName(route.catalog)?.model;
+  if (!(catalog?.reasoning ?? UNLISTED_ROUTED_MODEL.reasoning) && selected.thinkingLevel && selected.thinkingLevel !== "off") throw agentXError("CONFIG_INVALID", "the selected model does not support reasoning; set thinkingLevel to off");
+  const runtime = await ModelRuntime.create({ refreshOnCreate: false, modelsPath: null, credentials: new InMemoryCredentialStore() });
+  const requestKey = typeof proxy.apiKey === "function" ? proxy.apiKey : undefined;
+  const initialKey = requestKey === undefined ? proxy.apiKey as string : await requestKey().catch((error: unknown) => {
+    if (error instanceof ModelBudgetExhaustedError) throw error;
+    throw agentXError("RUNTIME_UNAVAILABLE", "the model proxy key could not be obtained");
+  });
+  const origin = proxy.baseUrl.replace(/\/+$/u, "");
+  // Pi's Anthropic client adds /v1/messages itself; the OpenAI clients add /responses and /chat/completions to a base that ends in /v1.
+  const baseUrl = route.api === "anthropic-messages" ? proxy.baseUrl : `${origin}/v1`;
+  const identity = routeUsageIdentity(route);
+  const base = catalog ?? UNLISTED_ROUTED_MODEL;
+  runtime.registerProvider(ROUTE_PROVIDER, {
+    baseUrl, api: route.api,
+    models: [{
+      id: route.alias, name: route.alias, api: route.api, baseUrl,
+      reasoning: base.reasoning, input: base.input, cost: base.cost, contextWindow: base.contextWindow, maxTokens: base.maxTokens,
+      ...(catalog?.thinkingLevelMap === undefined ? {} : { thinkingLevelMap: catalog.thinkingLevelMap }),
+      ...(catalog?.promptCache === undefined ? {} : { promptCache: catalog.promptCache }),
+      compat: routeCompat(route.api, catalog?.api === route.api ? catalog.compat : undefined),
+    }],
+    streamSimple: (entry, context, streamOptions) => safeProviderStream(route.api === "anthropic-messages" ? "anthropic" : "openai", entry, context, streamOptions, undefined, options.fetch, options.onUsage, undefined, requestKey, { api: route.api, identity }),
+  });
+  try { await runtime.setRuntimeApiKey(ROUTE_PROVIDER, initialKey); }
+  catch { throw agentXError("RUNTIME_UNAVAILABLE", "the model proxy key could not be initialized"); }
+  return runtime;
+}
+
+/** The request a routed model gets: the shared rules of requestCompat, and no session-affinity header for a company's endpoint. */
+function routeCompat(api: InvocationModelRoute["api"], compat: unknown) {
+  if (api === "anthropic-messages") return requestCompat("anthropic", compat);
+  if (api === "openai-responses") return requestCompat("openai", compat);
+  return { ...(compat as OpenAICompletionsCompat | undefined), sendSessionAffinityHeaders: false, supportsMidConvoSystemMessages: false };
+}
+
 /**
  * The request each provider gets on Pi 1.0 (spec 050 Ruling 7). Pi records prompt changes as
  * mid-conversation system messages, which a model would receive after the old prompt; without them Pi
@@ -191,7 +256,9 @@ function eventModel(data: { model?: unknown; message?: { model?: unknown }; resp
   return data.model ?? data.message?.model ?? data.response?.model;
 }
 
-function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, context: TranscriptContext, options: SimpleStreamOptions | undefined, routing: Record<string, unknown> | undefined, transport: typeof fetch = fetch, onUsage = (record: Record<string, unknown>) => console.info(JSON.stringify(record)), plan?: ChatGptPlan, proxyKey?: () => Promise<string>) {
+function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, context: TranscriptContext, options: SimpleStreamOptions | undefined, routing: Record<string, unknown> | undefined, transport: typeof fetch = fetch, onUsage = (record: Record<string, unknown>) => console.info(JSON.stringify(record)), plan?: ChatGptPlan, proxyKey?: () => Promise<string>,
+  /** A routed model (Task 27): its API, which picks the client, and the catalog identity its usage is reported under. */
+  route?: { api: InvocationModelRoute["api"]; identity: ModelIdentifier }) {
   const output = createAssistantMessageEventStream();
   const chatgpt = plan !== undefined;
   let failureStatus: number | undefined;
@@ -260,7 +327,9 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
       // A proxy key is asked for each time too: it is minted for an hour, and a task can run longer.
       if (proxyKey !== undefined) key = { apiKey: await proxyKey() };
       // ChatGPT requests are not retried here: a plan's limit does not lift in seconds, and the fallback is ready.
-      const upstream = upstreamStream(provider, model, context, { ...options, ...key, ...(plan === undefined ? {} : { maxRetries: 0 }), fetch: observedFetch }, routing);
+      const upstreamOptions = { ...options, ...key, ...(plan === undefined ? {} : { maxRetries: 0 }), fetch: observedFetch };
+      const upstream = route?.api === "openai-completions" ? openAICompletionsStream(model as Model<"openai-completions">, context, upstreamOptions)
+        : upstreamStream(provider, model, context, upstreamOptions, routing);
       let started = false;
       for await (const event of upstream) {
         // Pi's first event comes only once OpenAI accepted the request, so an error first means nothing reached Pi yet.
@@ -268,17 +337,18 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
           return await fallBack(plan.fallback, refusal);
         }
         started = true;
-        if (event.type === "error") event.error.errorMessage = safeError(provider, event.reason === "aborted", failureStatus, chatgpt, exhausted);
+        if (event.type === "error") event.error.errorMessage = safeError(provider, event.reason === "aborted", failureStatus, chatgpt, exhausted, route !== undefined);
         if (event.type === "done" || event.type === "error") {
           const message = event.type === "done" ? event.message : event.error;
           // Pi retains the response in the transcript. This record also identifies the serving model
           // and, through OpenRouter, the upstream provider, without treating catalog prices as billed cost.
           const priced = message.usage.cost.total > 0;
-          try { onUsage({ event: "model_request_usage", provider, requestedModel: model.id,
+          const reported = route === undefined ? { provider, modelId: model.id } : route.identity;
+          try { onUsage({ event: "model_request_usage", provider: reported.provider, requestedModel: reported.modelId,
             returnedModel: returnedModel ?? null, returnedProvider: returnedProvider ?? null,
             tokens: { input: message.usage.input, output: message.usage.output, cacheRead: message.usage.cacheRead, cacheWrite: message.usage.cacheWrite },
             costUsd: priced ? message.usage.cost.total : null,
-            costSource: !priced ? "unknown" : provider === "openrouter" ? "estimated" : "list-price", outcome: message.stopReason,
+            costSource: !priced ? "unknown" : reported.provider === "openrouter" ? "estimated" : "list-price", outcome: message.stopReason,
           }); } catch { /* Telemetry must not turn a completed model response into a failed turn. */ }
         }
         output.push(event);
@@ -287,7 +357,7 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
     } catch (error) {
       const aborted = options?.signal?.aborted === true;
       const message: AssistantMessage = { role: "assistant", api: model.api, provider, model: model.id,
-        content: [], timestamp: Date.now(), stopReason: aborted ? "aborted" : "error", errorMessage: safeError(provider, aborted, failureStatus, chatgpt, exhausted ?? (error instanceof ModelBudgetExhaustedError ? error.scope : undefined)),
+        content: [], timestamp: Date.now(), stopReason: aborted ? "aborted" : "error", errorMessage: safeError(provider, aborted, failureStatus, chatgpt, exhausted ?? (error instanceof ModelBudgetExhaustedError ? error.scope : undefined), route !== undefined),
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
       };
       output.push({ type: "error", reason: aborted ? "aborted" : "error", error: message });
@@ -298,8 +368,9 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
 }
 
 /** A diagnostic chosen from the HTTP status alone, so provider error bodies (which can echo prompts) never surface. */
-function safeError(provider: KeyedModelProvider, aborted: boolean, status?: number, chatgpt = false, exhausted?: ModelBudgetScope): string {
-  const { label } = KEYED_MODEL_PROVIDERS[provider];
+function safeError(provider: KeyedModelProvider, aborted: boolean, status?: number, chatgpt = false, exhausted?: ModelBudgetScope, routed = false): string {
+  // A routed model is a company's source, whichever API it speaks: it is not named after a provider it may not be.
+  const label = routed ? "Model source" : KEYED_MODEL_PROVIDERS[provider].label;
   if (aborted) return `${label} request cancelled`;
   // The proxy's budget refusal: the worker ends the task on this text (see budgetExhaustedFromMarker).
   if (exhausted !== undefined) return budgetExhaustedMarker(exhausted);

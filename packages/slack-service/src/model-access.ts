@@ -1,7 +1,7 @@
 // A Slack turn's model access (Task 13): the proxy's address and a key minted for this turn alone, from the control plane's
 // POST /v1/service/model-access. The orchestrator holds no provider secret; the key stays in memory until shortly before it
 // expires, is asked for once at a time, and is never logged.
-import { agentXError } from "@agentx/contracts";
+import { ModelRouteSchema, agentXError, type InvocationModelRoute } from "@agentx/contracts";
 
 /** Asked for again this long before the key expires, so no request carries one about to lapse. */
 export const TURN_ACCESS_MARGIN_MS = 60_000;
@@ -11,6 +11,8 @@ export interface TurnModelAccess {
   apiKey: string;
   /** Epoch milliseconds. */
   expiresAt: number;
+  /** Task 26: the model the broker chose for the turn, when the org routes it to a company source. Absent, the turn runs its configured model. */
+  route?: InvocationModelRoute;
 }
 
 export interface TurnModelAccessInput {
@@ -30,13 +32,14 @@ const KEY_PATTERN = /^[^\s]{1,16384}$/u;
 function parseTurnModelAccess(body: unknown): TurnModelAccess {
   const value = body !== null && typeof body === "object" ? body as Record<string, unknown> : {};
   const { baseUrl, apiKey, expiresAt } = value;
+  const route = value.route === undefined ? undefined : ModelRouteSchema.safeParse(value.route);
   let origin: URL | undefined;
   try { origin = typeof baseUrl === "string" ? new URL(baseUrl) : undefined; } catch { origin = undefined; }
   if (origin === undefined || !/^https?:$/u.test(origin.protocol) || typeof apiKey !== "string" || !KEY_PATTERN.test(apiKey)
-    || typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) {
+    || typeof expiresAt !== "number" || !Number.isFinite(expiresAt) || route?.success === false) {
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the control plane answered the model access request with something unexpected");
   }
-  return { baseUrl: baseUrl as string, apiKey, expiresAt };
+  return { baseUrl: baseUrl as string, apiKey, expiresAt, ...(route?.success ? { route: route.data } : {}) };
 }
 
 /** The turn's current model access, fetched when there is none or it is about to expire; concurrent callers share one fetch. */
@@ -65,6 +68,11 @@ export function turnModelAccessSource(input: TurnModelAccessInput): () => Promis
     })();
     return pending;
   };
+}
+
+/** The model the broker chose for the turn, if it chose one: asked of the same access source, so it shares the turn's one key request. */
+export async function turnModelRoute(source: () => Promise<TurnModelAccess>): Promise<InvocationModelRoute | undefined> {
+  return (await source()).route;
 }
 
 /** What a runtime needs from a turn's access: the proxy's origin once, and the key as often as it is asked for. */
