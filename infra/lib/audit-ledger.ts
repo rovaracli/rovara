@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import {
+  ArnFormat,
   Aws,
   CfnCondition,
   CfnParameter,
@@ -28,7 +29,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_INTAKE_MAX_RECEIVES, AUDIT_RETENTION_DAYS_DEFAULT, AUDIT_SEAL_INTERVAL_MINUTES, canonicalJson } from "@agentx/contracts";
+import { AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_INTAKE_MAX_RECEIVES, AUDIT_RETENTION_DAYS_DEFAULT, AUDIT_SEAL_INTERVAL_MINUTES, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS, canonicalJson } from "@agentx/contracts";
 import type { AgentXNaming } from "./naming.js";
 import {
   auditLockSettings,
@@ -155,6 +156,9 @@ export const AUDIT_CHAIN_MISMATCH_EVENTS = ["audit.chain_mismatch", "audit.versi
  * the anchor but means the delete-marker and extra-version look was skipped).
  */
 export const AUDIT_LOCK_DRIFT_EVENTS = ["audit.lock_config_mismatch", "audit.version_drift", "audit.lock_sweep_failed"] as const;
+
+/** The anchor's log event for a timestamp that was not obtained or not accepted (Task 10): the authority's label and the problem. */
+export const AUDIT_TIMESTAMP_FAILED_EVENTS = ["audit.timestamp_failed"] as const;
 
 /** A string that is a CDK token (a template value resolved at deploy time), not the text it will become. */
 export type TemplateTokenString = string & { readonly __templateToken: true };
@@ -628,7 +632,10 @@ export class AuditLedger extends Construct {
    *    `GetObjectRetention` on its objects, `ListBucketVersions` on the bucket (it lists a key's versions before it
    *    writes, and sweeps the sealed keys), and, on the bucket, the three reads of its own configuration that the drift check
    *    makes each run: `GetBucketObjectLockConfiguration`, `GetBucketVersioning` and `GetBucketPolicy`. Never a delete, `PutObjectRetention`, `PutObjectLegalHold`, `BypassGovernanceRetention`, a bucket-level write
-   *    or anything of KMS (the bucket uses S3-managed encryption).
+   *    or anything of KMS (the bucket uses S3-managed encryption);
+   *  - Task 10, on a `custom` install only: `ssm:GetParameter` on the one parameter that holds the timestamp authorities' roots.
+   *    The function is outside any VPC, like the broker, so a public authority is reached over the internet with no NAT or
+   *    endpoint of ours.
    * Reserved concurrency 1: two runs never overlap. The conditional writes in the code make an overlap harmless as well. Lambda's
    * own two retries of a failed asynchronous run stay at their defaults: a run is idempotent, so a retry only resumes.
    */
@@ -665,6 +672,12 @@ export class AuditLedger extends Construct {
         // What the bucket policy is normalized with before it is hashed: this deployment's own partition, account and region.
         AUDIT_PARTITION: Aws.PARTITION,
         AUDIT_ACCOUNT_ID: Aws.ACCOUNT_ID,
+        // Task 10: which timestamp authorities, how long to wait for one and how far apart to ask it. `custom` adds the URLs and
+        // the one SSM parameter that holds their roots (read at cold start); `public` and `off` name neither.
+        AUDIT_TSA_KIND: this.tsa.kind,
+        AUDIT_TSA_TIMEOUT_MS: String(AUDIT_TSA_TIMEOUT_MS),
+        AUDIT_TSA_SPACING_MS: String(AUDIT_TSA_SPACING_MS),
+        ...(this.tsa.kind === "custom" ? { AUDIT_TSA_URLS: this.tsa.urls.join(","), AUDIT_TSA_ROOTS_PARAMETER: this.tsa.rootsParameter } : {}),
       },
       bundling: { externalModules: [], minify: true, sourceMap: true, target: "node22" },
     });
@@ -712,6 +725,15 @@ export class AuditLedger extends Construct {
           actions: ["s3:GetBucketObjectLockConfiguration", "s3:GetBucketVersioning", "s3:GetBucketPolicy"],
           resources: [this.ledgerBucket.bucketArn],
         }),
+        // Task 10, custom authorities only: the one parameter that holds their root certificates, read at cold start. A public or
+        // `off` install has no SSM grant at all.
+        ...(this.tsa.kind === "custom"
+          ? [new iam.PolicyStatement({
+            sid: "TimestampRoots",
+            actions: ["ssm:GetParameter"],
+            resources: [Stack.of(this).formatArn({ service: "ssm", resource: "parameter", resourceName: this.tsa.rootsParameter.replace(/^\//, ""), arnFormat: ArnFormat.SLASH_RESOURCE_NAME })],
+          })]
+          : []),
       ],
     });
 
@@ -781,6 +803,19 @@ export class AuditLedger extends Construct {
       "The ledger bucket's Object Lock no longer meets the floor, or its versioning, its default retention or its policy differs from what was deployed, an object came back with a weaker lock than the floor, or a sealed key holds a delete marker, a second version or another version. Sealing stops (or the affected org is not finalized) until a person looks. See the anchor's logs for audit.lock_config_mismatch and audit.version_drift, and docs/runbooks/audit-object-conflict.md.",
       this.countedLogEvents(naming, logGroup, "AuditLockDrift", "AuditLockDrift", AUDIT_LOCK_DRIFT_EVENTS),
     );
+    // Task 10: a timestamp that was not obtained or not accepted. One miss is normal (an authority is slow); a miss in each of two
+    // consecutive 15-minute periods means an authority has been failing for half an hour. Sealing is not held back; the epochs
+    // wait and the next stamped epoch covers them.
+    new cloudwatch.Alarm(this, "AuditTimestampFailedAlarm", {
+      alarmName: naming.alarmName("AuditTimestampFailed"),
+      alarmDescription: "A timestamp authority has failed to give the anchor a valid timestamp in each of two 15-minute periods. Sealing goes on and the epochs wait for their timestamp; the next epoch that is stamped covers them, so nothing is lost, but the independent time is late. Check the anchor's logs for audit.timestamp_failed (the label and the problem) and, on a private install, that the functions can reach the authority.",
+      metric: this.countedLogEvents(naming, logGroup, "AuditTimestampFailed", "AuditTimestampFailed", AUDIT_TIMESTAMP_FAILED_EVENTS).with({ period: Duration.minutes(AUDIT_SEAL_INTERVAL_MINUTES) }),
+      threshold: 1,
+      evaluationPeriods: 2,
+      datapointsToAlarm: 2,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(props.notifyOperator);
     return anchor;
   }
 

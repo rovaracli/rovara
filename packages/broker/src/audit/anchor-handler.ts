@@ -4,9 +4,11 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { S3Client } from "@aws-sdk/client-s3";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { requiredEnvironment } from "../aws/lambda.js";
 import { AUDIT_EPOCH_SOURCE, auditS3ClientConfig, runAuditEpoch, type AnchorDeps, type AnchorRunResult } from "./anchor.js";
 import { lockSettingsFromEnvironment } from "./lock-check.js";
+import { loadTsaDeps, type TsaDeps } from "./tsa-client.js";
 
 export interface AuditEpochEvent {
   source?: unknown;
@@ -18,6 +20,31 @@ export async function handleAuditEpochEvent(deps: AnchorDeps, event: AuditEpochE
 }
 
 let production: AnchorDeps | undefined;
+let timestamps: TsaDeps | undefined;
+
+/**
+ * Task 10. Read once per cold start: the kind of timestamp authority (public, custom or off), and for custom the roots from the
+ * one SSM parameter the stack names. That parameter is the only thing this function ever reads from SSM. A failure to read it is
+ * logged and leaves the epochs waiting for a timestamp (loadTsaDeps); it is not cached, so the next run tries again.
+ */
+async function timestampDependencies(base: AnchorDeps): Promise<TsaDeps> {
+  if (timestamps !== undefined) return timestamps;
+  const region = process.env.AWS_REGION;
+  const ssm = new SSMClient(region === undefined ? {} : { region });
+  const failures: Array<Record<string, unknown>> = [];
+  const loaded = await loadTsaDeps(process.env, {
+    readParameter: async (name) => {
+      const out = await ssm.send(new GetParameterCommand({ Name: name }));
+      const value = out.Parameter?.Value;
+      if (typeof value !== "string") throw new Error("the roots parameter has no value");
+      return value;
+    },
+    fetch,
+    log: (entry) => { failures.push(entry); base.log(entry); },
+  });
+  if (failures.length === 0) timestamps = loaded;
+  return loaded;
+}
 
 function productionDependencies(): AnchorDeps {
   if (production !== undefined) return production;
@@ -37,5 +64,7 @@ function productionDependencies(): AnchorDeps {
 }
 
 export async function handler(event: AuditEpochEvent): Promise<AnchorRunResult | { status: "ignored" }> {
-  return handleAuditEpochEvent(productionDependencies(), event);
+  const base = productionDependencies();
+  if (event.source !== AUDIT_EPOCH_SOURCE) return { status: "ignored" };
+  return handleAuditEpochEvent({ ...base, tsa: await timestampDependencies(base) }, event);
 }

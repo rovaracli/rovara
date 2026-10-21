@@ -781,6 +781,82 @@ describe("the audit ledger in templates", () => {
     });
   });
 
+  describe("the anchor's timestamp settings (Task 10)", () => {
+    const ROLE = "AuditLedgerAuditAnchorRole";
+    const PARAMETER = "/agentx/acme/tsa-roots";
+    const PARAMETER_ARN = `arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/agentx/acme/tsa-roots`;
+    const custom = (urls: string, parameter: string = PARAMETER) => named("acme", { agentxAuditTsa: "custom", agentxAuditTsaUrls: urls, agentxAuditTsaRootsParameter: parameter });
+    const variables = (synthesis: Synth) => (one(synthesis.template, "AWS::Lambda::Function", "AuditLedgerAuditAnchor")[1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    const tsaVariables = (synthesis: Synth) => Object.fromEntries(Object.entries(variables(synthesis)).filter(([name]) => name.startsWith("AUDIT_TSA_")));
+    const ownStatements = (synthesis: Synth): Statement[] => {
+      const own = ofType(synthesis.template, "AWS::IAM::Policy").filter(([id]) => withoutHash(id) === "AuditLedgerAuditAnchorPolicy");
+      expect(own).toHaveLength(1);
+      return ((own[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => concreteAws(statement) as Statement);
+    };
+    const identity = (synthesis: Synth): IamStatement[] => roleStatements(synthesis.template, one(synthesis.template, "AWS::IAM::Role", ROLE)[0], concreteAws);
+    const ssmStatements = (synthesis: Synth) => identity(synthesis).filter((statement) => [statement.Action].flat().some((action) => String(action).startsWith("ssm:")));
+
+    it("a public install names the kind, the timeout and the spacing, and no URL or parameter; the default is public", () => {
+      for (const env of ["production", "staging", "acme"]) {
+        expect(tsaVariables(named(env))).toStrictEqual({ AUDIT_TSA_KIND: "public", AUDIT_TSA_TIMEOUT_MS: "10000", AUDIT_TSA_SPACING_MS: "15000" });
+      }
+    });
+
+    it("an off install says so and names nothing else", () => {
+      expect(tsaVariables(named("acme", { agentxAuditTsa: "off" }))).toStrictEqual({ AUDIT_TSA_KIND: "off", AUDIT_TSA_TIMEOUT_MS: "10000", AUDIT_TSA_SPACING_MS: "15000" });
+    });
+
+    it("a custom install is given its URLs, in order, and the one parameter that holds their roots", () => {
+      expect(tsaVariables(custom("https://tsa-1.example.test/ts, http://tsa-2.example.test/ts"))).toStrictEqual({
+        AUDIT_TSA_KIND: "custom", AUDIT_TSA_TIMEOUT_MS: "10000", AUDIT_TSA_SPACING_MS: "15000",
+        AUDIT_TSA_URLS: "https://tsa-1.example.test/ts,http://tsa-2.example.test/ts", AUDIT_TSA_ROOTS_PARAMETER: PARAMETER,
+      });
+      expect(tsaVariables(custom("https://tsa.example.test/ts")).AUDIT_TSA_URLS).toBe("https://tsa.example.test/ts");
+    });
+
+    it("grants ssm:GetParameter on the configured parameter, and only when custom: a public or off install has no SSM grant at all", () => {
+      for (const synthesis of [named("production"), named("staging"), named("acme"), named("acme", { agentxAuditTsa: "off" })]) {
+        expect(ssmStatements(synthesis)).toStrictEqual([]);
+        expect(JSON.stringify(synthesis.template.Resources[one(synthesis.template, "AWS::IAM::Policy", "AuditLedgerAuditAnchorPolicy")[0]])).not.toContain("ssm:");
+      }
+      const synthesis = custom("https://tsa.example.test/ts");
+      expect(ssmStatements(synthesis)).toStrictEqual([{ Sid: "TimestampRoots", Effect: "Allow", Action: "ssm:GetParameter", Resource: PARAMETER_ARN }]);
+      // The role's other statements are the same seven as without it, plus the log group's.
+      expect(ownStatements(synthesis).map((statement) => statement.Sid)).toStrictEqual(["SealsTable", "LockRatchet", "LedgerRead", "LedgerDirtyMarkers", "LedgerBucketObjects", "LedgerBucketVersions", "LedgerBucketConfiguration", "TimestampRoots"]);
+    });
+
+    it("a parameter name without a leading slash gets the same kind of ARN", () => {
+      expect(ssmStatements(custom("https://tsa.example.test/ts", "tsa-roots"))).toMatchObject([{ Resource: `arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/tsa-roots` }]);
+    });
+
+    it("IAM lets the anchor read that parameter and no other, and do nothing else in SSM", () => {
+      const synthesis = custom("https://tsa.example.test/ts");
+      const can = (action: string, resource: string) => simulateIam(identity(synthesis), { action, resource });
+      expect(can("ssm:GetParameter", PARAMETER_ARN)).toMatchObject({ allowed: true });
+      for (const resource of [`arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/agentx/acme/other`, `arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/agentx/acme/tsa-roots-2`, `arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/agentx/acme`]) {
+        expect(can("ssm:GetParameter", resource), resource).toMatchObject({ allowed: false });
+      }
+      for (const action of ["ssm:GetParameters", "ssm:GetParametersByPath", "ssm:PutParameter", "ssm:DeleteParameter", "ssm:DescribeParameters"]) {
+        expect(can(action, PARAMETER_ARN), action).toMatchObject({ allowed: false });
+      }
+      // A public install's anchor may not read it.
+      const publicIdentity = identity(named("acme"));
+      expect(simulateIam(publicIdentity, { action: "ssm:GetParameter", resource: PARAMETER_ARN })).toMatchObject({ allowed: false });
+    });
+
+    it("runs outside any VPC whatever the kind, so a public authority is reached over the internet and a private one by its own network", () => {
+      for (const synthesis of [named("acme"), custom("https://tsa.example.test/ts"), named("acme", { agentxAuditTsa: "off" })]) {
+        expect(one(synthesis.template, "AWS::Lambda::Function", "AuditLedgerAuditAnchor")[1].Properties.VpcConfig).toBeUndefined();
+      }
+    });
+
+    it("keeps the alarm for a custom and an off install too (the health route reads every alarm by name)", () => {
+      for (const synthesis of [custom("https://tsa.example.test/ts"), named("acme", { agentxAuditTsa: "off" })]) {
+        expect(one(synthesis.template, "AWS::CloudWatch::Alarm", "AuditLedgerAuditTimestampFailedAlarm")[1].Properties).toMatchObject({ AlarmName: "agentx-acme-AuditTimestampFailed" });
+      }
+    });
+  });
+
   describe("the timestamp authority context", () => {
     it("custom without roots throws the exact text at synth", () => {
       expect(() => named("acme", { agentxAuditTsa: "custom", agentxAuditTsaUrls: "https://tsa.example.com" })).toThrow("audit ledger: a custom timestamp authority needs its URL and root certificates");
@@ -1240,6 +1316,10 @@ describe("the audit ledger in templates", () => {
               AUDIT_BUCKET_POLICY_SHA256: synthesis.ledger.bucketPolicySha256ByProfile[profile],
               AUDIT_PARTITION: "aws",
               AUDIT_ACCOUNT_ID: ACCOUNT,
+              // Task 10: the public authorities are the default; no URL and no parameter are named.
+              AUDIT_TSA_KIND: "public",
+              AUDIT_TSA_TIMEOUT_MS: "10000",
+              AUDIT_TSA_SPACING_MS: "15000",
             });
           }
           // The default profile is the one the environment's own settings give.
@@ -1508,7 +1588,7 @@ describe("the audit ledger in templates", () => {
           expect(epochs).toHaveLength(1);
         });
 
-        it("raises four alarms: seals overdue, a chain mismatch (or version drift), an object conflict, and lock drift (Task 9)", () => {
+        it("raises five alarms: seals overdue, a chain mismatch (or version drift), an object conflict, lock drift (Task 9) and a timestamp failure (Task 10)", () => {
           const topicId = one(synthesis.template, "AWS::SNS::Topic", "OperatorAlerts")[0];
           const logGroupId = one(synthesis.template, "AWS::Logs::LogGroup", "AuditLedgerAuditAnchorLogs")[0];
           const namespace = environmentNaming(env).metricsNamespace;
@@ -1530,6 +1610,15 @@ describe("the audit ledger in templates", () => {
             MetricTransformations: [{ MetricName: "AuditLockDrift", MetricNamespace: namespace, MetricValue: "1" }],
           });
           const alarm = (id: string) => one(synthesis.template, "AWS::CloudWatch::Alarm", id)[1].Properties;
+          expect(filter("AuditLedgerAuditTimestampFailedMetric")).toStrictEqual({
+            LogGroupName: { Ref: logGroupId }, FilterPattern: '{ $.event = "audit.timestamp_failed" }',
+            MetricTransformations: [{ MetricName: "AuditTimestampFailed", MetricNamespace: namespace, MetricValue: "1" }],
+          });
+          // One or more failures in each of two consecutive 15-minute periods (a single slow authority is not an alarm).
+          expect(alarm("AuditLedgerAuditTimestampFailedAlarm")).toMatchObject({
+            AlarmName: `agentx-${env}-AuditTimestampFailed`, MetricName: "AuditTimestampFailed", Namespace: namespace, Statistic: "Sum",
+            Period: 900, EvaluationPeriods: 2, DatapointsToAlarm: 2, Threshold: 1, ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
+          });
           const overdue = alarm("AuditLedgerAuditSealOverdueAlarm");
           expect(overdue).toMatchObject({
             AlarmName: `agentx-${env}-AuditSealOverdue`, MetricName: "AuditEpochSealed", Namespace: namespace, Statistic: "Sum",
@@ -1542,13 +1631,13 @@ describe("the audit ledger in templates", () => {
               Period: 300, EvaluationPeriods: 1, Threshold: 1, ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
             });
           }
-          for (const id of ["AuditLedgerAuditSealOverdueAlarm", "AuditLedgerAuditChainMismatchAlarm", "AuditLedgerAuditObjectConflictAlarm", "AuditLedgerAuditLockDriftAlarm"]) {
+          for (const id of ["AuditLedgerAuditSealOverdueAlarm", "AuditLedgerAuditChainMismatchAlarm", "AuditLedgerAuditObjectConflictAlarm", "AuditLedgerAuditLockDriftAlarm", "AuditLedgerAuditTimestampFailedAlarm"]) {
             expect(alarm(id).AlarmActions).toStrictEqual([{ Ref: topicId }]);
           }
         });
 
         it("names its alarms in the list the health route reads", () => {
-          for (const suffix of ["AuditSealOverdue", "AuditChainMismatch", "AuditObjectConflict", "AuditLockDrift"]) expect(HEALTH_ALARM_SUFFIXES).toContain(suffix);
+          for (const suffix of ["AuditSealOverdue", "AuditChainMismatch", "AuditObjectConflict", "AuditLockDrift", "AuditTimestampFailed"]) expect(HEALTH_ALARM_SUFFIXES).toContain(suffix);
         });
 
         it("keeps its log group a month", () => {

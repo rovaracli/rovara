@@ -9,21 +9,27 @@ import { OrgIdSchema } from "./org.js";
 // so what is written is by construction what an auditor recomputes.
 export {
   AUDIT_LIMITS_COPY,
+  buildTimeStampRequest,
   canonicalJson as auditCanonicalJson,
   checkChain,
+  defaultAnchors,
   detailCommit,
   genesisHash,
   merkleRoot,
+  parseTimeStampResponse,
   recordHash,
   recordLeafData,
   sealHash,
   sealLeafData,
   statementHash,
+  verifyTimeStampToken,
   type AuditBundleV1,
   type AuditRecordV1,
   type EpochStatementV1,
   type LockedObjectV1,
   type OrgSealV1,
+  type TimestampProblem,
+  type TimestampVerdict,
 } from "@rovara/audit-verifier";
 
 export const AUDIT_SEAL_INTERVAL_MINUTES = 15;
