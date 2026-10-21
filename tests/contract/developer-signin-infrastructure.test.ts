@@ -295,7 +295,7 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(leadingKeys(deletes[0])).toEqual({
       "dynamodb:LeadingKeys": ["ORG#org_????????????????????#MEMBER#*", "ORG#org_????????????????????", "DEVELOPER_ORG#*"],
     });
-    for (const statement of stateGrants) expect(leadingKeys(statement)["dynamodb:LeadingKeys"]).not.toContain("ORG#*");
+    for (const statement of stateGrants) expect(JSON.stringify(leadingKeys(statement))).not.toContain('"ORG#*"');
     // FR-045: both functions get each method's enabled-since cutoff straight from its parameter.
     const variables = (prefix: string) => (named.Resources[functionId(named, prefix)]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
     expect(variables("Broker")).toMatchObject({

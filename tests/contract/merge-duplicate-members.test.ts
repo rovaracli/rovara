@@ -17,7 +17,7 @@ const T0 = Date.parse("2026-10-20T12:00:00.000Z");
 const D1 = ownerKeyForSubject(OIDC_ISSUER, "priya-cloud-1");
 const D2 = ownerKeyForSubject(GITHUB_ISSUER, "4711");
 const EMAIL = "priya@acme.dev";
-const githubIdentity: ProviderIdentity = { issuer: GITHUB_ISSUER, subject: "4711", displayName: "Priya R.", email: EMAIL, emailVerified: true, login: "priya-dev" };
+const githubIdentity: ProviderIdentity = { method: "github", issuer: GITHUB_ISSUER, subject: "4711", displayName: "Priya R.", email: EMAIL, emailVerified: true, login: "priya-dev" };
 
 const developerRecord = (developerId: string, provider: "cloud" | "github", issuer: string, subject: string) =>
   ({ pk: `DEVELOPER#${developerId}`, sk: "META", entityType: "DEVELOPER", developerId, provider, issuer, subject, displayName: "Priya", email: EMAIL, firstSignInAt: "2026-09-01T00:00:00.000Z", lastSignInAt: "2026-09-02T00:00:00.000Z", revoked: false });
