@@ -58,7 +58,7 @@ import {
 } from "./join-page.js";
 import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderResult, type SignInProvider } from "./providers.js";
 import type { SlackDirectory } from "./slack-directory.js";
-import { endedByAdmin, endedByUnlink, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
+import { endedByAdmin, endedByUnlink, isFreshSignIn, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
 import { sendIdentityLinkedNotice, type IdentityNoticeDependencies } from "./identity-notice.js";
 import { issueAccessToken, pkceChallengeMatches, type TokenSigner } from "./tokens.js";
 
@@ -429,7 +429,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
 
   async function toProvider(requestId: string, nonce: string, method: DeveloperSignInMethod, clientRedirect: string, clientState: string, fresh = false): Promise<HttpResult> {
     try {
-      return redirect(await provider(method).authorizeUrl({ state: requestId, nonce, redirectUri: endpoint(`/callback/${method}`), ...(fresh ? { prompt: "login" as const } : {}) }));
+      return redirect(await provider(method).authorizeUrl({ state: requestId, nonce, redirectUri: endpoint(`/callback/${method}`), ...(fresh ? { freshSignIn: true } : {}) }));
     } catch (error) {
       return providerFailure(error, method, clientRedirect, clientState);
     }
@@ -570,17 +570,21 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     // Only a join answers without an org; this sign-in created or joined one.
     if (org.orgId === undefined) throw new Error("sign-in resolved no organization");
     if (method === "github" && identity.githubUserId !== undefined && deps.onGithubSignIn !== undefined) await unlockTrialBestEffort(org.orgId, identity.githubUserId);
+    // When the person signed in: the callback's time, or the provider's own `auth_time` when that is earlier (a provider that reused its browser
+    // session says so here). A stale one makes the session not fresh, so it cannot be used to change sign-in methods.
+    const authTime = signInTime(identity.authTime);
+    if (request.fresh === true && !isFreshSignIn({ authTime }, deps.now())) deps.log({ event: "signin.fresh_sign_in_not_fresh", method });
     if (request.browserReturnTo !== undefined) {
       // A fixed 30 days from sign-in, with no renewal: the session record ends then, whatever the cookie says.
       const endsAt = Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS;
-      const { session } = await store.createSession({ developerId, amr: method, identityKey, authTime: new Date(deps.now()).toISOString(),
+      const { session } = await store.createSession({ developerId, amr: method, identityKey, authTime,
         ...(slackUserId === undefined ? {} : { slackUserId }),
         reviewExpiresAt: endsAt, endsAt,
       });
       deps.log({ event: "signin.browser_succeeded", method, developerId });
       return browserReturn(request.browserReturnTo, true, session.sessionId);
     }
-    const agentxCode = await store.issueCode({ developerId, amr: method, identityKey, ...(slackUserId === undefined ? {} : { slackUserId }), codeChallenge: request.codeChallenge, redirectUri: request.clientRedirectUri });
+    const agentxCode = await store.issueCode({ developerId, amr: method, identityKey, authTime, ...(slackUserId === undefined ? {} : { slackUserId }), codeChallenge: request.codeChallenge, redirectUri: request.clientRedirectUri });
     deps.log({ event: "signin.succeeded", method, developerId, linkedToSlack: slackUserId !== undefined });
     // An invite that was not used (the person is already in an org, or it is unknown, used, expired or for another email) is reported, not hidden.
     return client({ code: agentxCode, ...(org.inviteError === undefined ? {} : { inviteError: org.inviteError }) });
@@ -589,7 +593,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   /** Off to the provider for adding a removed method back; a provider that cannot be reached is a page, not a redirect to the CLI. */
   async function linkToProvider(requestId: string, nonce: string, method: DeveloperSignInMethod): Promise<HttpResult> {
     try {
-      return redirect(await provider(method).authorizeUrl({ state: requestId, nonce, redirectUri: endpoint(`/callback/${method}`) }));
+      return redirect(await provider(method).authorizeUrl({ state: requestId, nonce, redirectUri: endpoint(`/callback/${method}`), chooseAccount: true }));
     } catch (error) {
       deps.log({ event: "signin.link_authorize_failed", method, error: errorName(error) });
       return page(503, "Sign-in is unavailable", ["Nothing was added. Try again in a moment."]);
@@ -640,9 +644,28 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       return page(403, "That sign-in was not added", [capitalized(refusalWords(error)), "Nothing was changed."]);
     }
     deps.log({ event: "signin.identity_relinked", developerId, provider: method });
-    // The same notice as for any new method: if the person did not do this, they can remove it at once.
-    await noticeNewMethod(method, identity, (await store.getDeveloper(developerId))?.email);
+    // The same notice as for any new method: if the person did not do this, they can remove it at once. The method is already added, so
+    // nothing here may turn the page into an error: the account's address is read twice, then the sign-in's own verified one is used.
+    await noticeNewMethod(method, identity, await accountEmail(developerId));
     return page(200, "Sign-in method added back", [`${methodLabel(method)} can sign in to your Rovara account again.`, "You can close this tab and go back to your terminal."]);
+  }
+
+  /** The developer record's address; a read that fails twice answers nothing (the notice then goes to the sign-in's own verified address). */
+  async function accountEmail(developerId: string): Promise<string | undefined> {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        return (await store.getDeveloper(developerId))?.email;
+      } catch (error) {
+        deps.log({ event: "signin.identity_link_account_read_failed", attempt, error: errorName(error) });
+      }
+    }
+    return undefined;
+  }
+
+  /** An ISO time for a sign-in whose provider may say it happened earlier (`auth_time`, in seconds). Never later than now. */
+  function signInTime(providerAuthTime: number | undefined): string {
+    const now = deps.now();
+    return new Date(providerAuthTime === undefined ? now : Math.min(now, Math.round(providerAuthTime * 1000))).toISOString();
   }
 
   /**

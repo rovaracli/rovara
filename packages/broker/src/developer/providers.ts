@@ -11,6 +11,12 @@ export interface ProviderIdentity {
   githubUserId?: string;
   /** The GitHub account's login (the `github` method only), shown beside the linked identity; it can change, so it never keys anything. */
   login?: string;
+  /**
+   * When the provider says the person last authenticated, in epoch seconds: the ID token's `auth_time` claim (Cognito and company OpenID
+   * Connect providers; Google when the claim is requested). Absent when the token carries none: GitHub and Slack's tokens never do.
+   * Plan 2, Task 8b: the sign-in's recorded time is never newer than this.
+   */
+  authTime?: number;
 }
 /** `wrongAccount`: the person signed in fine but is not one AgentX accepts (another Slack workspace,
  * or without the required claim), so signing in as someone else may help. */
@@ -22,8 +28,12 @@ export class ProviderNotConfiguredError extends Error { override name = "Provide
 
 export interface SignInProvider {
   readonly method: DeveloperSignInMethod;
-  /** `prompt: "login"` (Plan 2, Task 8b) asks the provider to have the person sign in again instead of reusing its browser session, where it can (the OpenID Connect providers; Slack and GitHub have no such option). */
-  authorizeUrl(input: { state: string; nonce: string; redirectUri: string; prompt?: "login" }): Promise<string>;
+  /**
+   * Plan 2, Task 8b. `freshSignIn` asks the provider to have the person sign in again instead of reusing its browser session, and
+   * `chooseAccount` asks it to show its account picker, each only in the way its documentation lists (see the providers below); a
+   * provider with no such option ignores it. Neither is proof: a fresh sign-in is judged by the ID token's `auth_time`, not by the request.
+   */
+  authorizeUrl(input: { state: string; nonce: string; redirectUri: string; freshSignIn?: boolean; chooseAccount?: boolean }): Promise<string>;
   complete(input: { code: string; nonce: string; redirectUri: string }): Promise<ProviderResult>;
 }
 
@@ -76,6 +86,10 @@ async function verifyIdToken(idToken: string, jwks: JWTVerifyGetKey, options: { 
 
 /** OIDC Core 5.1: `email_verified` is a boolean, but some providers send the string "true". */
 const emailVerifiedClaim = (payload: JWTPayload): boolean => payload.email_verified === true || payload.email_verified === "true";
+
+/** OIDC Core 2: `auth_time` is a JSON number of seconds; anything else is not a time the sign-in can use. */
+const authTimeOf = (payload: JWTPayload): { authTime: number } | Record<string, never> =>
+  typeof payload.auth_time === "number" && Number.isFinite(payload.auth_time) && payload.auth_time >= 0 ? { authTime: payload.auth_time } : {};
 
 const verifiedEmail = (payload: JWTPayload): string | undefined =>
   typeof payload.email === "string" && emailVerifiedClaim(payload) ? payload.email : undefined;
@@ -161,10 +175,20 @@ export function oidcSignInProvider(input: {
   };
   return {
     method,
-    async authorizeUrl({ state, nonce, redirectUri, prompt }) {
+    async authorizeUrl({ state, nonce, redirectUri, freshSignIn, chooseAccount }) {
       const doc = await discover();
       const url = new URL(doc.authorization_endpoint);
-      for (const [key, value] of Object.entries({ response_type: "code", scope: SCOPES, client_id: input.clientId, state, nonce, redirect_uri: redirectUri, ...(prompt === undefined ? {} : { prompt }) })) url.searchParams.set(key, value);
+      // Only parameters the documentation lists, and never `prompt=login`: Cognito forwards every prompt value but `none` to the social
+      // provider it signs in with, and Google documents only none, consent and select_account.
+      //  - `max_age=0`: Cognito managed login /oauth2/authorize (https://docs.aws.amazon.com/cognito/latest/developerguide/authorization-endpoint.html,
+      //    "Step-up authentication request"); OIDC Core 3.1.2.1 for a company provider. A server ignores a parameter it does not know (RFC 6749 3.1).
+      //  - `prompt=select_account`: the same Cognito page (forwarded to the social provider, no effect on the email code), Google
+      //    (https://developers.google.com/identity/openid-connect/openid-connect) and OIDC Core 3.1.2.1.
+      for (const [key, value] of Object.entries({
+        response_type: "code", scope: SCOPES, client_id: input.clientId, state, nonce, redirect_uri: redirectUri,
+        ...(freshSignIn === true ? { max_age: "0" } : {}),
+        ...(freshSignIn === true || chooseAccount === true ? { prompt: "select_account" } : {}),
+      })) url.searchParams.set(key, value);
       return url.toString();
     },
     async complete({ code, nonce, redirectUri }) {
@@ -198,6 +222,7 @@ export function oidcSignInProvider(input: {
           method, issuer, subject: payload.sub,
           displayName: (name === undefined ? undefined : cleanDisplayName(name)) ?? payload.sub,
           ...(email === undefined ? {} : { email, emailVerified: emailVerifiedClaim(payload) }),
+          ...authTimeOf(payload),
         },
       };
     },
@@ -219,9 +244,15 @@ export function githubSignInProvider(input: {
 }): SignInProvider {
   return {
     method: "github",
-    async authorizeUrl({ state, redirectUri }) {
+    async authorizeUrl({ state, redirectUri, freshSignIn, chooseAccount }) {
       const url = new URL("https://github.com/login/oauth/authorize");
-      for (const [key, value] of Object.entries({ client_id: input.clientId, redirect_uri: redirectUri, scope: GITHUB_SCOPES, state })) url.searchParams.set(key, value);
+      // GitHub documents one `prompt` value, `select_account` (the account picker); it has no login or max_age
+      // (https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps). So a fresh GitHub sign-in is best effort:
+      // an app the person already authorized can complete without a password, and GitHub has no ID token to carry an auth_time.
+      for (const [key, value] of Object.entries({
+        client_id: input.clientId, redirect_uri: redirectUri, scope: GITHUB_SCOPES, state,
+        ...(freshSignIn === true || chooseAccount === true ? { prompt: "select_account" } : {}),
+      })) url.searchParams.set(key, value);
       return url.toString();
     },
     async complete({ code, redirectUri }) {

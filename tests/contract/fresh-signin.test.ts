@@ -126,18 +126,140 @@ describe("the CLI's fresh sign-in", () => {
     expect((await only.http(httpEvent("GET", authorizeQuery({ exclude_method: "cloud" })))).statusCode).toBe(302);
   });
 
-  it("asks the email-code provider to prompt for a sign-in again (fresh=1), and only then", async () => {
+  it("asks the email-code provider to require a new sign-in (fresh=1), and only then", async () => {
     const h = identityHarness({ slack: false, cloud: {}, oidcUsers: [priya] });
     const plain = await h.http(httpEvent("GET", authorizeQuery()));
+    expect(new URL(plain.headers.location!).searchParams.get("max_age")).toBeNull();
     expect(new URL(plain.headers.location!).searchParams.get("prompt")).toBeNull();
     const fresh = await h.http(httpEvent("GET", authorizeQuery({ fresh: "1" })));
-    expect(new URL(fresh.headers.location!).searchParams.get("prompt")).toBe("login");
+    expect(new URL(fresh.headers.location!).searchParams.get("max_age")).toBe("0");
+    expect(new URL(fresh.headers.location!).searchParams.get("prompt")).toBe("select_account");
     // The choice page keeps it: the request remembers that the sign-in must be fresh.
     const many = identityHarness({ slack: false, cloud: {}, oidcUsers: [priya], github: { users: [octo] } });
     const page = await many.http(httpEvent("GET", authorizeQuery({ fresh: "1" })));
     const link = /href="([^"]*method=cloud)"/.exec(page.body)![1]!.replaceAll("&amp;", "&");
     const toProvider = await many.http(httpEvent("GET", link));
-    expect(new URL(toProvider.headers.location!).searchParams.get("prompt")).toBe("login");
+    expect(new URL(toProvider.headers.location!).searchParams.get("max_age")).toBe("0");
+    const githubLink = /href="([^"]*method=github)"/.exec(page.body)![1]!.replaceAll("&amp;", "&");
+    const toGithub = await many.http(httpEvent("GET", githubLink));
+    expect(new URL(toGithub.headers.location!).searchParams.get("prompt")).toBe("select_account");
+  });
+});
+
+// Each provider is sent only the parameters its documentation lists, never a value it may reject:
+//  - Cognito managed login (/oauth2/authorize): `max_age` (non-negative seconds since the last sign-in; documented with the step-up
+//    parameters) and `prompt=select_account` (documented; forwarded to the social IdP, no effect on the email code).
+//    `prompt=login` is documented for Cognito but is forwarded to Google, whose documented prompt values are only none, consent and select_account.
+//  - Company OpenID Connect: `max_age` is OIDC Core 3.1.2.1 (an unknown parameter is ignored, RFC 6749 3.1), `prompt=select_account` is OIDC Core and Google-documented.
+//  - GitHub: only `prompt=select_account` is documented (no login/max_age); the account picker is the one deliberate click it offers.
+describe("what each provider is asked", () => {
+  const paramsOf = (url: string) => Object.fromEntries(new URL(url).searchParams);
+  const base = { state: "s1", nonce: "n1", redirectUri: "https://abc123.execute-api.us-east-1.amazonaws.com/v1/auth/callback/cloud" };
+
+  it("Cognito (cloud): a plain sign-in sends neither; fresh sends max_age=0 and the account picker; adding back sends the account picker only", async () => {
+    const h = identityHarness({ slack: false, cloud: {}, oidcUsers: [priya] });
+    const cloudProvider = h.deps.providers.cloud!;
+    const common = { response_type: "code", scope: "openid email profile", client_id: "agentx-developers", state: "s1", nonce: "n1", redirect_uri: base.redirectUri };
+    expect(paramsOf(await cloudProvider.authorizeUrl(base))).toEqual(common);
+    expect(paramsOf(await cloudProvider.authorizeUrl({ ...base, freshSignIn: true }))).toEqual({ ...common, max_age: "0", prompt: "select_account" });
+    expect(paramsOf(await cloudProvider.authorizeUrl({ ...base, chooseAccount: true }))).toEqual({ ...common, prompt: "select_account" });
+    expect(paramsOf(await cloudProvider.authorizeUrl({ ...base, chooseAccount: true, freshSignIn: true }))).toEqual({ ...common, max_age: "0", prompt: "select_account" });
+    // Never prompt=login: Cognito would forward it to Google, which documents only none, consent and select_account.
+    expect(await cloudProvider.authorizeUrl({ ...base, freshSignIn: true })).not.toContain("prompt=login");
+  });
+
+  it("company OpenID Connect: the same two parameters", async () => {
+    const h = identityHarness({ slack: false, oidc: {}, oidcUsers: [priya] });
+    const company = h.deps.providers.oidc!;
+    const common = { response_type: "code", scope: "openid email profile", client_id: "agentx-developers", state: "s1", nonce: "n1", redirect_uri: base.redirectUri };
+    expect(paramsOf(await company.authorizeUrl(base))).toEqual(common);
+    expect(paramsOf(await company.authorizeUrl({ ...base, freshSignIn: true }))).toEqual({ ...common, max_age: "0", prompt: "select_account" });
+    expect(paramsOf(await company.authorizeUrl({ ...base, chooseAccount: true }))).toEqual({ ...common, prompt: "select_account" });
+  });
+
+  it("GitHub: only prompt=select_account, for a fresh sign-in and for adding back; never login or max_age", async () => {
+    const h = identityHarness({ slack: false, github: { users: [octo] } });
+    const github = h.deps.providers.github!;
+    const common = { client_id: "Iv1.0123456789abcdef", redirect_uri: base.redirectUri, scope: "read:user user:email", state: "s1" };
+    expect(paramsOf(await github.authorizeUrl(base))).toEqual(common);
+    expect(paramsOf(await github.authorizeUrl({ ...base, freshSignIn: true }))).toEqual({ ...common, prompt: "select_account" });
+    expect(paramsOf(await github.authorizeUrl({ ...base, chooseAccount: true }))).toEqual({ ...common, prompt: "select_account" });
+  });
+
+  it("the link flow's redirect asks each provider for the account picker, and a plain sign-in does not", async () => {
+    const { h, github } = await removedCloud();
+    const started = await startLink(h, github.token, "cloud");
+    const url = new URL(String(started.body.authorizeUrl));
+    const toCloud = await h.http(httpEvent("GET", url.pathname + url.search));
+    expect(paramsOf(toCloud.headers.location!)).toMatchObject({ prompt: "select_account" });
+    expect(paramsOf(toCloud.headers.location!)).not.toHaveProperty("max_age");
+  });
+
+  it("the link flow's redirect to GitHub asks for the account picker", async () => {
+    const h = identityHarness({ cloud: {}, oidcUsers: [priya], github: { users: [octo] } });
+    const cloud = await signIn(h, "cloud", priya.sub);
+    await signIn(h, "github", "4711");
+    advance(h, 1000);
+    expect((await brokerCall(h, "DELETE", "/v1/app/me/identities/github", cloud.token)).status).toBe(200);
+    const started = await startLink(h, cloud.token, "github");
+    expect(started.status).toBe(200);
+    const url = new URL(String(started.body.authorizeUrl));
+    const toGithub = await h.http(httpEvent("GET", url.pathname + url.search));
+    expect(paramsOf(toGithub.headers.location!)).toMatchObject({ prompt: "select_account" });
+    expect(paramsOf(toGithub.headers.location!)).not.toHaveProperty("max_age");
+  });
+});
+
+describe("the provider's auth_time (where the ID token carries one)", () => {
+  const authTimeSeconds = (offsetSeconds: number) => Math.floor(T0 / 1000) + offsetSeconds;
+
+  async function cloudSessionAfter(auth_time: number | undefined) {
+    const user: FakeOidcUser = { ...priya, ...(auth_time === undefined ? {} : { auth_time }) };
+    const h = identityHarness({ cloud: {}, oidcUsers: [user], github: { users: [octo] } });
+    // The email-code account first (its own sign-in, which cannot be removed), then the GitHub account linked to it by the verified email.
+    const cloud = await signIn(h, "cloud", priya.sub);
+    const github = await signIn(h, "github", "4711");
+    return { h, github, cloud, sessionOf: (token: string) => h.db.get(`SESSION#${String(claimsOf(token).sid)}`, "META")! };
+  }
+
+  it("a session records the provider's auth_time as its sign-in time when that is older than the callback", async () => {
+    const { sessionOf, cloud } = await cloudSessionAfter(authTimeSeconds(-3600));
+    expect(sessionOf(cloud.token)).toMatchObject({ authTime: new Date(T0 - 3_600_000).toISOString() });
+  });
+
+  it("a stale auth_time makes the sign-in not fresh: the session cannot be used to change sign-in methods", async () => {
+    const { h, cloud } = await cloudSessionAfter(authTimeSeconds(-(FRESH_SIGN_IN_SECONDS + 5)));
+    advance(h, 1000);
+    // Removing GitHub needs a fresh sign-in with another method: the email-code session signed in at the provider an hour ago.
+    const refused = await brokerCall(h, "DELETE", "/v1/app/me/identities/github", cloud.token);
+    expect(refused.status).toBe(403);
+    expect(errorOf(refused)).toEqual({ code: "REAUTH_REQUIRED", message: REAUTH_TO_CHANGE_METHODS });
+    expect(h.db.get(signInIdentityKey(githubId))).not.toHaveProperty("unlinkedFrom");
+  });
+
+  it("an auth_time inside the window is fresh, to the second, and counts from the provider's time", async () => {
+    const { h, cloud } = await cloudSessionAfter(authTimeSeconds(-(FRESH_SIGN_IN_SECONDS - 30)));
+    advance(h, 30_000);
+    expect((await brokerCall(h, "DELETE", "/v1/app/me/identities/github", cloud.token)).status).toBe(200);
+  });
+
+  it("an auth_time in the future never makes a sign-in newer than the callback", async () => {
+    const { sessionOf, cloud } = await cloudSessionAfter(authTimeSeconds(3600));
+    expect(sessionOf(cloud.token)).toMatchObject({ authTime: new Date(T0).toISOString() });
+  });
+
+  it("a token with no auth_time (GitHub has no ID token at all) is fresh from the callback, as before", async () => {
+    const { sessionOf, cloud, github } = await cloudSessionAfter(undefined);
+    expect(sessionOf(cloud.token)).toMatchObject({ authTime: new Date(T0).toISOString() });
+    expect(sessionOf(github.token)).toMatchObject({ authTime: new Date(T0).toISOString() });
+  });
+
+  it("a stale auth_time on a fresh sign-in is logged, so the operator can see the provider ignored the request", async () => {
+    const user: FakeOidcUser = { ...priya, auth_time: authTimeSeconds(-3600) };
+    const h = identityHarness({ slack: false, cloud: {}, oidcUsers: [user] });
+    const location = await h.signIn("cloud", priya.sub, { query: { fresh: "1" } });
+    expect(location.searchParams.get("code")).not.toBeNull();
+    expect(h.logs).toContainEqual({ event: "signin.fresh_sign_in_not_fresh", method: "cloud" });
   });
 });
 
@@ -442,6 +564,29 @@ describe("adding a removed sign-in method back", () => {
     expect(h.db.get(signInIdentityKey(cloudId))).toMatchObject({ developerId: githubId });
     expect(h.logs).toContainEqual({ event: "signin.identity_link_notice_failed", provider: "cloud", error: "MessageRejected" });
     expect(JSON.stringify(h.logs)).not.toContain("priya@acme.dev");
+  });
+
+  it("a failure after the link was written still shows the success page and still sends the notice (the account's address is read again, then falls back to the sign-in's own)", async () => {
+    for (const failures of [1, Infinity]) {
+      const ses = fakeSes();
+      const { h, github } = await removedCloud({ ses });
+      const started = await startLink(h, github.token, "cloud");
+      const original = h.deps.store.getDeveloper.bind(h.deps.store);
+      let linked = false;
+      let failed = 0;
+      const relink = h.deps.store.relinkIdentity.bind(h.deps.store);
+      vi.spyOn(h.deps.store, "relinkIdentity").mockImplementation(async (input) => { const result = await relink(input); linked = true; return result; });
+      vi.spyOn(h.deps.store, "getDeveloper").mockImplementation(async (id) => {
+        if (linked && failed < failures) { failed += 1; throw Object.assign(new Error("ThrottlingException"), { name: "ThrottlingException" }); }
+        return original(id);
+      });
+      const page = await finishLink(h, String(started.body.authorizeUrl), "cloud", priya.sub);
+      expect(page.statusCode).toBe(200);
+      expect(page.body).toContain("Sign-in method added back");
+      expect(h.db.get(signInIdentityKey(cloudId))).toMatchObject({ developerId: githubId });
+      expect(ses.sent).toHaveLength(2);
+      expect(ses.sent[1]!.input.Destination).toEqual({ ToAddresses: ["priya@acme.dev"] });
+    }
   });
 
   it("a person cancelling at the provider links nothing", async () => {

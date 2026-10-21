@@ -621,10 +621,11 @@ export class DeveloperSignInStore {
     }
   }
 
-  async issueCode(input: { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; codeChallenge: string; redirectUri: string }): Promise<string> {
+  /** `authTime`: when the person signed in at the provider, if the provider says it was before this answer (its `auth_time`); else now. */
+  async issueCode(input: { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; authTime?: string; codeChallenge: string; redirectUri: string }): Promise<string> {
     const code = randomToken("agxc_");
-    // The code is issued the moment the provider has answered, so this is when the person signed in interactively.
-    const record: CodeRecord = { ...input, authTime: this.iso(), expiresAt: this.seconds() + DEVELOPER_CODE_SECONDS };
+    // The code is issued the moment the provider has answered, so this is when the person signed in interactively (unless the provider says earlier).
+    const record: CodeRecord = { ...input, authTime: input.authTime ?? this.iso(), expiresAt: this.seconds() + DEVELOPER_CODE_SECONDS };
     await this.put({ pk: `CODE#${sha256Hex(code)}`, sk: META, entityType: "AUTH_CODE", ...record }, "attribute_not_exists(pk)");
     return code;
   }
