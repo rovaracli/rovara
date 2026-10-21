@@ -46,6 +46,7 @@ import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolv
 import type { ApprovalDependencies } from "./approvals.js";
 import { readGuardrails, readGuardrailsWithRevision, requireBaseEnabled } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
+import { addToRoster, checkRosterChange, listRoster, removeFromRoster, rosterAgentView, type RosterEntry } from "./roster.js";
 import type { SkillRecord } from "./skills.js";
 import { updateAvailable, type AgentDraft, type AgentRecord, type AgentVersion, type BuiltinSettings, type RequestMark } from "./store.js";
 
@@ -587,8 +588,34 @@ async function putGuardrails(deps: AgentRouteDependencies, caller: AgentCaller, 
   return result.applied ? result.value : waiting(result);
 }
 
+// ---- project rosters (Task 10)
+
+/** Which agents work on a project. */
+async function getRoster(deps: AgentRouteDependencies, caller: AgentCaller, project: string): Promise<Shown> {
+  return { agents: await listRoster(deps, caller, project) };
+}
+
+async function putRosterAgent(deps: AgentRouteDependencies, caller: AgentCaller, project: string, agentId: AgentId, body: unknown): Promise<Shown> {
+  const input = parseBody(RequestOnlySchema, body);
+  const agent = await checkRosterChange(deps, caller, project, { add: agentId });
+  // The project is part of what was asked, so the same request id for another project is a different request.
+  const { mark, replay } = await markRequest(deps, caller, "roster-add", `${project}/${agentId}`, input);
+  const entry = replay === undefined ? await addToRoster(deps, { orgId: caller.orgId, project, agentId, by: caller.developerId, request: mark }) : replay.result as RosterEntry;
+  const shown = await rosterAgentView(deps, caller, entry);
+  return { agent: shown ?? { agentId: agent?.agentId ?? agentId, addedBy: entry.addedBy, addedAt: entry.addedAt } };
+}
+
+async function deleteRosterAgent(deps: AgentRouteDependencies, caller: AgentCaller, project: string, agentId: AgentId, body: unknown): Promise<Shown> {
+  const input = parseBody(RequestOnlySchema, body);
+  await checkRosterChange(deps, caller, project, { remove: agentId });
+  const { mark, replay } = await markRequest(deps, caller, "roster-remove", `${project}/${agentId}`, input);
+  if (replay !== undefined) return replay.result as Shown;
+  return { removed: await removeFromRoster(deps, { orgId: caller.orgId, project, agentId, request: mark }) };
+}
+
 // ---- routing
 
+const PROJECT_AGENTS_PATH = /^\/v1\/app\/projects\/([^/]+)\/agents(?:\/([^/]+))?$/;
 const SKILL_PATH = /^\/v1\/app\/skills(?:\/([^/]+)(?:\/(content))?)?$/;
 const AGENT_PATH = /^\/v1\/app\/agents(?:\/([^/]+)(?:\/([a-z-]+)(?:\/([0-9]{1,6}))?)?)?$/;
 
@@ -609,6 +636,20 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
   if (url.pathname === GUARDRAILS_PATH) {
     if (request.method === "GET") return readGuardrailsWithRevision(deps, caller.orgId);
     if (request.method === "PUT") return putGuardrails(deps, caller, jsonBody(request));
+    throw agentXError("NOT_FOUND", "route not found");
+  }
+  const projectAgents = PROJECT_AGENTS_PATH.exec(url.pathname);
+  if (projectAgents !== null) {
+    let project: string;
+    try { project = decodeURIComponent(projectAgents[1]!); } catch { throw agentXError("PROJECT_NOT_FOUND", "that is not a valid AgentX project name"); }
+    const rawId = projectAgents[2];
+    if (rawId === undefined) {
+      if (request.method === "GET") return getRoster(deps, caller, project);
+    } else if (request.method === "PUT") {
+      return putRosterAgent(deps, caller, project, agentIdOf(rawId), jsonBody(request));
+    } else if (request.method === "DELETE") {
+      return deleteRosterAgent(deps, caller, project, agentIdOf(rawId), jsonBody(request));
+    }
     throw agentXError("NOT_FOUND", "route not found");
   }
   const skillPath = SKILL_PATH.exec(url.pathname);

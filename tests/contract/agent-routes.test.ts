@@ -1078,13 +1078,17 @@ describe("Plan 3's paths and Plan 2's (PF24)", () => {
   it("sends a project's agents, AI, spend and connectors paths to the agent router before Plan 2's project routes", async () => {
     const { call } = await setup();
     for (const path of [
-      "/v1/app/projects/web/agents", "/v1/app/projects/web/ai", "/v1/app/projects/web/spend", "/v1/app/projects/web/connectors",
+      "/v1/app/projects/web/ai", "/v1/app/projects/web/spend", "/v1/app/projects/web/connectors",
       "/v1/app/projects/web/connectors/github/comment-triggers", "/v1/app/budget", "/v1/app/org/spend",
     ]) {
       const reply = await call(MAYA, "GET", path);
       expect(reply.status, path).toBe(404);
       expect(errorOf(reply).message, path).toBe("that isn't available yet");
     }
+    // A project's agents are Task 10's: the agent router answers them (Maya has no role on `web` here).
+    const roster = await call(MAYA, "GET", "/v1/app/projects/web/agents");
+    expect(roster.status).toBe(404);
+    expect(errorOf(roster)).toEqual({ code: "PROJECT_NOT_FOUND", message: "project `web` doesn't exist in this AgentX" });
     // Plan 2's own paths are still its own.
     expect(errorOf(await call(MAYA, "GET", "/v1/app/projects/nope/unknown")).message).toBe("route not found");
     expect((await call(MAYA, "GET", "/v1/app/me")).status).toBe(200);
