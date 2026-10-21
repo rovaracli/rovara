@@ -631,7 +631,7 @@ async function feedbackReviewScenario(): Promise<Captured> {
   workflow = collectWorkflowFeedbackBundles(workflow, { bundleRefs: [{ ...without(bundle, "sourceDeliveryIds", "comments"), sha256: bundleDigest, objectKey: bundleKey, comments: bundle.comments }], threadObservations: [] }, now);
   harness.db.set({ ...task, workflow, updatedAt: now });
   const routeDeps = { documentClient: harness.db, tableName: "state", actions: harness.actions, orgId: TEST_ORG,
-    checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.parse(now) };
+    checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.parse(now) };
   if (!await startTaskWorkflowFeedbackReviewFromWebhook(routeDeps, taskId)) throw new Error("the feedback critic did not start");
   return captureOperation(broker.handles, workspaceId, broker.operationWhere(workspaceId, (item) => item.workflowMode === "FEEDBACK_REVIEW"), taskId, { end: "FAILED" });
 }

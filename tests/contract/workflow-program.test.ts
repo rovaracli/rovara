@@ -433,7 +433,7 @@ describe("the broker following a program", () => {
     expect(String(invocationOf(harness, securityReview!.id).payload.prompt)).toContain("read-only security review");
     const owner = harness.db.get(`DEVTASK#${taskId}`, "META") as unknown as { developerId: string };
     const pageNow = await getTaskDocumentView({ orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
-      checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
+      checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() },
     { orgId: TEST_ORG, developerId: owner.developerId } as never, taskId);
     expect(pageNow).toMatchObject({ status: "The security review is running", nextStep: "The next step of the sequence starts when the review passes." });
 
@@ -576,7 +576,7 @@ describe("the broker following a program", () => {
       // The task page and the finished card say it finished, never that the plan was rejected.
       const record = harness.db.get(`DEVTASK#${taskId}`, "META") as unknown as { developerId: string };
       const page = await getTaskDocumentView({ orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
-        checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
+        checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() },
       { orgId: TEST_ORG, developerId: record.developerId } as never, taskId);
       expect(page).toMatchObject({ status: "Finished every step", nextStep: "The changes are kept in this task's workspace until you close the task." });
     });

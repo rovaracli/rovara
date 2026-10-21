@@ -756,10 +756,10 @@ describe("every task launch checks that the creator is still a member (ruling R6
   // Only reached from startTaskWorkflowPublicationFromSystem, which checks first.
   const CHECKED_BY_CALLER = ["startTaskWorkflowPullRequestUpdate"];
 
-  it("finds the nine acceptTask call sites and the pull request call sites, and every one is checked first", () => {
+  it("finds the ten acceptTask call sites and the pull request call sites, and every one is checked first", () => {
     const launching = functions.filter((chunk) => /deps\.actions\.(acceptTask|acceptPullRequest|acceptPullRequestUpdate)\(/.test(chunk));
     expect(launching.length).toBeGreaterThanOrEqual(9);
-    expect(source.match(/deps\.actions\.acceptTask\(/g)).toHaveLength(9);
+    expect(source.match(/deps\.actions\.acceptTask\(/g)).toHaveLength(10);
     for (const chunk of launching) {
       const name = /function (\w+)/.exec(chunk)?.[1] ?? "?";
       if (CHECKED_BY_CALLER.includes(name)) continue;
