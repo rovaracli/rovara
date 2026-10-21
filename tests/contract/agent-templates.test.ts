@@ -57,7 +57,9 @@ describe("built-in agents", () => {
     expect(recipe.allowMentions, id).toBe(false);
     expect(recipe.chain, id).toEqual([{ agentId: id, name: BUILTIN_AGENTS[id].name, version: entry.version, builtin: true }]);
     expect(builtinRecipe(id, entry.version), id).toEqual(recipe);
-    expect(entry.digest, id).toBe(recipeDigest(recipe));
+    expect(entry.digest, id).toBe(recipeDigest(builtinRecipe(id, entry.version)));
+    expect(Object.isFrozen(recipe) && Object.isFrozen(recipe.steps) && Object.isFrozen(recipe.tools), `${id} recipe is frozen`).toBe(true);
+    expect(() => { recipe.tools.push({ connector: { type: "mcp" }, access: "read" }); }, id).toThrow(TypeError);
     expect(entry.releasedIn.length, id).toBeGreaterThan(0);
     expect(entry.notes.length, id).toBeGreaterThan(0);
   });
@@ -225,5 +227,12 @@ describe("template instructions", () => {
     expect(triage).toMatch(/label/i);
     expect(triage).toMatch(/`rovara`/);
     expect(instructionTexts(recipeOf("service-reviewer")).join("\n")).toMatch(/new tickets? labelled `rovara`/);
+    const serviceText = instructionTexts(recipeOf("service-reviewer")).join("\n");
+    expect(serviceText).toMatch(/comments on tickets in the tracker/);
+    expect(serviceText).not.toMatch(/comments on tickets and issues/);
+    expect(serviceText).toMatch(/never write to GitHub/);
+    const reviewText = instructionTexts(recipeOf("code-reviewer")).join("\n");
+    expect(reviewText).toMatch(/request for changes/);
+    expect(reviewText).toMatch(/Never approve a pull request and never merge it\./);
   });
 });
