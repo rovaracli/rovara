@@ -127,12 +127,6 @@ export class CloudIdentity extends Construct {
       },
       supportedIdentityProviders: [cognito.UserPoolClientIdentityProvider.COGNITO, cognito.UserPoolClientIdentityProvider.GOOGLE],
       preventUserExistenceErrors: true,
-      // The verified email is what links one person's sign-in methods (broker developer/identities.ts), so a signed-in user must not
-      // be able to change it through the pool: email and email_verified are left out of the attributes this client may write.
-      writeAttributes: new cognito.ClientAttributes().withStandardAttributes({
-        fullname: true, givenName: true, familyName: true, middleName: true, nickname: true, preferredUsername: true,
-        profilePicture: true, locale: true, timezone: true, gender: true, birthdate: true, website: true,
-      }),
       accessTokenValidity: Duration.hours(1),
       idTokenValidity: Duration.hours(1),
       refreshTokenValidity: Duration.days(30),

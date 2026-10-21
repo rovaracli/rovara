@@ -41,7 +41,11 @@ export interface SignInOrg {
 }
 
 const codeOf = (error: unknown) => (error as { code?: unknown }).code;
-const sameEmail = (a: string, b: string) => normalizeEmail(a).email === normalizeEmail(b).email;
+/** The same address on both sides, and only for ASCII ones: Unicode folding must not make two different addresses equal (U+212A is "k"). */
+const sameEmail = (a: string, b: string) => {
+  const [left, right] = [normalizeEmail(a), normalizeEmail(b)];
+  return left.ascii && right.ascii && left.email === right.email;
+};
 
 /** The org and role this sign-in belongs to, creating or joining one on a first sign-in. */
 export async function resolveOrgOnSignIn(deps: ResolveOrgOnSignInDependencies, input: ResolveOrgOnSignInInput): Promise<SignInOrg> {
@@ -84,6 +88,8 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
       return await attempt(cloud ? indexedEmail : undefined);
     } catch (error) {
       if (!cloud || indexedEmail === undefined || codeOf(error) !== "ALREADY_IN_ORG" || await winnerOfRace() !== undefined) throw error;
+      // This can leave one person with two orgs; the line lets the duplicate be found and healed.
+      (deps.log ?? (() => undefined))({ event: "signin.email_pointer_conflict", developerId: input.developerId });
       return attempt(undefined);
     }
   };

@@ -4,6 +4,8 @@
 import { randomUUID } from "node:crypto";
 import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  agentXError,
+  normalizeEmail,
   DEVELOPER_AUTH_REQUEST_SECONDS,
   DEVELOPER_CODE_SECONDS,
   DEVELOPER_SESSION_SECONDS,
@@ -65,9 +67,9 @@ interface CancellationReason { Code?: string }
 
 export const META = "META";
 
-/** E8: the email index's key, the SHA-256 of the trimmed, lowercased email, so no email is stored as a key. */
+/** E8: the email index's key, the SHA-256 of the normalized email (normalizeEmail, the same as the org email pointer), so no email is stored as a key. */
 export function emailIndexKey(email: string): { pk: string; sk: "META" } {
-  return { pk: `EMAIL#${sha256Hex(email.trim().toLowerCase())}`, sk: META };
+  return { pk: `EMAIL#${sha256Hex(normalizeEmail(email).email)}`, sk: META };
 }
 export function signInIdentityKey(identityKey: string): { pk: string; sk: "META" } {
   return { pk: `SIGNIN_IDENTITY#${identityKey}`, sk: META };
@@ -269,7 +271,7 @@ export class DeveloperSignInStore {
     if (current === undefined) return undefined;
     if (isActiveLink(current, identityKey)) return { developerId: current.developerId, created: false };
     if (own) return undefined;
-    throw new Error("this sign-in identity was unlinked and can only start its own developer");
+    throw agentXError("AUTH_REQUIRED", "this sign-in was unlinked from that account and can only start its own; run agentx login again");
   }
 
   /** The identities linked to a developer, oldest link first. Issuer and subject never leave the store. */

@@ -362,7 +362,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
         ...(slackUserId === undefined ? {} : { slackUserId }),
       });
     }
-    if (resolved.link !== "new-self") await store.touchIdentity(identityKey);
+    // A link written just now already carries this sign-in's time.
+    if (resolved.link === "existing") await store.touchIdentity(identityKey);
     // A first sign-in puts the person in an org (ruling R2); the tokens and the browser session carry it from here.
     const org = await resolveOrgOnSignIn(
       { orgs: deps.orgs, ...(deps.singleOrgId === undefined ? {} : { singleOrgId: deps.singleOrgId }), singleOrgName: config.env, log: deps.log,

@@ -126,13 +126,31 @@ describe("resolveOrgOnSignIn", () => {
     expect(slack.orgId).not.toBe(single);
   });
 
-  it("rule 3: a cloud sign-in whose email pointer is another developer's still gets its own org, and the pointer stays (no lock-out after a race)", async () => {
+  it("rule 3: the loser of a two-route first sign-in race ends with its own second org, the email pointer kept by the first, and a log line to heal it by", async () => {
     const { state, orgs } = setup();
-    await orgs.createOrgWithOwner({ name: "A", developerId: dev("a"), email: "maya@example.com" });
-    const result = await resolveOrgOnSignIn({ orgs }, cloudInput(dev("c"), { email: "maya@example.com" }));
+    const first = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a"), email: "maya@example.com" });
+    const logs: Array<Record<string, unknown>> = [];
+    const result = await resolveOrgOnSignIn({ orgs, log: (entry) => logs.push(entry) }, cloudInput(dev("c"), { email: "maya@example.com" }));
     expect(result.role).toBe("owner");
+    expect(result.orgId).not.toBe(first);
     expect(await orgs.orgForDeveloper(dev("c"))).toEqual(result);
-    expect(state.get(orgEmailKey("maya@example.com"))).toMatchObject({ developerId: dev("a") });
+    expect(state.get(orgEmailKey("maya@example.com"))).toMatchObject({ developerId: dev("a"), orgId: first });
+    expect(logs).toEqual([{ event: "signin.email_pointer_conflict", developerId: dev("c") }]);
+    // The next sign-in is an ordinary existing member: no retry, no log.
+    logs.length = 0;
+    expect(await resolveOrgOnSignIn({ orgs, log: (entry) => logs.push(entry) }, cloudInput(dev("c"), { email: "maya@example.com" }))).toEqual(result);
+    expect(logs).toEqual([]);
+  });
+
+  it("rule 2: an invite written for kate@provider.dev is not satisfied by a verified address that only folds to it (U+212A KELVIN SIGN)", async () => {
+    const { state, orgs } = setup();
+    const org = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a") });
+    const { token } = await orgs.createInvite({ orgId: org, createdBy: dev("a"), role: "member", email: "kate@provider.dev" });
+    const result = await resolveOrgOnSignIn({ orgs }, cloudInput(dev("k"), { email: "\u212Aate@provider.dev", inviteToken: token }));
+    expect(result).toMatchObject({ role: "owner", inviteError: "INVITE_INVALID" });
+    expect(result.orgId).not.toBe(org);
+    expect(inviteAccepted(state, token)).toBe(false);
+    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("e"), { email: "Kate@Provider.dev", inviteToken: token }))).toEqual({ orgId: org, role: "member" });
   });
 
   it("rule 2: an invite accepted while the email pointer is another developer's still joins, and the pointer stays", async () => {

@@ -131,12 +131,16 @@ describe("cloud identity infrastructure", () => {
     expect(callback).toContain("Fn::GetAtt");
   });
 
-  it("does not let the app client write email or email_verified, which link one person's sign-in methods", () => {
+  it("leaves every IdP-mapped attribute writable: a write list that omits email_verified fails Google sign-in", () => {
     const [, client] = resourcesOf(cloud(), "AWS::Cognito::UserPoolClient")[0]!;
-    const writable = client.Properties.WriteAttributes as string[];
-    expect(writable.length).toBeGreaterThan(0);
-    expect(writable).not.toContain("email");
-    expect(writable).not.toContain("email_verified");
+    const provider = resourcesOf(cloud(), "AWS::Cognito::UserPoolIdentityProvider")[0]![1];
+    const mapped = Object.keys(provider.Properties.AttributeMapping as Record<string, unknown>);
+    expect(mapped).toEqual(expect.arrayContaining(["email", "email_verified"]));
+    // No explicit list means every attribute is writable (the default); an explicit one must name every mapped attribute.
+    const writable = client.Properties.WriteAttributes as string[] | undefined;
+    if (writable !== undefined) for (const attribute of mapped) expect(writable).toContain(attribute);
+    // Email stays safe without it: the client has a secret, its scopes exclude aws.cognito.signin.user.admin, and the sign-in links only a verified email.
+    expect(client.Properties.AllowedOAuthScopes).not.toContain("aws.cognito.signin.user.admin");
   });
 
   it("stores the client secret as {clientSecret} in Secrets Manager under the environment's name", () => {
