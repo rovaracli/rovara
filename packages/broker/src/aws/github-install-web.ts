@@ -4,7 +4,7 @@
 import { agentXError } from "@agentx/contracts";
 import {
   clearedConnectCookie, completeGithubConnect, confirmGithubConnect, connectCookie, GITHUB_CONNECT_COOKIE,
-  type GithubConnectionDependencies,
+  type ConnectOutcome, type GithubConnectionDependencies,
 } from "../org/github-connection.js";
 import { githubConnectPage } from "../org/github-connect-page.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
@@ -21,9 +21,13 @@ export const isGithubInstallPath = (pathname: string) => pathname === GITHUB_INS
 export async function routeGithubInstall(deps: GithubConnectionDependencies | undefined, request: AdaptedHttpRequest, url: URL): Promise<WebResponse> {
   if (deps === undefined || !deps.cloud) throw agentXError("NOT_FOUND", "route not found");
   if (request.method === "GET" && url.pathname === GITHUB_INSTALL_CALLBACK_PATH) {
+    // A callback is always a browser navigation: a failure the flow did not map (a store error, say) is the expired page, not raw JSON.
     const result = await completeGithubConnect(deps, {
       code: url.searchParams.get("code") ?? undefined, installation_id: url.searchParams.get("installation_id") ?? undefined,
       setup_action: url.searchParams.get("setup_action") ?? undefined, state: url.searchParams.get("state") ?? undefined,
+    }).catch((error: unknown): ConnectOutcome => {
+      deps.log?.({ event: "github.connect_callback_failed", error: error instanceof Error ? error.name : "unknown" });
+      return { outcome: "expired" };
     });
     const page = githubConnectPage(result.outcome, {
       ...(result.accountLogin === undefined ? {} : { accountLogin: result.accountLogin }),

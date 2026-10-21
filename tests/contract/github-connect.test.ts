@@ -414,9 +414,30 @@ describe("the callback and the confirmation", () => {
       if (change === "demote") w.db.set({ ...w.db.get(orgMemberKey(TEST_ORG, OWNER))!, role: "member" });
       if (change === "remove") w.db.delete(orgMemberKey(TEST_ORG, OWNER));
       if (change === "close") w.db.set({ ...w.db.get(orgMetaKey(TEST_ORG))!, closedAt: "2026-10-21T00:00:00.000Z" });
-      expect((await confirmGithubConnect(w.deps, { connect: started.stateHash, decision: "connect" }, result.confirmToken, CELL)).outcome).toBe("expired");
+      expect((await confirmGithubConnect(w.deps, { connect: started.stateHash, decision: "connect" }, result.confirmToken, CELL)).outcome).toBe("not_allowed");
       expect(installationItems(w.db)).toEqual([]);
     }
+  });
+
+  it("an Origin of \"null\" is refused like any other foreign Origin, and nothing is consumed", async () => {
+    const w = standard();
+    const started = await start(w);
+    const result = await completeGithubConnect(w.deps, callbackQuery(started.state));
+    await expect(confirmGithubConnect(w.deps, { connect: started.stateHash, decision: "connect" }, result.confirmToken, "null")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect((await confirmGithubConnect(w.deps, { connect: started.stateHash, decision: "connect" }, result.confirmToken, CELL)).outcome).toBe("connected");
+  });
+
+  it("a confirmation that fails for a reason other than a condition is the expired page, not a thrown error", async () => {
+    const w = standard();
+    const started = await start(w);
+    const result = await completeGithubConnect(w.deps, callbackQuery(started.state));
+    const send = w.deps.documentClient.send.bind(w.deps.documentClient);
+    w.deps.documentClient.send = (async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === "TransactWriteCommand") throw Object.assign(new Error("slow down"), { name: "ThrottlingException" });
+      return send(command);
+    });
+    expect((await confirmGithubConnect(w.deps, { connect: started.stateHash, decision: "connect" }, result.confirmToken, CELL)).outcome).toBe("expired");
+    expect(installationItems(w.db)).toEqual([]);
   });
 
   it("the trial already claimed by this GitHub account is connected_trial_used, and the binding is written", async () => {
@@ -509,6 +530,21 @@ describe("the callback and the confirmation", () => {
   });
 });
 
+describe("the callback route", () => {
+  it("answers a failure the flow did not map with the expired page, not raw JSON", async () => {
+    const { routeGithubInstall } = await import("../../packages/broker/src/aws/github-install-web.js");
+    const w = standard();
+    const started = await start(w);
+    const deps = { ...w.deps, orgs: { getOrg: async () => { throw Object.assign(new Error("boom"), { name: "ThrottlingException" }); } } };
+    const request = { method: "GET", path: "/v1/github/install/callback", headers: {}, requestId: "r" };
+    const page = await routeGithubInstall(deps, request, new URL(`https://cell.example/v1/github/install/callback?code=code1&installation_id=501&setup_action=install&state=${started.state}`));
+    expect(page.statusCode).toBe(410);
+    expect(page.headers["content-type"]).toContain("text/html");
+    expect(page.body).toContain("This connect link has expired.");
+    expect(w.logs).toContainEqual({ event: "github.connect_callback_failed", error: "ThrottlingException" });
+  });
+});
+
 describe("the cookie", () => {
   it("is a __Host- cookie that is Secure, HttpOnly, SameSite=Strict, for the whole host, for ten minutes; clearing it expires it", () => {
     expect(connectCookie("tok")).toBe("__Host-rovara_gh_connect=tok; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=600");
@@ -595,6 +631,8 @@ describe("through the broker", () => {
     expect(callback.body).toContain(`name="connect" value="${sha(state)}"`);
     expect(callback.body).toMatch(/>Connect<\/button>.*>Cancel<\/button>/);
     expect(callback.body).not.toContain(state);
+    // The page's own form post must carry its real Origin, so the page may not say no-referrer (a browser would send "Origin: null").
+    expect(callback.headers["referrer-policy"]).toBe("same-origin");
     const set = callback.headers["set-cookie"]!;
     expect(set).toMatch(/^__Host-rovara_gh_connect=[A-Za-z0-9_-]{43}; Secure; HttpOnly; SameSite=Strict; Path=\/; Max-Age=600$/);
     expect(b.db.get(githubInstallationKey(501))).toBeUndefined();
@@ -627,6 +665,8 @@ describe("through the broker", () => {
     const form = `connect=${sha(state)}&decision=connect`;
     expect((await b.publicCall("POST", "/v1/github/install/confirm", { origin: "https://evil.example", cookie: `__Host-rovara_gh_connect=${token}` }, form)).statusCode).toBe(400);
     expect((await b.publicCall("POST", "/v1/github/install/confirm", { cookie: `__Host-rovara_gh_connect=${token}` }, form)).statusCode).toBe(400);
+    // A browser whose page said no-referrer posts "Origin: null": still refused, never accepted as the cell.
+    expect((await b.publicCall("POST", "/v1/github/install/confirm", { origin: "null", cookie: `__Host-rovara_gh_connect=${token}` }, form)).statusCode).toBe(400);
     expect((await b.publicCall("POST", "/v1/github/install/confirm", { origin: CELL }, form)).statusCode).toBe(410);
     expect((await b.publicCall("POST", "/v1/github/install/confirm", { origin: CELL, cookie: `__Host-rovara_gh_connect=${token}` }, "connect=zz&decision=maybe")).statusCode).toBe(400);
     expect(b.db.get(githubInstallationKey(501))).toBeUndefined();
@@ -671,6 +711,10 @@ describe("the pages", () => {
     expect(githubConnectPage("taken").statusCode).toBe(409);
     expect(text("not_yours")).toContain("<h1>Only the account&#39;s owner or an admin of the GitHub organization can connect it</h1>");
     expect(text("not_yours")).toContain("Ask an admin of acme on GitHub to run agentx github connect.");
+    expect(githubConnectPage("confirm", { accountLogin: "acme", orgName: "Acme", connectId: "a".repeat(64) }).headers["referrer-policy"]).toBe("same-origin");
+    expect(githubConnectPage("not_allowed", { orgName: "Acme" }).statusCode).toBe(403);
+    expect(text("not_allowed")).toContain("<h1>Nothing was connected</h1>");
+    expect(text("not_allowed")).toContain("The Rovara organization Acme was closed, or you are no longer its owner or admin. Ask an owner or admin of Acme to run agentx github connect.");
     expect(text("not_linked")).toContain("This connect link was started by someone else in Rovara, or your GitHub account isn&#39;t linked to your Rovara account. Sign in with GitHub (agentx login, then choose GitHub), then run agentx github connect yourself.");
   });
 });

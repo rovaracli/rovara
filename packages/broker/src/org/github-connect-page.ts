@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { GITHUB_INSTALLATION_TAKEN_MESSAGE } from "@agentx/contracts";
 import { escapeHtml, safeResponse, type WebResponse } from "../aws/web-session.js";
 
-export type ConnectPageKind = "confirm" | "connected" | "connected_trial_used" | "cancelled" | "requested" | "not_linked" | "not_yours" | "taken" | "expired";
+export type ConnectPageKind = "confirm" | "connected" | "connected_trial_used" | "cancelled" | "requested" | "not_linked" | "not_yours" | "not_allowed" | "taken" | "expired";
 
 export interface ConnectPageData {
   /** The GitHub account (login) the installation is on. */
@@ -54,6 +54,11 @@ function copyFor(kind: ConnectPageKind, data: ConnectPageData): PageCopy {
         status: 403, title: "Only the account's owner or an admin of the GitHub organization can connect it",
         body: [`Ask an admin of ${account} on GitHub to run agentx github connect.`],
       };
+    case "not_allowed":
+      return {
+        status: 403, title: "Nothing was connected",
+        body: [`The Rovara organization ${org} was closed, or you are no longer its owner or admin. Ask an owner or admin of ${org} to run agentx github connect.`],
+      };
     case "expired":
       return { status: 410, title: "This connect link has expired. Run agentx github connect again.", body: [] };
   }
@@ -61,7 +66,11 @@ function copyFor(kind: ConnectPageKind, data: ConnectPageData): PageCopy {
 
 const STYLE = ":root{color-scheme:light dark;font-family:system-ui,sans-serif}body{max-width:36rem;margin:0 auto;padding:clamp(1rem,4vw,2.5rem);line-height:1.55}h1{line-height:1.2;font-size:1.5rem}code{padding:.15rem .4rem;border:1px solid #888;border-radius:.35rem;overflow-wrap:anywhere}button{font:inherit;padding:.65rem 1rem;margin:.35rem .5rem .35rem 0;border-radius:.35rem;cursor:pointer}button:focus{outline:3px solid #478cff;outline-offset:2px}";
 
-/** One page, as a private response (no store, no referrer, a nonce-only policy). */
+/**
+ * One page, as a private response (no store, a nonce-only policy). The referrer policy is `same-origin`, not `no-referrer`: with
+ * `no-referrer` a browser sends `Origin: null` on the confirm form's post, which the strict Origin check on the confirm route refuses.
+ * Nothing is sent to another origin either way.
+ */
 export function githubConnectPage(kind: ConnectPageKind, data: ConnectPageData = {}): WebResponse {
   const copy = copyFor(kind, data);
   const nonce = randomBytes(18).toString("base64url");
@@ -71,5 +80,6 @@ export function githubConnectPage(kind: ConnectPageKind, data: ConnectPageData =
     : "";
   const next = copy.code === undefined ? "" : `<p>Next: <code>${escapeHtml(copy.code)}</code></p>`;
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style nonce="${nonce}">${STYLE}</style></head><body><main><h1>${title}</h1>${copy.body.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}${form}${next}</main></body></html>`;
-  return safeResponse(copy.status, html, nonce);
+  const response = safeResponse(copy.status, html, nonce);
+  return { ...response, headers: { ...response.headers, "referrer-policy": "same-origin" } };
 }

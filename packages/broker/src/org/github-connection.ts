@@ -63,7 +63,7 @@ export interface ConnectOutcome {
   /** With `confirm`: set in the `__Host-rovara_gh_connect` cookie, never in the page. */
   confirmToken?: string;
 }
-export type ConfirmOutcomeName = "connected" | "connected_trial_used" | "cancelled" | "taken" | "expired";
+export type ConfirmOutcomeName = "connected" | "connected_trial_used" | "cancelled" | "taken" | "not_allowed" | "expired";
 export interface ConfirmOutcome { outcome: ConfirmOutcomeName; orgName?: string; accountLogin?: string }
 
 export const GITHUB_CONNECT_COOKIE = "__Host-rovara_gh_connect";
@@ -270,6 +270,8 @@ async function exchangeCode(deps: GithubConnectionDependencies, client: { client
     body: new URLSearchParams({ client_id: client.clientId, client_secret: client.clientSecret, code }).toString(),
   });
   if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's token exchange failed with HTTP ${response.status}`);
+  // A GitHub App user token that expires comes with a refresh token (`ghr_`). It is dropped here, never stored or logged. Open question
+  // (check once on staging): whether revoking the access token below also invalidates the paired refresh token.
   const body = await response.json().catch(() => undefined) as { access_token?: unknown } | undefined;
   return typeof body?.access_token === "string" && body.access_token !== "" ? body.access_token : undefined;
 }
@@ -403,6 +405,7 @@ export async function confirmGithubConnect(
           TableName: deps.tableName, Item: { ...githubInstallationKey(pending.installationId), entityType: "GITHUB_INSTALLATION", ...record },
           ConditionExpression: "attribute_not_exists(pk) OR orgId = :org", ExpressionAttributeValues: { ":org": state.orgId },
         } },
+        // Unconditioned on purpose: a re-bind by the same org refreshes boundAt and the binder on both items (the global item's condition guards other orgs).
         { Put: { TableName: deps.tableName, Item: { ...orgGithubInstallationKey(state.orgId, pending.installationId), entityType: "ORG_GITHUB_INSTALLATION", ...record } } },
         { Update: {
           TableName: deps.tableName, Key: githubInstallationEverBoundKey(pending.installationId),
@@ -428,9 +431,11 @@ export async function confirmGithubConnect(
     }
     if (failed !== undefined && (failed.has(3) || failed.has(4))) {
       log(deps, { event: "github.connect_refused", orgId: state.orgId, installationId: pending.installationId, reason: "not_allowed_now" });
-      return { outcome: "expired", ...names };
+      return { outcome: "not_allowed", ...names };
     }
-    throw error;
+    // The state is already used, so the person starts over; a page says so, not raw JSON.
+    log(deps, { event: "github.connect_confirm_failed", orgId: state.orgId, error: errorName(error) });
+    return { outcome: "expired", ...names };
   }
   log(deps, { event: "github.connected", orgId: state.orgId, installationId: pending.installationId, accountType: pending.accountType });
 
