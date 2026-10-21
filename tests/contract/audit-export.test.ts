@@ -14,6 +14,8 @@ import { describe, expect, it } from "vitest";
 import { parseBundle, verifyBundle, type AuditBundleV1, type AuditRecordV1 } from "@rovara/audit-verifier";
 import { runCli } from "../../packages/audit-verifier/src/cli.js";
 import {
+  AUDIT_EXPORT_AVAILABLE_DAYS,
+  AUDIT_EXPORT_FILE_LIFECYCLE_DAYS,
   AUDIT_EXPORT_MAX_RECORDS,
   AUDIT_EXPORT_URL_SECONDS,
   AUDIT_FILTER_SCAN_MAX,
@@ -528,22 +530,43 @@ describe("runAuditExport", () => {
     expect(b.exportsBucket.calls).toStrictEqual([]);
   });
 
-  it("ready and its audit.exported item commit together: a transaction that fails leaves no file, no item and a running export that the retry finishes", async () => {
+  it("ready and its audit.exported item commit together: a commit that is refused (cancelled) leaves no file, no item and a running export that the retry finishes", async () => {
     const b = await world();
     const exportId = await started(b, { fromSeq: 1, toSeq: 12 });
     b.h.hooks.before = (command) => {
-      if (command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes("AUDIT_EXPORT#")) throw Object.assign(new Error("the process died"), { name: "ProcessDied" });
+      if (command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes("AUDIT_EXPORT#")) {
+        throw Object.assign(new Error("Transaction cancelled"), { name: "TransactionCanceledException", CancellationReasons: [{ Code: "TransactionConflict" }] });
+      }
     };
-    await expect(runAuditExport(b.deps, { orgId: A, exportId })).rejects.toMatchObject({ name: "ProcessDied" });
+    await expect(runAuditExport(b.deps, { orgId: A, exportId })).rejects.toMatchObject({ name: "TransactionCanceledException" });
     b.h.hooks.before = undefined;
     expect(b.h.db.get(`ORG#${A}#AUDIT_EXPORT#${exportId}`, "META")).toMatchObject({ status: "running" });
     expect(pendingItems(b)).toStrictEqual([]);
+    // The cancellation is definite: nothing was committed, so this run's own file is removed.
     expect(b.exportsBucket.objects.size).toBe(0);
     expect(b.exportsBucket.calls.map((call) => call.command)).toStrictEqual(["PutObject", "DeleteObject"]);
     // The platform's retry of the background invoke: the whole thing is made again.
     expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("ready");
     expect(b.exportsBucket.objects.size).toBe(1);
     expect(b.sqs.queue).toHaveLength(1);
+  });
+
+  it("any other commit error keeps the file, whatever the record shows, and rethrows so the platform retries: a late commit can never point at a deleted file", async () => {
+    const b = await world();
+    const exportId = await started(b, { fromSeq: 1, toSeq: 12 });
+    // The answer is lost; the record still reads running (the commit may yet land).
+    b.h.hooks.before = (command) => {
+      if (command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes("AUDIT_EXPORT#")) throw Object.assign(new Error("the process died"), { name: "ProcessDied" });
+    };
+    await expect(runAuditExport(b.deps, { orgId: A, exportId })).rejects.toMatchObject({ name: "ProcessDied" });
+    b.h.hooks.before = undefined;
+    expect(metaOf2b(b, exportId)).toMatchObject({ status: "running" });
+    expect(b.exportsBucket.calls.map((call) => call.command)).toStrictEqual(["PutObject"]);
+    expect(b.exportsBucket.objects.size).toBe(1);
+    // The retry writes a file of its own; the first stays an orphan for the lifecycle, and the ready record names the retry's.
+    expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("ready");
+    expect(b.exportsBucket.objects.size).toBe(2);
+    expect(b.exportsBucket.objects.has(fileKey(b, A, exportId))).toBe(true);
   });
 
   it("does not rebuild a finished export, ignores an unknown one, and never looks at another org's", async () => {
@@ -650,7 +673,7 @@ describe("runAuditExport: late, retried and ambiguous runs", () => {
     b.exportsBucket.beforePut = async () => {
       b.exportsBucket.beforePut = undefined;
       b.exportsBucket.objects.set(winnerKey, Buffer.from("the winner's file"));
-      b.h.db.set({ ...metaOf2(b, exportId), status: "ready", objectKey: winnerKey, summary: { bytes: 17 } });
+      b.h.db.set({ ...metaOf2(b, exportId), status: "ready", objectKey: winnerKey, summary: { bytes: 17 }, expiresAt: iso(b.h.clock.now + 6 * 86_400_000) });
     };
     expect(await runAuditExport(b.deps, { orgId: A, exportId })).toBe("already_ready");
     expect(b.exportsBucket.objects.get(winnerKey)!.toString()).toBe("the winner's file");
@@ -709,6 +732,8 @@ describe("runAuditExport: late, retried and ambiguous runs", () => {
   });
 });
 
+const metaOf2b = (b: Bench, exportId: string) => b.h.db.get(`ORG#${A}#AUDIT_EXPORT#${exportId}`, "META")!;
+
 describe("exportDownloadUrl", () => {
   it("presigns the export's file for 900 seconds, for a ready export of this org only", async () => {
     const b = await world();
@@ -721,6 +746,34 @@ describe("exportDownloadUrl", () => {
     await expect(exportDownloadUrl(b.deps, A, "aex_../../x")).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
+  it("a ready export is available for 6 days (a day less than the bucket keeps its files), then it is expired: the view says so and no link is made", async () => {
+    const b = await world();
+    expect(AUDIT_EXPORT_AVAILABLE_DAYS).toBe(AUDIT_EXPORT_FILE_LIFECYCLE_DAYS - 1);
+    expect(AUDIT_EXPORT_AVAILABLE_DAYS).toBe(6);
+    const { exportId } = await startAuditExport(b.deps, requester(), { requestId: "expiry", fromSeq: 1, toSeq: 4 });
+    await runAuditExport(b.deps, { orgId: A, exportId });
+    const meta = metaOf2b(b, exportId);
+    const completed = Date.parse(String(meta.completedAt));
+    expect(meta.expiresAt).toBe(new Date(completed + 6 * 86_400_000).toISOString());
+    expect(await getAuditExport(b.deps, A, exportId)).toMatchObject({ status: "ready", expiresAt: meta.expiresAt });
+    b.h.clock.now = completed + 6 * 86_400_000 - 1;
+    expect(await getAuditExport(b.deps, A, exportId)).toMatchObject({ status: "ready" });
+    await expect(exportDownloadUrl(b.deps, A, exportId)).resolves.toMatchObject({ expiresInSeconds: 900 });
+    let signed = 0;
+    b.deps.presign = async (input) => { signed += 1; return { url: input.key, expiresInSeconds: 1 }; };
+    b.h.clock.now = completed + 6 * 86_400_000;
+    expect(await getAuditExport(b.deps, A, exportId)).toMatchObject({ status: "expired", expiresAt: meta.expiresAt, summary: expect.anything() as unknown });
+    await expect(exportDownloadUrl(b.deps, A, exportId)).rejects.toMatchObject({ code: "NOT_FOUND", statusCode: 404, message: expect.stringMatching(/expired.*again/i) as unknown });
+    expect(signed).toBe(0);
+    // The stored record is not changed by being looked at, and a record with no expiry is never signed.
+    expect(metaOf2b(b, exportId)).toMatchObject({ status: "ready" });
+    b.h.clock.now = completed;
+    const { expiresAt: _gone, ...without } = metaOf2b(b, exportId);
+    void _gone;
+    b.h.db.set(without);
+    await expect(exportDownloadUrl(b.deps, A, exportId)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
   it("signs the file the record names, and only when that key is under this org's export prefix", async () => {
     const b = await world();
     const { exportId } = await startAuditExport(b.deps, requester(), { requestId: "prefix", fromSeq: 1, toSeq: 4 });
@@ -728,7 +781,14 @@ describe("exportDownloadUrl", () => {
     const meta = b.h.db.get(`ORG#${A}#AUDIT_EXPORT#${exportId}`, "META")!;
     let signed = 0;
     b.deps.presign = async (input) => { signed += 1; return { url: `https://signed.test/${input.key}`, expiresInSeconds: input.expiresInSeconds }; };
-    for (const bad of [`${B}/${exportId}.0123456789abcdef.rovara-audit.json.gz`, `${A}/aex_other.0123456789abcdef.rovara-audit.json.gz`, `${A}/${exportId}/../x`, "", undefined]) {
+    const sound = `${A}/${exportId}.0123456789abcdef.rovara-audit.json.gz`;
+    const bads = [
+      `${B}/${exportId}.0123456789abcdef.rovara-audit.json.gz`, `${A}/aex_other.0123456789abcdef.rovara-audit.json.gz`, `${A}/${exportId}/../x`, "", undefined,
+      // Anything but exactly <org>/<export>.<16 lowercase hex>.rovara-audit.json.gz is refused, however close.
+      `${A}/${exportId}.x/y.rovara-audit.json.gz`, `${A}/${exportId}.0123456789ABCDEF.rovara-audit.json.gz`, `${A}/${exportId}.0123456789abcde.rovara-audit.json.gz`,
+      `${A}/${exportId}.0123456789abcdef0.rovara-audit.json.gz`, `${sound}.bak`, `${sound}\n`, ` ${sound}`, `${A}/${exportId}.rovara-audit.json.gz`, `${A}//${exportId}.0123456789abcdef.rovara-audit.json.gz`,
+    ];
+    for (const bad of bads) {
       b.h.db.set({ ...meta, objectKey: bad });
       await expect(exportDownloadUrl(b.deps, A, exportId), String(bad)).rejects.toMatchObject({ code: "NOT_FOUND" });
     }

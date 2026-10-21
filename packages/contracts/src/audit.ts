@@ -72,6 +72,9 @@ export const AUDIT_TSA_ENDPOINTS = {
 
 export const AUDIT_EXPORT_MAX_RECORDS = 200000;
 export const AUDIT_EXPORT_URL_SECONDS = 900;
+/** How long the exports bucket keeps a file (its lifecycle rule), and how long an export is offered: a day less, so a link is never made for a file the bucket may already have removed. */
+export const AUDIT_EXPORT_FILE_LIFECYCLE_DAYS = 7;
+export const AUDIT_EXPORT_AVAILABLE_DAYS = AUDIT_EXPORT_FILE_LIFECYCLE_DAYS - 1;
 /**
  * The export function's asynchronous-invoke limits and timeout. The platform may start an attempt up to the event age after the
  * request and let it run the timeout, so an export still `running` after both is lost: its view says failed and no later attempt

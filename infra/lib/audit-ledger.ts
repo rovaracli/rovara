@@ -29,7 +29,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS, AUDIT_EXPORT_RETRY_ATTEMPTS, AUDIT_EXPORT_TIMEOUT_SECONDS, AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_INTAKE_MAX_RECEIVES, AUDIT_RETENTION_DAYS_DEFAULT, AUDIT_SEAL_INTERVAL_MINUTES, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS, canonicalJson } from "@agentx/contracts";
+import { AUDIT_EXPORT_FILE_LIFECYCLE_DAYS, AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS, AUDIT_EXPORT_RETRY_ATTEMPTS, AUDIT_EXPORT_TIMEOUT_SECONDS, AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_INTAKE_MAX_RECEIVES, AUDIT_RETENTION_DAYS_DEFAULT, AUDIT_SEAL_INTERVAL_MINUTES, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS, canonicalJson } from "@agentx/contracts";
 import type { AgentXNaming } from "./naming.js";
 import {
   auditLockSettings,
@@ -479,7 +479,7 @@ export class AuditLedger extends Construct {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
-      lifecycleRules: [{ expiration: Duration.days(7) }],
+      lifecycleRules: [{ expiration: Duration.days(AUDIT_EXPORT_FILE_LIFECYCLE_DAYS) }],
       removalPolicy: RemovalPolicy.RETAIN,
     });
 

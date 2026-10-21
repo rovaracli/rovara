@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { App, ArnFormat, Stack, aws_cloudwatch_actions as cloudwatchActions, aws_dynamodb as dynamodb, aws_iam as iam, aws_lambda as lambda, aws_sns as sns } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS, AUDIT_EXPORT_RETRY_ATTEMPTS, AUDIT_EXPORT_TIMEOUT_SECONDS, AUDIT_INTAKE_MAX_RECEIVES, HEALTH_ALARM_SUFFIXES, canonicalJson } from "@agentx/contracts";
+import { AUDIT_EXPORT_FILE_LIFECYCLE_DAYS, AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS, AUDIT_EXPORT_RETRY_ATTEMPTS, AUDIT_EXPORT_TIMEOUT_SECONDS, AUDIT_INTAKE_MAX_RECEIVES, HEALTH_ALARM_SUFFIXES, canonicalJson } from "@agentx/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { AuditLedger } from "../../infra/lib/audit-ledger.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
@@ -324,6 +324,8 @@ describe("the audit ledger in templates", () => {
       expect(bucket.Properties.PublicAccessBlockConfiguration).toStrictEqual({ BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true });
       expect(bucket.Properties.BucketEncryption).toStrictEqual({ ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" } }] });
       expect(bucket.Properties.LifecycleConfiguration).toStrictEqual({ Rules: [{ ExpirationInDays: 7, Status: "Enabled" }] });
+      // The days an export stays available are derived from this one number, a day short of it.
+      expect(AUDIT_EXPORT_FILE_LIFECYCLE_DAYS).toBe(7);
       expect(bucket.Properties.ObjectLockEnabled).toBeUndefined();
       expect(KEEP).toContain(bucket.DeletionPolicy);
       const policy = Object.values(production.template.Resources).find((resource) => resource.Type === "AWS::S3::BucketPolicy" && JSON.stringify(resource.Properties.Bucket).includes(id))!;

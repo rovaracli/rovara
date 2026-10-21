@@ -19,6 +19,7 @@ import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateComma
 import {
   AUDIT_ERROR_MESSAGES,
   AUDIT_EXPORT_MAX_RECORDS,
+  AUDIT_EXPORT_AVAILABLE_DAYS,
   AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS,
   AUDIT_EXPORT_TIMEOUT_SECONDS,
   AUDIT_EXPORT_URL_SECONDS,
@@ -130,6 +131,8 @@ const inconsistent = (what: string): AuditExportBuildError => new AuditExportBui
 
 /** Where an export's files live: every attempt writes one under this prefix, with a key of its own. */
 export const exportObjectPrefix = (orgId: string, exportId: string): string => `${orgId}/${exportId}.`;
+/** The one shape a file's key may have: `<orgId>/<exportId>.<16 lowercase hex>.rovara-audit.json.gz`. */
+const exportFileKey = (orgId: string, exportId: string): RegExp => new RegExp(`^${orgId}/${exportId}\\.[0-9a-f]{16}\\.rovara-audit\\.json\\.gz$`);
 /** The file of one attempt. The attempt's suffix is random, so no run can write, replace or delete another run's file. */
 export const exportObjectKey = (orgId: string, exportId: string, attempt: string): string => `${exportObjectPrefix(orgId, exportId)}${attempt}.rovara-audit.json.gz`;
 
@@ -420,7 +423,8 @@ export interface AuditExportRequest {
   withDetails?: boolean;
 }
 
-export type AuditExportStatus = "running" | "ready" | "failed";
+/** `expired`: a ready export past its `expiresAt` (a day before the bucket removes the file). */
+export type AuditExportStatus = "running" | "ready" | "failed" | "expired";
 
 export interface AuditExportSummary {
   fromSeq: number;
@@ -445,6 +449,8 @@ export interface AuditExportView {
   withDetails: boolean;
   createdAt: string;
   completedAt?: string;
+  /** When a ready export stops being offered: AUDIT_EXPORT_AVAILABLE_DAYS after it completed. */
+  expiresAt?: string;
   summary?: AuditExportSummary;
   failure?: { code: string; failedChecks?: string[]; report?: BundleReport };
 }
@@ -455,6 +461,12 @@ export function auditExportId(orgId: string, requestId: string): string {
   return `aex_${createHash("sha256").update(`rovara-audit-export-v1\n${orgId}\n${requestId}`).digest("hex").slice(0, 32)}`;
 }
 
+/** A ready export with no readable expiry counts as expired: nothing signs a link for a record that cannot say its file is still there. */
+function isExpired(expiresAt: unknown, now: number): boolean {
+  const at = typeof expiresAt === "string" ? Date.parse(expiresAt) : Number.NaN;
+  return Number.isNaN(at) || now >= at;
+}
+
 function viewOf(item: Record<string, unknown>, now: number): AuditExportView {
   const { pk: _pk, sk: _sk, entityType: _entityType, orgId: _orgId, ...view } = item;
   void _pk; void _sk; void _entityType; void _orgId;
@@ -462,6 +474,7 @@ function viewOf(item: Record<string, unknown>, now: number): AuditExportView {
   if (result.status === "running" && now - Date.parse(result.createdAt) > AUDIT_EXPORT_STALE_MS) {
     return { ...result, status: "failed", failure: { code: "TIMED_OUT" } };
   }
+  if (result.status === "ready" && isExpired(result.expiresAt, now)) return { ...result, status: "expired" };
   return result;
 }
 
@@ -547,10 +560,12 @@ export type AuditExportOutcome = "ready" | "failed" | "unknown" | "already_ready
 
 /**
  * Builds the export, checks it with the verifier's own `verifyBundle`, and only a bundle that passes is written. `failed` keeps the
- * whole report and writes no file. A file is gzipped JSON at `<orgId>/<exportId>.rovara-audit.json.gz` in the exports bucket; `ready`
- * is set in ONE transaction with the `audit.exported` pending item, so the record of the export and the export commit together
- * (a failed transaction removes the file and throws, so the platform's retry of the background invoke starts again). A finished
- * export is not rebuilt.
+ * whole report and writes no file. A file is gzipped JSON at `<orgId>/<exportId>.<attempt>.rovara-audit.json.gz` in the exports
+ * bucket, where `<attempt>` is 16 random hex digits chosen by this run alone (so no run writes over or deletes another's file); `ready`
+ * is set in ONE transaction with the `audit.exported` pending item, recording that key, the file's size and `expiresAt` (6 days on, a
+ * day before the bucket's lifecycle removes the file), so the record of the export and the export commit together. A commit that is
+ * definitely cancelled removes this run's own file and throws; any other commit error keeps the file and throws (the commit may
+ * still land), and the platform's retry of the background invoke starts again. A finished export is not rebuilt.
  */
 export async function runAuditExport(deps: AuditExportDeps, event: { orgId: string; exportId: string }): Promise<AuditExportOutcome> {
   const orgId = checkedOrgId(event.orgId);
@@ -626,7 +641,10 @@ export async function runAuditExport(deps: AuditExportDeps, event: { orgId: stri
     lockModes: report.lockModes,
     bytes: body.length,
   };
-  const completedAt = new Date(deps.now()).toISOString();
+  const completedAtMs = deps.now();
+  const completedAt = new Date(completedAtMs).toISOString();
+  // Offered for a day less than the exports bucket keeps its files, so a link is never made for a file the lifecycle may have removed.
+  const expiresAt = new Date(completedAtMs + AUDIT_EXPORT_AVAILABLE_DAYS * 86_400_000).toISOString();
   const exported = auditExported({
     orgId,
     actor: item.requestedBy as AuditActor,
@@ -644,10 +662,10 @@ export async function runAuditExport(deps: AuditExportDeps, event: { orgId: stri
           Update: {
             TableName: deps.tableName,
             Key: metaKey(orgId, exportId),
-            UpdateExpression: "SET #status = :ready, #summary = :summary, #completedAt = :at, #objectKey = :key",
+            UpdateExpression: "SET #status = :ready, #summary = :summary, #completedAt = :at, #expiresAt = :expiresAt, #objectKey = :key",
             ConditionExpression: "#status = :running",
-            ExpressionAttributeNames: { "#status": "status", "#summary": "summary", "#completedAt": "completedAt", "#objectKey": "objectKey" },
-            ExpressionAttributeValues: { ":ready": "ready", ":running": "running", ":summary": summary, ":at": completedAt, ":key": key },
+            ExpressionAttributeNames: { "#status": "status", "#summary": "summary", "#completedAt": "completedAt", "#expiresAt": "expiresAt", "#objectKey": "objectKey" },
+            ExpressionAttributeValues: { ":ready": "ready", ":running": "running", ":summary": summary, ":at": completedAt, ":expiresAt": expiresAt, ":key": key },
           },
         },
         ...auditPending(deps, exported),
@@ -661,12 +679,15 @@ export async function runAuditExport(deps: AuditExportDeps, event: { orgId: stri
       await flushAuditEvents(deps, [exported]);
       return "ready";
     }
-    // Another run's file is the export's (or the export is failed, or the commit really did not happen): this run's file is the
-    // one it wrote and the only one it removes. (The lifecycle removes it in seven days if this fails.)
-    try {
-      await deps.s3.send(new DeleteObjectCommand({ Bucket: deps.exportsBucket, Key: key }));
-    } catch {
-      // see above
+    // Only a definite cancellation (a condition failed, a conflict) means nothing was committed, so only then is this run's own file
+    // removed. After any other error the commit may still land and name this file, so it is kept (at worst an orphan the lifecycle
+    // clears) and the error is thrown for the platform's retry.
+    if (error instanceof Error && error.name === "TransactionCanceledException") {
+      try {
+        await deps.s3.send(new DeleteObjectCommand({ Bucket: deps.exportsBucket, Key: key }));
+      } catch {
+        // The lifecycle removes it.
+      }
     }
     if (current?.status === "ready") return "already_ready";
     if (current?.status === "failed") return "already_failed";
@@ -681,9 +702,11 @@ export async function exportDownloadUrl(deps: AuditExportClientDeps, orgId: stri
   checkedOrgId(orgId);
   const item = await readMeta(deps, orgId, exportId);
   if (item === undefined || item.status !== "ready") throw agentXError("NOT_FOUND", "That export was not found, or it is not ready yet.");
-  // The file is the one the ready record names, and only if it is under this export's prefix in this org.
+  // After `expiresAt` the bucket may have removed the file (NOT_FOUND is the code that fits: the export is gone).
+  if (isExpired(item.expiresAt, deps.now())) throw agentXError("NOT_FOUND", "That export has expired. Request it again.");
+  // The file is the one the ready record names, and only if it has exactly this org's, this export's and an attempt's name.
   const key = item.objectKey;
-  if (typeof key !== "string" || !key.startsWith(exportObjectPrefix(orgId, exportId)) || key.includes("..") || !key.endsWith(".rovara-audit.json.gz")) {
+  if (typeof key !== "string" || !exportFileKey(orgId, exportId).test(key)) {
     deps.log({ event: "audit.export_file_unnamed", level: "error", orgId, exportId });
     throw agentXError("NOT_FOUND", "That export was not found, or it is not ready yet.");
   }
