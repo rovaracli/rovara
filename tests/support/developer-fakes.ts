@@ -10,7 +10,7 @@ import type { DeveloperIdentityDependencies, HttpResult } from "../../packages/b
 import { createDeveloperIdentityHandler } from "../../packages/broker/src/developer/server.js";
 import { slackDirectory } from "../../packages/broker/src/developer/slack-directory.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
-import { mergeDuplicateMember } from "../../packages/broker/src/org/merge-members.js";
+import { duplicateMerger } from "../../packages/broker/src/org/merge-members.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { unlockTrial } from "../../packages/broker/src/org/trial.js";
 import type { PublicSigningJwk, TokenSigner } from "../../packages/broker/src/developer/tokens.js";
@@ -396,7 +396,7 @@ export function identityHarness(options: {
       ...(options.github === undefined ? {} : { github: { displayName: "GitHub" } }),
     },
     store,
-    ...(options.sharedTable === true ? { mergeDuplicate: (input) => mergeDuplicateMember({ documentClient: state, tableName: "state", signInStore: store, now }, input) } : {}),
+    ...(options.sharedTable === true ? duplicateMerger({ documentClient: state, tableName: "state", signInStore: store, now }) : {}),
     orgs,
     ...(options.singleOrg === false ? {} : { singleOrgId: TEST_ORG }),
     ...(options.github === undefined ? {} : { onGithubSignIn: (input: { orgId: OrgId; githubUserId: string }) => unlockTrial({ documentClient: state, tableName: "state", now }, input) }),

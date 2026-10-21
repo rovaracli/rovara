@@ -76,6 +76,8 @@ export interface DeveloperIdentityDependencies {
   onGithubSignIn?: (input: { orgId: OrgId; githubUserId: string }) => Promise<void>;
   /** Merges a duplicate member of the same person into the member their verified email names, on the duplicate's next sign-in (see resolveSignInDeveloper, rule 1b). Without it duplicates are left alone. */
   mergeDuplicate?: ResolveSignInDeveloperDependencies["mergeDuplicate"];
+  /** Says whether the duplicate's own org is a disposable leftover of the first-sign-in race, which a merge may close; bound with `mergeDuplicate`. */
+  raceOrgBlocker?: ResolveSignInDeveloperDependencies["raceOrgBlocker"];
   now: () => number;
   log: (entry: Record<string, unknown>) => void;
 }
@@ -340,7 +342,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     }
     const identity = result.identity;
     // One developer per person: a second sign-in route for the same verified email is linked to the first route's developer.
-    const resolved = await resolveSignInDeveloper({ store, orgs: deps.orgs, log: deps.log, ...(deps.mergeDuplicate === undefined ? {} : { mergeDuplicate: deps.mergeDuplicate }) }, { method, identity });
+    const resolved = await resolveSignInDeveloper({ store, orgs: deps.orgs, log: deps.log, ...(deps.mergeDuplicate === undefined ? {} : { mergeDuplicate: deps.mergeDuplicate }), ...(deps.raceOrgBlocker === undefined ? {} : { raceOrgBlocker: deps.raceOrgBlocker }) }, { method, identity });
     const { developerId, identityKey } = resolved;
     const existing = await store.getDeveloper(developerId);
     if (existing?.revoked === true) {

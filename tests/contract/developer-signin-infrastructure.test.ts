@@ -271,31 +271,31 @@ describe("developer sign-in infrastructure (named environments)", () => {
       "DEVELOPER_SIGNIN_SLACK", "DEVELOPER_OIDC_ISSUER", "DEVELOPER_OIDC_CLIENT_ID", "DEVELOPER_OIDC_REQUIRED_CLAIM", "DEVELOPER_OIDC_REQUIRED_VALUES",
       "DEVELOPER_OIDC_DISPLAY_NAME", "DEVELOPER_OIDC_SECRET_ID", "STATE_TABLE_NAME",
     ]));
-    // A sign-in puts the developer in an org, which lives in the State table: DeveloperIdentity reads and writes only the org partition, the
-    // developer pointer and, to heal a duplicate member (Plan 2, Task 3), that member's grants and the org's settings there.
+    // A sign-in puts the developer in an org, which lives in the State table. DeveloperIdentity gets the statement every sign-in needs, plus
+    // one statement per action for each further key that healing a duplicate member (Plan 2, Task 3) uses: exactly those keys, no more.
     const stateGrants = ofType(named, "AWS::IAM::Policy").flatMap(([, policy]) => (policy.Properties.PolicyDocument as { Statement: Array<Record<string, unknown>> }).Statement)
-      .filter((statement) => JSON.stringify(statement.Condition ?? {}).includes("DEVELOPER_ORG#*"));
-    expect(stateGrants).toHaveLength(2);
-    const leadingKeys = (statement: Record<string, unknown> | undefined) => (statement?.Condition as Record<string, Record<string, unknown>>)["ForAllValues:StringLike"];
-    const writes = stateGrants.filter((statement) => JSON.stringify(statement.Action).includes("dynamodb:PutItem"));
-    expect(writes).toHaveLength(1);
-    expect(writes[0]).toMatchObject({ Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], Effect: "Allow" });
-    // Exactly the bare org partition (20 characters, an org ID's), a member's grants, the org's settings, the developer's org pointer, and the
-    // email and invite rows a sign-in reads: no other org-scoped or Slack team row, and no `ORG#*` wildcard.
-    expect(leadingKeys(writes[0])).toEqual({
-      "dynamodb:LeadingKeys": [
-        "ORG#org_????????????????????", "ORG#org_????????????????????#MEMBER#*", "ORG#org_????????????????????#SETTINGS",
-        "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*",
-      ],
-    });
-    // Deleting and querying (the duplicate merge) reach only a member's grants, the member rows, and the developer pointer.
-    const deletes = stateGrants.filter((statement) => JSON.stringify(statement.Action).includes("dynamodb:DeleteItem"));
-    expect(deletes).toHaveLength(1);
-    expect(deletes[0]).toMatchObject({ Action: ["dynamodb:Query", "dynamodb:DeleteItem"], Effect: "Allow" });
-    expect(leadingKeys(deletes[0])).toEqual({
-      "dynamodb:LeadingKeys": ["ORG#org_????????????????????#MEMBER#*", "ORG#org_????????????????????", "DEVELOPER_ORG#*"],
-    });
-    for (const statement of stateGrants) expect(JSON.stringify(leadingKeys(statement))).not.toContain('"ORG#*"');
+      .filter((statement) => /ORG#org_|DEVELOPER_ORG#/.test(JSON.stringify(statement.Condition ?? {})));
+    const keysOf = (statement: Record<string, unknown>) => (statement.Condition as Record<string, Record<string, unknown>>)["ForAllValues:StringLike"]!["dynamodb:LeadingKeys"];
+    const grantsOf = stateGrants.map((statement) => [[statement.Action].flat().join(","), keysOf(statement)] as const).sort((a, b) => a[0].localeCompare(b[0]));
+    const ORG = "ORG#org_????????????????????";
+    expect(grantsOf).toEqual([
+      // Deleting: the duplicate's member row (bare partition; IAM cannot tell it from the org record) and grants, and its org pointer.
+      ["dynamodb:DeleteItem", [`${ORG}#MEMBER#*`, ORG, "DEVELOPER_ORG#*"]],
+      // The org's budget settings, read and written back.
+      ["dynamodb:GetItem,dynamodb:PutItem", [`${ORG}#SETTINGS`]],
+      // What every sign-in uses: the bare org partition (20 characters, an org ID's), the developer's org pointer, and the email and invite rows.
+      ["dynamodb:GetItem,dynamodb:PutItem,dynamodb:UpdateItem", [ORG, "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*"]],
+      // Listing: a member's grants, a race org's whole partition, and its project catalog.
+      ["dynamodb:Query", [`${ORG}#MEMBER#*`, ORG, `${ORG}#PROJECT_CATALOG`]],
+      // A member's grants copied to the survivor.
+      ["dynamodb:PutItem", [`${ORG}#MEMBER#*`]],
+    ].sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+    for (const statement of stateGrants) {
+      expect(statement.Effect).toBe("Allow");
+      expect(JSON.stringify(keysOf(statement))).not.toMatch(/"ORG#\*"|SLACK_TEAM|PROJECT#/);
+    }
+    // Nothing is queried under the developer pointers.
+    expect(grantsOf.filter(([action, keys]) => action === "dynamodb:Query" && JSON.stringify(keys).includes("DEVELOPER_ORG#"))).toEqual([]);
     // FR-045: both functions get each method's enabled-since cutoff straight from its parameter.
     const variables = (prefix: string) => (named.Resources[functionId(named, prefix)]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
     expect(variables("Broker")).toMatchObject({

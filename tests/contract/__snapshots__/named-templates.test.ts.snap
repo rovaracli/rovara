@@ -3850,8 +3850,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 "ForAllValues:StringLike": {
                   "dynamodb:LeadingKeys": [
                     "ORG#org_????????????????????",
-                    "ORG#org_????????????????????#MEMBER#*",
-                    "ORG#org_????????????????????#SETTINGS",
                     "DEVELOPER_ORG#*",
                     "ORG_EMAIL#*",
                     "ORG_INVITE#*",
@@ -3867,10 +3865,63 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               },
             },
             {
+              "Action": "dynamodb:PutItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "ORG#org_????????????????????#MEMBER#*",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
               "Action": [
-                "dynamodb:Query",
-                "dynamodb:DeleteItem",
+                "dynamodb:GetItem",
+                "dynamodb:PutItem",
               ],
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "ORG#org_????????????????????#SETTINGS",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": "dynamodb:Query",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "ORG#org_????????????????????#MEMBER#*",
+                    "ORG#org_????????????????????",
+                    "ORG#org_????????????????????#PROJECT_CATALOG",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": "dynamodb:DeleteItem",
               "Condition": {
                 "ForAllValues:StringLike": {
                   "dynamodb:LeadingKeys": [

@@ -280,24 +280,42 @@ export class DeveloperSignInStore {
 
   /**
    * The sign-in table's items for merging a duplicate developer into `survivorId` (Plan 2, Task 3), for a caller whose one transaction also
-   * writes the State table: the duplicate's identity is linked to the survivor, and the duplicate's record says where it went and when.
-   * The link is written only if the identity has none; the record is marked only if it exists and was not merged before.
+   * writes the State table: the duplicate's identity is linked to the survivor, and the duplicate's record says where it went and when
+   * and ends its sessions as of that moment, so no session outlives the merge.
+   * `link` is the identity's link item when it has one. A duplicate that signed in after identity links has a link to itself, which is
+   * moved to the survivor (both items, conditional on still being its own and never unlinked); with no link item one is written.
    */
-  mergeItems(input: { duplicate: DeveloperRecord; duplicateIdentityKey: string; survivorId: string; at: string; email?: string; login?: string }): SignInTransactItem[] {
-    const { duplicate, duplicateIdentityKey: identityKey, survivorId, at } = input;
-    const email = input.email ?? duplicate.email;
+  mergeItems(input: { duplicate: DeveloperRecord; duplicateIdentityKey: string; survivorId: string; at: string; link?: IdentityLinkRecord; email?: string; login?: string }): SignInTransactItem[] {
+    const { duplicate, duplicateIdentityKey: identityKey, survivorId, at, link } = input;
+    const TableName = this.input.tableName;
+    const email = input.email ?? link?.email ?? duplicate.email;
+    const login = input.login ?? link?.login;
     const body = {
       entityType: "IDENTITY_LINK", developerId: survivorId, provider: duplicate.provider, issuer: duplicate.issuer, subject: duplicate.subject,
       ...(email === undefined ? {} : { email }),
-      ...(input.login === undefined ? {} : { login: input.login }),
-      linkedAt: at, lastSignInAt: at,
+      ...(login === undefined ? {} : { login }),
+      linkedAt: link?.linkedAt ?? at, lastSignInAt: at,
     };
+    const items: SignInTransactItem[] = link === undefined
+      ? [{ Put: { TableName, Item: { ...signInIdentityKey(identityKey), ...body }, ConditionExpression: "attribute_not_exists(pk)" } }]
+      : [
+        { Update: {
+          TableName, Key: signInIdentityKey(identityKey), UpdateExpression: "SET developerId = :survivor, lastSignInAt = :at",
+          ConditionExpression: "developerId = :duplicate AND attribute_not_exists(unlinkedFrom)", ExpressionAttributeValues: { ":survivor": survivorId, ":at": at, ":duplicate": duplicate.developerId },
+        } },
+        // The old reverse item stays but no longer lists under the duplicate.
+        { Update: {
+          TableName, Key: developerIdentityKey(duplicate.developerId, identityKey), UpdateExpression: "SET developerId = :survivor",
+          ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":survivor": survivorId },
+        } },
+      ];
     return [
-      { Put: { TableName: this.input.tableName, Item: { ...signInIdentityKey(identityKey), ...body }, ConditionExpression: "attribute_not_exists(pk)" } },
-      { Put: { TableName: this.input.tableName, Item: { ...developerIdentityKey(survivorId, identityKey), ...body } } },
+      ...items,
+      { Put: { TableName, Item: { ...developerIdentityKey(survivorId, identityKey), ...body } } },
       { Update: {
-        TableName: this.input.tableName, Key: { pk: `DEVELOPER#${duplicate.developerId}`, sk: META }, UpdateExpression: "SET mergedInto = :survivor, mergedAt = :at",
-        ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(mergedInto)", ExpressionAttributeValues: { ":survivor": survivorId, ":at": at },
+        TableName, Key: { pk: `DEVELOPER#${duplicate.developerId}`, sk: META }, UpdateExpression: "SET mergedInto = :survivor, mergedAt = :at, sessionsEndedAt = :at",
+        ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(mergedInto) AND (attribute_not_exists(sessionsEndedAt) OR sessionsEndedAt <= :at)",
+        ExpressionAttributeValues: { ":survivor": survivorId, ":at": at },
       } },
     ];
   }
