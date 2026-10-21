@@ -115,6 +115,7 @@ export function deployStep(input: { id: DeployStepId; title: string; after?: (co
         parts: [...parts],
         lockHeld: true,
         ...(deployment.declaredParameters === undefined ? {} : { declaredParameters: deployment.declaredParameters }),
+        ...(deployment.ensurePassRole === undefined ? {} : { ensurePassRole: deployment.ensurePassRole }),
         onEvent: (event) => context.write(progressLine(event)),
         now: context.now,
       });

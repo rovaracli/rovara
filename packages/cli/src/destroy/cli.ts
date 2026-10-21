@@ -9,6 +9,7 @@ import { CognitoIdentityProviderClient } from "@aws-sdk/client-cognito-identity-
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { EC2Client } from "@aws-sdk/client-ec2";
 import { ECRClient } from "@aws-sdk/client-ecr";
+import { IAMClient } from "@aws-sdk/client-iam";
 import { KMSClient } from "@aws-sdk/client-kms";
 import { S3Client } from "@aws-sdk/client-s3";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
@@ -84,6 +85,8 @@ export function registerDestroyCommand(program: Command, context: DestroyCommand
             cloudFormation: new CloudFormationClient(aws), ec2: new EC2Client(aws), s3: new S3Client(aws), dynamodb: new DynamoDBClient(aws),
             logs: new CloudWatchLogsClient(aws), cognito: new CognitoIdentityProviderClient(aws), kms: new KMSClient(aws), secrets: new SecretsManagerClient(aws), ecr: new ECRClient(aws),
           }),
+          // Real clients only for a real run: a test that fakes the API gets no IAM unless it passes its own.
+          ...(overrides.passRole !== undefined ? { passRole: overrides.passRole } : overrides.api === undefined ? { passRole: { iam: new IAMClient(aws), cloudformation: new CloudFormationClient(aws) } } : {}),
           identity: overrides.identity ?? stsCallerIdentity(new STSClient(aws)),
           confirmLine: overrides.confirmLine ?? ((question) => reader!.ask(question)),
           write,

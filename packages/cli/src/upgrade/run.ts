@@ -277,6 +277,7 @@ export async function runUpgrade(options: UpgradeOptions, deps: UpgradeDependenc
           ...(settings.engine === "templates" ? { confirm: review.confirm } : {}),
           deployedParameters: async (stackName) => (await deps.stacks.describe(stackName))?.parameters,
           ...(declaredBy === undefined ? {} : { declaredParameters: declaredBy }),
+          ...(settings.engine === "cdk" && prepared.ensurePassRole !== undefined ? { ensurePassRole: prepared.ensurePassRole } : {}),
           now: deps.now,
         });
       } catch (error) {

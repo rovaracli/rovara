@@ -3,6 +3,8 @@
 // environment, and safe to re-run: the inventory of retained resources is saved in SSM before any
 // stack is deleted, and the settings and lock are deleted last.
 import { access, rm } from "node:fs/promises";
+import type { CloudFormationClient } from "@aws-sdk/client-cloudformation";
+import type { IAMClient } from "@aws-sdk/client-iam";
 import { agentXError, environmentPullThroughPrefix, environmentStackName, type StackPart } from "@agentx/contracts";
 import { tokenStoreKey } from "../auth.js";
 import { forgetDeveloperSignIn } from "../developer/config.js";
@@ -13,6 +15,7 @@ import { lockParameterName, withEnvironmentLock, type LockRecord } from "../envi
 import type { ParameterStore } from "../environments/parameter-store.js";
 import { readEnvironmentSettings, settingsParameterName, type EnvironmentSettings } from "../environments/settings.js";
 import { isOperatorRole } from "../init/commands.js";
+import { removeCdkPassRole } from "../init/pass-role.js";
 import { installAnswersParameterName, installProgressParameterName, readInstallAnswers, readInstallProgress } from "../init/install-state.js";
 import type { TokenStore } from "../token-store.js";
 import type { DestroyApi, DestroyStack } from "./aws.js";
@@ -35,6 +38,9 @@ export interface DestroyDependencies {
   region: string;
   /** Whether stdin is a terminal: a lock takeover is offered only then, never to piped input. */
   isInteractive: () => boolean;
+  /** The clients that take the cdk engine's PassRole permission off the CDK deploy role once the last
+   * environment in the region is gone (init/pass-role.ts). Optional: without it nothing is removed. */
+  passRole?: { iam: Pick<IAMClient, "send">; cloudformation: Pick<CloudFormationClient, "send"> };
 }
 
 export interface DestroyResult {
@@ -156,6 +162,7 @@ export async function runDestroy(options: { env: string; keepData: boolean }, de
   let localFiles = await filesFor(inventory);
 
   const keptSecrets: string[] = [];
+  let passRoleStep: string | undefined;
   const result: DestroyResult = { env, removed: false, stacksDeleted: [], instances: 0, volumes: 0, retainedDeleted: [], kept: [], leftInPlace: [], secrets: 0, parameters: 0, localFiles: [], manualSteps: [] };
   if (stacks.size + inventory.resources.length + instances.length + volumes.length + secrets.length + parameters.length + localFiles.length === 0) {
     deps.write(`Environment ${env} has nothing to remove in this account and region.`);
@@ -228,6 +235,17 @@ export async function runDestroy(options: { env: string; keepData: boolean }, de
 
     for (const part of DELETE_AFTER_WORKERS) await deleteStack(part);
 
+    // The cdk engine's PassRole permission on the CDK deploy role goes after this environment's
+    // stacks, and only if no other environment in the region still has an access stack. A failure
+    // here is said, not thrown: the environment is already gone, so destroy goes on and names the step.
+    if (deps.passRole !== undefined && (settings?.engine ?? answers?.engine) === "cdk") {
+      try {
+        await removeCdkPassRole({ ...deps.passRole, write: deps.write, env, account: caller.account, region: deps.region });
+      } catch (error) {
+        passRoleStep = `Remove the inline policy named AgentXPassCloudFormationRole from the role cdk-hnb659fds-deploy-role-${caller.account}-${deps.region} by hand (agentx destroy could not: ${error instanceof Error ? error.message : String(error)}), unless another environment in ${deps.region} still uses it.`;
+      }
+    }
+
     // 5. What the stacks retained. The secrets deleted here are left out of step 6's sweep: Secrets
     // Manager can still list one as scheduled, and deleting it again would restore it first.
     const deletedSecrets: string[] = [];
@@ -290,6 +308,7 @@ export async function runDestroy(options: { env: string; keepData: boolean }, de
   // (listed in step 1), or, when that listing failed, without names.
   result.manualSteps = [
     ...vendorSteps(inventory),
+    ...(passRoleStep === undefined ? [] : [passRoleStep]),
     ...(options.keepData && result.kept.length + keptSecrets.length > 0 ? [`Kept, as --keep-data asked: ${[...result.kept, ...keptSecrets.map((name) => `secret ${name}`)].join(", ")}. A new install named ${env} cannot reuse the secret names until you delete them.`] : []),
     ...(options.keepData ? ["Run agentx destroy again, without --keep-data, to remove what was kept."] : []),
     // Ruling F32: the image pull-through cache made these repositories, outside every stack.

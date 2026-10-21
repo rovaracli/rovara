@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
+import { IAMClient } from "@aws-sdk/client-iam";
 import { S3Client } from "@aws-sdk/client-s3";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { SSMClient } from "@aws-sdk/client-ssm";
@@ -24,6 +25,7 @@ import { assertCdkBootstrapped, assertSourceAtRelease, buildSource, cdkDeployer,
 import { synthDeclaredParameters } from "./cdk-source.js";
 import type { ChangeSetChange, DeployEvent, StackDeployer, StackOutputs } from "./deployer.js";
 import { deployEnvironment, type DeployAnswers, type DeployEnvironmentResult } from "./deploy-environment.js";
+import { ensureCdkPassRole } from "../init/pass-role.js";
 import { writeExportBundle } from "./export-bundle.js";
 import { installOrder, type DeployPart } from "./parameters.js";
 import { assertReleaseCoversRegion, loadRelease, type LoadedRelease } from "./release.js";
@@ -49,6 +51,9 @@ export interface DeployCliDependencies {
   deployer?: StackDeployer;
   /** The cdk engine's shell-out, and `assertSourceAtRelease`'s git calls. */
   commandRunner?: CommandRunner;
+  /** The cdk engine's IAM client, for the deploy role's PassRole permission (real IAM by default; the
+   * default is only built on the real cdk engine, never when `deployer` is overridden). */
+  iam?: Pick<IAMClient, "send">;
   /** The cdk engine's stack-outputs reader (CloudFormation DescribeStacks by default). */
   stackOutputs?: (stackName: string) => Promise<StackOutputs | undefined>;
   /** The deployed stacks' parameters an upgrade keeps (DescribeStacks by default). */
@@ -616,6 +621,7 @@ async function deployCommand(options: DeployCommandOptions, deps: DeployCliDepen
       ...(parts === undefined ? {} : { parts }),
       deployedParameters: deps.stackParameters ?? cloudFormationParametersReader(new CloudFormationClient({ region: answers.region })),
       ...(prepared.declaredParameters === undefined ? {} : { declaredParameters: prepared.declaredParameters }),
+      ...(prepared.ensurePassRole === undefined ? {} : { ensurePassRole: prepared.ensurePassRole }),
       onEvent,
       ...(confirm === undefined ? {} : { confirm }),
       ...(deps.now === undefined ? {} : { now: deps.now }),
@@ -646,6 +652,10 @@ export interface PreparedDeployment {
    * (issue 152), for deployEnvironment's declaredParameters. Undefined for the templates engine, which
    * reads them from the release's own templates, and when a test overrides the whole deployer. */
   declaredParameters?: (part: DeployPart) => ReadonlySet<string>;
+  /** The cdk engine's PassRole permission on the CDK deploy role (init/pass-role.ts), for
+   * deployEnvironment's ensurePassRole. Undefined for the templates engine and when a test overrides
+   * the whole deployer without an IAM client. */
+  ensurePassRole?: () => Promise<"present" | "added">;
   /** Removes the cdk engine's outputs directory; a no-op for templates. */
   cleanup(): Promise<void>;
 }
@@ -729,6 +739,11 @@ export async function prepareDeployment(input: {
     deployer = buildTemplatesDeployer({ clients, release, env: input.env, region, partition });
   }
 
+  const passRoleIam = input.engine !== "cdk" ? undefined : deps.iam ?? (deps.deployer === undefined ? new IAMClient({ region }) : undefined);
+  const ensurePassRole = passRoleIam === undefined
+    ? undefined
+    : () => ensureCdkPassRole({ iam: passRoleIam, write: (line) => { input.stderr.write(`${line}\n`); }, account: input.account, region, partition });
+
   const outputsDir = cdkOutputsDir;
   return {
     deployer,
@@ -737,6 +752,7 @@ export async function prepareDeployment(input: {
     holder,
     partition,
     ...(declaredParameters === undefined ? {} : { declaredParameters }),
+    ...(ensurePassRole === undefined ? {} : { ensurePassRole }),
     async cleanup() {
       if (outputsDir !== undefined) await rm(outputsDir, { recursive: true, force: true });
     },
