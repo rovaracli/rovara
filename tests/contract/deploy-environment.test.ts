@@ -828,8 +828,10 @@ describe("an upgrade keeps what the operator set (OPERATOR_PARAMETERS)", () => {
       mode: "install", engine: "templates", answers: baseAnswers(), release: fakeRelease(), deployer: install.deployer, store, secrets: memorySecrets(), holder: HOLDER,
       deployedParameters: async (name) => { reads.push(name); return { BudgetMonthlyUsd: "250" }; },
     });
-    expect(reads).toEqual([]);
+    // Only the control plane's audit lock profile is looked up (so an install never changes it unasked); no other operator parameter is kept.
+    expect(reads).toEqual([stackName("control-plane")]);
     expect(install.requests.find((request) => request.part === "control-plane")!.parameters).not.toHaveProperty("BudgetMonthlyUsd");
+    expect(install.requests.find((request) => request.part === "control-plane")!.parameters).not.toHaveProperty("AuditLockProfile");
   });
 
   it("keeps the settings' alert address when it rewrites the settings (F16)", async () => {
@@ -1074,7 +1076,8 @@ describe("the audit ledger's lock profile (Task 5b)", () => {
   async function upgrade(input: { answers: DeployAnswers; deployedProfile: string | undefined; release?: LoadedRelease; mode?: "install" | "upgrade"; parts?: DeployPart[] }) {
     const store = new MemoryParameterStore();
     const secrets = memorySecrets();
-    await writeEnvironmentSettings(store, stagingSettings);
+    // Every part has a stack, so a subset of the parts still reads the others' outputs.
+    await writeEnvironmentSettings(store, { ...stagingSettings, stacks: { ...stagingSettings.stacks, access: stackName("access"), identity: stackName("identity") } });
     const { deployer, requests } = fakeDeployer(scriptedOutputs());
     const run = deployEnvironment({
       mode: input.mode ?? "upgrade", engine: "templates", answers: input.answers, release: input.release ?? fakeReleaseWithControlPlaneParameters(["AuditLockProfile", "BudgetMonthlyUsd"]),
@@ -1123,6 +1126,37 @@ describe("the audit ledger's lock profile (Task 5b)", () => {
       await run;
       expect(controlPlane(requests).AuditLockProfile).toBe(profile);
     }
+  });
+
+  it("keeps the deployed profile on an install of the control plane whose answers do not set one (the template default would be production)", async () => {
+    for (const profile of ["production", "trial"]) {
+      const { run, requests } = await upgrade({ answers: withProfile(), deployedProfile: profile, mode: "install", parts: ["control-plane"] });
+      await run;
+      expect(controlPlane(requests).AuditLockProfile).toBe(profile);
+    }
+  });
+
+  it("keeps it on an upgrade of the control plane alone, and sends nothing when the stack has no profile", async () => {
+    for (const profile of ["production", "trial"]) {
+      const { run, requests } = await upgrade({ answers: withProfile(), deployedProfile: profile, parts: ["control-plane"] });
+      await run;
+      expect(controlPlane(requests).AuditLockProfile).toBe(profile);
+    }
+    const fresh = await upgrade({ answers: withProfile(), deployedProfile: undefined, mode: "install", parts: ["control-plane"] });
+    await fresh.run;
+    expect(controlPlane(fresh.requests)).not.toHaveProperty("AuditLockProfile");
+  });
+
+  it("changes the profile on an install only when the answers choose it: trial to production is allowed there too", async () => {
+    const { run, requests } = await upgrade({ answers: withProfile("production"), deployedProfile: "trial", mode: "install", parts: ["control-plane"] });
+    await run;
+    expect(controlPlane(requests).AuditLockProfile).toBe("production");
+  });
+
+  it("does not send the kept profile to a release whose template lacks the parameter", async () => {
+    const { run, requests } = await upgrade({ answers: withProfile(), deployedProfile: "trial", mode: "install", parts: ["control-plane"], release: fakeReleaseWithControlPlaneParameters(["BudgetMonthlyUsd"]) });
+    await run;
+    expect(controlPlane(requests)).not.toHaveProperty("AuditLockProfile");
   });
 
   it("sends nothing for a release whose template has no such parameter, and does not refuse", async () => {

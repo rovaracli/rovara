@@ -194,6 +194,7 @@ set` (the CloudFormation console, say) are not recorded. Each key lives in exact
 | `alerts.slowTurnMinutes` | stack parameter SlowTurnMinutes on agentx-<env>-slack | 5 | 1 to 60 |
 | `budget.monthlyUsd` | stack parameter BudgetMonthlyUsd on agentx-<env>-control-plane | 0 | 0 for none |
 | `budget.scope` | stack parameter BudgetScope on agentx-<env>-control-plane | tag | tag or account |
+| `audit.lock` | stack parameter AuditLockProfile on agentx-<env>-control-plane | production (trial in staging, test and dev*, when init chose nothing) | production or trial; trial to production only, never back: records written from now on are locked for 3 years and can't be shortened |
 | `mcp.confirmElicitation` | stack parameter McpConfirmElicitation on agentx-<env>-control-plane | enabled | enabled or disabled; disabled leaves only the Slack Confirm button or the CLI to confirm an admin change |
 
 - **Models.** A new model must answer a one-token call before anything changes. `set` then

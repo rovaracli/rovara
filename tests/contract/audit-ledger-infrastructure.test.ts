@@ -273,6 +273,29 @@ describe("the audit ledger in templates", () => {
       }
     });
 
+    it("the policy override relies on CDK keeping the statements in the order they were added: the first statements CDK builds are the profile's own", () => {
+      const own = underProfile(acme, ((one(acme.template, "AWS::S3::BucketPolicy", "AuditLedgerAuditLedgerBucketPolicy")[1].Properties.PolicyDocument) as { Statement: unknown[] }).Statement, "production") as unknown[];
+      const built = underProfile(acme, (acme.stack.resolve(acme.ledger.ledgerBucket.policy!.document.toJSON()) as { Statement: unknown[] }).Statement, "production") as unknown[];
+      expect(own.length).toBeGreaterThanOrEqual(4);
+      expect(built.length).toBeGreaterThanOrEqual(own.length);
+      expect(built.slice(0, own.length).map((statement) => canonicalJson(statement))).toStrictEqual(own.map((statement) => canonicalJson(statement)));
+    });
+
+    it("a statement a later task adds to the policy is kept after the profile's own", () => {
+      const stack = new Stack(new App(), "Scratch");
+      const ledger = new AuditLedger(stack, "AuditLedger", { ...scratchProps(stack), appenderRole: new iam.Role(stack, "AppenderRole", { assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com") }) });
+      ledger.ledgerBucket.addToResourcePolicy(new iam.PolicyStatement({ sid: "LaterTask", actions: ["s3:GetObject"], resources: [ledger.ledgerBucket.arnForObjects("*")], principals: [new iam.AccountRootPrincipal()] }));
+      const template = Template.fromStack(stack).toJSON() as TemplateJson;
+      const sids = ((one(template, "AWS::S3::BucketPolicy", "AuditLedgerAuditLedgerBucketPolicy")[1].Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => statement.Sid);
+      expect(sids.at(-1)).toBe("LaterTask");
+      expect(sids.filter((sid) => sid === "LaterTask")).toHaveLength(1);
+    });
+
+    it("the hash the anchor is given is a template token, not a hex digest", () => {
+      expect(acme.ledger.bucketPolicySha256).not.toMatch(/^[0-9a-f]{64}$/);
+      expect(acme.ledger.bucketPolicySha256ByProfile.production).toMatch(/^[0-9a-f]{64}$/);
+    });
+
     it("the profile differs between the hashes, and a raised retention changes only the production one", () => {
       const raised = named("acme", { agentxAuditRetentionDays: "1826" });
       expect(raised.ledger.bucketPolicySha256ByProfile.trial).toBe(acme.ledger.bucketPolicySha256ByProfile.trial);

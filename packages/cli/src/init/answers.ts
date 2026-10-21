@@ -3,7 +3,7 @@ import { DEFAULT_BEDROCK_MODELS, DEFAULT_DIRECT_MODELS, PROVIDER_KEY_MIN_LENGTH,
 // commander default never silently skips a question. An alert webhook carries its integration
 // key, so it is a secret: it is never a flag value and never stored in the answers.
 import { agentXError, ImageDigest, KEYED_MODEL_PROVIDERS, MODEL_PROVIDERS, keyedProviderSecretName, type KeyedModelProvider, type ModelProvider } from "@agentx/contracts";
-import { CLOUD_NEEDS_CDK_MESSAGE, CloudSignInAnswersSchema, DIRECT_PROVIDERS, GITHUB_LOGIN_PATTERN, ModelsAnswersSchema, providerSecretArn, type DirectProvider } from "../deploy/answer-schemas.js";
+import { CLOUD_NEEDS_CDK_MESSAGE, CloudSignInAnswersSchema, defaultAuditLockProfile, DIRECT_PROVIDERS, GITHUB_LOGIN_PATTERN, ModelsAnswersSchema, providerSecretArn, type DirectProvider } from "../deploy/answer-schemas.js";
 import type { BundleAnswers } from "../deploy/export-bundle.js";
 import { SecretAlreadyExistsError } from "../deploy/signing-key.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
@@ -241,7 +241,8 @@ export async function collectInitAnswers(input: {
     if (scope === "tag") notes.push(BUDGET_TAG_NOTE);
   }
 
-  const auditLock = flags.auditLock ?? (values[SETTINGS_FIELD.auditLock] === "trial" ? "trial" : "production");
+  const typedAuditLock = values[SETTINGS_FIELD.auditLock];
+  const auditLock = flags.auditLock ?? (typedAuditLock === "trial" || typedAuditLock === "production" ? typedAuditLock : defaultAuditLockProfile(env));
 
   const githubAccount = flags.githubAccount ?? typed(SETTINGS_FIELD.githubAccount) ?? "";
   if (!GITHUB_LOGIN_PATTERN.test(githubAccount)) throw agentXError("CONFIG_INVALID", `--github-account ${githubAccount} is not a GitHub organization or user name`);

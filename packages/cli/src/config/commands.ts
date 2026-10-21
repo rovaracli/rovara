@@ -9,6 +9,7 @@ import type { CallerIdentity, StackReader } from "../environments/adopt.js";
 import { withEnvironmentLock } from "../environments/lock.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 import { readEnvironmentSettings, writeEnvironmentSettings, type EnvironmentSettings } from "../environments/settings.js";
+import { assertAuditLockNotLowered } from "../deploy/answer-schemas.js";
 import { updateStackParameters } from "../deploy/parameter-update.js";
 import { checkAlertWebhook, storeAlertWebhook, webhookDisplay } from "../init/answers.js";
 import type { InitSecrets } from "../init/context.js";
@@ -152,6 +153,21 @@ class RecordModelError extends Error {
   }
 }
 
+const AUDIT_LOCK_PARAMETER = "AuditLockProfile";
+/** What a move from trial to production means, said once before the person confirms it. */
+const AUDIT_LOCK_PRODUCTION_MEANING = "Records written from now on are locked for 3 years and can't be shortened.";
+
+/** Keeps the install answers in step with the stack so `agentx init --resume` does not ask for the old profile back. The stack has changed already, so a failure here only warns. */
+async function recordAuditLock(services: ConfigServices, env: string, profile: string): Promise<void> {
+  if (profile !== "production" && profile !== "trial") return;
+  try {
+    const answers = await readInstallAnswers(services.store, env);
+    if (answers !== undefined && answers.auditLock !== profile) await writeInstallAnswers(services.store, { ...answers, auditLock: profile });
+  } catch {
+    services.write(`Warning: the audit lock is now ${profile} on the stack, but the install answers were not updated; agentx init --resume would ask for the old profile.`);
+  }
+}
+
 /** True when the settings and install answers (if any) already name this model. */
 async function modelRecorded(services: ConfigServices, env: string, settings: EnvironmentSettings, role: ModelRole, modelId: string): Promise<boolean> {
   if (settings.models[role] !== modelId) return false;
@@ -286,6 +302,8 @@ export async function runConfigSet(services: ConfigServices, env: string, input:
       return { changed: true };
     });
   }
+  // The audit ledger's lock only moves up: refused here, before anything is asked or recorded (updateStackParameters checks again).
+  if (target.parameter === AUDIT_LOCK_PARAMETER) assertAuditLockNotLowered(await currentValue(services, env, settings, entry), value);
   const session = await recordingSession(services, env, entry, STACK_SIGN_IN_MS, input.yes);
   if (role !== undefined) await checkModel(services, env, settings, role, value);
   const roleArn = settings.access?.cloudFormationRoleArn;
@@ -302,6 +320,7 @@ export async function runConfigSet(services: ConfigServices, env: string, input:
         cloudFormation: services.cloudFormation, stackName, roleArn, changes: { [target.parameter]: value }, label: "config",
         confirm: async ({ parameters, changes }) => {
           for (const change of parameters) services.write(`${entry.key}: ${change.name} ${change.from} -> ${change.to} on ${stackName}`);
+          if (parameters.some((change) => change.name === AUDIT_LOCK_PARAMETER && change.to === "production")) services.write(AUDIT_LOCK_PRODUCTION_MEANING);
           for (const change of changes) services.write(`  ${change.action} ${change.logicalId} (${change.type})${change.replacement === "True" ? " [replacement]" : ""}`);
           const requestedAt = input.yes ? undefined : iso(services.now());
           if (!(input.yes || await services.prompter.confirm(`Apply this change to ${stackName}?`, { defaultValue: false }))) return false;
@@ -326,6 +345,7 @@ export async function runConfigSet(services: ConfigServices, env: string, input:
     }
     // After a yes, updateStackParameters either changed the stack or threw.
     if (result.changed) await finishRecording(services, entry, recording, { outcome: "applied" });
+    if (result.changed && target.parameter === AUDIT_LOCK_PARAMETER) await recordAuditLock(services, env, value);
     if (result.changed && role !== undefined) {
       try {
         await recordModel(services, env, role, value);

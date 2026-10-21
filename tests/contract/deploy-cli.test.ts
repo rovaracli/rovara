@@ -187,7 +187,8 @@ function safeDeployDeps(overrides: DeployCliDependencies = {}): DeployCliDepende
       create: () => unexpectedAwsCall(),
     },
     stackOutputs: () => unexpectedAwsCall(),
-    stackParameters: () => unexpectedAwsCall(),
+    // An install now looks up the control plane's audit lock profile too: by default no stack exists yet.
+    stackParameters: async () => undefined,
     templatesClients: {
       cloudFormation: { send: () => unexpectedAwsCall() } as unknown as TemplatesEngineClients["cloudFormation"],
       s3: { send: () => unexpectedAwsCall() } as unknown as TemplatesEngineClients["s3"],

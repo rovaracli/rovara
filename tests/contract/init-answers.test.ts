@@ -80,7 +80,7 @@ describe("init questions", () => {
       models: { orchestrator: "us.anthropic.claude-sonnet-4-6", classifier: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: "us.anthropic.claude-sonnet-4-6" },
       alert: { kind: "email", address: "ops@example.com" },
       budget: { monthlyUsd: 260, scope: "account" },
-      auditLock: "production",
+      auditLock: "trial", // the staging default, as the infrastructure gives staging
       github: { account: "acme", accountType: "organization", appName: "AgentX acme (staging)" },
       slack: { appName: "AgentX acme (staging)", appPostedMessages: "accept" },
       // Spec 048 FR-020: your email and the developer sign-in are settings now.
@@ -243,9 +243,21 @@ describe("the budget question (FR-047)", () => {
 });
 
 describe("the audit lock question (Task 5b)", () => {
-  it("defaults to production when nothing says otherwise", async () => {
-    const result = await collectWithFlags({ ...base, flags: withExplicitUndefined(everyFlag, "auditLock") });
+  it("defaults to production for a real install name when nothing says otherwise", async () => {
+    const result = await collectWithFlags({ ...base, env: "acme", flags: withExplicitUndefined(everyFlag, "auditLock") });
     expect(result.answers.auditLock).toBe("production");
+  });
+
+  it("follows the environment the way the infrastructure does: staging, test and dev* default to trial, every other name to production", async () => {
+    for (const [env, expected] of [["staging", "trial"], ["test", "trial"], ["dev-2", "trial"], ["production", "production"], ["acme", "production"]] as const) {
+      const result = await collectWithFlags({ ...base, env, flags: withExplicitUndefined(everyFlag, "auditLock") });
+      expect(result.answers.auditLock, env).toBe(expected);
+    }
+  });
+
+  it("lets a flag override the environment's default either way", async () => {
+    expect((await collectWithFlags({ ...base, env: "staging", flags: { ...everyFlag, auditLock: "production" } })).answers.auditLock).toBe("production");
+    expect((await collectWithFlags({ ...base, env: "acme", flags: { ...everyFlag, auditLock: "trial" } })).answers.auditLock).toBe("trial");
   });
 
   it("takes --audit-lock trial and --audit-lock production", async () => {
@@ -262,6 +274,7 @@ describe("the audit lock question (Task 5b)", () => {
     const { settingsFields } = await import("../../packages/cli/src/init/settings-form.js");
     const field = settingsFields({ env: "acme", flags: {}, fixed: false, budgetWhy: "" }).find((each) => each.name === "auditLock")!;
     expect(field.defaultValue).toBe("production");
+    expect(settingsFields({ env: "staging", flags: {}, fixed: false, budgetWhy: "" }).find((each) => each.name === "auditLock")!.defaultValue).toBe("trial");
     expect(field.choices!.map((choice) => choice.value)).toEqual(["production", "trial"]);
     for (const choice of field.choices!) expect(choice.label).not.toMatch(/\u2014|\u2013/);
   });

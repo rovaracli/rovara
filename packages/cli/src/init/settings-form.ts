@@ -6,7 +6,7 @@
 // then ADVANCED_QUESTION (prompts.ts askForm).
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
 import { ENVIRONMENT_NAME_PATTERN, ENVIRONMENT_PLACEHOLDER, EnvironmentNameSchema } from "@agentx/contracts";
-import { AlertEmailSchema, GITHUB_LOGIN_PATTERN, MAX_BUDGET_USD } from "../deploy/answer-schemas.js";
+import { AlertEmailSchema, defaultAuditLockProfile, GITHUB_LOGIN_PATTERN, MAX_BUDGET_USD } from "../deploy/answer-schemas.js";
 import type { InitFlags } from "./answers.js";
 import { estimateMonthlyCost, modelName, modelPriceLabel, money, suggestedBudgetUsd } from "./cost.js";
 import type { FormField } from "./prompts.js";
@@ -149,7 +149,7 @@ export function settingsFields(input: SettingsFieldsInput): FormField[] {
     validate: orEmpty(budgetProblem), help: { why: input.budgetWhy, hint: `Optional. Leave empty to use the estimate plus 20% ($${suggested}).` },
   }));
   unless(flags.budgetScope, advanced({ name: SETTINGS_FIELD.budgetScope, question: "Which costs should the budget count?", flag: "--budget-scope", defaultValue: "account", choices: BUDGET_SCOPE_CHOICES }));
-  unless(flags.auditLock, advanced({ name: SETTINGS_FIELD.auditLock, question: "How long should the audit ledger be locked?", flag: "--audit-lock", defaultValue: "production", choices: AUDIT_LOCK_CHOICES }));
+  unless(flags.auditLock, advanced({ name: SETTINGS_FIELD.auditLock, question: "How long should the audit ledger be locked?", flag: "--audit-lock", defaultValue: defaultAuditLockProfile(input.env), choices: AUDIT_LOCK_CHOICES }));
   unless(flags.slackAppPostedMessages, advanced({ name: SETTINGS_FIELD.appPostedMessages, question: "Answer mentions people post through other apps with their own Slack token?", flag: "--slack-app-posted-messages", defaultValue: "accept", choices: POSTED_CHOICES }));
   unless(alertAnswered, advanced({ name: SETTINGS_FIELD.alertKind, question: "Where should AgentX send alerts?", flag: ALERT_FLAG, defaultValue: "email", choices: ALERT_CHOICES }));
   unless(alertAnswered, advanced({ name: SETTINGS_FIELD.alertEmail, question: "Alert email address", flag: ALERT_FLAG, defaultValue: "", validate: orEmpty(emailProblem), help: { hint: "Optional. Leave empty to use your email." } }));

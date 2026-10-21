@@ -137,6 +137,9 @@ export const AUDIT_RECORD_FAILED_EVENTS = ["audit.record_failed", "audit.record_
  */
 export const AUDIT_PENDING_STUCK_EVENTS = ["audit.pending_stuck", "audit.drain_failed"] as const;
 
+/** A string that is a CDK token (a template value resolved at deploy time), not the text it will become. */
+export type TemplateTokenString = string & { readonly __templateToken: true };
+
 /** The two lock profiles an install chooses between with the `AuditLockProfile` stack parameter. */
 export type AuditLockProfile = "production" | "trial";
 export const AUDIT_LOCK_PROFILES: readonly AuditLockProfile[] = ["production", "trial"];
@@ -209,9 +212,10 @@ export class AuditLedger extends Construct {
   /**
    * The same hash as a template value that follows the chosen profile (`Fn::If` on `AuditLockProfile`): the anchor's
    * `AUDIT_BUCKET_POLICY_SHA256` environment variable (Task 9) takes this, so it always names the policy the stack deployed.
-   * Only a token: read `bucketPolicySha256ByProfile` for the hex values.
+   * This is a CDK token string, NOT a hex digest: it resolves to the hash only at deploy time, so never compare it,
+   * slice it or hash it in TypeScript. Read `bucketPolicySha256ByProfile` for the hex values.
    */
-  readonly bucketPolicySha256: string;
+  readonly bucketPolicySha256: TemplateTokenString;
 
   constructor(scope: Construct, id: string, props: AuditLedgerProps) {
     super(scope, id);
@@ -406,7 +410,15 @@ export class AuditLedger extends Construct {
     const bucketPolicy = this.ledgerBucket.policy!;
     // Statements added to the policy after this point (by a later task) are kept after the profile's own.
     (bucketPolicy.node.defaultChild as s3.CfnBucketPolicy).addPropertyOverride("PolicyDocument.Statement", Lazy.any({
-      produce: () => [...profileStatements, ...(stack.resolve(bucketPolicy.document.toJSON()) as { Statement: unknown[] }).Statement.slice(profileStatements.length)],
+      produce: () => {
+        const resolved = (stack.resolve(bucketPolicy.document.toJSON()) as { Statement: unknown[] }).Statement;
+        // The override takes the profile's own statements from the front and keeps the rest. That is only right while CDK
+        // keeps the statements in the order they were added and does not merge or drop any; fail loudly at synth if not.
+        if (!productionStatements.every((statement, index) => canonicalJson(resolved[index]) === canonicalJson(statement))) {
+          throw new Error("audit ledger: CDK changed the order or the content of the bucket policy statements; the lock profile override depends on them");
+        }
+        return [...profileStatements, ...resolved.slice(profileStatements.length)];
+      },
     }));
 
     // The same documents with placeholders where the deployment's values go; resolving them through CDK gives the
@@ -415,7 +427,7 @@ export class AuditLedger extends Construct {
       .update(canonicalJson(stack.resolve(documentOf({ partition: "{{partition}}", account: "{{account}}", region: "{{region}}" }, profile).toJSON())))
       .digest("hex");
     this.bucketPolicySha256ByProfile = { production: hashOf(this.lockProfiles.production), trial: hashOf(this.lockProfiles.trial) };
-    this.bucketPolicySha256 = Fn.conditionIf(this.trialCondition.logicalId, this.bucketPolicySha256ByProfile.trial, this.bucketPolicySha256ByProfile.production).toString();
+    this.bucketPolicySha256 = Fn.conditionIf(this.trialCondition.logicalId, this.bucketPolicySha256ByProfile.trial, this.bucketPolicySha256ByProfile.production).toString() as TemplateTokenString;
 
     this.exportsBucket = new s3.Bucket(this, "AuditExportsBucket", {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
