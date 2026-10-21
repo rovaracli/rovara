@@ -785,9 +785,10 @@ describe("verifyTimeStampToken: the hash input", () => {
 describe("verifyTimeStampToken: the certificate path search is bounded", () => {
   const pki = makePki("Bounded");
 
-  it("a pool of self-signed certificates sharing one name and key returns quickly with a failing verdict", () => {
+  // 15 clones make 15 x 15 = 225 distinct links, under the signature-check cap: only an edge-visit cap stops the walk.
+  it.each([15, 20])("a pool of %i self-signed certificates sharing one name and key returns quickly with a failing verdict", (count) => {
     const keys = newKey("ec");
-    const clones = Array.from({ length: 20 }, (_, i) =>
+    const clones = Array.from({ length: count }, (_, i) =>
       issueCertificate({
         commonName: "Clone CA",
         keys,

@@ -80,8 +80,10 @@ function validCa(fields: CertificateFields, index: number): boolean {
 
 const MAX_PATH_LENGTH = 8;
 const MAX_PATHS = 32;
-/** The most issuer links (subject signed by issuer?) one search examines before it gives up. */
+/** The most signature checks (distinct subject and issuer pairs) one search makes before it gives up. */
 const MAX_LINK_CHECKS = 256;
+/** The most edges (subject and issuer with a matching name, cached or not) one search visits before it gives up. */
+const MAX_EDGE_VISITS = 4096;
 
 /**
  * Looks for paths from `signer` to one of `anchors` through `pool` (the certificates that came with the
@@ -89,7 +91,8 @@ const MAX_LINK_CHECKS = 256;
  * anchor but none passes the CA, path length, key usage and validity checks at `at`.
  *
  * The pool is attacker-supplied, so the search is bounded: certificates are de-duplicated by their bytes,
- * each (subject, issuer) signature is checked once, and after `MAX_LINK_CHECKS` links the search stops and
+ * each (subject, issuer) signature is checked once, and after `MAX_LINK_CHECKS` signature checks or
+ * `MAX_EDGE_VISITS` edges the search stops and
  * the token is "untrusted" (a bound that is hit never produces "ok").
  */
 export function checkCertificatePath(
@@ -118,9 +121,15 @@ export function checkCertificatePath(
   const isAnchor = (c: Candidate): boolean => anchorCandidates.some((a) => bytesEqual(a.fields.raw, c.fields.raw));
   const verdicts = new Map<Candidate, Map<Candidate, boolean>>();
   let linkChecks = 0;
+  let edgeVisits = 0;
   let exhausted = false;
   const signedBy = (subject: Candidate, issuer: Candidate): boolean => {
     if (!bytesEqual(subject.fields.issuer, issuer.fields.subject)) return false;
+    edgeVisits += 1;
+    if (edgeVisits > MAX_EDGE_VISITS) {
+      exhausted = true;
+      return false;
+    }
     let known = verdicts.get(subject);
     if (known === undefined) {
       known = new Map();
