@@ -275,18 +275,18 @@ whichever boundary is in force. The default boundary allows the AWS services Rov
 (a generated test keeps that list complete and adds nothing unused), role actions and `PassRole`
 only for roles under `/agentx/<env>/` (plus the service role itself), and a few
 service-linked roles. It explicitly denies Organizations and Account changes, anything on IAM users
-or groups, creating, versioning or deleting managed policies (except the ones named `agentx-*`, which
-hold the broker's grants), and changing the boundary itself. A
+or groups, creating, versioning or deleting managed policies (except the environment's own broker grant policies,
+`policy/agentx/<env>/agentx-<env>-broker-*`), and changing the boundary itself. A
 company-supplied boundary replaces the default entirely, so it must allow every action Rovara's
 roles need.
 That includes `ses:SendEmail` on the sign-in sender identity (the `CloudSignInEmailSourceArn` identity,
 in whichever region it lives): without it the new-sign-in-method notice fails quietly, because a
 failed notice never fails a sign-in.
-It also includes creating, reading, versioning and deleting the managed policies named `agentx-*`
+It also includes creating, reading, versioning and deleting the environment's own broker managed policies
 (`iam:CreatePolicy`, `iam:DeletePolicy`, `iam:CreatePolicyVersion`, `iam:DeletePolicyVersion`,
 `iam:GetPolicy`, `iam:GetPolicyVersion`, `iam:ListPolicyVersions`, `iam:TagPolicy`, `iam:UntagPolicy`,
-`iam:ListEntitiesForPolicy` on `policy/agentx-*`): the broker's grants live in
-`agentx-<env>-broker-state`, `-orchestration` and `-integrations`, because IAM caps a role's inline
+`iam:ListEntitiesForPolicy` on `policy/agentx/<env>/agentx-<env>-broker-*`): the broker's grants live in
+`agentx-<env>-broker-state`, `-orchestration` and `-integrations` under the path `/agentx/<env>/`, because IAM caps a role's inline
 policies at 10,240 characters.
 
 What this does and does not protect, plainly:

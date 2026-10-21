@@ -37,7 +37,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { HEALTH_ALARM_SUFFIXES, connectorSecretsRoleName, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
+import { HEALTH_ALARM_SUFFIXES, brokerManagedPolicyPath, brokerManagedPolicyPrefix, connectorSecretsRoleName, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
 import { TaskPersonProof } from "./task-person-proof.js";
@@ -199,7 +199,7 @@ export class ControlPlaneStack extends Stack {
     // Then they move into named managed policies (agentx-<env>-broker-<group>, ruling M2): a role's inline policies are capped at 10,240
     // characters in total, and the deploy's CloudFormation role may create managed policies named agentx-* only.
     if (naming.env !== undefined && props?.mergeBrokerStatements !== false) {
-      mergeRoleStatementsOnSynth(broker.role!, { managedPolicyPrefix: `agentx-${naming.env}-broker` });
+      mergeRoleStatementsOnSynth(broker.role!, { managedPolicyPrefix: brokerManagedPolicyPrefix(naming.env), managedPolicyPath: brokerManagedPolicyPath(naming.env) });
     }
     state.grantReadWriteData(broker);
     artifacts.grantReadWrite(broker);

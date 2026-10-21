@@ -85,8 +85,8 @@ Without `--to`, it upgrades to the release of the `agentx` you run. So
 `npx @preplabsai/rovara-code@<version> --env <env> upgrade --region <region>` is the usual form.
 `--release <dir>` uses a release directory instead of downloading one.
 
-The access stack deploys first, so the CloudFormation role can create the broker's `agentx-*`
-managed policies before the control plane needs them.
+The access stack deploys first, so the CloudFormation role can create the broker's
+`agentx-<env>-broker-*` managed policies before the control plane needs them.
 
 It prints the release notes, then deploys each stack in turn. For each stack it shows the change
 set (or, for a cdk environment, `cdk diff`), lists IAM changes on their own, and asks before

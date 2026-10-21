@@ -18,7 +18,7 @@ export interface PolicyStatementJson {
   Effect: "Allow" | "Deny";
   Action: string[];
   Resource?: string | string[];
-  /** Only a Deny names it: every resource except these (ruling M2's carve-out for agentx-* managed policies). */
+  /** Only a Deny names it: every resource except these (ruling M2's carve-out for the environment's broker managed policies). */
   NotResource?: string | string[];
   Condition?: Record<string, Record<string, string | string[]>>;
 }
@@ -129,7 +129,7 @@ const ROLE_ACTIONS = [
  * Managed-policy management (Plan 3, ruling M2): the broker's grants live in named customer-managed policies (agentx-<env>-broker-<group>)
  * because IAM caps a role's inline policies at 10,240 characters in total. These are exactly the actions CloudFormation's
  * AWS::IAM::ManagedPolicy handlers use (create, read, update, delete), no SetDefaultPolicyVersion (CreatePolicyVersion sets the default)
- * and no Attach/Detach (ROLE_ACTIONS has them, on roles). Allowed only on policies named agentx-*, in the service role and the boundary.
+ * and no Attach/Detach (ROLE_ACTIONS has them, on roles). Allowed only on this environment's policy/agentx/<env>/agentx-<env>-broker-*, in the service role and the boundary.
  */
 export const MANAGED_POLICY_ACTIONS: readonly string[] = [
   "iam:CreatePolicy",
@@ -144,9 +144,23 @@ export const MANAGED_POLICY_ACTIONS: readonly string[] = [
   "iam:ListEntitiesForPolicy",
 ];
 
-/** The managed policies AgentX creates: named agentx-*, no path, in any environment (the default boundary lives under a path, so it never matches). */
-function agentxManagedPolicies(scope: Pick<PolicyScope, "partition" | "account">): string {
-  return `arn:${scope.partition}:iam::${scope.account}:policy/agentx-*`;
+/** The path the broker's managed grant policies live under (the environment's role path, ruling M2). */
+export function brokerManagedPolicyPath(env: string): string {
+  return environmentRolePath(env);
+}
+
+/** The broker's managed grant policies' name prefix, agentx-<env>-broker (ruling M2). */
+export function brokerManagedPolicyPrefix(env: string): string {
+  return `agentx-${env}-broker`;
+}
+
+/**
+ * The managed policies this environment's deploy may manage (ruling M2, owner-approved 2026-10-21): only its own broker grant
+ * policies, under its own path, so one environment's deploy cannot touch another's policies, the default boundary
+ * (agentx-<env>-boundary, which this prefix never matches) or any other agentx-named policy in the account.
+ */
+function agentxManagedPolicies(scope: Pick<PolicyScope, "env" | "partition" | "account">): string {
+  return `arn:${scope.partition}:iam::${scope.account}:policy${brokerManagedPolicyPath(scope.env)}${brokerManagedPolicyPrefix(scope.env)}-*`;
 }
 
 /** Instance profile management the service role needs for the EC2 workers' instance profile. */
@@ -243,6 +257,9 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
       Condition: { StringNotEquals: { "iam:PermissionsBoundary": boundary } },
     },
     { Sid: "IamKeepBoundary", Effect: "Deny", Action: ["iam:DeleteRolePermissionsBoundary"], Resource: roles },
+    // The boundary in force (a company's own, or the default) is never edited, versioned, tagged or deleted by the deploy (ruling M2
+    // review): a new default version of the boundary would lift the ceiling for every role.
+    { Sid: "IamKeepBoundaryPolicy", Effect: "Deny", Action: ["iam:CreatePolicyVersion", "iam:DeletePolicyVersion", "iam:SetDefaultPolicyVersion", "iam:DeletePolicy", "iam:TagPolicy", "iam:UntagPolicy"], Resource: boundary },
     { Sid: "PassRoles", Effect: "Allow", Action: ["iam:PassRole"], Resource: roles },
     {
       Sid: "ServiceLinkedRoles",
@@ -315,8 +332,8 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
       Sid: "DenyPolicyManagement",
       Effect: "Deny",
       Action: ["iam:CreatePolicy*", "iam:*PolicyVersion*", "iam:DeletePolicy", "iam:SetDefaultPolicyVersion"],
-      // Everywhere except the agentx-* policies the service role creates (ruling M2). NotResource, so a policy that is not named
-      // agentx-* (and the default boundary, under a path) stays denied; DenyBoundaryChanges below still covers the boundary.
+      // Everywhere except this environment's broker grant policies (ruling M2). NotResource, so a policy that is not named
+      // (the default boundary and every other agentx-named policy included) stays denied; DenyBoundaryChanges below still covers the boundary.
       NotResource: agentxManagedPolicies(scope),
     },
     { Sid: "DenyBoundaryChanges", Effect: "Deny", Action: ["iam:*Policy*"], Resource: defaultBoundaryArn(scope) },

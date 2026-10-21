@@ -148,8 +148,10 @@ describe("access stack", () => {
     // quota read, never servicequotas:*).
     const namedActions = [...actions];
     expect(namedActions.length).toBeGreaterThan(0);
-    // The service role's own boundary Deny action (DeleteRolePermissionsBoundary) is never needed as an allow.
-    expect(namedActions.filter((a) => a !== "iam:DeleteRolePermissionsBoundary" && !allowed.has(a) && !allowedServices.has(a.split(":")[0]))).toEqual([]);
+    // The service role's own boundary Deny actions (DeleteRolePermissionsBoundary, and the IamKeepBoundaryPolicy actions of ruling
+    // M2's review) are never needed as allows.
+    const denyOnly = new Set(["iam:DeleteRolePermissionsBoundary", "iam:SetDefaultPolicyVersion"]);
+    expect(namedActions.filter((a) => !denyOnly.has(a) && !allowed.has(a) && !allowedServices.has(a.split(":")[0]))).toEqual([]);
     // Nothing the roles never use: every wildcard service is a resource type's service or used by an action.
     const used = new Set([...neededServices, ...[...actions].map((a) => a.split(":")[0]!)]);
     expect([...allowedServices].filter((service) => !used.has(service!))).toEqual([]);

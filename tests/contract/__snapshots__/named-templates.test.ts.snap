@@ -351,7 +351,7 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                         {
                           "Ref": "AWS::AccountId",
                         },
-                        ":policy/agentx-*",
+                        ":policy/agentx/staging/agentx-staging-broker-*",
                       ],
                     ],
                   },
@@ -422,6 +422,29 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                     ],
                   },
                   "Sid": "IamKeepBoundary",
+                },
+                {
+                  "Action": [
+                    "iam:CreatePolicyVersion",
+                    "iam:DeletePolicyVersion",
+                    "iam:SetDefaultPolicyVersion",
+                    "iam:DeletePolicy",
+                    "iam:TagPolicy",
+                    "iam:UntagPolicy",
+                  ],
+                  "Effect": "Deny",
+                  "Resource": {
+                    "Fn::If": [
+                      "HasPermissionsBoundary",
+                      {
+                        "Ref": "PermissionsBoundaryArn",
+                      },
+                      {
+                        "Ref": "DefaultPermissionsBoundary",
+                      },
+                    ],
+                  },
+                  "Sid": "IamKeepBoundaryPolicy",
                 },
                 {
                   "Action": [
@@ -757,7 +780,7 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                     {
                       "Ref": "AWS::AccountId",
                     },
-                    ":policy/agentx-*",
+                    ":policy/agentx/staging/agentx-staging-broker-*",
                   ],
                 ],
               },
@@ -945,7 +968,7 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                     {
                       "Ref": "AWS::AccountId",
                     },
-                    ":policy/agentx-*",
+                    ":policy/agentx/staging/agentx-staging-broker-*",
                   ],
                 ],
               },
@@ -2855,7 +2878,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Properties": {
         "Description": "AgentX broker grants (integrations), moved out of the role's inline policy for size",
         "ManagedPolicyName": "agentx-staging-broker-integrations",
-        "Path": "/",
+        "Path": "/agentx/staging/",
         "PolicyDocument": {
           "Statement": [
             {
@@ -2966,7 +2989,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Properties": {
         "Description": "AgentX broker grants (orchestration), moved out of the role's inline policy for size",
         "ManagedPolicyName": "agentx-staging-broker-orchestration",
-        "Path": "/",
+        "Path": "/agentx/staging/",
         "PolicyDocument": {
           "Statement": [
             {
@@ -3349,7 +3372,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Properties": {
         "Description": "AgentX broker grants (state), moved out of the role's inline policy for size",
         "ManagedPolicyName": "agentx-staging-broker-state",
-        "Path": "/",
+        "Path": "/agentx/staging/",
         "PolicyDocument": {
           "Statement": [
             {

@@ -29,7 +29,11 @@ describe("service role policy", () => {
   it("scopes every IAM action to the environment's role path, except service-linked roles", () => {
     for (const statement of serviceRoleStatements(scope).filter((s) => s.Action.some((a) => a.startsWith("iam:")))) {
       const resources = [statement.Resource].flat();
-      if (statement.Sid === "CognitoEmailServiceLinkedRole") {
+      if (statement.Sid === "IamKeepBoundaryPolicy") {
+        // Ruling M2 review: the boundary in force is never versioned, tagged or deleted by the deploy.
+        expect(statement.Effect).toBe("Deny");
+        expect(resources).toEqual(["arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-boundary"]);
+      } else if (statement.Sid === "CognitoEmailServiceLinkedRole") {
         expect(resources).toEqual([COGNITO_EMAIL_SLR]);
       } else if (statement.Sid === "ServiceLinkedRoles") {
         expect(resources).toEqual(["arn:aws:iam::123456789012:role/aws-service-role/*"]);
@@ -41,7 +45,7 @@ describe("service role policy", () => {
       } else if (statement.Sid === "IamManagedPolicies") {
         // Ruling M2 (owner-approved 2026-10-21): the broker's named managed policies, agentx-* only, and only the
         // create/read/update/delete actions CloudFormation's AWS::IAM::ManagedPolicy handlers use.
-        expect(resources).toEqual(["arn:aws:iam::123456789012:policy/agentx-*"]);
+        expect(resources).toEqual(["arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-broker-*"]);
         expect([...statement.Action].sort()).toEqual([...MANAGED_POLICY_ACTIONS].sort());
       } else {
         // A path, not a name prefix: generated role names are truncated, and agentx-prod-* would
@@ -97,7 +101,7 @@ describe("service role policy", () => {
   });
 
   it("never grants iam:* or wildcard IAM user, group or policy management (managed policies only as agentx-*, ruling M2)", () => {
-    const all = actions(serviceRoleStatements(scope).filter((statement) => statement.Sid !== "IamManagedPolicies"));
+    const all = actions(serviceRoleStatements(scope).filter((statement) => statement.Effect === "Allow" && statement.Sid !== "IamManagedPolicies"));
     expect(all).not.toContain("iam:*");
     expect(all.filter((a) => /^iam:(Create|Delete|Put|Attach).*(User|Group|Policy)$/.test(a) && !ROLE_SCOPED_POLICY_ACTIONS.includes(a))).toEqual([]);
   });
@@ -292,7 +296,7 @@ describe("default permission boundary", () => {
 
   it("never allows iam:* or any user, group, access key, login profile or managed-policy action, except agentx-* managed policies (ruling M2)", () => {
     const managedPolicies = allows.find((statement) => statement.Sid === "IamManagedPolicies");
-    expect(managedPolicies?.Resource).toBe("arn:aws:iam::123456789012:policy/agentx-*");
+    expect(managedPolicies?.Resource).toBe("arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-broker-*");
     expect([...managedPolicies!.Action].sort()).toEqual([...MANAGED_POLICY_ACTIONS].sort());
     const iam = allows.filter((statement) => statement.Sid !== "IamManagedPolicies").flatMap((s) => s.Action).filter((a) => a.startsWith("iam:") || a === "*");
     expect(iam).not.toContain("iam:*");
@@ -335,7 +339,7 @@ describe("default permission boundary", () => {
       { Action: ["organizations:*", "account:*"], Resource: "*" },
       { Action: ["iam:*User*", "iam:*Group*"], Resource: "*" },
       // Every policy except the agentx-* managed policies the service role creates (ruling M2); the boundary itself stays denied below.
-      { Action: ["iam:CreatePolicy*", "iam:*PolicyVersion*", "iam:DeletePolicy", "iam:SetDefaultPolicyVersion"], Resource: { NotResource: "arn:aws:iam::123456789012:policy/agentx-*" } },
+      { Action: ["iam:CreatePolicy*", "iam:*PolicyVersion*", "iam:DeletePolicy", "iam:SetDefaultPolicyVersion"], Resource: { NotResource: "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-broker-*" } },
       { Action: ["iam:*Policy*"], Resource: "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-boundary" },
     ]);
     expect(denies.every((s) => s.Condition === undefined)).toBe(true);
