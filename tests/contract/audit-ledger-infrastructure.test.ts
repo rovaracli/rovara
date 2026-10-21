@@ -12,6 +12,7 @@ import { environmentNaming } from "../../infra/lib/naming.js";
 import { auditLockSettings, auditTsaSettings } from "../../infra/lib/audit-settings.js";
 import { evaluate } from "../support/cfn-evaluate.js";
 import { roleStatements, simulateIam, type IamStatement } from "../support/iam-simulate.js";
+import { lockedPutInput } from "../../packages/broker/src/audit/anchor.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -823,9 +824,14 @@ describe("the audit ledger in templates", () => {
             .filter((statement) => watched.some((name) => JSON.stringify([statement.Resource, statement.NotResource]).includes(name)))
             .map((statement) => `${policy}/${statement.Sid ?? "?"}`));
           // Each function's statements are listed here: the broker's send (Task 6), and the appender's consume and
-          // table statements (Task 7, pinned in full in "the appender" below). Later tasks add theirs.
+          // table statements (Task 7, pinned in full in "the appender" below), and the anchor's (Task 8, "the anchor" below). Later tasks add theirs.
           expect(mentions.sort()).toStrictEqual([
             "AuditAppenderRoleDefaultPolicy/?",
+            "AuditLedgerAuditAnchorPolicy/LedgerBucketObjects",
+            "AuditLedgerAuditAnchorPolicy/LedgerBucketVersions",
+            "AuditLedgerAuditAnchorPolicy/LedgerDirtyMarkers",
+            "AuditLedgerAuditAnchorPolicy/LedgerRead",
+            "AuditLedgerAuditAnchorPolicy/SealsTable",
             "AuditLedgerAuditAppenderPolicy/KeysTable",
             "AuditLedgerAuditAppenderPolicy/LedgerTable",
             "AuditLedgerAuditBrokerOutboxPolicy/SendAuditEvents",
@@ -978,11 +984,11 @@ describe("the audit ledger in templates", () => {
           expect(JSON.stringify(variables)).not.toContain("alias/");
         });
 
-        it("is the only function given the ledger or keys table names or the vault key", () => {
-          const others = ofType(synthesis.template, "AWS::Lambda::Function").filter(([id]) => withoutHash(id) !== "AuditLedgerAuditAppender");
+        it("is the only function given the keys table's name or the vault key, and only it and the anchor are given the ledger table", () => {
+          const others = ofType(synthesis.template, "AWS::Lambda::Function").filter(([id]) => !["AuditLedgerAuditAppender", "AuditLedgerAuditAnchor"].includes(withoutHash(id)));
           for (const [id, fn] of others) {
             const variables = JSON.stringify((fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables ?? {});
-            expect(variables, id).not.toMatch(/AuditLedgerAudit(LedgerTable|KeysTable|SealsTable|VaultKey)/);
+            expect(variables, id).not.toMatch(/AuditLedgerAudit(LedgerTable|KeysTable|SealsTable|VaultKey|LedgerBucket)/);
           }
         });
 
@@ -1172,6 +1178,341 @@ describe("the audit ledger in templates", () => {
     it("a legacy template has no appender", () => {
       const legacy = Template.fromStack(buildAgentXApp().node.children.filter((child): child is Stack => Stack.isStack(child)).find((stack) => stack.stackName === "AgentXControlPlane")!).toJSON();
       expect(JSON.stringify(legacy)).not.toMatch(/AuditAppender|AUDIT_LEDGER_TABLE_NAME|AuditIntakeBacklog/);
+    });
+  });
+
+  describe("the anchor (Task 8)", () => {
+    const ROLE = "AuditLedgerAuditAnchorRole";
+    const LEDGER = "AuditLedgerAuditLedgerTable.Arn";
+    const KEYS = "AuditLedgerAuditKeysTable.Arn";
+    const SEALS = "AuditLedgerAuditSealsTable.Arn";
+    const QUEUE = "AuditLedgerAuditIntakeQueue.Arn";
+    const DLQ = "AuditLedgerAuditIntakeDeadLetterQueue.Arn";
+    const VAULT_KEY = "AuditLedgerAuditVaultKey.Arn";
+    const LEDGER_BUCKET = "AuditLedgerAuditLedgerBucket.Arn";
+    const EXPORTS_BUCKET = "AuditLedgerAuditExportsBucket.Arn";
+    const STATE = "State.Arn";
+    const SEAL_PARTITIONS = ["EPOCH#*", "EPOCH_HEAD", "SEALED#*", "SEALS#*", "BACKSTOP"];
+    const functionOf = (synthesis: Synth) => one(synthesis.template, "AWS::Lambda::Function", "AuditLedgerAuditAnchor");
+    const identity = (synthesis: Synth): IamStatement[] => roleStatements(synthesis.template, one(synthesis.template, "AWS::IAM::Role", ROLE)[0], concreteAws);
+    const ownStatements = (synthesis: Synth): Statement[] => {
+      const own = ofType(synthesis.template, "AWS::IAM::Policy").filter(([id]) => withoutHash(id) === "AuditLedgerAuditAnchorPolicy");
+      expect(own).toHaveLength(1);
+      return ((own[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => concreteAws(statement) as Statement);
+    };
+    const sortedBySid = (statements: IamStatement[]) => statements.slice().sort((left, right) => String(left.Sid ?? left.Action).localeCompare(String(right.Sid ?? right.Action)));
+
+    for (const env of ["production", "staging", "acme"]) {
+      describe(env, () => {
+        const synthesis = named(env);
+
+        it("is a Node 22 function with 300 seconds, 512 MB and reserved concurrency 1, on its own role, outside any VPC", () => {
+          const [, fn] = functionOf(synthesis);
+          expect(fn.Properties).toMatchObject({ Runtime: "nodejs22.x", Timeout: 300, MemorySize: 512, ReservedConcurrentExecutions: 1, Handler: "index.handler" });
+          expect(concreteAws(fn.Properties.Role)).toBe(`${ROLE}.Arn`);
+          expect(fn.Properties.VpcConfig).toBeUndefined();
+          // Reserved concurrency is the anchor's alone.
+          const reserved = ofType(synthesis.template, "AWS::Lambda::Function").filter(([, other]) => other.Properties.ReservedConcurrentExecutions !== undefined);
+          expect(reserved.map(([id]) => withoutHash(id))).toContain("AuditLedgerAuditAnchor");
+        });
+
+        it("is given the ledger and seals table names and the ledger bucket's name, and no key, alias or vault", () => {
+          const [, fn] = functionOf(synthesis);
+          const variables = (fn.Properties.Environment as { Variables: Json }).Variables;
+          const audit = Object.fromEntries(Object.entries(variables).filter(([name]) => name.startsWith("AUDIT_")).map(([name, value]) => [name, concreteAws(value)]));
+          expect(audit).toStrictEqual({
+            AUDIT_LEDGER_TABLE_NAME: "Ref:AuditLedgerAuditLedgerTable",
+            AUDIT_SEALS_TABLE_NAME: "Ref:AuditLedgerAuditSealsTable",
+            AUDIT_LEDGER_BUCKET_NAME: "Ref:AuditLedgerAuditLedgerBucket",
+          });
+          expect(JSON.stringify(variables)).not.toMatch(/alias\/|KeysTable|VaultKey/);
+        });
+
+        it("is the only function given the seals table or the ledger bucket", () => {
+          const withSeals = ofType(synthesis.template, "AWS::Lambda::Function").filter(([, fn]) => JSON.stringify((fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables ?? {}).includes("AuditLedgerAuditSealsTable"));
+          expect(withSeals.map(([id]) => withoutHash(id))).toStrictEqual(["AuditLedgerAuditAnchor"]);
+          const withBucket = ofType(synthesis.template, "AWS::Lambda::Function").filter(([, fn]) => JSON.stringify((fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables ?? {}).includes("AuditLedgerAuditLedgerBucket"));
+          expect(withBucket.map(([id]) => withoutHash(id))).toStrictEqual(["AuditLedgerAuditAnchor"]);
+        });
+
+        it("has exactly the pinned statements, in a policy of its own, and the log group's write actions", () => {
+          expect(ownStatements(synthesis)).toStrictEqual([
+            {
+              Sid: "SealsTable", Effect: "Allow",
+              Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"],
+              Resource: SEALS,
+              Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": SEAL_PARTITIONS } },
+            },
+            { Sid: "LedgerRead", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query"], Resource: LEDGER },
+            {
+              Sid: "LedgerDirtyMarkers", Effect: "Allow", Action: ["dynamodb:PutItem", "dynamodb:DeleteItem"], Resource: LEDGER,
+              Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT_DIRTY"] } },
+            },
+            { Sid: "LedgerBucketObjects", Effect: "Allow", Action: ["s3:PutObject", "s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectRetention"], Resource: `${LEDGER_BUCKET}/*` },
+            { Sid: "LedgerBucketVersions", Effect: "Allow", Action: "s3:ListBucketVersions", Resource: LEDGER_BUCKET },
+          ]);
+          // The whole identity of the role: those five and the log group's write actions. No managed policy.
+          expect(sortedBySid(identity(synthesis))).toStrictEqual(sortedBySid([
+            ...(ownStatements(synthesis) as IamStatement[]),
+            { Effect: "Allow", Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: "AuditLedgerAuditAnchorLogs.Arn" },
+          ]));
+          expect(identity(synthesis)).toHaveLength(6);
+        });
+
+        it("names no NotAction, no NotResource and no wildcard resource", () => {
+          for (const statement of identity(synthesis)) {
+            expect(statement.NotAction).toBeUndefined();
+            expect(statement.NotResource).toBeUndefined();
+            expect([statement.Resource].flat().join(",").replace(`${LEDGER_BUCKET}/*`, "")).not.toContain("*");
+            expect(statement.Effect).toBe("Allow");
+          }
+        });
+
+        describe("what IAM lets it do (the policies simulated)", () => {
+          const request = (action: string, resource: string, leadingKeys?: string[]) => simulateIam(identity(synthesis), { action, resource, ...(leadingKeys === undefined ? {} : { context: { "dynamodb:LeadingKeys": leadingKeys } }) });
+          const org = "org_aaaaaaaaaaaaaaaaaaaa";
+
+          it("allows its four actions on the seals table for its own partitions, alone or together", () => {
+            for (const action of ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]) {
+              for (const keys of [["EPOCH#e20261020T1215Z"], ["EPOCH_HEAD"], [`SEALED#${org}`], [`SEALS#${org}`], ["BACKSTOP"], [`EPOCH#e20261020T1215Z`, "EPOCH_HEAD", `SEALED#${org}`]]) {
+                expect(request(action, SEALS, keys).allowed, `${action} ${keys.join(",")}`).toBe(true);
+              }
+            }
+          });
+
+          it("denies the seals table to every other action, and its partitions to any other key", () => {
+            for (const action of ["dynamodb:DeleteItem", "dynamodb:ConditionCheckItem", "dynamodb:Scan", "dynamodb:BatchWriteItem", "dynamodb:BatchGetItem", "dynamodb:DeleteTable", "dynamodb:*"]) {
+              expect(request(action, SEALS, ["EPOCH_HEAD"]).allowed, action).toBe(false);
+            }
+            for (const keys of [[`AUDIT#${org}`], ["AUDIT_DIRTY"], ["AUDIT_ORGS"], ["EPOCH_HEAD", "AUDIT_DIRTY"], ["ORG#x"], ["epoch_head"], ["EPOCHX"]]) {
+              expect(request("dynamodb:PutItem", SEALS, keys).allowed, keys.join(",")).toBe(false);
+              expect(request("dynamodb:GetItem", SEALS, keys).allowed, keys.join(",")).toBe(false);
+            }
+          });
+
+          it("reads the ledger table, and writes there only dirty markers", () => {
+            for (const action of ["dynamodb:GetItem", "dynamodb:Query"]) {
+              for (const keys of [[`AUDIT#${org}`], ["AUDIT_DIRTY"], ["AUDIT_ORGS"]]) expect(request(action, LEDGER, keys).allowed, `${action} ${keys.join(",")}`).toBe(true);
+            }
+            for (const action of ["dynamodb:PutItem", "dynamodb:DeleteItem"]) {
+              expect(request(action, LEDGER, ["AUDIT_DIRTY"]).allowed, action).toBe(true);
+              // A record, a head, a claim, the org list, or any of those beside a marker.
+              for (const keys of [[`AUDIT#${org}`], ["AUDIT_ORGS"], ["AUDIT_DIRTY", `AUDIT#${org}`], ["AUDIT_EPOCH"], [`SEALED#${org}`]]) {
+                expect(request(action, LEDGER, keys), `${action} ${keys.join(",")}`).toMatchObject({ allowed: false, reason: "implicit-deny" });
+              }
+            }
+            for (const action of ["dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:Scan", "dynamodb:BatchWriteItem", "dynamodb:DeleteTable"]) {
+              expect(request(action, LEDGER, ["AUDIT_DIRTY"]).allowed, action).toBe(false);
+            }
+          });
+
+          it("has nothing on the keys table, the State table, the queues or the vault key", () => {
+            for (const resource of [KEYS, STATE]) {
+              for (const action of ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:DeleteItem"]) expect(request(action, resource, ["ORG#x"]).allowed, `${action} ${resource}`).toBe(false);
+            }
+            for (const resource of [QUEUE, DLQ]) {
+              for (const action of ["sqs:SendMessage", "sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:PurgeQueue"]) expect(request(action, resource).allowed, `${action} ${resource}`).toBe(false);
+            }
+            for (const action of ["kms:GenerateDataKey", "kms:Decrypt", "kms:Encrypt", "kms:CreateGrant"]) expect(request(action, VAULT_KEY).allowed, action).toBe(false);
+            expect(identity(synthesis).some((statement) => [statement.Action].flat().some((action) => String(action).startsWith("kms:")))).toBe(false);
+          });
+
+          it("creates and reads sealed objects and lists versions, and nothing that changes, removes or unlocks them", () => {
+            const object = `${LEDGER_BUCKET}/orgs/${org}/seals/000000000001.json`;
+            for (const action of ["s3:PutObject", "s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectRetention"]) expect(request(action, object).allowed, action).toBe(true);
+            expect(request("s3:ListBucketVersions", LEDGER_BUCKET).allowed).toBe(true);
+            for (const action of [
+              "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:PutObjectRetention", "s3:PutObjectLegalHold", "s3:BypassGovernanceRetention",
+              "s3:PutBucketObjectLockConfiguration", "s3:PutBucketPolicy", "s3:PutBucketVersioning", "s3:PutLifecycleConfiguration", "s3:DeleteBucket",
+              "s3:DeleteBucketPolicy", "s3:PutReplicationConfiguration", "s3:ListBucket", "s3:*",
+            ]) {
+              expect(request(action, object).allowed, `${action} on an object`).toBe(false);
+              expect(request(action, LEDGER_BUCKET).allowed, `${action} on the bucket`).toBe(false);
+            }
+            // Not the bucket's listing of versions on an object resource, and nothing on the exports bucket.
+            expect(request("s3:ListBucketVersions", object).allowed).toBe(false);
+            for (const resource of [EXPORTS_BUCKET, `${EXPORTS_BUCKET}/x`]) {
+              for (const action of ["s3:GetObject", "s3:PutObject", "s3:ListBucketVersions", "s3:DeleteObject"]) expect(request(action, resource).allowed, `${action} ${resource}`).toBe(false);
+            }
+          });
+
+          it("the simulator sees the conditions: without them the same statements would allow other partitions", () => {
+            const loosened = identity(synthesis).map(({ Condition: _condition, ...rest }) => { void _condition; return rest; });
+            expect(simulateIam(loosened, { action: "dynamodb:PutItem", resource: LEDGER, context: { "dynamodb:LeadingKeys": [`AUDIT#${org}`] } }).allowed).toBe(true);
+            expect(simulateIam(loosened, { action: "dynamodb:PutItem", resource: SEALS, context: { "dynamodb:LeadingKeys": ["AUDIT_DIRTY"] } }).allowed).toBe(true);
+            expect(request("dynamodb:PutItem", LEDGER, [`AUDIT#${org}`]).allowed).toBe(false);
+            expect(request("dynamodb:PutItem", SEALS, ["AUDIT_DIRTY"]).allowed).toBe(false);
+          });
+        });
+
+        it("no workload role may delete, unlock, lock-change or bypass retention on the ledger bucket, or write its policy", () => {
+          const denied = /^s3:(Delete|PutObjectRetention|PutObjectLegalHold|BypassGovernanceRetention|PutBucket|PutLifecycle|PutReplication|PutEncryption|PutObjectAcl)/i;
+          const reaches = (value: unknown): boolean => {
+            const text = JSON.stringify(value);
+            return text.includes("AuditLedgerAuditLedgerBucket") || /"\*"/.test(text) || text.includes("arn:aws:s3:::*");
+          };
+          const offending: string[] = [];
+          const statementsIn = (document: unknown): Statement[] => [((document as { Statement?: Statement | Statement[] } | undefined)?.Statement) ?? []].flat();
+          for (const [id, resource] of Object.entries(synthesis.template.Resources)) {
+            const documents: unknown[] = [];
+            if (resource.Type === "AWS::IAM::Policy") documents.push(resource.Properties.PolicyDocument);
+            if (resource.Type === "AWS::IAM::Role") for (const inline of (resource.Properties.Policies ?? []) as Array<{ PolicyDocument: unknown }>) documents.push(inline.PolicyDocument);
+            if (resource.Type === "AWS::IAM::ManagedPolicy") documents.push(resource.Properties.PolicyDocument);
+            for (const document of documents) {
+              for (const statement of statementsIn(document)) {
+                if (statement.Effect !== "Allow") continue;
+                const actions = [statement.Action ?? statement.NotAction].flat().map(String);
+                const broad = statement.NotAction !== undefined || actions.some((action) => action === "*" || action === "s3:*");
+                if ((broad || actions.some((action) => denied.test(action))) && reaches(statement.Resource ?? statement.NotResource)) offending.push(`${withoutHash(id)}/${statement.Sid ?? "?"}: ${actions.join(",")}`);
+              }
+            }
+          }
+          expect(offending).toStrictEqual([]);
+        });
+
+        describe("what the ledger bucket's own policy lets the anchor's PutObject do (both lock profiles)", () => {
+          const roleArn = `arn:aws:iam::${ACCOUNT}:role/anchor`;
+          const bucketPolicy = (profile: Profile): IamStatement[] => {
+            const [id] = one(synthesis.template, "AWS::S3::Bucket", "AuditLedgerAuditLedgerBucket");
+            const policies = Object.values(synthesis.template.Resources).filter((resource) => resource.Type === "AWS::S3::BucketPolicy" && (resource.Properties.Bucket as { Ref?: string }).Ref === id);
+            expect(policies).toHaveLength(1);
+            return ((policies[0]!.Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => underProfile(synthesis, statement, profile) as IamStatement);
+          };
+          const bucketArn = `arn:aws:s3:::agentx-${env}-audit-ledger-${ACCOUNT}-${REGION}`;
+          // The bucket policy is all Deny statements; the anchor's identity policy supplies the Allow (pinned above).
+          const identityAllow: IamStatement = { Sid: "AnchorIdentity", Effect: "Allow", Action: ["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:PutObjectRetention", "s3:PutObjectLegalHold", "s3:BypassGovernanceRetention", "s3:PutBucketObjectLockConfiguration"], Resource: "*" };
+          const put = (profile: Profile, context: Record<string, string>) => simulateIam([...bucketPolicy(profile), identityAllow], {
+            action: "s3:PutObject", resource: `${bucketArn}/orgs/org_aaaaaaaaaaaaaaaaaaaa/seals/000000000001.json`, principal: roleArn,
+            context: { "aws:SecureTransport": "true", "aws:PrincipalArn": roleArn, ...context },
+          });
+          /** The request context S3 builds for the anchor's PutObject: its If-None-Match header and any stated retention. */
+          const contextOf = (input: ReturnType<typeof lockedPutInput>): Record<string, string> => ({
+            ...(input.IfNoneMatch === undefined ? {} : { "s3:if-none-match": input.IfNoneMatch }),
+            ...(input.ObjectLockRetainUntilDate === undefined ? {} : { "s3:object-lock-remaining-retention-days": String(Math.floor((input.ObjectLockRetainUntilDate.getTime() - Date.now()) / 86_400_000)) }),
+          });
+          const anchorsPut = lockedPutInput("agentx-bucket", "orgs/org_aaaaaaaaaaaaaaaaaaaa/seals/000000000001.json", "{}", "application/json");
+
+          for (const profile of ["production", "trial"] as const) {
+            it(`allows the anchor's create-only write under the ${profile} profile`, () => {
+              expect(contextOf(anchorsPut)).toStrictEqual({ "s3:if-none-match": "*" });
+              expect(put(profile, contextOf(anchorsPut))).toMatchObject({ allowed: true });
+            });
+
+            it(`refuses a write that is not create-only, and one that states a short retention, under the ${profile} profile`, () => {
+              expect(put(profile, {})).toMatchObject({ allowed: false, reason: "explicit-deny", matched: ["RequireConditionalWrites"] });
+              expect(put(profile, { "s3:if-none-match": "*", "s3:object-lock-remaining-retention-days": "0" })).toMatchObject({ allowed: false, matched: ["DenyShortRetention"] });
+            });
+          }
+
+          it("production wants at least its retention if one is stated; the trial profile accepts a day", () => {
+            const days = (profile: Profile, remaining: string) => put(profile, { "s3:if-none-match": "*", "s3:object-lock-remaining-retention-days": remaining }).allowed;
+            expect(days("production", "30")).toBe(false);
+            expect(days("production", "1095")).toBe(false);
+            expect(days("production", "1096")).toBe(true);
+            expect(days("trial", "1")).toBe(true);
+            expect(days("trial", "0")).toBe(false);
+          });
+
+          it("denies the anchor's role every delete and lock change, in both profiles", () => {
+            for (const profile of ["production", "trial"] as const) {
+              for (const action of ["s3:DeleteObject", "s3:DeleteObjectVersion", "s3:PutObjectRetention", "s3:PutObjectLegalHold", "s3:BypassGovernanceRetention", "s3:PutBucketObjectLockConfiguration"]) {
+                // Even if an identity policy allowed the action, the bucket policy's Deny wins.
+                const decision = simulateIam([...bucketPolicy(profile), identityAllow], { action, resource: `${bucketArn}/x`, principal: roleArn, context: { "aws:SecureTransport": "true", "aws:PrincipalArn": roleArn } });
+                expect(decision, `${profile} ${action}`).toMatchObject({ allowed: false, reason: "explicit-deny" });
+              }
+            }
+          });
+        });
+
+        it("runs every 15 minutes on a schedule that sends { source: agentx.audit-epoch } to the anchor through a scheduler role", () => {
+          const [, schedule] = one(synthesis.template, "AWS::Scheduler::Schedule", "AuditLedgerAuditEpochSchedule");
+          const anchorId = functionOf(synthesis)[0];
+          expect(concreteAws(schedule.Properties)).toStrictEqual({
+            Description: "Seals the audit records written since the last epoch",
+            FlexibleTimeWindow: { Mode: "OFF" },
+            ScheduleExpression: "rate(15 minutes)",
+            State: "ENABLED",
+            Target: {
+              Arn: `${withoutHash(anchorId)}.Arn`,
+              RoleArn: "AuditLedgerAuditEpochSchedulerRole.Arn",
+              Input: JSON.stringify({ source: "agentx.audit-epoch" }),
+              RetryPolicy: { MaximumEventAgeInSeconds: 60, MaximumRetryAttempts: 0 },
+            },
+          });
+          const [, role] = one(synthesis.template, "AWS::IAM::Role", "AuditLedgerAuditEpochSchedulerRole");
+          expect(concreteAws(role.Properties.AssumeRolePolicyDocument)).toStrictEqual({
+            Version: "2012-10-17",
+            Statement: [{
+              Effect: "Allow", Action: "sts:AssumeRole", Principal: { Service: "scheduler.amazonaws.com" },
+              Condition: { StringEquals: { "aws:SourceAccount": ACCOUNT, "aws:SourceArn": `arn:aws:scheduler:${REGION}:${ACCOUNT}:schedule-group/default` } },
+            }],
+          });
+          const inline = role.Properties.Policies as Array<{ PolicyDocument: { Statement: Statement[] } }>;
+          expect(inline).toHaveLength(1);
+          expect(inline[0]!.PolicyDocument.Statement.map((statement) => concreteAws(statement))).toStrictEqual([
+            { Sid: "InvokeAnchor", Effect: "Allow", Action: "lambda:InvokeFunction", Resource: `${withoutHash(anchorId)}.Arn` },
+          ]);
+          const epochs = ofType(synthesis.template, "AWS::Scheduler::Schedule").filter(([, other]) => JSON.stringify(other.Properties).includes("agentx.audit-epoch"));
+          expect(epochs).toHaveLength(1);
+        });
+
+        it("raises three alarms: seals overdue, a chain mismatch (or version drift), and an object conflict", () => {
+          const topicId = one(synthesis.template, "AWS::SNS::Topic", "OperatorAlerts")[0];
+          const logGroupId = one(synthesis.template, "AWS::Logs::LogGroup", "AuditLedgerAuditAnchorLogs")[0];
+          const namespace = environmentNaming(env).metricsNamespace;
+          const filter = (id: string) => one(synthesis.template, "AWS::Logs::MetricFilter", id)[1].Properties;
+          expect(filter("AuditLedgerAuditEpochSealedMetric")).toStrictEqual({
+            LogGroupName: { Ref: logGroupId }, FilterPattern: '{ $.event = "audit.epoch_sealed" }',
+            MetricTransformations: [{ MetricName: "AuditEpochSealed", MetricNamespace: namespace, MetricValue: "1" }],
+          });
+          expect(filter("AuditLedgerAuditChainMismatchMetric")).toStrictEqual({
+            LogGroupName: { Ref: logGroupId }, FilterPattern: '{ ($.event = "audit.chain_mismatch") || ($.event = "audit.version_drift") }',
+            MetricTransformations: [{ MetricName: "AuditChainMismatch", MetricNamespace: namespace, MetricValue: "1" }],
+          });
+          expect(filter("AuditLedgerAuditObjectConflictMetric")).toStrictEqual({
+            LogGroupName: { Ref: logGroupId }, FilterPattern: '{ $.event = "audit.object_conflict" }',
+            MetricTransformations: [{ MetricName: "AuditObjectConflict", MetricNamespace: namespace, MetricValue: "1" }],
+          });
+          const alarm = (id: string) => one(synthesis.template, "AWS::CloudWatch::Alarm", id)[1].Properties;
+          const overdue = alarm("AuditLedgerAuditSealOverdueAlarm");
+          expect(overdue).toMatchObject({
+            AlarmName: `agentx-${env}-AuditSealOverdue`, MetricName: "AuditEpochSealed", Namespace: namespace, Statistic: "Sum",
+            // Three 15-minute periods with fewer than one completed epoch each: 45 minutes. A missing period counts.
+            Period: 900, EvaluationPeriods: 3, DatapointsToAlarm: 3, Threshold: 1, ComparisonOperator: "LessThanThreshold", TreatMissingData: "breaching",
+          });
+          for (const [id, name] of [["AuditLedgerAuditChainMismatchAlarm", "AuditChainMismatch"], ["AuditLedgerAuditObjectConflictAlarm", "AuditObjectConflict"]] as const) {
+            expect(alarm(id)).toMatchObject({
+              AlarmName: `agentx-${env}-${name}`, MetricName: name, Namespace: namespace, Statistic: "Sum",
+              Period: 300, EvaluationPeriods: 1, Threshold: 1, ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
+            });
+          }
+          for (const id of ["AuditLedgerAuditSealOverdueAlarm", "AuditLedgerAuditChainMismatchAlarm", "AuditLedgerAuditObjectConflictAlarm"]) {
+            expect(alarm(id).AlarmActions).toStrictEqual([{ Ref: topicId }]);
+          }
+        });
+
+        it("names its alarms in the list the health route reads", () => {
+          for (const suffix of ["AuditSealOverdue", "AuditChainMismatch", "AuditObjectConflict"]) expect(HEALTH_ALARM_SUFFIXES).toContain(suffix);
+        });
+
+        it("keeps its log group a month", () => {
+          expect(one(synthesis.template, "AWS::Logs::LogGroup", "AuditLedgerAuditAnchorLogs")[1].Properties.RetentionInDays).toBe(30);
+        });
+      });
+    }
+
+    it("a scratch stack with the ledger alone builds the same function, schedule and alarms, so the checks above read the construct and not the control plane", () => {
+      const stack = new Stack(new App(), "Scratch");
+      new AuditLedger(stack, "AuditLedger", { ...scratchProps(stack), appenderRole: new iam.Role(stack, "AppenderRole", { assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com") }) });
+      const template = Template.fromStack(stack).toJSON() as TemplateJson;
+      expect(one(template, "AWS::Lambda::Function", "AuditLedgerAuditAnchor")[1].Properties).toMatchObject({ Timeout: 300, MemorySize: 512, ReservedConcurrentExecutions: 1 });
+      expect(one(template, "AWS::Scheduler::Schedule", "AuditLedgerAuditEpochSchedule")[1].Properties).toMatchObject({ ScheduleExpression: "rate(15 minutes)" });
+      expect(ofType(template, "AWS::CloudWatch::Alarm").filter(([id]) => /Audit(SealOverdue|ChainMismatch|ObjectConflict)Alarm/.test(id))).toHaveLength(3);
+    });
+
+    it("a legacy template has no anchor", () => {
+      const legacy = Template.fromStack(buildAgentXApp().node.children.filter((child): child is Stack => Stack.isStack(child)).find((stack) => stack.stackName === "AgentXControlPlane")!).toJSON();
+      expect(JSON.stringify(legacy)).not.toMatch(/AuditAnchor|AUDIT_SEALS_TABLE_NAME|agentx\.audit-epoch|AuditSealOverdue/);
     });
   });
 

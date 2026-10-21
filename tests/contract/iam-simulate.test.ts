@@ -71,8 +71,27 @@ describe("simulateIam", () => {
       expect(simulateIam([allow({}), tls], { action: "dynamodb:PutItem", resource: "table", context: { "aws:SecureTransport": "true" } }).allowed).toBe(true);
     });
 
+    it("compares numbers: a key that is absent matches no positive numeric operator, and NumericNotEquals is satisfied by an absent key", () => {
+      const deny = (operator: string, value: string): IamStatement => ({ Sid: "D", Effect: "Deny", Action: "*", Resource: "*", Condition: { [operator]: { "s3:object-lock-remaining-retention-days": value } } });
+      const days = (statements: IamStatement[], remaining?: string) => simulateIam([allow({ Action: "*", Resource: "*" }), ...statements], { action: "s3:PutObject", resource: "x", ...(remaining === undefined ? {} : { context: { "s3:object-lock-remaining-retention-days": remaining } }) }).allowed;
+      // DenyShortRetention: refuses a stated retention shorter than the floor, and says nothing about a request that states none.
+      expect(days([deny("NumericLessThan", "1096")], "30")).toBe(false);
+      expect(days([deny("NumericLessThan", "1096")], "1096")).toBe(true);
+      expect(days([deny("NumericLessThan", "1096")], "2000")).toBe(true);
+      expect(days([deny("NumericLessThan", "1096")])).toBe(true);
+      expect(days([deny("NumericLessThanEquals", "5")], "5")).toBe(false);
+      expect(days([deny("NumericGreaterThan", "5")], "6")).toBe(false);
+      expect(days([deny("NumericGreaterThanEquals", "5")], "5")).toBe(false);
+      expect(days([deny("NumericEquals", "5")], "5")).toBe(false);
+      expect(days([deny("NumericEquals", "5")], "6")).toBe(true);
+      expect(days([deny("NumericNotEquals", "5")], "6")).toBe(false);
+      expect(days([deny("NumericNotEquals", "5")], "5")).toBe(true);
+      expect(days([deny("NumericNotEquals", "5")])).toBe(false);
+      expect(days([deny("NumericEquals", "5")])).toBe(true);
+    });
+
     it("refuses an operator it does not know, and several values given to a single-valued operator", () => {
-      expect(() => simulateIam([allow({ Condition: { NumericLessThan: { "s3:x": "1" } } })], { action: "dynamodb:PutItem", resource: "table" })).toThrow(/unsupported condition operator/);
+      expect(() => simulateIam([allow({ Condition: { DateLessThan: { "s3:x": "1" } } })], { action: "dynamodb:PutItem", resource: "table" })).toThrow(/unsupported condition operator/);
       expect(() => simulateIam([allow({ Condition: { StringEquals: { "dynamodb:LeadingKeys": "a" } } })], { action: "dynamodb:PutItem", resource: "table", context: { "dynamodb:LeadingKeys": ["a", "b"] } })).toThrow(/ForAllValues or ForAnyValue/);
     });
   });

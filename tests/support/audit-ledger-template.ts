@@ -17,23 +17,35 @@ export function withoutAuditLedger(template: unknown): unknown {
   const resources = (template as { Resources: Record<string, Resource> }).Resources;
   const ids = Object.keys(resources).filter((id) => id.startsWith("AuditLedger") || id.startsWith("AuditAppenderRole"));
   expect(ids.map((id) => `${resources[id]!.Type} ${id.replace(/[0-9A-F]{8}$/, "").replace(/(SqsEventSource).+$/, "$1")}`).sort()).toStrictEqual([
+    "AWS::CloudWatch::Alarm AuditLedgerAuditChainMismatchAlarm",
     "AWS::CloudWatch::Alarm AuditLedgerAuditIntakeBacklogAlarm",
     "AWS::CloudWatch::Alarm AuditLedgerAuditIntakeDeadLettersAlarm",
+    "AWS::CloudWatch::Alarm AuditLedgerAuditObjectConflictAlarm",
     "AWS::CloudWatch::Alarm AuditLedgerAuditPendingStuckAlarm",
     "AWS::CloudWatch::Alarm AuditLedgerAuditRecordFailedAlarm",
+    "AWS::CloudWatch::Alarm AuditLedgerAuditSealOverdueAlarm",
     "AWS::DynamoDB::Table AuditLedgerAuditKeysTable",
     "AWS::DynamoDB::Table AuditLedgerAuditLedgerTable",
     "AWS::DynamoDB::Table AuditLedgerAuditSealsTable",
     "AWS::IAM::Policy AuditAppenderRoleDefaultPolicy",
+    "AWS::IAM::Policy AuditLedgerAuditAnchorPolicy",
+    "AWS::IAM::Policy AuditLedgerAuditAnchorRoleDefaultPolicy",
     "AWS::IAM::Policy AuditLedgerAuditAppenderPolicy",
     "AWS::IAM::Policy AuditLedgerAuditBrokerOutboxPolicy",
     "AWS::IAM::Role AuditAppenderRole",
+    "AWS::IAM::Role AuditLedgerAuditAnchorRole",
     "AWS::IAM::Role AuditLedgerAuditDrainSchedulerRole",
+    "AWS::IAM::Role AuditLedgerAuditEpochSchedulerRole",
     "AWS::KMS::Alias AuditLedgerAuditVaultKeyAlias",
     "AWS::KMS::Key AuditLedgerAuditVaultKey",
     "AWS::Lambda::EventSourceMapping AuditLedgerAuditAppenderSqsEventSource",
+    "AWS::Lambda::Function AuditLedgerAuditAnchor",
     "AWS::Lambda::Function AuditLedgerAuditAppender",
+    "AWS::Logs::LogGroup AuditLedgerAuditAnchorLogs",
     "AWS::Logs::LogGroup AuditLedgerAuditAppenderLogs",
+    "AWS::Logs::MetricFilter AuditLedgerAuditChainMismatchMetric",
+    "AWS::Logs::MetricFilter AuditLedgerAuditEpochSealedMetric",
+    "AWS::Logs::MetricFilter AuditLedgerAuditObjectConflictMetric",
     "AWS::Logs::MetricFilter AuditLedgerAuditPendingStuckMetric",
     "AWS::Logs::MetricFilter AuditLedgerAuditRecordFailedMetric",
     "AWS::S3::Bucket AuditLedgerAuditExportsBucket",
@@ -45,6 +57,7 @@ export function withoutAuditLedger(template: unknown): unknown {
     "AWS::SQS::QueuePolicy AuditLedgerAuditIntakeDeadLetterQueuePolicy",
     "AWS::SQS::QueuePolicy AuditLedgerAuditIntakeQueuePolicy",
     "AWS::Scheduler::Schedule AuditLedgerAuditDrainSchedule",
+    "AWS::Scheduler::Schedule AuditLedgerAuditEpochSchedule",
   ]);
   for (const id of ids) delete resources[id];
   // Task 5b: the lock profile parameter and the one condition on it; both are used only by the ledger resources removed above.

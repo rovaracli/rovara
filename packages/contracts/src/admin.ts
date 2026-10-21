@@ -206,7 +206,7 @@ export type AdminWorkspacesResponse = z.infer<typeof AdminWorkspacesResponseSche
  * tests/contract/admin-health-infrastructure.test.ts checks the list against a named app's alarms.
  */
 export const HEALTH_ALARM_SUFFIXES = [
-  "AuditIntakeBacklog", "AuditIntakeDeadLetters", "AuditPendingStuck", "AuditRecordFailed",
+  "AuditChainMismatch", "AuditIntakeBacklog", "AuditIntakeDeadLetters", "AuditObjectConflict", "AuditPendingStuck", "AuditRecordFailed", "AuditSealOverdue",
   "BedrockThrottling", "CheckerFailures", "ClassifierThrottling", "ConnectorBroken", "ConnectorNotConnected",
   "DeveloperNoticeDeadLetters", "DeveloperNoticeStreamFailures", "DispatchDeadLetters", "EmptyResponses",
   "EvalBatchTickErrors", "EvalBatchWatcherErrors", "EvalExecutionsFailed",

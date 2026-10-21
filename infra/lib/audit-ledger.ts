@@ -28,7 +28,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_INTAKE_MAX_RECEIVES, AUDIT_RETENTION_DAYS_DEFAULT, canonicalJson } from "@agentx/contracts";
+import { AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_INTAKE_MAX_RECEIVES, AUDIT_RETENTION_DAYS_DEFAULT, AUDIT_SEAL_INTERVAL_MINUTES, canonicalJson } from "@agentx/contracts";
 import type { AgentXNaming } from "./naming.js";
 import {
   auditLockSettings,
@@ -141,6 +141,13 @@ export const AUDIT_RECORD_FAILED_EVENTS = ["audit.record_failed", "audit.record_
  */
 export const AUDIT_PENDING_STUCK_EVENTS = ["audit.pending_stuck", "audit.drain_failed"] as const;
 
+/**
+ * The anchor's log events that mean an org cannot be sealed until a person looks: its records or sealed state do not fit
+ * the locked seal, or a sealed key was tampered with (a delete marker, a second version, other bytes: `audit.version_drift`,
+ * which Task 9's lock-drift alarm will cover as well).
+ */
+export const AUDIT_CHAIN_MISMATCH_EVENTS = ["audit.chain_mismatch", "audit.version_drift"] as const;
+
 /** A string that is a CDK token (a template value resolved at deploy time), not the text it will become. */
 export type TemplateTokenString = string & { readonly __templateToken: true };
 
@@ -202,6 +209,8 @@ export class AuditLedger extends Construct {
   readonly vaultKey: kms.Key;
   /** The appender (Task 7): the only function that writes the chain. */
   readonly appender: lambda.Function;
+  /** The anchor (Task 8): seals each org's new records into the locked bucket every 15 minutes; the only writer of the seals table. */
+  readonly anchor: lambda.Function;
   readonly ledgerBucket: s3.Bucket;
   readonly exportsBucket: s3.Bucket;
   /** The settings of each lock profile, and the one the `AuditLockProfile` parameter defaults to. */
@@ -446,6 +455,7 @@ export class AuditLedger extends Construct {
 
     this.addBrokerOutbox(props, brokerRole);
     this.appender = this.addAppender(props);
+    this.anchor = this.addAnchor(props);
 
     // The second copy, in a separate account: only with both context values (auditReplicaSettings throws on the ARN alone).
     if (this.replica !== undefined) {
@@ -548,27 +558,8 @@ export class AuditLedger extends Construct {
 
     // The two audit alarms, on the broker's log. Their names end in a suffix the health route lists
     // (HEALTH_ALARM_SUFFIXES), because the app refuses to synthesize an alarm the probe would not read.
-    const counted = (id: string, metricName: string, events: readonly string[]): cloudwatch.Metric => {
-      new logs.MetricFilter(this, `${id}Metric`, {
-        logGroup: broker.logGroup,
-        filterPattern: logs.FilterPattern.any(...events.map((event) => logs.FilterPattern.stringValue("$.event", "=", event))),
-        metricNamespace: naming.metricsNamespace,
-        metricName,
-        metricValue: "1",
-      });
-      return new cloudwatch.Metric({ namespace: naming.metricsNamespace, metricName, statistic: "Sum", period: Duration.minutes(5) });
-    };
-    const alarm = (id: string, suffix: string, description: string, metric: cloudwatch.Metric) => {
-      new cloudwatch.Alarm(this, id, {
-        alarmName: naming.alarmName(suffix),
-        alarmDescription: description,
-        metric,
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      }).addAlarmAction(props.notifyOperator);
-    };
+    const counted = (id: string, metricName: string, events: readonly string[]): cloudwatch.Metric => this.countedLogEvents(naming, broker.logGroup, id, metricName, events);
+    const alarm = (id: string, suffix: string, description: string, metric: cloudwatch.Metric) => { this.alarmOnAtLeastOne(naming, props.notifyOperator, id, suffix, description, metric); };
     alarm(
       "AuditRecordFailedAlarm",
       "AuditRecordFailed",
@@ -581,6 +572,171 @@ export class AuditLedger extends Construct {
       "An audit event has waited more than 10 minutes in the outbox, or the drain could not read the outbox at all: events are not being delivered. Check the intake queue, the State table and the broker logs for audit.pending_stuck and audit.drain_failed.",
       counted("AuditPendingStuck", "AuditPendingStuck", AUDIT_PENDING_STUCK_EVENTS),
     );
+  }
+
+  /** A metric that counts the log events whose `$.event` is one of `events`, in the group (one metric filter, `<id>Metric`). */
+  private countedLogEvents(naming: AgentXNaming, logGroup: logs.ILogGroup, id: string, metricName: string, events: readonly string[]): cloudwatch.Metric {
+    new logs.MetricFilter(this, `${id}Metric`, {
+      logGroup,
+      filterPattern: logs.FilterPattern.any(...events.map((event) => logs.FilterPattern.stringValue("$.event", "=", event))),
+      metricNamespace: naming.metricsNamespace,
+      metricName,
+      metricValue: "1",
+    });
+    return new cloudwatch.Metric({ namespace: naming.metricsNamespace, metricName, statistic: "Sum", period: Duration.minutes(5) });
+  }
+
+  /** An alarm that fires on one or more of the metric in a 5-minute period, and notifies the operator. */
+  private alarmOnAtLeastOne(naming: AgentXNaming, notifyOperator: cloudwatch.IAlarmAction, id: string, suffix: string, description: string, metric: cloudwatch.Metric): void {
+    new cloudwatch.Alarm(this, id, {
+      alarmName: naming.alarmName(suffix),
+      alarmDescription: description,
+      metric,
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(notifyOperator);
+  }
+
+  /**
+   * The anchor (Task 8): every 15 minutes it seals each org's new records into create-only objects in the locked bucket and
+   * chains the epoch to the one before it. It is the only writer of the seals table. Its role is made here (nothing else
+   * names it) and holds exactly these statements, plus the log group's write actions:
+   *  - the seals table: `GetItem`, `PutItem`, `UpdateItem` and `Query`, for the partitions it keeps (`EPOCH#`, `EPOCH_HEAD`,
+   *    `SEALED#`, `SEALS#`, `BACKSTOP`). A transaction authorizes each item by its own action, so these four cover the
+   *    finalize. No `DeleteItem` (it never deletes seal state), no `ConditionCheckItem`, no batch or scan action;
+   *  - the ledger table: `GetItem` and `Query` (the chain and the lists it reads), and `PutItem` and `DeleteItem` only for the
+   *    dirty markers (`AUDIT_DIRTY`): the finalize deletes a marker, the hourly backstop puts one back. It cannot write a
+   *    record, a head or a claim;
+   *  - the ledger bucket: `PutObject` (create-only, by the bucket policy), `GetObject`, `GetObjectVersion` and
+   *    `GetObjectRetention` on its objects, and `ListBucketVersions` on the bucket (it lists a key's versions before it
+   *    writes). Never a delete, `PutObjectRetention`, `PutObjectLegalHold`, `BypassGovernanceRetention`, a bucket-level write
+   *    or anything of KMS (the bucket uses S3-managed encryption).
+   * Reserved concurrency 1: two runs never overlap. The conditional writes in the code make an overlap harmless as well. Lambda's
+   * own two retries of a failed asynchronous run stay at their defaults: a run is idempotent, so a retry only resumes.
+   */
+  private addAnchor(props: AuditLedgerProps): lambda.Function {
+    const { naming } = props;
+    const role = new iam.Role(this, "AuditAnchorRole", {
+      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+      description: "The Rovara audit ledger anchor: seals each org's records into the locked bucket and is the only writer of the seals table",
+    });
+    const logGroup = new logs.LogGroup(this, "AuditAnchorLogs", { retention: logs.RetentionDays.ONE_MONTH, removalPolicy: RemovalPolicy.DESTROY });
+    const anchor = new lambdaNodejs.NodejsFunction(this, "AuditAnchor", {
+      description: "Seals each org's new audit records into create-only locked objects, one epoch every 15 minutes",
+      runtime: lambda.Runtime.NODEJS_22_X,
+      entry: resolve(process.cwd(), "packages/broker/src/audit/anchor-handler.ts"),
+      handler: "handler",
+      timeout: Duration.seconds(300),
+      memorySize: 512,
+      reservedConcurrentExecutions: 1,
+      role,
+      logGroup,
+      environment: {
+        AUDIT_LEDGER_TABLE_NAME: this.ledgerTable.tableName,
+        AUDIT_SEALS_TABLE_NAME: this.sealsTable.tableName,
+        AUDIT_LEDGER_BUCKET_NAME: this.ledgerBucket.bucketName,
+      },
+      bundling: { externalModules: [], minify: true, sourceMap: true, target: "node22" },
+    });
+    // A function on a role of our own gets no log permission from CDK.
+    logGroup.grantWrite(role);
+    new iam.Policy(this, "AuditAnchorPolicy", {
+      roles: [role],
+      statements: [
+        new iam.PolicyStatement({
+          sid: "SealsTable",
+          actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"],
+          resources: [this.sealsTable.tableArn],
+          conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["EPOCH#*", "EPOCH_HEAD", "SEALED#*", "SEALS#*", "BACKSTOP"] } },
+        }),
+        new iam.PolicyStatement({
+          sid: "LedgerRead",
+          actions: ["dynamodb:GetItem", "dynamodb:Query"],
+          resources: [this.ledgerTable.tableArn],
+        }),
+        new iam.PolicyStatement({
+          sid: "LedgerDirtyMarkers",
+          actions: ["dynamodb:PutItem", "dynamodb:DeleteItem"],
+          resources: [this.ledgerTable.tableArn],
+          conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT_DIRTY"] } },
+        }),
+        new iam.PolicyStatement({
+          sid: "LedgerBucketObjects",
+          actions: ["s3:PutObject", "s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectRetention"],
+          resources: [this.ledgerBucket.arnForObjects("*")],
+        }),
+        new iam.PolicyStatement({
+          sid: "LedgerBucketVersions",
+          actions: ["s3:ListBucketVersions"],
+          resources: [this.ledgerBucket.bucketArn],
+        }),
+      ],
+    });
+
+    // The schedule: every 15 minutes, with { source: "agentx.audit-epoch" }. The scheduler may assume its role only for this
+    // account's schedules in the default group (confused-deputy guard, as the drain schedule).
+    const schedulerRole = new iam.Role(this, "AuditEpochSchedulerRole", {
+      assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com", {
+        conditions: {
+          StringEquals: {
+            "aws:SourceAccount": Aws.ACCOUNT_ID,
+            "aws:SourceArn": `arn:${Aws.PARTITION}:scheduler:${Aws.REGION}:${Aws.ACCOUNT_ID}:schedule-group/default`,
+          },
+        },
+      }),
+      description: "Lets the EventBridge scheduler invoke the audit anchor every 15 minutes",
+      inlinePolicies: {
+        InvokeAnchor: new iam.PolicyDocument({
+          statements: [new iam.PolicyStatement({ sid: "InvokeAnchor", actions: ["lambda:InvokeFunction"], resources: [anchor.functionArn] })],
+        }),
+      },
+    });
+    new scheduler.CfnSchedule(this, "AuditEpochSchedule", {
+      description: "Seals the audit records written since the last epoch",
+      flexibleTimeWindow: { mode: "OFF" },
+      scheduleExpression: "rate(15 minutes)",
+      state: "ENABLED",
+      target: {
+        arn: anchor.functionArn,
+        roleArn: schedulerRole.roleArn,
+        input: JSON.stringify({ source: "agentx.audit-epoch" }),
+        retryPolicy: { maximumRetryAttempts: 0, maximumEventAgeInSeconds: 60 },
+      },
+    });
+
+    // Three alarms the health route reads (HEALTH_ALARM_SUFFIXES): the plan's audit-seal-overdue, audit-chain-mismatch and
+    // audit-object-conflict in the house style. Every run that completes logs audit.epoch_sealed (an idle one too); a
+    // stopped or failed run does not, so the overdue alarm fires on a stuck anchor and stays quiet on a quiet install.
+    new logs.MetricFilter(this, "AuditEpochSealedMetric", {
+      logGroup,
+      filterPattern: logs.FilterPattern.stringValue("$.event", "=", "audit.epoch_sealed"),
+      metricNamespace: naming.metricsNamespace,
+      metricName: "AuditEpochSealed",
+      metricValue: "1",
+    });
+    new cloudwatch.Alarm(this, "AuditSealOverdueAlarm", {
+      alarmName: naming.alarmName("AuditSealOverdue"),
+      alarmDescription: "No audit epoch has completed in 45 minutes: the anchor is stopped, failing, or not running, and records are not being sealed. Check the anchor's logs for audit.object_conflict, audit.lock_config_mismatch, audit.epoch_stopped and audit.epoch_failed.",
+      metric: new cloudwatch.Metric({ namespace: naming.metricsNamespace, metricName: "AuditEpochSealed", statistic: "Sum", period: Duration.minutes(AUDIT_SEAL_INTERVAL_MINUTES) }),
+      threshold: 1,
+      evaluationPeriods: 3,
+      datapointsToAlarm: 3,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+    }).addAlarmAction(props.notifyOperator);
+    this.alarmOnAtLeastOne(
+      naming, props.notifyOperator, "AuditChainMismatchAlarm", "AuditChainMismatch",
+      "An org's records or sealed state do not fit its locked seal, or a sealed key holds a delete marker, a second version or other bytes. That org is not being sealed and a person must look. See the anchor's logs for audit.chain_mismatch and audit.version_drift, and docs/runbooks/audit-object-conflict.md.",
+      this.countedLogEvents(naming, logGroup, "AuditChainMismatch", "AuditChainMismatch", AUDIT_CHAIN_MISMATCH_EVENTS),
+    );
+    this.alarmOnAtLeastOne(
+      naming, props.notifyOperator, "AuditObjectConflictAlarm", "AuditObjectConflict",
+      "A create-only write found different bytes already at its key. Sealing is stopped for every org until a person resolves it: see docs/runbooks/audit-object-conflict.md.",
+      this.countedLogEvents(naming, logGroup, "AuditObjectConflict", "AuditObjectConflict", ["audit.object_conflict"]),
+    );
+    return anchor;
   }
 
   /**

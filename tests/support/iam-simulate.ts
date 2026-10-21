@@ -45,7 +45,26 @@ function glob(pattern: string, caseInsensitive = false): RegExp {
 
 const matchesAny = (patterns: string[], value: string, caseInsensitive = false) => patterns.some((pattern) => glob(pattern, caseInsensitive).test(value));
 
-const BASE_OPERATORS = ["StringEquals", "StringNotEquals", "StringLike", "StringNotLike", "ArnEquals", "ArnNotEquals", "ArnLike", "ArnNotLike", "Bool", "Null"] as const;
+const NUMERIC_OPERATORS = ["NumericEquals", "NumericNotEquals", "NumericLessThan", "NumericLessThanEquals", "NumericGreaterThan", "NumericGreaterThanEquals"] as const;
+const BASE_OPERATORS = ["StringEquals", "StringNotEquals", "StringLike", "StringNotLike", "ArnEquals", "ArnNotEquals", "ArnLike", "ArnNotLike", "Bool", "Null", ...NUMERIC_OPERATORS] as const;
+
+/**
+ * Whether a request value matches a policy value under a numeric operator. NumericNotEquals reports the match it negates
+ * (equality), because the caller negates "Not" operators, as it does StringNotEquals. A value that is not a number never matches.
+ */
+function numericHolds(base: (typeof NUMERIC_OPERATORS)[number], value: string, pattern: string): boolean {
+  const left = Number(value);
+  const right = Number(pattern);
+  if (Number.isNaN(left) || Number.isNaN(right)) return false;
+  switch (base) {
+    case "NumericEquals": return left === right;
+    case "NumericNotEquals": return left === right;
+    case "NumericLessThan": return left < right;
+    case "NumericLessThanEquals": return left <= right;
+    case "NumericGreaterThan": return left > right;
+    case "NumericGreaterThanEquals": return left >= right;
+  }
+}
 
 function parseOperator(operator: string): { qualifier: "ForAllValues" | "ForAnyValue" | undefined; base: (typeof BASE_OPERATORS)[number]; ifExists: boolean } {
   const [, qualifier, rest] = /^(?:(ForAllValues|ForAnyValue):)?(.+)$/.exec(operator) ?? [];
@@ -66,9 +85,13 @@ function conditionHolds(condition: Record<string, Record<string, unknown>> | und
         if ((policyValues[0] === "true") !== !present) return false;
         continue;
       }
+      const numeric = (NUMERIC_OPERATORS as readonly string[]).includes(base);
       const negated = base.includes("Not");
       const like = base.endsWith("Like");
-      const same = (value: string, pattern: string) => (base === "Bool" ? value.toLowerCase() === pattern.toLowerCase() : like ? glob(pattern).test(value) : value === pattern);
+      const same = (value: string, pattern: string) => {
+        if (numeric) return numericHolds(base as (typeof NUMERIC_OPERATORS)[number], value, pattern);
+        return base === "Bool" ? value.toLowerCase() === pattern.toLowerCase() : like ? glob(pattern).test(value) : value === pattern;
+      };
       const hit = (value: string) => policyValues.some((pattern) => same(value, pattern));
       const values = present ? [supplied].flat() : [];
       let holds: boolean;

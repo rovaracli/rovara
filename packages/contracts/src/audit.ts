@@ -10,11 +10,20 @@ import { OrgIdSchema } from "./org.js";
 export {
   AUDIT_LIMITS_COPY,
   canonicalJson as auditCanonicalJson,
+  checkChain,
   detailCommit,
   genesisHash,
+  merkleRoot,
   recordHash,
+  recordLeafData,
+  sealHash,
+  sealLeafData,
+  statementHash,
   type AuditBundleV1,
   type AuditRecordV1,
+  type EpochStatementV1,
+  type LockedObjectV1,
+  type OrgSealV1,
 } from "@rovara/audit-verifier";
 
 export const AUDIT_SEAL_INTERVAL_MINUTES = 15;
