@@ -12,10 +12,12 @@ Nothing is lost while this alarm is on. Sealing goes on: records are sealed, the
 |---|---|
 | `timeout`, `network`, `http` | The authority did not answer in time (10 s), could not be reached, or answered with an HTTP status other than 200. On a public install, check that the anchor can reach the authority (see "Network"). |
 | `rejection` | The authority refused the request (status other than granted). |
-| `malformed` | The answer was not a time-stamp response (an HTML page, a truncated answer, a granted answer without a token). |
+| `malformed` | The answer was not a time-stamp response (an HTML page, a truncated answer, a granted answer without a token, or a body larger than 1 MB: the anchor stops reading at that size however the body is sent). |
+| `gen_time` | The token verifies but its time is more than 5 minutes before the last record the epoch covers (an authority whose clock runs behind), or more than 5 minutes ahead of now. It is not stored, because an auditor's verifier would reject it. The epoch waits and is stamped by a later run, or covered by a later epoch; if it repeats, the authority's clock is wrong. |
+| `pending_too_long` | (`label` is `all`.) An epoch has waited for a token for more than 3 hours. Look at the other lines for why it cannot be stamped. Every run that finds the head waiting also checks that the crash of an earlier run did not leave older epochs behind a sealed head: that is repaired automatically at the start of the run. |
 | `imprint`, `nonce`, `signature`, `eku` | The answer was a token but not one for this request or not one a verifier would accept: another hash, another nonce, a signer not named by its signing-certificate attribute, a signer certificate without the timestamping usage. Nothing is stored. A repeat usually means the authority or something between it and the anchor is wrong. |
 | `untrusted`, `chain` | The token chains to a root that is not pinned for this label (or the chain is not valid at the token's time). On a public install the roots are in the anchor's code; if DigiCert or Sectigo changed the root they sign under, a new root has to be pinned in the verifier and the anchor released. On a custom install, check the roots in the SSM parameter. |
-| `roots_unavailable` | A custom install: the roots parameter could not be read at cold start, or is not in the format below. No request is made. The anchor tries again on its next cold start. |
+| `roots_unavailable` | A custom install: the roots parameter could not be read at cold start, or is not in the format below. No request is made. The anchor tries again on its next run (a failed load is not cached). |
 | `stored_token_invalid` | The key `<epochId>.<label>.tsr` already holds an object that does not verify as a token for that epoch. It is not adopted and cannot be replaced (the bucket is locked); the epoch waits and a later epoch covers it. Treat it like an object conflict: see `audit-object-conflict.md`. |
 | `version_drift` | The token key holds a delete marker or a second version (also logged as `audit.version_drift`). See `audit-object-conflict.md`. |
 
@@ -31,6 +33,8 @@ Context values: `agentxAuditTsa=custom`, `agentxAuditTsaUrls` (one or two `http(
 
 - a JSON list with one PEM bundle (a string) per URL, in the URLs' order: `["-----BEGIN CERTIFICATE-----\n...", "-----BEGIN CERTIFICATE-----\n..."]`, or
 - for a single URL, the PEM text itself.
+
+The parameter must be a plain `String` (roots are public). The anchor reads it without decryption, so a `SecureString` would come back encrypted and show up as `roots_unavailable`.
 
 A token from one URL is judged only against that URL's roots. An auditor verifying an export gives the same roots to the verifier with `--trust custom-1=<pem file>`.
 

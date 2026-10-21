@@ -7,6 +7,7 @@ import type { X509Certificate } from "node:crypto";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildTimeStampRequest,
   defaultAnchors,
   genesisHash,
   inclusionPath,
@@ -136,6 +137,58 @@ describe("requestTimestamp", () => {
   it("refuses an answer that is far too large", async () => {
     const big = (async () => new Response(Buffer.alloc(2_000_000, 1), { status: 200 })) as unknown as typeof fetch;
     await expect(requestTimestamp(big, "sectigo", SECTIGO, HASH, { timeoutMs: 1000, nonce: 1n, anchors: [] })).rejects.toMatchObject({ problem: "malformed" });
+  });
+
+  it("cuts off a chunked body that has no Content-Length at the cap, after reading about that much and no more (review I3)", async () => {
+    let pulled = 0;
+    const endless = (async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 65_536;
+        controller.enqueue(new Uint8Array(65_536).fill(7));
+      },
+    }), { status: 200 })) as unknown as typeof fetch;
+    const started = Date.now();
+    // The timeout is long: only the byte cap can end this quickly.
+    await expect(requestTimestamp(endless, "sectigo", SECTIGO, HASH, { timeoutMs: 30_000, nonce: 1n, anchors: [] })).rejects.toMatchObject({ label: "sectigo", problem: "malformed" });
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(pulled).toBeGreaterThan(1_000_000);
+    expect(pulled).toBeLessThan(1_000_000 + 4 * 65_536 + 1);
+  });
+
+  it("cuts off a body larger than the Content-Length it declared", async () => {
+    let pulled = 0;
+    const liar = (async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 100_000;
+        controller.enqueue(new Uint8Array(100_000));
+      },
+    }), { status: 200, headers: { "content-length": "100" } })) as unknown as typeof fetch;
+    await expect(requestTimestamp(liar, "sectigo", SECTIGO, HASH, { timeoutMs: 30_000, nonce: 1n, anchors: [] })).rejects.toMatchObject({ problem: "malformed" });
+    expect(pulled).toBeLessThan(1_500_000);
+  });
+
+  it("still reads a normal answer that arrives in several chunks", async () => {
+    const { host, fetch } = digicert();
+    const whole = await (await fetch(DIGICERT, { method: "POST", body: buildTimeStampRequest(HASH, 9n) })).arrayBuffer();
+    const bytes = new Uint8Array(whole);
+    const pieces = (async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let offset = 0; offset < bytes.length; offset += 300) controller.enqueue(bytes.subarray(offset, offset + 300));
+        controller.close();
+      },
+    }), { status: 200 })) as unknown as typeof fetch;
+    const stamped = await requestTimestamp(pieces, "digicert", DIGICERT, HASH, { timeoutMs: 1000, nonce: 9n, anchors: [rootOf(host)] });
+    expect(stamped.genTime).toBe("2026-10-20T12:00:00.000Z");
+  });
+
+  it("refuses a token dated more than 5 minutes before the last record it covers, or more than 5 minutes ahead of now, and keeps one inside the skew (review I1)", async () => {
+    const { host, fetch } = digicert();
+    const base = { timeoutMs: 1000, nonce: 3n, anchors: [rootOf(host)] };
+    const recorded = (offsetMs: number): string => new Date(Date.parse("2026-10-20T12:00:00Z") + offsetMs).toISOString();
+    await expect(requestTimestamp(fetch, "digicert", DIGICERT, HASH, { ...base, lastRecordedAt: recorded(5 * 60_000 + 1000) })).rejects.toMatchObject({ label: "digicert", problem: "gen_time" });
+    await expect(requestTimestamp(fetch, "digicert", DIGICERT, HASH, { ...base, lastRecordedAt: recorded(4 * 60_000) })).resolves.toMatchObject({ genTime: "2026-10-20T12:00:00.000Z" });
+    await expect(requestTimestamp(fetch, "digicert", DIGICERT, HASH, { ...base, clock: () => Date.parse("2026-10-20T11:50:00Z") })).rejects.toMatchObject({ problem: "gen_time" });
+    await expect(requestTimestamp(fetch, "digicert", DIGICERT, HASH, { ...base, clock: () => Date.parse("2026-10-20T11:56:00Z") })).resolves.toMatchObject({ genTime: "2026-10-20T12:00:00.000Z" });
   });
 
   it("verifies the real DigiCert and Sectigo answers under each label's pinned root, and only under its own", async () => {
@@ -586,6 +639,35 @@ describe("I11: no request storm after an outage", () => {
   });
 });
 
+describe("coverage by the new epoch while the newest pending epoch is incomplete (review minor 5)", () => {
+  it("covers every older pending epoch, including the incomplete newest one, by the new epoch; the export passes the offline verifier", async () => {
+    const w = world();
+    w.digicert.behavior = "rejection";
+    w.sectigo.behavior = "rejection";
+    for (const slot of [0, 1]) {
+      w.h.clock.now = at(slot);
+      appendRecords(w.h, A, 1);
+      await run(w.h, at(slot));
+    }
+    expect([E0, E1].map((id) => statusOf(w.h, id))).toStrictEqual(["stamp_pending", "stamp_pending"]);
+    // Sectigo is back; DigiCert fails its first request of the run (for E1, the newest pending epoch) and answers its second (for E2).
+    w.sectigo.behavior = "grant";
+    w.h.deps.tsa = { ...(w.h.deps.tsa as TsaDeps), sleep: async (ms: number) => { w.digicert.behavior = "grant"; w.h.clock.now += ms; } };
+    w.h.clock.now = at(2);
+    appendRecords(w.h, A, 1);
+    await run(w.h, at(2));
+    expect(stampOf(w.h, E1, "sectigo")).toBeDefined();
+    expect(stampOf(w.h, E1, "digicert")).toBeUndefined();
+    expect(stampOf(w.h, E2, "digicert")).toBeDefined();
+    expect(stampOf(w.h, E2, "sectigo")).toBeDefined();
+    expect(statusOf(w.h, E2)).toBe("sealed");
+    expect(metaOf(w.h, E0)).toMatchObject({ status: "sealed", covered_by: E2 });
+    expect(metaOf(w.h, E1)).toMatchObject({ status: "sealed", covered_by: E2 });
+    const report = verifyBundle(exportBundle(w.h, A, w.settings), { anchors: anchorsOf(w) });
+    expect(report.ok, JSON.stringify(report.checks.filter((check) => !check.ok))).toBe(true);
+  });
+});
+
 describe("a crash, or a stop, in the middle of stamping", () => {
   it("a crash between a token object and the record of it: the next run adopts the stored token without asking the authority again", async () => {
     const w = world();
@@ -843,6 +925,178 @@ describe("what is stored in the table about a stamp, and what it logs", () => {
     const serialized = JSON.stringify(failures(w.h));
     expect(serialized).not.toMatch(/token|BEGIN|[A-Za-z0-9+/]{80,}/);
     expect(storedRecords(w.h, B)).toStrictEqual([]);
+  });
+});
+
+describe("review I1: a token's time is checked before it is stored", () => {
+  const MINUTE = 60_000;
+
+  it("an authority whose clock runs 10 minutes behind gets no token stored: the epoch waits, the failure is logged and the other authority's token is kept; a later run with a right clock seals, and the export passes", async () => {
+    const w = world();
+    w.digicert.skewMs = -10 * MINUTE;
+    await sealFirstEpoch(w);
+    expect(tokenKeys(w.h)).toStrictEqual([tokenObjectKey(E0, "sectigo")]);
+    expect(stampOf(w.h, E0, "digicert")).toBeUndefined();
+    expect(statusOf(w.h, E0)).toBe("stamp_pending");
+    expect(failures(w.h)).toMatchObject([{ label: "digicert", problem: "gen_time", epochId: E0 }]);
+    w.digicert.skewMs = 0;
+    w.h.clock.now = at(1);
+    await run(w.h, at(1));
+    expect(statusOf(w.h, E0)).toBe("sealed");
+    expect(tokenKeys(w.h)).toStrictEqual([tokenObjectKey(E0, "digicert"), tokenObjectKey(E0, "sectigo")]);
+    const report = verifyBundle(exportBundle(w.h, A, w.settings), { anchors: anchorsOf(w) });
+    expect(report.ok, JSON.stringify(report.checks.filter((check) => !check.ok))).toBe(true);
+  });
+
+  it("a clock that is only 4 minutes behind is inside the skew: stored, and the export passes", async () => {
+    const w = world();
+    w.digicert.skewMs = -4 * MINUTE;
+    await sealFirstEpoch(w);
+    expect(statusOf(w.h, E0)).toBe("sealed");
+    expect(failures(w.h)).toStrictEqual([]);
+    const report = verifyBundle(exportBundle(w.h, A, w.settings), { anchors: anchorsOf(w) });
+    expect(report.ok, JSON.stringify(report.checks.filter((check) => !check.ok))).toBe(true);
+  });
+
+  it("a token dated 10 minutes in the future is refused too", async () => {
+    const w = world();
+    w.sectigo.skewMs = 10 * MINUTE;
+    await sealFirstEpoch(w);
+    expect(stampOf(w.h, E0, "sectigo")).toBeUndefined();
+    expect(failures(w.h)).toMatchObject([{ label: "sectigo", problem: "gen_time" }]);
+  });
+
+  it("while an authority keeps the wrong time the epoch waits and a later epoch with good tokens covers it", async () => {
+    const w = world();
+    w.digicert.skewMs = -10 * MINUTE;
+    await sealFirstEpoch(w);
+    expect(statusOf(w.h, E0)).toBe("stamp_pending");
+    w.digicert.skewMs = 0;
+    w.h.clock.now = at(1);
+    appendRecords(w.h, A, 2);
+    // DigiCert is right for the new epoch's request, which is its second of the run (the first one, for E0, is the retry): both pass.
+    await run(w.h, at(1));
+    expect(statusOf(w.h, E1)).toBe("sealed");
+    expect(statusOf(w.h, E0)).toBe("sealed");
+    const report = verifyBundle(exportBundle(w.h, A, w.settings), { anchors: anchorsOf(w) });
+    expect(report.ok, JSON.stringify(report.checks.filter((check) => !check.ok))).toBe(true);
+  });
+
+  it("a token an earlier build stored with a time that is too early is not adopted: no request is made, the failure is logged and the epoch waits", async () => {
+    const w = world({ digicert: "rejection" });
+    await sealFirstEpoch(w);
+    expect(statusOf(w.h, E0)).toBe("stamp_pending");
+    const hash = String(metaOf(w.h, E0)?.statementHash);
+    w.digicert.behavior = "grant";
+    w.digicert.skewMs = -10 * MINUTE;
+    const answered = await w.digicert.handler(new URL(DIGICERT), { method: "POST", body: buildTimeStampRequest(hash, 5n), headers: {} });
+    const planted = parseTimeStampResponse(new Uint8Array(await answered!.arrayBuffer())).token!;
+    await w.h.s3.client.send(new PutObjectCommand(lockedPutInput(BUCKET, tokenObjectKey(E0, "digicert"), planted, "application/octet-stream")));
+    w.digicert.skewMs = 0;
+    const before = w.digicert.requests.length;
+    w.h.clock.now = at(1);
+    await run(w.h, at(1));
+    expect(w.digicert.requests.length).toBe(before);
+    expect(stampOf(w.h, E0, "digicert")).toBeUndefined();
+    expect(statusOf(w.h, E0)).toBe("stamp_pending");
+    expect(failures(w.h).filter((entry) => entry.problem === "gen_time")).toMatchObject([{ label: "digicert", epochId: E0 }]);
+  });
+
+  it("the token object is stored as application/octet-stream: it is a TimeStampToken, not a full response (review minor)", async () => {
+    const w = world();
+    await sealFirstEpoch(w);
+    const puts = w.h.s3.putCalls().filter((call) => call.key?.endsWith(".tsr"));
+    expect(puts.map((put) => put.input.ContentType)).toStrictEqual(["application/octet-stream", "application/octet-stream"]);
+  });
+});
+
+describe("review I2: a crash after a stamped epoch is completed must not strand older pending epochs", () => {
+  /** Two epochs wait (E0, E1) while both authorities refuse; they come back and the run for E2 crashes at its first covering write. */
+  async function crashedBeforeCovering(): Promise<World> {
+    const w = world();
+    w.digicert.behavior = "rejection";
+    w.sectigo.behavior = "rejection";
+    for (const slot of [0, 1]) {
+      w.h.clock.now = at(slot);
+      appendRecords(w.h, A, 1);
+      await run(w.h, at(slot));
+    }
+    expect([E0, E1].map((id) => statusOf(w.h, id))).toStrictEqual(["stamp_pending", "stamp_pending"]);
+    w.digicert.behavior = "grant";
+    w.sectigo.behavior = "grant";
+    w.h.hooks.before = (command) => {
+      if (command.constructor.name === "UpdateCommand" && JSON.stringify(command.input).includes("covered_by")) throw crash();
+    };
+    w.h.clock.now = at(2);
+    appendRecords(w.h, A, 1);
+    await expect(run(w.h, at(2))).rejects.toMatchObject({ name: "ProcessDied" });
+    w.h.hooks.before = undefined;
+    // The new epoch is complete and the head; the older ones were not covered.
+    expect(statusOf(w.h, E2)).toBe("sealed");
+    expect(epochHead(w.h)).toMatchObject({ epochId: E2 });
+    expect(statusOf(w.h, E0)).toBe("stamp_pending");
+    return w;
+  }
+
+  it("the next run, before it opens an epoch of its own, covers and seals the epochs the crash left, whatever it finds to seal", async () => {
+    const w = await crashedBeforeCovering();
+    const requests = w.digicert.requests.length;
+    w.h.clock.now = at(3);
+    await run(w.h, at(3));
+    expect(w.digicert.requests.length).toBe(requests);
+    for (const id of [E0, E1]) expect(statusOf(w.h, id), id).toBe("sealed");
+    expect(metaOf(w.h, E0)?.covered_by).toBeDefined();
+    expect(failures(w.h).filter((entry) => entry.problem === "pending_too_long")).toStrictEqual([]);
+    const report = verifyBundle(exportBundle(w.h, A, w.settings), { anchors: anchorsOf(w) });
+    expect(report.ok, JSON.stringify(report.checks.filter((check) => !check.ok))).toBe(true);
+    expect(report.epochsWithoutTimestamp).toStrictEqual([]);
+  });
+
+  it("it also heals when the next run has new records of its own, and settling again changes nothing", async () => {
+    const w = await crashedBeforeCovering();
+    w.h.clock.now = at(3);
+    appendRecords(w.h, A, 2);
+    await run(w.h, at(3));
+    for (const id of [E0, E1, E2, epochIdAt(at(3))]) expect(statusOf(w.h, id), id).toBe("sealed");
+    const settled = JSON.stringify([E0, E1, E2].map((id) => metaOf(w.h, id)));
+    w.h.clock.now = at(4);
+    await run(w.h, at(4));
+    expect(JSON.stringify([E0, E1, E2].map((id) => metaOf(w.h, id)))).toBe(settled);
+    const report = verifyBundle(exportBundle(w.h, A, w.settings), { anchors: anchorsOf(w) });
+    expect(report.ok, JSON.stringify(report.checks.filter((check) => !check.ok))).toBe(true);
+  });
+
+  it("a crash in the middle of the healing run is healed by the one after", async () => {
+    const w = await crashedBeforeCovering();
+    let first = true;
+    w.h.hooks.before = (command) => {
+      if (first && command.constructor.name === "UpdateCommand" && JSON.stringify(command.input).includes("covered_by")) {
+        first = false;
+        throw crash();
+      }
+    };
+    w.h.clock.now = at(3);
+    await expect(run(w.h, at(3))).rejects.toMatchObject({ name: "ProcessDied" });
+    w.h.hooks.before = undefined;
+    w.h.clock.now = at(4);
+    await run(w.h, at(4));
+    for (const id of [E0, E1]) expect(statusOf(w.h, id), id).toBe("sealed");
+  });
+
+  it("alarms, as a timestamp failure, for a pending epoch that has waited longer than 3 hours, and not before", async () => {
+    const w = world({ digicert: "rejection", sectigo: "rejection" });
+    appendRecords(w.h, A, 1);
+    w.h.clock.now = at(0);
+    await run(w.h, at(0));
+    const tooLong = (): unknown[] => failures(w.h).filter((entry) => entry.problem === "pending_too_long");
+    // The check is made at the start of a run, on the epoch closed by the earlier one: 11 slots later it is 2 h 45 min old.
+    w.h.clock.now = at(11);
+    await run(w.h, at(11));
+    expect(tooLong()).toStrictEqual([]);
+    w.h.clock.now = at(13);
+    await run(w.h, at(13));
+    expect(tooLong()).toMatchObject([{ epochId: E0, level: "error", label: "all" }]);
+    expect(statusOf(w.h, E0)).toBe("stamp_pending");
   });
 });
 

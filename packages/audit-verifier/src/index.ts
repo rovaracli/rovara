@@ -36,5 +36,5 @@ export {
   type LockedObjectV1,
   type LockMode,
 } from "./bundle.js";
-export { bundleSealedThroughSeq, verifyBundle, type BundleCheck, type BundleReport, type VerifyBundleOptions } from "./verify-bundle.js";
+export { TIMESTAMP_SKEW_MS, bundleSealedThroughSeq, timestampCoversRecord, verifyBundle, type BundleCheck, type BundleReport, type VerifyBundleOptions } from "./verify-bundle.js";
 export { verifyExtends } from "./extends.js";

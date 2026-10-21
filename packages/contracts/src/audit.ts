@@ -22,6 +22,8 @@ export {
   sealHash,
   sealLeafData,
   statementHash,
+  TIMESTAMP_SKEW_MS,
+  timestampCoversRecord,
   verifyTimeStampToken,
   type AuditBundleV1,
   type AuditRecordV1,

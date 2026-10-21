@@ -46,7 +46,7 @@ import {
   type OrgSealV1,
 } from "@agentx/contracts";
 import { currentLockState, enforceObjectLock, runLockChecks, type LockCheckDeps } from "./lock-check.js";
-import { TsaError, randomNonce, requestTimestamp, type TsaDeps, type TsaSettings, type TsaTarget } from "./tsa-client.js";
+import { TsaError, checkGenTime, randomNonce, requestTimestamp, type TsaDeps, type TsaSettings, type TsaTarget } from "./tsa-client.js";
 
 /** The event the schedule sends (EventBridge Scheduler, every 15 minutes). */
 export const AUDIT_EPOCH_SOURCE = "agentx.audit-epoch";
@@ -188,6 +188,8 @@ interface Context {
   stampRequests: Map<string, number>;
   /** When this run last sent each authority a request (the spacing is measured from it). */
   lastStampRequestAt: Map<string, number>;
+  /** The latest record time of each epoch looked up in this run (the genTime check), by epoch id. */
+  lastRecordedAt: Map<string, string | undefined>;
 }
 
 /** A timestamp token kept for an epoch: where it is stored, and the time the authority vouches for. */
@@ -220,6 +222,8 @@ interface Intent {
   index?: { index: number; size: number };
   skipped?: string;
   blocked?: string;
+  /** The `recordedAt` of the last record the seal covers (Task 10: a timestamp must not predate it by more than 5 minutes). */
+  lastRecordedAt?: string;
 }
 
 interface SealedState {
@@ -314,6 +318,7 @@ function toIntent(item: Item): Intent {
     ...(item.index === undefined ? {} : { index: item.index as Intent["index"] }),
     ...(typeof item.skipped === "string" ? { skipped: item.skipped } : {}),
     ...(typeof item.blocked === "string" ? { blocked: item.blocked } : {}),
+    ...(typeof item.lastRecordedAt === "string" ? { lastRecordedAt: item.lastRecordedAt } : {}),
   } as Intent;
 }
 
@@ -547,9 +552,9 @@ async function sealOne(ctx: Context, meta: EpochMeta, intent: Intent): Promise<v
   await ctx.deps.documentClient.send(new UpdateCommand({
     TableName: ctx.deps.sealsTable,
     Key: { pk: `EPOCH#${meta.epochId}`, sk: `ORG#${orgId}` },
-    UpdateExpression: "SET #seal = :seal, #objects = :objects",
-    ExpressionAttributeNames: { "#seal": "seal", "#objects": "objects" },
-    ExpressionAttributeValues: { ":seal": seal, ":objects": { records: recordsObject, seal: sealObject } },
+    UpdateExpression: "SET #seal = :seal, #objects = :objects, #lastRecordedAt = :lastRecordedAt",
+    ExpressionAttributeNames: { "#seal": "seal", "#objects": "objects", "#lastRecordedAt": "lastRecordedAt" },
+    ExpressionAttributeValues: { ":seal": seal, ":objects": { records: recordsObject, seal: sealObject }, ":lastRecordedAt": records[records.length - 1]!.recordedAt },
   }));
 }
 
@@ -905,6 +910,30 @@ async function keepSpacing(ctx: Context, active: ActiveTsa, label: string): Prom
 }
 
 /**
+ * The latest `recordedAt` among the last records of the epoch's org seals: what a token's time is held against (the bundle check
+ * compares each seal's own last record, so the latest of them is the binding one). Undefined for an epoch with no seal. The
+ * intents carry it since the seal was written; a seal written without it has its last record read.
+ */
+async function lastRecordedAtOf(ctx: Context, epochId: string): Promise<string | undefined> {
+  if (ctx.lastRecordedAt.has(epochId)) return ctx.lastRecordedAt.get(epochId);
+  const times: string[] = [];
+  const sealed = (await readIntents(ctx, epochId)).filter((intent) => intent.seal !== undefined && intent.skipped === undefined);
+  await eachPage(sealed, async (intent) => {
+    if (intent.lastRecordedAt !== undefined) {
+      times.push(intent.lastRecordedAt);
+      return;
+    }
+    const [record] = await readRecords(ctx, intent.orgId, intent.seal!.toSeq, intent.seal!.toSeq);
+    if (record === undefined) throw new ChainMismatchError("missing_records", { seq: intent.seal!.toSeq });
+    times.push(record.recordedAt);
+  });
+  let latest: string | undefined;
+  for (const time of times) if (latest === undefined || Date.parse(time) > Date.parse(latest)) latest = time;
+  ctx.lastRecordedAt.set(epochId, latest);
+  return latest;
+}
+
+/**
  * One token for one epoch from one authority, stored create-only as `<epochId>.<label>.tsr` and recorded on the epoch's META.
  * What the key holds comes first: a token an earlier run stored (it crashed before recording it) is read back, checked with the
  * offline verifier and adopted, with no new request; a delete marker or a second version is version drift; a stored object that
@@ -914,6 +943,8 @@ async function stampOne(ctx: Context, active: ActiveTsa, target: TsaTarget, epoc
   const { epochId } = epoch.meta;
   const { label } = target;
   if (target.unavailable !== undefined) throw new TsaError(label, target.unavailable);
+  const clock = active.tsa.clock ?? Date.now;
+  const lastRecordedAt = await lastRecordedAtOf(ctx, epochId);
   const key = tokenObjectKey(epochId, label);
   const hashHex = statementHash(epoch.statement);
   const verify = (bytes: Uint8Array) => verifyTimeStampToken(bytes, { hashHex, anchors: target.anchors });
@@ -928,6 +959,8 @@ async function stampOne(ctx: Context, active: ActiveTsa, target: TsaTarget, epoc
     const stored = await ctx.deps.s3.send(new GetObjectCommand({ Bucket: ctx.deps.bucket, Key: key, VersionId: versionId }));
     const verdict = verify(await stored.Body!.transformToByteArray());
     if (!verdict.ok) throw new TsaError(label, "stored_token_invalid");
+    // A token an earlier build kept with an unbelievable time is never adopted; the epoch waits for a successor to cover it.
+    checkGenTime(label, verdict.genTime, { lastRecordedAt, nowMs: clock() });
     genTime = verdict.genTime;
   } else {
     await keepSpacing(ctx, active, label);
@@ -936,17 +969,27 @@ async function stampOne(ctx: Context, active: ActiveTsa, target: TsaTarget, epoc
       timeoutMs: active.settings.timeoutMs,
       nonce: (active.tsa.nonce ?? randomNonce)(),
       anchors: target.anchors,
+      clock,
+      ...(lastRecordedAt === undefined ? {} : { lastRecordedAt }),
     });
     genTime = stamped.genTime;
+    let tooEarly = false;
     try {
       // A 412 means another run stored a token first: its bytes differ from ours, and are accepted when they verify too.
-      versionId = await createObject(ctx, { key, text: stamped.token, contentType: "application/timestamp-reply" }, (bytes) => {
+      versionId = await createObject(ctx, { key, text: stamped.token, contentType: "application/octet-stream" }, (bytes) => {
         const verdict = verify(bytes);
-        if (verdict.ok) genTime = verdict.genTime;
-        return verdict.ok;
+        if (!verdict.ok) return false;
+        try {
+          checkGenTime(label, verdict.genTime, { lastRecordedAt, nowMs: clock() });
+        } catch {
+          tooEarly = true;
+          return false;
+        }
+        genTime = verdict.genTime;
+        return true;
       });
     } catch (error) {
-      if (error instanceof ObjectConflictError) throw new TsaError(label, "stored_token_invalid");
+      if (error instanceof ObjectConflictError) throw new TsaError(label, tooEarly ? "gen_time" : "stored_token_invalid");
       if (error instanceof VersionDriftError) throw new TsaError(label, "version_drift");
       throw error;
     }
@@ -1022,8 +1065,9 @@ async function newestPending(ctx: Context): Promise<StampTarget | undefined> {
 /**
  * Every epoch before `epoch` that is still waiting is covered by it (`covered_by`) and sealed: its statement chains to this
  * one's, which has tokens, so the verifier takes the later tokens for the older epochs too. The walk goes back by `prevEpochId`
- * and stops at the first epoch that is not waiting (or was covered by this epoch before a crash). The writes go oldest first, so
- * a crash never leaves a gap that a later walk would stop at.
+ * and stops at the first epoch that is not waiting (or was covered by this epoch before a crash). The writes go oldest first
+ * but a page of them runs at once, so a crash can leave a later epoch of the page covered and an earlier one still waiting: the
+ * walk passes through the epochs already covered by this epoch, and so finishes the work on a repeat.
  */
 async function coverOlder(ctx: Context, epochId: string, prevEpochId: string | null): Promise<number> {
   const waiting: string[] = [];
@@ -1091,6 +1135,40 @@ async function stampWaiting(ctx: Context): Promise<void> {
   await stampEpochs(ctx, [waiting]);
   await enforceStampLocks(ctx, [waiting]);
   await settleStamps(ctx, [waiting]);
+}
+
+/** A pending epoch older than this, with nothing to cover it, is reported every run (the same alarm as a failed token). */
+const PENDING_ALARM_MINUTES = 180;
+
+/**
+ * The first thing every run does for the timestamps (I2): finish the settling a crashed run left. The newest completed epoch is the
+ * head. When it holds a token from every authority, whatever it can cover is covered now and it is sealed if it was waiting; this
+ * is the same idempotent step the end of a run takes, and it runs BEFORE this run opens an epoch, so a crash between
+ * `completeEpoch` and the covering can never leave older epochs behind a sealed head. When the head still lacks a token and has
+ * waited for longer than PENDING_ALARM_MINUTES (with the epochs before it that also wait), it is logged as a timestamp failure,
+ * so the alarm fires even when no authority is asked or answers wrongly.
+ */
+async function resumeStamps(ctx: Context): Promise<void> {
+  const active = activeTsa(ctx);
+  if (active === undefined) return;
+  const head = await getItem(ctx, ctx.deps.sealsTable, "EPOCH_HEAD", "HEAD");
+  if (typeof head?.epochId !== "string") return;
+  const meta = await readMeta(ctx, head.epochId);
+  if (meta.statement === undefined) return;
+  if (hasAllStamps(active, meta.stamps)) {
+    await settleStamps(ctx, [{ meta, statement: meta.statement }]);
+    return;
+  }
+  if (meta.status !== "stamp_pending") return;
+  // The waiting epochs end at the head; the walk stops at the first one old enough to alarm, or at the first that is not waiting.
+  const limit = ctx.now - PENDING_ALARM_MINUTES * 60_000;
+  for (let current: EpochMeta | undefined = meta; current !== undefined && current.status === "stamp_pending";) {
+    if (Date.parse(current.closedAt) < limit) {
+      ctx.deps.log({ event: "audit.timestamp_failed", level: "error", label: "all", problem: "pending_too_long", epochId: current.epochId, closedAt: current.closedAt });
+      return;
+    }
+    current = current.prevEpochId === null ? undefined : await readMeta(ctx, current.prevEpochId);
+  }
 }
 
 async function driveEpoch(ctx: Context, epochId: string, resumed: boolean): Promise<AnchorEpochSummary> {
@@ -1228,7 +1306,7 @@ function logEpoch(ctx: Context, summary: AnchorEpochSummary): void {
  * run the hourly backstop, and, if any org has new records, open the epoch of this slot and seal it.
  */
 export async function runAuditEpoch(deps: AnchorDeps, now: number): Promise<AnchorRunResult> {
-  const ctx: Context = { deps, now, nowIso: new Date(now).toISOString(), stampRequests: new Map(), lastStampRequestAt: new Map() };
+  const ctx: Context = { deps, now, nowIso: new Date(now).toISOString(), stampRequests: new Map(), lastStampRequestAt: new Map(), lastRecordedAt: new Map() };
   const epochs: AnchorEpochSummary[] = [];
   const finish = (reason?: string): AnchorRunResult => {
     const status = epochs.some((epoch) => epoch.status === "stamp_pending") ? "stamp_pending" : epochs.length > 0 ? "sealed" : "idle";
@@ -1240,6 +1318,9 @@ export async function runAuditEpoch(deps: AnchorDeps, now: number): Promise<Anch
     // finalized; the mismatch is logged by the check.
     const lock = await runLockChecks(deps, now);
     if (!lock.ok) throw new StopRun("lock_config_mismatch", undefined);
+
+    // 0b. Task 10: settle the timestamps a crashed run left half done, before this run makes any epoch of its own.
+    await resumeStamps(ctx);
 
     // 1. Resume first.
     const head = await getItem(ctx, deps.sealsTable, "EPOCH_HEAD", "HEAD");

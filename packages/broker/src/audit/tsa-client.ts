@@ -9,7 +9,7 @@
 //           one SSM parameter at cold start (see `customTsaSettings` for its format);
 //   off     no requests at all: epochs are sealed without a token.
 import { X509Certificate, randomBytes } from "node:crypto";
-import { AUDIT_TSA_ENDPOINTS, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS, buildTimeStampRequest, defaultAnchors, parseTimeStampResponse, verifyTimeStampToken, type TimestampProblem } from "@agentx/contracts";
+import { AUDIT_TSA_ENDPOINTS, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS, TIMESTAMP_SKEW_MS, buildTimeStampRequest, defaultAnchors, parseTimeStampResponse, timestampCoversRecord, verifyTimeStampToken, type TimestampProblem } from "@agentx/contracts";
 
 export type TsaProblem =
   | TimestampProblem
@@ -25,6 +25,8 @@ export type TsaProblem =
   | "roots_unavailable"
   /** A token already stored under the epoch's key does not verify. */
   | "stored_token_invalid"
+  /** The token verifies but its time is wrong: more than 5 minutes before the last record it should cover, or in the future. */
+  | "gen_time"
   /** The token's key holds a delete marker or a second version. */
   | "version_drift";
 
@@ -48,10 +50,47 @@ export interface RequestOptions {
   timeoutMs: number;
   nonce: bigint;
   anchors: readonly X509Certificate[];
+  /** The latest `recordedAt` among the records the statement covers. A token dated more than 5 minutes before it is refused (see `checkGenTime`). */
+  lastRecordedAt?: string;
+  /** Milliseconds now, for the upper bound on genTime. Defaults to `Date.now`. */
+  clock?: () => number;
+}
+
+/**
+ * The time a token vouches for must be believable before the anchor keeps it: not more than the bundle check's skew before the
+ * last record the statement covers (the very rule `verifyBundle` applies, so a token the anchor keeps never fails an export on its
+ * time), and not more than that skew ahead of now (only the anchor knows the real time). Throws `TsaError(label, "gen_time")`.
+ */
+export function checkGenTime(label: string, genTime: string, bounds: { lastRecordedAt?: string | undefined; nowMs: number }): void {
+  if (bounds.lastRecordedAt !== undefined && !timestampCoversRecord(genTime, bounds.lastRecordedAt)) throw new TsaError(label, "gen_time");
+  if (!(Date.parse(genTime) <= bounds.nowMs + TIMESTAMP_SKEW_MS)) throw new TsaError(label, "gen_time");
 }
 
 /** An answer larger than this is not a time-stamp response (a real one is a few kilobytes). */
 const MAX_RESPONSE_BYTES = 1_000_000;
+
+/**
+ * The body, read chunk by chunk and counted as it arrives: a body with no Content-Length (chunked, or a lying one) is cut off at the
+ * cap, so a hostile or broken authority cannot make the function buffer more than that. Returns undefined when the cap is passed.
+ */
+async function readCapped(response: Response): Promise<Uint8Array | undefined> {
+  if (response.body === null) return new Uint8Array();
+  const reader = response.body.getReader() as { read: () => Promise<{ done: boolean; value?: Uint8Array }>; cancel: () => Promise<void> };
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const next = await reader.read();
+    const value = next.value;
+    if (next.done || value === undefined) break;
+    total += value.length;
+    if (total > MAX_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      return undefined;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
 
 /**
  * POSTs a time-stamp query for `hashHex` (a SHA-256, lowercase hex) to `url`, aborting at `timeoutMs`, and verifies the answer
@@ -78,15 +117,20 @@ export async function requestTimestamp(fetchFn: typeof fetch, label: string, url
     if (response.status !== 200) throw new TsaError(label, "http");
     const declared = Number(response.headers.get("content-length") ?? "0");
     if (declared > MAX_RESPONSE_BYTES) throw new TsaError(label, "malformed");
+    let read: Uint8Array | undefined;
     try {
-      bytes = new Uint8Array(await response.arrayBuffer());
+      read = await readCapped(response);
     } catch {
       throw lost();
     }
+    if (read === undefined) {
+      controller.abort();
+      throw new TsaError(label, "malformed");
+    }
+    bytes = read;
   } finally {
     clearTimeout(timer);
   }
-  if (bytes.length > MAX_RESPONSE_BYTES) throw new TsaError(label, "malformed");
   let parsed: ReturnType<typeof parseTimeStampResponse>;
   try {
     parsed = parseTimeStampResponse(bytes);
@@ -97,6 +141,7 @@ export async function requestTimestamp(fetchFn: typeof fetch, label: string, url
   if (parsed.token === undefined) throw new TsaError(label, "malformed");
   const verdict = verifyTimeStampToken(parsed.token, { hashHex, nonce: options.nonce, anchors: options.anchors });
   if (!verdict.ok) throw new TsaError(label, verdict.problem);
+  checkGenTime(label, verdict.genTime, { lastRecordedAt: options.lastRecordedAt, nowMs: (options.clock ?? Date.now)() });
   return { token: parsed.token, genTime: verdict.genTime, tsa: verdict.tsa, serialHex: verdict.serialHex };
 }
 

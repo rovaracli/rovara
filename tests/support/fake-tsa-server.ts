@@ -37,6 +37,8 @@ export interface FakeTsaHost {
   readonly url: string;
   readonly pki: FakePki;
   behavior: TsaBehavior;
+  /** Added to the test clock to make a token's genTime: a negative number is an authority whose clock runs behind. */
+  skewMs: number;
   readonly requests: TsaRequestRecord[];
   readonly handler: (url: URL, init: RequestInit | undefined) => Promise<Response | undefined>;
 }
@@ -102,6 +104,7 @@ export function fakeTsaHost(options: FakeTsaHostOptions): FakeTsaHost {
     url: options.url,
     pki: options.pki,
     behavior: options.behavior ?? "grant",
+    skewMs: 0,
     requests,
     handler: async (url, init) => {
       if (url.href !== new URL(options.url).href) return undefined;
@@ -111,7 +114,7 @@ export function fakeTsaHost(options: FakeTsaHostOptions): FakeTsaHost {
       requests.push({ url: options.url, at: options.now(), contentType: headers.get("content-type"), method: init?.method ?? "GET", ...parsed });
       const reply = (bytes: Uint8Array): Response => new Response(Buffer.from(bytes), { status: 200, headers: { "content-type": "application/timestamp-reply" } });
       const pki = options.pki;
-      const genTime = new Date(options.now());
+      const genTime = new Date(options.now() + host.skewMs);
       const base = { hashHex: parsed.hashHex, ...(parsed.nonce === undefined ? {} : { nonce: parsed.nonce }), genTime };
       switch (host.behavior) {
         case "hang":

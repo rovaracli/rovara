@@ -35,7 +35,16 @@ export type VerifyBundleOptions = {
 };
 
 /** A token's genTime may be this much before the seal's last recordedAt (clock skew). */
-const SKEW_MS = 5 * 60 * 1000;
+export const TIMESTAMP_SKEW_MS = 5 * 60 * 1000;
+
+/**
+ * The bundle check's rule for a token and the last record it should cover: genTime must not be more than the skew before that
+ * record's `recordedAt`. The anchor applies the same function before it stores a token, so it never keeps one that an export
+ * would fail. An unreadable time on either side fails.
+ */
+export function timestampCoversRecord(genTime: string, lastRecordedAt: string): boolean {
+  return Date.parse(genTime) >= Date.parse(lastRecordedAt) - TIMESTAMP_SKEW_MS;
+}
 const MAX_LISTED = 5;
 
 function listed(items: readonly string[]): string {
@@ -96,9 +105,7 @@ function checkTokens(
       continue;
     }
     if (lastRecordedAt !== undefined) {
-      const limit = Date.parse(lastRecordedAt) - SKEW_MS;
-      const genTime = Date.parse(verdict.genTime);
-      if (!(genTime >= limit)) {
+      if (!timestampCoversRecord(verdict.genTime, lastRecordedAt)) {
         outcomeOf.problems.push(
           `${context} ${entry.tsa}: genTime ${verdict.genTime} is more than 5 minutes before the last record it should cover (${lastRecordedAt})`,
         );
