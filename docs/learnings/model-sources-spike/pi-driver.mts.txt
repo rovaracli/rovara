@@ -1,0 +1,58 @@
+// Stored as .txt so the repo lint ignores it. Run: cp pi-driver.mts.txt /tmp/pi-driver.mts (path import below is relative to this folder) then `npx tsx <copy> <proxyOrigin> <proxyKey> <out.json>`.
+// Drives the repo's real model runtime (Pi 1.0.0) against a proxy; records every request body, path and header names.
+// usage: tsx pi-driver.mts <proxyOrigin> <key> <outfile> [scenarioFilter]
+import { writeFileSync } from "node:fs";
+import { createConfiguredModelRuntime } from "../../../packages/model-runtime/src/index.ts";
+
+const [proxy, key, outfile, only] = process.argv.slice(2) as [string, string, string, string | undefined];
+const captured: Array<{ scenario: string; method: string; path: string; headerNames: string[]; beta: string | null; body: Record<string, unknown> }> = [];
+let scenario = "";
+const rewrite = (url: string): string => {
+  const u = new URL(url);
+  if (u.hostname === "api.anthropic.com") return proxy + u.pathname + u.search;             // /v1/messages?beta=true
+  if (u.hostname === "api.openai.com") return proxy + u.pathname + u.search;                // /v1/responses
+  if (u.hostname === "openrouter.ai") return proxy + u.pathname.replace(/^\/api\/v1/, "") + u.search; // /chat/completions
+  throw new Error("unexpected host " + u.hostname);
+};
+const transport: typeof fetch = async (input, init) => {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  const headers = new Headers(init?.headers);
+  captured.push({ scenario, method: init?.method ?? "GET", path: new URL(rewrite(url)).pathname + new URL(rewrite(url)).search, headerNames: [...headers.keys()].sort(), beta: headers.get("anthropic-beta"), body: JSON.parse(String(init?.body ?? "{}")) });
+  return fetch(rewrite(url), init);
+};
+const tools = [{ name: "read_file", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } }];
+const ctx = (extra: Array<unknown> = []) => ({ systemPrompt: "You are a test agent.", messages: [{ role: "user" as const, content: "read README.md", timestamp: 0 }, ...extra], tools });
+const cases: Array<{ name: string; provider: "anthropic" | "openai" | "openrouter"; modelId: string; thinking?: string; opts?: Record<string, unknown> }> = [
+  { name: "anthropic-off", provider: "anthropic", modelId: "claude-sonnet-4-6" },
+  { name: "anthropic-high", provider: "anthropic", modelId: "claude-sonnet-4-6", thinking: "high", opts: { reasoning: "high" } },
+  { name: "anthropic-cache-long", provider: "anthropic", modelId: "claude-sonnet-4-6", opts: { cacheRetention: "long", sessionId: "s1" } },
+  { name: "openai-off", provider: "openai", modelId: "gpt-5" },
+  { name: "openai-high", provider: "openai", modelId: "gpt-5", thinking: "high", opts: { reasoning: "high" } },
+  { name: "openai-cache", provider: "openai", modelId: "gpt-5", opts: { cacheRetention: "long", sessionId: "s1" } },
+  { name: "openrouter-off", provider: "openrouter", modelId: "openai/gpt-5" },
+  { name: "openrouter-high", provider: "openrouter", modelId: "openai/gpt-5", thinking: "high", opts: { reasoning: "high" } },
+];
+const results: unknown[] = [];
+for (const c of cases) {
+  if (only && !c.name.includes(only)) continue;
+  scenario = c.name;
+  const usage: unknown[] = [];
+  try {
+    const runtime = await createConfiguredModelRuntime({ provider: c.provider, modelId: c.modelId, ...(c.thinking ? { thinkingLevel: c.thinking } : {}) },
+      { environment: { AGENTX_OPENROUTER_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/fake-AbCdEf", AGENTX_ANTHROPIC_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/fake-AbCdEf", AGENTX_OPENAI_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/fake-AbCdEf", AGENTX_OPENROUTER_PROVIDERS: "openai" }, readSecret: async () => key, fetch: transport, onUsage: (r) => usage.push(r) });
+    const model = runtime.getModel(c.provider, c.modelId)!;
+    for (const toolTurn of [true, false]) {
+      const history = toolTurn ? [] : [
+        { role: "assistant" as const, content: [{ type: "toolCall" as const, id: "call_1", name: "read_file", arguments: { path: "README.md" } }], api: model.api, provider: c.provider, model: c.modelId, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse" as const, timestamp: 0 },
+        { role: "toolResult" as const, toolCallId: "call_1", toolName: "read_file", content: [{ type: "text" as const, text: "file text" }], isError: false, timestamp: 0 },
+      ];
+      const s = runtime.streamSimple(model, ctx(history) as never, { maxTokens: 256, ...(c.opts ?? {}) } as never);
+      const msg = await s.result();
+      results.push({ scenario: c.name, turn: toolTurn ? "tool-call" : "after-tool", stopReason: msg.stopReason, text: msg.content.filter((p: { type: string }) => p.type === "text").map((p: { text: string }) => p.text).join(""),
+        tool: msg.content.filter((p: { type: string }) => p.type === "toolCall").map((p: { name: string; arguments: unknown }) => [p.name, p.arguments]), usage: msg.usage, error: msg.errorMessage });
+    }
+  } catch (e) { results.push({ scenario: c.name, thrown: String(e).slice(0, 300) }); }
+  results.push({ scenario: c.name, onUsage: usage });
+}
+writeFileSync(outfile, JSON.stringify({ results, captured }, null, 1));
+console.log(`wrote ${outfile}: ${results.length} results, ${captured.length} requests`);

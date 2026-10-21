@@ -1,6 +1,6 @@
 # Model sources spike: per-org model sources through LiteLLM (Plan 3, Task 2)
 
-Date: 2026-10-20. Throwaway spike; the harness (a Python wire mock, a Python driver, shell helpers) lived in the session scratchpad and is not merged. Only these findings are.
+Date: 2026-10-20. Spike with fix round 1 (2026-10-20, after the Opus review). The harness is committed in `docs/learnings/model-sources-spike/` (see `run-notes.sh` there) so a LiteLLM or Pi bump can repeat the checks; the findings are here.
 
 ## Setup
 
@@ -14,31 +14,31 @@ Date: 2026-10-20. Throwaway spike; the harness (a Python wire mock, a Python dri
 | # | Question | Result |
 |---|---|---|
 | 1 | `STORE_MODEL_IN_DB` with `/model/new` and `/model/delete` across 2 replicas | **GO** |
-| 2 | Isolation (key `models`, discovery routes, team `models`) | **GO, with three binding conditions** |
-| 3 | Credentials | `/credentials` API **GO**; Secrets Manager reference **NOT TESTED** against real AWS (mechanism passes a local fake, but unsuitable for dynamic names) |
-| 4 | Transports `anthropic-messages`, `openai-responses`, `openai-completions` | **GO** for all three (wire mock and second LiteLLM); vendor upstreams **NOT TESTED** |
-| 5 | Bedrock in another account | Documentation and parameter confirmed; the live same-account denial is **NEEDS HUMAN** (**NOT TESTED**) |
-| 6 | Prices | **GO** |
+| 2 | Isolation | **GO with conditions (a) to (f), re-probed** (exact-path listener rules, org-prefixed collision-free aliases, mint-time checks, per-key `allowed_routes`, listener-only ingress). The reviewed claim that `/health/history` and `/health/latest` leak was **not reproduced live** (401 for org keys), but the exact-path rule stays |
+| 3 | Credentials | `/credentials` API **GO** and chosen. The Secrets Manager reference is **not pursued** (rejected on design grounds, see Q3) |
+| 4 | Transports | **GO** for `anthropic-messages`, `openai-responses`, `openai-completions`, now with Pi's real request bodies (pi-ai 1.0.0, `?beta=true`) through the guarded proxy: 16 of 16 requests. Vendor upstreams **NOT TESTED** |
+| 5 | Bedrock in another account | Documentation and parameter confirmed; the live same-account denial belongs to **Task 37 Step 10** (under the deploy approval) |
+| 6 | Prices | **GO** for catalog price on every route, cache read and write included, when the upstream sends no `usage.cost`; **an upstream that sends `usage.cost` overrides the price** |
 | 7 | Per-alias health | **GO** |
-| 8 | Client-side overrides refused | **NO-GO** on the stock proxy (`api_key` and `extra_headers` are not refused); a config-embedded pre-call hook fixes it (verified) |
-| 9 | Redirects not followed | **NO-GO** (every transport follows 3xx, including to `http:` and link-local, and reflects the target body in the error) |
-| 10 | Per-model `ssl_verify: true` honoured | **GO** (fail closed on all three transports), with caveats |
-| 11 | Spend lag | **GO**: `FINALIZE_DELAY_MS = 120000` |
+| 8 | Client-side overrides | **NO-GO on the stock proxy; GO with the per-route allow-list guard** (verified, recursive into fallbacks). It gates every company-key kind |
+| 9 | Redirects | **NO-GO on the stock proxy.** The in-process no-redirect patch was prototyped and verified (0 canary hits in 45 requests, start-up self-test refuses to boot without it). Whether `endpoint` ships at launch is the human's call |
+| 10 | Per-model `ssl_verify: true` | **GO** (fail closed) |
+| 11 | Spend lag | **GO**, `FINALIZE_DELAY_MS = 120000`; revocation across replicas is 10.2 s with `user_api_key_cache_ttl: 10` |
 | 12 | Key `metadata` in spend logs | **NO-GO**: Task 30 tags ledger lines from `ModelKeyRecord.tags` |
 
 ## Decisions recorded
 
 ```
-SOURCE_CREDENTIAL_STORE = litellm-credentials-api   (LiteLLM POST /credentials, referenced by litellm_credential_name; encrypted in Postgres under LITELLM_SALT_KEY)
-SOURCE_KINDS_AT_LAUNCH  = []                        (see below: openai, anthropic, openrouter need real keys; bedrock needs the Q5 live row; endpoint is blocked by Q9)
+SOURCE_CREDENTIAL_STORE = litellm-credentials-api   (LiteLLM POST /credentials, referenced by litellm_credential_name; encrypted in Postgres under LITELLM_SALT_KEY). Pending the human's decision; Task 25's Secrets Manager IAM is dropped if confirmed.
+SOURCE_KINDS_AT_LAUNCH  = []                        (openai, anthropic, openrouter need real-key rows; bedrock needs Task 37 Step 10; endpoint is the human's call, see Q9)
 TRANSPORTS_AT_LAUNCH    = [anthropic-messages, openai-responses, openai-completions]
-INFERENCE_PATHS         = POST /v1/messages, POST /v1/responses, POST /chat/completions, POST /v1/chat/completions
+INFERENCE_PATHS         = POST /v1/messages, POST /v1/responses, POST /chat/completions   (exact paths, nothing else on the inference listener)
 FINALIZE_DELAY_MS       = 120000
 ```
 
-- `SOURCE_KINDS_AT_LAUNCH` is empty now, not because 1 and 2 failed (they are GO) but because each candidate kind has an open gate: `openai`, `anthropic` and `openrouter` are NOT TESTED against a vendor (per the human's decision) so they stay out until the final cumulative round; `bedrock` needs Q5's live denial (NEEDS HUMAN) and then ships with the NOT TESTED note; `endpoint` needs 8, 9 and 10, and 9 is NO-GO. When the final round passes a vendor row, the kind joins the list; its transports are already GO.
-- Plan consequence for the controller: the NO-GO path in the brief (`SOURCE_KINDS_AT_LAUNCH = []`, keys use `models: [catalogId]`) applies at launch for kinds, but the infrastructure (Q1, Q2, Q4, Q6) is proven, so Task 24 onward can be built and kinds enabled one by one.
-- Q12 NO-GO: Task 30 tags ledger lines from `ModelKeyRecord.tags`. Spend-log rows do carry `metadata.user_api_key_alias`, `team_id`, the hashed `api_key` and `model_group`, which is enough to join a ledger line to its `ModelKeyRecord`.
+- `SOURCE_KINDS_AT_LAUNCH` is empty now, not because 1 and 2 failed (they are GO with conditions) but because each kind has an open gate: `openai`, `anthropic` and `openrouter` are NOT TESTED against a vendor and join after the final cumulative round; `bedrock` joins after Task 37 Step 10 and ships with the NOT TESTED note; `endpoint` needs the Q8 guard (verified) and the Q9 patch (verified), and the human decides.
+- Q12 NO-GO: Task 30 tags ledger lines from `ModelKeyRecord.tags`. Spend-log rows carry `metadata.user_api_key_alias`, `team_id`, the hashed `api_key` and `model_group`; join on the hashed token, never on client-controlled fields (`request_tags`, request `metadata.tags`).
+- Pi paths: with a `baseUrl` that is the proxy origin, Pi posts to `/v1/messages?beta=true`, `/v1/responses` and `/chat/completions`. A `/v1` suffix on the `openai-completions` base URL would make it `/v1/chat/completions`, which is not on the list.
 
 ## Question 1: models in the database, 2 replicas (GO)
 
@@ -47,29 +47,35 @@ FINALIZE_DELAY_MS       = 120000
 - `POST /model/delete` (`{"id": ...}`) refuses at once on the replica that took the write, but the other replica kept serving the deleted alias for 18, 20, 30 and 30 s (4 trials). A deleted alias is not revoked on all replicas for up to about 30 s: revoke access by key (Q11 revocation lag below), not by alias deletion alone.
 - `LITELLM_SALT_KEY` is required for `STORE_MODEL_IN_DB` (credentials are encrypted with it) and must be identical on every replica.
 
-## Question 2: isolation (GO, with conditions)
+## Question 2: isolation (GO with conditions, re-probed in fix round 1)
 
-Two org aliases, `org_aaa--chat` and `org_bbb--chat`, with different `api_base` and upstream key; teams `team-aaa` and `team-bbb` with matching `models`; a key per org with `models: [<alias>]` and `team_id`.
+Two org aliases, `org_aaa--chat` and `org_bbb--chat`, with different `api_base` and upstream key; teams with matching `models`; a key per org with `models: [<alias>]` and `team_id`.
 
-- A key for org A calling org B's alias, any other alias, or a non-existent alias: HTTP 403 `key_model_access_denied` on `/chat/completions`, `/v1/chat/completions`, `/v1/responses` and `/v1/messages`, on both replicas. The own alias returned 200 on all four.
-- `/v1/models`, `/models`, `/model_group/info` and `/model/info` (no parameter) list only the key's alias. `/model_group/info?model_group=<other>` returns empty. `/model/info` shows the key's own `api_base` (acceptable) and never `api_key`.
-- Team `models` is a working second layer on calls: a key with `models: [A, B]` in a team whose `models` is `[A]` gets 403 on B. Caveat: that key's `/v1/models` still lists B, so the listing does not intersect with the team.
-- A key with no `models` and no `team_id` reaches every alias (200 on both orgs' aliases).
+- A key for org A calling org B's alias, another alias, or a non-existent alias: HTTP 403 `key_model_access_denied` on `/chat/completions`, `/v1/chat/completions`, `/v1/responses` and `/v1/messages`, on both replicas. The own alias returned 200 on all four.
+- `/v1/models`, `/models`, `/model_group/info` and `/model/info` (no parameter) list only the key's alias. Team `models` is a working second layer on calls (a key with `models: [A, B]` in a team whose `models` is `[A]` gets 403 on B), but that key's `/v1/models` still lists B.
+- Leaks with an ordinary org key on the stock proxy: `GET /v2/model/info` returns every model with its `api_base`, and `GET /model/info?litellm_model_id=<id>` returns another org's entry. A key minted with an `internal_user` role (a `user_id`) also reads `/model/info` and `/v2/model/info`; Rovara keys must never carry a `user_id` or role.
 
-Leaks found with an ordinary org key (all closed by the conditions below):
+**C1: `/health/history`, `/health/latest` and the other `/health/*` routes (not reproduced).** The review read the source and expected these to leak other orgs' alias names and error text. Live: after master-key health checks on org B's two aliases (one healthy, one dead), the rows exist (`GET /health/latest` with the master key returns both, with status and error text), but an org A key gets HTTP 401 ("Only proxy admin can be used", `Your role=unknown`) on `/health/history`, `/health/latest`, `/health/shared-status` and `/health/readiness/details`, and so does an `internal_user` key. Org keys do get 200 on `/health` (own alias only), `/health/readiness`, `/health/liveliness` and `/health/liveness`, and 422 on `/health/services`. So the route check protects them today, but the data is persisted and one version bump or role change would expose it. The rule stays: no `/health/*` wildcard on the listener.
 
-1. `GET /v2/model/info` returns every model, including other orgs' `api_base` (and `static-mock`), on both replicas.
-2. `GET /model/info?litellm_model_id=<id>` returns another org's model info, `api_base` included, if the id is known.
-3. Keys that omit `models` or `team_id` see everything.
+**Other routes that skip the guard.** Pass-through routes exist and do not run the pre-call hook: `/anthropic/v1/messages` (401 without a proxy-held Anthropic credential), `/openai/v1/chat/completions` (500), `/bedrock/model/<id>/invoke` (checks the key's models), `/v1/messages/count_tokens` (200, no upstream call), `/engines/<m>/chat/completions`. Exact-path rules close all of them. Call types the guard does not serve (completions, embeddings, batches, images, rerank) answer 400 `call type ... is not served`.
 
-Binding conditions for GO: (a) the proxy's load balancer forwards only the inference paths (`INFERENCE_PATHS`) and `/health/liveliness`; `/v2/model/info`, `/model/info`, `/model_group/info`, `/v1/models` and every management route are not reachable from a worker or sandbox; (b) every key is minted with a non-empty `models` list and a `team_id`; (c) model ids are unguessable (let LiteLLM generate them, never derive them from the org id). Other management routes probed with an org key (`/key/list`, `/team/list`, `/user/list`, `/spend/*`, `/credentials`, `/guardrails/list`, `/config/list` and 20 more) returned 401, 403, 404 or an empty body, and none contained another org's data. `/routes` returns the route list (no tenant data).
+**The corrected conditions** (each re-probed locally):
 
-## Question 3: credentials
+- **(a) Exact paths and methods.** The inference listener rule matches exactly `POST /v1/messages`, `POST /v1/responses`, `POST /chat/completions` (the query string `?beta=true` is not part of path matching). The code's current `INFERENCE_PATH_PATTERNS = ["/v1/messages*", "/health/*"]` (`infra/lib/model-proxy.ts:30`) must be replaced; `/v1/messages/count_tokens` is not used by Pi (no match in pi-ai). The target group's health check on `/health/liveliness` bypasses listener rules, so no health path is needed on the listener. `/v2/model/info`, `/model/info`, `/model_group/info`, `/v1/models`, every `/health/*`, every management and pass-through route are unreachable from workers.
+- **(b) Alias collision.** Confirmed: `/model/new` accepts a second deployment with an existing `model_name` (only a duplicate `model_info.id` is refused with a 500), and LiteLLM load-balances the group: org A's key sent 20 calls to `org_aaa--chat` and the upstream saw 12 for org A's endpoint and 8 for the colliding deployment with the other org's key. So: the server derives every alias as `org_<orgId>--<slug>`; no catalog id or static model starts with `org_`; `upsertSource` refuses a `model_name` that already exists for another org (a Rovara-side unique record with a conditional write, because replicas sync every 30 s and two concurrent adds both pass any LiteLLM-side check); and after `/model/new`, read `GET /model/info?litellm_model_id=<id>` and the master-key `GET /model_group/info?model_group=<name>` (empty `data` means free) to confirm exactly one deployment carries the name.
+- **(c) Mint-time checks (the master key mints, through one function).** What LiteLLM honours: key `models: ["*"]`, `["all-proxy-models"]`, `[]`, and `[]` in a team with empty `models` all reach every alias; an access-group name in `models` reaches every member of the group; `openai/*` matches only if a wildcard route exists; a key `aliases` map did not bypass the models check (403). `validate_mint` (`mint.py`) refuses all of them from a closed schema: only `models`, `team_id`, `key_alias`, budget fields, `duration`, `metadata`, `allowed_routes`; each model must match `org_<ownOrgId>--<slug>`; the team must exist with non-empty `models` of org aliases and catalog ids only (no `*`, group or `all-proxy-models`); `team_id` required; no `user_id`, `aliases`, `tags`, `model_max_budget`. `verify_minted` then reads `/key/info` and `/team/info` and fails the mint if `models` drifted from the request (it caught a wildcard key minted straight through LiteLLM). A periodic audit of `/key/list` for the same invariants backs it up.
+- **(d) Per-key `allowed_routes` works on OSS v1.105.1.** `allowed_routes: ["/chat/completions"]` stored and enforced: the same key got 403 "Virtual key is not allowed to call this route" on `/v1/messages` and `/v1/responses`, and 403 on `GET /v2/model/info`, `/model/info`, `/key/info` and `/health`. Use exact route strings (`["/v1/messages", "/v1/responses", "/chat/completions"]`, trimmed to the key's sources' transports); the group name `llm_api_routes` also opens `GET /model/info`, so do not use it. This is a second layer under (a).
+- **(e) Ingress.** The task security group takes ingress only from the load balancer's group (`model-proxy.ts:115-118`); the management port 4001 is reachable only from `ModelAccessFunction` (`model-proxy.ts:25-28`). `checkSource` (Q7) goes through the management port.
+- **(f) Unguessable model ids** (let LiteLLM generate `model_info.id`), and Task 25's infra test asserts `configurable_clientside_auth_params` and `allow_client_side_credentials` are unset.
+
+A staging probe through the load balancer (encoded and dot-segment variants such as `/v1/messages/../v2/model/info`, `//v1/messages`, `/v1/messages/`) belongs in Task 37; locally `//v1/messages` is a 404 and `/v1/messages/` a 307 (neither matches an exact rule anyway).
+
+## Question 3: credentials (`/credentials` API chosen; Secrets Manager not pursued)
 
 - **`/credentials` API (GO).** `POST /credentials` (`credential_name`, `credential_values: {api_key, api_base}`, `credential_info`) then `/model/new` with `litellm_params.litellm_credential_name`: the other replica served it and the upstream received the credential's key. `GET /credentials` shows the key redacted (`sk****11`); `/model/info` shows only the credential name. An org key gets 401 on `/credentials`. `PATCH /credentials/{name}` needs `credential_name` repeated in the body; the rotated key reached the upstream on both replicas within about 10 s.
-- **Secrets Manager reference (NOT TESTED against real AWS).** Creating the throwaway secret `agentx/spike/org-sources/test` is an AWS resource, so it was not done (hard limit, PF29). The mechanism was exercised against a local fake Secrets Manager (the source builds the endpoint from `AWS_BEDROCK_RUNTIME_ENDPOINT` with `bedrock-runtime` replaced by `secretsmanager`): config-file and database models with `api_key: os.environ/<secret-id>` and `key_management_system: aws_secret_manager` resolved the secret and sent it upstream; the database stores the reference encrypted and `/model/info` shows `api_key: None`; the secret is read when the model loads (not on each request). Findings that make it a poor fit for per-org sources: with `hosted_keys` set, a reference not in the list is not resolved (the call failed with "api_key client option must be set"), and without `hosted_keys` every `os.environ/` reference (master key, database url) goes to Secrets Manager first. Resolving new names would need a restart or a static list. A real-AWS row stays NOT TESTED.
+- **Secrets Manager reference (not pursued).** No ruling gates it and the `/credentials` API makes it moot. The throwaway secret `agentx/spike/org-sources/test` was not created (an AWS resource), so the real-AWS row was never run. The mechanism was exercised against a local fake Secrets Manager (the source builds the endpoint from `AWS_BEDROCK_RUNTIME_ENDPOINT` with `bedrock-runtime` replaced by `secretsmanager`): config-file and database models with `api_key: os.environ/<secret-id>` and `key_management_system: aws_secret_manager` resolved the secret and sent it upstream; the database stores the reference encrypted and `/model/info` shows `api_key: None`; the secret is read when the model loads (not on each request). Findings that make it a poor fit for per-org sources: with `hosted_keys` set, a reference not in the list is not resolved (the call failed with "api_key client option must be set"), and without `hosted_keys` every `os.environ/` reference (master key, database url) goes to Secrets Manager first. Resolving new names would need a restart or a static list.
 
-## Question 4: transports (GO)
+## Question 4: transports (GO, now with Pi's real bodies)
 
 Each of `/v1/messages` (`anthropic-messages`), `/v1/responses` (`openai-responses`) and `/chat/completions` (`openai-completions`) was run with a text call, a streamed text call, a tool call and a streamed tool call. Upstreams: (b) the wire mock, native route (`anthropic/` for Messages, `openai/` for Responses and Completions); (c) a second LiteLLM in front of the wire mock (`api_base` the second proxy's origin). All 24 requests returned 200. Streams were `text/event-stream` (6 to 11 events); tool name `read_file` and arguments `{"path":"README.md"}` were assembled from the stream on all three; usage was 1000 input / 200 output on every request (streamed and not).
 
@@ -77,32 +83,56 @@ LiteLLM `mock_response` rows (a): `/chat/completions` works for text and streami
 
 NOT TESTED: real Anthropic, OpenAI and OpenRouter upstreams, and Bedrock Claude (no key or call, by decision). `/v1/messages` against an OpenAI-protocol upstream also worked (LiteLLM translated), but it is not an offered combination.
 
-## Question 5: Bedrock in another account (documentation and parameter confirmed; live denial NEEDS HUMAN)
+
+**Fix round 1: Pi's real bodies.** The repo's real runtime (`createConfiguredModelRuntime`, pi-ai 1.0.0) was driven through the guarded proxy against the wire mock, for `anthropic` `claude-sonnet-4-6` (path `/v1/messages?beta=true`), `openai` `gpt-5` (`/v1/responses`) and `openrouter` `openai/gpt-5` (`/chat/completions`), each with thinking off, high, and long cache retention with a session id, and each as a tool-call turn followed by a tool-result turn: 16 of 16 requests returned 200; streams assembled; the `read_file` tool call round-tripped; Pi's `usage` carried cache read and write and reasoning tokens. Pi's captured top-level body fields (the allow-list source): Messages `model, messages, max_tokens, stream, system, thinking, output_config, tools` (plus `temperature`, `tool_choice`, `metadata.user_id` when set); Responses `model, input, stream, store, max_output_tokens, prompt_cache_key, prompt_cache_retention, reasoning, include, tools`; Completions `model, messages, stream, stream_options, store, max_completion_tokens, reasoning, provider, tools`. Pi sent no `anthropic-beta` header in these runs and no `service_tier`, `timeout`, `user` or `metadata`. Headers Pi sets: `x-api-key` or `authorization`, `anthropic-version`, `anthropic-dangerous-direct-browser-access`, `session_id`, `x-client-request-id`, `x-stainless-*`.
+
+Condition found: `reasoning.effort` on `/v1/responses` is refused with an `UnsupportedParamsError` when the alias's underlying model is unknown to LiteLLM's cost map (`litellm_params.model: openai/gpt-mock`: HTTP 400 "its model cost map entry lacks `supports_reasoning`"). With the real underlying name (`openai/gpt-5`) it passes; for a custom `endpoint` model, set `model_info.supports_reasoning: true` (200). `drop_params: true` also passes but silently drops the reasoning request, so do not use it. Chat Completions and Messages accepted their reasoning fields for the unknown mock model.
+
+## Question 5: Bedrock in another account (documentation and parameter confirmed; live denial is Task 37 Step 10)
 
 - The IAM service authorization reference for STS (machine-readable form, `servicereference.us-east-1.amazonaws.com/v1/sts/sts.json`) lists `sts:ExternalId` among the condition keys of `sts:AssumeRole` (resource type `role`). The IAM global condition keys page says `aws:ResourceAccount` is "always included in the request context for most service actions" and lists its exceptions; `sts:AssumeRole` is not among them. Its example is an identity-based policy.
 - LiteLLM has the parameter: `aws_external_id` (source `llms/bedrock/base_aws_llm.py` passes it as `ExternalId` to `AssumeRole`; the env fallback is `AWS_EXTERNAL_ID`). It is one of the body parameters the proxy refuses from clients (Q8). The other identity parameters are `aws_role_name` and `aws_session_name`.
 - Supplementary, not live: `iam simulate-custom-policy` (a read-only evaluation, no resource created) on profile `agentx-test` with an Allow on `arn:aws:iam::*:role/*` plus a Deny when `aws:ResourceAccount` equals the own account: a same-account role gave `explicitDeny`, another account's role `allowed`. With `StringLike sts:ExternalId = rovara-org_*`: `rovara-org_abc` allowed, `other` and an absent external id `implicitDeny`.
-- **NEEDS HUMAN:** "assuming a same-account role is denied live" needs a real IAM role (and the proxy task role's policy) in an AWS account. PF29 forbids creating one without the human. Until it passes, `bedrock` stays out of `SOURCE_KINDS_AT_LAUNCH`. If the human approves, record which role was used.
+- **Live denial: Task 37 Step 10.** "Assuming a same-account role is denied live" is run there, with the real proxy task role, under the deploy approval; PF29 forbids creating a role in the spike. Until it passes, `bedrock` stays out of `SOURCE_KINDS_AT_LAUNCH`. An earlier signal without a new IAM resource is possible (assume an existing `agentx-test` role with a session policy carrying the Allow and the `aws:ResourceAccount` Deny, then try an existing same-account role); not run.
 
-## Question 6: prices (GO)
+## Question 6: prices (GO, with the `usage.cost` caveat)
 
 Per-token prices from Pi's catalog (installed `@earendil-works/pi-ai`): `claude-sonnet-4-6` 3 / 15 USD per million (input / output), `gpt-5` (`openai-responses`) 1.25 / 10, `openrouter openai/gpt-5` (`openai-completions`) 1.25 / 10. Set as `input_cost_per_token` and `output_cost_per_token` in `litellm_params` on each alias. With 1000 input and 200 output tokens per request, a key's spend after 4 requests (text, streamed, tool, streamed tool) equalled list price exactly on every route and upstream: 0.024 on Messages (4 x 0.006), 0.013 on Responses and Completions (4 x 0.00325), for both the wire mock and the second LiteLLM. Streamed requests are priced. NOT TESTED: cache read and write tokens; the `mock_response` rows (spend 0 on Messages, estimated tokens on the others); a vendor's real usage.
+
+
+**Fix round 1: cache and reasoning pricing with Pi's real bodies.** Aliases carry the catalog's four prices (`claude-sonnet-4-6`: input 3, output 15, cache read 0.3, cache write 3.75 USD per million; `gpt-5`: input 1.25, output 10, cache read 0.125), the real underlying model names, and the wire mock returns cache and reasoning usage (Messages `cache_creation_input_tokens` 200 and `cache_read_input_tokens` 400; Responses and Completions `cached_tokens` 400 inside 1400 input tokens, `reasoning_tokens` 50 inside 200 output tokens). Per request, LiteLLM spend equalled Pi's own catalog cost exactly: Messages 0.00687, Responses 0.0033, Completions (no `usage.cost`) 0.0033 (6, 6 and 4 requests, key spend 0.07422 for those; reasoning tokens are part of output and need no separate price).
+
+**But an upstream that reports `usage.cost` overrides the price.** The mock added `usage.cost: 0.01234` to Chat Completions usage: LiteLLM billed 0.01234 per request on `openai/`-provider and `openrouter/`-provider aliases alike, ignoring the configured prices; the same alias path with the field removed billed the catalog price. So the ruling "spend uses vendor-reported cost where the upstream returns it" holds on the Completions route for any upstream, which also means an `endpoint` upstream sets its own spend (acceptable only if Task 30 treats it as the company's own budget). `usage.cost` was not tested on Messages or Responses. The `mock_response` rows and a vendor's real usage remain NOT TESTED.
 
 ## Question 7: health per alias (GO)
 
 `GET /health?model=<alias>` (or `?model_id=<id>`) with the master key. Healthy body: `{"healthy_endpoints":[{"api_base":"...","model":"openai/gpt-mock","model_id":"..."}],"unhealthy_endpoints":[],"healthy_count":1,"unhealthy_count":0}`. A dead upstream returns an `unhealthy_endpoints` entry with `api_base`, `model`, `model_id`, `exception_status`, a full Python stack trace in `error`, and `raw_request_typed_dict` with the request body and a masked `Authorization` (`Be****yz`: the first two and last two characters of the secret). The check makes a real upstream call (the mock logged a chat request) and took about 1.5 s for a refused connection. An alias the replica has not synced yet returns `healthy_count: 0` and `unhealthy_count: 0` (unknown, not unhealthy). An org key may call `/health?model=<own alias>` (no `api_base` in the body) and gets 403 for another alias. Rovara should map the response to healthy, unhealthy or unknown and never show the body to members.
 
-## Question 8: client-side overrides (NO-GO stock; fix verified)
+## Question 8: client-side overrides (NO-GO on the stock proxy; GO with the guard)
 
-- Refused (HTTP 401, "Rejected Request: <param> is not allowed in request body") on all three routes, nothing reached the upstream or the canary: `api_base`, `base_url`, `aws_role_name`, `aws_external_id`, `user_config`.
-- **Not refused:** `api_key` (HTTP 200; the upstream received the client's key instead of the deployment's) and `extra_headers` (HTTP 200; the upstream received the client's header and the client's `Authorization` replaced the deployment's). Neither is in `_BANNED_REQUEST_BODY_PARAMS`.
-- `configurable_clientside_auth_params` default: `null` (visible in `/model_group/info`); `general_settings.allow_client_side_credentials` is unset (false). With both unset, the banned list above is enforced unconditionally; the list is a fixed tuple in the pinned image and cannot be extended by config.
-- Fix verified: a config-embedded `CustomLogger` whose `async_pre_call_hook` raises HTTP 400 when the body carries `api_key`, `extra_headers`, `headers`, `extra_body`, `litellm_credential_name`, `timeout`, `ssl_verify`, `api_version` or `custom_llm_provider`. With it, clean requests returned 200 and all six override requests (two per route) returned 400 and never reached the upstream. It needs a `custom_hook.py` next to the config (`litellm_settings: callbacks: custom_hook.proxy_handler_instance`); the ECS task writes only the YAML today, so the start command must also write the file.
-- Gate: `endpoint` also needs Q9, so it stays out regardless.
+Stock behaviour (unchanged): HTTP 401 "Rejected Request" for `api_base`, `base_url`, `aws_role_name`, `aws_external_id`, `user_config`; **not refused** `api_key` (replaces the deployment's upstream key) and `extra_headers` (forwarded, replacing the deployment's `Authorization`). `configurable_clientside_auth_params` defaults to `null` and `allow_client_side_credentials` is unset; the banned tuple (184 entries) cannot be extended by config. It also does not cover `organization`, `aws_region_name`, `service_tier`, `num_retries`, `headers`, `extra_query`, OpenRouter `models` and `route`, or **fallbacks: a dict fallback target carrying `api_key` and `extra_headers` got through the stock proxy and reached the upstream** (primary alias dead, fallback `{"model": "<own alias>", "api_key": "sk-ATTACKER-key", "extra_headers": {...}}`: the upstream saw the attacker key and header; stock replica returned 200). Client `litellm_metadata` is merged into the request metadata on `/v1/responses` and `/chat/completions`, so a client can add `tags`.
 
-## Question 9: redirects (NO-GO)
+**The guard (`rovara_guard.py`, a LiteLLM callback module, gates every company-key kind, not only `endpoint`).**
 
-Models whose `api_base` pointed at a route answering 3xx. Every transport followed the redirect: HTTP 302, 307 and 308 to an `http:` canary reached the canary on `/chat/completions`, `/v1/responses` and `/v1/messages` (stream and non-stream); a 302 to `http://169.254.169.254/latest/meta-data/` was followed (errors: "Cannot connect to host 169.254.169.254:80"); an `https:` upstream redirecting to `http:` was followed on `/v1/responses`. The canary's response body appears in the client-visible error (`OpenAIException - {"ok": true, "canary": true}`), so a redirect is an SSRF with a reflected body. The source hard-codes `follow_redirects=True` in the OpenAI and shared httpx clients (`llms/openai/common_utils.py`, `llms/custom_httpx/http_handler.py`); there is no configuration switch. `endpoint` stays out until the proxy is isolated by the network (egress only to the validated host, nothing link-local or task-metadata reachable) and that is itself tested, or LiteLLM is changed.
+- A per-route allow-list of body fields, keyed by LiteLLM call type (`anthropic_messages`, `aresponses`, `acompletion`), built from the Pi fields above. Any other field is a 400 `request not allowed: field <name>`. It runs on the data after LiteLLM injects its own keys, so it ignores the injected set (`litellm_call_id`, `litellm_logging_obj`, `proxy_server_request`, `secret_fields`, `provider_specific_header`) and checks that the injected metadata dict holds only the 51 keys a clean request produces on v1.105.1 (plus `user_api_key*`); a client-sent `metadata.tags` or `litellm_metadata.tags` is refused.
+- `fallbacks`, `context_window_fallbacks`, `content_policy_fallbacks` and `router_settings_override` are refused outright; the refusal names a credential-bearing field found anywhere inside (recursion into fallback targets: `fallbacks (carries 0.api_key)`).
+- `service_tier`, `organization`, `aws_region_name`, `api_key`, `extra_headers`, `timeout`, `num_retries`, `models`, `route` and every other field outside the list are refused. `provider` (OpenRouter routing) must have `allow_fallbacks: false` and only routing keys. `metadata` on Messages may carry only `user_id`.
+- Headers: any `x-litellm-*` (it would set `timeout`), `openai-organization`, `openai-project`, and an `anthropic-beta` outside two known values are refused. `forward_client_headers_to_llm_api` and OTEL trace forwarding stay off, or the proxy adds the headers itself and every request fails.
+- LiteLLM silently drops a client `mock_response` unless the key or team metadata allows it (observed: the request reached the upstream).
+- Tested on all three routes (hooktest.py): every case above refused with 400, nothing reached the upstream; Pi's 16 captured bodies passed (14 at first, the 2 refusals were the unknown-model `reasoning.effort` error from Q4, not the guard). Pi itself, through the guarded proxy, passed 16 of 16.
+- Cost: a Pi upgrade that adds a body field fails closed with a 400 until the list is updated. The upgrade path re-runs `pi-driver` (capture) and `hooktest.py` (replay), and diffs the captured field set against `ROUTE_FIELDS`.
+- Files: the module is loaded with `litellm_settings: callbacks: rovara_guard.proxy_handler_instance` and must sit next to the config; the ECS start command currently writes only the YAML, so it must also write the module.
+
+## Question 9: redirects (NO-GO on the stock proxy; patch prototyped and verified)
+
+Stock: every transport follows 302, 307 and 308 (stream and non-stream), including to `http:`, to link-local `169.254.169.254` and from `https:` to `http:`, and the redirect target's body is reflected in the client-visible error. `follow_redirects=True` is hard-coded (`llms/openai/common_utils.py`, `llms/custom_httpx/http_handler.py`). Re-run in fix round 1 on the stock replica: 16 of 30 rows (stream and non-stream) and, in a separate streamed-only run, 10 of 15 rows reached the canary (the rest are the `https` rows that failed on the mock's certificate before any redirect).
+
+**The no-redirect patch (in `rovara_guard.py`).** At import it wraps `httpx.Client.send` and `httpx.AsyncClient.send` to force `follow_redirects=False`. httpx is where every path follows: LiteLLM's handler, the OpenAI and Anthropic SDK clients, and the aiohttp transport. About 15 lines, no infrastructure. A start-up self-test spins up a local redirector and target and checks eight paths (`httpx.Client`, `httpx.AsyncClient`, the OpenAI SDK, the Anthropic SDK, LiteLLM's `AsyncHTTPHandler`, and `litellm.acompletion` and `litellm.aresponses` for OpenAI and `acompletion` for Anthropic); if any would follow, the process exits 70 before serving. Verified:
+
+- Re-run of the redirect matrix on the patched replica: 0 canary hits in 45 requests (3 transports x 302, 307, 308, link-local and https-to-http, stream and non-stream); every row is an error (`Error code: 302` and the like); a redirecting deployment goes into router cooldown (HTTP 429 "No deployments available" on the next calls), which is acceptable.
+- Negative test: with the patch disabled (`ROVARA_DISABLE_NO_REDIRECT_PATCH=1`) all eight self-test checks detect the follow and the process exits 70, so the proxy does not start.
+- Limits: it covers httpx-based paths (all three transports here). It does not cover a provider that uses another HTTP library, so the matrix and the self-test must be re-run on every LiteLLM bump (R24 digest pin). Stronger options (an egress proxy that checks IPs at connect time) remain available. The direct connection to the endpoint's own host is covered by TLS verification that fails closed (Q10) and Task 12's URL rules.
+- Whether `endpoint` ships at launch is the human's call.
 
 ## Question 10: `ssl_verify` (GO, fail closed)
 
@@ -110,9 +140,11 @@ Against the self-signed HTTPS mock: `ssl_verify: true` and an absent `ssl_verify
 
 ## Question 11: spend lag (GO): `FINALIZE_DELAY_MS = 120000`
 
-- `/key/info` spend after one request: 0.5 s, 9.6 s and 9.4 s (identical on both replicas); after a burst of 80 requests over both replicas, the full spend (0.26) was visible 9.2 s after the last response. The flush interval is `PROXY_BATCH_WRITE_AT` (default 10 s). Spend-log rows were visible within about 4 s. The default of 120000 ms keeps a margin of more than 10 times.
+- `/key/info` spend after one request: 0.5 s, 9.6 s and 9.4 s (identical on both replicas); after a burst of 80 requests over both replicas, the full spend (0.26) was visible 9.2 s after the last response. The flush interval is `PROXY_BATCH_WRITE_AT` (default 10 s). Spend-log rows were visible within about 4 s. The flush alone is about 10 s; the settle window must also cover revocation and in-flight requests (below).
 - After `/key/block`, `/key/info` still returns the key with `blocked: true` and the full spend. After `/key/delete`, `/key/info?key=<key>` still returned the full info and spend, and `/spend/logs?api_key=<hashed token>` returned all 80 rows (sum 0.26); `/key/list?include_deleted=true` did not list it.
-- Revocation lag across replicas: the replica that took `/key/block` or `/key/delete` refuses at once (401), the other replica kept accepting the key for 60 s (60.1 s and 60.0 s) because of the key cache. Revoking a key is complete only after about 60 s. A blocked key was still served on the other replica in the earlier burst test for the same reason.
+- Revocation lag across replicas (stock default): the replica that took `/key/block` or `/key/delete` refuses at once, the other kept accepting the key for 60 s (60.1 s and 60.0 s), the key cache TTL.
+- **With `general_settings.user_api_key_cache_ttl: 10` (fix round 1):** block and delete each refused on the other replica after 10.2, 10.2, 10.2 and 10.1 s (4 of 4), so revocation propagates in under 15 s. Model add/delete sync is separate (30 s, Q1).
+- **Derivation of `FINALIZE_DELAY_MS = 120000`:** key-cache TTL (10 s) + spend flush (10 s) = about 20 s after the last admitted request is written. A request admitted before the block can still run: LiteLLM's default `request_timeout` is 6000 s, the ALB idle timeout is 900 s, so set `REQUEST_TIMEOUT` explicitly (at most 900) and treat 120000 ms as the settle window for ordinary requests; an overshoot from a request that outlives it is picked up by Task 30's 24 h re-settlement of finalized keys, which adds it to `committedUsd`.
 
 ## Question 12: key `metadata` in spend logs (NO-GO)
 
@@ -120,14 +152,16 @@ A key generated with `metadata: {"orgId": "org_q12", "memberId": "m_q12", "taskI
 
 ## NOT TESTED
 
-- Real OpenAI, Anthropic, OpenRouter upstreams and Bedrock (any account): streaming, tool calls, usage and prices against a vendor.
-- Secrets Manager against real AWS (a throwaway secret is an AWS resource) and credential rotation through a Secrets Manager reference.
-- Q5's live same-account denial (needs an IAM role).
-- Cache token prices, reasoning tokens, concurrency races at a budget boundary.
-- A fix for Q9 (network isolation) and the effect of the Q8 hook on Pi's real request bodies (Pi may set fields the hook bans, for example `timeout`; trim the list against Pi's actual bodies before adopting it).
+- Real OpenAI, Anthropic, OpenRouter upstreams and Bedrock (any account): streaming, tool calls, usage, `usage.cost`, prices and thinking against a vendor. The final cumulative round runs the per-kind checklists from the review (real-key rows only; everything keyless above must pass first).
+- Task 37 Step 10: the live same-account denial with the real proxy task role.
+- `usage.cost` on Messages and Responses; cache write pricing on OpenAI-protocol routes; concurrency races at a budget boundary.
+- A staging probe through the load balancer (encoded and dot-segment path variants).
+- Secrets Manager against real AWS (not pursued).
 
 ## Notes for the plan
 
-- Tell the human before Task 24 only if they want kinds enabled sooner: 1 and 2 are GO, so Task 24 is not blocked.
-- Task 25 (proxy infrastructure): load balancer allow-list of `INFERENCE_PATHS` (and the existing health path), the pre-call hook file, a shared `LITELLM_SALT_KEY` secret, `STORE_MODEL_IN_DB=True` (the production task currently sets it to `False`).
-- Key lifecycle: minting always sets `models` and `team_id`; expect up to 60 s to revoke on every replica and up to about 30 s for a deleted alias.
+- Task 24 is not blocked: 1 and 2 are GO with the conditions above.
+- Task 25 (proxy infrastructure): exact-path, POST-only listener rule for `INFERENCE_PATHS` (replacing `/v1/messages*` and `/health/*`); the guard module written next to the config and loaded as a callback; `user_api_key_cache_ttl: 10`; `REQUEST_TIMEOUT` set (at most 900); a shared `LITELLM_SALT_KEY` secret; `STORE_MODEL_IN_DB=True` (production currently sets `False`); infra test asserting `configurable_clientside_auth_params` and `allow_client_side_credentials` unset, no provider or AWS credentials in the proxy's environment (the `/anthropic/...` and `/bedrock/...` pass-through routes would use them), and `forward_client_headers_to_llm_api` off.
+- Minting: one function with the closed schema, `allowed_routes` exact, `verify_minted` after every mint, a periodic audit; every key has `models`, `team_id`, no `user_id`.
+- Aliases: `org_<orgId>--<slug>`, derived by the server, unique per Rovara record, `model_info.supports_reasoning` set for custom models whose capabilities LiteLLM does not know.
+- Key lifecycle: up to 10 s to revoke on every replica and up to about 30 s for a deleted alias.
