@@ -12,8 +12,9 @@ import {
   SOURCE_KINDS_AT_LAUNCH,
   TRANSPORTS_AT_LAUNCH,
   bedrockExternalId,
-  customSourceCountProblem,
+  customSourceLimitProblem,
   defaultModelSourceOrder,
+  modelSourceOrgProblem,
   modelSourceInputSchema,
   sourceAlias,
   sourceKindProblem,
@@ -127,6 +128,8 @@ describe("client input", () => {
     expect(ModelSourceInputSchema.safeParse({ ...bedrockInput, models: bedrockDup }).success).toBe(false);
     const endpointDup = [{ name: "Our-Model", catalog: claude }, { name: "our-model", catalog: claude }];
     expect(ModelSourceInputSchema.safeParse({ ...endpointInput, models: endpointDup }).success).toBe(false);
+    const sameCatalog = [{ name: "model-a", catalog: claude }, { name: "model-b", catalog: claude }];
+    expect(ModelSourceInputSchema.safeParse({ ...endpointInput, models: sameCatalog }).success).toBe(false);
   });
 
   it("allows 20 models and refuses 21, and refuses none", () => {
@@ -159,8 +162,20 @@ describe("stored source", () => {
     expect(ModelSourceSchema.safeParse({ ...anthropicInput, sourceId: "src_a.b" }).success).toBe(false);
     expect(ModelSourceSchema.safeParse({ ...bedrockInput, sourceId: SRC }).success).toBe(false);
     expect(ModelSourceSchema.safeParse({ ...bedrockInput, sourceId: SRC, externalId: "rovara-x", tested: false }).success).toBe(false);
-    expect(ModelSourceSchema.safeParse({ ...bedrockInput, sourceId: SRC, externalId: bedrockExternalId(ORG) }).success).toBe(false);
+    expect(ModelSourceSchema.safeParse({ ...bedrockInput, sourceId: SRC, tested: false }).success).toBe(false);
     expect(ModelSourceSchema.safeParse({ ...anthropicInput, sourceId: SRC, tested: false }).success).toBe(false);
+  });
+
+  it("defaults a stored Bedrock source to not tested", () => {
+    const parsed = ModelSourceSchema.parse({ ...bedrockInput, sourceId: SRC, externalId: bedrockExternalId(ORG) });
+    expect(parsed.kind === "bedrock" && parsed.tested).toBe(false);
+  });
+
+  it("checks a stored Bedrock external id against the org", () => {
+    const own = ModelSourceSchema.parse({ ...bedrockInput, sourceId: SRC, externalId: bedrockExternalId(ORG) });
+    expect(modelSourceOrgProblem(ORG, own)).toBeUndefined();
+    expect(modelSourceOrgProblem("org_zzzzzzzzzz0123456789", own)).toMatch(/external id/);
+    expect(modelSourceOrgProblem(ORG, ModelSourceSchema.parse({ ...anthropicInput, sourceId: SRC }))).toBeUndefined();
   });
 
   it("derives the external id from the org", () => {
@@ -171,9 +186,11 @@ describe("stored source", () => {
 describe("org limits", () => {
   it("allows 10 custom sources per org and refuses an 11th", () => {
     expect(MAX_CUSTOM_SOURCES_PER_ORG).toBe(10);
-    expect(customSourceCountProblem(10)).toBeUndefined();
-    expect(customSourceCountProblem(11)).toMatch(/10/);
-    expect(customSourceCountProblem(0)).toBeUndefined();
+    expect(customSourceLimitProblem(0)).toBeUndefined();
+    expect(customSourceLimitProblem(9)).toBeUndefined();
+    expect(customSourceLimitProblem(10)).toMatch(/10/);
+    expect(customSourceLimitProblem(9, 2)).toMatch(/10/);
+    expect(customSourceLimitProblem(0, 10)).toBeUndefined();
   });
 });
 
@@ -196,7 +213,9 @@ describe("order and alias", () => {
 
   it("parses the org's sources record", () => {
     expect(OrgModelSourcesSchema.safeParse({ sources: [{ ...anthropicInput, sourceId: SRC }], order: [SRC, "rovara"] }).success).toBe(true);
-    expect(OrgModelSourcesSchema.safeParse({ sources: [], order: ["rovara"], assistantModel: claude, chatgptPreferredModel: { provider: "openai", modelId: "gpt-5" } }).success).toBe(true);
+    expect(OrgModelSourcesSchema.safeParse({ sources: [], order: ["rovara"], assistantModel: claude, chatgptPreferredModel: "gpt-6.1-sol" }).success).toBe(true);
+    expect(OrgModelSourcesSchema.safeParse({ sources: [], order: ["rovara"], chatgptPreferredModel: { provider: "openai", modelId: "gpt-5" } }).success).toBe(false);
+    expect(OrgModelSourcesSchema.safeParse({ sources: [], order: ["rovara"], chatgptPreferredModel: "not a model id" }).success).toBe(false);
     expect(OrgModelSourcesSchema.safeParse({ sources: [], order: ["nope"] }).success).toBe(false);
     expect(OrgModelSourcesSchema.safeParse({ sources: [], order: [SRC] }).success).toBe(false);
     expect(OrgModelSourcesSchema.safeParse({ sources: [], order: ["rovara", "rovara"] }).success).toBe(false);

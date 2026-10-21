@@ -3,6 +3,7 @@
 // real-key checklist passes. The store, the routes and the ChatGPT settings are Task 24b.
 import { z } from "zod";
 import { ModelSourceIdSchema, type ModelSourceId } from "./agent.js";
+import { ChatGptModelIdSchema } from "./chatgpt.js";
 import { ModelIdentifierSchema, canonicalModelName, type ModelIdentifier } from "./models.js";
 import type { OrgId } from "./org.js";
 
@@ -46,9 +47,9 @@ export function sourceKindProblem(kind: ModelSourceKind, api?: string, launch: S
   return undefined;
 }
 
-/** The refusal for an org that would hold more custom sources than allowed, given how many it would have. */
-export function customSourceCountProblem(count: number): string | undefined {
-  return count > MAX_CUSTOM_SOURCES_PER_ORG ? `an organization can have at most ${MAX_CUSTOM_SOURCES_PER_ORG} AI sources` : undefined;
+/** The refusal for adding sources to an org that already has `existing` custom ones, when the total would pass the limit. */
+export function customSourceLimitProblem(existing: number, adding = 1): string | undefined {
+  return existing + adding > MAX_CUSTOM_SOURCES_PER_ORG ? `an organization can have at most ${MAX_CUSTOM_SOURCES_PER_ORG} AI sources` : undefined;
 }
 
 /** An IAM role in the org's own AWS account, with no wildcard: the proxy assumes it for Bedrock. */
@@ -86,19 +87,23 @@ function catalogSchema(provider: string | undefined, options: ModelSourceOptions
     .refine((model) => options.isKnownCatalog?.(model) ?? true, { message: "must be a model in the catalog" });
 }
 
-function modelsSchema<T extends z.ZodType>(model: T, served: (entry: z.infer<T>) => ModelIdentifier) {
+/** `identities` are the models an entry claims; each position is unique across entries by canonical name. */
+function modelsSchema<T extends z.ZodType>(model: T, identities: (entry: z.infer<T>) => ModelIdentifier[]) {
   return z.array(model).min(1).max(MAX_MODELS_PER_SOURCE).superRefine((models, context) => {
-    const seen = new Set<string>();
+    const seen: Array<Set<string>> = [];
     for (const [index, entry] of models.entries()) {
-      const name = canonicalModelName(served(entry));
-      if (seen.has(name)) context.addIssue({ code: "custom", path: [index], message: "models must be unique" });
-      seen.add(name);
+      for (const [position, identity] of identities(entry).entries()) {
+        const names = (seen[position] ??= new Set<string>());
+        const name = canonicalModelName(identity);
+        if (names.has(name)) context.addIssue({ code: "custom", path: [index], message: "models must be unique" });
+        names.add(name);
+      }
     }
   });
 }
 
 function keyedModels(kind: keyof typeof CATALOG_PROVIDER, options: ModelSourceOptions) {
-  return modelsSchema(z.object({ catalog: catalogSchema(CATALOG_PROVIDER[kind], options) }).strict(), (entry) => entry.catalog);
+  return modelsSchema(z.object({ catalog: catalogSchema(CATALOG_PROVIDER[kind], options) }).strict(), (entry) => [entry.catalog]);
 }
 
 function inputShapes(options: ModelSourceOptions) {
@@ -119,7 +124,8 @@ function inputShapes(options: ModelSourceOptions) {
     // `name` is what the endpoint calls the model; `catalog` is the Pi model it behaves like, for prices and limits.
     models: modelsSchema(
       z.object({ name: z.string().trim().min(1).max(256), catalog: catalogSchema(undefined, options) }).strict(),
-      (entry) => ({ provider: "endpoint", modelId: entry.name }),
+      // Unique by the name the endpoint serves and by the catalog model it stands for, since routing matches on either.
+      (entry) => [{ provider: "endpoint", modelId: entry.name }, entry.catalog],
     ),
   }).strict();
   return [keyed("anthropic"), keyed("openai"), keyed("openrouter"), bedrock, endpoint] as const;
@@ -141,7 +147,7 @@ export function modelSourceSchema(options: ModelSourceOptions = {}) {
     anthropic.extend({ sourceId }).strict(),
     openai.extend({ sourceId }).strict(),
     openrouter.extend({ sourceId }).strict(),
-    bedrock.extend({ sourceId, externalId: z.string().regex(EXTERNAL_ID_PATTERN), tested: z.boolean() }).strict(),
+    bedrock.extend({ sourceId, externalId: z.string().regex(EXTERNAL_ID_PATTERN), tested: z.boolean().default(false) }).strict(),
     endpoint.extend({ sourceId }).strict(),
   ]);
 }
@@ -149,6 +155,12 @@ export function modelSourceSchema(options: ModelSourceOptions = {}) {
 /** The shape-only schemas; a caller with Pi's catalog uses `modelSourceInputSchema({ isKnownCatalog })`. */
 export const ModelSourceInputSchema = modelSourceInputSchema();
 export const ModelSourceSchema = modelSourceSchema();
+/** The refusal when a stored source is not this org's: a Bedrock source's external id must be `rovara-<orgId>`. */
+export function modelSourceOrgProblem(orgId: OrgId, source: ModelSource): string | undefined {
+  if (source.kind === "bedrock" && source.externalId !== bedrockExternalId(orgId)) return "the external id does not belong to this organization";
+  return undefined;
+}
+
 export type ModelSourceInput = z.infer<typeof ModelSourceInputSchema>;
 export type ModelSource = z.infer<typeof ModelSourceSchema>;
 
@@ -159,7 +171,7 @@ export const OrgModelSourcesSchema = z.object({
     if (new Set(order).size !== order.length) context.addIssue({ code: "custom", message: "order must not repeat a source" });
   }),
   assistantModel: ModelIdentifierSchema.optional(),
-  chatgptPreferredModel: ModelIdentifierSchema.optional(),
+  chatgptPreferredModel: ChatGptModelIdSchema.optional(),
 }).strict().superRefine((record, context) => {
   const known = new Set<string>(record.sources.map((source) => source.sourceId));
   for (const [index, id] of record.order.entries()) {
