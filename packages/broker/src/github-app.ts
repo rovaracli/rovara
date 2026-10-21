@@ -1,5 +1,5 @@
 import { createHash, createSign } from "node:crypto";
-import { agentXError, createCandidateManifest, isSafeE2ESourcePath, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
+import { agentXError, createCandidateManifest, githubNotConnectedMessage, isSafeE2ESourcePath, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
 import type { RepositoryAccess, RepositoryCredential } from "./repository-access.js";
 import type { GithubMergeReadBudget } from "./aws/workflow-merge-recovery.js";
 
@@ -26,7 +26,8 @@ export interface GitHubInstallation {
  * that org, active, at the moment of every mint. `webhook` (a signed delivery GitHub sent) and `private-install` (the install's one org, which
  * has no bindings) name no org and are never checked.
  */
-export type GitHubTokenScope = { orgId: OrgId } | { system: "webhook" | "private-install" };
+export type SystemTokenScope = { system: "webhook" | "private-install" };
+export type GitHubTokenScope = { orgId: OrgId } | SystemTokenScope;
 
 export interface GitHubAppCredentialProviderOptions {
   credentialRef: string;
@@ -216,7 +217,7 @@ export class GitHubAppCredentialProvider {
     }
     const parsed = parseGitHubRepository(repository.url);
     const installed = await this.installed(parsed, scope);
-    const token = await this.createInstallationToken(parsed, { issues: access }, scope);
+    const token = await this.createInstallationToken(installed, { issues: access }, scope);
     return { owner: installed.owner, repo: parsed.name, token };
   }
 
@@ -906,19 +907,14 @@ export class GitHubAppCredentialProvider {
   /**
    * Plan 2, Task 14: whether `login` is a member of the GitHub organization `org`, read with a token of the installation `installationId`
    * (the App's own `members: read`). GitHub answers 404 for a user who is not a member (or not visible to the token), which is `undefined`;
-   * any other failure is thrown, so the caller never mistakes an outage for "not a member".
+   * any other failure is thrown, so the caller never mistakes an outage for "not a member". The installation is not bound to any org yet
+   * (this runs while a signed `installation.created` is being judged), so the scope can only be a system one.
    */
-  async organizationMembership(installationId: number, org: string, login: string): Promise<{ state: string; role: string } | undefined> {
+  async organizationMembership(installationId: number, org: string, login: string, scope: SystemTokenScope): Promise<{ state: string; role: string } | undefined> {
+    if (!("system" in scope)) throw agentXError("CONFIG_INVALID", "a membership is read for an installation no org holds yet; the scope must be a system one");
     if (!Number.isSafeInteger(installationId) || installationId < 1) throw agentXError("CONFIG_INVALID", "GitHub installation id must be a positive integer");
     if (!GITHUB_LOGIN.test(org) || !GITHUB_LOGIN.test(login)) return undefined;
-    const tokenResponse = await this.fetchImplementation(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
-      method: "POST", headers: await this.appHeaders(), body: JSON.stringify({ permissions: { members: "read" } }),
-      signal: AbortSignal.timeout(5_000), redirect: "error",
-    });
-    if (!tokenResponse.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub App installation token request failed with HTTP ${tokenResponse.status}`);
-    const issued: unknown = await tokenResponse.json();
-    const token = issued !== null && typeof issued === "object" && "token" in issued && typeof issued.token === "string" ? issued.token : undefined;
-    if (token === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid installation token response");
+    const token = await this.mintInstallationToken(installationId, { members: "read" });
     const response = await this.fetchImplementation(`https://api.github.com/orgs/${encodeURIComponent(org)}/memberships/${encodeURIComponent(login)}`, {
       headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "user-agent": "agentx-control-plane", "x-github-api-version": "2022-11-28" },
       signal: AbortSignal.timeout(5_000), redirect: "error",
@@ -938,14 +934,7 @@ export class GitHubAppCredentialProvider {
   async listInstallationRepositories(installationId: number, scope: GitHubTokenScope): Promise<GitHubInstallationRepository[]> {
     if (!Number.isSafeInteger(installationId) || installationId < 1) throw agentXError("CONFIG_INVALID", "GitHub installation id must be a positive integer");
     if ("orgId" in scope && this.options.requireInstallationBound !== undefined) await this.options.requireInstallationBound(scope.orgId, installationId);
-    const tokenResponse = await this.fetchImplementation(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
-      method: "POST", headers: await this.appHeaders(), body: JSON.stringify({ permissions: { metadata: "read" } }),
-      signal: AbortSignal.timeout(5_000), redirect: "error",
-    });
-    if (!tokenResponse.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub App installation token request failed with HTTP ${tokenResponse.status}`);
-    const issued: unknown = await tokenResponse.json();
-    const token = issued !== null && typeof issued === "object" && "token" in issued && typeof issued.token === "string" ? issued.token : undefined;
-    if (token === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid installation token response");
+    const token = await this.mintInstallationToken(installationId, { metadata: "read" });
     const repositories: GitHubInstallationRepository[] = [];
     for (let page = 1; page <= INSTALLATION_REPOSITORY_PAGES; page += 1) {
       const response = await this.fetchImplementation(`https://api.github.com/installation/repositories?per_page=100&page=${page}`, {
@@ -993,44 +982,47 @@ export class GitHubAppCredentialProvider {
   }
 
   /**
-   * A token for one repository. When the cached installation is gone (the App was uninstalled
-   * and installed again, which gives it a new ID), the installation is looked up once more.
+   * A token for one repository. An `InstalledRepository` has just been through `installed()` (so the org check is done, once); a bare
+   * repository goes through it here. When the cached installation is gone (the App was uninstalled and installed again, which gives it a
+   * new ID), the installation is looked up once more, and checked again. GitHub's 422 for a repository an installation does not (or no
+   * longer) reach means, for an org, that its connection does not cover the repository.
    */
   private async createInstallationToken(
-    repository: { owner: string; name: string },
+    repository: { owner: string; name: string } | InstalledRepository,
     permissions: Record<string, "read" | "write">,
     scope: GitHubTokenScope,
     retried = false,
   ): Promise<string> {
-    const installed = await this.installed(repository, scope);
-    const response = await this.fetchImplementation(
-      `https://api.github.com/app/installations/${installed.installationId}/access_tokens`,
-      {
-        method: "POST",
-        headers: await this.appHeaders(),
-        body: JSON.stringify({
-          repositories: [installed.name],
-          permissions,
-        }),
-        signal: AbortSignal.timeout(5_000),
-        redirect: "error",
-      },
-    );
+    const installed = "installationId" in repository ? repository : await this.installed(repository, scope);
+    const response = await this.postInstallationToken(installed.installationId, { repositories: [installed.name], permissions });
     if (response.status === 404 && !retried) {
       this.installations.delete(installed.owner.toLowerCase());
-      return this.createInstallationToken(repository, permissions, scope, true);
+      return this.createInstallationToken({ owner: installed.owner, name: installed.name }, permissions, scope, true);
     }
-    if (!response.ok) {
-      throw agentXError(
-        "RUNTIME_UNAVAILABLE",
-        `GitHub App installation token request failed with HTTP ${response.status}`,
-      );
-    }
+    if (response.status === 422 && "orgId" in scope) throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(`${installed.owner}/${installed.name}`));
+    return this.tokenOf(response);
+  }
+
+  /** `POST /app/installations/{id}/access_tokens` with the App's JWT; the caller reads the status. */
+  private async postInstallationToken(installationId: number, body: { permissions: Record<string, "read" | "write">; repositories?: string[] }): Promise<Response> {
+    return this.fetchImplementation(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
+      method: "POST", headers: await this.appHeaders(), body: JSON.stringify(body), signal: AbortSignal.timeout(5_000), redirect: "error",
+    });
+  }
+
+  /** The token of a successful token response; anything else is GitHub being unavailable. */
+  private async tokenOf(response: Response): Promise<string> {
+    if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub App installation token request failed with HTTP ${response.status}`);
     const body: unknown = await response.json();
     if (!body || typeof body !== "object" || !("token" in body) || typeof body.token !== "string") {
       throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid installation token response");
     }
     return body.token;
+  }
+
+  /** A token for a whole installation (no repository list), for the reads that name no one repository. */
+  private async mintInstallationToken(installationId: number, permissions: Record<string, "read" | "write">): Promise<string> {
+    return this.tokenOf(await this.postInstallationToken(installationId, { permissions }));
   }
 
   private async findOpenPullRequest(

@@ -14,6 +14,7 @@ import {
   agentXError,
   canonicalJson,
   githubInstallationKey,
+  githubNotConnectedMessage,
   orgPk,
   parseCommandLine,
   projectAllows,
@@ -66,7 +67,7 @@ export interface ProjectSettingsDependencies<Caller extends ProjectSettingsCalle
 export const SETTINGS_STALE_MESSAGE = "someone changed this project's settings; reload and try again";
 
 /** What a refusal to reach a repository through the org's GitHub connection says (ruling: Plan 2, Task 15's wording). */
-export const githubNotConnectedMessage = (fullName: string) => `Rovara can't reach ${fullName} through your organization's GitHub connection. Connect it with: agentx github connect`;
+export { githubNotConnectedMessage };
 
 const withoutCode = (error: AgentXError) => error.message.replace(new RegExp(`^${error.code}: `), "");
 const invalid = (message: string) => agentXError("CONFIG_INVALID", message);

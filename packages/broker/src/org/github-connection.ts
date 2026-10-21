@@ -8,7 +8,6 @@
 import { randomBytes } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  AgentXError,
   agentXError,
   githubConnectStateKey,
   githubDeliveryKey,
@@ -443,9 +442,10 @@ export interface RepositoryGateDependencies {
 }
 
 /**
- * The installation that covers the repository, after the pin and the org's binding were checked (cloud); the lookup alone elsewhere. A
- * binding that refuses may be a cached installation the App was since reinstalled over: GitHub is asked once more, and the new installation
- * (which must pass the same checks) stands in.
+ * The installation that covers the repository, after the pin and the org's binding were checked (cloud); the lookup alone elsewhere. On
+ * cloud GitHub is asked afresh every time (one App-JWT call per repository): an installation limited to selected repositories can lose one
+ * at any time, and a provider's per-owner cache, which can outlive that on a warm Lambda, must not answer a gate. A fresh answer is also the
+ * one that follows an App reinstalled under a new id.
  */
 async function connectedInstallation(
   deps: RepositoryGateDependencies,
@@ -455,22 +455,13 @@ async function connectedInstallation(
   pinnedInstallationId: number | undefined,
 ): Promise<number> {
   const fullName = `${owner}/${name}`;
-  let found = await deps.app.installationForRepository(owner, name);
+  const found = await deps.app.installationForRepository(owner, name, deps.cloud ? { fresh: true } : {});
   if (found === undefined) throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(fullName));
   if (!deps.cloud) return found.installationId;
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      // A repository that moved to another installation (a transfer) must be connected again on purpose: the project's pin stays with the old one.
-      if (pinnedInstallationId !== undefined && pinnedInstallationId !== found.installationId) throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(fullName));
-      await requireInstallationBound(deps, orgId, found.installationId, { owner, name });
-      return found.installationId;
-    } catch (error) {
-      if (attempt > 0 || !(error instanceof AgentXError) || error.code !== "GITHUB_NOT_CONNECTED") throw error;
-      const current = await deps.app.installationForRepository(owner, name, { fresh: true });
-      if (current === undefined || current.installationId === found.installationId) throw error;
-      found = current;
-    }
-  }
+  // A repository that moved to another installation (a transfer) must be connected again on purpose: the project's pin stays with the old one.
+  if (pinnedInstallationId !== undefined && pinnedInstallationId !== found.installationId) throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(fullName));
+  await requireInstallationBound(deps, orgId, found.installationId, { owner, name });
+  return found.installationId;
 }
 
 /**
@@ -532,8 +523,8 @@ export async function listInstallationRepositories(
 
 /** What an `installation` or `installation_repositories` delivery (other than `created`) tells. */
 export type InstallationLifecycleEvent =
-  | { kind: "installation"; action: "deleted" | "suspend" | "unsuspend"; installationId: number }
-  | { kind: "repositories"; installationId: number; repositorySelection: "all" | "selected" };
+  | { kind: "installation"; action: "deleted" | "suspend" | "unsuspend"; installationId: number; eventAt?: number }
+  | { kind: "repositories"; installationId: number; repositorySelection: "all" | "selected"; eventAt?: number };
 
 /**
  * Follows GitHub's own changes to an installation that is bound to an org: `deleted` makes it `removed`, `suspend` `suspended`, `unsuspend`
@@ -557,6 +548,12 @@ export async function applyInstallationLifecycle(
     }
     const orgId = bound.orgId;
     const was = bound.status;
+    // GitHub's own timestamp orders deliveries: one older than what is already applied (a replay under another delivery id, or one that
+    // arrived late) says nothing about the installation now.
+    if (event.eventAt !== undefined && typeof bound.githubUpdatedAt === "number" && bound.githubUpdatedAt > event.eventAt) {
+      log(full, { event: "github.installation_event_stale", orgId, installationId: event.installationId, kind: event.kind === "installation" ? event.action : "repositories" });
+      return "ignored";
+    }
     let next: { status?: GithubInstallationRecord["status"]; repositorySelection?: "all" | "selected"; action: string } | undefined;
     if (event.kind === "repositories") next = was === "removed" || bound.repositorySelection === event.repositorySelection ? undefined : { repositorySelection: event.repositorySelection, action: "installation_repositories_changed" };
     else if (event.action === "deleted") next = was === "removed" ? undefined : { status: "removed", action: "installation_removed" };
@@ -568,15 +565,16 @@ export async function applyInstallationLifecycle(
     }
     const now = deps.now();
     const at = new Date(now).toISOString();
-    const expression = `SET updatedAt = :at${next.status === undefined ? "" : ", #status = :status"}${next.repositorySelection === undefined ? "" : ", repositorySelection = :selection"}`;
-    const values = { ":at": at, ...(next.status === undefined ? {} : { ":status": next.status }), ...(next.repositorySelection === undefined ? {} : { ":selection": next.repositorySelection }) };
+    const expression = `SET updatedAt = :at${event.eventAt === undefined ? "" : ", githubUpdatedAt = :eventAt"}${next.status === undefined ? "" : ", #status = :status"}${next.repositorySelection === undefined ? "" : ", repositorySelection = :selection"}`;
+    const values = { ":at": at, ...(event.eventAt === undefined ? {} : { ":eventAt": event.eventAt }), ...(next.status === undefined ? {} : { ":status": next.status }), ...(next.repositorySelection === undefined ? {} : { ":selection": next.repositorySelection }) };
     // DynamoDB refuses a name or a value that no expression uses: the org's copy has no condition on the status, so it declares #status only when it sets it.
     const copyUpdate = {
       UpdateExpression: expression, ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: values,
       ...(next.status === undefined ? {} : { ExpressionAttributeNames: { "#status": "status" } }),
     };
     const globalUpdate = {
-      UpdateExpression: expression, ConditionExpression: "orgId = :org AND #status = :was",
+      // `<=`: GitHub stamps whole seconds, and two real changes in one second (a suspend, then an unsuspend) must both apply.
+      UpdateExpression: expression, ConditionExpression: `orgId = :org AND #status = :was${event.eventAt === undefined ? "" : " AND (attribute_not_exists(githubUpdatedAt) OR githubUpdatedAt <= :eventAt)"}`,
       ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ...values, ":org": orgId, ":was": was },
     };
     const items = (withOrgCopy: boolean) => [

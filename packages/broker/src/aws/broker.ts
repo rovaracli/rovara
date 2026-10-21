@@ -752,7 +752,7 @@ function githubConnectionOf(dependencies: AwsBrokerDependencies): GithubConnecti
     origin: new URL(dependencies.developer.issuer).origin,
     app: {
       appSlug: () => app.appSlug!(), oauthClient: () => app.oauthClient!(), installation: (id) => app.installation!(id),
-      ...(app.organizationMembership === undefined ? {} : { orgMembership: (installationId, org, login) => app.organizationMembership!(installationId, org, login) }),
+      ...(app.organizationMembership === undefined ? {} : { orgMembership: (installationId, org, login) => app.organizationMembership!(installationId, org, login, { system: "webhook" }) }),
       ...(app.listInstallationRepositories === undefined ? {} : { listInstallationRepositories: (installationId, scope) => app.listInstallationRepositories!(installationId, scope) }),
     },
     identities: signIn, orgs: orgStoreOf(dependencies),
@@ -3579,6 +3579,12 @@ async function ensureThreadWorkspace(
   if (existing) {
     if (existing.status === "CLOSED" && existing.closedAt) {
       return { outcome: "CLOSED", workspaceId: existing.id, closedAt: existing.closedAt };
+    }
+    // Plan 2, Task 15: a follow-up in a thread that has its workspace can wake the machine, so it needs the org's GitHub connection too.
+    const followUpGate = repositoryGateOf(dependencies);
+    if (followUpGate !== undefined) {
+      const bound = await requireLatestProject(dependencies, requireOrgId(identity.orgId), slack.binding.projectName);
+      await requireRepositoriesConnected(followUpGate, requireOrgId(identity.orgId), bound.definition);
     }
     if (existing.status === "UNPREPARED" && !lazyPreparation) {
       // An older Slack service cannot parse UNPREPARED and expects compute now: prepare it at once.

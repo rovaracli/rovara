@@ -312,4 +312,6 @@ export interface GithubInstallationRecord {
   status: "active" | "suspended" | "removed";
   boundAt: string;
   updatedAt: string;
+  /** Epoch milliseconds GitHub stamped on the newest lifecycle event applied (Plan 2, Task 15), so an older delivery arriving later is ignored. */
+  githubUpdatedAt?: number;
 }

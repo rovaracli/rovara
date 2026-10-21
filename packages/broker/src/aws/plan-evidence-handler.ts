@@ -20,7 +20,7 @@ import {
   type PlanEvidenceEvent, type PlanEvidenceJob,
 } from "../developer/plan-evidence-jobs.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
-import type { OrgId, PlanDocument } from "@agentx/contracts";
+import { agentXError, type OrgId, type PlanDocument } from "@agentx/contracts";
 import { installOrgIdFromEnvironment, orgOf } from "../org/resolve.js";
 
 /** All cited code must be read inside this; the Lambda's own timeout (150 s) leaves room to attach and clean up. */
@@ -141,12 +141,24 @@ export async function runPlanEvidenceJob(deps: PlanEvidenceRunDependencies, even
     // The task's org: on a cloud install the code is read only while that org's GitHub connection holds the installation.
     const scope: GitHubTokenScope = deps.cloud === true ? { orgId } : { system: "private-install" };
     const deadline = deps.now() + RESOLVE_DEADLINE_MS;
+    let closed = false;
     const bundle = await resolvePlanEvidence(plan, {
       ...planEvidenceSources(project, task),
-      readFile: (url, path, commit, options) => deps.github.getFileAtCommit(url, path, commit, scope, { ...options, timeoutMs: Math.max(1, Math.min(READ_TIMEOUT_MAX_MS, deadline - deps.now())) }),
+      readFile: async (url, path, commit, options) => {
+        // The org's GitHub connection no longer holds the installation: no later read or retry will, so the rest are not tried.
+        if (closed) throw agentXError("GITHUB_NOT_CONNECTED", "the organization's GitHub connection no longer reaches this repository");
+        try {
+          return await deps.github.getFileAtCommit(url, path, commit, scope, { ...options, timeoutMs: Math.max(1, Math.min(READ_TIMEOUT_MAX_MS, deadline - deps.now())) });
+        } catch (error) {
+          if ((error as { code?: unknown }).code === "GITHUB_NOT_CONNECTED") closed = true;
+          throw error;
+        }
+      },
       deadlineMs: RESOLVE_DEADLINE_MS,
       now: deps.now,
     });
+    // Retrying cannot help an org that has disconnected GitHub: attach the places as unavailable and end the job.
+    if (closed) return finish("github_not_connected", plan);
     if (bundle.excerpts.some((excerpt) => excerpt.status === "unavailable") && attempt < PLAN_EVIDENCE_MAX_ATTEMPTS) {
       await reschedule(deps.now() + RETRY_MINUTES[attempt - 1]! * MS_PER_MINUTE);
       log({ event: "plan_evidence.retry", taskId, artifactId, attempt, reason: "unavailable" });

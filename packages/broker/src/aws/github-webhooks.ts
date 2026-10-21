@@ -779,7 +779,10 @@ const InstallationCreatedSchema = z.object({
 /** The parts of the other `installation` actions and of `installation_repositories` that Task 15 reads. */
 const InstallationLifecycleSchema = z.object({
   action: z.string().min(1).max(64),
-  installation: z.object({ id: z.number().int().positive(), repository_selection: z.enum(["all", "selected"]).optional() }).passthrough(),
+  installation: z.object({
+    id: z.number().int().positive(), repository_selection: z.enum(["all", "selected"]).optional(),
+    updated_at: z.union([z.string().max(64), z.number()]).nullish(), suspended_at: z.union([z.string().max(64), z.number()]).nullish(),
+  }).passthrough(),
   repository_selection: z.enum(["all", "selected"]).optional(),
 }).passthrough();
 
@@ -811,11 +814,20 @@ async function handleInstallationEvent(
     const change = InstallationLifecycleSchema.safeParse(raw);
     if (lifecycle === undefined || !change.success) throw new GithubWebhookRefusal("GitHub webhook event payload is unsupported or incomplete");
     const installationId = change.data.installation.id;
+    // When GitHub says the installation last changed: `updated_at`, and for a suspension the moment it was suspended if that is later. It
+    // orders deliveries; a payload with neither is applied in the order it arrives.
+    const stamps = [change.data.installation.updated_at, change.data.action === "suspend" ? change.data.installation.suspended_at : undefined]
+      .flatMap((value) => {
+        const time = typeof value === "number" ? (value < 1e12 ? value * 1000 : value) : typeof value === "string" ? Date.parse(value) : Number.NaN;
+        return Number.isFinite(time) ? [time] : [];
+      });
+    const eventAt = stamps.length === 0 ? undefined : Math.max(...stamps);
+    const at = eventAt === undefined ? {} : { eventAt };
     if (githubEvent === "installation_repositories") {
       const repositorySelection = change.data.repository_selection ?? change.data.installation.repository_selection;
-      if (repositorySelection !== undefined) await lifecycle(deliveryId, { kind: "repositories", installationId, repositorySelection });
+      if (repositorySelection !== undefined) await lifecycle(deliveryId, { kind: "repositories", installationId, repositorySelection, ...at });
     } else if (change.data.action === "deleted" || change.data.action === "suspend" || change.data.action === "unsuspend") {
-      await lifecycle(deliveryId, { kind: "installation", action: change.data.action, installationId });
+      await lifecycle(deliveryId, { kind: "installation", action: change.data.action, installationId, ...at });
     }
     return { status: "ACCEPTED", deliveryId, lifecycle: true };
   }

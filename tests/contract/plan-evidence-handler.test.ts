@@ -1,7 +1,7 @@
 // Spec 061 (slice 1.1, task 5): the PlanEvidence job reads a stored plan's cited code in the background, with retries.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { WorkflowSnapshot } from "@agentx/contracts";
+import { agentXError, type WorkflowSnapshot } from "@agentx/contracts";
 import { getTaskDocumentView } from "../../packages/broker/src/aws/developer-tasks.js";
 import { runPlanEvidenceJob, type PlanEvidenceRunDependencies } from "../../packages/broker/src/aws/plan-evidence-handler.js";
 import { PLAN_EVIDENCE_EVENT_SOURCE, planEvidenceDueKey } from "../../packages/broker/src/developer/plan-evidence-jobs.js";
@@ -99,6 +99,18 @@ describe("the PlanEvidence job", () => {
       expect.objectContaining({ claimId: "2", status: "not_found", commit: "e".repeat(40) }),
     ]);
     expect(rows(harness)).toEqual([]);
+  });
+
+  it("stops at once when the task's org no longer holds the GitHub installation: a bundle of unavailable places, the row deleted, no retry scheduled", async () => {
+    const harness = await jobBroker();
+    const { taskId, artifact } = await plannedTask(harness, ["repo/demo/src/charge.ts", "repo/demo/src/other.ts"]);
+    const time = clock(rows(harness)[0]!.nextAttemptAt + 1_000);
+    const reads: string[] = [];
+    const getFile: GetFile = async (_url, path) => { reads.push(path); throw agentXError("GITHUB_NOT_CONNECTED", "Rovara can't reach example/demo through your organization's GitHub connection. Connect it with: agentx github connect"); };
+    expect(await runPlanEvidenceJob(jobDeps(harness, getFile, time.now), { taskId, artifactId: artifact.id })).toBe("attached");
+    expect(rows(harness)).toEqual([]);
+    expect(bundleOf(harness, taskId, artifact.id).excerpts).toEqual([expect.objectContaining({ status: "unavailable" }), expect.objectContaining({ status: "unavailable" })]);
+    expect(reads.length).toBeGreaterThan(0);
   });
 
   it("counts a thrown error as an attempt", async () => {

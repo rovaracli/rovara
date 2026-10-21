@@ -58,6 +58,8 @@ function fakeGithub(options: { installationOf?: Record<string, number>; reposito
   const repositories = options.repositories ?? { 55: [repo("demo", 9001), repo("website", 9002)] };
   const requests: string[] = [];
   const tokenInstallation = new Map<string, number>();
+  /** Repositories (`owner/name`) the installation no longer reaches: GitHub answers 404 for their installation and 422 to a token asked for them. */
+  const uncovered = new Set<string>();
   const minted = () => requests.filter((request) => /^POST \/app\/installations\/\d+\/access_tokens/.test(request));
   const fetchImplementation = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
@@ -65,11 +67,13 @@ function fakeGithub(options: { installationOf?: Record<string, number>; reposito
     requests.push(`${method} ${url.pathname}${url.search}`);
     let match = /^\/repos\/([^/]+)\/([^/]+)\/installation$/.exec(url.pathname);
     if (match !== null) {
-      const id = installationOf[match[1]!];
+      const id = uncovered.has(`${match[1]}/${match[2]}`) ? undefined : installationOf[match[1]!];
       return id === undefined ? Response.json({ message: "Not Found" }, { status: 404 }) : Response.json({ id, account: { login: match[1] } });
     }
     match = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(url.pathname);
     if (match !== null) {
+      const asked = (JSON.parse(typeof init?.body === "string" ? init.body : "{}") as { repositories?: string[] }).repositories ?? [];
+      if (asked.some((name) => uncovered.has(`example/${name}`))) return Response.json({ message: "Unprocessable" }, { status: 422 });
       const token = `token-${String(minted().length)}`;
       tokenInstallation.set(token, Number(match[1]));
       return Response.json({ token }, { status: 201 });
@@ -86,7 +90,7 @@ function fakeGithub(options: { installationOf?: Record<string, number>; reposito
     if (match !== null) return Response.json({ id: 9001, full_name: `${match[1]}/${match[2]}`, default_branch: "main" });
     return Response.json({ message: "unexpected" }, { status: 500 });
   }) as typeof fetch;
-  return { fetchImplementation, requests, minted, installationOf };
+  return { fetchImplementation, requests, minted, installationOf, uncovered };
 }
 
 type World = Awaited<ReturnType<typeof world>>;
@@ -129,7 +133,7 @@ async function world(options: { cloud?: boolean; bound?: false | { orgId?: OrgId
       body: raw, requestContext: { requestId: randomUUID(), http: { method: "POST" } },
     });
   };
-  const lifecycle = (action: string, id = 55, deliveryId?: string) => signed("installation", { action, installation: { id }, sender: { id: 777, login: "gh-admin" } }, deliveryId);
+  const lifecycle = (action: string, id = 55, deliveryId?: string, installation: Record<string, unknown> = {}) => signed("installation", { action, installation: { id, ...installation }, sender: { id: 777, login: "gh-admin" } }, deliveryId);
   const start = (extra: Record<string, unknown> = {}) => harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "claude-code", ...extra });
   const bindingOf = () => db.get(githubInstallationKey(55)) as (GithubInstallationRecord & Record<string, unknown>) | undefined;
   const copyOf = () => db.get(orgGithubInstallationKey(TEST_ORG, 55)) as (GithubInstallationRecord & Record<string, unknown>) | undefined;
@@ -579,6 +583,92 @@ describe("the project settings seam", () => {
     const accepted = await settings("example/website");
     expect(accepted.status).toBe(200);
     expect(revisions()).toBe(before + 1);
+  });
+});
+
+describe("Fix round 1", () => {
+  const demo = "https://github.com/example/demo.git";
+
+  it("a repository removed from a selected installation is refused at start even on a warm Lambda: nothing is charged or created", async () => {
+    const w = await world();
+    // Warm: the provider has cached installation 55 for the owner.
+    expect(await w.provider.getFileAtCommit(demo, "src/a.ts", "a".repeat(40), SCOPE_A)).toBe("file text");
+    w.github.uncovered.add("example/demo");
+    const writes = taskWrites(w).length;
+    const commands = w.db.commandNames().length;
+    const mintsBefore = w.github.minted().length;
+    const refused = await w.start();
+    expect(refused.status).toBe(403);
+    expect(error(refused)).toEqual({ code: "GITHUB_NOT_CONNECTED", message: NOT_CONNECTED });
+    expect(taskWrites(w)).toHaveLength(writes);
+    expect(w.db.commandNames().slice(commands)).not.toContain("TransactWriteCommand");
+    expect(w.github.minted()).toHaveLength(mintsBefore);
+  });
+
+  it("the same for a new Slack thread and for a repository added in the settings", async () => {
+    const w = await world();
+    expect(await w.provider.getFileAtCommit(demo, "src/a.ts", "a".repeat(40), SCOPE_A)).toBe("file text");
+    w.github.uncovered.add("example/demo");
+    const thread = await ensureWorkspace(w.handler, `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000009`, MAYA.slackUserId!);
+    expect(thread.status).toBe(403);
+    expect(error(thread).code).toBe("GITHUB_NOT_CONNECTED");
+    w.github.uncovered.delete("example/demo");
+    w.github.uncovered.add("example/website");
+    const settings = await w.dev(OMAR, "PUT", "/v1/app/projects/payments/settings", { requestId: randomUUID(), expectedRevision: 1, addRepositories: ["example/website"] });
+    expect(settings.status).toBe(403);
+    expect(error(settings).code).toBe("GITHUB_NOT_CONNECTED");
+  });
+
+  it("GitHub's 422 on a token for a repository the installation does not reach is GITHUB_NOT_CONNECTED for an org, not an outage", async () => {
+    const w = await world();
+    expect(await w.provider.getFileAtCommit(demo, "src/a.ts", "a".repeat(40), SCOPE_A)).toBe("file text");
+    w.github.uncovered.add("example/demo");
+    expect(await refusal(w.provider.getPullRequest(demo, 1, SCOPE_A))).toEqual({ code: "GITHUB_NOT_CONNECTED", statusCode: 403, message: NOT_CONNECTED });
+  });
+
+  it("follow-ups in an existing Slack thread are gated at entry", async () => {
+    const w = await world();
+    const thread = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000011`;
+    expect((await ensureWorkspace(w.handler, thread, MAYA.slackUserId!)).status).toBe(200);
+    expect((await ensureWorkspace(w.handler, thread, MAYA.slackUserId!)).status).toBe(200);
+    expect((await w.lifecycle("deleted")).statusCode).toBe(202);
+    const followUp = await ensureWorkspace(w.handler, thread, MAYA.slackUserId!);
+    expect(followUp.status).toBe(403);
+    expect(error(followUp)).toEqual({ code: "GITHUB_NOT_CONNECTED", message: NOT_CONNECTED });
+  });
+
+  it("an old suspend that arrives after an unsuspend is logged as stale and ignored; a newer event applies", async () => {
+    const w = await world();
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const at = (seconds: number) => new Date(NOW + seconds * 1000).toISOString();
+    expect((await w.lifecycle("suspend", 55, undefined, { updated_at: at(10), suspended_at: at(10) })).statusCode).toBe(202);
+    expect(w.bindingOf()).toMatchObject({ status: "suspended", githubUpdatedAt: NOW + 10_000 });
+    expect(w.copyOf()).toMatchObject({ githubUpdatedAt: NOW + 10_000 });
+    expect((await w.lifecycle("unsuspend", 55, undefined, { updated_at: at(20), suspended_at: null })).statusCode).toBe(202);
+    expect(w.bindingOf()).toMatchObject({ status: "active", githubUpdatedAt: NOW + 20_000 });
+    // The first suspend delivered again under another delivery id, after the unsuspend.
+    expect((await w.lifecycle("suspend", 55, undefined, { updated_at: at(10), suspended_at: at(10) })).statusCode).toBe(202);
+    expect(w.bindingOf()).toMatchObject({ status: "active", githubUpdatedAt: NOW + 20_000 });
+    expect(log.mock.calls.map((entry) => String(entry[0]))).toContainEqual(expect.stringContaining("github.installation_event_stale"));
+    expect((await w.lifecycle("suspend", 55, undefined, { updated_at: at(30), suspended_at: at(30) })).statusCode).toBe(202);
+    expect(w.bindingOf()).toMatchObject({ status: "suspended" });
+  });
+
+  it("a provider call reads the binding once, not twice", async () => {
+    const w = await world();
+    const reads: string[] = [];
+    const send = w.db.send.bind(w.db);
+    w.db.send = async (command) => {
+      const key = (command as { input?: { Key?: { pk?: string } } }).input?.Key?.pk;
+      if (typeof key === "string" && key.startsWith("GITHUB_INSTALLATION#")) reads.push(key);
+      return send(command);
+    };
+    await expect(w.provider.getPullRequest(demo, 1, SCOPE_A)).rejects.not.toMatchObject({ code: "GITHUB_NOT_CONNECTED" });
+    expect(reads).toEqual(["GITHUB_INSTALLATION#55"]);
+    w.bind(55, { status: "removed" });
+    reads.length = 0;
+    await expect(w.provider.getPullRequest(demo, 1, SCOPE_A)).rejects.toMatchObject({ code: "GITHUB_NOT_CONNECTED" });
+    expect(reads.length).toBeGreaterThan(0);
   });
 });
 
