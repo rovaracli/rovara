@@ -2,7 +2,7 @@
 // plain message (at most 1,200 visible characters), and every blocked step carries its ways out as buttons. Every
 // value from a record, the model or a reviewer is redacted where it is free text, cut short and escaped here.
 import {
-  WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
+  WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
   WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { WORKFLOW_ACTION_IDS } from "./workflow-actions.js";
@@ -93,7 +93,7 @@ export function workflowModalCopy(workflow: Pick<WorkflowSnapshot, "path" | "rev
 
 /** Block reasons written for people, shown word for word; matched exactly, never by prefix. */
 const PLAIN_REASONS: ReadonlySet<string> = new Set([
-  WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_HISTORY_REWRITTEN_MESSAGE,
+  WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_HISTORY_REWRITTEN_MESSAGE,
   ...Object.values(WORKFLOW_BLOCK_REASONS),
 ]);
 

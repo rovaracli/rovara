@@ -145,6 +145,8 @@ import {
   resolveWorkflowReviewFindings,
   workflowFindingAccepted,
   workflowFindingProblem,
+  workflowReviewRoles,
+  workflowVerificationPosition,
   capText,
 } from "@agentx/contracts";
 import { z } from "zod";
@@ -2101,7 +2103,7 @@ export async function decideTaskWorkflow(
           ...(included.length === 0 ? [] : [counterTouch(deps, taskId)]),
           accessFence(deps, access),
         ];
-      }, { sharedTask: task.shared === true, workflowMode: mode, ...(retired.length === 0 ? {} : { retiredClaimIds: retired }), ...(mode === "PLAN" && nextPhase !== undefined ? { workflowPhase: nextPhase } : {}), ...(selectedReadiness === undefined ? {} : { readiness: selectedReadiness }), ...(mode === "IMPLEMENT" ? taskBaseOption(task, next) : {}), ...(workflowDependencies === undefined ? {} : { workflowDependencies }) });
+      }, { sharedTask: task.shared === true, workflowMode: mode, ...(retired.length === 0 ? {} : { retiredClaimIds: retired }), ...(mode === "PLAN" && nextPhase !== undefined ? { workflowPhase: nextPhase } : {}), ...(selectedReadiness === undefined ? {} : { readiness: selectedReadiness }), ...(mode === "IMPLEMENT" ? taskBaseOption(task, next) : {}), ...(mode === "IMPLEMENT" && next.programStepId !== undefined ? { programStepId: next.programStepId } : {}), ...(workflowDependencies === undefined ? {} : { workflowDependencies }) });
     });
   } catch (error) {
     // Another decision got there first: the same request (a double press) is that decision; any other is refused with
@@ -2279,6 +2281,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
       revision: workflow.revision + 1,
       stage: "VERIFY",
       state: "RUNNING",
+      ...workflowVerificationPosition(workflow),
       checkPolicy: { ...policy, selectedOptionalIds, selectedProposedIds },
       verificationRetries: [...(workflow.verificationRetries ?? []), {
         requestId: request.requestId, actorId: access.actorId, selectedOptionalCheckIds: selectedOptionalIds, selectedProposedCheckIds: selectedProposedIds, at: receivedAt,
@@ -2360,7 +2363,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
           response: `AgentX is rerunning the selected checks without code-editing tools as operation ${operation.id}.`, operationId: operation.id,
         })),
         accessFence(deps, access),
-      ], { sharedTask: task.shared === true, workflowMode: "CHECKS", readiness: selectedReadiness, ...taskBaseOption(task, next) });
+      ], { sharedTask: task.shared === true, workflowMode: "CHECKS", readiness: selectedReadiness, ...taskBaseOption(task, next), ...(next.programStepId === undefined ? {} : { programStepId: next.programStepId }) });
     } catch (error) {
       if (isConditional(error)) await authorizeTaskAction(deps, caller, taskId, "retry");
       return busyOrClosing(deps, task, error);
@@ -2628,7 +2631,7 @@ async function queueWorkflowCoding(
           request: input.request, response: `${input.response} as operation ${operation.id}.`, operationId: operation.id,
         })),
         accessFence(deps, access),
-      ], { sharedTask: task.shared === true, workflowMode: "IMPLEMENT", ...selectedCheckCommands(input.next), ...taskBaseOption(task, input.next), ...(input.workflowDependencies === undefined ? {} : { workflowDependencies: input.workflowDependencies }) });
+      ], { sharedTask: task.shared === true, workflowMode: "IMPLEMENT", ...selectedCheckCommands(input.next), ...taskBaseOption(task, input.next), ...(input.next.programStepId === undefined ? {} : { programStepId: input.next.programStepId }), ...(input.workflowDependencies === undefined ? {} : { workflowDependencies: input.workflowDependencies }) });
     });
   } catch (error) {
     if (isConditional(error)) await authorizeTaskAction(deps, caller, task.taskId, "control");
@@ -3000,7 +3003,10 @@ async function queueWorkflowReview(
   const candidateDigest = workflow.candidate.digest;
   const { blockReason: _blockReason, reviews: _oldReviews, ...retryBase } = workflow;
   void _blockReason; void _oldReviews;
-  const next: WorkflowSnapshot = { ...retryBase, revision: workflow.revision + 1, state: "RUNNING", updatedAt: receivedAt };
+  // The reviews this step asks for run again; a program's earlier reviews of the other role (same code) stand.
+  const reviewRoles = workflowReviewRoles(workflow);
+  const keptReviews = (workflow.reviews ?? []).filter((review) => !reviewRoles.includes(review.role));
+  const next: WorkflowSnapshot = { ...retryBase, ...(keptReviews.length === 0 ? {} : { reviews: keptReviews }), revision: workflow.revision + 1, state: "RUNNING", updatedAt: receivedAt };
   const prompt = `Perform the required read-only critic and security reviews for the task. The current verified candidate digest is ${candidateDigest}. Do not edit files. Reviewer findings must be concise and refer to code evidence. The owner retry note is carried separately as untrusted reviewer context.`;
   const reviewPlan = await workflowReviewPlanOption(deps, workflow);
   const reviewFeedback = await workflowReviewFeedbackOption(deps, task, workflow);
@@ -3018,7 +3024,9 @@ async function queueWorkflowReview(
       request: "Run independent candidate reviews", response: `Independent code and security reviews started as operation ${operation.id}.`, operationId: operation.id,
     })),
     ...(access === undefined ? [] : [accessFence(deps, access)]),
-  ], { sharedTask: task.shared === true, workflowMode: "REVIEW", workflowReviewNote: note, ...taskBaseOption(task, next), ...workflowReviewChecksOption(workflow), ...reviewPlan, ...reviewFeedback });
+  ], { sharedTask: task.shared === true, workflowMode: "REVIEW", workflowReviewNote: note, ...taskBaseOption(task, next), ...workflowReviewChecksOption(workflow), ...reviewPlan, ...reviewFeedback,
+    // A custom sequence's review step: which step it is, and (when it asks for fewer than both) which reviews to run.
+    ...(workflow.programStepId === undefined ? {} : { programStepId: workflow.programStepId }), ...(reviewRoles.length === 2 ? {} : { workflowReviewers: reviewRoles }) });
 }
 
 /**
@@ -3049,6 +3057,54 @@ export async function startTaskWorkflowReviewFromSystem(
   const requestId = workflowRequestId("agentx-auto-review", taskId, expected.workflowRevision, expected.candidateDigest);
   const note = workflow.verification.reviewOnly === true ? AUTOMATIC_REVIEW_ONLY_NOTE : AUTOMATIC_REVIEW_NOTE;
   const accepted = await queueWorkflowReview(deps, task, { ...workflow, candidate: workflow.candidate }, requestId, note, dispatchAccess, actor);
+  return accepted.duplicate ? "DUPLICATE" : "STARTED";
+}
+
+/**
+ * A custom coding sequence's next coding step, started with no one asking: another build after a build, or the build
+ * a review's findings go back to. Answers STALE (nothing to do) unless the task is open and still ready for coding at the
+ * expected revision. The request ID comes from the task, revision and step, so a recovered or repeated dispatch is the
+ * broker's duplicate of the first. Problems the reviews or checks found go to the coder as a send-back does. The task's
+ * cap window is not renewed: only a person restarts that.
+ */
+export async function startTaskWorkflowImplementationFromSystem(
+  deps: DeveloperTaskRouteDependencies,
+  taskId: string,
+  expected: { workflowRevision: number },
+  actor?: DeveloperCaller,
+): Promise<"STARTED" | "DUPLICATE" | "STALE"> {
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  const workflow = task?.workflow;
+  if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.program === undefined || workflow.programStepId === undefined
+    || workflow.revision !== expected.workflowRevision || workflow.stage !== "IMPLEMENT" || workflow.state !== "READY") return "STALE";
+  await creatorGuard(deps, task);
+  const dispatchAccess = await systemTaskAccess(deps, task);
+  const workspace = await deps.actions.workspace(task.workspaceId);
+  if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
+  const plan = await approvedCodingPlan(deps, workflow);
+  const receivedAt = iso(deps);
+  const requestId = workflowRequestId("agentx-program-implement", taskId, workflow.revision, workflow.programStepId);
+  const next: WorkflowSnapshot = { ...workflow, revision: workflow.revision + 1, state: "RUNNING", updatedAt: receivedAt };
+  // A step sent back by its reviews or checks is given what they found; a step that simply follows another is given the plan.
+  const found = sendBackProblems(workflow);
+  const problems = found.length === 0 ? "" : `${sendBackProblemsPromptSection(found, promptTagId(task, requestId))}\n\n`;
+  const prompt = found.length === 0
+    ? `Implement the human-approved plan below, one coding step of a longer sequence: the previous step's work is in the code now. Follow its ordered steps, run the listed checks, and report results and limitations. ${NO_PUBLISH_NOTE}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}`
+    : `Address the problems below in the code, keeping to the approved plan. ${NO_PUBLISH_NOTE}\n\n${problems}Approved plan (sha256 ${plan.sha256}):\n${plan.text}`;
+  const accepted = await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt }, (operation) => [
+    { Update: {
+      TableName: deps.tableName, Key: taskKey(task.taskId),
+      UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+      ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :implement AND workflow.#state = :ready AND attribute_not_exists(closedAt)",
+      ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+      ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":implement": "IMPLEMENT", ":ready": "READY" },
+    } },
+    putNew(turnTable(deps), aiToolTurn({
+      party: actor === undefined ? partyOfTask(task) : partyOfTaskActor(task, actor), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
+      request: "Run the next coding step", response: `The next coding step of the sequence started as operation ${operation.id}.`, operationId: operation.id,
+    })),
+    ...(dispatchAccess === undefined ? [] : [accessFence(deps, dispatchAccess)]),
+  ], { sharedTask: task.shared === true, workflowMode: "IMPLEMENT", ...selectedCheckCommands(next), ...taskBaseOption(task, next), programStepId: workflow.programStepId });
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 

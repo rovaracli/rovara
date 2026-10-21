@@ -84,12 +84,16 @@ import {
   WORKFLOW_NO_CODE_CHANGE_MESSAGE,
   WORKFLOW_BLOCK_REASONS,
   WORKFLOW_MISSING_COMMITTED_SOURCE_EXPORT_REASON,
+  WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE,
   WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE,
   WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE,
   WORKFLOW_DISPATCH_DUE_INDEX,
   WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
   WorkflowReviewBaseSchema as PreparedBaseSchema,
   recordWorkflowVerification,
+  completeWorkflowBuild,
+  nextProgramStep,
+  workflowReviewRoles,
   submitWorkflowReview,
   registerWorkflowPullRequest,
   blockWorkflowPullRequestUpdate,
@@ -287,7 +291,7 @@ import {
 import { requireCreatorStillMember, requireWorkspaceCreatorStillMember, type CreatorCheckDependencies } from "../developer/creator-member.js";
 import { aiToolTurn, completedTurn, developerFooter, E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON, githubWorkflowPullRequestKey, inertName, OUTCOME, partyOfTask, taskKey, taskOwnerKey, taskOwnerSubject, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type GithubWorkflowPullRequestRecord, type StoredEvent } from "../developer/task-records.js";
 import { readWorkspaceLimits } from "../developer/limits.js";
-import { WORKFLOW_DISPATCH_PK, workflowDispatchItem, type WorkflowDispatchRecord, type WorkflowE2EReadinessMarker, AWS_TEMPORARY_MESSAGE, GATED_TASK_PULL_REQUEST_ACTION_REFUSAL, GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, UNEXPECTED_REQUEST_MESSAGE, hashJson, isConditional, isTemporaryAwsError, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, planDocumentInstructions, workerPrompt } from "./broker-shared.js";
+import { WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem, type WorkflowDispatchRecord, type WorkflowE2EReadinessMarker, AWS_TEMPORARY_MESSAGE, GATED_TASK_PULL_REQUEST_ACTION_REFUSAL, GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, UNEXPECTED_REQUEST_MESSAGE, hashJson, isConditional, isTemporaryAwsError, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, planDocumentInstructions, workerPrompt } from "./broker-shared.js";
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../e2e/feature-plan-planning-context.js";
 import { developerIdForSlackUser, grantProjectAccess } from "./admin-actions.js";
 import { chatGptOwner, chatGptTaskSelection } from "../chatgpt/task-model.js";
@@ -302,7 +306,7 @@ import type { ModelAccess } from "../model-proxy/access.js";
 import { admitSpend, changeBudgets, keyIdOf, mintCap, mintKeyHealing, recordMintedKey, type OrgBudgetSettings } from "../org/budget.js";
 import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
-import { ADMISSION_REFUSALS, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
+import { ADMISSION_REFUSALS, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
@@ -4285,7 +4289,7 @@ async function createConversation(
 async function taskOperationParts(
   dependencies: AwsBrokerDependencies,
   workspace: WorkspaceInstance,
-  input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; legacyTask?: boolean; workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; retiredClaimIds?: readonly string[]; slackThread?: SlackThread },
+  input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; legacyTask?: boolean; workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; retiredClaimIds?: readonly string[]; slackThread?: SlackThread },
   now: string,
 ): Promise<{ operation: OperationRecord; outbox: ReturnType<typeof outboxRecord>; fence: number }> {
   // Ruling R60, as a backstop for any launch path that did not check first: a task whose creator was removed starts nothing.
@@ -4310,9 +4314,12 @@ async function taskOperationParts(
     ...(input.workflowFeedbackApproval === undefined ? {} : { workflowFeedbackApproval: input.workflowFeedbackApproval }),
     ...(input.workflowE2EAdmission === undefined ? {} : { workflowE2EAdmission: input.workflowE2EAdmission }),
     ...(input.workflowDependencies === undefined ? {} : { workflowDependencies: input.workflowDependencies }),
+    // The step of the workflow program this operation runs, for the per-step settings the dispatch applies.
+    ...(input.programStepId === undefined ? {} : { programStepId: input.programStepId }),
     requestId: input.requestId,
     payloadHash: hashJson({ conversationId: input.conversationId, prompt: input.prompt,
       ...(input.workflowReviewNote === undefined ? {} : { workflowReviewNote: input.workflowReviewNote }),
+      ...(input.workflowReviewers === undefined ? {} : { workflowReviewers: input.workflowReviewers }),
       ...(input.workflowDependencies === undefined ? {} : { workflowDependencies: input.workflowDependencies }),
       ...(input.workflowE2EAdmission === undefined ? {} : { workflowE2EAdmission: input.workflowE2EAdmission }) }),
     status: "ACCEPTED",
@@ -4387,6 +4394,7 @@ async function taskOperationParts(
       ...(input.workflowReviewPlan === undefined ? {} : { workflowReviewPlan: input.workflowReviewPlan }),
       ...(input.workflowReviewFeedback === undefined ? {} : { workflowReviewFeedback: input.workflowReviewFeedback }),
       ...(input.workflowReviewNote === undefined ? {} : { workflowReviewNote: input.workflowReviewNote }),
+      ...(input.workflowReviewers === undefined ? {} : { workflowReviewers: [...input.workflowReviewers] }),
       ...(resolvedModel.model === undefined ? {} : { model: resolvedModel.model }),
       ...(chatgpt === undefined ? {} : { chatgpt: { model: chatgpt.model } }),
       ...(resolvedModel.diagnostic === undefined ? {} : { modelSelectionDiagnostic: resolvedModel.diagnostic }),
@@ -4685,7 +4693,7 @@ async function acceptTask(
   workspaceId: string,
   value: unknown,
   extra: ExtraItems = () => [],
-  options: { sharedTask?: boolean; operationId?: string; workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; retiredClaimIds?: readonly string[] } = {},
+  options: { sharedTask?: boolean; operationId?: string; workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; retiredClaimIds?: readonly string[] } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   assertNoUntrustedRoutingFields(value);
   const request = OperationRequestSchema.parse(value);
@@ -4693,6 +4701,7 @@ async function acceptTask(
   await requireMembership(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName);
   const requestHash = hashJson({ conversationId: request.conversationId, prompt: request.prompt,
     ...(options.workflowReviewNote === undefined ? {} : { workflowReviewNote: options.workflowReviewNote }),
+    ...(options.workflowReviewers === undefined ? {} : { workflowReviewers: options.workflowReviewers }),
     ...(options.workflowDependencies === undefined ? {} : { workflowDependencies: options.workflowDependencies }),
     ...(options.workflowE2EAdmission === undefined ? {} : { workflowE2EAdmission: options.workflowE2EAdmission }) });
   const idempotencyKey = {
@@ -4743,6 +4752,8 @@ async function acceptTask(
     ...(options.workflowReviewPlan === undefined ? {} : { workflowReviewPlan: options.workflowReviewPlan }),
     ...(options.workflowReviewFeedback === undefined ? {} : { workflowReviewFeedback: options.workflowReviewFeedback }),
     ...(options.workflowReviewNote === undefined ? {} : { workflowReviewNote: options.workflowReviewNote }),
+    ...(options.programStepId === undefined ? {} : { programStepId: options.programStepId }),
+    ...(options.workflowReviewers === undefined ? {} : { workflowReviewers: options.workflowReviewers }),
     ...(options.retiredClaimIds === undefined ? {} : { retiredClaimIds: options.retiredClaimIds }),
     ...(options.readiness === undefined ? {} : { readiness: options.readiness }),
   }, now);
@@ -9482,6 +9493,7 @@ async function recordWorkflowDispatchFailure(dependencies: AwsBrokerDependencies
     const [stage, state, reason] = item.kind === "CHECKS"
       ? ["VERIFY", "WAITING", WORKFLOW_BLOCK_REASONS.checksUnconfirmed] as const
       : item.kind === "REVIEW" ? ["REVIEW", "WAITING", WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE] as const
+      : item.kind === "IMPLEMENT" ? ["IMPLEMENT", "READY", WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE] as const
       : ["PULL_REQUEST", "READY", WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE] as const;
     // A fix AgentX gave up pushing: the task waits for the merge, blocked, naming the pull request.
     const updating = item.kind === "UPDATE" && workflow !== undefined ? nextWorkflowPullRequestUpdate(workflow) : undefined;
@@ -9767,6 +9779,7 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
     const workflow = task?.workflow;
     const due = item.kind === "CHECKS" ? workflow?.stage === "VERIFY" && workflow.state === "WAITING"
       : item.kind === "REVIEW" ? workflow?.stage === "REVIEW" && workflow.state === "WAITING"
+      : item.kind === "IMPLEMENT" ? workflow?.stage === "IMPLEMENT" && workflow.state === "READY" && workflow.program !== undefined
       : item.kind === "PUBLISH" || item.kind === "UPDATE" ? workflow?.stage === "PULL_REQUEST" && workflow.state === "READY" : false;
     if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.revision !== item.workflowRevision
       || !due || dependencies.developer === undefined) {
@@ -9794,6 +9807,7 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
     } else {
       outcome = item.kind === "PUBLISH" || item.kind === "UPDATE"
         ? await startTaskWorkflowPublicationFromSystem(routeDependencies, item.taskId, expected, { taskPageUrl: taskPageUrl(dependencies.developer.issuer, item.taskId) })
+        : item.kind === "IMPLEMENT" ? await startTaskWorkflowImplementationFromSystem(routeDependencies, item.taskId, expected)
         : await startTaskWorkflowReviewFromSystem(routeDependencies, item.taskId, expected);
     }
     await remove();
@@ -10181,6 +10195,23 @@ async function loadWorkflowCandidateSourceExport(
   return parsed.data;
 }
 
+/**
+ * Whether a finished coding run is a custom sequence's build that another build follows: the workflow program is at that
+ * build, and the run carries no approved work breakdown (an ordered run records its candidate and checks as it always did).
+ */
+function programContinuesCoding(workflow: WorkflowSnapshot, operation: OperationRecord, dependencyBinding: unknown): boolean {
+  if (operation.workflowMode !== "IMPLEMENT" || workflow.program === undefined || workflow.stage !== "IMPLEMENT" || dependencyBinding !== undefined) return false;
+  if (workflow.program.steps.find((step) => step.id === workflow.programStepId)?.kind !== "build") return false;
+  const move = nextProgramStep(workflow.program, workflow.programStepId, "done");
+  return move.kind === "step" && move.step.kind === "build";
+}
+
+/** Whether the workflow program is past its first build step: a work breakdown the plan approved belongs to that first build. */
+function laterProgramBuild(workflow: WorkflowSnapshot): boolean {
+  const first = workflow.program?.steps.find((step) => step.kind === "build");
+  return first !== undefined && workflow.programStepId !== undefined && workflow.programStepId !== first.id;
+}
+
 async function completedWorkflowItems(
   dependencies: AwsBrokerDependencies,
   operation: OperationRecord,
@@ -10341,6 +10372,10 @@ async function completedWorkflowItems(
         delete unknown.candidateTreeSha;
         next = WorkflowSnapshotSchema.parse({ ...next, workflowDependenciesProgress: [...progress, unknown] });
       }
+    } else if (programContinuesCoding(task.workflow, operation, dependencyBinding)) {
+      // A custom sequence's build followed by another build: the code is not checked or reviewed yet, so no candidate
+      // is recorded; the workflow is ready for the next build, which the dispatch below starts.
+      next = completeWorkflowBuild(task.workflow, now);
     } else {
       const repositories = Array.isArray(reported.workflowCandidateRepositories) ? reported.workflowCandidateRepositories : [];
       const checkedRepositories = Array.isArray(reported.workflowCheckCandidateRepositories) ? reported.workflowCheckCandidateRepositories : [];
@@ -10357,8 +10392,9 @@ async function completedWorkflowItems(
           verificationFailure = "approved work breakdown result is missing, stale or incomplete";
           throw new Error(verificationFailure);
         }
+        // A custom sequence runs the approved work breakdown in its first build only; its later builds carry none.
         if (dependencyBinding === undefined && task.workflow.workflowDependenciesApproval !== undefined && operation.workflowMode === "IMPLEMENT"
-          && task.workflow.stage === "IMPLEMENT") {
+          && task.workflow.stage === "IMPLEMENT" && !laterProgramBuild(task.workflow)) {
           verificationFailure = "approved work breakdown was not carried into this implementation";
           throw new Error(verificationFailure);
         }
@@ -10572,9 +10608,11 @@ async function completedWorkflowItems(
           }
           submitWorkflowReview(task.workflow, review, now);
         }
-        // Exactly one code review and one security review: two of one kind would leave the stage waiting for the other.
+        // Exactly the reviews the step asks for (one code review and one security review, unless a custom sequence's review
+        // step asks for fewer): two of one kind would leave the stage waiting for the other.
         const roles = reviews.map((review) => (review as Record<string, unknown>).role).sort();
-        if (roles.length !== 2 || roles[0] !== "CRITIC" || roles[1] !== "SECURITY") {
+        const asked = workflowReviewRoles(task.workflow);
+        if (roles.length !== asked.length || roles.some((role, index) => role !== asked[index])) {
           reviewFailure = WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE;
           throw new Error("review result does not hold one code review and one security review");
         }
@@ -10670,7 +10708,14 @@ async function completedWorkflowItems(
     // Item 7: a fix of pull requests already open is pushed to them, not opened as new ones.
     : operation.workflowMode === "REVIEW" && next.stage === "PULL_REQUEST" && next.state === "READY" && next.candidate !== undefined
       ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, workflowPullRequestUpdateDue(next) ? "UPDATE" : "PUBLISH", next.candidate.digest, now)]
-      : [];
+      // A custom sequence's next step: another review after a passed one, or the next coding step (after a build, a passed
+      // check or review, or findings sent back).
+      : operation.workflowMode === "REVIEW" && next.program !== undefined && next.stage === "REVIEW" && next.state === "WAITING" && next.candidate !== undefined
+        ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "REVIEW", next.candidate.digest, now)]
+      : next.program !== undefined && next.stage === "IMPLEMENT" && next.state === "READY"
+        && (operation.workflowMode === "IMPLEMENT" || operation.workflowMode === "CHECKS" || operation.workflowMode === "REVIEW")
+        ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "IMPLEMENT", next.candidate?.digest ?? WORKFLOW_NO_CANDIDATE_DIGEST, now)]
+        : [];
   // A saved plan forgets the reasons an earlier answer was unreadable; an unreadable answer keeps its own for Retry planning.
   const forget = planUnreadable === null && task.planUnreadable !== undefined;
   if (operation.kind === "task" && operation.workflowMode === "CHECKS" && task.workflow.e2e?.required === true

@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { z } from "zod";
+import { StepIdSchema } from "./agent-recipe.js";
 import { OrgIdSchema } from "./org.js";
 import { WorkflowFeedbackApprovalBindingSchema } from "./task-workflow.js";
 import { WorkflowDependencyInvocationSchema } from "./workflow-dependencies.js";
@@ -223,6 +224,8 @@ export const OperationSchema = z
     workflowFeedbackReview: z.object({ taskId: z.string().uuid(), workflowRevision: z.number().int().positive(), candidateDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
     workflowFeedbackApproval: WorkflowFeedbackApprovalBindingSchema.optional(),
     workflowDependencies: WorkflowDependencyInvocationSchema.optional(),
+    /** The step of the task's workflow program this operation runs; absent without a program. Per-step settings read it. */
+    programStepId: StepIdSchema.optional(),
     requestId: z.string().uuid(),
     payloadHash: z.string().regex(/^[a-f0-9]{64}$/),
     status: OperationStatusSchema,

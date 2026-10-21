@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { CODING_STEP_KINDS, MAX_RECIPE_STEPS, OnFindingsSchema, ReviewerSchema, StepIdSchema } from "./agent-recipe.js";
 import { E2EWorkflowProgressSchema, E2EQualifiedRoundSchema, E2E_PROJECT_CHECK_ID } from "./e2e.js";
 import { z } from "zod";
 import { ProjectCommandSchema } from "./project.js";
@@ -27,6 +28,8 @@ export const WORKFLOW_HISTORY_REWRITTEN_MESSAGE = "The change history was rewrit
 
 /** Shown to the owner when AgentX gave up starting the reviews on its own; Retry reviews starts them. */
 export const WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE = "AgentX couldn't start the reviews automatically. Use Retry reviews to try again.";
+/** Shown to the owner when AgentX gave up starting a custom sequence's next coding step on its own; Retry coding starts it. */
+export const WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE = "AgentX couldn't start the next coding step automatically. Use Retry coding to try again.";
 /** Shown to the owner when a review run did not return exactly one code review and one security review. */
 export const WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE = "The reviews didn't return one code review and one security review. Use Retry reviews to run them again.";
 /** Shown to the owner when AgentX gave up opening the draft pull request on its own; Retry opening the pull request starts it. */
@@ -575,6 +578,170 @@ export type WorkflowStage = z.infer<typeof WorkflowStageSchema>;
 export const WorkflowStateSchema = z.enum(["READY", "RUNNING", "WAITING", "BLOCKED", "COMPLETE"]);
 export type WorkflowState = z.infer<typeof WorkflowStateSchema>;
 
+/** One step of a workflow program: the same step kinds a coding recipe has, in the order the engine follows them. */
+export const WorkflowProgramStepSchema = z.object({
+  id: StepIdSchema,
+  kind: z.enum(CODING_STEP_KINDS),
+  /** Review steps only: which reviews this step runs. */
+  reviewers: z.array(ReviewerSchema).min(1).max(2).optional(),
+  /** Review steps only: where findings go back to (an earlier build step), and how many review rounds before the step blocks. */
+  onFindings: OnFindingsSchema.optional(),
+}).strict();
+
+/**
+ * The step order a custom coding recipe hands to the workflow engine. Rovara Code's own order is the engine's built-in
+ * path and has no program. A check step is the checks run on the build before it; a check anywhere else was already
+ * recorded with its build, so the engine passes over it.
+ */
+export const WorkflowProgramSchema = z.object({
+  steps: z.array(WorkflowProgramStepSchema).min(1).max(MAX_RECIPE_STEPS),
+}).strict().superRefine((program, context) => {
+  const steps = program.steps;
+  const problem = (message: string, index?: number) => context.addIssue({ code: "custom", path: index === undefined ? ["steps"] : ["steps", index], message });
+  if (new Set(steps.map((step) => step.id)).size !== steps.length) problem("step ids must be unique");
+  steps.forEach((step, index) => {
+    if (step.kind === "plan" && index !== 0) problem("a plan step can only come first", index);
+    if (step.kind === "pull_request" && index !== steps.length - 1) problem("a pull request step can only come last", index);
+    if (step.kind === "review") {
+      if (step.reviewers === undefined) problem("a review step needs its reviewers", index);
+      else if (new Set(step.reviewers).size !== step.reviewers.length) problem("reviewers must be unique", index);
+    } else if (step.reviewers !== undefined || step.onFindings !== undefined) {
+      problem("only a review step has reviewers or an onFindings", index);
+    }
+    if (step.onFindings !== undefined) {
+      const target = steps.findIndex((candidate) => candidate.id === step.onFindings?.backTo);
+      if (target < 0 || target >= index || steps[target]?.kind !== "build") problem("onFindings must go back to an earlier build step", index);
+    }
+  });
+  if (steps.find((step) => step.kind !== "plan")?.kind !== "build") problem("the first step after the plan must be a build step");
+  if (steps.some((step) => step.kind === "pull_request")) {
+    const after = steps.slice(steps.findLastIndex((step) => step.kind === "build") + 1);
+    if (!after.some((step) => step.kind === "check") || !after.some((step) => step.kind === "review" && step.reviewers?.includes("code") === true && step.reviewers.includes("security"))) {
+      problem("a pull request step needs a check step and a review step with both reviewers after the last build step");
+    }
+  }
+});
+export type WorkflowProgram = z.infer<typeof WorkflowProgramSchema>;
+export type WorkflowProgramStep = WorkflowProgram["steps"][number];
+
+/** The reviews a workflow's current step asks for: the review step's reviewers, or both when there is no program. */
+export function workflowReviewRoles(workflow: { program?: WorkflowProgram | undefined; programStepId?: string | undefined }): Array<"CRITIC" | "SECURITY"> {
+  const step = workflow.program?.steps.find((candidate) => candidate.id === workflow.programStepId);
+  if (step?.kind !== "review" || step.reviewers === undefined) return ["CRITIC", "SECURITY"];
+  return (["CRITIC", "SECURITY"] as const).filter((role) => step.reviewers?.includes(role === "CRITIC" ? "code" : "security") === true);
+}
+
+/** Why a review step blocked, named as the owner knows the reviews: the one that did not pass, or both. */
+function reviewNotPassedReason(roles: ReadonlyArray<"CRITIC" | "SECURITY">): string {
+  return roles.length === 2 ? "the code and security reviews did not pass" : `the ${roles[0] === "CRITIC" ? "code" : "security"} review did not pass`;
+}
+
+const PROGRAM_STAGE_OF_STEP: Record<WorkflowProgramStep["kind"], WorkflowStage> = {
+  plan: "PLAN", build: "IMPLEMENT", check: "VERIFY", review: "REVIEW", pull_request: "PULL_REQUEST",
+};
+
+function programIndex(program: WorkflowProgram, id: string | undefined): number {
+  if (id === undefined) return -1;
+  const index = program.steps.findIndex((step) => step.id === id);
+  if (index < 0) throw new WorkflowTransitionError(`the workflow program has no step "${id}"`);
+  return index;
+}
+
+/** The step the engine runs after the one at `index`: a plan step never repeats, and a check not right after a build was recorded with its build. */
+function programStepAfter(program: WorkflowProgram, index: number): WorkflowProgramStep | undefined {
+  for (let next = index + 1; next < program.steps.length; next += 1) {
+    const step = program.steps[next]!;
+    if (step.kind === "plan" || (step.kind === "check" && program.steps[next - 1]?.kind !== "build")) continue;
+    return step;
+  }
+  return undefined;
+}
+
+export type ProgramMove = { kind: "step"; step: WorkflowProgramStep } | { kind: "end" } | { kind: "blocked"; reason: string };
+
+/**
+ * Where a program goes from step `currentId` (undefined: before its first step): the next step when it is `done`, or,
+ * after a review that had `findings`, back to `onFindings.backTo` until `round` (the review rounds so far, this one
+ * included) reaches `maxRounds`; then the step blocks with the review reason (for `failedRoles`, else the step's reviewers).
+ */
+export function nextProgramStep(
+  program: WorkflowProgram, currentId: string | undefined, outcome: "done" | "findings", round = 0, failedRoles?: ReadonlyArray<"CRITIC" | "SECURITY">,
+): ProgramMove {
+  const index = programIndex(program, currentId);
+  if (outcome === "done") {
+    const next = programStepAfter(program, index);
+    return next === undefined ? { kind: "end" } : { kind: "step", step: next };
+  }
+  const current = program.steps[index];
+  if (current?.kind !== "review") throw new WorkflowTransitionError("only a review step has findings to send back");
+  const onFindings = current.onFindings;
+  const target = onFindings === undefined ? undefined : program.steps.find((step) => step.id === onFindings.backTo);
+  if (onFindings === undefined || target === undefined || round >= onFindings.maxRounds) {
+    return { kind: "blocked", reason: reviewNotPassedReason(failedRoles ?? workflowReviewRoles({ program, programStepId: current.id })) };
+  }
+  return { kind: "step", step: target };
+}
+
+/**
+ * The stage after the current one: `defaultNext` (the engine's own next stage) without a program; with one, the next
+ * program step's stage and id, or `complete` when the program has no step left.
+ */
+export function advanceStage(
+  current: { program?: WorkflowProgram | undefined; programStepId?: string | undefined }, defaultNext: WorkflowStage,
+): { stage: WorkflowStage; programStepId?: string; complete?: true } {
+  if (current.program === undefined) return { stage: defaultNext };
+  const move = nextProgramStep(current.program, current.programStepId, "done");
+  return move.kind === "step" ? { stage: PROGRAM_STAGE_OF_STEP[move.step.kind], programStepId: move.step.id } : { stage: "CLOSED", complete: true };
+}
+
+/** The state a workflow takes on arriving at a program step by itself: coding and the pull request are ready, checks and reviews wait to be run. */
+const PROGRAM_ARRIVAL_STATE: Partial<Record<WorkflowStage, WorkflowState>> = { IMPLEMENT: "READY", VERIFY: "WAITING", REVIEW: "WAITING", PULL_REQUEST: "READY", CLOSED: "COMPLETE" };
+
+/**
+ * The snapshot fields a program move sets: its stage, state and step, and (when the program ends) the passed outcome.
+ * Arriving at a review step forgets the reviews that step runs again, so a stale report never stands in for a new one.
+ */
+function programArrival(current: WorkflowSnapshot, move: { stage: WorkflowStage; programStepId?: string; complete?: true }, candidateChanged = false): Record<string, unknown> {
+  const program = current.program;
+  const step = program?.steps.find((candidate) => candidate.id === move.programStepId);
+  const arrivingRoles = step?.kind === "review" && program !== undefined ? workflowReviewRoles({ program, programStepId: step.id }) : [];
+  return {
+    stage: move.stage, state: PROGRAM_ARRIVAL_STATE[move.stage] ?? "READY",
+    ...(move.programStepId === undefined ? {} : { programStepId: move.programStepId }),
+    ...(move.complete === true ? { outcome: "PASSED" } : {}),
+    ...(step?.kind === "review" ? { reviews: candidateChanged ? [] : (current.reviews ?? []).filter((review) => !arrivingRoles.includes(review.role)) } : {}),
+  };
+}
+
+/** The last build step at or before `index` (the first build step when there is none): where coding picks up again. */
+function programBuildAtOrBefore(program: WorkflowProgram, index: number): WorkflowProgramStep {
+  for (let at = Math.min(index, program.steps.length - 1); at >= 0; at -= 1) if (program.steps[at]?.kind === "build") return program.steps[at]!;
+  return program.steps.find((step) => step.kind === "build")!;
+}
+
+/** Where owner-sent work goes back to: a blocked review's `backTo`, else the last build at or before the step the workflow is at. */
+function programSendBackStep(program: WorkflowProgram, currentId: string | undefined): WorkflowProgramStep {
+  const index = programIndex(program, currentId);
+  const current = program.steps[index];
+  const backTo = current?.kind === "review" ? current.onFindings?.backTo : undefined;
+  return (backTo === undefined ? undefined : program.steps.find((step) => step.id === backTo)) ?? programBuildAtOrBefore(program, index);
+}
+
+/** Where a workflow with a program stands while its checks are recorded: the check step after its build, else the build. Nothing without a program. */
+export function workflowVerificationPosition(workflow: { program?: WorkflowProgram | undefined; programStepId?: string | undefined }): { programStepId?: string } {
+  return workflow.program === undefined ? {} : { programStepId: programVerifyStepId(workflow.program, workflow.programStepId) };
+}
+
+/** The step a workflow is at while its checks are recorded: the check step right after the build it is at, else that build. */
+function programVerifyStepId(program: WorkflowProgram, currentId: string | undefined): string {
+  const index = programIndex(program, currentId);
+  const step = program.steps[index];
+  const origin = step?.kind === "check" ? step : step?.kind === "build" ? step : programBuildAtOrBefore(program, index);
+  const originIndex = program.steps.indexOf(origin);
+  const check = origin.kind === "build" && program.steps[originIndex + 1]?.kind === "check" ? program.steps[originIndex + 1] : undefined;
+  return (check ?? origin).id;
+}
+
 const WorkflowObjectKeySchema = z.string().min(1).max(1024).refine((key) => !key.startsWith("/") && !key.split("/").includes(".."));
 
 export const WorkflowArtifactSchema = z.object({
@@ -971,7 +1138,25 @@ const WorkflowSnapshotShapeSchema = z.object({
   /** Broker-authored pointer to the accepted operation for the current approved graph attempt; never exposed in task views. */
   workflowDependenciesOperationId: z.string().uuid().optional(),
   workflowDependenciesProgress: z.array(WorkItemProgressV1Schema).max(32).optional(),
+  /** A custom coding sequence the engine follows; absent for Rovara Code's own path. */
+  program: WorkflowProgramSchema.optional(),
+  /** The program step the workflow is at (or, before its first step, the plan step); only with a program. */
+  programStepId: StepIdSchema.optional(),
+  /** How many review rounds each review step has finished, so a step that keeps finding problems blocks at its `maxRounds`. */
+  programRounds: z.record(StepIdSchema, z.number().int().min(1).max(100)).optional(),
 }).superRefine((workflow, context) => {
+  if (workflow.program === undefined) {
+    if (workflow.programStepId !== undefined || workflow.programRounds !== undefined) {
+      context.addIssue({ code: "custom", path: ["program"], message: "a program position needs its program" });
+    }
+  } else {
+    if (workflow.programStepId !== undefined && !workflow.program.steps.some((step) => step.id === workflow.programStepId)) {
+      context.addIssue({ code: "custom", path: ["programStepId"], message: "the program position must be a step of the program" });
+    }
+    if (Object.keys(workflow.programRounds ?? {}).some((id) => workflow.program?.steps.find((step) => step.id === id)?.kind !== "review")) {
+      context.addIssue({ code: "custom", path: ["programRounds"], message: "review rounds are counted only for review steps of the program" });
+    }
+  }
   const taskMetadata = { feedbackReview: workflow.feedbackReview, feedbackDecisions: workflow.feedbackDecisions, feedbackDispatchApproval: workflow.feedbackDispatchApproval, feedbackNotes: workflow.feedbackNotes, feedbackReviewHistory: workflow.feedbackReviewHistory, feedbackThreadObservations: workflow.feedbackThreadObservations, verificationRetries: workflow.verificationRetries, canvasLineage: workflow.canvasLineage, canvasCloseout: workflow.canvasCloseout, canvasCloseoutAttempt: workflow.canvasCloseoutAttempt, workflowDependenciesApproval: workflow.workflowDependenciesApproval, workflowDependenciesOperationId: workflow.workflowDependenciesOperationId, workflowDependenciesProgress: workflow.workflowDependenciesProgress };
   if (Buffer.byteLength(JSON.stringify(taskMetadata), "utf8") > 262_144) {
     context.addIssue({ code: "custom", message: "workflow metadata exceeds the task snapshot storage budget" });
@@ -1168,6 +1353,15 @@ export function recordWorkflowVerification(
   void _priorRegressions;
   const { qualifiedRound: _priorQualifiedRound, ...unqualifiedE2E } = current.e2e ?? {};
   void _priorQualifiedRound;
+  // A program places the workflow: on its check step (or the build's own step) while the checks stand, and past that
+  // step once they pass, on to the program's next step (which may be another build, a review, the pull request or its end).
+  const program = current.program;
+  const verifyStepId = program === undefined ? undefined : programVerifyStepId(program, current.programStepId);
+  const move = program === undefined || verifyStepId === undefined || !(passed && e2eQualified) ? undefined : nextProgramStep(program, verifyStepId, "done");
+  const placed = program === undefined ? undefined
+    : move === undefined ? { programStepId: verifyStepId }
+      : move.kind === "step" ? programArrival({ ...current, candidate, reviews: candidateChanged ? [] : current.reviews ?? [] }, { stage: PROGRAM_STAGE_OF_STEP[move.step.kind], programStepId: move.step.id }, candidateChanged)
+        : programArrival(current, { stage: "CLOSED", complete: true });
   return WorkflowSnapshotSchema.parse({
     ...withoutBlockReason,
     revision: current.revision + 1,
@@ -1181,7 +1375,27 @@ export function recordWorkflowVerification(
     // A new candidate invalidates every prior review report.
     reviews: candidateChanged ? [] : current.reviews ?? [],
     updatedAt: input.now,
+    ...placed,
   });
+}
+
+/**
+ * A coding step of a program ends and another coding step follows it, so the code is not checked yet (a first build
+ * may leave tests that fail on purpose): the workflow is ready for the next build, with no candidate recorded. A build
+ * followed by checks, a review, the pull request or the program's end records its candidate and checks instead
+ * (`recordWorkflowVerification`).
+ */
+export function completeWorkflowBuild(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  const program = current.program;
+  if (program === undefined) throw new WorkflowTransitionError("this workflow has no program to follow");
+  if (current.stage !== "IMPLEMENT" || (current.state !== "READY" && current.state !== "RUNNING")) throw new WorkflowTransitionError("workflow is not at a coding step");
+  if (program.steps[programIndex(program, current.programStepId)]?.kind !== "build") throw new WorkflowTransitionError("the program is not at a build step");
+  const move = nextProgramStep(program, current.programStepId, "done");
+  if (move.kind !== "step" || move.step.kind !== "build") throw new WorkflowTransitionError("this build step is followed by checks; its candidate is recorded with them");
+  const { blockReason: _blockReason, ...withoutBlockReason } = current;
+  void _blockReason;
+  return WorkflowSnapshotSchema.parse({ ...withoutBlockReason, revision: current.revision + 1, stage: "IMPLEMENT", state: "READY", programStepId: move.step.id, updatedAt: now });
 }
 
 export function submitWorkflowReview(currentInput: unknown, reportInput: unknown, now: string): WorkflowSnapshot {
@@ -1193,16 +1407,33 @@ export function submitWorkflowReview(currentInput: unknown, reportInput: unknown
   if (report.data.candidateDigest !== current.candidate.digest || current.verification.candidateDigest !== current.candidate.digest) {
     throw new WorkflowTransitionError("review report does not match the current verified candidate");
   }
+  // The reviews this step asks for: both without a program, the review step's own reviewers with one.
+  const roles = workflowReviewRoles(current);
+  if (current.program !== undefined && !roles.includes(report.data.role)) throw new WorkflowTransitionError("review report is not one this step asked for");
   const reviews = [...(current.reviews ?? []).filter((entry) => entry.role !== report.data.role), report.data];
   // A review also stands when the owner accepted every finding that blocked it, for this candidate.
-  const complete = (["CRITIC", "SECURITY"] as const).every((role) => reviews.some((entry) => entry.role === role && reviewCleared(entry, current.acceptedFindings)));
+  const complete = roles.every((role) => reviews.some((entry) => entry.role === role && reviewCleared(entry, current.acceptedFindings)));
   // The reviews that hold the change back, named as the owner knows them, whichever review was recorded last.
-  const notCleared = (["CRITIC", "SECURITY"] as const).filter((role) => reviews.some((entry) => entry.role === role && !reviewCleared(entry, current.acceptedFindings)));
+  const notCleared = roles.filter((role) => reviews.some((entry) => entry.role === role && !reviewCleared(entry, current.acceptedFindings)));
   const failed = notCleared.length > 0;
-  const blockReason = notCleared.length === 2 ? "the code and security reviews did not pass"
-    : `the ${notCleared[0] === "CRITIC" ? "code" : "security"} review did not pass`;
+  const blockReason = reviewNotPassedReason(notCleared);
   const { blockReason: _priorBlockReason, ...withoutBlockReason } = current;
   void _priorBlockReason;
+  const program = current.program;
+  // With a program, once every review the step asked for is in, the outcome picks the next step: findings go back to
+  // coding (until the step's rounds are spent), a pass goes on to the step after it. An unfinished review (a timeout, an
+  // unreadable answer) is no round at all: the step stays blocked for the owner to retry, as it does without a program.
+  const allIn = program !== undefined && roles.every((role) => reviews.some((entry) => entry.role === role));
+  const findingsOnly = failed && notCleared.every((role) => reviews.some((entry) => entry.role === role && entry.status === "FINDINGS"));
+  if (program !== undefined && allIn && current.programStepId !== undefined && (complete || findingsOnly)) {
+    const rounds = { ...(current.programRounds ?? {}), [current.programStepId]: (current.programRounds?.[current.programStepId] ?? 0) + 1 };
+    const move = complete ? nextProgramStep(program, current.programStepId, "done") : nextProgramStep(program, current.programStepId, "findings", rounds[current.programStepId], notCleared);
+    const base = { ...withoutBlockReason, revision: current.revision + 1, reviews, programRounds: rounds, updatedAt: now };
+    if (move.kind === "blocked") return WorkflowSnapshotSchema.parse({ ...base, stage: "REVIEW", state: "BLOCKED", blockReason: move.reason });
+    const placed = move.kind === "end" ? programArrival({ ...current, reviews }, { stage: "CLOSED", complete: true })
+      : programArrival({ ...current, reviews }, { stage: PROGRAM_STAGE_OF_STEP[move.step.kind], programStepId: move.step.id });
+    return WorkflowSnapshotSchema.parse({ ...base, ...placed });
+  }
   return WorkflowSnapshotSchema.parse({
     ...withoutBlockReason,
     revision: current.revision + 1,
@@ -1604,7 +1835,9 @@ export function decideWorkflowFeedbackFindings(currentInput: unknown, input: {
     || pr.candidateDigest !== current.candidate?.digest ? pr
     : { ...pr, headTreeSha: current.candidate.repositories.find(repo => repo.repositoryId === pr.repositoryId)?.treeSha });
   return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, ...(pullRequests === undefined ? {} : { pullRequests }),
-    ...(input.decision === "APPROVE" ? { stage: "IMPLEMENT", state: "READY" } : {}),
+    ...(input.decision === "APPROVE" ? { stage: "IMPLEMENT", state: "READY",
+      // A fix to an open pull request goes through the program's last build, then its checks and reviews again.
+      ...(current.program === undefined ? {} : { programStepId: programBuildAtOrBefore(current.program, current.program.steps.length - 1).id }) } : {}),
     feedbackReview: { ...review, status: input.decision === "APPROVE" ? "APPROVED" : input.decision === "REQUEST_CHANGES" ? "CHANGES_REQUESTED" : "DISMISSED" },
     feedbackDecisions: [...(current.feedbackDecisions ?? []), decision.data], feedbackNotes, updatedAt: now,
   });
@@ -1616,7 +1849,7 @@ function validSnapshot(input: unknown): WorkflowSnapshot {
   return parsed.data;
 }
 
-export function createWorkflowSnapshot(input: { taskId: string; ownerId: string; now: string; path?: WorkflowPath; checkPolicy?: WorkflowCheckPolicyInput }): WorkflowSnapshot {
+export function createWorkflowSnapshot(input: { taskId: string; ownerId: string; now: string; path?: WorkflowPath; checkPolicy?: WorkflowCheckPolicyInput; program?: WorkflowProgram }): WorkflowSnapshot {
   const parsed = WorkflowSnapshotSchema.safeParse({
     schemaVersion: 1,
     definitionId: "agentx-task-to-pr",
@@ -1633,6 +1866,10 @@ export function createWorkflowSnapshot(input: { taskId: string; ownerId: string;
     artifacts: [],
     decisions: [],
     ...(input.checkPolicy === undefined ? {} : { checkPolicy: input.checkPolicy }),
+    ...(input.program === undefined ? {} : {
+      program: input.program,
+      ...(input.program.steps[0]?.kind === "plan" ? { programStepId: input.program.steps[0].id } : {}),
+    }),
   });
   if (!parsed.success) throw new WorkflowTransitionError("workflow initialization is invalid");
   return parsed.data;
@@ -1784,6 +2021,8 @@ export function returnWorkflowToImplementation(
   void _blockReason;
   return WorkflowSnapshotSchema.parse({
     ...unblocked, revision: current.revision + 1, stage: "IMPLEMENT", state: "READY",
+    // A program picks coding up again at the step the work goes back to.
+    ...(current.program === undefined ? {} : { programStepId: programSendBackStep(current.program, current.programStepId).id }),
     decisions: [...current.decisions, decision], updatedAt: input.now,
   });
 }
@@ -2035,12 +2274,14 @@ export function resolveWorkflowReviewFindings(
     requestId: input.requestId, workflowRevision: current.revision, decision: "APPROVE", actorId: actor.actorId,
     actorRole: "TASK_OWNER", reason: summary, source: "FINDINGS", at: options.now,
   });
-  const reviewsClear = (["CRITIC", "SECURITY"] as const).every((role) => (current.reviews ?? []).some((review) =>
+  const reviewsClear = workflowReviewRoles(current).every((role) => (current.reviews ?? []).some((review) =>
     review.role === role && review.candidateDigest === candidateDigest && reviewCleared(review, acceptedFindings)));
   const { blockReason, ...unblocked } = withAccepted;
+  // With a program, the reviews this step asked for are clear: the program goes on to its next step.
+  const advanced = reviewsClear && current.program !== undefined ? advanceStage(current, "PULL_REQUEST") : undefined;
   return WorkflowSnapshotSchema.parse({
     ...(reviewsClear ? unblocked : withAccepted), revision: current.revision + 1,
-    ...(reviewsClear ? { stage: "PULL_REQUEST", state: "READY" } : { blockReason }),
+    ...(!reviewsClear ? { blockReason } : advanced === undefined ? { stage: "PULL_REQUEST", state: "READY" } : programArrival(withAccepted, advanced)),
     decisions: [...current.decisions, decision], updatedAt: options.now,
   });
 }
@@ -2183,9 +2424,11 @@ export function decideWorkflow(
     ? current.reviewPhase === "REQUIREMENTS" ? "DESIGN" as const
       : current.reviewPhase === "DESIGN" ? "IMPLEMENTATION_PLAN" as const : undefined
     : undefined;
+  // Approving the last document goes on to coding: the engine's IMPLEMENT, or the first step of the program.
+  const advance = request.data.decision === "REJECT" || request.data.decision === "REQUEST_CHANGES" || nextFullPhase !== undefined ? undefined : advanceStage(current, "IMPLEMENT");
   const nextStage: WorkflowStage = request.data.decision === "REJECT" ? "CLOSED"
     : request.data.decision === "REQUEST_CHANGES" ? "PLAN"
-      : nextFullPhase !== undefined ? "PLAN" : "IMPLEMENT";
+      : advance?.stage ?? "PLAN";
   const outcome = request.data.decision === "APPROVE" && nextFullPhase === undefined ? "PASSED"
     : request.data.decision === "REQUEST_CHANGES" ? "CHANGES_REQUESTED"
       : request.data.decision === "REJECT" ? "REJECTED"
@@ -2197,6 +2440,7 @@ export function decideWorkflow(
     state: request.data.decision === "REJECT" ? "COMPLETE" : "READY",
     ...(nextFullPhase === undefined ? {} : { reviewPhase: nextFullPhase }),
     ...(outcome === undefined ? {} : { outcome }),
+    ...(advance?.programStepId === undefined ? {} : { programStepId: advance.programStepId }),
     updatedAt: options.now,
     decisions: [...current.decisions, decision],
     ...(request.data.decision === "APPROVE" && request.data.workBreakdownDigest !== undefined ? {

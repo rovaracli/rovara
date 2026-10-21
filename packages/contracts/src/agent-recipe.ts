@@ -2,7 +2,7 @@
 // agent version stores on top of the agent it builds on. Every schema here is strict, so a recipe cannot carry a
 // field that reaches the safety layer (prompts, extensions, environment variables, sandbox or allowed domains).
 // Below the schemas are the functions that apply an overlay, check a recipe's structure, turn a coding recipe into
-// a workflow program, and digest and compare recipes.
+// a workflow program (WorkflowProgramSchema, in task-workflow.ts), and digest and compare recipes.
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { ToolPatternSchema } from "./action-policy.js";
@@ -10,6 +10,7 @@ import { AGENT_NAME_MAX, AgentIdSchema, AutonomySchema, SkillIdSchema } from "./
 import { canonicalJson } from "./canonical-json.js";
 import { ConnectorNameSchema } from "./connectors.js";
 import { ModelSelectionSchema } from "./models.js";
+import type { WorkflowProgram } from "./task-workflow.js";
 
 export const INSTRUCTIONS_MAX_BYTES = 8192;
 export const STEP_NAME_MAX = 40;
@@ -214,16 +215,6 @@ export interface RecipeProblem { path: string; message: string }
 /** The problem as one line: `<path>: <message>`. */
 export function formatRecipeProblem(problem: RecipeProblem): string {
   return `${problem.path}: ${problem.message}`;
-}
-
-/** The steps a coding recipe hands to the workflow engine, in order (the engine's own schema arrives with Task 17). */
-export interface WorkflowProgram {
-  steps: Array<{
-    id: StepId;
-    kind: CodingStepKind;
-    reviewers?: Array<z.infer<typeof ReviewerSchema>>;
-    onFindings?: z.infer<typeof OnFindingsSchema>;
-  }>;
 }
 
 function isCodingKind(kind: string): kind is CodingStepKind {

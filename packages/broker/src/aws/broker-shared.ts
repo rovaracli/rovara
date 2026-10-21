@@ -290,7 +290,8 @@ export interface WorkflowDispatchRecord {
   taskId: string;
   workflowRevision: number;
   /** UPDATE: an approved fix's checks and reviews passed, and it is pushed to the pull requests already open. */
-  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE";
+  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT";
+  /** IMPLEMENT (a custom sequence's next coding step) may be due before any candidate exists: then it is WORKFLOW_NO_CANDIDATE_DIGEST. */
   candidateDigest: string;
   /** A single internal resume operation warms EC2 before a required E2E round is immutably admitted. */
   readinessOperationId?: string;
@@ -316,6 +317,8 @@ export interface WorkflowE2EReadinessMarker {
 }
 
 export const WORKFLOW_DISPATCH_PK = "WORKFLOW_DISPATCH";
+/** The candidate digest of a dispatch row due before the task has a candidate. */
+export const WORKFLOW_NO_CANDIDATE_DIGEST = "0".repeat(64);
 const WORKFLOW_DISPATCH_RETENTION_SECONDS = 7 * 86_400;
 
 export function workflowDispatchItem(tableName: string, taskId: string, workflowRevision: number, kind: WorkflowDispatchRecord["kind"], candidateDigest: string, now: string): TransactItems[number] {

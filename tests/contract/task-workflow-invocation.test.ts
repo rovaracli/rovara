@@ -100,6 +100,18 @@ describe("workflow-mode worker invocation", () => {
     expect(WORKER_INVOCATION_FEATURES).toContain("task.workflowReviewNote");
   });
 
+  it("carries the reviews to run only on review operations, from one to both, each once", () => {
+    const reviewers = (workflowReviewers: unknown, workflowMode = "REVIEW") => WorkerInvocationSchema.safeParse({ ...base, payload: { ...base.payload, workflowMode, workflowReviewers } }).success;
+    expect(reviewers(["SECURITY"])).toBe(true);
+    expect(reviewers(["CRITIC", "SECURITY"])).toBe(true);
+    expect(reviewers([])).toBe(false);
+    expect(reviewers(["SECURITY", "SECURITY"])).toBe(false);
+    expect(reviewers(["OTHER"])).toBe(false);
+    expect(reviewers(["SECURITY"], "IMPLEMENT")).toBe(false);
+    expect(WorkerInvocationSchema.parse(base).payload).not.toHaveProperty("workflowReviewers");
+    expect(WORKER_INVOCATION_FEATURES).toContain("task.workflowReviewers");
+  });
+
   it("carries the reviewed tree for a pull request update, only as 40 hex on a maintain append", () => {
     const maintain = {
       ...base,

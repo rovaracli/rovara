@@ -195,7 +195,8 @@ async function forWorker(
   const agentStep = invocation.kind === "task" ? invocation.payload.agentStep : undefined;
   const carriesAgentStep = agentStep !== undefined;
   const carriesModelRoute = invocation.kind === "task" && invocation.payload.modelRoute !== undefined;
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute) return invocation;
+  const carriesReviewers = invocation.kind === "task" && invocation.payload.workflowReviewers !== undefined;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -229,6 +230,10 @@ async function forWorker(
   }
   if (carriesModelRoute && !features.includes(MODEL_ROUTE_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // A review step that asks for fewer than both reviews must not be run by a worker that would run them all, so the field is never dropped.
+  if (carriesReviewers && !features.includes("task.workflowReviewers")) {
+    throw agentXError("RUNTIME_UNAVAILABLE", "a review step that runs only some of the reviews needs a worker that runs just the reviews it is asked for");
   }
   if (carriesProjectSetupSmoke && !features.includes("project.setupSmoke")) {
     throw agentXError("RUNTIME_UNAVAILABLE", "project setup smoke requires a worker that implements project.setupSmoke");

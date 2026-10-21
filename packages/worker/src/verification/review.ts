@@ -650,6 +650,8 @@ export async function runWorkflowReviews(input: {
   reviewFeedback?: WorkflowReviewFeedback;
   /** The exact review request note; absent from older broker invocations. Shown only as untrusted reviewer context. */
   reviewNote?: string;
+  /** Which reviews to run, when a custom coding sequence's review step asks for fewer than both; absent: both. */
+  reviewers?: readonly ("CRITIC" | "SECURITY")[];
   piAdapter?: PiSessionAdapter;
   /** Where the reviewer's file tools run: the task's container (R56). An EC2 worker refuses a review without it. */
   fileTools?: FileOpsTarget;
@@ -662,7 +664,8 @@ export async function runWorkflowReviews(input: {
   assertFileToolsContained(input.fileTools === undefined ? {} : { fileTools: input.fileTools });
   const manifest = createCandidateManifest(input.candidate);
   const reports: Array<ReturnType<typeof WorkflowReviewReportSchema.parse>> = [];
-  const unavailable = (failureReason: "BASE_UNAVAILABLE" | "DIFF_UNAVAILABLE") => (["CRITIC", "SECURITY"] as const).map((role) => WorkflowReviewReportSchema.parse({
+  const roles = (["CRITIC", "SECURITY"] as const).filter((role) => input.reviewers === undefined || input.reviewers.includes(role));
+  const unavailable = (failureReason: "BASE_UNAVAILABLE" | "DIFF_UNAVAILABLE") => roles.map((role) => WorkflowReviewReportSchema.parse({
     operationId: input.operationId, candidateDigest: manifest.digest, role, provider: input.model.provider, version: input.model.modelId,
     status: "UNKNOWN", failureReason, findings: [], readOnly: true,
     recordedAt: (input.now ?? (() => new Date().toISOString()))(),
@@ -677,7 +680,7 @@ export async function runWorkflowReviews(input: {
   const repositories = withCandidateBase(input.repositories, manifest.repositories);
   const timeoutMs = input.timeoutMs ?? 5 * 60 * 1000;
   let interrupted = input.signal?.aborted ?? false;
-  for (const role of ["CRITIC", "SECURITY"] as const) {
+  for (const role of roles) {
     const recordedAt = (input.now ?? (() => new Date().toISOString()))();
     let provider = input.model.provider;
     let version = input.model.modelId;

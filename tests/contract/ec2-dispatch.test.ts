@@ -472,6 +472,16 @@ describe("ec2-ebs delivery", () => {
       expect(postedPayload(capable.post).workflowDependencies).toEqual(workflowDependencies);
     });
 
+    it("never drops the reviews a review step asked for: a worker that cannot run just those is refused", async () => {
+      const record = taskRecord({ workflowMode: "REVIEW", workflowReviewers: ["SECURITY"] });
+      const older = delivery({ workerFeatures: async () => ["task.workflowMode", "task.workflowReview"] });
+      await expect(older.deliver(record, record.invocation)).rejects.toThrow(/runs just the reviews it is asked for/);
+      expect(older.post).not.toHaveBeenCalled();
+      const capable = delivery({ workerFeatures: async () => ["task.workflowMode", "task.workflowReview", "task.workflowReviewers"] });
+      await expect(capable.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
+      expect(postedPayload(capable.post).workflowReviewers).toEqual(["SECURITY"]);
+    });
+
     describe("agent steps and model routes (Plan 3, Task 16a)", () => {
       const NEWER_WORKER = "This agent needs a newer worker. Ask an admin to upgrade Rovara.";
       const refusal = { code: "RUNTIME_UNAVAILABLE", message: `RUNTIME_UNAVAILABLE: ${NEWER_WORKER}` };
