@@ -91,6 +91,9 @@ export function workflowModalCopy(workflow: Pick<WorkflowSnapshot, "path" | "rev
   return { title: `Approve ${name}`, submit: name === "coding plan" ? "Approve and start coding" : "Approve and continue" };
 }
 
+/** What the owner is told when a custom sequence without a pull request step has run every step. */
+export const SEQUENCE_FINISHED_TEXT = "Rovara finished every step. The changes are in this task's workspace; open a pull request from it, or it will be cleaned up when idle.";
+
 /** Block reasons written for people, shown word for word; matched exactly, never by prefix. */
 const PLAIN_REASONS: ReadonlySet<string> = new Set([
   WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_HISTORY_REWRITTEN_MESSAGE,
@@ -732,7 +735,9 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
       const total = (workflow.pullRequests ?? []).filter((pullRequest) => pullRequest.required).length;
       return plain(total <= 1 ? "The pull request is merged. This task is complete." : `All ${total} pull requests are merged. This task is complete.`);
     }
-    case "CLOSED/COMPLETE": return plain(workflow.outcome === "REJECTED" ? "Closed without changes." : "This task is closed.");
+    // A custom sequence with no pull request step ran every step: its changes stay in the workspace until a pull request is opened or it is cleaned up.
+    case "CLOSED/COMPLETE": return plain(workflow.outcome === "REJECTED" ? "Closed without changes."
+      : workflow.outcome === "PASSED" ? SEQUENCE_FINISHED_TEXT : "This task is closed.");
     default: return undefined;
   }
 }

@@ -4,11 +4,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { getTaskDocumentView } from "../../packages/broker/src/aws/developer-tasks.js";
 import { EMPTY_RECIPE, codingProgram, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe.js";
 import {
   WorkflowProgramSchema, WorkflowSnapshotSchema, WorkflowTransitionError, advanceStage, blockWorkflow, completeWorkflowBuild, createCandidateManifest,
   createWorkflowSnapshot, decideWorkflow, nextProgramStep, recordWorkflowVerification, resolveWorkflowReviewFindings, returnWorkflowToImplementation,
-  submitWorkflowArtifact, submitWorkflowReview, workflowFindingFingerprint, workflowReviewRoles, type WorkflowProgram, type WorkflowSnapshot,
+  sendBackProblems, submitWorkflowArtifact, submitWorkflowReview, workflowFindingFingerprint, workflowReviewRoles, type WorkflowProgram, type WorkflowSnapshot,
 } from "../../packages/contracts/src/task-workflow.js";
 
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
@@ -299,6 +301,33 @@ describe("a security-only review", () => {
   });
 });
 
+describe("a build that follows a build", () => {
+  const program = programOf(recipeOf([build("first"), build("second"), check(), review("review", ["code", "security"], { backTo: "first", maxRounds: 3 }), pullRequest()]));
+
+  it("does not carry the earlier review's findings into its prompt as problems", () => {
+    const candidate = candidateOf("1");
+    const reviewing = verified(completeWorkflowBuild(approved(program), now), candidate);
+    const sentBack = submitWorkflowReview(reviewing, report("CRITIC", "FINDINGS", candidate.digest, [finding]), now);
+    const found = submitWorkflowReview(sentBack, report("SECURITY", "PASS", candidate.digest), now);
+    expect(found).toMatchObject({ stage: "IMPLEMENT", state: "READY", programStepId: "first" });
+    // The first build is given the findings; once it is done, the second build is given only the plan.
+    expect(sendBackProblems(found)).toHaveLength(1);
+    const next = completeWorkflowBuild(found, now);
+    expect(next).toMatchObject({ stage: "IMPLEMENT", state: "READY", programStepId: "second" });
+    expect(sendBackProblems(next)).toEqual([]);
+  });
+});
+
+describe("the review round count", () => {
+  it("stops at the most the record holds, so a step that keeps finding problems blocks instead of failing the record", () => {
+    const program = programOf(recipeOf([build("code"), check(), review("review", ["code", "security"], { backTo: "code", maxRounds: 3 }), pullRequest()]));
+    const candidate = candidateOf("1");
+    const reviewing = { ...verified(approved(program), candidate), programRounds: { review: 100 } };
+    const blocked = reviewedBy(reviewing, [report("CRITIC", "FINDINGS", candidate.digest, [finding]), report("SECURITY", "PASS", candidate.digest)]);
+    expect(blocked).toMatchObject({ stage: "REVIEW", state: "BLOCKED", programRounds: { review: 100 } });
+  });
+});
+
 describe("a program without a pull request step", () => {
   it("ends complete after its last step, keeping the candidate and its reviews", () => {
     const program = programOf(recipeOf([build("code"), check(), review("review", ["code", "security"])]));
@@ -398,6 +427,13 @@ describe("the broker following a program", () => {
     const [securityReview] = byMode(harness, workspaceId, "REVIEW");
     expect(securityReview).toMatchObject({ programStepId: "security_review" });
     expect(invocationOf(harness, securityReview!.id).payload).toMatchObject({ workflowMode: "REVIEW", workflowReviewers: ["SECURITY"] });
+    // The prompt, the audit line and the task page name the one review that runs, and do not promise a pull request after it.
+    expect(String(invocationOf(harness, securityReview!.id).payload.prompt)).toContain("read-only security review");
+    const owner = harness.db.get(`DEVTASK#${taskId}`, "META") as unknown as { developerId: string };
+    const pageNow = await getTaskDocumentView({ orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
+      checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
+    { orgId: TEST_ORG, developerId: owner.developerId } as never, taskId);
+    expect(pageNow).toMatchObject({ status: "The security review is running", nextStep: "The next step of the sequence starts when the review passes." });
 
     // Both reports for a step that asked for one is not a result the broker trusts.
     const report = (role: string, status: string, findings: unknown[], operationId: unknown) => ({ operationId, candidateDigest: candidate.digest, role, provider: "t", version: "1", status, findings, readOnly: true, recordedAt: new Date().toISOString() });
@@ -435,6 +471,113 @@ describe("the broker following a program", () => {
     expect(workflowOf(harness, taskId)).toMatchObject({ stage: "CLOSED", state: "COMPLETE", outcome: "PASSED", candidate: { digest: candidate.digest } });
     expect(harness.db.find((item) => item.pk === "WORKFLOW_DISPATCH")).toEqual([]);
     expect(operations(harness, workspaceId).filter((item) => item.kind === "publish")).toEqual([]);
+    // Finished with its changes unpublished: the workspace is kept for the idle reaper, not released at once.
+    expect((harness.db.get(`DEVTASK#${taskId}`, "META") as unknown as { releasedAt?: string }).releasedAt).toBeUndefined();
+    expect(harness.db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ status: "READY" });
+  });
+
+  describe("the owner accepts every finding of a review step in the middle of a program", () => {
+    const FOUND = { text: "The token is logged.", origin: "INTRODUCED", severity: "HIGH", file: "src/log.ts", line: 4 };
+    const reportOf = (operationId: unknown, role: "CRITIC" | "SECURITY", findings: unknown[]) =>
+      ({ operationId, candidateDigest: candidate.digest, role, provider: "t", version: "1", status: findings.length > 0 ? "FINDINGS" : "PASS", findings, readOnly: true, recordedAt: new Date().toISOString() });
+    const recordOf = (harness: Harness, taskId: string) => harness.db.get(`DEVTASK#${taskId}`, "META") as unknown as { releasedAt?: string; closedAt?: string; workspaceId: string };
+    const dispatchRows = (harness: Harness) => harness.db.find((item) => item.pk === "WORKFLOW_DISPATCH");
+
+    /** The program's first review step blocks on a finding (it allows one round), and the owner accepts it: the answer the broker is tested on. */
+    async function acceptedAtFirstReview(program: WorkflowProgram, reviewers: Array<"CRITIC" | "SECURITY">) {
+      const started = await startedWith(program);
+      const { harness, taskId, workspaceId } = started;
+      await harness.finish(workspaceId, String(byMode(harness, workspaceId, "IMPLEMENT")[0]!.id), "SUCCEEDED", codingResult);
+      if (byMode(harness, workspaceId, "REVIEW").length === 0) await sweep(harness);
+      const [reviewing] = byMode(harness, workspaceId, "REVIEW");
+      const reports = reviewers.map((role, index) => reportOf(reviewing!.id, role, index === 0 ? [FOUND] : []));
+      await harness.finish(workspaceId, String(reviewing!.id), "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowReviews: reports } });
+      const blocked = workflowOf(harness, taskId);
+      expect(blocked).toMatchObject({ stage: "REVIEW", state: "BLOCKED" });
+      const response = await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/review-findings`, {
+        requestId: randomUUID(), expectedRevision: blocked.revision, candidateDigest: candidate.digest,
+        resolutions: [{ findingId: workflowFindingFingerprint(reviewers[0]!, FOUND), action: "ACCEPT", note: "Test token only." }],
+      });
+      expect(response.status).toBe(200);
+      return { ...started, blocked };
+    }
+
+    it("runs the next build with that step's own instructions, never an empty fix prompt", async () => {
+      const program = programOf(recipeOf([
+        build("code"), check(), review("first", ["code", "security"], { backTo: "code", maxRounds: 1 }),
+        build("docs", "write the docs"), check("final_check"), review("final", ["code", "security"], { backTo: "docs", maxRounds: 3 }), pullRequest()]));
+      const { harness, taskId, workspaceId, blocked } = await acceptedAtFirstReview(program, ["CRITIC", "SECURITY"]);
+      if (byMode(harness, workspaceId, "IMPLEMENT").length === 1) await sweep(harness);
+      const implementations = byMode(harness, workspaceId, "IMPLEMENT");
+      expect(implementations).toHaveLength(2);
+      expect(implementations[1]).toMatchObject({ programStepId: "docs" });
+      const prompt = String(invocationOf(harness, implementations[1]!.id).payload.prompt);
+      expect(prompt).toContain("Fix retry handling.");
+      expect(prompt).not.toContain("Address only the problems");
+      expect(prompt).not.toContain("Address the problems");
+      expect(workflowOf(harness, taskId)).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING", programStepId: "docs" });
+      expect(workflowOf(harness, taskId).revision).toBeGreaterThan(blocked.revision);
+      expect(dispatchRows(harness)).toEqual([]);
+      const turns = harness.db.find((item) => typeof item.request === "string" && /Fix 0 review/.test(item.request));
+      expect(turns).toEqual([]);
+    });
+
+    it("runs the next review step instead of stalling in REVIEW/WAITING", async () => {
+      const program = programOf(recipeOf([
+        build("code"), check(), review("first", ["security"], { backTo: "code", maxRounds: 1 }),
+        review("final", ["code", "security"], { backTo: "code", maxRounds: 3 }), pullRequest()]));
+      const { harness, taskId, workspaceId } = await acceptedAtFirstReview(program, ["SECURITY"]);
+      if (byMode(harness, workspaceId, "REVIEW").length === 1) await sweep(harness);
+      const reviews = byMode(harness, workspaceId, "REVIEW");
+      expect(reviews).toHaveLength(2);
+      expect(reviews[1]).toMatchObject({ programStepId: "final" });
+      expect(workflowOf(harness, taskId)).toMatchObject({ stage: "REVIEW", state: "RUNNING", programStepId: "final" });
+      expect(dispatchRows(harness)).toEqual([]);
+    });
+
+    it("keeps the next step due for a sweep when its start fails", async () => {
+      const program = programOf(recipeOf([
+        build("code"), check(), review("first", ["security"], { backTo: "code", maxRounds: 1 }),
+        review("final", ["code", "security"], { backTo: "code", maxRounds: 3 }), pullRequest()]));
+      const started = await startedWith(program);
+      const { harness, taskId, workspaceId } = started;
+      await harness.finish(workspaceId, String(byMode(harness, workspaceId, "IMPLEMENT")[0]!.id), "SUCCEEDED", codingResult);
+      if (byMode(harness, workspaceId, "REVIEW").length === 0) await sweep(harness);
+      const [reviewing] = byMode(harness, workspaceId, "REVIEW");
+      await harness.finish(workspaceId, String(reviewing!.id), "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowReviews: [reportOf(reviewing!.id, "SECURITY", [FOUND])] } });
+      harness.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes('"programStepId":"final"') && JSON.stringify(input).includes('"status":"ACCEPTED"'), error: { name: "TransactionCanceledException" }, times: 1 });
+      const blocked = workflowOf(harness, taskId);
+      const response = await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/review-findings`, {
+        requestId: randomUUID(), expectedRevision: blocked.revision, candidateDigest: candidate.digest,
+        resolutions: [{ findingId: workflowFindingFingerprint("SECURITY", FOUND), action: "ACCEPT", note: "Test token only." }],
+      });
+      expect(response.status).toBe(200);
+      expect(workflowOf(harness, taskId)).toMatchObject({ stage: "REVIEW", state: "WAITING", programStepId: "final" });
+      expect(byMode(harness, workspaceId, "REVIEW")).toHaveLength(1);
+      const [row] = dispatchRows(harness);
+      expect(row).toMatchObject({ kind: "REVIEW", taskId });
+      const past = new Date(Date.now() - 1_000).toISOString();
+      harness.db.set({ ...row!, nextAttemptAt: past, dispatchDueSk: `${past}#${String(row!.sk)}` });
+      await sweep(harness);
+      expect(byMode(harness, workspaceId, "REVIEW")).toHaveLength(2);
+    });
+
+    it("finishes a program with no pull request step, keeping the candidate and the workspace", async () => {
+      const program = programOf(recipeOf([build("code"), check(), review("review", ["code", "security"], { backTo: "code", maxRounds: 1 })]));
+      const { harness, taskId, workspaceId } = await acceptedAtFirstReview(program, ["CRITIC", "SECURITY"]);
+      expect(workflowOf(harness, taskId)).toMatchObject({ stage: "CLOSED", state: "COMPLETE", outcome: "PASSED", candidate: { digest: candidate.digest } });
+      expect(dispatchRows(harness)).toEqual([]);
+      expect(operations(harness, workspaceId).filter((item) => item.kind === "publish")).toEqual([]);
+      // The changes stay in the workspace for the idle reaper: it is not released, and no one is told the plan was rejected.
+      expect(recordOf(harness, taskId).releasedAt).toBeUndefined();
+      expect(harness.db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ status: "READY" });
+      // The task page and the finished card say it finished, never that the plan was rejected.
+      const record = harness.db.get(`DEVTASK#${taskId}`, "META") as unknown as { developerId: string };
+      const page = await getTaskDocumentView({ orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, log: () => undefined,
+        checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
+      { orgId: TEST_ORG, developerId: record.developerId } as never, taskId);
+      expect(page).toMatchObject({ status: "Finished every step", nextStep: "The changes are in this task's workspace; open a pull request from it, or it will be cleaned up when idle." });
+    });
   });
 
   it("keeps the next coding step due when its start fails, and a later sweep starts it once", async () => {

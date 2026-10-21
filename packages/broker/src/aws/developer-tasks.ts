@@ -183,7 +183,7 @@ import {
   type TurnParty,
   type WorkspaceCharge,
 } from "../developer/task-records.js";
-import { GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, WORKFLOW_DISPATCH_PK, hashJson, isConditional, planDocumentKindName, previousPlanDocumentBlock, workflowDispatchItem, type WorkflowDispatchRecord } from "./broker-shared.js";
+import { GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, hashJson, isConditional, planDocumentKindName, previousPlanDocumentBlock, workflowDispatchItem, type WorkflowDispatchRecord } from "./broker-shared.js";
 import { planEvidencePointerKey, type PlanEvidencePointer } from "../developer/plan-evidence-jobs.js";
 import { loadPlanEvidence, loadWorkflowDocument, shortenMarkdown, type LoadedDocument } from "../developer/plan-artifacts.js";
 import type { DeveloperTaskActions, TransactItems } from "./developer-task-actions.js";
@@ -2745,7 +2745,9 @@ export async function resolveTaskWorkflowFindings(deps: DeveloperTaskRouteDepend
     if (error instanceof WorkflowTransitionError) throw agentXError("CONFIG_INVALID", error.message);
     throw error;
   }
-  if (next.stage === "IMPLEMENT") {
+  // Only a finding the owner asked to have fixed returns the task to coding with the findings as the problems. With every
+  // finding accepted, a program may still land at a coding step: that one is the program step's own work, started below.
+  if (next.stage === "IMPLEMENT" && request.resolutions.some((resolution) => resolution.action === "FIX")) {
     await actionableWorkspace(deps, task);
     const plan = await approvedCodingPlan(deps, workflow);
     const workflowDependencies = await approvedWorkflowDependencies(deps, task, access.peopleRevision);
@@ -2773,9 +2775,16 @@ export async function resolveTaskWorkflowFindings(deps: DeveloperTaskRouteDepend
       request: `Fix ${toFix.length} review finding${toFix.length === 1 ? "" : "s"}`, response: workflowDependencies === undefined ? "AgentX sent the findings to fix back to coding" : "AgentX restarted the approved ordered work plan for the review findings",
       ...(restartApprovedGraph === undefined ? {} : { workflowDependencies: restartApprovedGraph }) });
   }
-  // Every finding accepted. When both reviews now stand the pull request is due, committed with the decision as a
-  // passing review's result commits it, so a lost start is the recovery sweep's.
+  // Every finding accepted. When the reviews now stand, the next step is due: the draft pull request, committed with the
+  // decision as a passing review's result commits it (so a lost start is the recovery sweep's); or, in a custom sequence,
+  // the next review or coding step, or the end of the sequence.
   const ready = next.stage === "PULL_REQUEST" && next.state === "READY" && next.candidate !== undefined;
+  const due: WorkflowDispatchRecord["kind"] | undefined = ready ? (workflowPullRequestUpdateDue(next) ? "UPDATE" : "PUBLISH")
+    : next.program === undefined ? undefined
+    : next.stage === "REVIEW" && next.state === "WAITING" && next.candidate !== undefined ? "REVIEW"
+    : next.stage === "IMPLEMENT" && next.state === "READY" ? "IMPLEMENT"
+    : undefined;
+  const dueDigest = next.candidate?.digest ?? WORKFLOW_NO_CANDIDATE_DIGEST;
   try {
     await deps.actions.transact([{ Update: {
       TableName: deps.tableName, Key: taskKey(taskId),
@@ -2783,7 +2792,7 @@ export async function resolveTaskWorkflowFindings(deps: DeveloperTaskRouteDepend
       ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :state AND workflow.candidate.digest = :candidate AND attribute_not_exists(closedAt)",
       ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
       ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":stage": "REVIEW", ":state": "BLOCKED", ":candidate": request.candidateDigest },
-    } }, ...(ready ? [workflowDispatchItem(deps.tableName, taskId, next.revision, workflowPullRequestUpdateDue(next) ? "UPDATE" : "PUBLISH", request.candidateDigest, receivedAt)] : []), accessFence(deps, access)]);
+    } }, ...(due === undefined ? [] : [workflowDispatchItem(deps.tableName, taskId, next.revision, due, dueDigest, receivedAt)]), accessFence(deps, access)]);
   } catch (error) {
     if (isConditional(error)) {
       await authorizeTaskAction(deps, caller, taskId, "decide");
@@ -2791,26 +2800,32 @@ export async function resolveTaskWorkflowFindings(deps: DeveloperTaskRouteDepend
     }
     throw error;
   }
-  if (ready) await startAcceptedPublication(deps, taskId, next);
-  const fresh = (await authorizeTaskAction(deps, caller, taskId, "decide")).task;
+  if (due !== undefined) await startAcceptedStep(deps, taskId, next, due);
+  // A sequence that has no step left is finished, so the task no longer takes owner actions: read it back as a terminal answer is.
+  const fresh = (await (next.stage === "CLOSED" ? authorizeTaskActor(deps, caller, taskId, "decide") : authorizeTaskAction(deps, caller, taskId, "decide"))).task;
   const view = await taskView(deps, fresh, { events: 0, details: false });
   await syncIndex(deps, fresh, view.status, view.updatedAt);
   return { task: view };
 }
 
 /**
- * Open the draft pull request now, as the dispatcher would, and drop the dispatch row once the start was answered. A
- * start that fails (the workspace is busy, say) leaves the row for the recovery sweep, and the owner's Retry opening
- * the pull request also works from here.
+ * Start the step the owner's answer made due now, as the dispatcher would, and drop the dispatch row once the start was
+ * answered: the draft pull request, or a custom sequence's next review or coding step. A start that fails (the workspace
+ * is busy, say) leaves the row for the recovery sweep, and the owner's retry also works from here.
  */
-async function startAcceptedPublication(deps: DeveloperTaskRouteDependencies, taskId: string, ready: WorkflowSnapshot): Promise<void> {
-  if (ready.candidate === undefined) return;
+async function startAcceptedStep(deps: DeveloperTaskRouteDependencies, taskId: string, ready: WorkflowSnapshot, kind: WorkflowDispatchRecord["kind"]): Promise<void> {
+  const candidateDigest = ready.candidate?.digest;
   try {
-    await startTaskWorkflowPublicationFromSystem(deps, taskId, { workflowRevision: ready.revision, candidateDigest: ready.candidate.digest },
-      { ...(deps.issuer === undefined ? {} : { taskPageUrl: taskPageUrl(deps.issuer, taskId) }) });
+    if (kind === "IMPLEMENT") await startTaskWorkflowImplementationFromSystem(deps, taskId, { workflowRevision: ready.revision });
+    else if (candidateDigest === undefined) return;
+    else if (kind === "REVIEW") await startTaskWorkflowReviewFromSystem(deps, taskId, { workflowRevision: ready.revision, candidateDigest });
+    else {
+      await startTaskWorkflowPublicationFromSystem(deps, taskId, { workflowRevision: ready.revision, candidateDigest },
+        { ...(deps.issuer === undefined ? {} : { taskPageUrl: taskPageUrl(deps.issuer, taskId) }) });
+    }
     await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: WORKFLOW_DISPATCH_PK, sk: `${taskId}#${ready.revision}` } }));
   } catch (error) {
-    log(deps, { event: "developer.task_publication_start_deferred", taskId, error: error instanceof Error ? error.name : "unknown" });
+    log(deps, { event: kind === "PUBLISH" || kind === "UPDATE" ? "developer.task_publication_start_deferred" : "developer.task_step_start_deferred", taskId, error: error instanceof Error ? error.name : "unknown" });
   }
 }
 
@@ -3007,7 +3022,9 @@ async function queueWorkflowReview(
   const reviewRoles = workflowReviewRoles(workflow);
   const keptReviews = (workflow.reviews ?? []).filter((review) => !reviewRoles.includes(review.role));
   const next: WorkflowSnapshot = { ...retryBase, ...(keptReviews.length === 0 ? {} : { reviews: keptReviews }), revision: workflow.revision + 1, state: "RUNNING", updatedAt: receivedAt };
-  const prompt = `Perform the required read-only critic and security reviews for the task. The current verified candidate digest is ${candidateDigest}. Do not edit files. Reviewer findings must be concise and refer to code evidence. The owner retry note is carried separately as untrusted reviewer context.`;
+  // A custom sequence's review step may ask for one review only; the wording follows what it asks.
+  const asked = reviewRoles.length === 2 ? "critic and security reviews" : reviewRoles[0] === "SECURITY" ? "security review" : "critic review";
+  const prompt = `Perform the required read-only ${asked} for the task. The current verified candidate digest is ${candidateDigest}. Do not edit files. Reviewer findings must be concise and refer to code evidence. The owner retry note is carried separately as untrusted reviewer context.`;
   const reviewPlan = await workflowReviewPlanOption(deps, workflow);
   const reviewFeedback = await workflowReviewFeedbackOption(deps, task, workflow);
   await creatorGuard(deps, task);
@@ -3021,7 +3038,7 @@ async function queueWorkflowReview(
     } },
     putNew(turnTable(deps), aiToolTurn({
       party: actor === undefined ? partyOfTask(task) : partyOfTaskActor(task, actor), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
-      request: "Run independent candidate reviews", response: `Independent code and security reviews started as operation ${operation.id}.`, operationId: operation.id,
+      request: "Run independent candidate reviews", response: `Independent ${reviewRoles.length === 2 ? "code and security reviews" : reviewRoles[0] === "SECURITY" ? "security review" : "code review"} started as operation ${operation.id}.`, operationId: operation.id,
     })),
     ...(access === undefined ? [] : [accessFence(deps, access)]),
   ], { sharedTask: task.shared === true, workflowMode: "REVIEW", workflowReviewNote: note, ...taskBaseOption(task, next), ...workflowReviewChecksOption(workflow), ...reviewPlan, ...reviewFeedback,
@@ -3173,6 +3190,10 @@ const removedReasonOf = (task: DeveloperTaskRecord) => (task.outcome === "creato
 
 /** Where a workflow task stands and what happens next, in the words the task page shows. */
 function taskPageStage(workflow: WorkflowSnapshot | undefined, closed: boolean, owner: boolean, publication: "failed" | "retrying" | undefined = undefined, removedReason: string | undefined = undefined): { status: string; nextStep: string } {
+  // A custom sequence with no pull request step ran every step; its changes wait, unpublished, in the workspace.
+  if (!closed && workflow?.stage === "CLOSED" && workflow.state === "COMPLETE" && workflow.outcome === "PASSED") {
+    return { status: "Finished every step", nextStep: "The changes are in this task's workspace; open a pull request from it, or it will be cleaned up when idle." };
+  }
   if (closed || workflow?.stage === "CLOSED") return { status: "Closed", nextStep: "Nothing; this task is closed." };
   // Ruling R60: the creator was removed from the org, so the task ended; no step is waiting.
   if (removedReason !== undefined && workflow?.stage !== "MERGED") return { status: removedReason, nextStep: "Nothing; this task has ended." };
@@ -3206,7 +3227,11 @@ function taskPageStage(workflow: WorkflowSnapshot | undefined, closed: boolean, 
       : { status: "Preparing the checks", nextStep: "The approved checks start shortly." };
     case "VERIFY/READY": case "VERIFY/RUNNING": return { status: "Running the checks", nextStep: "The code and security reviews start when the checks pass." };
     case "VERIFY/BLOCKED": return { status: "The checks didn't pass or couldn't run", nextStep: `Send it back to coding, retry the checks, or close the task ${inSlack}.` };
-    case "REVIEW/READY": case "REVIEW/WAITING": case "REVIEW/RUNNING": return { status: "Code and security reviews are running", nextStep: "A draft pull request opens when both pass." };
+    case "REVIEW/READY": case "REVIEW/WAITING": case "REVIEW/RUNNING": return workflow.program === undefined
+      ? { status: "Code and security reviews are running", nextStep: "A draft pull request opens when both pass." }
+      // A custom sequence's review step may ask for one review, and what follows it is the sequence's next step.
+      : { status: workflowReviewRoles(workflow).length === 2 ? "Code and security reviews are running" : workflowReviewRoles(workflow)[0] === "SECURITY" ? "The security review is running" : "The code review is running",
+        nextStep: "The next step of the sequence starts when the review passes." };
     case "REVIEW/BLOCKED": return { status: "The reviews found problems or couldn't finish", nextStep: `Send it back to coding, retry the reviews, or close the task ${inSlack}.` };
     // The last try to open it failed: said until the next try's result, so the page never says "opening" over a failure.
     case "PULL_REQUEST/READY": return publication === "failed"
@@ -5189,12 +5214,14 @@ export async function finishTaskClose(
 }
 
 /**
- * Whether a workflow task is finished: all its pull requests merged, or its workflow ended in the CLOSED stage (the
- * owner rejected its plan). Nothing changes either after.
+ * Whether a workflow task is finished and gives its workspace back at once: all its pull requests merged, or its workflow
+ * ended in the CLOSED stage (the owner rejected its plan). Nothing changes either after. A custom sequence that ran every
+ * step and has no pull request step also ends CLOSED, with the outcome PASSED, but its code was never published: it is
+ * not released here, and its workspace is left to the idle reaper like any task whose changes are unpublished.
  */
 export function workflowTaskFinished(task: Pick<DeveloperTaskRecord, "workflow">): boolean {
   const workflow = task.workflow;
-  return workflow?.state === "COMPLETE" && ((workflow.stage === "MERGED" && workflow.outcome === "MERGED") || workflow.stage === "CLOSED");
+  return workflow?.state === "COMPLETE" && ((workflow.stage === "MERGED" && workflow.outcome === "MERGED") || (workflow.stage === "CLOSED" && workflow.outcome !== "PASSED"));
 }
 
 /** Workspace states whose compute a finished task can remove: nothing is starting, stopping, closing or running there. */
@@ -5275,7 +5302,7 @@ export async function releaseFinishedTask(deps: ReleaseDeps, task: DeveloperTask
     }
   }
   const now = new Date().toISOString();
-  const reason = task.workflow?.stage === "CLOSED" ? "its plan was rejected" : "its pull request merged";
+  const reason = task.workflow?.stage !== "CLOSED" ? "its pull request merged" : task.workflow.outcome === "PASSED" ? "it finished every step" : "its plan was rejected";
   const rest = (): TransactItems => [
     ...(releaseWorkspace ? [{ Update: {
       TableName: deps.tableName,

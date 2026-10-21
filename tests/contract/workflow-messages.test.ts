@@ -77,6 +77,7 @@ function variants(): Array<{ name: string; workflow: WorkflowSnapshot; publishFa
   found.push({ name: "PLAN/RUNNING changes", workflow: snapshot("PLAN", "RUNNING", { decisions: decided("REQUEST_CHANGES") }) });
   found.push({ name: "PLAN/RUNNING full", workflow: snapshot("PLAN", "RUNNING", { path: "FULL", reviewPhase: "IMPLEMENTATION_PLAN", decisions: decided("APPROVE") }) });
   found.push({ name: "CLOSED/COMPLETE rejected", workflow: snapshot("CLOSED", "COMPLETE", { outcome: "REJECTED" }) });
+  found.push({ name: "CLOSED/COMPLETE finished every step", workflow: snapshot("CLOSED", "COMPLETE", { outcome: "PASSED" }) });
   // An approved PR feedback fix: pushed to the pull request already open, pushed, or its push failed for each cause.
   const earlier = [{ repositoryId: "demo", number: 42, url: "https://github.com/example/demo/pull/42", headSha: "d".repeat(40), candidateDigest: "e".repeat(64), required: true, state: "OPEN" }];
   found.push({ name: "PULL_REQUEST/READY pushing the fix", workflow: snapshot("PULL_REQUEST", "READY", { checkPolicy, pullRequests: earlier }) });
@@ -175,6 +176,12 @@ describe("workflow Slack messages", () => {
       const message = workflowMessage({ taskId, workflow: sweep.get(name)!.workflow })!;
       expect(visibleSlackText(message.text), name).toContain(words);
     }
+  });
+
+  it("tells the owner a finished sequence kept its changes in the workspace, and never says the plan was rejected", () => {
+    const message = workflowMessage({ taskId, workflow: snapshot("CLOSED", "COMPLETE", { outcome: "PASSED" }) })!;
+    expect(visibleSlackText(message.text)).toBe("Rovara finished every step. The changes are in this task's workspace; open a pull request from it, or it will be cleaned up when idle.");
+    expect(message.text).not.toMatch(/reject/i);
   });
 
   it("acknowledges each owner decision by what it was, not by the stage alone", () => {

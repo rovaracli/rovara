@@ -1074,6 +1074,9 @@ export const WorkflowReviewBaseSchema = z.array(z.object({
 }).strict()).min(1).max(32).refine((base) => new Set(base.map((entry) => entry.repositoryId)).size === base.length,
   "base repositories must be unique");
 
+/** The most review rounds counted for one step: the count stops here, so it never outgrows what the record stores. */
+const PROGRAM_ROUNDS_MAX = 100;
+
 /** Why pushing a fix to a pull request failed: its head moved on GitHub, GitHub refused it, or the worker cannot push a reviewed fix. */
 export const WORKFLOW_PULL_REQUEST_UPDATE_CAUSES = ["HEAD_MOVED", "PUSH_REFUSED", "WORKER_OUTDATED"] as const;
 export type WorkflowPullRequestUpdateCause = typeof WORKFLOW_PULL_REQUEST_UPDATE_CAUSES[number];
@@ -1143,7 +1146,7 @@ const WorkflowSnapshotShapeSchema = z.object({
   /** The program step the workflow is at (or, before its first step, the plan step); only with a program. */
   programStepId: StepIdSchema.optional(),
   /** How many review rounds each review step has finished, so a step that keeps finding problems blocks at its `maxRounds`. */
-  programRounds: z.record(StepIdSchema, z.number().int().min(1).max(100)).optional(),
+  programRounds: z.record(StepIdSchema, z.number().int().min(1).max(PROGRAM_ROUNDS_MAX)).optional(),
 }).superRefine((workflow, context) => {
   if (workflow.program === undefined) {
     if (workflow.programStepId !== undefined || workflow.programRounds !== undefined) {
@@ -1393,8 +1396,9 @@ export function completeWorkflowBuild(currentInput: unknown, now: string): Workf
   if (program.steps[programIndex(program, current.programStepId)]?.kind !== "build") throw new WorkflowTransitionError("the program is not at a build step");
   const move = nextProgramStep(program, current.programStepId, "done");
   if (move.kind !== "step" || move.step.kind !== "build") throw new WorkflowTransitionError("this build step is followed by checks; its candidate is recorded with them");
-  const { blockReason: _blockReason, ...withoutBlockReason } = current;
-  void _blockReason;
+  // The reviews belong to the code the next build is about to change: its prompt must not carry their findings as problems.
+  const { blockReason: _blockReason, reviews: _reviews, ...withoutBlockReason } = current;
+  void _blockReason; void _reviews;
   return WorkflowSnapshotSchema.parse({ ...withoutBlockReason, revision: current.revision + 1, stage: "IMPLEMENT", state: "READY", programStepId: move.step.id, updatedAt: now });
 }
 
@@ -1426,7 +1430,7 @@ export function submitWorkflowReview(currentInput: unknown, reportInput: unknown
   const allIn = program !== undefined && roles.every((role) => reviews.some((entry) => entry.role === role));
   const findingsOnly = failed && notCleared.every((role) => reviews.some((entry) => entry.role === role && entry.status === "FINDINGS"));
   if (program !== undefined && allIn && current.programStepId !== undefined && (complete || findingsOnly)) {
-    const rounds = { ...(current.programRounds ?? {}), [current.programStepId]: (current.programRounds?.[current.programStepId] ?? 0) + 1 };
+    const rounds = { ...(current.programRounds ?? {}), [current.programStepId]: Math.min((current.programRounds?.[current.programStepId] ?? 0) + 1, PROGRAM_ROUNDS_MAX) };
     const move = complete ? nextProgramStep(program, current.programStepId, "done") : nextProgramStep(program, current.programStepId, "findings", rounds[current.programStepId], notCleared);
     const base = { ...withoutBlockReason, revision: current.revision + 1, reviews, programRounds: rounds, updatedAt: now };
     if (move.kind === "blocked") return WorkflowSnapshotSchema.parse({ ...base, stage: "REVIEW", state: "BLOCKED", blockReason: move.reason });
@@ -2424,7 +2428,7 @@ export function decideWorkflow(
     ? current.reviewPhase === "REQUIREMENTS" ? "DESIGN" as const
       : current.reviewPhase === "DESIGN" ? "IMPLEMENTATION_PLAN" as const : undefined
     : undefined;
-  // Approving the last document goes on to coding: the engine's IMPLEMENT, or the first step of the program.
+  // Approving the last document (or skipping it, which goes on the same way) goes on to coding: the engine's IMPLEMENT, or the first step of the program.
   const advance = request.data.decision === "REJECT" || request.data.decision === "REQUEST_CHANGES" || nextFullPhase !== undefined ? undefined : advanceStage(current, "IMPLEMENT");
   const nextStage: WorkflowStage = request.data.decision === "REJECT" ? "CLOSED"
     : request.data.decision === "REQUEST_CHANGES" ? "PLAN"
