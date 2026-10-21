@@ -270,7 +270,14 @@ export class AuditLedger extends Construct {
       }),
     });
 
-    new kms.Alias(this, "AuditVaultKeyAlias", { aliasName: `alias/agentx/${env}/audit-vault`, targetKey: this.vaultKey, removalPolicy: RemovalPolicy.RETAIN });
+    // The key policy lets nobody ScheduleKeyDeletion (and the alias cannot be deleted by anyone the policy allows), so a
+    // rolled-back first create could not delete either and would leave the stack in ROLLBACK_FAILED. Both keep plain
+    // Retain (the ActionLogsKey precedent in slack-orchestrator.ts).
+    (this.vaultKey.node.defaultChild as kms.CfnKey).addMetadata(KEEP_ON_ROLLBACK_METADATA, true);
+    // Later tasks MUST address the vault key by its ARN, never by this alias: kms:Update* and kms:CreateAlias in
+    // AdminWithoutUse let an IAM administrator repoint the alias at a key they control.
+    const vaultKeyAlias = new kms.Alias(this, "AuditVaultKeyAlias", { aliasName: `alias/agentx/${env}/audit-vault`, targetKey: this.vaultKey, removalPolicy: RemovalPolicy.RETAIN });
+    (vaultKeyAlias.node.defaultChild as kms.CfnAlias).addMetadata(KEEP_ON_ROLLBACK_METADATA, true);
 
     // The ledger bucket. Object Lock needs versioning; the default retention stamps every object at creation.
     const policyInputs = (values: Pick<AuditBucketPolicyInputs, "partition" | "account" | "region">): AuditBucketPolicyInputs => ({

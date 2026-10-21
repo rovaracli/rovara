@@ -2,7 +2,7 @@
 // Task 5 of the Audit Ledger plan: queues, tables, the vault key and its explicit policy, and the Object Lock
 // bucket with its policy. Nothing here is deployed; every check reads a synthesized template.
 import { createHash } from "node:crypto";
-import { App, Stack, aws_iam as iam } from "aws-cdk-lib";
+import { App, ArnFormat, Stack, aws_iam as iam } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { AUDIT_INTAKE_MAX_RECEIVES, canonicalJson } from "@agentx/contracts";
@@ -18,7 +18,7 @@ skipLambdaBundling();
 type Json = Record<string, unknown>;
 type Resource = { Type: string; Properties: Json; DeletionPolicy?: string; UpdateReplacePolicy?: string };
 type TemplateJson = { Resources: Record<string, Resource> };
-type Statement = { Sid?: string; Effect?: string; Principal?: unknown; Action?: string | string[]; Resource?: unknown; Condition?: Record<string, Record<string, unknown>> };
+type Statement = { Sid?: string; Effect?: string; Principal?: unknown; Action?: string | string[]; NotAction?: string | string[]; Resource?: unknown; NotResource?: unknown; Condition?: Record<string, Record<string, unknown>> };
 
 const ACCOUNT = "123456789012";
 const REGION = "us-east-1";
@@ -345,7 +345,7 @@ describe("the audit ledger in templates", () => {
 
     describe("least privilege: nothing but the key policy grants use of the key", () => {
       type Found = { stack: string; where: string; statement: Statement; keyPolicy: boolean };
-      /** Every IAM statement of the stacks: identity policies, managed policies, inline role policies, and resource policies (queues, buckets, topics, keys). */
+      /** Every IAM statement of the stacks: identity policies, managed policies (AWS::IAM::ManagedPolicy), inline role policies, and resource policies (queues, buckets, topics, keys). */
       function everyStatement(stacks: Stack[]): Found[] {
         const found: Found[] = [];
         for (const stack of stacks) {
@@ -357,7 +357,7 @@ describe("the audit ledger in templates", () => {
             if (properties.KeyPolicy !== undefined) documents.push(properties.KeyPolicy);
             if (Array.isArray(properties.Policies)) for (const inline of properties.Policies as Array<{ PolicyDocument?: unknown }>) if (inline.PolicyDocument !== undefined) documents.push(inline.PolicyDocument);
             for (const document of documents) {
-              for (const statement of (document as { Statement: Statement[] }).Statement) {
+              for (const statement of [(document as { Statement: Statement | Statement[] }).Statement].flat()) {
                 found.push({ stack: stack.stackName, where: id, statement, keyPolicy: resource.Type === "AWS::KMS::Key" });
               }
             }
@@ -367,7 +367,26 @@ describe("the audit ledger in templates", () => {
       }
       const glob = (pattern: string) => new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*").replaceAll("?", ".")}$`, "i");
       const USE_ACTIONS = ["kms:Decrypt", "kms:GenerateDataKey", "kms:GenerateDataKeyWithoutPlaintext", "kms:GenerateDataKeyPair", "kms:GenerateDataKeyPairWithoutPlaintext", "kms:Encrypt", "kms:ReEncryptFrom", "kms:ReEncryptTo"];
-      const grantsUse = (statement: Statement) => [statement.Action].flat().some((pattern) => USE_ACTIONS.some((action) => glob(String(pattern)).test(action)));
+      /** Allow with Action patterns reaching a use action, or NotAction leaving any use action unexcluded (an Allow NotAction grants everything it does not list). */
+      const grantsUse = (statement: Statement) => {
+        if (statement.NotAction !== undefined) return USE_ACTIONS.some((action) => ![statement.NotAction].flat().some((pattern) => glob(String(pattern)).test(action)));
+        return [statement.Action].flat().some((pattern) => USE_ACTIONS.some((action) => glob(String(pattern)).test(action)));
+      };
+
+      /** A template value as one pattern: Fn::Join and Fn::Sub are spelled out, any other intrinsic is "${ref}", so `key/*` at the end of a Join still reads as a wildcard. */
+      function pattern(value: unknown): string {
+        if (typeof value === "string") return value;
+        if (Array.isArray(value)) return value.map(pattern).join("");
+        if (value === null || typeof value !== "object") return String(value);
+        const [name, argument] = Object.entries(value as Json)[0] ?? [];
+        if (name === "Fn::Join") return (argument as [string, unknown[]])[1].map(pattern).join((argument as [string, unknown[]])[0]);
+        if (name === "Fn::Sub") return pattern(Array.isArray(argument) ? argument[0] : argument);
+        return "${ref}";
+      }
+      /** A resource that can be the vault key: any "*", or any KMS-looking pattern with a wildcard (arn:...:kms:*:*:key/*, key/abc*). */
+      const wildcardKey = (resource: unknown) => [resource].flat().some((entry) => { const text = pattern(entry); return text === "*" || (/kms/i.test(text) && text.includes("*")); });
+      /** Anything that names the key: its logical ID or an ImportValue of its export, in the resource or principal. */
+      const namesKey = (statement: Statement) => JSON.stringify([statement.Resource, statement.NotResource, statement.Principal]).includes("AuditVaultKey");
 
       // The access stack's CloudFormation service role and the default permission boundary list kms:* on every
       // resource by design (R53: the service role manages every key; the boundary is only a ceiling). That reaches
@@ -375,22 +394,43 @@ describe("the audit ledger in templates", () => {
       // open it. Any other statement that could reach the key is an offender.
       const baseline = (stack: string, where: string) => /^agentx-[a-z0-9-]+-access$/.test(stack) && /^(DefaultPermissionsBoundary|CloudFormationServiceRole)/.test(where);
 
-      /** Allowing statements, outside the vault key's own policy, that grant use by naming the key or on every resource. */
-      function offenders(stacks: Stack[]): string[] {
-        return everyStatement(stacks)
-          .filter(({ statement }) => statement.Effect !== "Deny" && grantsUse(statement))
-          .filter(({ keyPolicy, statement }) => JSON.stringify([statement.Resource, statement.Principal]).includes("AuditLedgerAuditVaultKey") || (!keyPolicy && [statement.Resource].flat().includes("*")))
-          .filter(({ stack, where, keyPolicy }) => !(keyPolicy && where.startsWith("AuditLedgerAuditVaultKey")) && !baseline(stack, where))
-          .map(({ stack, where }) => `${stack}/${where}`);
+      // Managed policies that grant nothing on KMS. Any other attachment to a role is an offender, because an
+      // AWS-managed policy such as AdministratorAccess or PowerUserAccess cannot be read here.
+      const HARMLESS_MANAGED = ["service-role/AWSLambdaBasicExecutionRole", "service-role/AWSLambdaVPCAccessExecutionRole"];
+
+      /** Roles with a ManagedPolicyArns entry that is neither a policy of the same template (a Ref, scanned as AWS::IAM::ManagedPolicy) nor on the harmless list. */
+      function managedAttachments(stacks: Stack[]): string[] {
+        const found: string[] = [];
+        for (const stack of stacks) {
+          const template = Template.fromStack(stack).toJSON() as TemplateJson;
+          for (const [id, resource] of Object.entries(template.Resources)) {
+            if (!["AWS::IAM::Role", "AWS::IAM::User", "AWS::IAM::Group"].includes(resource.Type) || !Array.isArray(resource.Properties.ManagedPolicyArns)) continue;
+            for (const entry of resource.Properties.ManagedPolicyArns as unknown[]) {
+              if (typeof entry === "object" && entry !== null && "Ref" in entry) continue;
+              if (!HARMLESS_MANAGED.some((name) => pattern(entry).endsWith(`:iam::aws:policy/${name}`))) found.push(`${stack.stackName}/${id}`);
+            }
+          }
+        }
+        return found;
       }
 
-      it("no policy in any stack allows use of the key by naming it or on every resource", () => {
+      /** Allowing statements, outside the vault key's own policy, that grant use by naming the key, by NotResource, or on a wildcard that includes it; and roles with a non-harmless managed policy. */
+      function offenders(stacks: Stack[]): string[] {
+        const statements = everyStatement(stacks)
+          .filter(({ statement }) => statement.Effect !== "Deny" && grantsUse(statement))
+          .filter(({ keyPolicy, statement }) => namesKey(statement) || (!keyPolicy && (statement.NotResource !== undefined || wildcardKey(statement.Resource))))
+          .filter(({ stack, where, keyPolicy }) => !(keyPolicy && where.startsWith("AuditLedgerAuditVaultKey")) && !baseline(stack, where))
+          .map(({ stack, where }) => `${stack}/${where}`);
+        return [...statements, ...managedAttachments(stacks).filter((entry) => !baseline(entry.split("/")[0]!, entry.split("/")[1]!))];
+      }
+
+      it("no policy or managed-policy attachment in any stack allows use of the key by naming it, by NotResource or on a wildcard", () => {
         expect(offenders(production.stacks)).toStrictEqual([]);
       });
 
       it("the baseline wildcards exist as described, so the allowance above is not stale", () => {
         const wildcards = everyStatement(production.stacks)
-          .filter(({ keyPolicy, statement }) => !keyPolicy && statement.Effect !== "Deny" && grantsUse(statement) && [statement.Resource].flat().includes("*"));
+          .filter(({ keyPolicy, statement }) => !keyPolicy && statement.Effect !== "Deny" && grantsUse(statement) && wildcardKey(statement.Resource));
         expect(wildcards.length).toBeGreaterThan(0);
         expect(wildcards.every(({ stack, where }) => baseline(stack, where))).toBe(true);
       });
@@ -401,19 +441,68 @@ describe("the audit ledger in templates", () => {
         expect(allowingUse.every((statement) => typeof (statement.Principal as { AWS: unknown }).AWS === "string" && (statement.Principal as { AWS: string }).AWS.endsWith(".Arn"))).toBe(true);
       });
 
-      it("the scan catches a violation: a role granted Decrypt on the key, and a policy on every resource", () => {
-        const scratch = (violate: boolean): Stack => {
-          const stack = new Stack(new App(), "Scratch");
-          const role = (id: string) => new iam.Role(stack, id, { assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com") });
-          const ledger = new AuditLedger(stack, "AuditLedger", { naming: environmentNaming("acme"), brokerRole: role("BrokerRole"), appenderRole: role("AppenderRole") });
-          if (violate) {
-            role("IntruderRole").addToPolicy(new iam.PolicyStatement({ actions: ["kms:Decrypt"], resources: [ledger.vaultKey.keyArn] }));
-            role("WideRole").addToPolicy(new iam.PolicyStatement({ actions: ["kms:GenerateDataKey*"], resources: ["*"] }));
+      /** A scratch stack holding the ledger plus whatever `plant` adds; returns the offenders with the logical-ID hash cut off. */
+      function planted(plant: (stack: Stack, ledger: AuditLedger) => void): string[] {
+        const stack = new Stack(new App(), "Scratch");
+        const role = (id: string) => new iam.Role(stack, id, { assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com") });
+        const ledger = new AuditLedger(stack, "AuditLedger", { naming: environmentNaming("acme"), brokerRole: role("BrokerRole"), appenderRole: role("AppenderRole") });
+        plant(stack, ledger);
+        return offenders([stack]).map((entry) => entry.replace(/[0-9A-F]{8}$/, ""));
+      }
+      const intruder = (stack: Stack) => new iam.Role(stack, "IntruderRole", { assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com") });
+
+      it("the scan is clean for the ledger alone", () => {
+        expect(planted(() => undefined)).toStrictEqual([]);
+      });
+
+      describe("the scan catches a planted statement", () => {
+        const actions = ["kms:Decrypt", "kms:GenerateDataKey*", "kms:*", "kms:ReEncrypt*"];
+        const resources: Array<[string, (stack: Stack, ledger: AuditLedger) => string[]]> = [
+          ["the key ARN", (_stack, ledger) => [ledger.vaultKey.keyArn]],
+          ["a key wildcard arn:...:key/*", (stack) => [stack.formatArn({ service: "kms", resource: "key", resourceName: "*", arnFormat: ArnFormat.SLASH_RESOURCE_NAME })]],
+          ["a literal key wildcard arn:aws:kms:*:*:key/*", () => ["arn:aws:kms:*:*:key/*"]],
+          ["every resource", () => ["*"]],
+        ];
+        for (const action of actions) {
+          for (const [label, resource] of resources) {
+            it(`${action} on ${label}`, () => {
+              expect(planted((stack, ledger) => intruder(stack).addToPolicy(new iam.PolicyStatement({ actions: [action], resources: resource(stack, ledger) })))).toStrictEqual(["Scratch/IntruderRoleDefaultPolicy"]);
+            });
           }
-          return stack;
-        };
-        expect(offenders([scratch(false)])).toStrictEqual([]);
-        expect(offenders([scratch(true)]).map((entry) => entry.replace(/[0-9A-F]{8}$/, ""))).toStrictEqual(["Scratch/IntruderRoleDefaultPolicy", "Scratch/WideRoleDefaultPolicy"]);
+        }
+
+        it("a NotAction statement that leaves the use actions out of its exclusions", () => {
+          expect(planted((stack, ledger) => intruder(stack).addToPolicy(new iam.PolicyStatement({ notActions: ["s3:*"], resources: [ledger.vaultKey.keyArn] })))).toStrictEqual(["Scratch/IntruderRoleDefaultPolicy"]);
+        });
+
+        it("a NotResource statement", () => {
+          expect(planted((stack) => intruder(stack).addToPolicy(new iam.PolicyStatement({ actions: ["kms:Decrypt"], notResources: ["arn:aws:kms:us-east-1:123456789012:key/other"] })))).toStrictEqual(["Scratch/IntruderRoleDefaultPolicy"]);
+        });
+
+        it("a NotAction that excludes every use action is not an offender", () => {
+          expect(planted((stack) => intruder(stack).addToPolicy(new iam.PolicyStatement({ notActions: ["kms:*"], resources: ["*"] })))).toStrictEqual([]);
+        });
+
+        it("a customer managed policy (AWS::IAM::ManagedPolicy)", () => {
+          expect(planted((stack, ledger) => {
+            new iam.ManagedPolicy(stack, "IntruderPolicy", { statements: [new iam.PolicyStatement({ actions: ["kms:Decrypt"], resources: [ledger.vaultKey.keyArn] })] });
+          })).toStrictEqual(["Scratch/IntruderPolicy"]);
+          expect(planted((stack) => {
+            new iam.ManagedPolicy(stack, "WidePolicy", { statements: [new iam.PolicyStatement({ actions: ["kms:*"], resources: ["*"] })] });
+          })).toStrictEqual(["Scratch/WidePolicy"]);
+        });
+
+        it("a role with an AWS managed policy attached (ManagedPolicyArns)", () => {
+          for (const name of ["AdministratorAccess", "PowerUserAccess"]) {
+            expect(planted((stack) => {
+              new iam.Role(stack, `Managed${name}`, { assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"), managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName(name)] });
+            }), name).toStrictEqual([`Scratch/Managed${name}`]);
+          }
+          // The harmless Lambda execution policies are allowed.
+          expect(planted((stack) => {
+            new iam.Role(stack, "Basic", { assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"), managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")] });
+          })).toStrictEqual([]);
+        });
       });
     });
   });

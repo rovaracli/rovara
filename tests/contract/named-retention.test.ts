@@ -36,9 +36,9 @@ describe("retained resources in a named environment", () => {
       "agentx-staging-access": ["ArtifactBucket AWS::S3::Bucket"],
       "agentx-staging-control-plane": [
         "Artifacts AWS::S3::Bucket",
-        // The Audit Ledger (Task 5 of its plan): the queues, key, alias and buckets. Its tables are in the plain Retain list below.
+        // The Audit Ledger (Task 5 of its plan): the queues and buckets. Its tables, vault key and alias are in the plain Retain list below.
         "AuditLedgerAuditExportsBucket AWS::S3::Bucket", "AuditLedgerAuditIntakeDeadLetterQueue AWS::SQS::Queue", "AuditLedgerAuditIntakeQueue AWS::SQS::Queue",
-        "AuditLedgerAuditLedgerBucket AWS::S3::Bucket", "AuditLedgerAuditVaultKey AWS::KMS::Key", "AuditLedgerAuditVaultKeyAlias AWS::KMS::Alias",
+        "AuditLedgerAuditLedgerBucket AWS::S3::Bucket",
         "DeveloperSignInTable AWS::DynamoDB::Table", "SlackSecret AWS::SecretsManager::Secret", "SlackThreadSessions AWS::S3::Bucket",
         "SlackThreads AWS::DynamoDB::Table", "State AWS::DynamoDB::Table", "TurnRecords AWS::DynamoDB::Table",
       ],
@@ -63,6 +63,9 @@ describe("retained resources in a named environment", () => {
       "agentx-staging-control-plane AuditLedgerAuditKeysTable AWS::DynamoDB::Table",
       "agentx-staging-control-plane AuditLedgerAuditLedgerTable AWS::DynamoDB::Table",
       "agentx-staging-control-plane AuditLedgerAuditSealsTable AWS::DynamoDB::Table",
+      // The vault key and alias: the key policy lets nobody ScheduleKeyDeletion or DeleteAlias, so a rollback could not delete them.
+      "agentx-staging-control-plane AuditLedgerAuditVaultKey AWS::KMS::Key",
+      "agentx-staging-control-plane AuditLedgerAuditVaultKeyAlias AWS::KMS::Alias",
       "agentx-staging-identity UserPool AWS::Cognito::UserPool",
       "agentx-staging-slack ActionLogs AWS::Logs::LogGroup",
       "agentx-staging-slack ActionLogsKey AWS::KMS::Key",
