@@ -208,7 +208,13 @@ export const EMPTY_RECIPE: ResolvedRecipe = {
 
 export type RecipeLayer = ResolvedRecipe["chain"][number];
 export type ResolvedSkill = ResolvedRecipe["skills"][number];
+/** A problem with where it is (`path`, dotted) and what is wrong (`message`, which does not repeat the path). */
 export interface RecipeProblem { path: string; message: string }
+
+/** The problem as one line: `<path>: <message>`. */
+export function formatRecipeProblem(problem: RecipeProblem): string {
+  return `${problem.path}: ${problem.message}`;
+}
 
 /** The steps a coding recipe hands to the workflow engine, in order (the engine's own schema arrives with Task 17). */
 export interface WorkflowProgram {
@@ -295,7 +301,7 @@ export function applyOverlay(base: ResolvedRecipe, overlay: RecipeOverlay, layer
 /** Patches in an overlay's `steps` that name no step of the recipe it applies to (after its own `sequence`). */
 export function overlayProblems(base: ResolvedRecipe, overlay: RecipeOverlay): RecipeProblem[] {
   const ids = new Set((overlay.sequence ?? base.steps).map((step) => step.id));
-  return Object.keys(overlay.steps ?? {}).filter((id) => !ids.has(id)).map((id) => ({ path: `steps.${id}`, message: `steps.${id}: no step has that id` }));
+  return Object.keys(overlay.steps ?? {}).filter((id) => !ids.has(id)).map((id) => ({ path: `steps.${id}`, message: `no step has that id` }));
 }
 
 /** The structure a coding recipe must have for the workflow engine to run it. */
@@ -303,27 +309,27 @@ function codingStructureProblems(steps: readonly ResolvedStep[], add: (path: str
   const indexesOf = (kind: CodingStepKind) => steps.flatMap((step, index) => (step.kind === kind ? [index] : []));
   const plans = indexesOf("plan");
   plans.forEach((index, order) => {
-    if (order > 0) add(`steps.${index}`, `steps.${index}: a recipe can have only one plan step`);
-    else if (index !== 0) add(`steps.${index}`, `steps.${index}: the plan step must come first`);
+    if (order > 0) add(`steps.${index}`, `a recipe can have only one plan step`);
+    else if (index !== 0) add(`steps.${index}`, `the plan step must come first`);
   });
   const builds = indexesOf("build");
-  if (builds.length === 0) add("steps", "steps: a coding recipe needs at least one build step");
+  if (builds.length === 0) add("steps", "a coding recipe needs at least one build step");
   const pullRequests = indexesOf("pull_request");
   pullRequests.forEach((index, order) => {
-    if (order > 0) add(`steps.${index}`, `steps.${index}: a recipe can have only one pull request step`);
-    else if (index !== steps.length - 1) add(`steps.${index}`, `steps.${index}: the pull request step must come last`);
+    if (order > 0) add(`steps.${index}`, `a recipe can have only one pull request step`);
+    else if (index !== steps.length - 1) add(`steps.${index}`, `the pull request step must come last`);
   });
   if (pullRequests.length > 0) {
     const afterBuild = steps.slice((builds.at(-1) ?? -1) + 1);
     const checked = afterBuild.some((step) => step.kind === "check");
     const reviewed = afterBuild.some((step) => step.kind === "review" && step.reviewers.includes("code") && step.reviewers.includes("security"));
-    if (!checked || !reviewed) add("steps", "steps: a pull request step needs a check step and a review step with both reviewers after the last build step");
+    if (!checked || !reviewed) add("steps", "a pull request step needs a check step and a review step with both reviewers after the last build step");
   }
   steps.forEach((step, index) => {
     if (step.kind !== "review" || !step.onFindings) return;
     const target = steps.findIndex((other) => other.id === step.onFindings?.backTo);
     if (target < 0 || target >= index || steps[target]?.kind !== "build") {
-      add(`steps.${index}.onFindings.backTo`, `steps.${index}.onFindings.backTo: "${step.onFindings.backTo}" must name an earlier build step`);
+      add(`steps.${index}.onFindings.backTo`, `"${step.onFindings.backTo}" must name an earlier build step`);
     }
   });
 }
@@ -348,16 +354,16 @@ export function recipeProblems(recipe: ResolvedRecipe): RecipeProblem[] {
   const problems: RecipeProblem[] = [];
   const add = (path: string, message: string) => { problems.push({ path, message }); };
   const steps = recipe.steps;
-  if (steps.length === 0) add("steps", "steps: a recipe needs at least one step");
+  if (steps.length === 0) add("steps", "a recipe needs at least one step");
 
   const indexById = new Map<string, number>();
   steps.forEach((step, index) => {
-    if (indexById.has(step.id)) add(`steps.${index}.id`, `steps.${index}.id: the id "${step.id}" is used by more than one step`);
+    if (indexById.has(step.id)) add(`steps.${index}.id`, `the id "${step.id}" is used by more than one step`);
     else indexById.set(step.id, index);
   });
 
   const hasCoding = steps.some((step) => isCodingKind(step.kind));
-  if (hasCoding && steps.some((step) => !isCodingKind(step.kind))) add("steps", "steps: a recipe can't mix coding steps and agent steps; link the two agents in a chain instead");
+  if (hasCoding && steps.some((step) => !isCodingKind(step.kind))) add("steps", "a recipe can't mix coding steps and agent steps; link the two agents in a chain instead");
   else if (hasCoding) codingStructureProblems(steps, add);
 
   steps.forEach((step, index) => {
@@ -365,22 +371,22 @@ export function recipeProblems(recipe: ResolvedRecipe): RecipeProblem[] {
     const at = (key: string) => `steps.${index}.settings.${key}`;
     if (settings.tools) {
       const message = toolProblem(step, settings.tools);
-      if (message) add(at("tools"), `${at("tools")}: ${message}`);
+      if (message) add(at("tools"), `${message}`);
     }
     if (step.kind === "check") {
       for (const key of Object.keys(settings)) {
-        if (key !== "timeoutMinutes" && key !== "instructions" && key !== "tools") add(at(key), `${at(key)}: a check step only takes a timeout`);
+        if (key !== "timeoutMinutes" && key !== "instructions" && key !== "tools") add(at(key), `a check step only takes a timeout`);
       }
     }
     const other = settings["differentCompanyFrom"];
     if (typeof other === "string") {
-      if (step.kind !== "review" && step.kind !== "agent") add(at("differentCompanyFrom"), `${at("differentCompanyFrom")}: only a review or agent step can name a step to differ from`);
-      else if ((indexById.get(other) ?? index) >= index) add(at("differentCompanyFrom"), `${at("differentCompanyFrom")}: "${other}" must name an earlier step`);
+      if (step.kind !== "review" && step.kind !== "agent") add(at("differentCompanyFrom"), `only a review or agent step can name a step to differ from`);
+      else if ((indexById.get(other) ?? index) >= index) add(at("differentCompanyFrom"), `"${other}" must name an earlier step`);
     }
   });
 
   const launchKinds: readonly string[] = TRIGGER_KINDS_AT_LAUNCH;
-  if (recipe.triggers.some((trigger) => !launchKinds.includes(trigger.kind))) add("triggers", "triggers: event and schedule triggers aren't available yet");
+  if (recipe.triggers.some((trigger) => !launchKinds.includes(trigger.kind))) add("triggers", "event and schedule triggers aren't available yet");
   return problems;
 }
 

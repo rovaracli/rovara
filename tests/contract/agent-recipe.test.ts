@@ -7,6 +7,7 @@ import {
   applyOverlay,
   codingProgram,
   diffRecipes,
+  formatRecipeProblem,
   overlayPaths,
   overlayProblems,
   recipeDigest,
@@ -58,7 +59,7 @@ const MODEL_A = { provider: "anthropic", modelId: "claude-sonnet-4-6" };
 const MODEL_B = { provider: "openai", modelId: "gpt-5.4" };
 
 function messages(recipe: ResolvedRecipe): string[] {
-  return recipeProblems(recipe).map((problem) => problem.message);
+  return recipeProblems(recipe).map(formatRecipeProblem);
 }
 
 describe("EMPTY_RECIPE", () => {
@@ -78,7 +79,9 @@ describe("recipeProblems", () => {
   });
 
   it("needs at least one step", () => {
-    expect(recipeProblems(recipeOf([]))).toEqual([{ path: "steps", message: "steps: a recipe needs at least one step" }]);
+    const problems = recipeProblems(recipeOf([]));
+    expect(problems).toEqual([{ path: "steps", message: "a recipe needs at least one step" }]);
+    expect(problems.map(formatRecipeProblem)).toEqual(["steps: a recipe needs at least one step"]);
   });
 
   it("refuses duplicate step ids", () => {
@@ -205,7 +208,29 @@ describe("recipeProblems", () => {
 
   it("refuses triggers outside the launch kinds", () => {
     const recipe = recipeOf([build()], { triggers: [{ kind: "person" }, { kind: "schedule" }] as unknown as ResolvedRecipe["triggers"] });
-    expect(recipeProblems(recipe)).toEqual([{ path: "triggers", message: "triggers: event and schedule triggers aren't available yet" }]);
+    const problems = recipeProblems(recipe);
+    expect(problems).toEqual([{ path: "triggers", message: "event and schedule triggers aren't available yet" }]);
+    expect(problems.map(formatRecipeProblem)).toEqual(["triggers: event and schedule triggers aren't available yet"]);
+  });
+});
+
+describe("recipe problem messages", () => {
+  it("never repeat their path", () => {
+    const recipes = [
+      recipeOf([]),
+      recipeOf([agentStep(), build()]),
+      recipeOf([build("same"), check("same"), plan(), { ...plan(), id: "p2" }, pullRequest(), build("late")]),
+      recipeOf([build(), review("review", ["code"], { backTo: "missing", maxRounds: 2 })]),
+      recipeOf([plan({ tools: ["bash"] }), { ...check(), settings: { instructions: [], model: MODEL_A } } as unknown as ResolvedStep, build("b", { differentCompanyFrom: "nobody" })]),
+      recipeOf([build()], { triggers: [{ kind: "schedule" }] as unknown as ResolvedRecipe["triggers"] }),
+    ];
+    const problems = recipes.flatMap((recipe) => recipeProblems(recipe));
+    expect(problems.length).toBeGreaterThan(8);
+    for (const problem of problems) {
+      expect(problem.message.startsWith(problem.path), problem.message).toBe(false);
+      expect(problem.message.startsWith("steps"), problem.message).toBe(false);
+      expect(problem.message.startsWith("triggers"), problem.message).toBe(false);
+    }
   });
 });
 
@@ -297,7 +322,7 @@ describe("applyOverlay", () => {
     const overlay: RecipeOverlay = { steps: { nobody: { model: MODEL_A } } };
     expect(() => applyOverlay(base, overlay, LAYER)).not.toThrow();
     expect(applyOverlay(base, overlay, LAYER).steps).toEqual(base.steps);
-    expect(overlayProblems(base, overlay)).toEqual([{ path: "steps.nobody", message: "steps.nobody: no step has that id" }]);
+    expect(overlayProblems(base, overlay)).toEqual([{ path: "steps.nobody", message: "no step has that id" }]);
     // The ids a new sequence defines count, the base's replaced ones do not.
     expect(overlayProblems(base, { sequence: [{ id: "build", name: "b", kind: "build" }], steps: { build: { model: MODEL_A } } })).toEqual([]);
     expect(overlayProblems(base, { sequence: [{ id: "build", name: "b", kind: "build" }], steps: { plan: { model: MODEL_A } } })).toHaveLength(1);
