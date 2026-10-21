@@ -50,6 +50,20 @@ describe("the PlanEvidence function's infrastructure", () => {
     for (const statement of dynamo) expect(JSON.stringify(statement.Resource)).not.toContain("/index/");
   });
 
+  it("hosted cloud only (Plan 2, Task 15): is told it is on the cloud and may read the org's GitHub installation binding, and nothing else of it", () => {
+    const cloud = Template.fromStack(new ControlPlaneStack(new App(), "PlanEvidenceCloudControlPlane", { naming: environmentNaming("staging"), cloud: true }));
+    const job = functionNamed(cloud, "PlanEvidence")!;
+    expect(job[1].Properties.Environment?.Variables).toMatchObject({ AGENTX_CLOUD: "true" });
+    const dynamo = statementsOf(cloud, job).filter((statement) => actionsOf(statement).some((action) => action.startsWith("dynamodb:")));
+    const binding = dynamo.find((statement) => statement.Sid === "ReadGithubInstallationBinding")!;
+    expect(actionsOf(binding)).toEqual(["dynamodb:GetItem"]);
+    expect(leadingKeys(binding)).toEqual(["GITHUB_INSTALLATION#*"]);
+    expect(JSON.stringify(binding.Resource)).not.toContain("/index/");
+    // The other statements are the ones every install has, unchanged.
+    expect(dynamo.map((statement) => statement.Sid).sort()).toEqual(["ClaimAndCloseJobRow", "PutEvidencePointer", "ReadGithubInstallationBinding", "ReadTaskJobAndProject"]);
+    expect(Object.keys(planEvidence[1].Properties.Environment?.Variables ?? {})).not.toContain("AGENTX_CLOUD");
+  });
+
   it("reads S3 under private/ and writes only under private/*/plan-documents/, and reads the GitHub App's secret", () => {
     const statements = statementsOf(named, planEvidence);
     const s3 = statements.filter((statement) => actionsOf(statement).some((action) => action.startsWith("s3:")));

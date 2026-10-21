@@ -237,6 +237,8 @@ export class ControlPlaneStack extends Stack {
         GITHUB_APP_PRIVATE_KEY_SECRET_ARN: githubAppPrivateKeySecretArn.valueAsString,
         // The install's single org (ruling R3) derives from the environment name.
         AGENTX_ENV: naming.env,
+        // Plan 2, Task 15: on the hosted cloud the job reads a task's code only while the task's org still holds the GitHub installation.
+        ...(props?.cloud === true ? { AGENTX_CLOUD: "true" } : {}),
       }, Duration.seconds(150), [], 1024);
       // The State table, one action at a time, each on the partitions it needs (the sort key cannot be narrowed here):
       // reads of the task record, its evidence pointer, the job rows and the project revision the task started from; the
@@ -248,6 +250,15 @@ export class ControlPlaneStack extends Stack {
         resources: [state.tableArn],
         conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVTASK#*", "PLAN_EVIDENCE", "ORG#*#PROJECT#*"] } },
       }));
+      // The hosted cloud only: the org's GitHub installation binding, read (never written) before each token the job mints.
+      if (props?.cloud === true) {
+        planEvidence.addToRolePolicy(new iam.PolicyStatement({
+          sid: "ReadGithubInstallationBinding",
+          actions: ["dynamodb:GetItem"],
+          resources: [state.tableArn],
+          conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["GITHUB_INSTALLATION#*"] } },
+        }));
+      }
       planEvidence.addToRolePolicy(new iam.PolicyStatement({
         sid: "PutEvidencePointer",
         actions: ["dynamodb:PutItem"],

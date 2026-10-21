@@ -136,7 +136,7 @@ describe("P0 normal project onboarding journey", () => {
     const githubProvider = new GitHubAppCredentialProvider({
       credentialRef: "github-app", appId: "123", getPrivateKey: async () => privateKey, fetchImplementation: githubTransport,
     });
-    const sourcePort = { capture: vi.fn(({ repositoryUrl, ref }: { repositoryUrl: string; ref: string }) => githubProvider.captureE2ESourceSnapshot(repositoryUrl, ref)) };
+    const sourcePort = { capture: vi.fn(({ repositoryUrl, ref }: { repositoryUrl: string; ref: string }) => githubProvider.captureE2ESourceSnapshot(repositoryUrl, ref, { system: "private-install" })) };
     const objects = new Map<string, Buffer>();
     const s3 = { send: async (command: never) => {
       const typed = command as unknown as { constructor: { name: string }; input: { Key: string; Body?: string | Uint8Array; Range?: string } };

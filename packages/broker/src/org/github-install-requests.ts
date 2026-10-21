@@ -44,7 +44,7 @@ import {
 } from "./github-connect-support.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const DELIVERY_RETENTION_MS = 30 * DAY_MS;
+export const DELIVERY_RETENTION_MS = 30 * DAY_MS;
 const REQUEST_PREFIX = "GITHUB_INSTALL_REQUEST#";
 /** GitHub's installation timestamps are whole seconds, so a request's start is compared at that precision. */
 const SECOND_MS = 1000;
@@ -77,7 +77,7 @@ async function readRequest(deps: GithubConnectionDependencies, githubUserId: str
 /** What an item of a request carries besides its key, so the global item and the org's copy stay identical. */
 const requestFields = (record: GithubInstallRequestRecord) => ({ entityType: "GITHUB_INSTALL_REQUEST", ...record });
 
-function auditItem(tableName: string, orgId: OrgId, at: number, entry: Record<string, unknown>) {
+export function auditItem(tableName: string, orgId: OrgId, at: number, entry: Record<string, unknown>) {
   const iso = new Date(at).toISOString();
   return { Put: { TableName: tableName, Item: { ...githubAuditKey(orgId, iso, randomUUID()), entityType: "GITHUB_AUDIT", orgId, at: iso, ...entry } } };
 }

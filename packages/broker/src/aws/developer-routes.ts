@@ -154,6 +154,8 @@ export interface DeveloperRouteDependencies {
   workflowE2EPresentation?: DeveloperTaskRouteDependencies["workflowE2EPresentation"];
   workflowE2EPublicationChecks?: DeveloperTaskRouteDependencies["workflowE2EPublicationChecks"];
   registeredRepositoryIdentity?: DeveloperTaskRouteDependencies["registeredRepositoryIdentity"];
+  /** Plan 2, Task 15: the check that an org's GitHub connection still reaches a project's repositories (cloud installs). */
+  requireRepositoriesConnected?: DeveloperTaskRouteDependencies["requireRepositoriesConnected"];
   /** Sign in with ChatGPT (#338): each developer's connection; without it /v1/dev/chatgpt/* answers NOT_FOUND. */
   chatgpt?: ChatGptConnections;
   /** Which org a developer belongs to: the membership a token's `org` claim is checked against on every request. */
@@ -188,6 +190,10 @@ export interface DeveloperRouteDependencies {
     /** Plan 2, Task 14: the org's requests to a GitHub admin (any member), and the cancelling of one that is waiting. */
     listRequests(caller: DeveloperCaller): Promise<{ requests: unknown[] }>;
     cancelRequest(caller: DeveloperCaller, githubUserId: string): Promise<{ githubUserId: string; status: "cancelled" }>;
+    /** Plan 2, Task 15: the org's installations (any member), disconnecting one (owner or admin), and the repositories one reaches. */
+    listInstallations(caller: DeveloperCaller): Promise<{ installations: unknown[] }>;
+    disconnect(caller: DeveloperCaller, installationId: number): Promise<{ installationId: number; accountLogin: string; message: string }>;
+    listRepositories(caller: DeveloperCaller, installationId: number): Promise<{ repositories: Array<{ fullName: string; githubRepositoryId: number; private: boolean; defaultBranch: string }> }>;
   };
 }
 
@@ -859,6 +865,30 @@ async function getAppProject(deps: DeveloperRouteDependencies, caller: Developer
   };
 }
 
+/**
+ * `GET /v1/app/github/repositories?installation=<id>` (Plan 2, Task 15): the repositories one of the org's installations reaches, each marked with
+ * the project of the caller's that already uses it. An installation that is not the org's answers NOT_FOUND, as a missing one does.
+ */
+async function listGithubRepositories(deps: DeveloperRouteDependencies, caller: DeveloperCaller, installation: string | null): Promise<{ repositories: Array<{ fullName: string; githubRepositoryId: number; private: boolean; defaultBranch: string; project?: string }> }> {
+  if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
+  if (installation === null || !/^[1-9][0-9]{0,14}$/.test(installation)) throw agentXError("CONFIG_INVALID", "installation: give the installation's id, from agentx github list");
+  const { repositories } = await deps.githubConnect.listRepositories(caller, Number(installation));
+  // Only the caller's own visible projects are named: another project's name is not theirs to learn.
+  const roles = await visibleProjectRoles(deps, caller);
+  const projectOf = new Map<string, string>();
+  for (const name of [...roles.keys()].sort()) {
+    const record = await latestProjectRecord(deps, caller.orgId, name);
+    for (const repository of record?.definition.repositories ?? []) {
+      const key = repositoryFullName(repository).toLowerCase();
+      if (!projectOf.has(key)) projectOf.set(key, name);
+    }
+  }
+  return { repositories: repositories.map((repository) => {
+    const project = projectOf.get(repository.fullName.toLowerCase());
+    return { ...repository, ...(project === undefined ? {} : { project }) };
+  }) };
+}
+
 /** `PUT /v1/app/projects/{name}/settings` (Plan 2, Task 17): a maintainer's change to the project's settings, as a new revision. */
 async function putProjectSettings(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, body: unknown): Promise<{ project: AppProjectDetail; warnings: string[] }> {
   const notFound = () => agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
@@ -1061,6 +1091,7 @@ export function developerTaskRouteDependencies(
     ...(deps.workflowE2EPresentation === undefined ? {} : { workflowE2EPresentation: deps.workflowE2EPresentation }),
     ...(deps.workflowE2EPublicationChecks === undefined ? {} : { workflowE2EPublicationChecks: deps.workflowE2EPublicationChecks }),
     ...(deps.registeredRepositoryIdentity === undefined ? {} : { registeredRepositoryIdentity: deps.registeredRepositoryIdentity }),
+    ...(deps.requireRepositoriesConnected === undefined ? {} : { requireRepositoriesConnected: deps.requireRepositoriesConnected }),
     ...(deps.developer.taskPeopleConfiguration === undefined ? {} : { taskPeopleConfiguration: deps.developer.taskPeopleConfiguration }),
     ...(deps.developer.workflowDependenciesEnabled === undefined ? {} : { workflowDependenciesEnabled: deps.developer.workflowDependenciesEnabled }),
     checkTaskPerson: async (task, developerId, admission) => {
@@ -1193,6 +1224,16 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
     return deps.githubConnect.listRequests(caller);
   }
+  if (request.method === "GET" && url.pathname === "/v1/app/github/installations") {
+    if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
+    return deps.githubConnect.listInstallations(caller);
+  }
+  const githubInstallationRoute = /^\/v1\/app\/github\/installations\/([1-9][0-9]{0,14})$/.exec(url.pathname);
+  if (request.method === "DELETE" && githubInstallationRoute !== null) {
+    if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
+    return deps.githubConnect.disconnect(caller, Number(githubInstallationRoute[1]));
+  }
+  if (request.method === "GET" && url.pathname === "/v1/app/github/repositories") return listGithubRepositories(deps, caller, url.searchParams.get("installation"));
   const githubRequestRoute = /^\/v1\/app\/github\/requests\/([0-9]{1,20})$/.exec(url.pathname);
   if (request.method === "DELETE" && githubRequestRoute !== null) {
     if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");

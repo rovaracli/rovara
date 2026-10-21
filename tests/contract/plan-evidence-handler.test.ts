@@ -58,7 +58,7 @@ describe("the PlanEvidence job", () => {
     const getFileAtCommit = vi.fn<GetFile>(async () => FILE);
     const outcome = await runPlanEvidenceJob(jobDeps(harness, getFileAtCommit), { taskId, artifactId: artifact.id });
     expect(outcome).toBe("attached");
-    expect(getFileAtCommit).toHaveBeenCalledWith("https://github.com/example/demo.git", "src/charge.ts", "e".repeat(40), { untilLine: 3, timeoutMs: 30_000 });
+    expect(getFileAtCommit).toHaveBeenCalledWith("https://github.com/example/demo.git", "src/charge.ts", "e".repeat(40), { system: "private-install" }, { untilLine: 3, timeoutMs: 30_000 });
     expect(bundleOf(harness, taskId, artifact.id).excerpts).toEqual([expect.objectContaining({ claimId: "1", status: "ok", commit: "e".repeat(40), lines: ["two", "three"] })]);
     expect(pointerOf(harness, taskId, artifact.id)!.objectKey).toMatch(new RegExp(`^private/${taskRecord(harness, taskId).ownerKey}/.+/plan-documents/${artifact.id}\\.evidence\\.[0-9a-f]{64}\\.json$`));
     expect(rows(harness)).toEqual([]);
@@ -214,7 +214,7 @@ describe("the PlanEvidence job", () => {
     const { taskId, artifact } = await plannedTask(harness, paths);
     const time = clock(rows(harness)[0]!.nextAttemptAt + 1_000);
     const timeouts: number[] = [];
-    await runPlanEvidenceJob(jobDeps(harness, async (_url, _path, _commit, options) => {
+    await runPlanEvidenceJob(jobDeps(harness, async (_url, _path, _commit, _scope, options) => {
       timeouts.push(options.timeoutMs ?? -1);
       // The first read takes 100 seconds, so the rest have 20 seconds left.
       if (timeouts.length === 1) time.state.t += 100_000;
@@ -267,7 +267,7 @@ describe("a deployment with no PlanEvidence function", () => {
     const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: { getFileAtCommit } } });
     const { taskId, artifact } = await plannedTask(harness);
     expect(rows(harness)).toEqual([]);
-    expect(getFileAtCommit).toHaveBeenCalledWith("https://github.com/example/demo.git", "src/charge.ts", "e".repeat(40), { untilLine: 3 });
+    expect(getFileAtCommit).toHaveBeenCalledWith("https://github.com/example/demo.git", "src/charge.ts", "e".repeat(40), { system: "private-install" }, { untilLine: 3 });
     expect(taskRecord(harness, taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
     expect(taskRecord(harness, taskId).workflow.artifacts.at(-1)).toEqual(artifact);
     expect(artifact).not.toHaveProperty("evidence");

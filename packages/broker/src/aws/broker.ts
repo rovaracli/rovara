@@ -255,7 +255,8 @@ import { recordPrepareFailureEvent } from "./operation-events.js";
 import { releaseFailedPreparation, slackThreadKey } from "./failed-preparation.js";
 import { releaseFailedCancelWorkspace } from "./failed-cancel-release.js";
 import { assertNoUntrustedRoutingFields, authorizeWorkspace } from "../authorization.js";
-import type { GitHubAppCredentialProvider } from "../github-app.js";
+import type { GitHubAppCredentialProvider, GitHubTokenScope } from "../github-app.js";
+import type { InstallationLifecycleEvent } from "../org/github-connection.js";
 import { GithubMergeRateLimitError, isWebhookSecretMissing } from "../github-app.js";
 import { createGitHubAppCredentials } from "./github-credentials.js";
 import { GITHUB_WEBHOOK_SIGNATURE_INVALID, GithubWebhookRefusal, GithubWebhookRetryableError, authorizeLinkedGithubWebhook, handleGithubWebhook, listDueGithubWebhookDeliveries, processGithubWebhookDelivery, reconcileTaskPullRequestFeedback, verifyTaskPullRequestFeedbackCurrent, type ReceivedGithubWebhook } from "./github-webhooks.js";
@@ -269,7 +270,10 @@ import { resolveConnectors, BUILT_IN_CONNECTOR_TYPES, type ConnectorType, type C
 import { CredentialRegistry, secretsManagerSource, type ConnectorCredentialsConfiguration } from "./credentials.js";
 import { developerTokenVerifier } from "../developer/verify-token.js";
 import { DeveloperSignInStore, type DeveloperRecord } from "../developer/store.js";
-import { startGithubConnect, type GithubConnectionDependencies } from "../org/github-connection.js";
+import {
+  applyInstallationLifecycle, disconnectGithubInstallation, installationBindingCheck, listGithubInstallations, listInstallationRepositories, requireRepositoriesConnected, requireRepositoryConnected, startGithubConnect,
+  type GithubConnectionDependencies, type RepositoryGateDependencies,
+} from "../org/github-connection.js";
 import { bindRequestedInstallation, cancelInstallRequest, drainInstallNoticeOutbox, listInstallRequests, sendInstallRequestReminders } from "../org/github-install-requests.js";
 import { sendGithubConnectedNotice, sendGithubRequestReminder, type IdentityNoticeDependencies } from "../developer/identity-notice.js";
 import { unlockTrial } from "../org/trial.js";
@@ -461,9 +465,9 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
-  projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }) => Promise<E2ESourceSnapshot> };
+  projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
   projectSetupRuntimeCatalogId?: string;
   /** Separate server-selected namespace for the already qualified portable feature verifier. */
@@ -477,7 +481,7 @@ interface AwsBrokerDependencies {
   /** How long a PR description update (D2) may take before it gives up without writing; 5 seconds when absent. */
   descriptionUpdateMaxMs?: number;
   /** Refuses, with CONFIG_INVALID, a repository its credential cannot reach; checked at registration. */
-  checkRepositoryAccess?: (repository: { credentialRef: string; url: string }) => Promise<void>;
+  checkRepositoryAccess?: (repository: { credentialRef: string; url: string }, scope: GitHubTokenScope) => Promise<void>;
   codeBuild: CodeBuildGateway;
   slack?: SlackServiceConfiguration;
   /** Spec 025 developer sign-in; absent when the deployment has none, and /v1/dev/* answers NOT_FOUND. */
@@ -505,7 +509,10 @@ interface AwsBrokerDependencies {
   orgResolver?: OrgResolver;
   /** The install's environment name, which its single org id derives from; defaults to the developer sign-in's, then AGENTX_ENV, then "default". */
   environmentName?: string;
-  githubMcp?: GitHubMcpDependencies;
+  /** The GitHub MCP connector's own settings, and the issuer of its tokens: told whose work each is for (Plan 2, Task 15). */
+  githubMcp?: Omit<GitHubMcpDependencies, "credentials"> & {
+    credentials(repository: { url: string; credentialRef: string }, access: "read" | "write", scope: GitHubTokenScope): Promise<{ owner: string; repo: string; token: string }>;
+  };
   catalogs: CatalogCache<ScopeDiscovery>;
   credentialRegistry?: CredentialRegistry;
   /** The administrator turn record export; absent when the deployment has no TurnRecords table. */
@@ -578,6 +585,36 @@ async function orgOfRecord(
     ...(typeof record.ownerKey === "string" ? { ownerKey: record.ownerKey } : {}),
     ...(typeof record.developerId === "string" ? { developerId: record.developerId } : {}),
   }));
+}
+
+/**
+ * Plan 2, Task 15: whose work a GitHub token is minted for. A cloud install's work belongs to an org, whose GitHub connection must hold the
+ * installation at the moment of the mint (the provider checks it); anywhere else the token is the install's own (`private-install`), which has
+ * no bindings. A cloud caller whose org is unknown mints nothing.
+ */
+function githubScope(dependencies: Pick<AwsBrokerDependencies, "cloud">, orgId: OrgId | undefined): GitHubTokenScope {
+  if (dependencies.cloud !== true) return { system: "private-install" };
+  if (orgId === undefined) throw agentXError("GITHUB_NOT_CONNECTED", "Rovara can't tell which organization this GitHub access is for; sign in again and retry");
+  return { orgId };
+}
+
+/** `githubScope` for a record that names its org, or an owner or developer who resolves to one (a task, a workspace). */
+async function githubScopeOf(dependencies: AwsBrokerDependencies, record: { orgId?: unknown; ownerKey?: unknown; developerId?: unknown }): Promise<GitHubTokenScope> {
+  if (dependencies.cloud !== true) return { system: "private-install" };
+  return { orgId: await orgOfRecord(dependencies, record) };
+}
+
+/** `githubScope` for the workspace an operation runs in. */
+async function githubScopeOfWorkspace(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<GitHubTokenScope> {
+  if (dependencies.cloud !== true) return { system: "private-install" };
+  const item = await getItem<Record<string, unknown>>(dependencies, workspaceKey(workspaceId));
+  if (item === undefined) throw agentXError("NOT_FOUND", "workspace not found");
+  return githubScopeOf(dependencies, item);
+}
+
+/** The GitHub MCP settings with their token issuer bound to one scope, as the connector framework (which knows no org) calls it. */
+function githubMcpFor(mcp: NonNullable<AwsBrokerDependencies["githubMcp"]>, scope: () => Promise<GitHubTokenScope>): GitHubMcpDependencies {
+  return { ...mcp, credentials: async (repository, access) => mcp.credentials(repository, access, await scope()) };
 }
 
 /**
@@ -716,6 +753,7 @@ function githubConnectionOf(dependencies: AwsBrokerDependencies): GithubConnecti
     app: {
       appSlug: () => app.appSlug!(), oauthClient: () => app.oauthClient!(), installation: (id) => app.installation!(id),
       ...(app.organizationMembership === undefined ? {} : { orgMembership: (installationId, org, login) => app.organizationMembership!(installationId, org, login) }),
+      ...(app.listInstallationRepositories === undefined ? {} : { listInstallationRepositories: (installationId, scope) => app.listInstallationRepositories!(installationId, scope) }),
     },
     identities: signIn, orgs: orgStoreOf(dependencies),
     ...(dependencies.githubConnectedNotice === undefined ? {} : {
@@ -735,8 +773,38 @@ function githubConnectRoute(dependencies: AwsBrokerDependencies): { githubConnec
       start: (caller) => startGithubConnect(connection, caller),
       listRequests: (caller) => listInstallRequests(connection, caller.orgId),
       cancelRequest: (caller, githubUserId) => cancelInstallRequest(connection, caller, githubUserId),
+      listInstallations: (caller) => listGithubInstallations(connection, caller.orgId),
+      disconnect: (caller, installationId) => disconnectGithubInstallation(connection, caller, installationId),
+      listRepositories: async (caller, installationId) => {
+        // Private repositories' names are an owner's or admin's to see, as creating a project from one is.
+        if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can list the repositories GitHub gives Rovara");
+        return listInstallationRepositories(connection, caller.orgId, installationId);
+      },
     },
   };
+}
+
+/**
+ * Plan 2, Task 15: what the repository checks need on a cloud install: the binding table and the App's own lookups. Undefined elsewhere (a
+ * private install has no bindings, so nothing is checked) and where the provider cannot say which installation covers a repository (a test
+ * double), as `githubConnectionOf` is for the connect flow.
+ */
+function repositoryGateOf(dependencies: AwsBrokerDependencies): RepositoryGateDependencies | undefined {
+  const app = dependencies.githubPullRequests;
+  if (dependencies.cloud !== true || app.installationForRepository === undefined) return undefined;
+  return {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, cloud: true,
+    app: {
+      installationForRepository: (owner, name, options) => app.installationForRepository!(owner, name, options),
+      ...(app.getRepositoryIdentity === undefined ? {} : { repositoryIdentity: (url, scope) => app.getRepositoryIdentity!(url, scope) }),
+    },
+  };
+}
+
+/** `requireRepositoriesConnected` for the task routes, absent where there is no gate. */
+function repositoriesGateRoute(dependencies: AwsBrokerDependencies): { requireRepositoriesConnected?: NonNullable<DeveloperRouteDependencies["requireRepositoriesConnected"]> } {
+  const gate = repositoryGateOf(dependencies);
+  return gate === undefined ? {} : { requireRepositoriesConnected: (orgId, definition) => requireRepositoriesConnected(gate, orgId, definition) };
 }
 
 function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">): OrgStore {
@@ -854,7 +922,7 @@ function adminChangeHandlers(dependencies: AwsBrokerDependencies): AdminChangeHa
       }
       // C8: the vendor preflight runs here, at planning, and never again at apply: neither in the
       // apply's re-plan (preflight: false, final review M1) nor in its registration.
-      const preflight = await registrationChecks(dependencies, identity, definition, options?.preflight !== false);
+      const preflight = await registrationChecks(dependencies, { orgId: requireOrgId(identity.orgId), ownerKey: identity.ownerKey }, definition, options?.preflight !== false);
       return { definition, warnings: registrationWarnings(toolBudget(approvedToolCount(definition)).warning, preflight) };
     },
     registerRevision: async (identity, definition, runtimeBinding) => {
@@ -1232,7 +1300,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
           workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
-          registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : url => dependencies.githubPullRequests.getRepositoryIdentity!(url),
+          registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : (url, orgId) => dependencies.githubPullRequests.getRepositoryIdentity!(url, githubScope(dependencies, orgId)),
+          ...repositoriesGateRoute(dependencies),
           refreshTaskFeedback: taskId => refreshTaskFeedbackForOwnerDecision(dependencies, taskId) }, request, url) as { statusCode: number; headers: Record<string, string>; body: string };
       }
       // The /v1/dev route has no API Gateway authorizer, so what it carries goes to the developer API or nowhere.
@@ -1277,6 +1346,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
               const connection = githubConnectionOf(dependencies);
               return connection === undefined ? "ignored" : bindRequestedInstallation(connection, deliveryId, payload);
             },
+            // Plan 2, Task 15: GitHub's own changes to an installation an org bound (uninstalled, suspended, repositories changed).
+            ...(dependencies.cloud === true ? {
+              installationLifecycle: (deliveryId: string, event: InstallationLifecycleEvent) => applyInstallationLifecycle({
+                documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+                log: (entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry })),
+              }, deliveryId, event),
+            } : {}),
             now: () => new Date().toISOString(),
           });
           let result;
@@ -1292,7 +1368,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
             result = await deliver(renewed);
           }
           if (result.status === "IN_PROGRESS") return json({ delivery: result.status, deliveryId: result.deliveryId }, request.requestId, 503);
-          return json({ delivery: result.status, deliveryId: result.deliveryId }, request.requestId);
+          // An installation lifecycle delivery is accepted for processing, whatever it changed (or ignored).
+          return json({ delivery: result.status, deliveryId: result.deliveryId }, request.requestId, result.lifecycle === true ? 202 : 200);
         } catch (error) {
           if (error instanceof GithubWebhookRefusal) return json({ error: { code: "FORBIDDEN", message: error.message } }, request.requestId, 403);
           if (error instanceof GithubWebhookRetryableError) return json({ error: { code: "RUNTIME_UNAVAILABLE", message: "GitHub webhook processing will be retried" } }, request.requestId, 503);
@@ -1425,14 +1502,19 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
           workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
-          registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : url => dependencies.githubPullRequests.getRepositoryIdentity!(url),
+          registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : (url, orgId) => dependencies.githubPullRequests.getRepositoryIdentity!(url, githubScope(dependencies, orgId)),
           createProject: (caller, input, org) => createCloudProject(dependencies, caller, input, org),
           ...githubConnectRoute(dependencies),
+          ...repositoriesGateRoute(dependencies),
           projectSettings: {
             registerRevision: async (actor, input) => { await registerProjectFor(dependencies, actor, input, { creatorMembership: "none" }); },
+            // Plan 2, Task 15: an added repository must be reached by the org's own GitHub connection (the installation GitHub says covers it, bound and active).
+            ...(repositoryGateOf(dependencies) === undefined ? {} : {
+              requireRepositoryConnected: (orgId: OrgId, owner: string, repository: string) => requireRepositoryConnected(repositoryGateOf(dependencies)!, orgId, owner, repository),
+            }),
             ...(dependencies.cloudProjects === undefined ? {} : { githubCredentialRef: dependencies.cloudProjects.githubCredentialRef }),
             ...(dependencies.githubPullRequests.getRepositoryIdentity === undefined ? {} : {
-              repositoryIdentity: (url: string) => dependencies.githubPullRequests.getRepositoryIdentity!(url),
+              repositoryIdentity: (url: string, orgId: OrgId) => dependencies.githubPullRequests.getRepositoryIdentity!(url, githubScope(dependencies, orgId)),
             }),
           },
           refreshTaskFeedback: taskId => refreshTaskFeedbackForOwnerDecision(dependencies, taskId) }, request, url);
@@ -1486,7 +1568,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         const requestBody = z.object({ repositoryUrl: z.string().url().max(500), ref: z.string().min(1).max(255) }).strict().parse(body);
         const urlParts = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i.exec(requestBody.repositoryUrl);
         if (!urlParts?.[1] || !urlParts[2]) throw agentXError("CONFIG_INVALID", "setup repository must be a canonical GitHub repository URL");
-        const snapshot = await dependencies.projectSetupSource.capture({ repositoryUrl: requestBody.repositoryUrl, ref: requestBody.ref });
+        const snapshot = await dependencies.projectSetupSource.capture({ repositoryUrl: requestBody.repositoryUrl, ref: requestBody.ref }, githubScope(dependencies, identity.orgId));
         const candidate = snapshot.candidate;
         const sourceRepository = candidate.repositories.length === 1 ? candidate.repositories[0] : undefined;
         const expectedRepositoryId = `${urlParts[1]}/${urlParts[2]}`;
@@ -1855,7 +1937,7 @@ async function routeWorkspaceRequest(
     if (!parsed?.success) {
       const types = dependencies.connectorTypes ?? BUILT_IN_CONNECTOR_TYPES;
       const discovery = await discoverLegacyGitHubScope({
-        connectors: resolveConnectors(project.definition, connectorTypeContext(dependencies), types),
+        connectors: resolveConnectors(project.definition, connectorTypeContext(dependencies, identityGithubScope(dependencies, identity)), types),
         githubTypeKnown: Object.hasOwn(types, "github"),
         connectorName: github.name, repository: repository.name, projectName: workspace.projectName,
         context: connectorContext(identity, workspace, project), catalogs: dependencies.catalogs,
@@ -1864,7 +1946,7 @@ async function routeWorkspaceRequest(
     }
     const attribution = attributionText(identity, github);
     const result = await executeGitHubTool(parsed.data, gitHubContext(identity, workspace, project, github, repository), {
-      ...withoutDeploymentAttribution(dependencies.githubMcp),
+      ...withoutDeploymentAttribution(githubMcpFor(dependencies.githubMcp, identityGithubScope(dependencies, identity))),
       ...(attribution === undefined ? {} : { attribution }),
       onAttributionDropped: attributionDroppedLog(workspace.projectName, revision, github.name, repository.name, parsed.data.requestId),
       store: new DynamoConnectorLedger(dependencies.documentClient, dependencies.tableName, workspace.id, GITHUB_LEDGER, github.name),
@@ -1876,7 +1958,7 @@ async function routeWorkspaceRequest(
   const connectorRoute = /^\/v1\/workspaces\/([0-9a-f-]+)\/connectors\/([a-z][a-z0-9-]{0,19})\/(tools|call)$/.exec(url.pathname);
   if (connectorRoute?.[1] && connectorRoute[2] && ((request.method === "GET" && connectorRoute[3] === "tools") || (request.method === "POST" && connectorRoute[3] === "call"))) {
     const { workspace, project } = await authorizeWorkspaceConnectors(dependencies, identity, connectorRoute[1]);
-    const connector = resolveConnectors(project.definition, connectorTypeContext(dependencies), dependencies.connectorTypes)
+    const connector = resolveConnectors(project.definition, connectorTypeContext(dependencies, identityGithubScope(dependencies, identity)), dependencies.connectorTypes)
       .find((entry) => entry.name === connectorRoute[2]);
     if (!connector) throw agentXError("NOT_FOUND", "connector not found");
     const parsed = request.method === "POST" ? ConnectorCallRequestSchema.safeParse(body) : undefined;
@@ -1992,9 +2074,10 @@ async function authorizeGitHubConnector(dependencies: AwsBrokerDependencies, ide
   return { workspace, project, github };
 }
 
-function connectorTypeContext(dependencies: AwsBrokerDependencies): ConnectorTypeContext {
+/** `scope` says whose work a GitHub token the connectors mint is for; it is asked only when one is minted. */
+function connectorTypeContext(dependencies: AwsBrokerDependencies, scope: () => Promise<GitHubTokenScope>): ConnectorTypeContext {
   return {
-    ...(dependencies.githubMcp ? { githubMcp: dependencies.githubMcp } : {}),
+    ...(dependencies.githubMcp ? { githubMcp: githubMcpFor(dependencies.githubMcp, scope) } : {}),
     ...(dependencies.credentialRegistry ? { credentialRegistry: dependencies.credentialRegistry } : {}),
   };
 }
@@ -2005,6 +2088,11 @@ function connectorContext(identity: AuthenticatedIdentity, workspace: WorkspaceI
 
 type GitHubConnector = NonNullable<ReturnType<typeof githubConnectorOf>>;
 type GitHubRepository = GitHubConnector["repositories"][number];
+
+/** The scope for an authenticated caller's own request: their org (on a cloud install). */
+function identityGithubScope(dependencies: Pick<AwsBrokerDependencies, "cloud">, identity: Pick<AuthenticatedIdentity, "orgId">): () => Promise<GitHubTokenScope> {
+  return async () => githubScope(dependencies, identity.orgId);
+}
 
 /** Only the connector decides attribution: a deployment-level value must not survive attribution: false. */
 function withoutDeploymentAttribution(dependencies: GitHubMcpDependencies): Omit<GitHubMcpDependencies, "attribution"> {
@@ -2048,9 +2136,9 @@ function parseRegistrationInput(value: unknown): { definition: ProjectDefinition
 }
 
 /** Registration's refusals and preflight, for a new revision; registerProject and a change plan share them. */
-async function registrationChecks(dependencies: AwsBrokerDependencies, identity: Pick<RegistrationActor, "ownerKey">, definition: ProjectDefinition, wantsPreflight: boolean): Promise<PreflightOutcome | undefined> {
+async function registrationChecks(dependencies: AwsBrokerDependencies, identity: RegistrationActor, definition: ProjectDefinition, wantsPreflight: boolean): Promise<PreflightOutcome | undefined> {
   const budget = toolBudget(approvedToolCount(definition));
-  const connectors = () => resolveConnectors(definition, connectorTypeContext(dependencies), dependencies.connectorTypes);
+  const connectors = () => resolveConnectors(definition, connectorTypeContext(dependencies, async () => githubScope(dependencies, identity.orgId)), dependencies.connectorTypes);
   const nameProblems = presentedNameProblems(definition);
   if (nameProblems.length > 0) throw agentXError("CONFIG_INVALID", nameProblems.join("; "));
   if (budget.refusal) throw agentXError("CONFIG_INVALID", budget.refusal);
@@ -2061,7 +2149,7 @@ async function registrationChecks(dependencies: AwsBrokerDependencies, identity:
   if (credentialProblems.length > 0) throw agentXError("CONFIG_INVALID", credentialProblems.join("; "));
   // A repository the GitHub App cannot reach would otherwise fail only at prepare (#123).
   for (const repository of definition.repositories) {
-    await dependencies.checkRepositoryAccess?.(repository);
+    await dependencies.checkRepositoryAccess?.(repository, githubScope(dependencies, identity.orgId));
   }
   if (!wantsPreflight) return undefined;
   const result = await preflightConnectors(connectors(), definition, identity.ownerKey);
@@ -2146,7 +2234,7 @@ export async function registerProjectFor(
     }
   }
   const budget = toolBudget(approvedToolCount(definition));
-  const connectors = () => resolveConnectors(definition, connectorTypeContext(dependencies), dependencies.connectorTypes);
+  const connectors = () => resolveConnectors(definition, connectorTypeContext(dependencies, async () => githubScope(dependencies, actor.orgId)), dependencies.connectorTypes);
   const respond = (project: Omit<RegisteredProjectRecord, "pk" | "sk">, duplicate: boolean, preflight: PreflightOutcome | undefined) => {
     const warnings = registrationWarnings(budget.warning, preflight);
     return {
@@ -2350,7 +2438,7 @@ async function createCloudProject(dependencies: AwsBrokerDependencies, caller: D
   const defaults = dependencies.cloudProjects;
   const lookUp = dependencies.githubPullRequests.getRepositoryIdentity;
   if (defaults === undefined || lookUp === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "creating projects is not set up in this deployment; ask Rovara support");
-  const identity = await lookUp.call(dependencies.githubPullRequests, `https://github.com/${input.owner}/${input.repositoryName}.git`).catch((error: unknown) => {
+  const identity = await lookUp.call(dependencies.githubPullRequests, `https://github.com/${input.owner}/${input.repositoryName}.git`, githubScope(dependencies, caller.orgId)).catch((error: unknown) => {
     if (error instanceof TypeError) {
       // GitHub answers a renamed or transferred repository with a redirect, which the lookup refuses (redirect: "error"): Node's fetch
       // rejects with TypeError("fetch failed") whose cause says so. DNS and connection failures reject the same way, with other causes.
@@ -3508,6 +3596,9 @@ async function ensureThreadWorkspace(
   // Plan 2, Task 11: a new thread is new work, so an archived project refuses it. A person in the bound channel is a contributor;
   // threads that already have a workspace were answered above and keep going.
   await requireNewWorkAllowed(dependencies, requireOrgId(identity.orgId), slack.binding.projectName, "contributor", "task");
+  // Plan 2, Task 15: a new thread is new work that needs the org's GitHub connection (cloud installs), before any budget or charge.
+  const gate = repositoryGateOf(dependencies);
+  if (gate !== undefined) await requireRepositoriesConnected(gate, requireOrgId(identity.orgId), project.definition);
   if (lazyPreparation) {
     return createUnpreparedThreadWorkspace(dependencies, identity, requestId, project, include, includeSettingsRevision);
   }
@@ -4088,7 +4179,8 @@ async function threadIntegrations(project: ProjectDefinition, include: Integrati
   const repositories = github?.repositories.map((repository) => repository.name) ?? [];
   let connectors: ThreadConnector[] | undefined;
   if (include.connectors) {
-    const resolved = resolveConnectors(project, connectorTypeContext(dependencies), dependencies.connectorTypes);
+    // Only whether each connector is connected is read here: no token is minted, so asking for a scope is a bug.
+    const resolved = resolveConnectors(project, connectorTypeContext(dependencies, () => Promise.reject(agentXError("RUNTIME_UNAVAILABLE", "listing a thread's connectors mints no GitHub token"))), dependencies.connectorTypes);
     const visible = include.allConnectorTypes ? resolved : resolved.filter((connector) => connector.type === "github");
     connectors = await Promise.all(visible.map(async (connector) => ({
       name: connector.name,
@@ -4659,7 +4751,7 @@ async function codingPlanFeatureE2EContext(dependencies: AwsBrokerDependencies, 
     if (!dependencies.projectSetupSource) return { status: "unknown" as const, reason: "trusted source capture for the exact prepared commit is unavailable" };
     if (expectedRepositoryId === undefined) return { status: "unknown" as const, reason: "the registered repository has no supported immutable source identity" };
     try {
-      const captured = await dependencies.projectSetupSource.capture({ repositoryUrl: repository.url, ref: prepared.baseCommitSha });
+      const captured = await dependencies.projectSetupSource.capture({ repositoryUrl: repository.url, ref: prepared.baseCommitSha }, await githubScopeOf(dependencies, task));
       if (!isExactFeatureE2ESourceSnapshot(captured, expectedRepositoryId, prepared.baseCommitSha)) {
         return { status: "unknown" as const, reason: "trusted capture did not match the task's prepared repository commit" };
       }
@@ -5202,7 +5294,8 @@ async function acceptPullRequestLifecycle(
   if (candidate !== undefined && existingRecord?.expectedHeadCommit !== candidate.expectedHeadCommit) {
     throw agentXError("STALE_FENCE", "the pull request's recorded head is not the one the task recorded");
   }
-  const remote = await dependencies.githubPullRequests.getPullRequest(repository.url, request.pullRequestNumber);
+  const scope = await githubScopeOf(dependencies, workspace);
+  const remote = await dependencies.githubPullRequests.getPullRequest(repository.url, request.pullRequestNumber, scope);
   const record = existingRecord ?? await adoptLegacyPullRequest(
     dependencies,
     workspaceId,
@@ -5237,7 +5330,7 @@ async function acceptPullRequestLifecycle(
         : { body: (await attributedBody(dependencies, identity, request.body)) ?? request.body }),
       ...(request.action === "close" ? { state: "closed" as const } : {}),
       ...(request.action === "reopen" ? { state: "open" as const } : {}),
-    });
+    }, scope);
     const result: PullRequestLifecycleResult = PullRequestLifecycleResultSchema.parse({
       action: request.action,
       repository: record.repository,
@@ -8044,7 +8137,7 @@ async function verifyTaskFeedbackForWorkerStart(dependencies: AwsBrokerDependenc
     documentClient: dependencies.documentClient, tableName: dependencies.tableName,
     repositoryFullName: parsed[1]!, number: Number(parsed[2]), loadTask: id => getItem<DeveloperTaskRecord>(dependencies, taskKey(id)),
     repositoryUrl: webhookRepositoryUrl(dependencies),
-    getCurrentFeedback: (url, number) => getFeedback.call(dependencies.githubPullRequests, url, number),
+    getCurrentFeedback: (url, number, orgId) => getFeedback.call(dependencies.githubPullRequests, url, number, githubScope(dependencies, orgId)),
   });
 }
 
@@ -8399,7 +8492,8 @@ async function reconcilePullRequestUpdate(
   if (record.expectedHeadCommit !== expected.expectedHeadCommit) {
     throw agentXError("STALE_FENCE", "pull request record changed before callback reconciliation");
   }
-  const remote = await dependencies.githubPullRequests.getPullRequest(record.repositoryUrl, record.number);
+  const scope = await githubScopeOfWorkspace(dependencies, operation.workspaceId);
+  const remote = await dependencies.githubPullRequests.getPullRequest(record.repositoryUrl, record.number, scope);
   // GitHub moves a pull request's head a moment after a push to its branch, and the worker calls back right after its
   // push: a pull request still at the head before the push holds the update when its branch, which GitHub reads from
   // Git itself, already points at the pushed commit.
@@ -8407,7 +8501,7 @@ async function reconcilePullRequestUpdate(
     const getBranchHead = dependencies.githubPullRequests.getBranchHead;
     if (remote.headCommit !== expected.expectedHeadCommit || getBranchHead === undefined) return false;
     try {
-      return await getBranchHead.call(dependencies.githubPullRequests, record.repositoryUrl, record.headBranch) === input.commit;
+      return await getBranchHead.call(dependencies.githubPullRequests, record.repositoryUrl, record.headBranch, scope) === input.commit;
     } catch {
       return false;
     }
@@ -8464,7 +8558,8 @@ async function describeFeedbackFixes(dependencies: AwsBrokerDependencies, operat
       (key, maxBytes) => (late() ? Promise.resolve(undefined) : readObjectText(dependencies, key, maxBytes)), `private/${task.ownerKey}/${task.workspaceId}/feedback-reviews/`);
     if (late()) return;
     // The description as GitHub has it now, read just before the write, so a person's edit since is kept.
-    const current = (await dependencies.githubPullRequests.getPullRequest(record.repositoryUrl, record.number)).body;
+    const scope = await githubScopeOf(dependencies, task);
+    const current = (await dependencies.githubPullRequests.getPullRequest(record.repositoryUrl, record.number, scope)).body;
     const workflow = task.workflow;
     const pushedChecked = workflow.candidate?.digest === candidateDigest && workflow.verification?.candidateDigest === candidateDigest;
     const status = pushedChecked ? withStatusLines(current, workflowPullRequestStatusLines(workflow)) : undefined;
@@ -8477,7 +8572,7 @@ async function describeFeedbackFixes(dependencies: AwsBrokerDependencies, operat
       log("workflow.pull_request_description_abandoned");
       return;
     }
-    await dependencies.githubPullRequests.updatePullRequest(record.repositoryUrl, record.number, { body: next.body });
+    await dependencies.githubPullRequests.updatePullRequest(record.repositoryUrl, record.number, { body: next.body }, scope);
   };
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -8559,6 +8654,7 @@ async function reconcilePullRequest(
   // A workflow publication opens only on the checked tree. GitHub, not the worker, says what the branch holds: its head
   // must be the reported commit, and that commit's tree the checked one, before the pull request opens from the branch.
   const github = dependencies.githubPullRequests;
+  const scope = await githubScopeOfWorkspace(dependencies, operation.workspaceId);
   const expectedTree = expected.expectedTreeSha;
   const expectedCommit = expected.expectedCommitSha;
   const expectedBase = expected.expectedBaseCommit;
@@ -8576,7 +8672,7 @@ async function reconcilePullRequest(
       if (current === expectedBase) return true;
       if (seen.has(current)) continue;
       seen.add(current);
-      for (const parent of await github.getCommitParents(expected.repositoryUrl, current)) {
+      for (const parent of await github.getCommitParents(expected.repositoryUrl, current, scope)) {
         if (!/^[a-f0-9]{40,64}$/u.test(parent)) return false;
         pending.push(parent);
       }
@@ -8592,8 +8688,8 @@ async function reconcilePullRequest(
       await blockUncheckedPublication(dependencies, operation);
       throw agentXError("CALLBACK_FORBIDDEN", "the pushed commit is not the checked commit");
     }
-    const head = await github.getBranchHead(expected.repositoryUrl, expected.headBranch);
-    if (head !== input.commit || await github.getCommitTree(expected.repositoryUrl, input.commit) !== expectedTree || !await onPinnedBase(input.commit)) {
+    const head = await github.getBranchHead(expected.repositoryUrl, expected.headBranch, scope);
+    if (head !== input.commit || await github.getCommitTree(expected.repositoryUrl, input.commit, scope) !== expectedTree || !await onPinnedBase(input.commit)) {
       await blockUncheckedPublication(dependencies, operation);
       throw agentXError("CALLBACK_FORBIDDEN", "the pushed commit is not the checked code");
     }
@@ -8621,7 +8717,7 @@ async function reconcilePullRequest(
     title: expected.title,
     ...(body === undefined ? {} : { body }),
     ...(draft === undefined ? {} : { draft }),
-  });
+  }, scope);
   // The branch could move between the check and the open (a force-push): the opened pull request's own head must still
   // be the checked commit, or it is closed again and nothing is recorded.
   if (expectedTree !== undefined) {
@@ -8632,8 +8728,8 @@ async function reconcilePullRequest(
     // closed pull request and a second one on retry. A head that still can't be read is closed, as one that differs is.
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        headCommit = (await github.getPullRequest(expected.repositoryUrl, pullRequest.number)).headCommit;
-        headTree = headCommit === input.commit ? await github.getCommitTree!(expected.repositoryUrl, headCommit) : undefined;
+        headCommit = (await github.getPullRequest(expected.repositoryUrl, pullRequest.number, scope)).headCommit;
+        headTree = headCommit === input.commit ? await github.getCommitTree!(expected.repositoryUrl, headCommit, scope) : undefined;
         headOnBase = headCommit === input.commit && await onPinnedBase(headCommit);
         break;
       } catch (error) {
@@ -8644,7 +8740,7 @@ async function reconcilePullRequest(
       }
     }
     if (headCommit !== input.commit || headTree !== expectedTree || !headOnBase) {
-      await github.updatePullRequest(expected.repositoryUrl, pullRequest.number, { state: "closed" }).catch((error: unknown) => {
+      await github.updatePullRequest(expected.repositoryUrl, pullRequest.number, { state: "closed" }, scope).catch((error: unknown) => {
         console.log(JSON.stringify({ component: "broker", event: "workflow.unchecked_pull_request_close_failed", operationId: operation.id, number: pullRequest.number, error: error instanceof Error ? error.name : "unknown" }));
       });
       await blockUncheckedPublication(dependencies, operation);
@@ -8682,6 +8778,7 @@ async function reconcilePullRequest(
       original.repositoryUrl,
       original.number,
       { state: "closed" },
+      scope,
     );
     const linkedOriginal: PullRequestRecord = {
       ...original,
@@ -8948,7 +9045,7 @@ async function validateWorkflowProgressChunk(
     const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
     const repository = project.definition.repositories.find((entry) => entry.name === invocation.graph.items[0]?.repository);
     if (repository === undefined) throw agentXError("CALLBACK_FORBIDDEN", "the approved work breakdown repository is no longer registered");
-    firstBaseTree = await dependencies.githubPullRequests.getCommitTree(repository.url, baseCommit);
+    firstBaseTree = await dependencies.githubPullRequests.getCommitTree(repository.url, baseCommit, await githubScopeOf(dependencies, task));
   }
   let latestSequence = history.at(-1)?.sequence ?? 0;
   if (latestSequence !== (invocation.sequenceStart ?? 0) + history.filter((entry) => entry.operationId === operation.id).length) {
@@ -9371,13 +9468,13 @@ export async function processGithubWorkflowEvent(
     ...(event.headSha === undefined ? {} : { expectedHeadSha: event.headSha }),
     loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
     repositoryUrl: webhookRepositoryUrl(dependencies),
-    getCurrentFeedback: async (url, number) => options === undefined
-      ? dependencies.githubPullRequests.getPullRequestFeedback!.call(dependencies.githubPullRequests, url, number)
-      : { pullRequest: await dependencies.githubPullRequests.getPullRequestMergeObservation!.call(dependencies.githubPullRequests, url, number, options.budget), comments: [], threads: [] },
+    getCurrentFeedback: async (url, number, orgId) => options === undefined
+      ? dependencies.githubPullRequests.getPullRequestFeedback!.call(dependencies.githubPullRequests, url, number, githubScope(dependencies, orgId))
+      : { pullRequest: await dependencies.githubPullRequests.getPullRequestMergeObservation!.call(dependencies.githubPullRequests, url, number, options.budget, githubScope(dependencies, orgId)), comments: [], threads: [] },
     ...(options === undefined ? {} : { observationMode: options.observationMode }),
     recordedHead: async (workspaceId, repositoryId, number) => (await getItem<PullRequestRecord>(dependencies, pullRequestKey(workspaceId, repositoryId, number)))?.expectedHeadCommit,
     ...(dependencies.githubPullRequests.getCommitParents === undefined ? {} : {
-      commitParents: (url: string, commit: string) => dependencies.githubPullRequests.getCommitParents!(url, commit),
+      commitParents: (url: string, commit: string, orgId: OrgId | undefined) => dependencies.githubPullRequests.getCommitParents!(url, commit, githubScope(dependencies, orgId)),
     }),
     // A fix push taken for failed but landed: recorded as its result would have, together or not at all.
     saveLandedPushes: async (taskId, expectedRevision, workflow, pushes) => {
@@ -10298,9 +10395,10 @@ async function completedPullRequestUpdateItems(
   const record = await getItem<PullRequestRecord>(dependencies, pullRequestKey(task.workspaceId, maintenance.repository, maintenance.pullRequestNumber));
   // GitHub, not the worker, says what the pull request now holds. A failed push may still have landed (a CodeBuild gate
   // after the push, a lost result): then GitHub's head is AgentX's fast-forward of the recorded head, on the reviewed tree.
+  const scope = await githubScopeOf(dependencies, task);
   let current: Awaited<ReturnType<typeof getFeedback>>;
   try {
-    current = await getFeedback.call(gateway, repository.url, maintenance.pullRequestNumber);
+    current = await getFeedback.call(gateway, repository.url, maintenance.pullRequestNumber, scope);
   } catch (error) {
     if (pushedCommit === undefined) return failed(cause);
     throw error;
@@ -10313,9 +10411,9 @@ async function completedPullRequestUpdateItems(
   if (head === maintenance.expectedHeadCommit && current.pullRequest.state === "open"
     && gateway.getBranchHead !== undefined && gateway.getCommitTree !== undefined) {
     try {
-      const branchHead = await gateway.getBranchHead(repository.url, maintenance.headBranch);
+      const branchHead = await gateway.getBranchHead(repository.url, maintenance.headBranch, scope);
       if (branchHead !== head && /^[a-f0-9]{40}$/.test(branchHead)) {
-        headTree = await gateway.getCommitTree(repository.url, branchHead);
+        headTree = await gateway.getCommitTree(repository.url, branchHead, scope);
         head = branchHead;
       }
     } catch {
@@ -10328,7 +10426,7 @@ async function completedPullRequestUpdateItems(
   const ownFastForward = async (): Promise<boolean> => {
     if (record?.expectedHeadCommit === head) return true;
     try {
-      return gateway.getCommitParents !== undefined && JSON.stringify(await gateway.getCommitParents(repository.url, head)) === JSON.stringify([maintenance.expectedHeadCommit]);
+      return gateway.getCommitParents !== undefined && JSON.stringify(await gateway.getCommitParents(repository.url, head, scope)) === JSON.stringify([maintenance.expectedHeadCommit]);
     } catch {
       return false;
     }
@@ -10435,7 +10533,7 @@ async function completedWorkflowItems(
     if (candidateRepository === undefined || getFeedback === undefined) {
       throw agentXError("RUNTIME_UNAVAILABLE", "cannot verify the published pull request against the checked candidate");
     }
-    const publishedFeedback = await getFeedback.call(dependencies.githubPullRequests, repository.url, published.data.number);
+    const publishedFeedback = await getFeedback.call(dependencies.githubPullRequests, repository.url, published.data.number, await githubScopeOf(dependencies, task));
     if (publishedFeedback.pullRequest.number !== published.data.number
       || publishedFeedback.pullRequest.url !== published.data.url
       || publishedFeedback.pullRequest.state !== "open"
@@ -10686,7 +10784,7 @@ async function completedWorkflowItems(
             for (const repository of candidate.repositories) {
               const url = project.definition.repositories.find((entry) => entry.name === repository.repositoryId)?.url;
               if (url === undefined) throw new Error("candidate repository is not registered");
-              await dependencies.githubPullRequests.getCommitTree(url, repository.baseCommitSha as string);
+              await dependencies.githubPullRequests.getCommitTree(url, repository.baseCommitSha as string, await githubScopeOf(dependencies, task));
             }
           } catch (error) {
             verificationFailure = WORKFLOW_BLOCK_REASONS.startUnconfirmed;
@@ -11019,7 +11117,7 @@ async function storePlanAnswer(
       ...planEvidenceSources(project, { workflow, preparedBase: task.preparedBase }),
       readFile: async (url, path, commit, options) => {
         if (github.getFileAtCommit === undefined) throw new Error("reading files from GitHub is not configured");
-        return github.getFileAtCommit(url, path, commit, options);
+        return github.getFileAtCommit(url, path, commit, await githubScopeOf(dependencies, task), options);
       },
     });
   } catch {
@@ -12202,7 +12300,7 @@ async function exchangeRepositoryCredential(
     credentialRef,
     repositoryUrl: input.repositoryUrl,
     access,
-  });
+  }, await githubScopeOfWorkspace(dependencies, workspaceId));
 }
 
 /** A stored mode is a selector, not continuing authority: reload the current task and project before issuing push credentials. */
@@ -12389,14 +12487,19 @@ const ec2Sessions = new SessionManager({
     },
   },
 });
-const github = createGitHubAppCredentials(secretsManager);
+const cloudOrgResolver = orgResolverFromEnvironment(process.env, orgStoreOf({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") }));
+// Plan 2, Task 15: on a cloud install every token for an org is minted only while that org's GitHub connection holds the installation.
+const github = createGitHubAppCredentials(
+  secretsManager,
+  cloudOrgResolver === undefined ? undefined : { requireInstallationBound: installationBindingCheck({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") }) },
+);
 const githubCredentials = github.provider;
 const repositoryGrantSigningKey = createHmac("sha256", requiredEnvironment("CALLBACK_SIGNING_KEY"))
   .update("agentx:repository-grants:v3")
   .digest();
 const repositoryGrants = new RepositoryGrantService(
   repositoryGrantSigningKey,
-  (credentialRef, repositoryUrl, access) => githubCredentials.resolve(credentialRef, repositoryUrl, access),
+  (credentialRef, repositoryUrl, access, scope) => githubCredentials.resolve(credentialRef, repositoryUrl, access, scope),
 );
 
 const lambdaClient = new LambdaClient(awsClientConfiguration);
@@ -12437,7 +12540,6 @@ function slackRequestQueue(queueUrl: string): SlackRequestQueue {
 }
 const developer = developerConfiguration();
 const cloudProjectDefaults = cloudProjectDefaultsFromEnvironment(process.env);
-const cloudOrgResolver = orgResolverFromEnvironment(process.env, orgStoreOf({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") }));
 
 // Sign in with ChatGPT (#338): set only where the control plane has the connection key.
 const chatGptKeyArn = process.env.CHATGPT_CONNECTION_KEY_ARN;
@@ -12473,7 +12575,7 @@ export const handler = createAwsBrokerHandler({
   callbackSigningKey: requiredEnvironment("CALLBACK_SIGNING_KEY"),
   repositoryGrants,
   githubPullRequests: githubCredentials,
-  projectSetupSource: { capture: ({ repositoryUrl, ref }) => githubCredentials.captureE2ESourceSnapshot(repositoryUrl, ref) },
+  projectSetupSource: { capture: ({ repositoryUrl, ref }, scope) => githubCredentials.captureE2ESourceSnapshot(repositoryUrl, ref, scope) },
   ...(process.env.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID
     ? { projectSetupRuntimeCatalogId: process.env.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID }
     : {}),
@@ -12489,8 +12591,8 @@ export const handler = createAwsBrokerHandler({
       log: (entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry })),
     },
   }),
-  checkRepositoryAccess: (repository) => githubCredentials.checkRepository(repository),
-  githubMcp: { credentials: (repository, access) => githubCredentials.issueCredentials(repository, access) },
+  checkRepositoryAccess: (repository, scope) => githubCredentials.checkRepository(repository, scope),
+  githubMcp: { credentials: (repository, access, scope) => githubCredentials.issueCredentials(repository, access, scope) },
   connectorCredentials: {
     secrets: secretsManagerSource(secretsManager, process.env.CONNECTOR_SECRET_PREFIX),
     githubApp: { ref: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF"), secretName: github.privateKeySecretArn },

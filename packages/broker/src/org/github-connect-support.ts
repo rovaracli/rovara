@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { agentXError, githubConnectStateKey, type OrgId, type OrgRecord, type OrgRole } from "@agentx/contracts";
-import type { GitHubInstallation } from "../github-app.js";
+import type { GitHubInstallation, GitHubInstallationRepository, GitHubTokenScope } from "../github-app.js";
 
 export const GITHUB_ISSUER = "https://github.com";
 const GITHUB_TIMEOUT_MS = 8_000;
@@ -39,6 +39,11 @@ export interface GithubConnectApp {
    * when GitHub answers 404 (not a member, or not visible). Anything else GitHub answers is thrown.
    */
   orgMembership?(installationId: number, org: string, login: string): Promise<{ state: string; role: string } | undefined>;
+  /**
+   * Plan 2, Task 15: the repositories one installation reaches (GitHub's `GET /installation/repositories`, read with a token minted for the
+   * org in `scope`, which the provider refuses unless the installation is bound to that org and active).
+   */
+  listInstallationRepositories?(installationId: number, scope: GitHubTokenScope): Promise<GitHubInstallationRepository[]>;
 }
 
 export interface GithubConnectionDependencies {

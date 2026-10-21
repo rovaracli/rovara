@@ -1,5 +1,5 @@
 import { createHash, createSign } from "node:crypto";
-import { agentXError, createCandidateManifest, isSafeE2ESourcePath, type AgentXError, type E2ESourceSnapshot } from "@agentx/contracts";
+import { agentXError, createCandidateManifest, isSafeE2ESourcePath, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
 import type { RepositoryAccess, RepositoryCredential } from "./repository-access.js";
 import type { GithubMergeReadBudget } from "./aws/workflow-merge-recovery.js";
 
@@ -21,6 +21,13 @@ export interface GitHubInstallation {
   suspendedAt: string | null;
 }
 
+/**
+ * Whose work a token is minted for (Plan 2, Task 15). An org's own work names the org: on a cloud install the installation must be bound to
+ * that org, active, at the moment of every mint. `webhook` (a signed delivery GitHub sent) and `private-install` (the install's one org, which
+ * has no bindings) name no org and are never checked.
+ */
+export type GitHubTokenScope = { orgId: OrgId } | { system: "webhook" | "private-install" };
+
 export interface GitHubAppCredentialProviderOptions {
   credentialRef: string;
   /** The App's id, or a function that reads it when first needed: an install's control plane
@@ -32,6 +39,11 @@ export interface GitHubAppCredentialProviderOptions {
    * reads it again, for a field set after the first read. Absent: the App's slug is asked of GitHub, and it has no OAuth client.
    */
   getAppSecret?: (options?: { refresh?: boolean }) => Promise<string>;
+  /**
+   * Cloud installs only: refuses (GITHUB_NOT_CONNECTED) unless the installation is bound to `orgId` and active. Called before every mint for
+   * an `orgId` scope. Absent on a private install.
+   */
+  requireInstallationBound?: (orgId: OrgId, installationId: number, repository?: { owner: string; name: string }) => Promise<void>;
   fetchImplementation?: typeof fetch;
   now?: () => number;
 }
@@ -96,6 +108,14 @@ export interface GitHubWebhookRepositoryScope {
 
 export interface GitHubRepositoryIdentity { repositoryId: number; fullName: string; defaultBranch?: string }
 
+const INSTALLATION_REPOSITORY_PAGES = 10;
+
+/** One repository an installation can reach, as GitHub lists it. */
+export interface GitHubInstallationRepository { fullName: string; githubRepositoryId: number; private: boolean; defaultBranch: string }
+
+/** The scope of a read made for a signed webhook delivery (or a bare installation lookup): it names no org. */
+const WEBHOOK_SCOPE: GitHubTokenScope = { system: "webhook" };
+
 /** A repository the App can reach: its installation, and the owner as GitHub spells it. */
 interface InstalledRepository {
   owner: string;
@@ -125,19 +145,20 @@ export class GitHubAppCredentialProvider {
   async resolve(
     credentialRef: string,
     repositoryUrl: string,
-    access: RepositoryAccess = "clone",
+    access: RepositoryAccess,
+    scope: GitHubTokenScope,
   ): Promise<RepositoryCredential> {
     if (credentialRef !== this.options.credentialRef) return {};
     const token = await this.createInstallationToken(parseGitHubRepository(repositoryUrl), {
       contents: access === "push" ? "write" : "read",
-    });
+    }, scope);
     return { username: "x-access-token", password: token };
   }
 
   /** Refuses, with CONFIG_INVALID, a repository of this App's credential that the App cannot reach. */
-  async checkRepository(repository: { credentialRef: string; url: string }): Promise<void> {
+  async checkRepository(repository: { credentialRef: string; url: string }, scope: GitHubTokenScope): Promise<void> {
     if (repository.credentialRef !== this.options.credentialRef) return;
-    await this.installed(parseGitHubRepository(repository.url));
+    await this.installed(parseGitHubRepository(repository.url), scope);
   }
 
   /** Confirms a signed webhook's repository identity against the App's current installation and GitHub API. */
@@ -145,9 +166,10 @@ export class GitHubAppCredentialProvider {
     const parsed = parseGitHubRepository(repositoryUrl);
     const expectedFullName = `${parsed.owner}/${parsed.name}`.toLowerCase();
     if (scope.fullName.toLowerCase() !== expectedFullName) return false;
-    const installed = await this.installed(parsed);
+    // A signed delivery names no org: the repository is read to confirm what GitHub sent, never for an org's work.
+    const installed = await this.installed(parsed, WEBHOOK_SCOPE);
     if (installed.installationId !== scope.installationId) return false;
-    const token = await this.createInstallationToken(installed, { contents: "read" });
+    const token = await this.createInstallationToken(installed, { contents: "read" }, WEBHOOK_SCOPE);
     const response = await this.fetchImplementation(
       `https://api.github.com/repos/${encodeURIComponent(installed.owner)}/${encodeURIComponent(installed.name)}`,
       { headers: githubHeaders(token), signal: AbortSignal.timeout(5_000), redirect: "error" },
@@ -164,11 +186,11 @@ export class GitHubAppCredentialProvider {
   }
 
   /** Reads the immutable GitHub numeric identity for a server-registered repository URL. */
-  async getRepositoryIdentity(repositoryUrl: string): Promise<GitHubRepositoryIdentity | undefined> {
+  async getRepositoryIdentity(repositoryUrl: string, scope: GitHubTokenScope): Promise<GitHubRepositoryIdentity | undefined> {
     const parsed = parseGitHubRepository(repositoryUrl);
     const expectedFullName = `${parsed.owner}/${parsed.name}`;
-    const installed = await this.installed(parsed);
-    const token = await this.createInstallationToken(installed, { contents: "read" });
+    const installed = await this.installed(parsed, scope);
+    const token = await this.createInstallationToken(installed, { contents: "read" }, scope);
     const response = await this.fetchImplementation(
       `https://api.github.com/repos/${encodeURIComponent(installed.owner)}/${encodeURIComponent(installed.name)}`,
       { headers: githubHeaders(token), signal: AbortSignal.timeout(5_000), redirect: "error" },
@@ -187,25 +209,26 @@ export class GitHubAppCredentialProvider {
   async issueCredentials(
     repository: { credentialRef: string; url: string },
     access: "read" | "write",
+    scope: GitHubTokenScope,
   ): Promise<{ owner: string; repo: string; token: string }> {
     if (repository.credentialRef !== this.options.credentialRef) {
       throw agentXError("FORBIDDEN", "repository does not use the configured GitHub App");
     }
     const parsed = parseGitHubRepository(repository.url);
-    const installed = await this.installed(parsed);
-    const token = await this.createInstallationToken(parsed, { issues: access });
+    const installed = await this.installed(parsed, scope);
+    const token = await this.createInstallationToken(parsed, { issues: access }, scope);
     return { owner: installed.owner, repo: parsed.name, token };
   }
 
-  async reconcilePullRequest(input: GitHubPullRequestInput): Promise<GitHubPullRequestResult> {
-    const repository = await this.installed(parseGitHubRepository(input.repositoryUrl));
+  async reconcilePullRequest(input: GitHubPullRequestInput, scope: GitHubTokenScope): Promise<GitHubPullRequestResult> {
+    const repository = await this.installed(parseGitHubRepository(input.repositoryUrl), scope);
     // GitHub's pull-request endpoint needs to resolve the private repository's
     // base and head refs. Keep the token repository-scoped, but allow it to
     // read those refs in addition to creating the pull request.
     const token = await this.createInstallationToken(repository, {
       contents: "read",
       pull_requests: "write",
-    });
+    }, scope);
     const existing = await this.findOpenPullRequest(repository, input, token);
     if (existing) return { ...existing, reconciled: true };
 
@@ -236,12 +259,12 @@ export class GitHubAppCredentialProvider {
     }
   }
 
-  async getPullRequest(repositoryUrl: string, number: number): Promise<GitHubPullRequestDetails> {
-    const repository = await this.installed(parseGitHubRepository(repositoryUrl));
+  async getPullRequest(repositoryUrl: string, number: number, scope: GitHubTokenScope): Promise<GitHubPullRequestDetails> {
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
     const token = await this.createInstallationToken(repository, {
       contents: "read",
       pull_requests: "read",
-    });
+    }, scope);
     return this.getPullRequestWithToken(repository, number, token);
   }
 
@@ -250,6 +273,7 @@ export class GitHubAppCredentialProvider {
     repositoryUrl: string,
     number: number,
     budget: GithubMergeReadBudget,
+    tokenScope: GitHubTokenScope,
   ): Promise<GitHubPullRequestDetails & { headTreeSha: string }> {
     const boundedFetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       if (budget.signal.aborted) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub merge observation was cancelled");
@@ -266,7 +290,7 @@ export class GitHubAppCredentialProvider {
     const repository = parseGitHubRepository(repositoryUrl);
     let installed: InstalledRepository;
     try {
-      installed = await scoped.installed(repository);
+      installed = await scoped.installed(repository, tokenScope);
     } catch (error) {
       if (error instanceof GithubMergeRateLimitError) throw error;
       if (isAgentXError(error) && error.code === "CONFIG_INVALID") {
@@ -274,7 +298,7 @@ export class GitHubAppCredentialProvider {
       }
       throw error;
     }
-    const token = await scoped.createInstallationToken(installed, { contents: "read", pull_requests: "read" });
+    const token = await scoped.createInstallationToken(installed, { contents: "read", pull_requests: "read" }, tokenScope);
     const before = await scoped.getPullRequestWithToken(installed, number, token);
     assertMergePullRequestIdentity(before, number);
     const headTreeSha = await scoped.getCommitTreeWithToken(installed, before.headCommit, token);
@@ -288,9 +312,9 @@ export class GitHubAppCredentialProvider {
   }
 
   /** Reads a bounded PR diff summary for a code-aware, owner-approved feedback proposal. */
-  async getPullRequestChangedFiles(repositoryUrl: string, number: number): Promise<GitHubPullRequestChangedFile[]> {
-    const repository = await this.installed(parseGitHubRepository(repositoryUrl));
-    const token = await this.createInstallationToken(repository, { contents: "read", pull_requests: "read" });
+  async getPullRequestChangedFiles(repositoryUrl: string, number: number, scope: GitHubTokenScope): Promise<GitHubPullRequestChangedFile[]> {
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.createInstallationToken(repository, { contents: "read", pull_requests: "read" }, scope);
     const response = await this.fetchImplementation(
       `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pulls/${number}/files?per_page=100`,
       { headers: { ...githubHeaders(token), accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(8_000), redirect: "error" },
@@ -309,9 +333,9 @@ export class GitHubAppCredentialProvider {
   }
 
   /** Current authoritative feedback, including thread resolution, read with a repository-scoped token. */
-  async getPullRequestFeedback(repositoryUrl: string, number: number): Promise<GitHubPullRequestFeedback> {
-    const repository = await this.installed(parseGitHubRepository(repositoryUrl));
-    const token = await this.createInstallationToken(repository, { contents: "read", pull_requests: "read", issues: "read" });
+  async getPullRequestFeedback(repositoryUrl: string, number: number, scope: GitHubTokenScope): Promise<GitHubPullRequestFeedback> {
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.createInstallationToken(repository, { contents: "read", pull_requests: "read", issues: "read" }, scope);
     const prUrl = pullRequestUrl(repository, number);
     const before = await this.getPullRequestWithToken(repository, number, token);
     if (before.number !== number) throw feedbackReadError("PR scope mismatch");
@@ -423,20 +447,20 @@ export class GitHubAppCredentialProvider {
   }
 
   /** The tree of a commit GitHub holds in the installed repository; throws when GitHub does not have that commit. */
-  async getCommitTree(repositoryUrl: string, commitSha: string): Promise<string> {
+  async getCommitTree(repositoryUrl: string, commitSha: string, scope: GitHubTokenScope): Promise<string> {
     if (!/^[a-f0-9]{40}$/u.test(commitSha)) throw agentXError("CONFIG_INVALID", "commit identity is invalid");
-    const repository = await this.installed(parseGitHubRepository(repositoryUrl));
-    const token = await this.createInstallationToken(repository, { contents: "read" });
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.createInstallationToken(repository, { contents: "read" }, scope);
     return this.getCommitTreeSha(repository, commitSha, token);
   }
 
   /** Server-owned, complete-tree source capture for normal project setup discovery. */
-  async captureE2ESourceSnapshot(repositoryUrl: string, ref: string): Promise<E2ESourceSnapshot> {
+  async captureE2ESourceSnapshot(repositoryUrl: string, ref: string, scope: GitHubTokenScope): Promise<E2ESourceSnapshot> {
     if (!ref || ref.length > 255 || ref.startsWith("-") || /[\0\\~^:?*[\s]/.test(ref) || ref.split("/").some(part => part === "" || part === "." || part === "..")) {
       throw agentXError("CONFIG_INVALID", "repository ref is invalid");
     }
-    const repository = await this.installed(parseGitHubRepository(repositoryUrl));
-    const token = await this.readTokenFor(repository);
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.readTokenFor(repository, scope);
     const api = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}`;
     const headers = githubHeaders(token);
     const deadlineAt = this.now() + 60_000;
@@ -512,15 +536,15 @@ export class GitHubAppCredentialProvider {
    * a file that ends sooner comes back whole. Throws when GitHub cannot answer or 20 MB arrive before the wanted line (or without one).
    * `timeoutMs` (default 8,000) is how long the request may take, for a caller that has more time to give.
    */
-  async getFileAtCommit(repositoryUrl: string, path: string, commitSha: string, options?: { untilLine?: number; timeoutMs?: number }): Promise<string | undefined> {
+  async getFileAtCommit(repositoryUrl: string, path: string, commitSha: string, scope: GitHubTokenScope, options?: { untilLine?: number; timeoutMs?: number }): Promise<string | undefined> {
     if (!/^[a-f0-9]{40}$/u.test(commitSha)) throw agentXError("CONFIG_INVALID", "commit identity is invalid");
     const segments = path.split("/");
     if (path.length === 0 || path.length > 512 || path.includes("\\") || segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
       throw agentXError("CONFIG_INVALID", "file path is invalid");
     }
     const untilLine = options?.untilLine;
-    const repository = await this.installed(parseGitHubRepository(repositoryUrl));
-    const token = await this.readTokenFor(repository);
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.readTokenFor(repository, scope);
     const response = await this.fetchImplementation(
       `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/contents/${segments.map(encodeURIComponent).join("/")}?ref=${commitSha}`,
       { headers: { ...githubHeaders(token), accept: "application/vnd.github.raw+json" }, signal: AbortSignal.timeout(options?.timeoutMs ?? FILE_AT_COMMIT_TIMEOUT_MS), redirect: "error" },
@@ -568,22 +592,25 @@ export class GitHubAppCredentialProvider {
     return new TextDecoder().decode(Buffer.concat(chunks));
   }
 
-  /** A contents-read token for reading files: reused for 5 minutes per repository, so a run of file reads mints one. */
-  private readTokenFor(repository: InstalledRepository): Promise<string> {
+  /**
+   * A contents-read token for reading files: reused for 5 minutes per repository, so a run of file reads mints one. The caller has just run
+   * `installed(repository, scope)`, so the org check happens on every read, a reused token included.
+   */
+  private readTokenFor(repository: InstalledRepository, scope: GitHubTokenScope): Promise<string> {
     const key = `${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}:contents=read`;
     const cached = this.readTokens.get(key);
     if (cached !== undefined && cached.expiresAt > this.now()) return cached.token;
-    const token = this.createInstallationToken(repository, { contents: "read" });
+    const token = this.createInstallationToken(repository, { contents: "read" }, scope);
     this.readTokens.set(key, { token, expiresAt: this.now() + READ_TOKEN_REUSE_MS });
     token.catch(() => { if (this.readTokens.get(key)?.token === token) this.readTokens.delete(key); });
     return token;
   }
 
   /** The parents of a commit GitHub holds in the installed repository; throws when GitHub does not have that commit. */
-  async getCommitParents(repositoryUrl: string, commitSha: string): Promise<string[]> {
+  async getCommitParents(repositoryUrl: string, commitSha: string, scope: GitHubTokenScope): Promise<string[]> {
     if (!/^[a-f0-9]{40}$/u.test(commitSha)) throw agentXError("CONFIG_INVALID", "commit identity is invalid");
-    const repository = await this.installed(parseGitHubRepository(repositoryUrl));
-    const token = await this.createInstallationToken(repository, { contents: "read" });
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.createInstallationToken(repository, { contents: "read" }, scope);
     const value = await this.getCommitObject(repository, commitSha, token);
     if (!Array.isArray(value.parents)) throw feedbackReadError("invalid commit parents");
     return value.parents.map((parent) => {
@@ -594,10 +621,10 @@ export class GitHubAppCredentialProvider {
   }
 
   /** The commit a branch points at now, as GitHub says; throws when the branch does not exist. */
-  async getBranchHead(repositoryUrl: string, branch: string): Promise<string> {
+  async getBranchHead(repositoryUrl: string, branch: string, scope: GitHubTokenScope): Promise<string> {
     if (!/^agentx\/[0-9a-f-]{36}$/iu.test(branch)) throw agentXError("CONFIG_INVALID", "branch name is invalid");
-    const repository = await this.installed(parseGitHubRepository(repositoryUrl));
-    const token = await this.createInstallationToken(repository, { contents: "read" });
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.createInstallationToken(repository, { contents: "read" }, scope);
     const response = await this.fetchImplementation(
       `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/git/ref/heads/${branch}`,
       { headers: githubHeaders(token), signal: AbortSignal.timeout(8_000), redirect: "error" },
@@ -670,15 +697,16 @@ export class GitHubAppCredentialProvider {
     repositoryUrl: string,
     number: number,
     update: GitHubPullRequestUpdate,
+    scope: GitHubTokenScope,
   ): Promise<GitHubPullRequestDetails> {
     if (update.title === undefined && update.body === undefined && update.state === undefined) {
       throw agentXError("CONFIG_INVALID", "pull request update is empty");
     }
-    const repository = await this.installed(parseGitHubRepository(repositoryUrl));
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
     const token = await this.createInstallationToken(repository, {
       contents: "read",
       pull_requests: "write",
-    });
+    }, scope);
     try {
       const response = await this.fetchImplementation(
         pullRequestUrl(repository, number),
@@ -737,9 +765,23 @@ export class GitHubAppCredentialProvider {
     return treeSha;
   }
 
-  /** The repository's installation, cached by owner; a failed lookup is not cached. */
-  private async installed(repository: { owner: string; name: string }): Promise<InstalledRepository> {
+  /**
+   * The installation that covers a repository, as GitHub says (cached by owner as `installed` caches it; a failed lookup is not cached;
+   * `fresh` asks GitHub again); undefined when the App is not installed there. Reads no org's binding: callers hand the result to `requireInstallationBound`.
+   */
+  async installationForRepository(owner: string, name: string, options: { fresh?: boolean } = {}): Promise<{ installationId: number } | undefined> {
+    try {
+      return { installationId: (await this.lookedUp({ owner, name }, options.fresh === true)).id };
+    } catch (error) {
+      if (isAgentXError(error) && error.code === "CONFIG_INVALID") return undefined;
+      throw error;
+    }
+  }
+
+  /** The repository's installation by owner, from the cache or (when `fresh`, or not cached) from GitHub. A failed lookup is not cached. */
+  private async lookedUp(repository: { owner: string; name: string }, fresh: boolean): Promise<{ id: number; login: string }> {
     const key = repository.owner.toLowerCase();
+    if (fresh) this.installations.delete(key);
     let installation = this.installations.get(key);
     if (installation === undefined) {
       installation = this.lookUpInstallation(repository);
@@ -749,7 +791,28 @@ export class GitHubAppCredentialProvider {
         if (this.installations.get(key) === pending) this.installations.delete(key);
       });
     }
-    const { id, login } = await installation;
+    return installation;
+  }
+
+  /**
+   * The repository's installation. For an org's scope on a cloud install it must be bound to that org and active, read fresh each time (the
+   * binding is never cached), so a removed binding stops every later mint and read. A cached installation that fails that check may be one
+   * the App has since been reinstalled over (a new id): GitHub is asked once more before the refusal stands.
+   */
+  private async installed(repository: { owner: string; name: string }, scope: GitHubTokenScope): Promise<InstalledRepository> {
+    let { id, login } = await this.lookedUp(repository, false);
+    const check = this.options.requireInstallationBound;
+    if ("orgId" in scope && check !== undefined) {
+      try {
+        await check(scope.orgId, id, { owner: login, name: repository.name });
+      } catch (error) {
+        if (!isAgentXError(error) || error.code !== "GITHUB_NOT_CONNECTED") throw error;
+        const current = await this.lookedUp(repository, true);
+        if (current.id === id) throw error;
+        ({ id, login } = current);
+        await check(scope.orgId, id, { owner: login, name: repository.name });
+      }
+    }
     return { owner: login, name: repository.name, installationId: id };
   }
 
@@ -868,6 +931,42 @@ export class GitHubAppCredentialProvider {
     return { state: record.state, role: record.role };
   }
 
+  /**
+   * Every repository one installation can reach (`GET /installation/repositories`, 100 to a page, at most 10 pages), read with a token minted
+   * for the installation. For an org's scope on a cloud install the installation must be bound to that org and active, checked before the mint.
+   */
+  async listInstallationRepositories(installationId: number, scope: GitHubTokenScope): Promise<GitHubInstallationRepository[]> {
+    if (!Number.isSafeInteger(installationId) || installationId < 1) throw agentXError("CONFIG_INVALID", "GitHub installation id must be a positive integer");
+    if ("orgId" in scope && this.options.requireInstallationBound !== undefined) await this.options.requireInstallationBound(scope.orgId, installationId);
+    const tokenResponse = await this.fetchImplementation(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
+      method: "POST", headers: await this.appHeaders(), body: JSON.stringify({ permissions: { metadata: "read" } }),
+      signal: AbortSignal.timeout(5_000), redirect: "error",
+    });
+    if (!tokenResponse.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub App installation token request failed with HTTP ${tokenResponse.status}`);
+    const issued: unknown = await tokenResponse.json();
+    const token = issued !== null && typeof issued === "object" && "token" in issued && typeof issued.token === "string" ? issued.token : undefined;
+    if (token === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid installation token response");
+    const repositories: GitHubInstallationRepository[] = [];
+    for (let page = 1; page <= INSTALLATION_REPOSITORY_PAGES; page += 1) {
+      const response = await this.fetchImplementation(`https://api.github.com/installation/repositories?per_page=100&page=${page}`, {
+        headers: githubHeaders(token), signal: AbortSignal.timeout(8_000), redirect: "error",
+      });
+      if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's repository listing failed with HTTP ${response.status}`);
+      const body: unknown = await response.json();
+      const entries = body !== null && typeof body === "object" && "repositories" in body && Array.isArray(body.repositories) ? body.repositories as unknown[] : undefined;
+      if (entries === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid repository listing");
+      for (const entry of entries) {
+        const record = entry !== null && typeof entry === "object" ? entry as Record<string, unknown> : {};
+        if (typeof record.full_name !== "string" || !Number.isSafeInteger(record.id) || (record.id as number) < 1 || typeof record.private !== "boolean" || typeof record.default_branch !== "string") {
+          throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid repository listing");
+        }
+        repositories.push({ fullName: record.full_name, githubRepositoryId: record.id as number, private: record.private, defaultBranch: record.default_branch });
+      }
+      if (entries.length < 100) break;
+    }
+    return repositories;
+  }
+
   /** Spec 025 A13: how many accounts the App is installed on (the first 100), for the health route. */
   async installationCount(): Promise<number> {
     const response = await this.fetchImplementation("https://api.github.com/app/installations?per_page=100", {
@@ -900,9 +999,10 @@ export class GitHubAppCredentialProvider {
   private async createInstallationToken(
     repository: { owner: string; name: string },
     permissions: Record<string, "read" | "write">,
+    scope: GitHubTokenScope,
     retried = false,
   ): Promise<string> {
-    const installed = await this.installed(repository);
+    const installed = await this.installed(repository, scope);
     const response = await this.fetchImplementation(
       `https://api.github.com/app/installations/${installed.installationId}/access_tokens`,
       {
@@ -918,7 +1018,7 @@ export class GitHubAppCredentialProvider {
     );
     if (response.status === 404 && !retried) {
       this.installations.delete(installed.owner.toLowerCase());
-      return this.createInstallationToken(repository, permissions, true);
+      return this.createInstallationToken(repository, permissions, scope, true);
     }
     if (!response.ok) {
       throw agentXError(

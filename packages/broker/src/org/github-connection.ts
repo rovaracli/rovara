@@ -6,27 +6,31 @@
 // Secrets: the state, the confirmation token, the authorization code and the GitHub user token are never logged and never stored raw
 // (the first two as SHA-256 only); the user token lives inside one callback and is revoked before it returns.
 import { randomBytes } from "node:crypto";
-import { GetCommand, TransactWriteCommand, UpdateCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  AgentXError,
   agentXError,
   githubConnectStateKey,
+  githubDeliveryKey,
   githubInstallationEverBoundKey,
   githubInstallationKey,
   orgGithubInstallationKey,
   orgMemberKey,
   orgMetaKey,
+  orgPk,
   type GithubInstallationRecord,
   type OrgId,
   type OrgRecord,
   type OrgRole,
 } from "@agentx/contracts";
-import type { GitHubInstallation } from "../github-app.js";
+import { parseGitHubRepository, type GitHubAppCredentialProviderOptions, type GitHubInstallation, type GitHubInstallationRepository, type GitHubTokenScope } from "../github-app.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import {
   GITHUB_ISSUER, conditionFailed, consumeState, errorName, exchangeCode, failedIndexes, isOwnerOrAdmin, log, readState, revokeUserToken, sha256Hex, userGet,
   type ConnectStateItem, type GithubConnectApp, type GithubConnectionDependencies, type PendingBinding,
 } from "./github-connect-support.js";
-import { ownerNameOf, recordInstallRequest } from "./github-install-requests.js";
+import { DELIVERY_RETENTION_MS, auditItem, ownerNameOf, recordInstallRequest } from "./github-install-requests.js";
+import { githubNotConnectedMessage } from "./project-settings.js";
 
 export type { GithubConnectApp, GithubConnectionDependencies };
 
@@ -333,4 +337,282 @@ export async function confirmGithubConnect(
     log(deps, { event: "github.connect_trial_unlock_failed", orgId: state.orgId, error: errorName(error) });
   }
   return { outcome: "connected", ...names };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------
+// Plan 2, Task 15: the installation lifecycle, the repository listing, and the check that stands in front of every token an org's work mints.
+// ---------------------------------------------------------------------------------------------------------------------------------------
+
+const INSTALLATION_ITEM_PREFIX = "GITHUB_INSTALLATION#";
+const INSTALLATION_EVENT_ATTEMPTS = 3;
+const NOT_CONNECTED_UNNAMED = "Rovara can't reach GitHub through your organization's GitHub connection. Connect it with: agentx github connect";
+
+/** One installation of an org, as `GET /v1/app/github/installations` shows it. */
+export interface InstallationView {
+  installationId: number;
+  accountLogin: string;
+  accountType: "User" | "Organization";
+  repositorySelection: "all" | "selected";
+  status: GithubInstallationRecord["status"];
+}
+
+/** `GET /v1/app/github/installations`: the org's installations (any member may read them), ordered by account. */
+export async function listGithubInstallations(deps: Pick<GithubConnectionDependencies, "documentClient" | "tableName">, orgId: OrgId): Promise<{ installations: InstallationView[] }> {
+  const items: Array<Partial<GithubInstallationRecord>> = [];
+  let start: Record<string, unknown> | undefined;
+  do {
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+      ExpressionAttributeValues: { ":pk": orgPk(orgId), ":prefix": INSTALLATION_ITEM_PREFIX }, ConsistentRead: true,
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Array<Partial<GithubInstallationRecord>>; LastEvaluatedKey?: Record<string, unknown> };
+    items.push(...page.Items ?? []);
+    start = page.LastEvaluatedKey;
+  } while (start !== undefined);
+  const installations = items.flatMap((item): InstallationView[] => {
+    if (typeof item.installationId !== "number" || typeof item.accountLogin !== "string" || (item.accountType !== "User" && item.accountType !== "Organization")
+      || (item.repositorySelection !== "all" && item.repositorySelection !== "selected") || (item.status !== "active" && item.status !== "suspended" && item.status !== "removed")) return [];
+    return [{ installationId: item.installationId, accountLogin: item.accountLogin, accountType: item.accountType, repositorySelection: item.repositorySelection, status: item.status }];
+  });
+  return { installations: installations.sort((left, right) => left.accountLogin.toLowerCase().localeCompare(right.accountLogin.toLowerCase()) || left.installationId - right.installationId) };
+}
+
+/**
+ * `DELETE /v1/app/github/installations/{id}`: an owner or admin stops this org using the installation. Both of its keys go, so an admin of
+ * another org may claim the GitHub account later (Task 13's checks apply to that claim). The EVER_BOUND tombstone stays. Nothing is
+ * changed on GitHub: the answer says how to remove the App's access there too.
+ */
+export async function disconnectGithubInstallation(
+  deps: GithubConnectionDependencies,
+  caller: { developerId: string; orgId: OrgId; orgRole: OrgRole },
+  installationId: number,
+): Promise<{ installationId: number; accountLogin: string; message: string }> {
+  if (!deps.cloud) throw agentXError("FORBIDDEN", "on this install, GitHub is connected by the administrator during agentx init");
+  if (!isOwnerOrAdmin(caller.orgRole)) throw agentXError("FORBIDDEN", "only an owner or admin can disconnect GitHub");
+  const found = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgGithubInstallationKey(caller.orgId, installationId), ConsistentRead: true })) as { Item?: { accountLogin?: unknown } };
+  if (found.Item === undefined || typeof found.Item.accountLogin !== "string") throw agentXError("NOT_FOUND", "this organization has no such GitHub installation");
+  const account = found.Item.accountLogin;
+  const now = deps.now();
+  try {
+    await deps.documentClient.send(new TransactWriteCommand({
+      TransactItems: [
+        { Delete: { TableName: deps.tableName, Key: orgGithubInstallationKey(caller.orgId, installationId) } },
+        // The global item may already be gone (a half-finished earlier attempt) but is never another org's.
+        { Delete: { TableName: deps.tableName, Key: githubInstallationKey(installationId), ConditionExpression: "attribute_not_exists(pk) OR orgId = :org", ExpressionAttributeValues: { ":org": caller.orgId } } },
+        auditItem(deps.tableName, caller.orgId, now, { action: "installation_disconnected", installationId, accountLogin: account, disconnectedBy: caller.developerId }),
+      ],
+    }));
+  } catch (error) {
+    if (failedIndexes(error) === undefined) throw error;
+    throw agentXError("NOT_FOUND", "this organization has no such GitHub installation");
+  }
+  log(deps, { event: "github.installation_disconnected", orgId: caller.orgId, installationId });
+  return {
+    installationId, accountLogin: account,
+    message: `Rovara no longer uses ${account}. To remove its access on GitHub too, uninstall the app in ${account}'s GitHub settings.`,
+  };
+}
+
+/**
+ * Refuses (GITHUB_NOT_CONNECTED) unless the installation is bound to `orgId` and active. Reads the binding fresh every time: nothing about it
+ * is cached, so a disconnect, an uninstall or a suspension stops the next token at once. The message names the repository when the caller has one.
+ */
+export async function requireInstallationBound(
+  deps: Pick<GithubConnectionDependencies, "documentClient" | "tableName">,
+  orgId: OrgId,
+  installationId: number,
+  repository?: { owner: string; name: string },
+): Promise<void> {
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: githubInstallationKey(installationId), ConsistentRead: true })) as { Item?: { orgId?: unknown; status?: unknown } };
+  if (response.Item?.orgId === orgId && response.Item.status === "active") return;
+  throw agentXError("GITHUB_NOT_CONNECTED", repository === undefined ? NOT_CONNECTED_UNNAMED : githubNotConnectedMessage(`${repository.owner}/${repository.name}`));
+}
+
+/** What the repository checks need: the binding table, the install's kind, and what GitHub says about a repository. */
+export interface RepositoryGateDependencies {
+  documentClient: { send(command: unknown): Promise<unknown> };
+  tableName: string;
+  /** Rovara Cloud. Anything else has no bindings: the checks look the repository up and return. */
+  cloud: boolean;
+  app: {
+    /** The installation that covers the repository, as GitHub says (`fresh`: asked again, not from a cache); undefined when the App is not installed there. */
+    installationForRepository(owner: string, name: string, options?: { fresh?: boolean }): Promise<{ installationId: number } | undefined>;
+    /** GitHub's immutable id of the repository, read with a token minted for `scope`. Needed only by `requireRepositoryConnected`. */
+    repositoryIdentity?(url: string, scope: GitHubTokenScope): Promise<{ repositoryId: number } | undefined>;
+  };
+}
+
+/**
+ * The installation that covers the repository, after the pin and the org's binding were checked (cloud); the lookup alone elsewhere. A
+ * binding that refuses may be a cached installation the App was since reinstalled over: GitHub is asked once more, and the new installation
+ * (which must pass the same checks) stands in.
+ */
+async function connectedInstallation(
+  deps: RepositoryGateDependencies,
+  orgId: OrgId,
+  owner: string,
+  name: string,
+  pinnedInstallationId: number | undefined,
+): Promise<number> {
+  const fullName = `${owner}/${name}`;
+  let found = await deps.app.installationForRepository(owner, name);
+  if (found === undefined) throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(fullName));
+  if (!deps.cloud) return found.installationId;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      // A repository that moved to another installation (a transfer) must be connected again on purpose: the project's pin stays with the old one.
+      if (pinnedInstallationId !== undefined && pinnedInstallationId !== found.installationId) throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(fullName));
+      await requireInstallationBound(deps, orgId, found.installationId, { owner, name });
+      return found.installationId;
+    } catch (error) {
+      if (attempt > 0 || !(error instanceof AgentXError) || error.code !== "GITHUB_NOT_CONNECTED") throw error;
+      const current = await deps.app.installationForRepository(owner, name, { fresh: true });
+      if (current === undefined || current.installationId === found.installationId) throw error;
+      found = current;
+    }
+  }
+}
+
+/**
+ * Whether the org's own GitHub connection reaches `owner/name`: the installation GitHub says covers it must be bound to the org and active
+ * (and be the one `pinnedInstallationId` names, when the project's entry pins one). Returns the installation and the repository's GitHub id.
+ * On an install that is not cloud nothing is bound, so it returns after the lookups.
+ */
+export async function requireRepositoryConnected(
+  deps: RepositoryGateDependencies,
+  orgId: OrgId,
+  owner: string,
+  name: string,
+  pinnedInstallationId?: number,
+): Promise<{ installationId: number; githubRepositoryId: number }> {
+  const installationId = await connectedInstallation(deps, orgId, owner, name, pinnedInstallationId);
+  if (deps.app.repositoryIdentity === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "reading a repository from GitHub is not set up in this deployment; ask Rovara support");
+  const scope: GitHubTokenScope = deps.cloud ? { orgId } : { system: "private-install" };
+  const identity = await deps.app.repositoryIdentity(`https://github.com/${owner}/${name}.git`, scope);
+  if (identity === undefined) throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(`${owner}/${name}`));
+  return { installationId, githubRepositoryId: identity.repositoryId };
+}
+
+/**
+ * `requireRepositoryConnected` for each repository of a project, passing each entry's pinned installation. It answers only whether each is
+ * reached (the start path needs nothing of GitHub's repository id, so it asks GitHub nothing more than the installation). Not cloud: returns.
+ */
+export async function requireRepositoriesConnected(
+  deps: Pick<RepositoryGateDependencies, "documentClient" | "tableName" | "cloud"> & { app: Pick<RepositoryGateDependencies["app"], "installationForRepository"> },
+  orgId: OrgId,
+  definition: { repositories: ReadonlyArray<{ url: string; installationId?: number | undefined }> },
+): Promise<void> {
+  if (!deps.cloud) return;
+  for (const repository of definition.repositories) {
+    const { owner, name } = parseGitHubRepository(repository.url);
+    await connectedInstallation(deps, orgId, owner, name, repository.installationId);
+  }
+}
+
+/** One repository of an installation, as `GET /v1/app/github/repositories` lists it (before the route marks the ones a project uses). */
+export type InstallationRepositoryView = GitHubInstallationRepository;
+
+/**
+ * `GET /v1/app/github/repositories?installation=<id>`: the repositories the installation reaches. The installation must be this org's
+ * (404 otherwise, whoever else holds it), and the token that reads them is minted for the org, which the provider checks again.
+ */
+export async function listInstallationRepositories(
+  deps: GithubConnectionDependencies,
+  orgId: OrgId,
+  installationId: number,
+): Promise<{ repositories: InstallationRepositoryView[] }> {
+  if (!deps.cloud) throw agentXError("FORBIDDEN", "on this install, GitHub is connected by the administrator during agentx init");
+  const global = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: githubInstallationKey(installationId), ConsistentRead: true })) as { Item?: { orgId?: unknown } };
+  if (global.Item?.orgId !== orgId) throw agentXError("NOT_FOUND", "this organization has no such GitHub installation");
+  if (deps.app.listInstallationRepositories === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "listing GitHub repositories is not set up in this deployment; ask Rovara support");
+  // A suspended or removed installation is refused by the provider's own check (GITHUB_NOT_CONNECTED), before any token is minted.
+  const repositories = await deps.app.listInstallationRepositories(installationId, { orgId });
+  return { repositories: [...repositories].sort((left, right) => left.fullName.toLowerCase().localeCompare(right.fullName.toLowerCase())) };
+}
+
+/** What an `installation` or `installation_repositories` delivery (other than `created`) tells. */
+export type InstallationLifecycleEvent =
+  | { kind: "installation"; action: "deleted" | "suspend" | "unsuspend"; installationId: number }
+  | { kind: "repositories"; installationId: number; repositorySelection: "all" | "selected" };
+
+/**
+ * Follows GitHub's own changes to an installation that is bound to an org: `deleted` makes it `removed`, `suspend` `suspended`, `unsuspend`
+ * `active` again, and a repository change updates `repositorySelection`. Both copies of the binding change together, with the delivery id
+ * (a replay changes nothing) and an audit item. A delivery for an installation nobody bound is logged (`github.installation_unbound`) and
+ * ignored: no write. A removed installation never comes back, and a suspension or unsuspension that does not follow from the current status
+ * changes nothing.
+ */
+export async function applyInstallationLifecycle(
+  deps: Pick<GithubConnectionDependencies, "documentClient" | "tableName" | "now" | "log">,
+  deliveryId: string,
+  event: InstallationLifecycleEvent,
+): Promise<"applied" | "ignored"> {
+  const full = deps as GithubConnectionDependencies;
+  for (let attempt = 0; attempt < INSTALLATION_EVENT_ATTEMPTS; attempt += 1) {
+    const read = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: githubInstallationKey(event.installationId), ConsistentRead: true })) as { Item?: Partial<GithubInstallationRecord> };
+    const bound = read.Item;
+    if (bound === undefined || typeof bound.orgId !== "string" || typeof bound.status !== "string") {
+      log(full, { event: "github.installation_unbound", installationId: event.installationId });
+      return "ignored";
+    }
+    const orgId = bound.orgId;
+    const was = bound.status;
+    let next: { status?: GithubInstallationRecord["status"]; repositorySelection?: "all" | "selected"; action: string } | undefined;
+    if (event.kind === "repositories") next = was === "removed" || bound.repositorySelection === event.repositorySelection ? undefined : { repositorySelection: event.repositorySelection, action: "installation_repositories_changed" };
+    else if (event.action === "deleted") next = was === "removed" ? undefined : { status: "removed", action: "installation_removed" };
+    else if (event.action === "suspend") next = was === "active" ? { status: "suspended", action: "installation_suspended" } : undefined;
+    else next = was === "suspended" ? { status: "active", action: "installation_unsuspended" } : undefined;
+    if (next === undefined) {
+      log(full, { event: "github.installation_event_ignored", orgId, installationId: event.installationId, kind: event.kind === "installation" ? event.action : "repositories" });
+      return "ignored";
+    }
+    const now = deps.now();
+    const at = new Date(now).toISOString();
+    const expression = `SET updatedAt = :at${next.status === undefined ? "" : ", #status = :status"}${next.repositorySelection === undefined ? "" : ", repositorySelection = :selection"}`;
+    const values = { ":at": at, ...(next.status === undefined ? {} : { ":status": next.status }), ...(next.repositorySelection === undefined ? {} : { ":selection": next.repositorySelection }) };
+    // DynamoDB refuses a name or a value that no expression uses: the org's copy has no condition on the status, so it declares #status only when it sets it.
+    const copyUpdate = {
+      UpdateExpression: expression, ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: values,
+      ...(next.status === undefined ? {} : { ExpressionAttributeNames: { "#status": "status" } }),
+    };
+    const globalUpdate = {
+      UpdateExpression: expression, ConditionExpression: "orgId = :org AND #status = :was",
+      ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ...values, ":org": orgId, ":was": was },
+    };
+    const items = (withOrgCopy: boolean) => [
+      { Put: {
+        TableName: deps.tableName,
+        Item: { ...githubDeliveryKey(deliveryId), entityType: "GITHUB_DELIVERY_INSTALL_REQUEST", processedAt: at, expiresAt: now + DELIVERY_RETENTION_MS, indexExpiresAt: Math.floor((now + DELIVERY_RETENTION_MS) / 1000) },
+        ConditionExpression: "attribute_not_exists(pk)",
+      } },
+      { Update: { TableName: deps.tableName, Key: githubInstallationKey(event.installationId), ...globalUpdate } },
+      ...(withOrgCopy ? [{ Update: { TableName: deps.tableName, Key: orgGithubInstallationKey(orgId, event.installationId), ...copyUpdate } }] : []),
+      auditItem(deps.tableName, orgId, now, { action: next.action, installationId: event.installationId, deliveryId, ...(next.status === undefined ? {} : { status: next.status }), ...(next.repositorySelection === undefined ? {} : { repositorySelection: next.repositorySelection }) }),
+    ];
+    try {
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items(true) }));
+    } catch (error) {
+      const failed = failedIndexes(error);
+      if (failed === undefined) throw error;
+      if (failed.has(0)) return "ignored";
+      // The org's copy is missing (it is only for listing): the global binding, which every token checks, still changes.
+      if (failed.has(2) && !failed.has(1)) {
+        try {
+          await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items(false) }));
+        } catch (retry) {
+          if (failedIndexes(retry) === undefined) throw retry;
+          continue;
+        }
+      } else continue;
+    }
+    log(full, { event: "github.installation_changed", orgId, installationId: event.installationId, change: next.action });
+    return "applied";
+  }
+  log(full, { event: "github.installation_event_conflict", installationId: event.installationId });
+  return "ignored";
+}
+
+/** The provider's pre-mint check (`requireInstallationBound` option) for a cloud install: reads the binding fresh before every token. */
+export function installationBindingCheck(deps: Pick<GithubConnectionDependencies, "documentClient" | "tableName">): NonNullable<GitHubAppCredentialProviderOptions["requireInstallationBound"]> {
+  return (orgId, installationId, repository) => requireInstallationBound(deps, orgId, installationId, repository);
 }

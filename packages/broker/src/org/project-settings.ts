@@ -55,7 +55,7 @@ export interface ProjectSettingsDependencies<Caller extends ProjectSettingsCalle
   /** The credential an added repository uses: the foundation's built-in GitHub App credential. */
   githubCredentialRef?: string;
   /** GitHub's own view of a repository (its spelling and default branch), through the App. Absent when GitHub cannot be asked. */
-  repositoryIdentity?(url: string): Promise<RepositoryIdentity | undefined>;
+  repositoryIdentity?(url: string, orgId: OrgId): Promise<RepositoryIdentity | undefined>;
   /**
    * Whether the org's GitHub connection reaches a repository; throws GITHUB_NOT_CONNECTED when not. Defaults to
    * `requireRepositoryConnectedByRecords`; Plan 2, Task 15's `requireRepositoryConnected` replaces it.
@@ -148,10 +148,10 @@ function resolveRepository(repositories: readonly Repository[], entry: string): 
   return repositories.find((repository) => repository.name.toLowerCase() === wanted || fullNameOf(repository).toLowerCase() === wanted);
 }
 
-async function identityOf(deps: Pick<ProjectSettingsDependencies, "repositoryIdentity">, fullName: string): Promise<RepositoryIdentity | undefined> {
+async function identityOf(deps: Pick<ProjectSettingsDependencies, "repositoryIdentity">, orgId: OrgId, fullName: string): Promise<RepositoryIdentity | undefined> {
   if (deps.repositoryIdentity === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "adding a repository is not set up in this deployment; ask Rovara support");
   try {
-    return await deps.repositoryIdentity(`https://github.com/${fullName}.git`);
+    return await deps.repositoryIdentity(`https://github.com/${fullName}.git`, orgId);
   } catch (error) {
     if (error instanceof TypeError) {
       // GitHub answers a renamed or transferred repository with a redirect the lookup refuses; a failed connection rejects the same way.
@@ -190,7 +190,7 @@ async function changedRepositories(
   for (const { owner, name } of added) await connected(caller.orgId, owner, name);
   const entries: Repository[] = [];
   for (const { index, owner, name } of added) {
-    const identity = await identityOf(deps, `${owner}/${name}`);
+    const identity = await identityOf(deps, caller.orgId, `${owner}/${name}`);
     if (identity === undefined) throw invalid(`addRepositories.${String(index)}: the GitHub App cannot see ${owner}/${name}; check the name`);
     if (identity.defaultBranch === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not describe that repository; try again");
     const githubCredentialRef = deps.githubCredentialRef;

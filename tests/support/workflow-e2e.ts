@@ -183,7 +183,7 @@ function wireFeedbackReader(github: FakeGitHub): (repositoryUrl: string, number:
   const provider = new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "123", getPrivateKey: async () => key, fetchImplementation: github.fetch });
   return async (repositoryUrl, number) => {
     github.fault("getPullRequestFeedback");
-    return github.atOneMoment(() => provider.getPullRequestFeedback(repositoryUrl, number));
+    return github.atOneMoment(() => provider.getPullRequestFeedback(repositoryUrl, number, { system: "private-install" }));
   };
 }
 
@@ -205,7 +205,7 @@ function mergeObservationReader(
       const observed = await provider.getPullRequestMergeObservation(repositoryUrl, number, {
         ...budget,
         beforeRequest: () => { requestLedger.push("github"); budget.beforeRequest(); },
-      });
+      }, { system: "private-install" });
       await controls.afterRead?.();
       return observed;
     };

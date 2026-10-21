@@ -64,7 +64,7 @@ import { runInit, type InitCliDependencies, type InitOptions } from "./init/comm
 import { cliCommandLine, currentCliInvocation, type CliInvocation } from "./init/cli-command.js";
 import { StoppedByOperator, isCtrlCAtPrompt } from "./stopped.js";
 import { runGithubOauthSet, type GithubOauthServices } from "./github/oauth.js";
-import { githubConnect, githubConnectText } from "./developer/github.js";
+import { githubConnect, githubConnectText, githubDisconnect, githubDisconnectText, githubList, githubListText } from "./developer/github.js";
 import { secretsManagerInitSecrets, type FinishFlags, type SecretFlags } from "./init/context.js";
 import { githubRestApi } from "./init/github-app.js";
 import { processPrompter } from "./init/prompts.js";
@@ -575,6 +575,24 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         ...(dependencies.githubConnect ?? {}),
       });
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, status: result.status, account: result.account, installationId: result.installationId }, true) : githubConnectText(result));
+    });
+
+  githubCommand
+    .command("list")
+    .description("the GitHub accounts connected to your organization, and any request still waiting for a GitHub admin")
+    .action(async (_options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await githubList(developerSession(), developerEnv(command));
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, installations: result.installations, waiting: result.waiting }, true) : githubListText(result));
+    });
+  githubCommand
+    .command("disconnect")
+    .description("stop using a connected GitHub account (owners and admins). Its repositories stop working in Rovara; uninstall the app in GitHub's settings to remove its access there too")
+    .argument("<account>", "the GitHub account's login, as agentx github list shows it")
+    .action(async (account: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await githubDisconnect(developerSession(), developerEnv(command), account);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, installationId: result.installationId, accountLogin: result.accountLogin, message: result.message }, true) : githubDisconnectText(result));
     });
 
   registerSigninCommands(program, {

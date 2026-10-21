@@ -196,6 +196,13 @@ export const RepositoryDefinitionSchema = z
     defaultBranch: GitBranchNameSchema,
     credentialRef: AgentXNameSchema,
     codeBuildGates: z.array(CodeBuildGateDefinitionSchema).max(8).optional(),
+    /**
+     * Rovara Cloud (Plan 2, Tasks 15 and 16): the GitHub installation, and the repository's immutable GitHub id, the project was registered
+     * against. When set, a task start refuses the project if the repository is now reached through another installation, so a transferred
+     * repository cannot quietly change installation. Control-plane only: a worker never reads either (`workerProjectDefinition`).
+     */
+    installationId: z.number().int().positive().optional(),
+    githubRepositoryId: z.number().int().positive().optional(),
   })
   .strict()
   .superRefine((repository, context) => {
@@ -449,12 +456,23 @@ function withoutFields(value: unknown, fields: readonly string[]): unknown {
 export type ProjectDefinition = z.infer<typeof ProjectDefinitionSchema>;
 
 /**
- * A project definition as a worker is sent it: without `network`. Workers of an earlier release parse the definition with a strict schema that
- * does not know the field, and the field is the control plane's alone (the DNS firewall enforces it, not the worker).
+ * A project definition as a worker is sent it: without `network`, and without any repository's `installationId` and `githubRepositoryId`.
+ * Workers of an earlier release parse the definition with a strict schema that does not know the fields, and they are the control plane's
+ * alone (the DNS firewall enforces `network`, the broker's start check the pins).
  */
 export function workerProjectDefinition<Definition extends object>(definition: Definition): Omit<Definition, "network"> {
   const rest: Record<string, unknown> = { ...(definition as Record<string, unknown>) };
   delete rest.network;
+  // The same for the repository pins (`installationId`, `githubRepositoryId`): the repository entry of an earlier worker is strict too.
+  if (Array.isArray(rest.repositories)) {
+    rest.repositories = rest.repositories.map((entry: unknown) => {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
+      const repository: Record<string, unknown> = { ...(entry as Record<string, unknown>) };
+      delete repository.installationId;
+      delete repository.githubRepositoryId;
+      return repository;
+    });
+  }
   return rest as Omit<Definition, "network">;
 }
 /** A project definition as `StoredProjectDefinitionSchema` parses it: its connectors may include

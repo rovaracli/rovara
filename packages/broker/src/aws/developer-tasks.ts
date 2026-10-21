@@ -268,7 +268,13 @@ export interface DeveloperTaskRouteDependencies {
   /** Atomic conditions for current managed-E2E authority, attached to publication admission. */
   workflowE2EPublicationChecks?(input: { task: DeveloperTaskRecord; operations: readonly unknown[] }): Promise<TransactItems | undefined>;
   /** Resolves only a URL loaded from the task's immutable registered project revision. */
-  registeredRepositoryIdentity?(url: string): Promise<{ repositoryId: number; fullName: string } | undefined>;
+  registeredRepositoryIdentity?(url: string, orgId: OrgId): Promise<{ repositoryId: number; fullName: string } | undefined>;
+  /**
+   * Rovara Cloud (Plan 2, Task 15): refuses, with GITHUB_NOT_CONNECTED, a project whose repositories the org's GitHub connection does not
+   * reach (the installation uninstalled, suspended, disconnected, or no longer the one the repository's entry pins). Absent where
+   * there are no bindings (a private install). Called at a task's start, before any budget, limit or machine time.
+   */
+  requireRepositoriesConnected?(orgId: OrgId, definition: { repositories: ReadonlyArray<{ url: string; installationId?: number | undefined }> }): Promise<void>;
 }
 
 /** Ruling R60: refuses a task whose creator is no longer a member of its org, before any other access check (see developer/creator-member.ts). */
@@ -305,7 +311,7 @@ async function e2ePublicationContext(deps: DeveloperTaskRouteDependencies, calle
   if (candidateBase !== subject.baseCommitSha) return unknown("candidate_commit_tree_or_base_mismatch");
   const registeredRepository = project.definition.repositories.find((item) => item.name === candidateRepository.repositoryId);
   if (registeredRepository === undefined || deps.registeredRepositoryIdentity === undefined) return unknown("registered_repository_identity_unavailable");
-  const identity = await deps.registeredRepositoryIdentity(registeredRepository.url);
+  const identity = await deps.registeredRepositoryIdentity(registeredRepository.url, deps.orgId);
   if (identity === undefined || identity.repositoryId !== subject.repositoryId) return unknown("registered_repository_id_mismatch");
   const url = new URL(registeredRepository.url);
   const pathParts = url.pathname.split("/").filter(Boolean);
@@ -1486,6 +1492,16 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
     log(deps, { event: "developer.task_start_revision_changed", checked: access.revision, latest: project.definition.revision });
     throw agentXError("WORKSPACE_BUSY", "the project changed while starting; try again with the same request_id");
   }
+  // Plan 2, Task 15: the org's GitHub connection must still reach every repository of the project. Before the budget, the limits and any
+  // write, so a task that cannot run costs nothing and leaves nothing behind.
+  if (deps.requireRepositoriesConnected !== undefined) {
+    try {
+      await deps.requireRepositoriesConnected(deps.orgId, project.definition);
+    } catch (error) {
+      if (error instanceof AgentXError) return refused(error);
+      throw error;
+    }
+  }
   // The budget comes first (ruling R23: soft caps, so this is a floor, not a promise): before the limit's counters are read
   // and before any write. A proxy that cannot answer fails the start with nothing recorded; a refusal is audited like any other.
   let admitted: { maxBudgetUsd: number } | undefined;
@@ -1728,7 +1744,17 @@ async function actionableWorkspace(deps: DeveloperTaskRouteDependencies, task: D
   if (workspace.status === "PREPARATION_FAILED") throw agentXError("CONFIG_INVALID", NEVER_STARTED);
   // A close in flight is not work to wait for or cancel: say so, not TASK_BUSY.
   if (workspace.status === "CLOSING") throw agentXError("CONFIG_INVALID", CLOSING_TASK);
+  // Plan 2, Task 15: work on an existing task needs the org's GitHub connection too, so a continue, a retry, a review or a publication of a
+  // project whose installation was uninstalled or disconnected is refused here, before anything is written or any machine woken.
+  await requireTaskRepositoriesConnected(deps, task);
   return workspace;
+}
+
+/** The project revision the task started on must still be reachable through its org's GitHub connection (cloud installs). */
+async function requireTaskRepositoriesConnected(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): Promise<void> {
+  if (deps.requireRepositoriesConnected === undefined) return;
+  const project = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
+  if (project !== undefined) await deps.requireRepositoriesConnected(deps.orgId, project.definition);
 }
 
 /**
