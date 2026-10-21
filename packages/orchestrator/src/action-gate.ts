@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
-import { redactText, type ActionPolicy, type ConnectorCatalog } from "@agentx/contracts";
+import { describeAction, slackSafe, type ActionPolicy, type ConnectorCatalog } from "@agentx/contracts";
 import { ClassifierError, usableClassifierTimeout, type ActionClassifier, type ClassifierUsage, type ClassifierVerdict } from "./action-classifier.js";
 
 export type { ActionClassifier } from "./action-classifier.js";
+// The pure wording lives in contracts with the action-class functions; this keeps the gate's import path.
+export { describeAction };
 import { evaluatePolicy, itemReference, type ActionClass, type SettledAction, type ToolFacts } from "./action-policy.js";
 import type { WorkerAccess } from "./orchestration-tools.js";
 
@@ -134,15 +136,6 @@ export function memberMessages(entries: readonly unknown[]): string[] {
   });
 }
 
-const SLACK_ESCAPES: Readonly<Record<string, string>> = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
-
-/** Text safe inside a Slack message: one line, no backticks, and no mentions or links it could smuggle in. */
-function slackSafe(text: string, limit: number): string {
-  const flat = text.replace(/[`\s]+/gu, " ").replace(/[&<>]/gu, (character) => SLACK_ESCAPES[character] ?? character).trim();
-  // A cut never leaves half an escape such as `&am`.
-  return flat.length > limit ? `${flat.slice(0, limit - 1).replace(/&[a-z]{0,3}$/u, "")}…` : flat;
-}
-
 const SHOWN_ARGUMENTS = 6;
 
 /** The action and its target, for the confirmation message: the tool, its target and its first arguments. */
@@ -157,83 +150,6 @@ export function describeCall(tool: string, args: Record<string, unknown>): strin
   const more = entries.length > SHOWN_ARGUMENTS ? `, and ${entries.length - SHOWN_ARGUMENTS} more` : "";
   const where = typeof target === "string" ? ` in ${target}` : "";
   return slackSafe(`${tool}${where}${shown.length > 0 ? `: ${shown.join(", ")}${more}` : ""}`, 300);
-}
-
-const PROMPT_SHOWN = 200;
-const VALUE_SHOWN = 80;
-
-/**
- * A value shortened for a person to read: never a count of its characters (#215). Redacted first:
- * the text is posted in the thread and stored with the confirmation.
- */
-function shortened(text: string, limit: number): string {
-  const flat = redactText(text).replace(/\s+/gu, " ").trim();
-  return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
-}
-
-/** An identifier in words: `close_item`, `createIssue` and `pull-request` become "close item", "create issue", "pull request". */
-function words(name: string): string {
-  return name.replace(/([a-z0-9])([A-Z])/gu, "$1 $2").replace(/[_\-.]+/gu, " ").trim().toLowerCase();
-}
-
-/** What each pull request action does, as the start of a sentence. */
-const PULL_REQUEST_VERBS: Readonly<Record<string, string>> = {
-  edit: "Edit", append: "Push the new commits to", sync: "Update", close: "Close", reopen: "Reopen", replace: "Replace", revert: "Revert",
-};
-
-function quoted(value: unknown, limit: number): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? `"${shortened(value, limit)}"` : undefined;
-}
-
-function inHouseAction(tool: string, args: Record<string, unknown>): string | undefined {
-  const prompt = quoted(args.prompt, PROMPT_SHOWN);
-  const repository = typeof args.repository === "string" ? ` in ${shortened(args.repository, VALUE_SHOWN)}` : "";
-  const title = quoted(args.title, VALUE_SHOWN);
-  switch (tool) {
-    case "agentx_submit_task": return `Start a coding task${prompt === undefined ? "" : `: ${prompt}`}`;
-    case "agentx_follow_up": return `Continue the coding task${prompt === undefined ? "" : `: ${prompt}`}`;
-    case "agentx_create_pull_request": return `Open a pull request${repository}${title === undefined ? "" : `: ${title}`}`;
-    case "agentx_manage_pull_request": {
-      const action = typeof args.action === "string" ? args.action : "";
-      const number = typeof args.pullRequestNumber === "number" ? ` #${args.pullRequestNumber}` : "";
-      const verb = PULL_REQUEST_VERBS[action] ?? `${words(action) || "Change"}`;
-      const tail = action === "sync" ? " with its base branch" : "";
-      const titled = (action === "edit" || action === "replace" || action === "revert") && title !== undefined ? `: ${title}` : "";
-      return `${verb.charAt(0).toUpperCase()}${verb.slice(1)} pull request${number}${repository}${tail}${titled}`;
-    }
-    case "agentx_task_status": return "Check the status of an earlier coding task";
-    case "agentx_task_result": return "Get the result of an earlier coding task";
-    default: return undefined;
-  }
-}
-
-/** One argument for a person: its name in words and its value, shortened, never counted in characters. */
-function shownArgument(key: string, value: unknown): string {
-  const name = words(key);
-  if (typeof value === "string") return `${name} ${shortened(value, VALUE_SHOWN)}`;
-  if (typeof value === "number" || typeof value === "boolean") return `${name} ${String(value)}`;
-  if (Array.isArray(value)) return `${name} ${value.length} item${value.length === 1 ? "" : "s"}`;
-  return `${name} (details)`;
-}
-
-/**
- * #215: what a blocked call will do, in plain words, for the member's confirmation. It never shows
- * a tool's name or a count of characters: coding work shows its prompt (shortened when long), pull
- * request work says what happens to which pull request, and a connector's action reads as
- * "Use <connector> to <action in words>" with its arguments' values. One Slack-safe line.
- */
-export function describeAction(tool: string, args: Record<string, unknown>): string {
-  const inHouse = inHouseAction(tool, args);
-  if (inHouse !== undefined) return slackSafe(inHouse, 300);
-  const { target, ...rest } = args;
-  const entries = Object.entries(rest).filter(([, value]) => value !== undefined && value !== null);
-  const shown = entries.slice(0, SHOWN_ARGUMENTS).map(([key, value]) => shownArgument(key, value));
-  const more = entries.length > SHOWN_ARGUMENTS ? `, and ${entries.length - SHOWN_ARGUMENTS} more` : "";
-  const where = typeof target === "string" ? ` in ${target}` : "";
-  const split = tool.indexOf("__");
-  // An in-house tool not described above is never named, even in words.
-  const action = split > 0 ? `Use ${tool.slice(0, split)} to ${words(tool.slice(split + 2))}` : tool.startsWith("agentx_") ? "Run an AgentX action" : `Run ${words(tool)}`;
-  return slackSafe(`${action}${where}${shown.length > 0 ? `: ${shown.join(", ")}${more}` : ""}`, 300);
 }
 
 /** Told to the model when the gate itself could not decide or record a call: fixed words, no error text. */
