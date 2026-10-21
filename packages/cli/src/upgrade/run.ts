@@ -166,7 +166,7 @@ async function setUpGithubWebhook(env: string, deps: UpgradeDependencies): Promi
     const controlPlane = await deps.stacks.describe(settings.stacks["control-plane"]);
     const outcome = await ensureGithubWebhook({
       appJwt: githubAppJwt({ appId: app.appId, privateKey: app.privateKey, nowSeconds: Math.floor(deps.now() / 1000) }),
-      api: github, secrets, secretId: secretName,
+      api: github, secrets, secretValue: raw, secretId: secretName,
       webhookUrl: controlPlane?.outputs.GithubWebhookUrl ?? githubWebhookUrl(settings.controlPlaneUrl),
     });
     deps.write(`GitHub webhook: ${outcome.status}`);

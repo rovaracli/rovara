@@ -47,6 +47,15 @@ describe("GitHub App credentials", () => {
     expect(state.reads).toBe(3);
   });
 
+  it("serves the App's slug and OAuth client from the same secret, and finds a client set while the container keeps running", async () => {
+    const { state, credentials } = fixture({ appId: "12345", slug: "rovara-cloud", privateKey: "pem" });
+    await expect(credentials.provider.appSlug()).resolves.toBe("rovara-cloud");
+    await expect(credentials.provider.oauthClient()).resolves.toBeUndefined();
+    state.current = { appId: "12345", slug: "rovara-cloud", privateKey: "pem", clientId: "Iv23liCLIENT", clientSecret: "s".repeat(40) };
+    vi.advanceTimersByTime(31_000);
+    await expect(credentials.provider.oauthClient()).resolves.toEqual({ clientId: "Iv23liCLIENT", clientSecret: "s".repeat(40) });
+  });
+
   it("throttles re-reads to once per 30 seconds", async () => {
     const { state, credentials } = fixture({ appId: "12345", privateKey: "pem" });
     await expect(credentials.webhookSecret()).rejects.toThrow();

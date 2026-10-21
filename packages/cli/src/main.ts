@@ -61,7 +61,10 @@ import { DEFAULT_CLASSIFIER_MODEL, DEFAULT_ORCHESTRATOR_MODEL, DEFAULT_WORKER_MO
 import { runInit, type InitCliDependencies, type InitOptions } from "./init/commands.js";
 import { cliCommandLine, currentCliInvocation, type CliInvocation } from "./init/cli-command.js";
 import { StoppedByOperator, isCtrlCAtPrompt } from "./stopped.js";
-import type { FinishFlags, SecretFlags } from "./init/context.js";
+import { runGithubOauthSet, type GithubOauthServices } from "./github/oauth.js";
+import { secretsManagerInitSecrets, type FinishFlags, type SecretFlags } from "./init/context.js";
+import { githubRestApi } from "./init/github-app.js";
+import { processPrompter } from "./init/prompts.js";
 import { INIT_STEP_IDS, type InitStepId } from "./init/install-state.js";
 import { parseConnectorsFlag } from "./init/finish-steps.js";
 import { runEnvAdopt, runEnvList, runEnvUse } from "./environments/commands.js";
@@ -141,6 +144,8 @@ export interface CliDependencies {
   config?: Partial<ConfigServices>;
   /** `agentx doctor` overrides, for tests: never touch AWS or a vendor. */
   doctor?: { store?: ParameterStore; services?: (settings: EnvironmentSettings) => DoctorServices };
+  /** `agentx github oauth set` overrides, for tests: never touch AWS or GitHub. */
+  githubOauth?: Partial<GithubOauthServices>;
   /** `agentx upgrade` overrides, for tests: never touch AWS or GitHub. */
   upgrade?: Partial<UpgradeDependencies>;
   /** `agentx destroy` overrides, for tests: never touch AWS. */
@@ -525,6 +530,32 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       if (!await confirm(question)) throw agentXError("CONFIRMATION_DECLINED", "you did not leave the organization; nothing changed");
       const result = await orgLeave(developerSession(), env);
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, orgClosed: result.orgClosed, message: result.message }, true) : orgLeaveText(result));
+    });
+
+  const githubCommand = program.command("github").description("the GitHub App of a Rovara Cloud install");
+  githubCommand
+    .command("oauth")
+    .description("the GitHub App's OAuth client, which the per-organization install flow uses")
+    .command("set")
+    .description("store the GitHub App's client id and client secret on a Rovara Cloud install (operator role); prints what to change in the App's settings")
+    .requiredOption("--client-id <id>", "the GitHub App's Client ID (General, About, Client ID)")
+    .option("--client-secret-stdin", "read the client secret from standard input instead of asking for it", false)
+    .option("--region <region>", "AWS region of the environment; defaults to your AWS configuration")
+    .action(async (options: { clientId: string; clientSecretStdin: boolean; region?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const overrides = dependencies.githubOauth ?? {};
+      const awsConfig = options.region === undefined ? {} : { region: options.region };
+      const result = await runGithubOauthSet({
+        store: overrides.store ?? parameterStore(options.region),
+        secrets: overrides.secrets ?? secretsManagerInitSecrets(new SecretsManagerClient(awsConfig)),
+        github: overrides.github ?? githubRestApi(services.fetchImplementation),
+        prompter: overrides.prompter ?? processPrompter(services.stderr),
+        processEnv: overrides.processEnv ?? process.env,
+        write: overrides.write ?? ((line) => { services.stderr.write(`${line}\n`); }),
+        now: overrides.now ?? Date.now,
+        readStdin: overrides.readStdin ?? (async () => { const chunks: Buffer[] = []; for await (const chunk of dependencies.stdin ?? process.stdin) chunks.push(Buffer.from(chunk as Uint8Array)); return Buffer.concat(chunks).toString("utf8"); }),
+      }, globals.env, { clientId: options.clientId, clientSecretStdin: options.clientSecretStdin });
+      services.stdout.write(globals.json ? formatSuccess(result, true) : `GitHub App client id and secret saved for ${result.env}.\n`);
     });
 
   registerSigninCommands(program, {

@@ -1136,3 +1136,127 @@ describe("current PR feedback API reads", () => {
     await expect(provider.getPullRequestFeedback("https://github.com/ps06756/personal-website-test.git", 42)).rejects.toThrow(/changed/);
   });
 });
+
+describe("GitHub App install flow lookups (Plan 2, Task 12)", () => {
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const CLIENT_SECRET = "github-oauth-client-secret-".padEnd(40, "c");
+  const secretWith = (extra: Record<string, unknown> = {}) => JSON.stringify({ appId: "5002502", slug: "rovara-cloud", account: "preplabsai", privateKey: pem, ...extra });
+
+  function recording(reply: (url: string) => Response) {
+    const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      requests.push({ url: requestUrl, init });
+      return reply(requestUrl);
+    });
+    return { requests, fetchImplementation };
+  }
+
+  it("reads an installation with the App's JWT and keeps only its identity, account, repository selection and suspension", async () => {
+    const { requests, fetchImplementation } = recording(() => Response.json({
+      id: 163046162, app_id: 5002502, target_type: "Organization", repository_selection: "selected", suspended_at: null,
+      account: { login: "Acme", id: 9001, type: "Organization", node_id: "x", avatar_url: "https://example.test/a.png" }, access_tokens_url: "https://api.github.com/x",
+    }));
+    const provider = new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => pem, fetchImplementation });
+    await expect(provider.installation(163046162)).resolves.toEqual({
+      id: 163046162, account: { login: "Acme", id: 9001, type: "Organization" }, repositorySelection: "selected", suspendedAt: null,
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toBe("https://api.github.com/app/installations/163046162");
+    expect(requests[0]?.init).toMatchObject({ redirect: "error" });
+    const [header, payload, signature] = ((requests[0]?.init?.headers as Record<string, string>).authorization ?? "").replace("Bearer ", "").split(".");
+    expect(JSON.parse(Buffer.from(payload!, "base64url").toString())).toMatchObject({ iss: "5002502" });
+    expect(verify("RSA-SHA256", Buffer.from(`${header}.${payload}`), publicKey, Buffer.from(signature!, "base64url"))).toBe(true);
+  });
+
+  it("reads a user installation that is all-repositories and suspended", async () => {
+    const { fetchImplementation } = recording(() => Response.json({
+      id: 7, repository_selection: "all", suspended_at: "2026-10-20T10:00:00Z", account: { login: "alice", id: 3, type: "User" },
+    }));
+    const provider = new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => pem, fetchImplementation });
+    await expect(provider.installation(7)).resolves.toEqual({ id: 7, account: { login: "alice", id: 3, type: "User" }, repositorySelection: "all", suspendedAt: "2026-10-20T10:00:00Z" });
+  });
+
+  it("refuses an installation id that is not a positive integer without calling GitHub", async () => {
+    const { fetchImplementation } = recording(() => Response.json({}));
+    const provider = new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => pem, fetchImplementation });
+    for (const id of [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 2]) await expect(provider.installation(id)).rejects.toThrow("installation id");
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  it("says an installation GitHub does not know is not found, and any other refusal by its status alone", async () => {
+    const missing = recording(() => new Response("{\"message\":\"Not Found\"}", { status: 404 }));
+    const provider = new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => pem, fetchImplementation: missing.fetchImplementation });
+    await expect(provider.installation(5)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    const broken = recording(() => new Response(`{"message":"echo ${CLIENT_SECRET}"}`, { status: 502 }));
+    const other = new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => pem, fetchImplementation: broken.fetchImplementation });
+    const failure = await other.installation(5).catch((error: unknown) => error);
+    expect(String(failure)).toContain("HTTP 502");
+    expect(String(failure)).not.toContain(CLIENT_SECRET);
+  });
+
+  it("refuses an installation response that is not the shape GitHub documents", async () => {
+    for (const body of [{}, { id: 5, repository_selection: "some", suspended_at: null, account: { login: "a", id: 1, type: "User" } },
+      { id: 5, repository_selection: "all", suspended_at: null, account: { login: "a", id: 1, type: "Bot" } },
+      { id: 5, repository_selection: "all", suspended_at: null, account: { login: "", id: 1, type: "User" } },
+      { id: 6, repository_selection: "all", suspended_at: null, account: { login: "a", id: 1, type: "User" } }, []]) {
+      const { fetchImplementation } = recording(() => Response.json(body));
+      const provider = new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => pem, fetchImplementation });
+      await expect(provider.installation(5)).rejects.toThrow("invalid installation response");
+    }
+  });
+
+  it("gives the App's slug from its secret, with no call to GitHub", async () => {
+    const { fetchImplementation } = recording(() => Response.json({}));
+    const provider = new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => pem, getAppSecret: async () => secretWith(), fetchImplementation });
+    await expect(provider.appSlug()).resolves.toBe("rovara-cloud");
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  it("asks GitHub for the slug when the secret has none, and keeps the answer", async () => {
+    const { requests, fetchImplementation } = recording(() => Response.json({ slug: "rovara-cloud", owner: { login: "preplabsai" } }));
+    const provider = new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => pem, fetchImplementation });
+    await expect(provider.appSlug()).resolves.toBe("rovara-cloud");
+    await expect(provider.appSlug()).resolves.toBe("rovara-cloud");
+    expect(requests.map((request) => request.url)).toEqual(["https://api.github.com/app"]);
+  });
+
+  it("refuses a slug that could change the install address", async () => {
+    for (const slug of ["../evil", "a/b", "a?x=1", "", "a b", "x".repeat(65)]) {
+      const provider = new GitHubAppCredentialProvider({
+        credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => pem, getAppSecret: async () => secretWith({ slug }),
+        fetchImplementation: recording(() => Response.json({ slug })).fetchImplementation,
+      });
+      await expect(provider.appSlug()).rejects.toThrow("slug");
+    }
+  });
+
+  it("gives the OAuth client from the App secret, and undefined when the secret has none", async () => {
+    const options = { credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => pem };
+    const present = new GitHubAppCredentialProvider({ ...options, getAppSecret: async () => secretWith({ clientId: "Iv23liCLIENT", clientSecret: CLIENT_SECRET }) });
+    await expect(present.oauthClient()).resolves.toEqual({ clientId: "Iv23liCLIENT", clientSecret: CLIENT_SECRET });
+    for (const extra of [{}, { clientId: "Iv23liCLIENT" }, { clientSecret: CLIENT_SECRET }, { clientId: "", clientSecret: "" }, { clientId: 5, clientSecret: {} }]) {
+      await expect(new GitHubAppCredentialProvider({ ...options, getAppSecret: async () => secretWith(extra) }).oauthClient()).resolves.toBeUndefined();
+    }
+    await expect(new GitHubAppCredentialProvider(options).oauthClient()).resolves.toBeUndefined();
+  });
+
+  it("looks again, once, for a client set after its copy was read", async () => {
+    const calls: Array<boolean | undefined> = [];
+    let current = secretWith();
+    const provider = new GitHubAppCredentialProvider({
+      credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => pem,
+      getAppSecret: async (options) => { calls.push(options?.refresh); return current; },
+    });
+    await expect(provider.oauthClient()).resolves.toBeUndefined();
+    expect(calls).toEqual([undefined, true]);
+    current = secretWith({ clientId: "Iv23liCLIENT", clientSecret: CLIENT_SECRET });
+    await expect(provider.oauthClient()).resolves.toEqual({ clientId: "Iv23liCLIENT", clientSecret: CLIENT_SECRET });
+  });
+
+  it("treats a secret that is not JSON as having no OAuth client, without echoing it", async () => {
+    const provider = new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "5002502", getPrivateKey: async () => pem, getAppSecret: async () => "not-json-private-text" });
+    await expect(provider.oauthClient()).resolves.toBeUndefined();
+  });
+});
