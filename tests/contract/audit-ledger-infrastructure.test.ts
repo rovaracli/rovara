@@ -17,7 +17,7 @@ skipLambdaBundling();
 
 type Json = Record<string, unknown>;
 type Resource = { Type: string; Properties: Json; DeletionPolicy?: string; UpdateReplacePolicy?: string };
-type TemplateJson = { Resources: Record<string, Resource> };
+type TemplateJson = { Resources: Record<string, Resource>; Parameters?: Record<string, { Default?: string; AllowedValues?: string[]; Type?: string }>; Conditions?: Record<string, unknown> };
 type Statement = { Sid?: string; Effect?: string; Principal?: unknown; Action?: string | string[]; NotAction?: string | string[]; Resource?: unknown; NotResource?: unknown; Condition?: Record<string, Record<string, unknown>> };
 
 const ACCOUNT = "123456789012";
@@ -43,7 +43,7 @@ function one(template: TemplateJson, type: string, prefix: string): [string, Res
 const withoutHash = (logicalId: string) => logicalId.replace(/[0-9A-F]{8}$/, "");
 
 /** A template value with pseudo parameters filled in, GetAtt turned into readable "<id>.<attribute>" text and a Ref to a resource into "Ref:<id>". */
-function concrete(value: unknown, pseudo: Record<string, string> = {}): unknown {
+function concrete(value: unknown, pseudo: Record<string, string> = {}, parameters: Record<string, string> = {}, conditions: Record<string, unknown> = {}): unknown {
   const readable = (node: unknown): unknown => {
     if (Array.isArray(node)) return node.map(readable);
     if (node === null || typeof node !== "object") return node;
@@ -55,9 +55,13 @@ function concrete(value: unknown, pseudo: Record<string, string> = {}): unknown 
     if (entries.length === 1 && entries[0]![0] === "Ref" && !String(entries[0]![1]).startsWith("AWS::")) return `Ref:${withoutHash(String(entries[0]![1]))}`;
     return Object.fromEntries(entries.map(([key, entry]) => [key, readable(entry)]));
   };
-  return evaluate(readable(value), { parameters: {}, conditions: {}, pseudo });
+  return evaluate(readable(value), { parameters, conditions, pseudo });
 }
 const concreteAws = (value: unknown) => concrete(value, { "AWS::AccountId": ACCOUNT, "AWS::Region": REGION, "AWS::Partition": "aws" });
+type Profile = "production" | "trial";
+/** A value of the synthesized template with the lock profile chosen (its default when not given), the way CloudFormation evaluates it. */
+const underProfile = (synthesis: Synth, value: unknown, profile?: Profile, pseudo: Record<string, string> = { "AWS::AccountId": ACCOUNT, "AWS::Region": REGION, "AWS::Partition": "aws" }) =>
+  concrete(value, pseudo, { AuditLockProfile: profile ?? synthesis.template.Parameters!.AuditLockProfile!.Default! }, synthesis.template.Conditions ?? {});
 
 const named = (env: string, extra: Record<string, unknown> = {}) => synth({ agentxEnv: env, ...extra });
 
@@ -150,9 +154,9 @@ describe("the audit ledger in templates", () => {
   });
 
   describe("Object Lock (Review Focus 4)", () => {
-    const lock = (synthesis: Synth) => {
+    const lock = (synthesis: Synth, profile?: Profile) => {
       const [, bucket] = one(synthesis.template, "AWS::S3::Bucket", "AuditLedgerAuditLedgerBucket");
-      return { bucket, configuration: bucket.Properties.ObjectLockConfiguration, versioning: bucket.Properties.VersioningConfiguration };
+      return { bucket, configuration: underProfile(synthesis, bucket.Properties.ObjectLockConfiguration, profile), versioning: bucket.Properties.VersioningConfiguration };
     };
 
     it("production is compliance for 1,096 days with versioning enabled", () => {
@@ -185,6 +189,98 @@ describe("the audit ledger in templates", () => {
     });
   });
 
+  describe("the lock profile (Task 5b)", () => {
+    const lockOf = (synthesis: Synth, profile?: Profile) => {
+      const [, bucket] = one(synthesis.template, "AWS::S3::Bucket", "AuditLedgerAuditLedgerBucket");
+      return underProfile(synthesis, bucket.Properties.ObjectLockConfiguration, profile);
+    };
+    const production2 = (days: number) => ({ ObjectLockEnabled: "Enabled", Rule: { DefaultRetention: { Mode: "COMPLIANCE", Days: days } } });
+    const trial2 = (days: number) => ({ ObjectLockEnabled: "Enabled", Rule: { DefaultRetention: { Mode: "GOVERNANCE", Days: days } } });
+
+    it("declares AuditLockProfile with production and trial as the only values, and production as the default of a real install", () => {
+      for (const synthesis of [production, acme]) {
+        expect(synthesis.template.Parameters!.AuditLockProfile).toMatchObject({ Type: "String", Default: "production", AllowedValues: ["production", "trial"] });
+        expect(synthesis.template.Conditions!.AuditLockIsTrial).toStrictEqual({ "Fn::Equals": [{ Ref: "AuditLockProfile" }, "trial"] });
+      }
+    });
+
+    it("production gives compliance for 1,096 days and trial governance for one day", () => {
+      for (const synthesis of [production, acme, staging]) {
+        expect(lockOf(synthesis, "production")).toStrictEqual(production2(1096));
+        expect(lockOf(synthesis, "trial")).toStrictEqual(trial2(1));
+      }
+    });
+
+    it("a named environment built by CDK keeps its own settings under the parameter's default", () => {
+      expect(staging.template.Parameters!.AuditLockProfile!.Default).toBe("trial");
+      expect(lockOf(staging)).toStrictEqual(trial2(1));
+      expect(lockOf(production)).toStrictEqual(production2(1096));
+      expect(lockOf(named("acme", { agentxAuditRetentionDays: "1826" }))).toStrictEqual(production2(1826));
+      expect(lockOf(named("acme", { agentxAuditRetentionDays: "1826" }), "trial")).toStrictEqual(trial2(1));
+      expect(lockOf(named("staging", { agentxAuditLockMode: "COMPLIANCE", agentxAuditRetentionDays: 30 }))).toStrictEqual(production2(30));
+    });
+
+    it("the floor still throws at synth for the CDK context", () => {
+      expect(() => named("acme", { agentxAuditLockMode: "GOVERNANCE" })).toThrow("audit ledger: acme needs compliance mode with at least 365 days");
+      expect(() => named("production", { agentxAuditRetentionDays: "100" })).toThrow("audit ledger: production needs compliance mode with at least 365 days");
+    });
+
+    it("keeps the bucket's logical id and name, so the profile change is an update in place", () => {
+      for (const synthesis of [production, staging, acme]) {
+        const [id, bucket] = one(synthesis.template, "AWS::S3::Bucket", "AuditLedgerAuditLedgerBucket");
+        expect(id).toBe("AuditLedgerAuditLedgerBucket8577AC5B");
+        // Nothing but the default retention and the policy depends on the parameter: no name or replacement-only property.
+        expect(JSON.stringify(bucket.Properties.BucketName)).not.toContain("AuditLockProfile");
+        expect(JSON.stringify(bucket.Properties.ObjectLockEnabled)).not.toContain("AuditLockProfile");
+        expect(JSON.stringify(bucket.Properties.VersioningConfiguration)).not.toContain("AuditLockProfile");
+      }
+    });
+
+    it("the parameter and its condition are used by the bucket, its policy and the anchor's hash only", () => {
+      const users = Object.entries(production.template.Resources)
+        .filter(([, resource]) => JSON.stringify(resource).includes("AuditLockIsTrial") || JSON.stringify(resource).includes("AuditLockProfile"))
+        .map(([id]) => withoutHash(id));
+      expect(users.sort()).toStrictEqual(["AuditLedgerAuditLedgerBucket", "AuditLedgerAuditLedgerBucketPolicy"]);
+    });
+
+    it("the policy statements are right in both profiles", () => {
+      const statements = (synthesis: Synth, profile: Profile): Statement[] => {
+        const [id] = one(synthesis.template, "AWS::S3::Bucket", "AuditLedgerAuditLedgerBucket");
+        const policy = Object.values(synthesis.template.Resources).find((resource) => resource.Type === "AWS::S3::BucketPolicy" && (resource.Properties.Bucket as { Ref?: string }).Ref === id)!;
+        return (policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement.map((statement) => underProfile(synthesis, statement, profile) as Statement);
+      };
+      const by = (list: Statement[]) => Object.fromEntries(list.map((statement) => [statement.Sid ?? "", statement]));
+      const naming = environmentNaming("acme");
+      const operator = `arn:aws:iam::${ACCOUNT}:role/${naming.operatorRoleName}`;
+      const cloudFormation = `arn:aws:iam::${ACCOUNT}:role/${naming.cloudFormationRoleName}`;
+
+      const compliance = by(statements(acme, "production"));
+      expect(Object.keys(compliance)).toStrictEqual(["DenyDeletes", "DenyLockChanges", "RequireConditionalWrites", "DenyShortRetention", "AllowSSLRequestsOnly"]);
+      expect(compliance.DenyDeletes!.Condition).toBeUndefined();
+      expect(compliance.DenyLockChanges!.Condition).toStrictEqual({ ArnNotEquals: { "aws:PrincipalArn": cloudFormation } });
+      expect(compliance.DenyShortRetention!.Condition).toStrictEqual({ NumericLessThan: { "s3:object-lock-remaining-retention-days": "1096" } });
+
+      const governance = by(statements(acme, "trial"));
+      expect(Object.keys(governance)).toStrictEqual(Object.keys(compliance));
+      expect(governance.DenyDeletes!.Condition).toStrictEqual({ ArnNotEquals: { "aws:PrincipalArn": operator } });
+      expect(governance.DenyLockChanges!.Condition).toStrictEqual({ ArnNotEquals: { "aws:PrincipalArn": [cloudFormation, operator] } });
+      expect(governance.DenyShortRetention!.Condition).toStrictEqual({ NumericLessThan: { "s3:object-lock-remaining-retention-days": "1" } });
+      // The statements that do not depend on the profile are the same in both.
+      for (const sid of ["RequireConditionalWrites", "AllowSSLRequestsOnly"]) expect(governance[sid]).toStrictEqual(compliance[sid]);
+      // The CloudFormation role is excepted from the lock-change denial only, in both profiles.
+      for (const list of [compliance, governance]) {
+        for (const sid of ["DenyDeletes", "RequireConditionalWrites", "DenyShortRetention", "AllowSSLRequestsOnly"]) expect(JSON.stringify(list[sid]!.Condition ?? {})).not.toContain(cloudFormation);
+      }
+    });
+
+    it("the profile differs between the hashes, and a raised retention changes only the production one", () => {
+      const raised = named("acme", { agentxAuditRetentionDays: "1826" });
+      expect(raised.ledger.bucketPolicySha256ByProfile.trial).toBe(acme.ledger.bucketPolicySha256ByProfile.trial);
+      expect(raised.ledger.bucketPolicySha256ByProfile.production).not.toBe(acme.ledger.bucketPolicySha256ByProfile.production);
+      expect(acme.ledger.bucketPolicySha256ByProfile.trial).not.toBe(acme.ledger.bucketPolicySha256ByProfile.production);
+    });
+  });
+
   describe("the buckets", () => {
     it("the ledger bucket is named by environment, account and region, blocked, encrypted, owner-enforced and never expires anything", () => {
       const [id, bucket] = one(production.template, "AWS::S3::Bucket", "AuditLedgerAuditLedgerBucket");
@@ -211,11 +307,11 @@ describe("the audit ledger in templates", () => {
   });
 
   describe("the ledger bucket policy", () => {
-    const statementsOf = (synthesis: Synth) => {
+    const statementsOf = (synthesis: Synth, profile?: Profile) => {
       const [id] = one(synthesis.template, "AWS::S3::Bucket", "AuditLedgerAuditLedgerBucket");
       const policies = Object.values(synthesis.template.Resources).filter((resource) => resource.Type === "AWS::S3::BucketPolicy" && (resource.Properties.Bucket as { Ref?: string }).Ref === id);
       expect(policies).toHaveLength(1);
-      return { document: policies[0]!.Properties.PolicyDocument, statements: (policies[0]!.Properties.PolicyDocument as { Statement: Statement[] }).Statement.map((statement) => concreteAws(statement) as Statement) };
+      return { document: policies[0]!.Properties.PolicyDocument, statements: (policies[0]!.Properties.PolicyDocument as { Statement: Statement[] }).Statement.map((statement) => underProfile(synthesis, statement, profile) as Statement) };
     };
     const bucketArn = (env: string) => `arn:aws:s3:::agentx-${env}-audit-ledger-${ACCOUNT}-${REGION}`;
     const roleArn = (name: string) => `arn:aws:iam::${ACCOUNT}:role/${name}`;
@@ -268,15 +364,30 @@ describe("the audit ledger in templates", () => {
       }
     });
 
-    it("hands the anchor the SHA-256 of the canonical policy document, with account, region and partition left as placeholders", () => {
+    it("hands the anchor the SHA-256 of the canonical policy document of each profile, with account, region and partition left as placeholders", () => {
       const placeholders = { "AWS::AccountId": "{{account}}", "AWS::Region": "{{region}}", "AWS::Partition": "{{partition}}" };
+      const hashes: string[] = [];
       for (const synthesis of [production, staging, acme]) {
         const { document } = statementsOf(synthesis);
-        const text = canonicalJson(concrete(document, placeholders));
-        expect(text).toContain("{{account}}");
-        expect(synthesis.ledger.bucketPolicySha256).toBe(createHash("sha256").update(text).digest("hex"));
+        for (const profile of ["production", "trial"] as const) {
+          // The evaluator resolves the same document, with the profile chosen, to what the anchor reads back from the bucket.
+          const text = canonicalJson(underProfile(synthesis, document, profile, placeholders));
+          expect(text).toContain("{{account}}");
+          expect(synthesis.ledger.bucketPolicySha256ByProfile[profile]).toBe(createHash("sha256").update(text).digest("hex"));
+          hashes.push(synthesis.ledger.bucketPolicySha256ByProfile[profile]);
+        }
       }
-      expect(new Set([production, staging, acme].map((synthesis) => synthesis.ledger.bucketPolicySha256)).size).toBe(3);
+      // Three environments and two profiles: the environment name is part of the document, and the profiles differ.
+      expect(new Set(hashes).size).toBe(6);
+    });
+
+    it("the hash the anchor is given follows the chosen profile", () => {
+      for (const synthesis of [production, staging]) {
+        const token: unknown = synthesis.stack.resolve(synthesis.ledger.bucketPolicySha256);
+        for (const profile of ["production", "trial"] as const) {
+          expect(underProfile(synthesis, token, profile)).toBe(synthesis.ledger.bucketPolicySha256ByProfile[profile]);
+        }
+      }
     });
   });
 

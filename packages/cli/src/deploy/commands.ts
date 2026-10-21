@@ -19,7 +19,7 @@ import type { CallerIdentity } from "../environments/adopt.js";
 import { cloudFormationStackReader, stsCallerIdentity } from "../environments/adopt.js";
 import { ssmParameterStore, type ParameterStore } from "../environments/parameter-store.js";
 import { settingsParameterName } from "../environments/settings.js";
-import { ACCOUNT_PATTERN, BudgetAnswersSchema, CLOUD_NEEDS_CDK_MESSAGE, CloudSignInAnswersSchema, IdentityAnswersSchema, ImagesAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "./answer-schemas.js";
+import { ACCOUNT_PATTERN, AuditLockProfileSchema, BudgetAnswersSchema, CLOUD_NEEDS_CDK_MESSAGE, CloudSignInAnswersSchema, IdentityAnswersSchema, ImagesAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "./answer-schemas.js";
 import { assertCdkBootstrapped, assertSourceAtRelease, buildSource, cdkDeployer, type CommandRunner } from "./cdk-engine.js";
 import { synthDeclaredParameters } from "./cdk-source.js";
 import type { ChangeSetChange, DeployEvent, StackDeployer, StackOutputs } from "./deployer.js";
@@ -109,6 +109,7 @@ export const DeployAnswersSchema = z
     images: ImagesAnswersSchema.optional(),
     slackAppPostedMessages: z.enum(["accept", "ignore"]).optional(),
     budget: BudgetAnswersSchema.optional(),
+    auditLock: AuditLockProfileSchema.optional(),
     cloud: z.literal(true).optional(),
     cloudSignIn: CloudSignInAnswersSchema.optional(),
   })
@@ -180,6 +181,7 @@ function toDeployAnswers(parsed: z.infer<typeof DeployAnswersSchema>): DeployAns
     ...(images === undefined ? {} : { images }),
     ...(parsed.slackAppPostedMessages === undefined ? {} : { slackAppPostedMessages: parsed.slackAppPostedMessages }),
     ...(parsed.budget === undefined ? {} : { budget: parsed.budget }),
+    ...(parsed.auditLock === undefined ? {} : { auditLock: parsed.auditLock }),
     ...(parsed.cloud === true ? { cloud: true as const } : {}),
     ...(parsed.cloudSignIn === undefined ? {} : { cloudSignIn: parsed.cloudSignIn }),
   };

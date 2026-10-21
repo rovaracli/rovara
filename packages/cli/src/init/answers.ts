@@ -69,6 +69,8 @@ export interface InitFlags {
   /** --budget: whole US dollars a month; "0" for none. */
   budget?: string;
   budgetScope?: "tag" | "account";
+  /** --audit-lock: the audit ledger's lock profile; production by default. */
+  auditLock?: "production" | "trial";
   githubAccount?: string; githubAccountType?: "organization" | "user"; githubAppName?: string;
   slackAppName?: string; slackAppPostedMessages?: "accept" | "ignore";
   workerImage?: string; slackImage?: string;
@@ -239,6 +241,8 @@ export async function collectInitAnswers(input: {
     if (scope === "tag") notes.push(BUDGET_TAG_NOTE);
   }
 
+  const auditLock = flags.auditLock ?? (values[SETTINGS_FIELD.auditLock] === "trial" ? "trial" : "production");
+
   const githubAccount = flags.githubAccount ?? typed(SETTINGS_FIELD.githubAccount) ?? "";
   if (!GITHUB_LOGIN_PATTERN.test(githubAccount)) throw agentXError("CONFIG_INVALID", `--github-account ${githubAccount} is not a GitHub organization or user name`);
   // FR-020: GitHub says what the owner is; the question is asked only when it cannot.
@@ -265,6 +269,7 @@ export async function collectInitAnswers(input: {
       : { images: { ...(workerImage === undefined ? {} : { worker: workerImage }), ...(slackImage === undefined ? {} : { slack: slackImage }) } }),
     alert,
     ...(budget === undefined ? {} : { budget }),
+    auditLock,
     ...(flags.rovaraCloud === true ? { cloud: true as const } : {}),
     ...(cloudSignIn === undefined ? {} : { cloudSignIn }),
     github: { account: githubAccount, accountType, appName },
@@ -484,6 +489,7 @@ const RESUME_CHECKS: Array<{ flag: string; key: keyof InitFlags; kind?: ResumeCh
   { flag: "--alert-email", key: "alertEmail", kind: "email", stored: (a) => (a.alert.kind === "email" ? a.alert.address : undefined) },
   { flag: "--budget", key: "budget", stored: (a) => String(a.budget?.monthlyUsd ?? 0) },
   { flag: "--budget-scope", key: "budgetScope", stored: (a) => a.budget?.scope },
+  { flag: "--audit-lock", key: "auditLock", stored: (a) => a.auditLock },
   { flag: "--github-account", key: "githubAccount", kind: "login", stored: (a) => a.github.account },
   { flag: "--github-account-type", key: "githubAccountType", stored: (a) => a.github.accountType },
   { flag: "--github-app-name", key: "githubAppName", stored: (a) => a.github.appName },

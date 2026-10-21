@@ -4,7 +4,7 @@
 // resume before that, from any machine with access to the account.
 import { z } from "zod";
 import { agentXError, AGENTX_NAME_PATTERN, EnvironmentNameSchema, environmentSettingsPrefix, ImageDigest } from "@agentx/contracts";
-import { AlertEmailSchema, ACCOUNT_PATTERN, BudgetAnswersSchema, CloudSignInAnswersSchema, GITHUB_LOGIN_PATTERN, IdentityAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "../deploy/answer-schemas.js";
+import { AlertEmailSchema, ACCOUNT_PATTERN, AuditLockProfileSchema, BudgetAnswersSchema, CloudSignInAnswersSchema, GITHUB_LOGIN_PATTERN, IdentityAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "../deploy/answer-schemas.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 
 export const INIT_STEP_IDS = [
@@ -61,6 +61,8 @@ export const InitAnswersSchema = z.object({
   images: z.object({ worker: ImageDigest.optional(), slack: ImageDigest.optional() }).strict().optional(),
   alert: AlertAnswersSchema,
   budget: BudgetAnswersSchema.optional(),
+  /** The audit ledger's lock profile (Task 5b); absent in answers saved before it, which then deploy with the template's default. */
+  auditLock: AuditLockProfileSchema.optional(),
   /** The hosted Rovara cloud (R45) and its sign-in settings (R46). */
   cloud: z.literal(true).optional(),
   cloudSignIn: CloudSignInAnswersSchema.optional(),

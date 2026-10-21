@@ -52,6 +52,7 @@ export function initDeployAnswers(answers: InitAnswers, progress: InstallProgres
     ...(images === undefined ? {} : { images }),
     slackAppPostedMessages: answers.slack.appPostedMessages,
     ...(answers.budget === undefined ? {} : { budget: answers.budget }),
+    ...(answers.auditLock === undefined ? {} : { auditLock: answers.auditLock }),
     ...(answers.cloud === true ? { cloud: true as const } : {}),
     ...(answers.cloudSignIn === undefined ? {} : { cloudSignIn: answers.cloudSignIn }),
   };

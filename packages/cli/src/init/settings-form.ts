@@ -22,7 +22,7 @@ export const SETTINGS_FIELD = {
   engine: "engine", identity: "identity", signin: "signin", modelProvider: "modelProvider",
   orchestratorModel: "orchestratorModel", classifierModel: "classifierModel", workerModel: "workerModel",
   permissionBoundary: "permissionBoundary", operatorPrincipal: "operatorPrincipal",
-  budget: "budget", budgetScope: "budgetScope", appPostedMessages: "appPostedMessages", alertKind: "alertKind", alertEmail: "alertEmail",
+  budget: "budget", budgetScope: "budgetScope", auditLock: "auditLock", appPostedMessages: "appPostedMessages", alertKind: "alertKind", alertEmail: "alertEmail",
 } as const;
 export type SettingsFieldName = (typeof SETTINGS_FIELD)[keyof typeof SETTINGS_FIELD];
 
@@ -64,6 +64,11 @@ const PROVIDER_CHOICES = [
 const BUDGET_SCOPE_CHOICES = [
   { value: "account", label: "The whole account (recommended)" },
   { value: "tag", label: "Only this environment's (tagged agentx:env; the tag must be activated in Billing)" },
+];
+/** The audit ledger's lock profile (Task 5b). Production is the default and cannot be undone: an install never goes back to trial. */
+const AUDIT_LOCK_CHOICES = [
+  { value: "production", label: "Production (recommended): audit records are locked for 3 years and nobody, not even an AWS administrator, can delete or shorten them" },
+  { value: "trial", label: "Trial: audit records are locked for 1 day and an operator can remove them; for trying AgentX out, and an install can move to production later but never back" },
 ];
 const POSTED_CHOICES = [{ value: "accept", label: "Yes (accept)" }, { value: "ignore", label: "No, only mentions typed in Slack (ignore)" }];
 const ALERT_CHOICES = [
@@ -144,6 +149,7 @@ export function settingsFields(input: SettingsFieldsInput): FormField[] {
     validate: orEmpty(budgetProblem), help: { why: input.budgetWhy, hint: `Optional. Leave empty to use the estimate plus 20% ($${suggested}).` },
   }));
   unless(flags.budgetScope, advanced({ name: SETTINGS_FIELD.budgetScope, question: "Which costs should the budget count?", flag: "--budget-scope", defaultValue: "account", choices: BUDGET_SCOPE_CHOICES }));
+  unless(flags.auditLock, advanced({ name: SETTINGS_FIELD.auditLock, question: "How long should the audit ledger be locked?", flag: "--audit-lock", defaultValue: "production", choices: AUDIT_LOCK_CHOICES }));
   unless(flags.slackAppPostedMessages, advanced({ name: SETTINGS_FIELD.appPostedMessages, question: "Answer mentions people post through other apps with their own Slack token?", flag: "--slack-app-posted-messages", defaultValue: "accept", choices: POSTED_CHOICES }));
   unless(alertAnswered, advanced({ name: SETTINGS_FIELD.alertKind, question: "Where should AgentX send alerts?", flag: ALERT_FLAG, defaultValue: "email", choices: ALERT_CHOICES }));
   unless(alertAnswered, advanced({ name: SETTINGS_FIELD.alertEmail, question: "Alert email address", flag: ALERT_FLAG, defaultValue: "", validate: orEmpty(emailProblem), help: { hint: "Optional. Leave empty to use your email." } }));

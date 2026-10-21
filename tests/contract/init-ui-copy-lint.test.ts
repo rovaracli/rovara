@@ -139,8 +139,8 @@ describe("SC-011: the whole install, as the page shows it", () => {
       if (question.kind === "ask" && question.defaultValue !== undefined) expect({ text: question.text, hint: question.hint }).toMatchObject({ hint: expect.stringMatching(/\S/) as unknown });
       for (const button of question.buttons ?? []) expect(["Yes", "No"]).not.toContain(button.label);
     }
-    // The settings form shows all 18 settings; a text field with a default says what empty means.
-    expect([...fields.keys()].filter((where) => where.startsWith("Your settings/"))).toHaveLength(18);
+    // The settings form shows all 19 settings; a text field with a default says what empty means.
+    expect([...fields.keys()].filter((where) => where.startsWith("Your settings/"))).toHaveLength(19);
     const withDefault = new Set(settingsFields({ env: "staging", flags: {}, fixed: false, budgetWhy: "" }).filter((field) => field.choices === undefined && field.defaultValue !== undefined).map((field) => field.name));
     expect(withDefault.size).toBeGreaterThan(0);
     for (const [where, field] of fields) {

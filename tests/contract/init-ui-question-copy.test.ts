@@ -36,6 +36,7 @@ const DEFAULT_PATH: Array<[kind: "ask" | "choose" | "confirm" | "secret", flag: 
   ["ask", ALERT_FLAG, "Alert email address"],
   ["ask", "--budget", "Monthly AWS budget for this environment, in US dollars (0 for none; empty for the estimate plus 20%, $260)"],
   ["choose", "--budget-scope", "Which costs should the budget count?"],
+  ["choose", "--audit-lock", "How long should the audit ledger be locked?"],
   ["ask", "--github-account", "GitHub organization or user that will own the AgentX GitHub App"],
   ["choose", "--github-account-type", "Is acme an organization or a personal account?"],
   ["ask", "--github-app-name", "GitHub App name (must be unique on GitHub)"],

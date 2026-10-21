@@ -6,7 +6,7 @@ import { CLOUD_PROJECT_FOUNDATION_PARAMETERS, CONTROL_PLANE_FOUNDATION_PARAMETER
 import type { ReleaseManifest, StackPart } from "@agentx/contracts";
 import { signInStackParameters, type StoredDeveloperSignIn } from "../signin/settings.js";
 
-import { providerSecretArn, type CloudSignInAnswers, type ModelsAnswers } from "./answer-schemas.js";
+import { providerSecretArn, type AuditLockProfileAnswer, type CloudSignInAnswers, type ModelsAnswers } from "./answer-schemas.js";
 
 export type StackOutputs = Record<string, string>;
 
@@ -55,6 +55,8 @@ export interface InstallAnswers {
   cloud?: true;
   /** The cloud sign-in settings (R46); only the ones set are passed, the template defaults the rest. */
   cloudSignIn?: CloudSignInAnswers;
+  /** The audit ledger's lock profile (the control plane's AuditLockProfile); absent leaves the template's default, or on an upgrade the deployed value. */
+  auditLock?: AuditLockProfileAnswer;
 }
 
 /** The shortest callback signing key the control plane accepts. */
@@ -74,7 +76,7 @@ export const OPERATOR_PARAMETERS: Readonly<Record<DeployPart, readonly string[]>
   foundation: [],
   identity: [],
   runtime: [],
-  "control-plane": ["BudgetMonthlyUsd", "BudgetScope", "SlackAppPostedMessages", "SlackThreadTurnsPerMinute", "SlackMemberWorkspaceLimit", "SlackOrganizationWorkspaceLimit", "McpConfirmElicitation", "TaskPeopleChangesEnabled", "TaskPeoplePublicInvitationsEnabled", "TaskPeoplePrivateInvitationsEnabled", "TaskPersonProofEnabled", "WorkflowDependenciesEnabled"],
+  "control-plane": ["BudgetMonthlyUsd", "BudgetScope", "SlackAppPostedMessages", "SlackThreadTurnsPerMinute", "SlackMemberWorkspaceLimit", "SlackOrganizationWorkspaceLimit", "McpConfirmElicitation", "TaskPeopleChangesEnabled", "TaskPeoplePublicInvitationsEnabled", "TaskPeoplePrivateInvitationsEnabled", "TaskPersonProofEnabled", "WorkflowDependenciesEnabled", "AuditLockProfile"],
   slack: ["SlowTurnMinutes"],
 };
 
@@ -302,6 +304,7 @@ export function stackParameters(part: DeployPart, answers: InstallAnswers, outpu
         ...(answers.slackAppPostedMessages === undefined ? {} : { SlackAppPostedMessages: answers.slackAppPostedMessages }),
         ...(answers.cloud === true ? cloudSignInParameters(answers.cloudSignIn) : {}),
         ...(answers.budget === undefined ? {} : { BudgetMonthlyUsd: String(answers.budget.monthlyUsd), BudgetScope: answers.budget.scope }),
+        ...(answers.auditLock === undefined ? {} : { AuditLockProfile: answers.auditLock }),
         // F24: only when a stored sign-in choice is actually given; the template's own defaults
         // (sign-in off) are otherwise left untouched, and only the seven keys the control-plane
         // template declares (infra/lib/developer-signin.ts) are ever added here.

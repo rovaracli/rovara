@@ -91,6 +91,12 @@ describe("deploy parameters", () => {
     const withBudget = stackParameters("control-plane", { ...answers(), budget: { monthlyUsd: 150, scope: "account" } }, outputs, { packages: true });
     expect(withBudget).toMatchObject({ BudgetMonthlyUsd: "150", BudgetScope: "account" });
   });
+  it("passes the audit ledger's lock profile to the control plane only when the answers choose one", () => {
+    expect(stackParameters("control-plane", answers(), outputs, { packages: true })).not.toHaveProperty("AuditLockProfile");
+    expect(stackParameters("control-plane", { ...answers(), auditLock: "trial" }, outputs, { packages: true }).AuditLockProfile).toBe("trial");
+    expect(stackParameters("control-plane", { ...answers(), auditLock: "production" }, outputs, { packages: true }).AuditLockProfile).toBe("production");
+    expect(stackParameters("slack", { ...answers(), auditLock: "trial" }, outputs, { packages: true })).not.toHaveProperty("AuditLockProfile");
+  });
   it.each(["access", "foundation", "identity", "control-plane", "runtime", "slack"] as DeployPart[])("supplies every required parameter of %s and nothing unknown", (part) => {
     const params = stackParameters(part, answers(), outputs, { packages: true });
     const declared = templates.get(part)!.Parameters ?? {};

@@ -37,7 +37,7 @@ const FORM_QUESTIONS = [
   "Deploy engine", "Sign-in", "How will developers sign in to AgentX from their AI tools?", "Model provider", "Orchestrator model",
   "Action-gate classifier model", "Worker model", "Permission boundary policy ARN (Enter for AgentX's default boundary)",
   "IAM principal allowed to assume the AgentX operator role (Enter for this account)", "Monthly AWS budget for this environment, in US dollars (0 for none; empty for the estimate plus 20%, $260)",
-  "Which costs should the budget count?", "Answer mentions people post through other apps with their own Slack token?", "Where should AgentX send alerts?", "Alert email address",
+  "Which costs should the budget count?", "How long should the audit ledger be locked?", "Answer mentions people post through other apps with their own Slack token?", "Where should AgentX send alerts?", "Alert email address",
 ];
 // Every default taken but alerts to the ops address, then "" for the owner's type (no GitHub lookup here).
 const FIRST_RUN = [...settingsScript({ owner: "acme", advanced: { alertEmail: "ops@example.com" } }), ""];
@@ -80,6 +80,7 @@ describe("init questions", () => {
       models: { orchestrator: "us.anthropic.claude-sonnet-4-6", classifier: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: "us.anthropic.claude-sonnet-4-6" },
       alert: { kind: "email", address: "ops@example.com" },
       budget: { monthlyUsd: 260, scope: "account" },
+      auditLock: "production",
       github: { account: "acme", accountType: "organization", appName: "AgentX acme (staging)" },
       slack: { appName: "AgentX acme (staging)", appPostedMessages: "accept" },
       // Spec 048 FR-020: your email and the developer sign-in are settings now.
@@ -238,6 +239,31 @@ describe("the budget question (FR-047)", () => {
   it("refuses a resume whose --budget differs from what the install started with", () => {
     expect(() => assertResumeFlagsMatch(sampleAnswers({ budget: { monthlyUsd: 100, scope: "tag" } }), { budget: "200" }))
       .toThrow("--budget 200 differs from what this install started with (100)");
+  });
+});
+
+describe("the audit lock question (Task 5b)", () => {
+  it("defaults to production when nothing says otherwise", async () => {
+    const result = await collectWithFlags({ ...base, flags: withExplicitUndefined(everyFlag, "auditLock") });
+    expect(result.answers.auditLock).toBe("production");
+  });
+
+  it("takes --audit-lock trial and --audit-lock production", async () => {
+    expect((await collectWithFlags({ ...base, flags: { ...everyFlag, auditLock: "trial" } })).answers.auditLock).toBe("trial");
+    expect((await collectWithFlags({ ...base, flags: { ...everyFlag, auditLock: "production" } })).answers.auditLock).toBe("production");
+  });
+
+  it("refuses a resume whose --audit-lock differs from what the install started with", () => {
+    expect(() => assertResumeFlagsMatch(sampleAnswers({ auditLock: "production" }), { auditLock: "trial" })).toThrow("--audit-lock trial differs from what this install started with (production)");
+    expect(() => assertResumeFlagsMatch(sampleAnswers({ auditLock: "production" }), { auditLock: "production" })).not.toThrow();
+  });
+
+  it("explains each choice in one plain line each, without em dashes", async () => {
+    const { settingsFields } = await import("../../packages/cli/src/init/settings-form.js");
+    const field = settingsFields({ env: "acme", flags: {}, fixed: false, budgetWhy: "" }).find((each) => each.name === "auditLock")!;
+    expect(field.defaultValue).toBe("production");
+    expect(field.choices!.map((choice) => choice.value)).toEqual(["production", "trial"]);
+    for (const choice of field.choices!) expect(choice.label).not.toMatch(/\u2014|\u2013/);
   });
 });
 

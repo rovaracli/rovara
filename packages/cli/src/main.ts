@@ -1187,6 +1187,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--github-sign-in-client-secret-arn <arn>", "with --rovara-cloud: the Secrets Manager secret holding the GitHub OAuth client secret as {\"clientSecret\": ...}")
     .option("--budget <usd>", "monthly AWS budget in whole US dollars; 0 for none (default 100)")
     .addOption(new Option("--budget-scope <scope>", "tag: costs tagged agentx:env; account: the whole account").choices(["tag", "account"]))
+    .addOption(new Option("--audit-lock <profile>", "production: audit records are locked for 3 years (default); trial: locked for 1 day and removable by an operator. An install can move from trial to production, never back").choices(["production", "trial"]))
     .option("--github-account <login>", "GitHub organization or user that will own the AgentX GitHub App")
     .addOption(new Option("--github-account-type <type>", "whether --github-account is an organization or a personal account").choices(["organization", "user"]))
     .option("--github-app-name <name>", "GitHub App name (unique on GitHub)")
@@ -1470,7 +1471,7 @@ interface InitCommandOptions extends SignInCommandOptions {
   openaiSecretArn?: string; openaiKeyFile?: string; openaiKeyEnv?: string;
   permissionBoundary?: string; operatorPrincipal?: string; orchestratorModel: string; classifierModel: string; workerModel: string;
   alertEmail?: string; alertWebhookFile?: string; alertWebhookEnv?: string; alerts: boolean;
-  budget?: string; budgetScope?: "tag" | "account";
+  budget?: string; budgetScope?: "tag" | "account"; auditLock?: "production" | "trial";
   githubAccount?: string; githubAccountType?: "organization" | "user"; githubAppName?: string;
   githubAppId?: string; githubInstallationId?: string; githubPrivateKeyFile?: string; githubPrivateKeyEnv?: string;
   slackAppName?: string; slackAppPostedMessages?: "accept" | "ignore"; slackInstall?: "installed" | "approval";
@@ -1525,7 +1526,7 @@ function initOptions(globals: GlobalOptions, options: InitCommandOptions, comman
     alertEmail: options.alertEmail,
     alertWebhook: secretSource(options.alertWebhookFile, options.alertWebhookEnv),
     alerts: typed("alerts", options.alerts),
-    budget: options.budget, budgetScope: options.budgetScope,
+    budget: options.budget, budgetScope: options.budgetScope, auditLock: options.auditLock,
     githubAccount: options.githubAccount, githubAccountType: options.githubAccountType, githubAppName: options.githubAppName,
     slackAppName: options.slackAppName, slackAppPostedMessages: options.slackAppPostedMessages,
     workerImage: options.workerImage, slackImage: options.slackImage,

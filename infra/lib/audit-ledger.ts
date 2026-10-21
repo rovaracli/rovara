@@ -6,7 +6,11 @@
 import { createHash } from "node:crypto";
 import {
   Aws,
+  CfnCondition,
+  CfnParameter,
   Duration,
+  Fn,
+  Lazy,
   RemovalPolicy,
   Stack,
   aws_cloudwatch as cloudwatch,
@@ -20,7 +24,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { AUDIT_INTAKE_MAX_RECEIVES, canonicalJson } from "@agentx/contracts";
+import { AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_INTAKE_MAX_RECEIVES, AUDIT_RETENTION_DAYS_DEFAULT, canonicalJson } from "@agentx/contracts";
 import type { AgentXNaming } from "./naming.js";
 import {
   auditLockSettings,
@@ -133,6 +137,30 @@ export const AUDIT_RECORD_FAILED_EVENTS = ["audit.record_failed", "audit.record_
  */
 export const AUDIT_PENDING_STUCK_EVENTS = ["audit.pending_stuck", "audit.drain_failed"] as const;
 
+/** The two lock profiles an install chooses between with the `AuditLockProfile` stack parameter. */
+export type AuditLockProfile = "production" | "trial";
+export const AUDIT_LOCK_PROFILES: readonly AuditLockProfile[] = ["production", "trial"];
+
+export interface AuditLockProfileSettings {
+  readonly mode: AuditLockMode;
+  readonly retentionDays: number;
+}
+
+/**
+ * What each profile sets. `production` is compliance and `trial` is governance. The environment's own settings
+ * (auditLockSettings: the name and the CDK context) fix the branch that matches them; the other branch takes the
+ * profile's standard value (1,096 days compliance, 1 day governance). So a named environment built by CDK keeps its
+ * behaviour under the parameter's default, and a published template (built for a placeholder name, which is a real
+ * install's kind) offers production by default and trial on request.
+ */
+export function auditLockProfileSettings(lock: AuditLockSettings): { production: AuditLockProfileSettings; trial: AuditLockProfileSettings; default: AuditLockProfile } {
+  return {
+    production: { mode: "COMPLIANCE", retentionDays: lock.mode === "COMPLIANCE" ? lock.retentionDays : AUDIT_RETENTION_DAYS_DEFAULT },
+    trial: { mode: "GOVERNANCE", retentionDays: lock.mode === "GOVERNANCE" ? lock.retentionDays : AUDIT_GOVERNANCE_RETENTION_DAYS },
+    default: lock.mode === "COMPLIANCE" ? "production" : "trial",
+  };
+}
+
 export interface AuditLedgerProps {
   readonly naming: AgentXNaming;
   /**
@@ -166,7 +194,23 @@ export class AuditLedger extends Construct {
   readonly vaultKey: kms.Key;
   readonly ledgerBucket: s3.Bucket;
   readonly exportsBucket: s3.Bucket;
-  /** SHA-256 (hex) of the canonical JSON of the bucket policy document with `{{partition}}`, `{{account}}` and `{{region}}` in place of the deployment's values. */
+  /** The settings of each lock profile, and the one the `AuditLockProfile` parameter defaults to. */
+  readonly lockProfiles: { readonly production: AuditLockProfileSettings; readonly trial: AuditLockProfileSettings; readonly default: AuditLockProfile };
+  /** The stack parameter that chooses the lock profile (`production` or `trial`). */
+  readonly lockProfileParameter: CfnParameter;
+  /** True when `AuditLockProfile` is `trial`. */
+  readonly trialCondition: CfnCondition;
+  /**
+   * SHA-256 (hex) of the canonical JSON of the bucket policy document with `{{partition}}`, `{{account}}` and `{{region}}`
+   * in place of the deployment's values, for each lock profile: the policy differs between them (operator exceptions,
+   * retention days), so there is one hash per profile.
+   */
+  readonly bucketPolicySha256ByProfile: Readonly<Record<AuditLockProfile, string>>;
+  /**
+   * The same hash as a template value that follows the chosen profile (`Fn::If` on `AuditLockProfile`): the anchor's
+   * `AUDIT_BUCKET_POLICY_SHA256` environment variable (Task 9) takes this, so it always names the policy the stack deployed.
+   * Only a token: read `bucketPolicySha256ByProfile` for the hex values.
+   */
   readonly bucketPolicySha256: string;
 
   constructor(scope: Construct, id: string, props: AuditLedgerProps) {
@@ -302,37 +346,76 @@ export class AuditLedger extends Construct {
     const vaultKeyAlias = new kms.Alias(this, "AuditVaultKeyAlias", { aliasName: `alias/agentx/${env}/audit-vault`, targetKey: this.vaultKey, removalPolicy: RemovalPolicy.RETAIN });
     (vaultKeyAlias.node.defaultChild as kms.CfnAlias).addMetadata(KEEP_ON_ROLLBACK_METADATA, true);
 
+    // The lock profile: one stack parameter chooses between the two sets of values. It sits at the stack's top level
+    // so that its name is exactly AuditLockProfile, which the deploy CLI passes. Changing it only changes the default
+    // retention for new objects (an update without interruption and without replacement), and the bucket policy.
+    this.lockProfiles = auditLockProfileSettings(this.lock);
+    this.lockProfileParameter = new CfnParameter(stack, "AuditLockProfile", {
+      type: "String",
+      default: this.lockProfiles.default,
+      allowedValues: [...AUDIT_LOCK_PROFILES],
+      description: "Lock profile of the audit ledger: production keeps records locked for 3 years and nobody can shorten that; trial keeps them for 1 day and an operator can remove them. An install can move from trial to production, never back.",
+    });
+    this.trialCondition = new CfnCondition(stack, "AuditLockIsTrial", { expression: Fn.conditionEquals(this.lockProfileParameter.valueAsString, "trial") });
+    const trialOrProduction = <T>(trial: T, production: T): T => Fn.conditionIf(this.trialCondition.logicalId, trial, production) as unknown as T;
+
     // The ledger bucket. Object Lock needs versioning; the default retention stamps every object at creation.
-    const policyInputs = (values: Pick<AuditBucketPolicyInputs, "partition" | "account" | "region">): AuditBucketPolicyInputs => ({
+    const policyInputs = (values: Pick<AuditBucketPolicyInputs, "partition" | "account" | "region">, profile: AuditLockProfileSettings): AuditBucketPolicyInputs => ({
       ...values,
       resourcePrefix: naming.resourcePrefix,
       cloudFormationRoleName: naming.cloudFormationRoleName,
       operatorRoleName: naming.operatorRoleName,
-      mode: this.lock.mode,
-      retentionDays: this.lock.retentionDays,
+      mode: profile.mode,
+      retentionDays: profile.retentionDays,
     });
-    const real = policyInputs({ partition: Aws.PARTITION, account: Aws.ACCOUNT_ID, region: Aws.REGION });
-    const retention = this.lock.mode === "COMPLIANCE"
-      ? s3.ObjectLockRetention.compliance(Duration.days(this.lock.retentionDays))
-      : s3.ObjectLockRetention.governance(Duration.days(this.lock.retentionDays));
+    const real = (profile: AuditLockProfileSettings) => policyInputs({ partition: Aws.PARTITION, account: Aws.ACCOUNT_ID, region: Aws.REGION }, profile);
     this.ledgerBucket = new s3.Bucket(this, "AuditLedgerBucket", {
-      bucketName: auditLedgerBucketName(real),
+      bucketName: auditLedgerBucketName(real(this.lockProfiles.production)),
       objectLockEnabled: true,
-      objectLockDefaultRetention: retention,
       versioned: true,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
       removalPolicy: RemovalPolicy.RETAIN,
     });
-    for (const statement of auditBucketPolicyStatements(real)) this.ledgerBucket.addToResourcePolicy(iam.PolicyStatement.fromJson(statement));
+    // The default retention follows the profile. CloudFormation updates it in place: the property is "No interruption"
+    // in the resource reference, and the bucket's logical id and name do not change. It applies to new objects only;
+    // records written under the trial profile keep their one-day governance lock after a move to production. S3 itself
+    // refuses to shorten or relax a compliance lock on an existing object version, so the deploy CLI's refusal of a move
+    // from production back to trial states the intent and is not the only guard.
+    // Raw CloudFormation property names: the value is a condition, which the typed property cannot express.
+    const retentionOf = (profile: AuditLockProfileSettings) => ({ Mode: profile.mode, Days: profile.retentionDays });
+    (this.ledgerBucket.node.defaultChild as s3.CfnBucket).objectLockConfiguration = {
+      objectLockEnabled: "Enabled",
+      rule: { defaultRetention: trialOrProduction<s3.CfnBucket.DefaultRetentionProperty>(retentionOf(this.lockProfiles.trial) as never, retentionOf(this.lockProfiles.production) as never) },
+    };
 
-    // The same document with placeholders where the deployment's values go; resolving it through CDK gives the
+    // The bucket policy: the statements that differ between the profiles are chosen by Fn::If on the statement, so each
+    // profile's policy is exactly the one its own settings produce. Both are built by the same function as the documents the
+    // anchor's drift check hashes.
+    const documentOf = (values: Pick<AuditBucketPolicyInputs, "partition" | "account" | "region">, profile: AuditLockProfileSettings) =>
+      new iam.PolicyDocument({ statements: auditBucketPolicyStatements(policyInputs(values, profile)).map((statement) => iam.PolicyStatement.fromJson(statement)) });
+    const statementsOf = (profile: AuditLockProfileSettings): unknown[] => (stack.resolve(documentOf({ partition: Aws.PARTITION, account: Aws.ACCOUNT_ID, region: Aws.REGION }, profile).toJSON()) as { Statement: unknown[] }).Statement;
+    const productionStatements = statementsOf(this.lockProfiles.production);
+    const trialStatements = statementsOf(this.lockProfiles.trial);
+    if (productionStatements.length !== trialStatements.length) throw new Error("audit ledger: the two lock profiles must have the same bucket policy statements");
+    const profileStatements = productionStatements.map((statement, index) => (
+      canonicalJson(statement) === canonicalJson(trialStatements[index]) ? statement : trialOrProduction<unknown>(trialStatements[index], statement)
+    ));
+    for (const statement of auditBucketPolicyStatements(real(this.lockProfiles.production))) this.ledgerBucket.addToResourcePolicy(iam.PolicyStatement.fromJson(statement));
+    const bucketPolicy = this.ledgerBucket.policy!;
+    // Statements added to the policy after this point (by a later task) are kept after the profile's own.
+    (bucketPolicy.node.defaultChild as s3.CfnBucketPolicy).addPropertyOverride("PolicyDocument.Statement", Lazy.any({
+      produce: () => [...profileStatements, ...(stack.resolve(bucketPolicy.document.toJSON()) as { Statement: unknown[] }).Statement.slice(profileStatements.length)],
+    }));
+
+    // The same documents with placeholders where the deployment's values go; resolving them through CDK gives the
     // serialization CloudFormation receives, so the anchor can compare against what the bucket reports.
-    const hashed = new iam.PolicyDocument({
-      statements: auditBucketPolicyStatements(policyInputs({ partition: "{{partition}}", account: "{{account}}", region: "{{region}}" })).map((statement) => iam.PolicyStatement.fromJson(statement)),
-    });
-    this.bucketPolicySha256 = createHash("sha256").update(canonicalJson(stack.resolve(hashed.toJSON()))).digest("hex");
+    const hashOf = (profile: AuditLockProfileSettings): string => createHash("sha256")
+      .update(canonicalJson(stack.resolve(documentOf({ partition: "{{partition}}", account: "{{account}}", region: "{{region}}" }, profile).toJSON())))
+      .digest("hex");
+    this.bucketPolicySha256ByProfile = { production: hashOf(this.lockProfiles.production), trial: hashOf(this.lockProfiles.trial) };
+    this.bucketPolicySha256 = Fn.conditionIf(this.trialCondition.logicalId, this.bucketPolicySha256ByProfile.trial, this.bucketPolicySha256ByProfile.production).toString();
 
     this.exportsBucket = new s3.Bucket(this, "AuditExportsBucket", {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,

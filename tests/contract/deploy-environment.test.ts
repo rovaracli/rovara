@@ -1064,3 +1064,74 @@ describe("the hosted Rovara cloud switch is stored and survives every deploy (R4
       .rejects.toThrow(/must be synthesized from source/);
   });
 });
+
+describe("the audit ledger's lock profile (Task 5b)", () => {
+  const REFUSAL = "audit ledger: an install in production mode can't go back to trial; its records are locked for 3 years";
+  const deployed = (profile: string | undefined) => async (stack: string): Promise<Record<string, string> | undefined> => (profile !== undefined && stack === stackName("control-plane") ? { AuditLockProfile: profile } : undefined);
+  const withProfile = (auditLock?: "production" | "trial"): DeployAnswers => ({ ...baseAnswers(), ...(auditLock === undefined ? {} : { auditLock }) });
+  const controlPlane = (requests: DeployRequest[]) => requests.find((request) => request.part === "control-plane")!.parameters;
+
+  async function upgrade(input: { answers: DeployAnswers; deployedProfile: string | undefined; release?: LoadedRelease; mode?: "install" | "upgrade"; parts?: DeployPart[] }) {
+    const store = new MemoryParameterStore();
+    const secrets = memorySecrets();
+    await writeEnvironmentSettings(store, stagingSettings);
+    const { deployer, requests } = fakeDeployer(scriptedOutputs());
+    const run = deployEnvironment({
+      mode: input.mode ?? "upgrade", engine: "templates", answers: input.answers, release: input.release ?? fakeReleaseWithControlPlaneParameters(["AuditLockProfile", "BudgetMonthlyUsd"]),
+      deployer, store, secrets, holder: HOLDER, deployedParameters: deployed(input.deployedProfile), ...(input.parts === undefined ? {} : { parts: input.parts }),
+    });
+    return { run, requests, secrets };
+  }
+
+  it("refuses production to trial with the exact text before anything deploys", async () => {
+    const { run, requests, secrets } = await upgrade({ answers: withProfile("trial"), deployedProfile: "production" });
+    await expect(run).rejects.toThrow(REFUSAL);
+    await expect(run).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect(requests).toEqual([]);
+    expect(secrets.creates).toEqual([]);
+  });
+
+  it("refuses it on an install over an existing production stack too", async () => {
+    const { run, requests } = await upgrade({ answers: withProfile("trial"), deployedProfile: "production", mode: "install", parts: ["control-plane"] });
+    await expect(run).rejects.toThrow(REFUSAL);
+    expect(requests).toEqual([]);
+  });
+
+  it("allows trial to production", async () => {
+    const { run, requests } = await upgrade({ answers: withProfile("production"), deployedProfile: "trial" });
+    await run;
+    expect(controlPlane(requests).AuditLockProfile).toBe("production");
+  });
+
+  it("allows production to production and trial to trial", async () => {
+    for (const profile of ["production", "trial"] as const) {
+      const { run, requests } = await upgrade({ answers: withProfile(profile), deployedProfile: profile });
+      await run;
+      expect(controlPlane(requests).AuditLockProfile).toBe(profile);
+    }
+  });
+
+  it("allows a first deploy of trial, when the stack has no profile yet", async () => {
+    const { run, requests } = await upgrade({ answers: withProfile("trial"), deployedProfile: undefined });
+    await run;
+    expect(controlPlane(requests).AuditLockProfile).toBe("trial");
+  });
+
+  it("keeps the deployed profile on an upgrade whose answers do not set one", async () => {
+    for (const profile of ["production", "trial"]) {
+      const { run, requests } = await upgrade({ answers: withProfile(), deployedProfile: profile });
+      await run;
+      expect(controlPlane(requests).AuditLockProfile).toBe(profile);
+    }
+  });
+
+  it("sends nothing for a release whose template has no such parameter, and does not refuse", async () => {
+    const { run, requests } = await upgrade({ answers: withProfile("production"), deployedProfile: undefined, release: fakeReleaseWithControlPlaneParameters(["BudgetMonthlyUsd"]) });
+    await run;
+    expect(controlPlane(requests)).not.toHaveProperty("AuditLockProfile");
+  });
+
+  it("is kept across upgrades like the other operator parameters", () => {
+    expect(OPERATOR_PARAMETERS["control-plane"]).toContain("AuditLockProfile");
+  });
+});

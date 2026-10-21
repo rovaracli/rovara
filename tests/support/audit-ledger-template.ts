@@ -8,7 +8,8 @@ export const hasAuditLedger = (template: unknown): boolean => Object.keys((templ
 /**
  * The Audit Ledger adds, to a named control plane, one construct's resources (AuditLedger*) and the appender's bare
  * role (AuditAppenderRole*), and nothing else but one environment variable on the broker (Task 6: the intake queue's
- * URL; its grants are a policy of their own, inside the construct). No parameter, output or grant on an existing
+ * URL; its grants are a policy of their own, inside the construct) and, since Task 5b, the AuditLockProfile parameter
+ * with its AuditLockIsTrial condition (nothing outside the ledger uses them). No other parameter, output or grant on an existing
  * resource. The inventory is checked here to be exactly this, then taken out, so the rest of the template must still
  * match the recorded snapshot or digest. audit-ledger-infrastructure.test.ts checks the resources themselves.
  */
@@ -39,6 +40,13 @@ export function withoutAuditLedger(template: unknown): unknown {
     "AWS::Scheduler::Schedule AuditLedgerAuditDrainSchedule",
   ]);
   for (const id of ids) delete resources[id];
+  // Task 5b: the lock profile parameter and the one condition on it; both are used only by the ledger resources removed above.
+  const { Parameters: parameters, Conditions: conditions } = template as { Parameters?: Record<string, unknown>; Conditions?: Record<string, unknown> };
+  expect(parameters?.AuditLockProfile).toBeDefined();
+  expect(conditions?.AuditLockIsTrial).toBeDefined();
+  delete parameters!.AuditLockProfile;
+  delete conditions!.AuditLockIsTrial;
+  expect(JSON.stringify(template)).not.toMatch(/AuditLockIsTrial|AuditLockProfile/);
   // Task 6: the one change to an existing resource, the broker's intake queue URL.
   const brokers = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::Lambda::Function" && /^Broker[0-9A-F]{8}$/.test(id));
   expect(brokers).toHaveLength(1);
