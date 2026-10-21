@@ -46,6 +46,16 @@ export interface CallOptions {
   busyStep?: string;
 }
 
+/** What the audit status route answers (the owner/admin check is the route's: other members get its refusal). The limits copy is the tool's own. */
+const AuditStatusSchema = z.object({
+  headSeq: z.number().int().min(0),
+  sealedThroughSeq: z.number().int().min(0),
+  latestTimestamp: z.string().optional(),
+  lockMode: z.enum(["COMPLIANCE", "GOVERNANCE"]).optional(),
+  epochsWithoutTimestamp: z.array(z.string()),
+});
+export type AuditStatusView = z.infer<typeof AuditStatusSchema>;
+
 export interface ControlPlaneClient {
   /** The environment's agentx-configuration, read without a token. */
   configuration(): Promise<{ env: string; apiVersion: string; baseUrl: string; adminApiVersion?: string; confirm?: AgentXConfigurationConfirm }>;
@@ -80,6 +90,8 @@ export interface ControlPlaneClient {
   getTaskPeopleRequest(taskId: string, requestId: string): Promise<TaskPeopleChangeResult>;
   setTaskPerson(taskId: string, request: TaskPeopleRoleRequest): Promise<TaskPeopleChangeResult>;
   takeTaskOwnership(taskId: string, request: TaskPeopleTakeOwnershipRequest): Promise<TaskPeopleChangeResult>;
+  /** Task 14: how far the signed-in person's organization audit log is sealed. Owners and admins only; anyone else gets the route's refusal. */
+  auditStatus(): Promise<AuditStatusView>;
 }
 
 /** Spec 025 A1: adminApiVersion is absent from a control plane from before 25d. */
@@ -268,5 +280,6 @@ export function httpControlPlaneClient(options: {
     getTaskPeopleRequest: async (taskId, requestId) => (await call(TaskPeopleChangeResponseSchema, "GET", path(taskId, `/people/requests/${encodeURIComponent(requestId)}`))).change,
     setTaskPerson: async (taskId, request) => (await call(TaskPeopleChangeResponseSchema, "POST", path(taskId, "/people/role"), request)).change,
     takeTaskOwnership: async (taskId, request) => (await call(TaskPeopleChangeResponseSchema, "POST", path(taskId, "/people/take-ownership"), request)).change,
+    auditStatus: () => call(AuditStatusSchema, "GET", "/v1/dev/org/audit/status"),
   };
 }

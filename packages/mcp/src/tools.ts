@@ -4,7 +4,7 @@
 import {
   DEFAULT_DEVELOPER_TASK_POLICY, DEVELOPER_EVENTS_DEFAULT, DEVELOPER_EVENTS_MAX, DEVELOPER_TASK_LIST_DEFAULT, DEVELOPER_TASK_LIST_MAX,
   DEVELOPER_WAIT_MAX_SECONDS, DeveloperInstructionsSchema, DeveloperTaskStatusSchema, SHARED_BY_POLICY, VIEW_ONLY_BY_POLICY, WORKFLOW_BLOCK_REASONS, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, WORKFLOW_REVIEW_FAILURE_REASONS,
-  E2ESharedViewSchema, inertName, openReviewFindings, workflowIsReviewOnly, workflowKeepPullRequestsOffered, type DeveloperTaskView,
+  AUDIT_LIMITS_COPY, E2ESharedViewSchema, inertName, openReviewFindings, workflowIsReviewOnly, workflowKeepPullRequestsOffered, type DeveloperTaskView,
   TaskPeopleRoleSchema,
 } from "@agentx/contracts";
 import { z } from "zod";
@@ -950,6 +950,38 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
       return answer.status === "PENDING"
         ? { structured: { status: answer.status, request_id: answer.requestId, confirmation_url: answer.confirmationUrl, expires_at: answer.expiresAt }, text: `A human confirmation is required: ${answer.confirmationUrl}` }
         : { structured: { status: answer.status, revision: answer.view.revision }, text: `People revision ${answer.view.revision} committed.` };
+    },
+  },
+  {
+    name: "agentx_audit_status",
+    title: "Show how far the organization's audit log is sealed",
+    description: "Shows how far the signed-in person's organization audit log is sealed, the latest independent time a timestamp service vouched for, and what the log does and does not prove. Only the organization's owners and admins can use it; other members are refused. It shows no records: for those, the person runs agentx audit log or agentx audit open. Each call is itself recorded in the audit log as a read.",
+    inputSchema: {},
+    outputSchema: {
+      head_seq: z.number(), sealed_through_seq: z.number(), unsealed_count: z.number(),
+      latest_timestamp: z.string().optional(), lock_mode: z.enum(["COMPLIANCE", "GOVERNANCE"]).optional(),
+      epochs_without_timestamp: z.array(z.string()).describe("sealed batches with no independent time yet; the latest_timestamp date does not cover them"),
+      limits: z.string().describe("what the log proves and what it does not; repeat it rather than claiming more"),
+    },
+    async handler(context) {
+      const status = await context.client.auditStatus();
+      const unsealed = Math.max(0, status.headSeq - status.sealedThroughSeq);
+      const epochs = status.epochsWithoutTimestamp.map((id) => plainText(id, "(unreadable)"));
+      const lines = [
+        `Sealed through record ${status.sealedThroughSeq} of ${status.headSeq}.${unsealed > 0 ? ` ${unsealed} newer ${unsealed === 1 ? "record is" : "records are"} not sealed yet.` : ""}`,
+        status.latestTimestamp === undefined ? "No independent time yet: no timestamp service has signed a sealed batch." : `Latest independent time: ${plainText(status.latestTimestamp, "(unreadable)")}.`,
+        ...(epochs.length === 0 ? [] : [`${epochs.length} sealed ${epochs.length === 1 ? "batch has" : "batches have"} no independent time yet, so that time does not cover ${epochs.length === 1 ? "it" : "them"}: ${epochs.join(", ")}.`]),
+        ...(status.lockMode === undefined ? [] : [`Sealed copies are locked in ${status.lockMode.toLowerCase()} mode.${status.lockMode === "GOVERNANCE" ? " In governance mode, a privileged administrator could remove the sealed copies." : ""}`]),
+      ];
+      return {
+        structured: {
+          head_seq: status.headSeq, sealed_through_seq: status.sealedThroughSeq, unsealed_count: unsealed,
+          ...(status.latestTimestamp === undefined ? {} : { latest_timestamp: plainText(status.latestTimestamp, "") }),
+          ...(status.lockMode === undefined ? {} : { lock_mode: status.lockMode }),
+          epochs_without_timestamp: epochs, limits: AUDIT_LIMITS_COPY,
+        },
+        text: `${lines.join("\n")}\n\n${AUDIT_LIMITS_COPY}`,
+      };
     },
   },
 ];
