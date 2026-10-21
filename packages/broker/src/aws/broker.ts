@@ -283,6 +283,7 @@ import {
   TERMINAL, getItem, issueCapability, operationKey, operationOrg, operationRecord, outboxRecord, publicOperation, requestCancellation, requireOperation,
   type CallbackClaims, type OperationRecord,
 } from "./cancellation.js";
+import { requireCreatorStillMember, requireWorkspaceCreatorStillMember, type CreatorCheckDependencies } from "../developer/creator-member.js";
 import { aiToolTurn, completedTurn, developerFooter, E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON, githubWorkflowPullRequestKey, inertName, OUTCOME, partyOfTask, taskKey, taskOwnerKey, taskOwnerSubject, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type GithubWorkflowPullRequestRecord, type StoredEvent } from "../developer/task-records.js";
 import { readWorkspaceLimits } from "../developer/limits.js";
 import { WORKFLOW_DISPATCH_PK, workflowDispatchItem, type WorkflowDispatchRecord, type WorkflowE2EReadinessMarker, AWS_TEMPORARY_MESSAGE, GATED_TASK_PULL_REQUEST_ACTION_REFUSAL, GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, UNEXPECTED_REQUEST_MESSAGE, hashJson, isConditional, isTemporaryAwsError, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, planDocumentInstructions, workerPrompt } from "./broker-shared.js";
@@ -550,6 +551,24 @@ async function orgOfRecord(
     ...(typeof record.ownerKey === "string" ? { ownerKey: record.ownerKey } : {}),
     ...(typeof record.developerId === "string" ? { developerId: record.developerId } : {}),
   }));
+}
+
+/**
+ * Ruling R60: what the removed-creator check reads with. A task that names no org is placed by the org resolver; one whose owner has
+ * no org at all is a legacy task and the check skips it.
+ */
+function creatorCheckOf(dependencies: AwsBrokerDependencies): CreatorCheckDependencies {
+  return {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName,
+    orgOf: async (task) => {
+      try {
+        return await orgOfRecord(dependencies, task);
+      } catch (error) {
+        if (error instanceof AgentXError) return undefined;
+        throw error;
+      }
+    },
+  };
 }
 
 /**
@@ -4248,6 +4267,8 @@ async function taskOperationParts(
   input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; legacyTask?: boolean; workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; retiredClaimIds?: readonly string[]; slackThread?: SlackThread },
   now: string,
 ): Promise<{ operation: OperationRecord; outbox: ReturnType<typeof outboxRecord>; fence: number }> {
+  // Ruling R60, as a backstop for any launch path that did not check first: a task whose creator was removed starts nothing.
+  await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspace.id);
   // The caller's org when there is one (a Slack thread's is its team's); a background writer reads it from the record.
   const orgId = input.orgId ?? await orgOfRecord(dependencies, workspace);
   const settings = await requireLatestProject(dependencies, orgId, workspace.projectName);
@@ -4753,6 +4774,8 @@ async function acceptPullRequest(
   options: { workflowCandidate?: { repositoryId: string; treeSha: string; commitSha?: string; candidateDigest: string; baseCommitSha?: string; publicationMode: "COMMITTED_HEAD" | "CHECKED_TREE"; admittedPinnedRevision: number; admittedLatestRevision: number; admittedMaterialDigest: string; admittedWorkflowRevision: number; admittedPlanArtifact: { id: string; type: string; version: number; objectKey: string; sha256: string; format: "markdown" | "structured" }; admittedOwnerApproval: { requestId: string; workflowRevision: number; actorId: string; actorRole: "TASK_OWNER" | "PROJECT_ADMIN"; artifactDigest: string; workBreakdownDigest: string | null; at: string }; admittedWorkflowAuthorityDigest: string } } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   const request = PullRequestRequestSchema.parse(value);
+  // Ruling R60: before any access check, so a removed creator's task says why instead of "project not found".
+  await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspaceId);
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
   await requireMembership(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName);
   const candidate = options.workflowCandidate;
@@ -4943,6 +4966,8 @@ async function acceptPullRequestLifecycle(
   options: { workflowCandidate?: { candidateDigest: string; treeSha: string; baseCommitSha: string; expectedHeadCommit: string } } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   const request = PullRequestLifecycleRequestSchema.parse(value);
+  // Ruling R60: before any access check, as for acceptPullRequest.
+  await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspaceId);
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
   await requireMembership(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName);
   const candidate = options.workflowCandidate;
@@ -5864,6 +5889,9 @@ export function isSlackWorkflowPublishRetryEvent(event: unknown): event is Slack
 
 /** Task 12: the owner's Retry opening the pull request, from the task's own thread. */
 async function retrySlackWorkflowPublication(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, event: SlackWorkflowPublishRetryEvent) {
+  // Ruling R60: a removed creator's task publishes nothing, so this refuses before the Slack checks and before any token is minted.
+  const stored = await getItem<DeveloperTaskRecord>(dependencies, taskKey(event.taskId));
+  if (stored !== undefined) await requireCreatorStillMember(creatorCheckOf(dependencies), stored);
   // The same checks as every other Slack press: this Slack workspace, the task's owner, and the task's own thread.
   const { taskId, requestId, caller, developer } = await ownedSlackWorkflowTask(dependencies, event, "retry opening the pull request");
   const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks }, caller);
@@ -11902,6 +11930,9 @@ async function exchangeRepositoryCredential(
   if (typeof input.repositoryUrl !== "string" || input.repositoryUrl.length > 2_048) {
     throw agentXError("CONFIG_INVALID", "repositoryUrl is invalid");
   }
+  // Ruling R60: a removed creator's task pushes nothing, so the token that would let a worker push is never minted. A clone is not
+  // refused: the step that needs one is already running and finishes.
+  if (access === "push") await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspaceId);
   const operation = await requireOperation(dependencies, workspaceId, operationId);
   if (operation.kind === "publish") await assertCurrentWorkflowPublication(dependencies, operation);
   return dependencies.repositoryGrants.exchange(grant, {

@@ -15,6 +15,7 @@ import {
   EnvironmentNameSchema,
   WorkspaceDeploymentModeSchema,
   MODEL_PROVIDERS,
+  OrgRoleSchema,
   agentXError,
   type ProjectDefinition,
 } from "@agentx/contracts";
@@ -42,6 +43,7 @@ import { loginWithPkce, openSystemBrowser, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
 import { createDeveloperProject, createProjectText, developerLogout, fetchDeveloperProjects, fetchLinkedIdentities, logoutText, whoamiText } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
+import { orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
 import { developerLogin } from "./developer/login.js";
 import { fetchDeveloperWorkspaces, type DeveloperWorkspacesResult } from "./developer/workspaces.js";
@@ -437,6 +439,51 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const globals = globalOptions(command);
       const result = await chatGptDisconnect(developerSession(), developerEnv(command));
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, ...result.connection }, true) : chatGptDisconnectText(result));
+    });
+
+  // Plan 2, Task 4: the people in your organization.
+  const org = program.command("org").description("the people in your organization");
+  org
+    .command("members")
+    .description("list the members of your organization, with their roles")
+    .action(async (_options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await orgMembers(developerSession(), developerEnv(command));
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, members: result.members }, true) : orgMembersText(result));
+    });
+  org
+    .command("role")
+    .description("change a member's role (owners only)")
+    .argument("<email-or-id>", "the member's email or developer ID, from agentx org members")
+    .argument("<role>", "owner, admin or member")
+    .action(async (who: string, role: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const parsed = OrgRoleSchema.safeParse(role);
+      if (!parsed.success) throw agentXError("CONFIG_INVALID", "the role must be owner, admin or member");
+      const result = await orgSetRole(developerSession(), developerEnv(command), who, parsed.data);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, developerId: result.member.developerId, role: result.role }, true) : orgRoleText(result));
+    });
+  org
+    .command("remove")
+    .description("remove a member from your organization: their sessions end and their running tasks stop after their current step")
+    .argument("<email-or-id>", "the member's email or developer ID, from agentx org members")
+    .action(async (who: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await orgRemove(developerSession(), developerEnv(command), who);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, developerId: result.member.developerId, message: result.message }, true) : orgRemoveText(result));
+    });
+  org
+    .command("leave")
+    .description("leave your organization; as its only member this closes it and releases its GitHub connection")
+    .option("--yes", "leave without asking", false)
+    .action(async (options: { yes: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const env = developerEnv(command);
+      const confirm = changeConfirmer(options.yes);
+      const { question } = await orgLeaveQuestion(developerSession(), env);
+      if (!await confirm(question)) throw agentXError("CONFIRMATION_DECLINED", "you did not leave the organization; nothing changed");
+      const result = await orgLeave(developerSession(), env);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, orgClosed: result.orgClosed, message: result.message }, true) : orgLeaveText(result));
     });
 
   registerSigninCommands(program, {

@@ -3902,6 +3902,23 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               },
             },
             {
+              "Action": "dynamodb:GetItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "ORG#org_????????????????????#BAN",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
               "Action": "dynamodb:Query",
               "Condition": {
                 "ForAllValues:StringLike": {
@@ -3927,6 +3944,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   "dynamodb:LeadingKeys": [
                     "ORG#org_????????????????????#MEMBER#*",
                     "ORG#org_????????????????????",
+                    "ORG#org_????????????????????#BAN",
                     "DEVELOPER_ORG#*",
                   ],
                 },

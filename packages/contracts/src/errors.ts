@@ -31,6 +31,8 @@ export const AgentXErrorCodeSchema = z.enum([
   "ALREADY_IN_ORG",
   "INVITE_INVALID",
   "SLACK_TEAM_TAKEN",
+  "REMOVED_FROM_ORG",
+  "LAST_OWNER",
   "SLACK_TEAM_NOT_BOUND",
   "MODEL_PROXY_UNAVAILABLE",
   "BUDGET_EXCEEDED",
@@ -55,7 +57,7 @@ export class AgentXError extends Error {
 
 export function errorStatus(code: AgentXErrorCode): number {
   if (code === "AUTH_REQUIRED") return 401;
-  if (code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED") return 403;
+  if (code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED" || code === "REMOVED_FROM_ORG") return 403;
   if (code === "NOT_FOUND" || code === "PROJECT_NOT_FOUND" || code === "TASK_NOT_FOUND") return 404;
   if (code === "BUDGET_EXCEEDED" || code === "ORG_BUDGET_EXCEEDED" || code === "MACHINE_TIME_EXCEEDED") return 402;
   if (code === "CONFIG_INVALID") return 400;

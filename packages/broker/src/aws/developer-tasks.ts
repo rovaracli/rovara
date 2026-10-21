@@ -211,6 +211,7 @@ import {
   planOwnerAnswers, promptComments, readDecisionDetail, refusalMessage,
 } from "../developer/owner-answers.js";
 import type { TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
+import { requireCreatorStillMember } from "../developer/creator-member.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -266,6 +267,10 @@ export interface DeveloperTaskRouteDependencies {
   /** Resolves only a URL loaded from the task's immutable registered project revision. */
   registeredRepositoryIdentity?(url: string): Promise<{ repositoryId: number; fullName: string } | undefined>;
 }
+
+/** Ruling R60: refuses a task whose creator is no longer a member of its org, before any other access check (see developer/creator-member.ts). */
+const creatorGuard = (deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord) =>
+  requireCreatorStillMember({ documentClient: deps.documentClient, tableName: deps.tableName, orgId: deps.orgId, now: () => deps.now() }, task);
 
 const E2EPublicationSubjectSchema = z.object({
   projectName: z.string().min(1).max(100), projectRevision: z.number().int().positive(), repositoryId: z.number().int().positive(),
@@ -1037,6 +1042,7 @@ export async function submitWorkflowFeedbackDecision(
     const running = { ...next, revision: next.revision + 1, state: "RUNNING" as const, feedbackDispatchApproval: approval, updatedAt: iso(deps) };
     const workspace = await actionableWorkspace(deps, latest);
     const readiness = running.checkPolicy === undefined ? undefined : workflowSelectedChecks(running.checkPolicy).map(check => check.command);
+    await creatorGuard(deps, latest);
     try {
       await deps.actions.acceptTask(developerTaskIdentity(latest, deps.orgId), workspace.id, {
         requestId: input.requestId, conversationId: latest.conversationId, prompt,
@@ -1772,6 +1778,7 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   const baseline = deps.modelAccess === undefined ? undefined
     : await taskSpendBaseline({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, task.modelKeyIds ?? []);
   const receivedAt = iso(deps);
+  await creatorGuard(deps, task);
   try {
     // acceptTask answers a repeated requestId with its first operation and writes nothing, and
     // refuses a second running turn (TASK_BUSY) before anything is written.
@@ -2322,6 +2329,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
       await syncIndex(deps, fresh, view.status, view.updatedAt);
       return { task: view };
     }
+    await creatorGuard(deps, task);
     try {
       await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
         requestId: request.requestId, conversationId: task.conversationId,
@@ -2984,6 +2992,7 @@ async function queueWorkflowReview(
   const prompt = `Perform the required read-only critic and security reviews for the task. The current verified candidate digest is ${candidateDigest}. Do not edit files. Reviewer findings must be concise and refer to code evidence. The owner retry note is carried separately as untrusted reviewer context.`;
   const reviewPlan = await workflowReviewPlanOption(deps, workflow);
   const reviewFeedback = await workflowReviewFeedbackOption(deps, task, workflow);
+  await creatorGuard(deps, task);
   return deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt }, (operation) => [
     { Update: {
       TableName: deps.tableName, Key: taskKey(task.taskId),
@@ -3021,6 +3030,7 @@ export async function startTaskWorkflowReviewFromSystem(
     || workflow.verification?.candidateDigest !== expected.candidateDigest
     || (workflow.verification.results.length === 0 && !(workflow.verification.reviewOnly === true && workflowIsReviewOnly(workflow.checkPolicy)))
     || workflow.verification.results.some((result) => result.status !== "PASS")) return "STALE";
+  await creatorGuard(deps, task);
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);
   if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
@@ -3047,6 +3057,7 @@ export async function startTaskWorkflowE2EChecksFromSystem(
     || admission.taskId !== taskId || admission.candidateDigest !== expected.candidateDigest
     || admission.workflowRevision !== workflow.revision + 1 || admission.roundId.length === 0
     || admission.groupRunIds.length === 0 || new Set(admission.groupRunIds).size !== admission.groupRunIds.length) return "STALE";
+  await creatorGuard(deps, task);
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);
   if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
@@ -3063,6 +3074,7 @@ export async function startTaskWorkflowE2EChecksFromSystem(
     updatedAt: receivedAt,
   });
   const requestId = workflowRequestId("agentx-auto-e2e-checks", taskId, expected.workflowRevision, expected.candidateDigest);
+  await creatorGuard(deps, task);
   const accepted = await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
     requestId, conversationId: task.conversationId,
     prompt: "Run the broker-admitted E2E verification groups for this exact candidate. Do not edit files or expand the admitted scenarios.",
@@ -4008,6 +4020,8 @@ export async function startTaskWorkflowPublicationFromSystem(
   if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.revision !== expected.workflowRevision
     || !(ownerRetry ? workflowPublicationRetryable(workflow) : workflow.stage === "PULL_REQUEST" && workflow.state === "READY")
     || workflow.candidate === undefined || workflow.candidate.digest !== expected.candidateDigest) return "STALE";
+  // Ruling R60: a removed creator's task opens or updates no pull request; this is before the E2E proof, the access check and any token.
+  await creatorGuard(deps, task);
   let currentE2EChecks: TransactItems = [];
   if (workflow.e2e?.required === true) {
     if (deps.workflowE2EPresentation === undefined) return "STALE";
@@ -4274,6 +4288,7 @@ export async function startTaskWorkflowFeedbackReviewFromWebhook(
   const workflow = task?.workflow;
   if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.stage !== "WAIT_FOR_MERGE"
     || workflow.state !== "WAITING" || workflow.candidate === undefined || workflow.feedbackReview?.status !== "COLLECTING") return false;
+  await creatorGuard(deps, task);
   const access = await systemTaskAccess(deps, task);
   return acceptFeedbackReview(deps, task, workflow, workflow, access);
 }
@@ -4299,6 +4314,7 @@ async function acceptFeedbackReview(
   const next: WorkflowSnapshot = { ...collecting, revision: collecting.revision + 1, state: "RUNNING", updatedAt: now };
   const binding = { taskId, workflowRevision: next.revision, candidateDigest: collecting.candidate.digest };
   const requestId = randomUUID();
+  await creatorGuard(deps, task);
   try {
     await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
       requestId, conversationId: task.conversationId,
@@ -4826,6 +4842,8 @@ async function withCurrentThreadNotes<T>(
 ): Promise<T> {
   let current = task;
   for (let attempt = 1; ; attempt += 1) {
+    // Ruling R60, first: every caller of this accepts a task operation, and a removed creator's task starts none.
+    await creatorGuard(deps, current);
     const notes = await threadNotesSuffix(deps, current, requestId);
     try {
       return await accept(current, notes);
@@ -4936,6 +4954,7 @@ async function openPullRequest(deps: DeveloperTaskRouteDependencies, caller: Dev
   const request = parse(DeveloperPullRequestRequestSchema, value, deps, "pull-request");
   const access = await authorizeLegacyTaskAction(deps, caller, taskId, "publish");
   const { task } = access;
+  await creatorGuard(deps, task);
   // Task 12: the workflow opens its own draft of the checked code; MCP and Slack follow it, nobody opens another.
   if (task.workflow !== undefined) throw agentXError("CONFIG_INVALID", GATED_TASK_PULL_REQUEST_REFUSAL);
   const turns = turnTable(deps);

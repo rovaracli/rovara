@@ -78,6 +78,11 @@ export interface DeveloperTaskRecord {
   createdAt: string;
   updatedAt: string;
   closedAt?: string;
+  /** Ruling R60: set when the task's creator was removed from the org; the task dispatches and publishes nothing more. */
+  outcome?: "creator_removed";
+  /** The sentence the task ended with (`<name> is no longer a member of <org>, so Rovara stopped this task.`) and when. */
+  outcomeReason?: string;
+  outcomeAt?: string;
   /**
    * When a finished workflow task (all its pull requests merged, or its workflow closed) gave back its workspace slot and
    * its workspace. A closed task gives them back with its close instead, and has none.

@@ -369,12 +369,21 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     // A link written just now already carries this sign-in's time.
     if (resolved.link === "existing") await store.touchIdentity(identityKey);
     // A first sign-in puts the person in an org (ruling R2); the tokens and the browser session carry it from here.
-    const org = await resolveOrgOnSignIn(
-      { orgs: deps.orgs, ...(deps.singleOrgId === undefined ? {} : { singleOrgId: deps.singleOrgId }), singleOrgName: config.env, log: deps.log,
-        ...(deps.onOrgJoined === undefined ? {} : { onOrgJoined: deps.onOrgJoined }) },
-      { method, developerId, displayName: identity.displayName, ...(identity.email === undefined ? {} : { email: identity.email }), emailVerified: identity.emailVerified === true,
-        ...(request.inviteToken === undefined ? {} : { inviteToken: request.inviteToken }) },
-    );
+    let org: Awaited<ReturnType<typeof resolveOrgOnSignIn>>;
+    try {
+      org = await resolveOrgOnSignIn(
+        { orgs: deps.orgs, ...(deps.singleOrgId === undefined ? {} : { singleOrgId: deps.singleOrgId }), singleOrgName: config.env, log: deps.log,
+          ...(deps.onOrgJoined === undefined ? {} : { onOrgJoined: deps.onOrgJoined }) },
+        { method, developerId, displayName: identity.displayName, ...(identity.email === undefined ? {} : { email: identity.email }), emailVerified: identity.emailVerified === true,
+          ...(request.inviteToken === undefined ? {} : { inviteToken: request.inviteToken }) },
+      );
+    } catch (error) {
+      // A removed member (single-org ban) is told so, not shown an internal error.
+      if ((error as { code?: unknown } | null)?.code !== "REMOVED_FROM_ORG") throw error;
+      deps.log({ event: "signin.refused", method, reason: "removed_from_org", developerId });
+      if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false);
+      return client({ error: "access_denied", error_description: (error as Error).message.replace(/^REMOVED_FROM_ORG: /, "") });
+    }
     if (method === "github" && identity.githubUserId !== undefined && deps.onGithubSignIn !== undefined) await unlockTrialBestEffort(org.orgId, identity.githubUserId);
     if (request.browserReturnTo !== undefined) {
       // A fixed 30 days from sign-in, with no renewal: the session record ends then, whatever the cookie says.

@@ -49,6 +49,7 @@ describe("resolveOrgOnSignIn (rules 1 and 5; cloud-sign-in.test.ts has the rest)
       createOrgWithOwner: real.createOrgWithOwner.bind(real),
       acceptInvite: real.acceptInvite.bind(real),
       peekInvite: real.peekInvite.bind(real),
+      isBanned: real.isBanned.bind(real),
       addMember: (async () => { throw agentXError("ALREADY_IN_ORG", "this developer already belongs to an organization"); }) as OrgStore["addMember"],
     };
     let reads = 0;

@@ -4,17 +4,26 @@
 // invite is accepted in one transaction with the membership writes, so a refused acceptance never
 // burns the invite. Invite tokens are stored only as SHA-256 hashes.
 import { randomBytes } from "node:crypto";
-import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  MEMBER_GRANT_SK_PREFIX,
   agentXError,
   developerOrgKey,
+  githubInstallationKey,
+  memberGrantsPk,
   newOrgId as generateOrgId,
   normalizeEmail,
+  orgBanKey,
   orgEmailKey,
   orgInviteKey,
   orgInviteRequestKey,
   orgMemberKey,
   orgMetaKey,
+  orgPk,
+  orgRemovedKey,
+  orgSettingsKey,
+  orgSlackTeamKey,
+  budgetSyncedKey,
   slackTeamOrgKey,
   type AgentXErrorCode,
   type OrgId,
@@ -223,6 +232,8 @@ export class OrgStore {
           },
         },
         ...this.membershipItems({ orgId, developerId: input.developerId, role, email: input.email }),
+        // An invite is the way back after a removal with a ban: it clears the ban in the same transaction.
+        { Delete: { TableName: this.input.tableName, Key: orgBanKey(orgId, input.developerId) } },
       ],
       (failed) => {
         if (failed.has(0)) return inviteInvalid();
@@ -233,17 +244,194 @@ export class OrgStore {
   }
 
   async bindSlackTeam(input: { orgId: OrgId; teamId: string }): Promise<void> {
-    try {
-      await this.input.documentClient.send(new PutCommand({
-        TableName: this.input.tableName,
-        Item: { ...slackTeamOrgKey(input.teamId), entityType: "SLACK_TEAM_ORG", orgId: input.orgId, boundAt: this.iso() },
-        ConditionExpression: "attribute_not_exists(pk) OR orgId = :orgId",
-        ExpressionAttributeValues: { ":orgId": input.orgId },
-      }));
-    } catch (error) {
-      if (errorName(error) === "ConditionalCheckFailedException") throw coded("SLACK_TEAM_TAKEN", "that Slack workspace is already connected to another organization");
-      throw error;
+    const boundAt = this.iso();
+    // The reverse item lets `closeOrg` find the org's teams; both are written together or not at all.
+    await this.transact(
+      [
+        {
+          Put: {
+            TableName: this.input.tableName,
+            Item: { ...slackTeamOrgKey(input.teamId), entityType: "SLACK_TEAM_ORG", orgId: input.orgId, boundAt },
+            ConditionExpression: "attribute_not_exists(pk) OR orgId = :orgId",
+            ExpressionAttributeValues: { ":orgId": input.orgId },
+          },
+        },
+        { Put: { TableName: this.input.tableName, Item: { ...orgSlackTeamKey(input.orgId, input.teamId), entityType: "ORG_SLACK_TEAM", orgId: input.orgId, teamId: input.teamId, boundAt } } },
+      ],
+      (failed) => (failed.has(0) ? coded("SLACK_TEAM_TAKEN", "that Slack workspace is already connected to another organization") : undefined),
+    );
+  }
+
+  /** Whether a removal banned this developer from the org (a single-org install only); sign-in refuses a banned developer. */
+  async isBanned(orgId: OrgId, developerId: string): Promise<boolean> {
+    return await this.get(orgBanKey(orgId, developerId)) !== undefined;
+  }
+
+  async listMembers(orgId: OrgId): Promise<OrgMembershipRecord[]> {
+    const members: OrgMembershipRecord[] = [];
+    for (const item of await this.queryPartition(orgPk(orgId), "MEMBER#")) members.push(strip(item) as unknown as OrgMembershipRecord);
+    return members;
+  }
+
+  /** The member record and the developer pointer change role together; demoting the last owner is refused (LAST_OWNER). */
+  async setRole(input: { orgId: OrgId; developerId: string; role: OrgRole }): Promise<void> {
+    const { orgId, developerId, role } = input;
+    const member = await this.get(orgMemberKey(orgId, developerId));
+    if (member === undefined) throw coded("NOT_FOUND", "that person is not a member of the organization");
+    const current = member.role as OrgRole;
+    if (current === role) return;
+    const guard = current === "owner" ? await this.otherOwnerGuard(orgId, developerId) : [];
+    await this.transact(
+      [
+        {
+          Update: {
+            TableName: this.input.tableName, Key: orgMemberKey(orgId, developerId), UpdateExpression: "SET #role = :role",
+            ConditionExpression: "attribute_exists(pk) AND #role = :current", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":role": role, ":current": current },
+          },
+        },
+        {
+          Update: {
+            TableName: this.input.tableName, Key: developerOrgKey(developerId), UpdateExpression: "SET #role = :role",
+            ConditionExpression: "attribute_exists(pk) AND orgId = :org", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":role": role, ":org": orgId },
+          },
+        },
+        ...guard,
+      ],
+      (failed) => (failed.has(2) ? coded("LAST_OWNER", LAST_OWNER_MESSAGE) : coded("CHANGE_STALE", "the organization's members changed; try again")),
+    );
+  }
+
+  /**
+   * Removes a member. Their project grants and monthly limit go first (so a half-finished removal leaves a member with nothing), then one
+   * transaction deletes the member record, the developer pointer and each email pointer that names them, and puts the ban when asked.
+   * Removing the last owner is refused (LAST_OWNER) before anything is deleted.
+   */
+  async removeMember(input: { orgId: OrgId; developerId: string; emails: string[]; ban: boolean }): Promise<void> {
+    const { orgId, developerId } = input;
+    const member = await this.get(orgMemberKey(orgId, developerId));
+    if (member === undefined) throw coded("NOT_FOUND", "that person is not a member of the organization");
+    const guard = member.role === "owner" ? await this.otherOwnerGuard(orgId, developerId) : [];
+    await this.deleteMemberData(orgId, developerId);
+    const items = this.removalItems(input, await this.emailPointersOf(input.emails, developerId), guard);
+    await this.transact(items, (failed) => (guard.length > 0 && failed.has(items.length - 1) ? coded("LAST_OWNER", LAST_OWNER_MESSAGE) : failed.has(0) ? coded("NOT_FOUND", "that person is not a member of the organization") : undefined));
+  }
+
+  /**
+   * Closes an org whose sole owner is leaving. In order: its GitHub installations and Slack team bindings are released (both the org's
+   * and the global item), its projects are archived and its egress domains cleared (injected: later tasks supply them), then `closedAt`
+   * is set and the sole member removed without a ban. `emails` are the leaving person's email pointers, which must go so an invite
+   * to another org can index them. The org's TRIAL_GITHUB claim stays. Safe to run again after a stop part-way.
+   */
+  async closeOrg(orgId: OrgId, deps: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; emails?: string[] }): Promise<void> {
+    const members = await this.listMembers(orgId);
+    if (members.length > 1 || members.some((member) => member.role !== "owner")) throw coded("LAST_OWNER", LAST_OWNER_MESSAGE);
+    const meta = await this.get(orgMetaKey(orgId));
+    if (meta === undefined) throw coded("NOT_FOUND", "your organization was not found");
+    for (const binding of await this.queryPartition(orgPk(orgId), "GITHUB_INSTALLATION#")) {
+      const installationId = Number(String(binding.sk).slice("GITHUB_INSTALLATION#".length));
+      await this.deleteIfOurs(githubInstallationKey(installationId), orgId);
+      await this.input.documentClient.send(new DeleteCommand({ TableName: this.input.tableName, Key: { pk: binding.pk, sk: binding.sk } }));
     }
+    for (const binding of await this.queryPartition(orgPk(orgId), "SLACK_TEAM#")) {
+      await this.deleteIfOurs(slackTeamOrgKey(String(binding.sk).slice("SLACK_TEAM#".length)), orgId);
+      await this.input.documentClient.send(new DeleteCommand({ TableName: this.input.tableName, Key: { pk: binding.pk, sk: binding.sk } }));
+    }
+    await deps.archiveProjects(orgId);
+    await deps.clearEgress(orgId);
+    const [sole] = members;
+    if (sole === undefined) return;
+    await this.deleteMemberData(orgId, sole.developerId);
+    await this.transact(
+      [
+        {
+          Update: {
+            TableName: this.input.tableName, Key: orgMetaKey(orgId), UpdateExpression: "SET closedAt = :at",
+            ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":at": this.iso() },
+          },
+        },
+        ...this.removalItems({ orgId, developerId: sole.developerId, ban: false }, await this.emailPointersOf(deps.emails ?? [], sole.developerId), []),
+      ],
+      () => coded("CHANGE_STALE", "the organization changed while it was closing; try again"),
+    );
+  }
+
+  /** The reverse of a GitHub or Slack binding's global item, deleted only while it still names this org. */
+  private async deleteIfOurs(key: OrgKey, orgId: OrgId): Promise<void> {
+    try {
+      await this.input.documentClient.send(new DeleteCommand({ TableName: this.input.tableName, Key: key, ConditionExpression: "orgId = :org", ExpressionAttributeValues: { ":org": orgId } }));
+    } catch (error) {
+      if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+    }
+  }
+
+  /** The `ORG_EMAIL#` pointers among `emails` that name this developer (another person's pointer, or none, is left alone). */
+  private async emailPointersOf(emails: string[], developerId: string): Promise<string[]> {
+    const keys = [...new Set(emails.map((email) => orgEmailKey(email).pk))];
+    const found = await Promise.all(keys.map(async (pk) => ({ pk, item: await this.get({ pk, sk: "DEVELOPER" }) })));
+    return found.filter(({ item }) => item?.developerId === developerId).map(({ pk }) => pk);
+  }
+
+  /** A check that another owner still holds the role at the moment of the transaction; LAST_OWNER when there is none. */
+  private async otherOwnerGuard(orgId: OrgId, except: string): Promise<TransactItem[]> {
+    const other = (await this.listMembers(orgId)).find((member) => member.role === "owner" && member.developerId !== except);
+    if (other === undefined) throw coded("LAST_OWNER", LAST_OWNER_MESSAGE);
+    return [{ ConditionCheck: { TableName: this.input.tableName, Key: orgMemberKey(orgId, other.developerId), ConditionExpression: "#role = :owner", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":owner": "owner" } } }];
+  }
+
+  /** The transaction items that end a membership: member, pointer, the person's email pointers and, given `ban`, the ban. */
+  private removalItems(input: { orgId: OrgId; developerId: string; ban: boolean }, emailPointers: string[], guard: TransactItem[]): TransactItem[] {
+    const { orgId, developerId } = input;
+    return [
+      { Delete: { TableName: this.input.tableName, Key: orgMemberKey(orgId, developerId), ConditionExpression: "attribute_exists(pk)" } },
+      { Delete: { TableName: this.input.tableName, Key: developerOrgKey(developerId), ConditionExpression: "attribute_exists(pk) AND orgId = :org", ExpressionAttributeValues: { ":org": orgId } } },
+      ...emailPointers.map((pk): TransactItem => ({
+        Delete: { TableName: this.input.tableName, Key: { pk, sk: "DEVELOPER" }, ConditionExpression: "developerId = :dev", ExpressionAttributeValues: { ":dev": developerId } },
+      })),
+      // The tombstone ruling R60 reads: this person was a member and is not now. Their running tasks stop at the next dispatch.
+      { Put: { TableName: this.input.tableName, Item: { ...orgRemovedKey(orgId, developerId), entityType: "ORG_REMOVED", orgId, developerId, removedAt: this.iso() } } },
+      ...(input.ban ? [{ Put: { TableName: this.input.tableName, Item: { ...orgBanKey(orgId, developerId), entityType: "ORG_BAN", orgId, developerId, bannedAt: this.iso() } } }] : []),
+      ...guard,
+    ];
+  }
+
+  /** A member's project grants and monthly limit (and the proxy-sync marker for it), which end with their membership. */
+  private async deleteMemberData(orgId: OrgId, developerId: string): Promise<void> {
+    for (const grant of await this.queryPartition(memberGrantsPk(orgId, developerId), MEMBER_GRANT_SK_PREFIX)) {
+      await this.input.documentClient.send(new DeleteCommand({ TableName: this.input.tableName, Key: { pk: grant.pk, sk: grant.sk } }));
+    }
+    await this.input.documentClient.send(new DeleteCommand({ TableName: this.input.tableName, Key: budgetSyncedKey(orgId, developerId) }));
+    const key = orgSettingsKey(orgId, "BUDGET");
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const item = await this.get(key);
+      const seen = item?.memberOverrides;
+      if (item === undefined || typeof seen !== "object" || seen === null || !Object.hasOwn(seen, developerId)) return;
+      const others = Object.fromEntries(Object.entries(seen).filter(([id]) => id !== developerId));
+      try {
+        // The whole item is written back, as the budget settings are; the condition keeps a concurrent edit of the overrides from being lost.
+        await this.input.documentClient.send(new PutCommand({ TableName: this.input.tableName, Item: { ...item, memberOverrides: others }, ConditionExpression: "memberOverrides = :seen", ExpressionAttributeValues: { ":seen": seen } }));
+        return;
+      } catch (error) {
+        if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+      }
+    }
+    throw coded("CHANGE_STALE", "the organization's budget settings kept changing; try again");
+  }
+
+  private async queryPartition(pk: string, prefix: string): Promise<Item[]> {
+    const items: Item[] = [];
+    let start: Record<string, unknown> | undefined;
+    do {
+      const page = await this.input.documentClient.send(new QueryCommand({
+        TableName: this.input.tableName,
+        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues: { ":pk": pk, ":prefix": prefix },
+        ConsistentRead: true,
+        ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+      })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+      items.push(...(page.Items ?? []));
+      start = page.LastEvaluatedKey;
+    } while (start !== undefined);
+    return items;
   }
 
   async orgForSlackTeam(teamId: string): Promise<OrgId | undefined> {
@@ -254,4 +442,5 @@ export class OrgStore {
 
 const coded = (code: AgentXErrorCode, message: string) => agentXError(code, message);
 const alreadyInOrg = () => coded("ALREADY_IN_ORG", "this developer already belongs to an organization");
+const LAST_OWNER_MESSAGE = "An organization needs at least one owner. Make someone else an owner first.";
 const inviteInvalid = () => coded("INVITE_INVALID", "the invite is unknown, expired or already used");

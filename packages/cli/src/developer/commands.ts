@@ -1,5 +1,5 @@
 // agentx whoami and agentx logout (FR-011).
-import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AppMeResponseSchema, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerTokenKey, removeDeveloperEnvironment, resolveDeveloperEnvironment } from "./config.js";
 import { developerAccessToken, type DeveloperSessionDeps } from "./session.js";
@@ -27,7 +27,7 @@ export async function developerRequest<T>(
   env: string | undefined,
   path: string,
   schema: { safeParse: (value: unknown) => { success: true; data: T } | { success: false } },
-  options: { method?: "GET" | "POST" | "DELETE"; body?: unknown; explain?: boolean } = {},
+  options: { method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown; explain?: boolean } = {},
 ): Promise<{ env: string; url: string; body: T }> {
   const session = await developerAccessToken(deps, env);
   let response: Response;
@@ -45,9 +45,12 @@ export async function developerRequest<T>(
     const reason = refusalReason(await response.json().catch(() => undefined));
     throw agentXError("AUTH_REQUIRED", `your AgentX sign-in for ${session.env} has ended${reason === undefined ? "" : ` (${reason})`}; run npx ${CLI_PACKAGE_NAME} login ${session.entry.url}`);
   }
-  if (options.explain === true && (response.status === 400 || response.status === 403 || response.status === 404)) {
-    const reason = refusalMessage(await response.json().catch(() => undefined));
-    if (reason !== undefined) throw agentXError(response.status === 400 ? "CONFIG_INVALID" : response.status === 403 ? "FORBIDDEN" : "NOT_FOUND", reason);
+  if (options.explain === true && (response.status === 400 || response.status === 403 || response.status === 404 || response.status === 409)) {
+    const refusal = await response.json().catch(() => undefined);
+    const reason = refusalMessage(refusal);
+    // A 409 is a refusal the person can act on (such as LAST_OWNER), shown as the server worded it, under the code it named.
+    const named = AgentXErrorCodeSchema.safeParse((refusal as { error?: { code?: unknown } } | undefined)?.error?.code);
+    if (reason !== undefined) throw agentXError(response.status === 400 ? "CONFIG_INVALID" : response.status === 403 ? "FORBIDDEN" : response.status === 409 ? (named.success ? named.data : "CONFIG_INVALID") : "NOT_FOUND", reason);
   }
   if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `AgentX answered HTTP ${response.status}; try again`);
   const parsed = schema.safeParse(await response.json().catch(() => undefined));

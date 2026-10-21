@@ -165,13 +165,19 @@ export class DeveloperSignIn extends Construct {
       actions: ["dynamodb:GetItem", "dynamodb:PutItem"], resources: [props.state.tableArn],
       conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#SETTINGS`] } },
     }));
+    // A removed member's ban on a single-org install (`ORG#<id>#BAN`): read by a sign-in that would join the install's org (GetItem) and
+    // cleared when an invite is accepted (DeleteItem, below). The function never writes a ban; only the broker's removal does.
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:GetItem"], resources: [props.state.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#BAN`] } },
+    }));
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:Query"], resources: [props.state.tableArn],
       conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#MEMBER#*`, `ORG#${orgPattern}`, `ORG#${orgPattern}#PROJECT_CATALOG`] } },
     }));
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:DeleteItem"], resources: [props.state.tableArn],
-      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#MEMBER#*`, `ORG#${orgPattern}`, "DEVELOPER_ORG#*"] } },
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#MEMBER#*`, `ORG#${orgPattern}`, `ORG#${orgPattern}#BAN`, "DEVELOPER_ORG#*"] } },
     }));
     tokenKey.grant(fn, "kms:Sign", "kms:GetPublicKey");
     tokenKey.addToResourcePolicy(new iam.PolicyStatement({

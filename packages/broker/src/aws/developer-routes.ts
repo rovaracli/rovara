@@ -132,7 +132,12 @@ export interface DeveloperRouteDependencies {
   /** Sign in with ChatGPT (#338): each developer's connection; without it /v1/dev/chatgpt/* answers NOT_FOUND. */
   chatgpt?: ChatGptConnections;
   /** Which org a developer belongs to: the membership a token's `org` claim is checked against on every request. */
-  orgs?: Pick<OrgStore, "orgForDeveloper" | "getOrg" | "createInvite">;
+  orgs?: Pick<OrgStore, "orgForDeveloper" | "getOrg" | "createInvite" | "listMembers" | "setRole" | "removeMember" | "closeOrg">;
+  /**
+   * What closing an org does besides releasing its GitHub and Slack bindings: archive its projects (Task 20) and clear its egress domains
+   * (Task 18). Both default to nothing until those tasks supply them; `POST /v1/app/org/leave` calls them when the last owner leaves.
+   */
+  closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void> };
   /** The model proxy, for budgets (ruling R28). Absent without one: budgets are not set up, and task starts are not checked against them. */
   modelAccess?: ModelAccess;
   /** A cloud install (ruling R42): trial lock and machine-time allowance apply to its orgs. */
@@ -921,8 +926,13 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);
   if (request.method === "POST" && url.pathname === "/v1/dev/projects") return createProject(deps, caller, jsonBody(request));
   if (request.method === "GET" && url.pathname === "/v1/dev/workspaces") return listWorkspaces(deps, caller);
-  if (request.method === "GET" && url.pathname === "/v1/dev/org") return getOrganization(deps, caller);
-  if (request.method === "POST" && url.pathname === "/v1/dev/org/invites") return createOrganizationInvite(deps, caller, jsonBody(request));
+  if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);
+  if (request.method === "POST" && (url.pathname === "/v1/dev/org/invites" || url.pathname === "/v1/app/org/invites")) return createOrganizationInvite(deps, caller, jsonBody(request));
+  if (request.method === "GET" && url.pathname === "/v1/app/org/members") return listOrganizationMembers(deps, caller);
+  if (request.method === "POST" && url.pathname === "/v1/app/org/leave") return leaveOrganization(deps, caller, jsonBody(request));
+  const memberRoute = /^\/v1\/app\/org\/members\/([a-f0-9]{64})(\/role)?$/.exec(url.pathname);
+  if (memberRoute !== null && request.method === "PUT" && memberRoute[2] !== undefined) return changeMemberRole(deps, caller, memberRoute[1]!, jsonBody(request));
+  if (memberRoute !== null && request.method === "DELETE" && memberRoute[2] === undefined) return removeOrganizationMember(deps, caller, memberRoute[1]!);
   if (request.method === "GET" && url.pathname === "/v1/dev/budget") return getBudget(deps, caller);
   if (request.method === "PUT" && url.pathname === "/v1/dev/org/budget") return putOrganizationBudget(deps, caller, jsonBody(request));
   if (url.pathname === "/v1/dev/tasks" || url.pathname.startsWith("/v1/dev/tasks/")) {
@@ -996,6 +1006,111 @@ async function createOrganizationInvite(deps: DeveloperRouteDependencies, caller
   const { token } = await deps.orgs.createInvite({ orgId: caller.orgId, createdBy: caller.developerId, role, requestId, ...(email === undefined ? {} : { email }) });
   logDeveloperEvent({ event: "developer.org_invite_created", orgId: caller.orgId, role, targeted: String(email !== undefined) });
   return { inviteUrl: inviteUrl(deps.developer.webOrigin ?? DEFAULT_ROVARA_WEB_ORIGIN, token) };
+}
+
+const signInStoreOf = (deps: DeveloperRouteDependencies) => new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: deps.now });
+
+const bodyError = (error: z.ZodError) => {
+  const issue = error.issues[0];
+  // Field names only: the values are the caller's.
+  return agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
+};
+
+/** `GET /v1/app/org/members`: any member may list the org's people. Names, emails and sign-in methods come from the sign-in table. */
+async function listOrganizationMembers(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<{ members: Array<{ developerId: string; name: string; email?: string; role: OrgRole; joinedAt: string; identities: DeveloperSignInMethod[] }> }> {
+  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
+  const store = signInStoreOf(deps);
+  const members = await deps.orgs.listMembers(caller.orgId);
+  const listed = await mapLimit(members, REVISION_READS_AT_ONCE, async (member) => {
+    const [record, identities] = await Promise.all([store.getDeveloper(member.developerId), store.identitiesOf(member.developerId)]);
+    const email = record?.email ?? identities.find((identity) => identity.email !== undefined)?.email;
+    return {
+      developerId: member.developerId, name: record?.displayName ?? "Unknown", ...(email === undefined ? {} : { email }), role: member.role, joinedAt: member.joinedAt,
+      identities: [...new Set(identities.map((identity) => identity.provider))],
+    };
+  });
+  return { members: listed.sort((left, right) => left.joinedAt.localeCompare(right.joinedAt) || left.developerId.localeCompare(right.developerId)) };
+}
+
+const ChangeRoleBodySchema = z.object({ requestId: z.string().uuid(), role: OrgRoleSchema }).strict();
+
+/** `PUT /v1/app/org/members/{developerId}/role`: owners only. Demoting the last owner is LAST_OWNER (409). */
+async function changeMemberRole(deps: DeveloperRouteDependencies, caller: DeveloperCaller, developerId: string, body: unknown): Promise<{ developerId: string; role: OrgRole }> {
+  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
+  if (caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can change roles");
+  const parsed = ChangeRoleBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  await deps.orgs.setRole({ orgId: caller.orgId, developerId, role: parsed.data.role });
+  logDeveloperEvent({ event: "developer.org_role_changed", orgId: caller.orgId, role: parsed.data.role });
+  return { developerId, role: parsed.data.role };
+}
+
+/**
+ * Ends a removed person's sign-in sessions through DeveloperIdentity. They are already refused (the membership is gone), so a failure
+ * here is logged and never fails the removal.
+ */
+async function endSessionsAfterRemoval(deps: DeveloperRouteDependencies, developerId: string): Promise<void> {
+  if (deps.developer.endDeveloperSessions === undefined) return;
+  try {
+    const answer = await deps.developer.endDeveloperSessions({ kind: "end-developer-sessions", developerId, at: new Date(deps.now()).toISOString() });
+    if (!answer.ok && answer.error !== "not_found") logDeveloperEvent({ event: "developer.org_removal_sessions_not_ended", reason: answer.error });
+  } catch (error) {
+    logDeveloperEvent({ event: "developer.org_removal_sessions_not_ended", reason: errorName(error) });
+  }
+}
+
+/** Every address that may hold a person's `ORG_EMAIL#` pointer: their developer record's and each linked identity's. */
+async function emailsOf(store: DeveloperSignInStore, developerId: string): Promise<string[]> {
+  const [record, identities] = await Promise.all([store.getDeveloper(developerId), store.identitiesOf(developerId)]);
+  return [...new Set([record?.email, ...identities.map((identity) => identity.email)].filter((email): email is string => typeof email === "string"))];
+}
+
+const STOPS_AFTER_STEP = (name: string) => `${name}'s running tasks will stop after their current step. None of them will open a pull request.`;
+
+/**
+ * `DELETE /v1/app/org/members/{developerId}`. Owners may remove anyone but the last owner, admins members only; nobody removes themselves
+ * (leaving has its own route). Their sessions end, and ruling R60 stops their running tasks at the next dispatch. A private install
+ * bans the person from signing back in to its one org until an invite clears it; a cloud install lets them start a new org.
+ */
+async function removeOrganizationMember(deps: DeveloperRouteDependencies, caller: DeveloperCaller, developerId: string): Promise<{ removed: { developerId: string; name: string }; message: string }> {
+  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
+  if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can remove people from the organization");
+  if (developerId === caller.developerId) throw agentXError("FORBIDDEN", "use agentx org leave to leave");
+  const target = (await deps.orgs.listMembers(caller.orgId)).find((member) => member.developerId === developerId);
+  if (target === undefined) throw agentXError("NOT_FOUND", "that person is not a member of the organization");
+  if (caller.orgRole === "admin" && target.role !== "member") throw agentXError("FORBIDDEN", "an admin can remove members only; ask an owner to remove an owner or admin");
+  const store = signInStoreOf(deps);
+  const [record, emails] = await Promise.all([store.getDeveloper(developerId), emailsOf(store, developerId)]);
+  await deps.orgs.removeMember({ orgId: caller.orgId, developerId, emails, ban: deps.cloud !== true });
+  await endSessionsAfterRemoval(deps, developerId);
+  const name = record?.displayName ?? "That person";
+  logDeveloperEvent({ event: "developer.org_member_removed", orgId: caller.orgId, role: target.role, banned: String(deps.cloud !== true) });
+  return { removed: { developerId, name }, message: STOPS_AFTER_STEP(name) };
+}
+
+const LeaveBodySchema = z.object({ requestId: z.string().uuid() }).strict();
+
+/**
+ * `POST /v1/app/org/leave`. Members and admins leave. An owner leaves when another owner exists; an owner who is the only member
+ * closes the org (its GitHub connection and Slack workspace are released, its projects archived). Otherwise LAST_OWNER (409).
+ */
+async function leaveOrganization(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<{ left: true; orgClosed: boolean; message: string }> {
+  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
+  const parsed = LeaveBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  const store = signInStoreOf(deps);
+  const emails = await emailsOf(store, caller.developerId);
+  const sole = caller.orgRole === "owner" && (await deps.orgs.listMembers(caller.orgId)).every((member) => member.developerId === caller.developerId);
+  if (sole) {
+    await deps.orgs.closeOrg(caller.orgId, {
+      archiveProjects: deps.closeOrgHooks?.archiveProjects ?? (async () => undefined), clearEgress: deps.closeOrgHooks?.clearEgress ?? (async () => undefined), emails,
+    });
+  } else {
+    await deps.orgs.removeMember({ orgId: caller.orgId, developerId: caller.developerId, emails, ban: false });
+  }
+  await endSessionsAfterRemoval(deps, caller.developerId);
+  logDeveloperEvent({ event: "developer.org_left", orgId: caller.orgId, role: caller.orgRole, closed: String(sole) });
+  return { left: true, orgClosed: sole, message: sole ? "You left and the organization is closed." : STOPS_AFTER_STEP(caller.name) };
 }
 
 function budgetDependencies(deps: DeveloperRouteDependencies): BudgetDependencies {

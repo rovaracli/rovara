@@ -9,7 +9,7 @@ import { agentXError, normalizeEmail, type DeveloperSignInMethod, type OrgId, ty
 import type { OrgStore } from "./store.js";
 
 export interface ResolveOrgOnSignInDependencies {
-  orgs: Pick<OrgStore, "orgForDeveloper" | "createOrgWithOwner" | "addMember" | "acceptInvite" | "peekInvite" | "ensureOrg">;
+  orgs: Pick<OrgStore, "orgForDeveloper" | "createOrgWithOwner" | "addMember" | "acceptInvite" | "peekInvite" | "ensureOrg" | "isBanned">;
   /** The install's single org (ruling R3); unset in an install that has none. */
   singleOrgId?: OrgId;
   /** The name that single org is created with the first time someone joins it; the environment's name. */
@@ -40,6 +40,7 @@ export interface SignInOrg {
   inviteError?: "ALREADY_IN_ORG" | "INVITE_INVALID";
 }
 
+export const REMOVED_FROM_ORG_MESSAGE = "You were removed from this organization. Ask an admin to invite you again.";
 const codeOf = (error: unknown) => (error as { code?: unknown }).code;
 /** The same address on both sides, and only for ASCII ones: Unicode folding must not make two different addresses equal (U+212A is "k"). */
 const sameEmail = (a: string, b: string) => {
@@ -140,6 +141,8 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
 
   // Rule 4: a Slack or company sign-in joins the install's single org.
   if (deps.singleOrgId === undefined) throw agentXError("CONFIG_INVALID", "Sign in with Rovara on this install: Slack and company sign-ins do not create or join an organization here");
+  // Removed from this install's org with a ban: not back by signing in again. An invite (above) still works and clears the ban.
+  if (await orgs.isBanned(deps.singleOrgId, input.developerId)) throw agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
   // No email pointer here: the email index links one person's cloud identities, and a Slack or company
   // sign-in joins by identity alone.
   await orgs.ensureOrg(deps.singleOrgId, deps.singleOrgName ?? "default");
