@@ -73,6 +73,8 @@ export class DeveloperSignIn extends Construct {
   readonly table: dynamodb.Table;
   /** The cloud sign-in, when the agentxCloud context is on. */
   readonly cloud: CloudIdentity | undefined;
+  /** The sign-in function (DeveloperIdentity). The audit ledger gives it the outbox (Audit Ledger, Task 18), because it links and unlinks sign-in methods and accepts invites. */
+  readonly signInFunction: lambdaNodejs.NodejsFunction;
 
   constructor(scope: Construct, id: string, props: DeveloperSignInProps) {
     super(scope, id);
@@ -141,6 +143,7 @@ export class DeveloperSignIn extends Construct {
         ROVARA_WEB_ORIGIN: cloud.webOrigin.valueAsString,
       }),
     }, Duration.seconds(15));
+    this.signInFunction = fn;
     // What DeveloperSignInStore sends on every sign-in: GetItem, PutItem, UpdateItem, and TransactWriteItems
     // made of Put and Update items (IAM authorizes each item as PutItem or UpdateItem).
     fn.addToRolePolicy(new iam.PolicyStatement({

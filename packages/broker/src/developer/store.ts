@@ -5,14 +5,19 @@ import { randomUUID } from "node:crypto";
 import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   agentXError,
+  developerOrgKey,
   normalizeEmail,
   DEVELOPER_AUTH_REQUEST_SECONDS,
   DEVELOPER_CODE_SECONDS,
   DEVELOPER_SESSION_SECONDS,
   FRESH_SIGN_IN_SECONDS,
+  type AuditEventInput,
   type DeveloperSignInMethod,
   type LinkedIdentity,
 } from "@agentx/contracts";
+import { auditIdentityLinked, auditIdentityUnlinked, auditOccurrence } from "../audit/events.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPending, tryAuditEvents, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import { pkceChallengeMatches, randomToken, sha256Hex } from "./tokens.js";
 
@@ -193,10 +198,47 @@ function relinkRefusal(link: IdentityLinkRecord | undefined, identityKey: string
 }
 
 export class DeveloperSignInStore {
-  constructor(private readonly input: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; now: () => number }) {}
+  constructor(private readonly input: {
+    documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; now: () => number;
+    /** The Audit Ledger's outbox (Task 18): a sign-in method linked or unlinked is recorded in the transaction that does it. Absent on a legacy install. */
+    audit?: AuditRuntime;
+  }) {}
 
   private seconds(): number { return Math.floor(this.input.now() / 1000); }
   private iso(): string { return new Date(this.input.now()).toISOString(); }
+
+  private auditDeps(): { audit?: AuditRuntime } {
+    return this.input.audit === undefined ? {} : { audit: this.input.audit };
+  }
+
+  /**
+   * The audit event for a sign-in method linked to or unlinked from a developer, or undefined when this install has no ledger or the
+   * developer belongs to no org (a person's first sign-in: the chain is an org's, and there is none yet). The org is read from the
+   * developer's `DEVELOPER_ORG#` pointer in the State table. A failed read or a bad event is logged and never stops the sign-in.
+   */
+  private async identityEvent(kind: "linked" | "unlinked", input: { identityKey: string; developerId: string; provider: DeveloperSignInMethod; at: string }): Promise<AuditEventInput | undefined> {
+    const audit = this.input.audit;
+    if (audit === undefined) return undefined;
+    const [event] = await tryAuditEvents(this.auditDeps(), async () => {
+      const pointer = await this.input.documentClient.send(new GetCommand({ TableName: audit.tableName, Key: developerOrgKey(input.developerId), ConsistentRead: true })) as { Item?: { orgId?: unknown } };
+      const orgId = pointer.Item?.orgId;
+      if (typeof orgId !== "string") return [];
+      const facts = {
+        orgId, actor: { kind: "member" as const, id: input.developerId }, occurredAt: input.at, occurrence: auditOccurrence(input.identityKey, input.at),
+        memberId: input.developerId, provider: input.provider,
+      };
+      return [kind === "linked" ? auditIdentityLinked(facts) : auditIdentityUnlinked(facts)];
+    });
+    return event;
+  }
+
+  private pendingFor(event: AuditEventInput | undefined): TransactItem[] {
+    return event === undefined ? [] : auditPending(this.auditDeps(), event);
+  }
+
+  private async flush(event: AuditEventInput | undefined): Promise<void> {
+    if (event !== undefined) await flushAuditEvents(this.auditDeps(), [event]);
+  }
 
   private async get<T>(pk: string): Promise<(T & { pk: string; sk: string }) | undefined> {
     const response = await this.input.documentClient.send(new GetCommand({ TableName: this.input.tableName, Key: { pk, sk: META }, ConsistentRead: true })) as { Item?: T & { pk: string; sk: string } };
@@ -357,6 +399,10 @@ export class DeveloperSignInStore {
     // every session of the identity goes in the same transaction, and sessions from before the link stay ended by its time.
     const marked = current === undefined ? undefined : await this.getDeveloper(developerId);
     const clearsUnlink = marked !== undefined && marked[identityUnlinkedAttribute(identityKey)] !== undefined;
+    // R1-5: a transaction cannot say whether it created the link, so the audited attempt is create-only: it writes only where nothing is
+    // linked, or over the identity's own tombstone. When that fails the link was made by someone else meanwhile (or is the same developer's
+    // already): the read below answers `created: false` and nothing is recorded.
+    const event = await this.identityEvent("linked", { identityKey, developerId, provider: input.provider, at });
     try {
       await this.input.documentClient.send(new TransactWriteCommand({
         TransactItems: [
@@ -368,11 +414,16 @@ export class DeveloperSignInStore {
           } }] : []),
           { Put: {
             TableName: this.input.tableName, Item: { ...signInIdentityKey(identityKey), ...body },
-            // Writes when nothing is linked, or (for the identity's own developer) over an item that was unlinked.
-            ConditionExpression: `attribute_not_exists(pk) OR (developerId = :d AND attribute_not_exists(unlinkedFrom))${own ? " OR attribute_exists(unlinkedFrom)" : ""}`,
-            ExpressionAttributeValues: { ":d": developerId },
+            // Writes when nothing is linked, or (for the identity's own developer) over an item that was unlinked. Audited: only those two.
+            ...(event === undefined
+              ? {
+                ConditionExpression: `attribute_not_exists(pk) OR (developerId = :d AND attribute_not_exists(unlinkedFrom))${own ? " OR attribute_exists(unlinkedFrom)" : ""}`,
+                ExpressionAttributeValues: { ":d": developerId },
+              }
+              : { ConditionExpression: current === undefined ? "attribute_not_exists(pk)" : "attribute_exists(unlinkedFrom)" }),
           } },
           { Put: { TableName: this.input.tableName, Item: { ...developerIdentityKey(developerId, identityKey), ...body } } },
+          ...this.pendingFor(event),
         ],
       }));
     } catch (error) {
@@ -382,6 +433,7 @@ export class DeveloperSignInStore {
       if (winner === undefined) throw error;
       return winner;
     }
+    await this.flush(event);
     return { developerId, created: true };
   }
 
@@ -506,6 +558,7 @@ export class DeveloperSignInStore {
       const mergedAway = (key: string): boolean => merged.get(key) === developerId;
       // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the reverse item's keys
       const { pk: _pk, sk: _sk, entityType: _type, ...fields } = link as typeof link & { pk: string; entityType?: string };
+      const event = await this.identityEvent("unlinked", { identityKey, developerId, provider: link.provider, at });
       try {
         await this.input.documentClient.send(new TransactWriteCommand({
           TransactItems: [
@@ -529,12 +582,14 @@ export class DeveloperSignInStore {
               TableName, Key: { pk: `DEVELOPER#${identityKey}`, sk: META }, UpdateExpression: "REMOVE mergedInto, mergedAt",
               ConditionExpression: "mergedInto = :d", ExpressionAttributeValues: { ":d": developerId },
             } }] : []),
+            ...this.pendingFor(event),
           ],
         }));
       } catch (error) {
         if (!conditionFailed(error)) throw error;
         throw agentXError("CONFIG_INVALID", "your sign-in methods changed while this ran; check them with agentx whoami and try again");
       }
+      await this.flush(event);
     }
     return { identityKey: keys[0]! };
   }
@@ -577,6 +632,7 @@ export class DeveloperSignInStore {
       linkedAt: at, lastSignInAt: at, relinkedBy: developerId, relinkedAt: at, relinkedWith: input.by.method,
     };
     const TableName = this.input.tableName;
+    const event = await this.identityEvent("linked", { identityKey, developerId, provider: input.provider, at });
     try {
       await this.input.documentClient.send(new TransactWriteCommand({
         TransactItems: [
@@ -591,6 +647,7 @@ export class DeveloperSignInStore {
             ConditionExpression: "developerId = :d AND unlinkedFrom = :d", ExpressionAttributeValues: { ":d": developerId },
           } },
           { Put: { TableName, Item: { ...developerIdentityKey(developerId, identityKey), ...body } } },
+          ...this.pendingFor(event),
         ],
       }));
     } catch (error) {
@@ -599,6 +656,7 @@ export class DeveloperSignInStore {
       const now = relinkRefusal(await this.getIdentityLink(identityKey), identityKey, developerId, input.provider);
       throw agentXError("CONFIG_INVALID", now ?? "your sign-in methods changed while this ran; check them with agentx whoami and try again");
     }
+    await this.flush(event);
     return { developerId };
   }
 

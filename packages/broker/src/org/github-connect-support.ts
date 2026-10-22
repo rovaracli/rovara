@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { agentXError, githubConnectStateKey, type OrgId, type OrgRecord, type OrgRole } from "@agentx/contracts";
+import type { AuditRuntime } from "../audit/outbox.js";
 import type { GitHubInstallation, GitHubInstallationRepository, GitHubTokenScope } from "../github-app.js";
 
 export const GITHUB_ISSUER = "https://github.com";
@@ -74,6 +75,8 @@ export interface GithubConnectionDependencies {
   fetch?: typeof fetch;
   /** Event names, ids and error names only. */
   log?: (entry: Record<string, unknown>) => void;
+  /** The Audit Ledger's outbox (Task 18): a connection, a disconnect and GitHub's own changes are recorded in the transaction that makes them. Absent on a legacy install. */
+  audit?: AuditRuntime;
 }
 
 export interface PendingBinding {

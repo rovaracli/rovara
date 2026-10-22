@@ -248,6 +248,29 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(tableStatements.flatMap(actionsOf).sort()).toEqual(["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
   });
 
+  it("gives DeveloperIdentity the audit outbox and nothing else of the ledger: the intake queue's URL, SendMessage on that queue, and PutItem and DeleteItem on the State table under AUDIT_PENDING# only (Audit Ledger, Task 18)", () => {
+    const [queueId] = ofType(named, "AWS::SQS::Queue").find(([id]) => withoutHash(id) === "AuditLedgerAuditIntakeQueue")!;
+    const [stateId] = ofType(named, "AWS::DynamoDB::Table").find(([id]) => withoutHash(id) === "State")!;
+    const variables = (named.Resources[functionId(named, "DeveloperSignInFunction")]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    expect(variables.AUDIT_INTAKE_QUEUE_URL).toEqual({ Ref: queueId });
+    const statements = statementsOfRole(named, "DeveloperSignInFunctionServiceRole");
+    // One statement sends to the queue, and it sends and does nothing else (no receive, no delete, no purge).
+    const sends = statements.filter((statement) => touches(statement, "sqs"));
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({ Effect: "Allow", Action: "sqs:SendMessage", Resource: { "Fn::GetAtt": [queueId, "Arn"] } });
+    // One statement writes pending items, inside the audit partitions' key prefix and nowhere else in the State table.
+    const pending = statements.filter((statement) => JSON.stringify(statement.Condition ?? {}).includes("AUDIT_PENDING#"));
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({ Effect: "Allow", Action: ["dynamodb:PutItem", "dynamodb:DeleteItem"], Resource: { "Fn::GetAtt": [stateId, "Arn"] } });
+    expect(leadingKeysOf(pending[0]!)).toEqual(["AUDIT_PENDING#*"]);
+    // Nothing else of the ledger: its tables, buckets and key are named by no statement of this role.
+    for (const name of ["AuditLedgerAuditLedgerTable", "AuditLedgerAuditSealsTable", "AuditLedgerAuditKeysTable", "AuditLedgerAuditLedgerBucket", "AuditLedgerAuditExportsBucket", "AuditLedgerAuditIntakeDeadLetterQueue", "AuditLedgerAuditVaultKey"]) {
+      expect(JSON.stringify(statements.map((statement) => statement.Resource))).not.toContain(name);
+    }
+    // The legacy deployment has no sign-in function and no ledger.
+    expect(JSON.stringify(legacy)).not.toContain("AUDIT_INTAKE_QUEUE_URL");
+  });
+
   it("needs no new permission for the fresh sign-in check and for adding a removed method back (Plan 2, Task 8b)", () => {
     const [tableId] = ofType(named, "AWS::DynamoDB::Table").find(([logicalId]) => logicalId.startsWith("DeveloperSignInTable"))!;
     const tableStatements = statementsOfRole(named, "DeveloperSignInFunctionServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(named, statement, tableId, SAMPLE_TABLE_ARN));

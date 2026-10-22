@@ -5,6 +5,9 @@
 // cannot overwrite a staff decision made meanwhile (and a decision cannot overwrite a save).
 import { randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { auditEgressDecided, auditOccurrence } from "../audit/events.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPending, type AuditRuntime } from "../audit/outbox.js";
 import {
   EGRESS_ALL_ORGS_SK_PREFIX,
   EGRESS_AUDIT_PK,
@@ -22,6 +25,8 @@ import {
   isAllowedDomain,
   projectMetaKey,
   egressRejectedWarning,
+  type AuditActor,
+  type AuditEventInput,
   type EgressAuditAction,
   type EgressDomainEntry,
   type EgressDomainsItem,
@@ -40,6 +45,8 @@ export interface EgressDomainsDependencies {
   sleep?: (milliseconds: number) => Promise<void>;
   /** Pushes the approved union to the DNS firewall (Task 19's `syncCellAllowList`, wired by the broker). `{ ok: false }` leaves the marker dirty for the schedule. */
   sync: () => Promise<{ ok: boolean; domains?: number }>;
+  /** The Audit Ledger's outbox (Task 18): a staff decision is recorded in the transaction that makes it. Absent on a legacy install. */
+  audit?: AuditRuntime;
 }
 
 type Reader = Pick<EgressDomainsDependencies, "documentClient" | "tableName">;
@@ -57,6 +64,8 @@ interface Plan<T> {
   audits: AuditDraft[];
   /** Whether the domains the firewall serves change. */
   dirty: boolean;
+  /** Audit events that commit with the change (each as a pending item in the same transaction). */
+  events?: AuditEventInput[];
   result: T;
 }
 
@@ -102,7 +111,7 @@ async function mutate<T>(
   planFor: (current: EgressDomainsItem | undefined, at: string, ownerActive: boolean) => Plan<T>,
   /** The owner's own record (a project's META), whose archived status decides whether a NEW item starts active. Read on each attempt and guarded in the transaction. */
   ownerRecord?: OrgKey,
-): Promise<{ result: T; dirty: boolean; changed: boolean }> {
+): Promise<{ result: T; dirty: boolean; changed: boolean; events: AuditEventInput[] }> {
   let changedUnderUs = 0;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     const current = await readItem(deps, key);
@@ -111,7 +120,7 @@ async function mutate<T>(
     // between this read and the write refuses the write and the next attempt reads it afresh (the archive's own flip finds no item to flip).
     const archived = ownerRecord !== undefined && current === undefined && await readOwnerArchived(deps, ownerRecord);
     const plan = planFor(current, at, !archived);
-    if (plan.next === undefined) return { result: plan.result, dirty: false, changed: false };
+    if (plan.next === undefined) return { result: plan.result, dirty: false, changed: false, events: [] };
     const condition = current === undefined
       ? { ConditionExpression: "attribute_not_exists(pk)" }
       : { ConditionExpression: "updatedAt = :read", ExpressionAttributeValues: { ":read": current.updatedAt } };
@@ -137,9 +146,10 @@ async function mutate<T>(
         ExpressionAttributeValues: { ":archived": "archived" },
       },
     }] : [];
-    const room = TRANSACTION_ACTIONS - 1 - marker.length - ownerCheck.length;
+    const pending = (plan.events ?? []).flatMap((event) => auditPending(deps, event));
+    const room = TRANSACTION_ACTIONS - 1 - marker.length - ownerCheck.length - pending.length;
     try {
-      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [write, ...marker, ...ownerCheck, ...audits.slice(0, room)] }));
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [write, ...marker, ...ownerCheck, ...pending, ...audits.slice(0, room)] }));
     } catch (error) {
       const reason = cancellation(error);
       if (reason === undefined) throw error;
@@ -155,7 +165,7 @@ async function mutate<T>(
     for (let start = room; start < audits.length; start += TRANSACTION_ACTIONS) {
       await deps.documentClient.send(new TransactWriteCommand({ TransactItems: audits.slice(start, start + TRANSACTION_ACTIONS) }));
     }
-    return { result: plan.result, dirty: plan.dirty, changed: true };
+    return { result: plan.result, dirty: plan.dirty, changed: true, events: plan.events ?? [] };
   }
   throw agentXError("RUNTIME_UNAVAILABLE", "the allowed domains could not be saved just now; try again");
 }
@@ -233,13 +243,17 @@ export async function setEgressOwnerActive(deps: EgressDomainsDependencies, orgI
   return dirty ? syncNow(deps) : {};
 }
 
-/** Staff decide one pending domain: `pending` becomes `approved` or `rejected`, audited with the operator's identity. */
+/**
+ * Staff decide one pending domain: `pending` becomes `approved` or `rejected`, audited with the operator's identity. With a ledger the decision
+ * is also recorded in the audit chain, in the same transaction: `auditActor` names the staff member by their pseudonym (never the subject), and
+ * `requestId` is the request's id, which with the domain makes the occurrence.
+ */
 export async function decideEgressDomain(
   deps: EgressDomainsDependencies,
-  input: { orgId: OrgId; owner: EgressOwner; domain: string; decision: "approved" | "rejected"; operatorId: string; reason?: string },
+  input: { orgId: OrgId; owner: EgressOwner; domain: string; decision: "approved" | "rejected"; operatorId: string; reason?: string; requestId?: string; auditActor?: AuditActor },
 ): Promise<{ warning?: string }> {
   const { orgId, owner, domain, decision, operatorId } = input;
-  const { dirty } = await mutate(deps, egressDomainsKey(orgId, owner), (current, at): Plan<undefined> => {
+  const { dirty, events } = await mutate(deps, egressDomainsKey(orgId, owner), (current, at): Plan<undefined> => {
     const entry = current?.domains.find((candidate) => candidate.domain === domain);
     if (current === undefined || entry === undefined || entry.status !== "pending") throw agentXError("CONFIG_INVALID", egressNotPendingMessage(domain));
     const decided: EgressDomainEntry = { ...entry, status: decision, decidedAt: at, decidedBy: operatorId, ...(decision === "rejected" && input.reason !== undefined ? { reason: input.reason } : {}) };
@@ -247,11 +261,38 @@ export async function decideEgressDomain(
       next: { ...current, domains: current.domains.map((candidate) => (candidate === entry ? decided : candidate)), updatedAt: at },
       audits: [{ orgId, owner, domain, action: decision, actor: { kind: "operator", id: operatorId }, ...(decided.reason === undefined ? {} : { reason: decided.reason }) }],
       dirty: decision === "approved" && current.active,
+      events: decisionEvents(deps, input, entry.requestedAt, at, decided.reason),
       result: undefined,
     };
   });
   log(decision === "approved" ? "domain_approved" : "domain_rejected", { orgId, owner, operatorId });
+  await flushAuditEvents(deps, events);
   return dirty ? syncNow(deps) : {};
+}
+
+/** The project or model source a domain belongs to, for the details of its decision (a name is personal data and stays out of the chain). */
+const ownerLabel = (owner: EgressOwner): Record<string, string> => (owner.kind === "project" ? { project: owner.project } : { modelSource: owner.sourceId });
+
+/** The audit event of a staff decision: none on an install with no ledger, and none (logged, without a value) when it cannot be built. */
+function decisionEvents(
+  deps: EgressDomainsDependencies,
+  input: { orgId: OrgId; owner: EgressOwner; domain: string; decision: "approved" | "rejected"; operatorId: string; requestId?: string; auditActor?: AuditActor },
+  requestedAt: string,
+  at: string,
+  reason: string | undefined,
+): AuditEventInput[] {
+  if (deps.audit === undefined) return [];
+  try {
+    return [auditEgressDecided({
+      orgId: input.orgId, actor: input.auditActor ?? { kind: "system", id: "rovara" }, occurredAt: at,
+      // Without a request id (a caller outside the staff route), the domain's own request time makes the occurrence: it is decided once per request.
+      occurrence: auditOccurrence(input.requestId ?? requestedAt, input.domain), domain: input.domain, decision: input.decision,
+      details: [{ subject: "org", fields: { ...ownerLabel(input.owner), ...(reason === undefined ? {} : { reason }) } }],
+    })];
+  } catch (error) {
+    try { deps.audit.log({ event: "audit.record_invalid", level: "error", reason: "builder_failed", error: error instanceof Error ? error.name : "unknown" }); } catch { /* nothing more can be done */ }
+    return [];
+  }
 }
 
 async function pagesOf(deps: Reader, prefix: string): Promise<EgressDomainsItem[]> {

@@ -707,7 +707,10 @@ async function putInstallBudget(dependencies: AwsBrokerDependencies, identity: A
 }
 
 function egressDepsOf(dependencies: AwsBrokerDependencies): EgressDomainsDependencies {
-  return { documentClient: dependencies.documentClient, tableName: dependencies.tableName, cloud: dependencies.cloud === true, now: () => new Date(), sync: dependencies.egressDomainsSync ?? (async () => ({ ok: false })) };
+  return {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, cloud: dependencies.cloud === true, now: () => new Date(), sync: dependencies.egressDomainsSync ?? (async () => ({ ok: false })),
+    ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
+  };
 }
 
 /**
@@ -736,14 +739,19 @@ async function listEgressPending(dependencies: AwsBrokerDependencies, identity: 
  */
 async function decideEgress(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, decision: "approved" | "rejected", body: unknown): Promise<EgressDecisionResponse & { warning?: string }> {
   if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
-  const parsed: z.ZodSafeParseResult<{ orgId: OrgId; owner: EgressOwner; domain: string; reason?: string }> = decision === "approved"
+  const parsed: z.ZodSafeParseResult<{ requestId: string; orgId: OrgId; owner: EgressOwner; domain: string; reason?: string }> = decision === "approved"
     ? EgressApproveBodySchema.safeParse(body) : EgressRejectBodySchema.safeParse(body);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
   }
-  const { orgId, owner, domain, reason } = parsed.data;
-  const { warning } = await decideEgressDomain(egressDepsOf(dependencies), { orgId, owner, domain, decision, operatorId: identity.subject, ...(reason === undefined ? {} : { reason }) });
+  const { orgId, owner, domain, reason, requestId } = parsed.data;
+  const { warning } = await decideEgressDomain(egressDepsOf(dependencies), {
+    orgId, owner, domain, decision, operatorId: identity.subject, requestId,
+    // The chain names the staff member by a pseudonymous id, never by their identity.
+    auditActor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) },
+    ...(reason === undefined ? {} : { reason }),
+  });
   return { orgId, owner, domain, status: decision, ...(warning === undefined ? {} : { warning }) };
 }
 
@@ -765,6 +773,7 @@ function githubConnectionOf(dependencies: AwsBrokerDependencies): GithubConnecti
       ...(app.listInstallationRepositories === undefined ? {} : { listInstallationRepositories: (installationId, scope) => app.listInstallationRepositories!(installationId, scope) }),
     },
     identities: signIn, orgs: orgStoreOf(dependencies),
+    ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
     ...(dependencies.githubConnectedNotice === undefined ? {} : {
       notifyGithubConnected: async (notice) => { await sendGithubConnectedNotice(dependencies.githubConnectedNotice!, notice); },
       remindGithubRequester: async (reminder) => { await sendGithubRequestReminder(dependencies.githubConnectedNotice!, reminder); },
@@ -824,8 +833,8 @@ async function developerDisplayName(dependencies: Pick<AwsBrokerDependencies, "d
   return typeof out.Item?.displayName === "string" ? out.Item.displayName : undefined;
 }
 
-function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">): OrgStore {
-  return new OrgStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now });
+function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName" | "audit">): OrgStore {
+  return new OrgStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) });
 }
 
 /**
@@ -1389,6 +1398,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
               installationLifecycle: (deliveryId: string, event: InstallationLifecycleEvent) => applyInstallationLifecycle({
                 documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
                 log: (entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry })),
+                ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
               }, deliveryId, event),
             } : {}),
             now: () => new Date().toISOString(),

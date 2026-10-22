@@ -26,6 +26,8 @@ import {
   budgetSyncedKey,
   slackTeamOrgKey,
   type AgentXErrorCode,
+  type AuditActor,
+  type AuditEventInput,
   type OrgId,
   type OrgInviteRecord,
   type OrgKey,
@@ -33,6 +35,10 @@ import {
   type OrgRecord,
   type OrgRole,
 } from "@agentx/contracts";
+import { scheduleAuditShred } from "../audit/erase.js";
+import { auditMemberJoined, auditMemberLeft, auditMemberRemoved, auditMemberRoleChanged, auditOccurrence, auditOrgClosed } from "../audit/events.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPending, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
 import { sha256Hex } from "../developer/tokens.js";
 import { INVITE_HASH_PATTERN, inviteTokenHash } from "./invite-url.js";
 
@@ -52,7 +58,12 @@ export interface OrgStoreInput {
   tableName: string;
   now: () => number;
   newOrgId?: () => OrgId;
+  /** The Audit Ledger's outbox (Task 18). Absent on a legacy install: nothing is recorded and no pending item is written. */
+  audit?: AuditRuntime;
 }
+
+/** Who a change is recorded as made by, when its caller says; otherwise the change is recorded as Rovara's own. */
+const SYSTEM_ACTOR: AuditActor = { kind: "system", id: "rovara" };
 
 const errorName = (error: unknown) => (error instanceof Error ? error.name : undefined);
 
@@ -85,6 +96,21 @@ export class OrgStore {
 
   private iso(): string {
     return new Date(this.input.now()).toISOString();
+  }
+
+  /** What the outbox functions take: the ledger, when this install has one. */
+  private deps(): { audit?: AuditRuntime } {
+    return this.input.audit === undefined ? {} : { audit: this.input.audit };
+  }
+
+  /** The pending audit items for an action's transaction: none on an install with no ledger, or for an event that could not be built. */
+  private pendingFor(...events: Array<AuditEventInput | undefined>): TransactItem[] {
+    return events.flatMap((event) => (event === undefined ? [] : auditPending(this.deps(), event)));
+  }
+
+  /** After the action's transaction committed: sends its events. Never throws, and never waits past the flush deadline. */
+  private async flush(...events: Array<AuditEventInput | undefined>): Promise<void> {
+    await flushAuditEvents(this.deps(), events.filter((event): event is AuditEventInput => event !== undefined));
   }
 
   private async get(key: OrgKey): Promise<Item | undefined> {
@@ -243,6 +269,10 @@ export class OrgStore {
     const nowIso = this.iso();
     if (invite === undefined || invite.acceptedAt !== undefined || invite.expiresAt <= nowIso) throw inviteInvalid();
     const { orgId, role } = invite;
+    const event = await tryAuditEvent(this.deps(), () => auditMemberJoined({
+      orgId, actor: { kind: "member", id: input.developerId }, occurredAt: nowIso, occurrence: input.tokenHash,
+      memberId: input.developerId, role, via: "invite", related: [invite.createdBy],
+    }));
     // One transaction: the invite is marked accepted only if the developer joins, and joins only if
     // the invite is still live, so a refusal on either side leaves the other untouched.
     const items: TransactItem[] = [
@@ -258,6 +288,8 @@ export class OrgStore {
       ...this.membershipItems({ orgId, developerId: input.developerId, role, email: input.email }),
       // An invite is the way back after a removal with a ban: it clears the ban in the same transaction.
       { Delete: { TableName: this.input.tableName, Key: orgBanKey(orgId, input.developerId) } },
+      // The audit item sits before the closed-org check, which stays last: a refusal reads that check by its position.
+      ...this.pendingFor(event),
       // A closed org (or one whose last owner is closing it) takes no new members. closeOrg writes `closingAt` before it checks that its
       // sole owner is alone, and both writes touch this item, so the two transactions are serialized.
       { ConditionCheck: { TableName: this.input.tableName, Key: orgMetaKey(orgId), ConditionExpression: "attribute_not_exists(closedAt) AND attribute_not_exists(closingAt)" } },
@@ -267,6 +299,7 @@ export class OrgStore {
       if (failed.has(items.length - 1)) return coded("INVITE_INVALID", "that organization has closed");
       return failed.has(1) || failed.has(2) || failed.has(3) ? alreadyInOrg() : undefined;
     });
+    await this.flush(event);
     return { orgId, role };
   }
 
@@ -301,20 +334,25 @@ export class OrgStore {
   }
 
   /** The member record and the developer pointer change role together; demoting the last owner is refused (LAST_OWNER). */
-  async setRole(input: { orgId: OrgId; developerId: string; role: OrgRole }): Promise<void> {
+  async setRole(input: { orgId: OrgId; developerId: string; role: OrgRole; /** Recorded as the actor of `member.role_changed`. */ by?: AuditActor; /** What makes this change one occurrence in the audit chain. */ requestId?: string }): Promise<void> {
     const { orgId, developerId, role } = input;
     const member = await this.get(orgMemberKey(orgId, developerId));
     if (member === undefined) throw coded("NOT_FOUND", "that person is not a member of the organization");
     const current = member.role as OrgRole;
     if (current === role) return;
     const guard = current === "owner" ? await this.otherOwnerGuard(orgId, developerId) : [];
+    const at = this.iso();
+    const event = await tryAuditEvent(this.deps(), () => auditMemberRoleChanged({
+      orgId, actor: input.by ?? SYSTEM_ACTOR, occurredAt: at, occurrence: input.requestId ?? auditOccurrence(developerId, at, role),
+      memberId: developerId, fromRole: current, toRole: role,
+    }));
     await this.transact(
       [
         {
           Update: {
             // `roleUpdatedAt` is what an E2E round's org-role proof records (Plan 2, Task 11), so a role changed and changed back reads as new.
             TableName: this.input.tableName, Key: orgMemberKey(orgId, developerId), UpdateExpression: "SET #role = :role, roleUpdatedAt = :at",
-            ConditionExpression: "attribute_exists(pk) AND #role = :current", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":role": role, ":current": current, ":at": new Date(this.input.now()).toISOString() },
+            ConditionExpression: "attribute_exists(pk) AND #role = :current", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":role": role, ":current": current, ":at": at },
           },
         },
         {
@@ -324,9 +362,11 @@ export class OrgStore {
           },
         },
         ...guard,
+        ...this.pendingFor(event),
       ],
       (failed) => (failed.has(2) ? coded("LAST_OWNER", LAST_OWNER_MESSAGE) : coded("CHANGE_STALE", "the organization's members changed; try again")),
     );
+    await this.flush(event);
   }
 
   /**
@@ -340,7 +380,7 @@ export class OrgStore {
    * landing inside it fails the transaction after the grants and monthly limit are already gone (re-running the removal, or the person
    * being promoted again, does not bring them back). `expectedRole` is the role the caller's authorization saw; a different one is CHANGE_STALE.
    */
-  async removeMember(input: { orgId: OrgId; developerId: string; emails: string[]; ban: boolean; expectedRole?: OrgRole }): Promise<void> {
+  async removeMember(input: { orgId: OrgId; developerId: string; emails: string[]; ban: boolean; expectedRole?: OrgRole; /** Who made the change. The person themselves: `member.left`; anyone else: `member.removed`. */ by?: AuditActor }): Promise<void> {
     const { orgId, developerId } = input;
     if (await this.get(orgMemberKey(orgId, developerId)) === undefined) throw coded("NOT_FOUND", "that person is not a member of the organization");
     const pointers = await this.emailPointersOf(input.emails, developerId);
@@ -350,8 +390,16 @@ export class OrgStore {
     if (input.expectedRole !== undefined && input.expectedRole !== role) throw coded("CHANGE_STALE", "the organization's members changed; try again");
     const guard = role === "owner" ? await this.otherOwnerGuard(orgId, developerId) : [];
     await this.deleteMemberData(orgId, developerId);
-    const items = this.removalItems(input, role, pointers, guard);
+    // One occurrence per membership: the same person removed after joining again has another `joinedAt`.
+    const actor = input.by ?? SYSTEM_ACTOR;
+    const left = actor.kind === "member" && actor.id === developerId;
+    const event = await tryAuditEvent(this.deps(), () => {
+      const facts = { orgId, actor, occurredAt: this.iso(), occurrence: auditOccurrence(developerId, String(member.joinedAt)), memberId: developerId, role };
+      return left ? auditMemberLeft(facts) : auditMemberRemoved(facts);
+    });
+    const items = this.removalItems(input, role, pointers, guard, this.pendingFor(event));
     await this.transact(items, (failed) => (guard.length > 0 && failed.has(items.length - 1) ? coded("LAST_OWNER", LAST_OWNER_MESSAGE) : failed.has(0) ? coded("CHANGE_STALE", "the organization's members changed; try again") : undefined));
+    await this.flush(event);
   }
 
   /**
@@ -360,7 +408,7 @@ export class OrgStore {
    * is set and the sole member removed without a ban. `emails` are the leaving person's email pointers, which must go so an invite
    * to another org can index them. The org's TRIAL_GITHUB claim stays. Safe to run again after a stop part-way.
    */
-  async closeOrg(orgId: OrgId, deps: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; emails?: string[] }): Promise<void> {
+  async closeOrg(orgId: OrgId, deps: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; emails?: string[]; /** Recorded as the actor of `org.closed`. Default: the sole owner. */ by?: AuditActor }): Promise<void> {
     const members = await this.listMembers(orgId);
     if (members.length > 1 || members.some((member) => member.role !== "owner")) throw coded("LAST_OWNER", LAST_OWNER_MESSAGE);
     const meta = await this.get(orgMetaKey(orgId));
@@ -389,18 +437,35 @@ export class OrgStore {
     const [sole] = members;
     if (sole === undefined) return;
     await this.deleteMemberData(orgId, sole.developerId);
+    const closedAt = this.iso();
+    // The close, the due item for the shred and both audit items commit together: a close that is recorded was scheduled, and the reverse.
+    const closed = await tryAuditEvent(this.deps(), () => auditOrgClosed({
+      orgId, actor: deps.by ?? { kind: "member", id: sole.developerId }, occurredAt: closedAt, occurrence: closedAt, plan: String(meta.plan),
+    }));
+    const shred = this.shredItems(orgId, closedAt);
     await this.transact(
       [
         {
           Update: {
             TableName: this.input.tableName, Key: orgMetaKey(orgId), UpdateExpression: "SET closedAt = :at REMOVE closingAt",
-            ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":at": this.iso() },
+            ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":at": closedAt },
           },
         },
-        ...this.removalItems({ orgId, developerId: sole.developerId, ban: false }, sole.role, await this.emailPointersOf(deps.emails ?? [], sole.developerId), []),
+        ...this.removalItems({ orgId, developerId: sole.developerId, ban: false }, sole.role, await this.emailPointersOf(deps.emails ?? [], sole.developerId), [], [...this.pendingFor(closed), ...shred]),
       ],
       () => coded("CHANGE_STALE", "the organization changed while it was closing; try again"),
     );
+    await this.flush(closed, ...shred.flatMap((item) => (item.Put?.Item?.event === undefined ? [] : [item.Put.Item.event as AuditEventInput])));
+  }
+
+  /** The due item for the org's shred and the `audit.org_shred_scheduled` pending item (none on an install with no ledger). A failure to build them is logged and never stops the close. */
+  private shredItems(orgId: OrgId, closedAt: string): TransactItem[] {
+    try {
+      return scheduleAuditShred({ ...this.deps(), tableName: this.input.tableName }, { orgId, closedAt, actor: SYSTEM_ACTOR });
+    } catch (error) {
+      try { this.input.audit?.log({ event: "audit.record_invalid", level: "error", reason: "builder_failed", error: error instanceof Error ? error.name : "unknown" }); } catch { /* nothing more can be done */ }
+      return [];
+    }
   }
 
   /** Stops invites into the org while it closes (`closingAt`); kept if already set, so a stopped close can be run again. */
@@ -448,7 +513,7 @@ export class OrgStore {
   }
 
   /** The transaction items that end a membership: member, pointer, the person's email pointers and, given `ban`, the ban. */
-  private removalItems(input: { orgId: OrgId; developerId: string; ban: boolean }, seenRole: OrgRole, emailPointers: string[], guard: TransactItem[]): TransactItem[] {
+  private removalItems(input: { orgId: OrgId; developerId: string; ban: boolean }, seenRole: OrgRole, emailPointers: string[], guard: TransactItem[], audit: TransactItem[] = []): TransactItem[] {
     const { orgId, developerId } = input;
     return [
       // Only while the member still holds the role that was read: a promotion in between fails the transaction.
@@ -460,6 +525,8 @@ export class OrgStore {
       // The tombstone ruling R60 reads: this person was a member and is not now. Their running tasks stop at the next dispatch.
       { Put: { TableName: this.input.tableName, Item: { ...orgRemovedKey(orgId, developerId), entityType: "ORG_REMOVED", orgId, developerId, removedAt: this.iso() } } },
       ...(input.ban ? [{ Put: { TableName: this.input.tableName, Item: { ...orgBanKey(orgId, developerId), entityType: "ORG_BAN", orgId, developerId, bannedAt: this.iso() } } }] : []),
+      // The audit items sit before the guard, which stays last: a refusal reads the guard by its position.
+      ...audit,
       ...guard,
     ];
   }

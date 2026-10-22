@@ -7,7 +7,8 @@ export const hasAuditLedger = (template: unknown): boolean => Object.keys((templ
 
 /**
  * The Audit Ledger adds, to a named control plane, one construct's resources (AuditLedger*, the appender function among
- * them) and the appender's role with the policy CDK attaches to it (AuditAppenderRole*), and nothing else but the environment variables the broker is given (Task 6: the intake queue's
+ * them) and the appender's role with the policy CDK attaches to it (AuditAppenderRole*), and nothing else but the environment variables the broker is given and the sign-in
+ * function's one (Task 18: the intake queue's URL) (Task 6: the intake queue's
  * URL; Task 11: the names it reads the ledger by; the grants are policies of their own, inside the construct) and, since Task 5b, the AuditLockProfile parameter
  * with its AuditLockIsTrial condition (nothing outside the ledger uses them). No other parameter, output or grant on an existing
  * resource. The inventory is checked here to be exactly this, then taken out, so the rest of the template must still
@@ -38,6 +39,7 @@ export function withoutAuditLedger(template: unknown): unknown {
     "AWS::IAM::Policy AuditLedgerAuditBrokerReadPolicy",
     "AWS::IAM::Policy AuditLedgerAuditExportPolicy",
     "AWS::IAM::Policy AuditLedgerAuditExportRoleDefaultPolicy",
+    "AWS::IAM::Policy AuditLedgerAuditSignInOutboxPolicy",
     "AWS::IAM::Role AuditAppenderRole",
     "AWS::IAM::Role AuditLedgerAuditAnchorRole",
     "AWS::IAM::Role AuditLedgerAuditDrainSchedulerRole",
@@ -88,5 +90,11 @@ export function withoutAuditLedger(template: unknown): unknown {
   const added = ["AUDIT_INTAKE_QUEUE_URL", "AUDIT_LEDGER_TABLE_NAME", "AUDIT_SEALS_TABLE_NAME", "AUDIT_KEYS_TABLE_NAME", "AUDIT_EXPORT_FUNCTION_NAME", "AUDIT_EXPORTS_BUCKET_NAME", "AUDIT_VAULT_KEY_ARN"];
   expect(Object.keys(variables).filter((name) => name.startsWith("AUDIT_")).sort()).toStrictEqual([...added].sort());
   for (const name of added) delete variables[name];
+  // Task 18: the sign-in function is given the intake queue's URL too (its grants are the policy removed above), and no other variable.
+  const signIns = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::Lambda::Function" && /^DeveloperSignInFunction[0-9A-F]{8}$/.test(id));
+  expect(signIns).toHaveLength(1);
+  const signInVariables = (signIns[0]![1].Properties as { Environment: { Variables: Record<string, unknown> } }).Environment.Variables;
+  expect(Object.keys(signInVariables).filter((name) => name.startsWith("AUDIT_"))).toStrictEqual(["AUDIT_INTAKE_QUEUE_URL"]);
+  delete signInVariables.AUDIT_INTAKE_QUEUE_URL;
   return template;
 }

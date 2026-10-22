@@ -197,6 +197,12 @@ export interface AuditLedgerProps {
    * DynamoDB actions the outbox performs, invokes it every minute to drain, and alarms on its log.
    */
   readonly broker: lambda.Function;
+  /**
+   * The developer sign-in function (Task 18), when this environment has one. It records a sign-in method linked or unlinked and an invite
+   * accepted, each in the transaction that does it, so it gets the same three things the broker gets for the outbox and nothing else:
+   * the intake queue's URL, `sqs:SendMessage` on that queue, and `PutItem` and `DeleteItem` on the State table under `AUDIT_PENDING#`.
+   */
+  readonly signInFunction?: lambda.Function;
   /** The State table, where the pending items live. */
   readonly stateTable: dynamodb.Table;
   /** Notifies the operator (the alerts topic) when an audit alarm fires. */
@@ -487,6 +493,7 @@ export class AuditLedger extends Construct {
 
     this.exportFunction = this.addExport(props, exportRole);
     this.addBrokerOutbox(props, brokerRole);
+    if (props.signInFunction !== undefined) this.addSignInOutbox(props, props.signInFunction);
     this.addBrokerReader(props, brokerRole);
     this.appender = this.addAppender(props);
     this.anchor = this.addAnchor(props);
@@ -523,6 +530,33 @@ export class AuditLedger extends Construct {
         }],
       };
     }
+  }
+
+  /**
+   * The sign-in function's side of the outbox (Task 18): its role is not the broker's, so it gets its own policy with the three things the
+   * outbox code running in it performs. `sqs:SendMessage` on the intake queue (the flush); `dynamodb:PutItem` (the pending item inside the
+   * action's transaction, which IAM authorizes as PutItem) and `dynamodb:DeleteItem` (the flush clears the item once the queue has it) on
+   * the State table with `dynamodb:LeadingKeys` restricted to `AUDIT_PENDING#*`. No Query or UpdateItem: the drain runs in the broker.
+   * Nothing on the dead-letter queue, the ledger, seals and keys tables, the buckets or the key.
+   */
+  private addSignInOutbox(props: AuditLedgerProps, signIn: lambda.Function): void {
+    signIn.addEnvironment("AUDIT_INTAKE_QUEUE_URL", this.intakeQueue.queueUrl);
+    new iam.Policy(this, "AuditSignInOutboxPolicy", {
+      roles: [signIn.role!],
+      statements: [
+        new iam.PolicyStatement({
+          sid: "SendAuditEvents",
+          actions: ["sqs:SendMessage"],
+          resources: [this.intakeQueue.queueArn],
+        }),
+        new iam.PolicyStatement({
+          sid: "AuditPendingItems",
+          actions: ["dynamodb:PutItem", "dynamodb:DeleteItem"],
+          resources: [props.stateTable.tableArn],
+          conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AUDIT_PENDING#*"] } },
+        }),
+      ],
+    });
   }
 
   /**

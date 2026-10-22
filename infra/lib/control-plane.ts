@@ -917,11 +917,13 @@ export class ControlPlaneStack extends Stack {
     }));
 
     // Spec 025 phase 25a: developer sign-in, named environments only (R3).
+    let signInFunction: DeveloperSignIn["signInFunction"] | undefined;
     if (naming.env !== undefined && signInParameters !== undefined) {
       const developerSignIn = new DeveloperSignIn(this, "DeveloperSignIn", {
         naming, env: naming.env, api, stage: defaultStage, brokerIntegration: integration, broker, slackSecret, parameters: signInParameters, turnRecords, state, throttledRoutes: githubInstallRoutes,
         ...(props?.cloud === true ? { cloud: true } : {}),
       });
+      signInFunction = developerSignIn.signInFunction;
       if (naming.env === "agentxlivetest123" && taskPersonProofEnabled !== undefined) {
         new TaskPersonProof(this, "TaskPersonProof", {
           naming,
@@ -1056,6 +1058,7 @@ export class ControlPlaneStack extends Stack {
         stateTable: state,
         notifyOperator,
         appenderRole: auditAppenderRole,
+        ...(signInFunction === undefined ? {} : { signInFunction }),
         ...(props?.deploymentRegion === undefined ? {} : { deploymentRegion: props.deploymentRegion }),
       });
     }

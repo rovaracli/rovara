@@ -1050,7 +1050,7 @@ async function putProjectMember(deps: DeveloperRouteDependencies, caller: Develo
   if (!projectAllows(role, "manage_members")) throw agentXError("FORBIDDEN", MANAGE_MEMBERS_MESSAGE);
   const parsed = PutProjectMemberBodySchema.safeParse(body);
   if (!parsed.success) throw bodyError(parsed.error);
-  const member = await setProjectMember({ ...projectMembersDepsOf(deps), now: () => new Date(deps.now()) }, caller.orgId, name, {
+  const member = await setProjectMember({ ...projectMembersDepsOf(deps), now: () => new Date(deps.now()), ...(deps.audit === undefined ? {} : { audit: deps.audit }) }, caller.orgId, name, {
     requestId: parsed.data.requestId, developerId, role: parsed.data.role, actor: { developerId: caller.developerId },
   });
   logDeveloperEvent({ event: "developer.project_member_set", orgId: caller.orgId, project: name, role: member.role });
@@ -1063,7 +1063,7 @@ async function deleteProjectMember(deps: DeveloperRouteDependencies, caller: Dev
   if (!projectAllows(role, "manage_members")) throw agentXError("FORBIDDEN", MANAGE_MEMBERS_MESSAGE);
   const parsed = RemoveProjectMemberBodySchema.safeParse(body);
   if (!parsed.success) throw bodyError(parsed.error);
-  const removed = await removeProjectMember({ ...projectMembersDepsOf(deps), now: () => new Date(deps.now()) }, caller.orgId, name, {
+  const removed = await removeProjectMember({ ...projectMembersDepsOf(deps), now: () => new Date(deps.now()), ...(deps.audit === undefined ? {} : { audit: deps.audit }) }, caller.orgId, name, {
     requestId: parsed.data.requestId, developerId, actor: { developerId: caller.developerId },
   });
   logDeveloperEvent({ event: "developer.project_member_removed", orgId: caller.orgId, project: name, removed: String(removed.removed) });
@@ -1627,7 +1627,7 @@ async function changeMemberRole(deps: DeveloperRouteDependencies, caller: Develo
   if (caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can change roles");
   const parsed = ChangeRoleBodySchema.safeParse(body);
   if (!parsed.success) throw bodyError(parsed.error);
-  await deps.orgs.setRole({ orgId: caller.orgId, developerId, role: parsed.data.role });
+  await deps.orgs.setRole({ orgId: caller.orgId, developerId, role: parsed.data.role, by: { kind: "member", id: caller.developerId }, requestId: parsed.data.requestId });
   logDeveloperEvent({ event: "developer.org_role_changed", orgId: caller.orgId, role: parsed.data.role });
   return { developerId, role: parsed.data.role };
 }
@@ -1668,7 +1668,7 @@ async function removeOrganizationMember(deps: DeveloperRouteDependencies, caller
   if (caller.orgRole === "admin" && target.role !== "member") throw agentXError("FORBIDDEN", "an admin can remove members only; ask an owner to remove an owner or admin");
   const store = signInStoreOf(deps);
   const [record, emails] = await Promise.all([store.getDeveloper(developerId), emailsOf(store, developerId)]);
-  await deps.orgs.removeMember({ orgId: caller.orgId, developerId, emails, ban: deps.cloud !== true, expectedRole: target.role });
+  await deps.orgs.removeMember({ orgId: caller.orgId, developerId, emails, ban: deps.cloud !== true, expectedRole: target.role, by: { kind: "member", id: caller.developerId } });
   await endSessionsAfterRemoval(deps, developerId);
   const name = record?.displayName ?? "That person";
   logDeveloperEvent({ event: "developer.org_member_removed", orgId: caller.orgId, role: target.role, banned: String(deps.cloud !== true) });
@@ -1694,9 +1694,10 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
   if (sole) {
     await deps.orgs.closeOrg(caller.orgId, {
       archiveProjects: deps.closeOrgHooks?.archiveProjects ?? ((orgId) => archiveOrgProjects(archiveDepsOf(deps), orgId, { developerId: caller.developerId })), clearEgress: deps.closeOrgHooks?.clearEgress ?? ((orgId) => clearOrgEgress(egressDepsOf(deps), orgId)), emails,
+      by: { kind: "member", id: caller.developerId },
     });
   } else {
-    await deps.orgs.removeMember({ orgId: caller.orgId, developerId: caller.developerId, emails, ban: false });
+    await deps.orgs.removeMember({ orgId: caller.orgId, developerId: caller.developerId, emails, ban: false, by: { kind: "member", id: caller.developerId } });
   }
   await endSessionsAfterRemoval(deps, caller.developerId);
   logDeveloperEvent({ event: "developer.org_left", orgId: caller.orgId, role: caller.orgRole, closed: String(sole) });

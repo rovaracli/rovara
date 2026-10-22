@@ -939,16 +939,18 @@ describe("the audit ledger in templates", () => {
             "AuditLedgerAuditExportPolicy/ReadLedgerAndSeals",
             "AuditLedgerAuditExportPolicy/ReadSealedObjects",
             "AuditLedgerAuditExportPolicy/SendAuditEvents",
+            // Task 18: the sign-in function records a sign-in method linked or unlinked and an invite accepted.
+            "AuditLedgerAuditSignInOutboxPolicy/SendAuditEvents",
           ]);
           for (const [, role] of ofType(synthesis.template, "AWS::IAM::Role")) {
             expect(JSON.stringify(role.Properties.Policies ?? [])).not.toMatch(/AuditLedger(Audit)?(IntakeQueue|LedgerTable|SealsTable|KeysTable|LedgerBucket)/);
           }
         });
 
-        it("gives the broker and the export function (which flushes its audit.exported item) the intake queue's URL, and no other function", () => {
+        it("gives the broker, the export function (which flushes its audit.exported item) and the sign-in function (Task 18) the intake queue's URL, and no other function", () => {
           const functions = ofType(synthesis.template, "AWS::Lambda::Function");
           const withUrl = functions.filter(([, fn]) => (fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables?.AUDIT_INTAKE_QUEUE_URL !== undefined);
-          expect(withUrl.map(([id]) => withoutHash(id)).sort()).toStrictEqual(["AuditLedgerAuditExport", "Broker"]);
+          expect(withUrl.map(([id]) => withoutHash(id)).sort()).toStrictEqual(["AuditLedgerAuditExport", "Broker", "DeveloperSignInFunction"]);
           const variables = (withUrl.find(([id]) => withoutHash(id) === "Broker")![1].Properties.Environment as { Variables: Json }).Variables;
           expect(concreteAws(variables.AUDIT_INTAKE_QUEUE_URL)).toBe("Ref:AuditLedgerAuditIntakeQueue");
         });
