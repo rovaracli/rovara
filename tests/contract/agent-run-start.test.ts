@@ -15,7 +15,7 @@ import { StartDeveloperTaskRequestSchema } from "../../packages/contracts/src/de
 import { AgentRunStateSchema, SHORTENED_MARKER, renderRunInput, type RunInput } from "../../packages/contracts/src/agent-run.js";
 import { ResolvedRecipeSchema, codingProgram, recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import { PER_TASK_BUDGET_USD } from "../../packages/contracts/src/org-budget.js";
-import { agentTasksKey, projectAgentKey, projectMemberKey, runRequestKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { agentTasksKey, projectAgentKey, projectMemberKey, projectRevisionKey, runRequestKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org.js";
 import type { ProjectRole } from "../../packages/contracts/src/app-projects.js";
 import type { AgentId } from "../../packages/contracts/src/agent.js";
@@ -611,6 +611,35 @@ describe("a pull request in the run's context (PF16)", () => {
         { repositories: ["demo"], permissions: { pull_requests: "read", contents: "read", metadata: "read" } },
       ]);
       expect(AgentRunStateSchema.parse(t.agentRunItem(t.taskOf(reply).taskId)).checkout).toEqual([{ repository: "demo", pullRequest: 12, headSha: HEAD }]);
+    });
+
+    /** Pins the project's repository to an installation, as a project registered in a cloud org is. */
+    const pin = (t: Awaited<ReturnType<typeof setup>>, installationId: number) => {
+      const key = projectRevisionKey(TEST_ORG, "payments", 1);
+      const revision = t.db.get(key.pk, key.sk) as { definition: { repositories: Array<Record<string, unknown>> } } & Record<string, unknown>;
+      t.db.set({ ...revision, definition: { ...revision.definition, repositories: revision.definition.repositories.map((repository) => ({ ...repository, installationId })) } });
+    };
+
+    it("hands the project's pinned installation to the reader, and reads nothing when the repository is under another one (review M5)", async () => {
+      const seen: unknown[] = [];
+      const t = await setup({ agents: { pullRequestHead: async (input: unknown) => { seen.push(input); return { headSha: HEAD }; } } });
+      pin(t, 55);
+      expect((await t.run(MAYA, "code-reviewer", { input: review("example/demo#12") })).status).toBe(202);
+      expect(seen).toEqual([{ orgId: TEST_ORG, repositoryUrl: "https://github.com/example/demo.git", number: 12, installationId: 55 }]);
+
+      const fake = github();
+      const wrong = await setup({ brokerExtra: { githubPullRequests: provider(fake, async () => undefined) } });
+      pin(wrong, 99);
+      const reply = await wrong.run(MAYA, "code-reviewer", { input: review("example/demo#12") });
+      expect(reply.status).toBe(403);
+      expect(errorOf(reply).code).toBe("GITHUB_NOT_CONNECTED");
+      expect(fake.requests.some((request) => request.path.endsWith("/access_tokens"))).toBe(false);
+      expect(wrong.taskCount()).toBe(0);
+
+      const right = github();
+      const fine = await setup({ brokerExtra: { githubPullRequests: provider(right, async () => undefined) } });
+      pin(fine, 55);
+      expect((await fine.run(MAYA, "code-reviewer", { input: review("example/demo#12") })).status).toBe(202);
     });
 
     it("reads nothing, and starts nothing, when the installation is not bound to the run's org", async () => {

@@ -92,7 +92,7 @@ describe("bot configs", () => {
   });
 
   it("covers exactly the configs the plan names", () => {
-    expect([...BOT_CONFIG_PATHS].sort()).toEqual([".github/.kodiak.toml", ".github/mergify.yml", ".kodiak.toml", ".mergify.yml", ".mergify/config.yml", "atlantis.yaml", "bors.toml"]);
+    expect([...BOT_CONFIG_PATHS].sort()).toEqual([".github/.kodiak.toml", ".github/bors.toml", ".github/mergify.yml", ".kodiak.toml", ".mergify.yml", ".mergify/config.yml", "atlantis.yaml", "atlantis.yml", "bors.toml"].sort());
   });
 
   it("does not parse a bot config, so one that is not valid YAML still counts", async () => {
@@ -370,6 +370,14 @@ describe("reading the default branch, once per repository per run", () => {
     expect(made).toBe(2);
   });
 
+  it("hands the project's pinned installation to the reader, and only when there is one", async () => {
+    const made: Array<Record<string, unknown>> = [];
+    const deps = { repositoryReader: async (input: Record<string, unknown>) => { made.push(input); return treeReader({}); } };
+    await repoCommandTriggers(deps as never, { orgId: TEST_ORG, repository: "example/demo", installationId: 55 });
+    await repoCommandTriggers(deps as never, { orgId: TEST_ORG, repository: "example/demo" });
+    expect(made).toEqual([{ orgId: TEST_ORG, repositoryUrl: "https://github.com/example/demo.git", installationId: 55 }, { orgId: TEST_ORG, repositoryUrl: "https://github.com/example/demo.git" }]);
+  });
+
   it("refuses a repository that is not owner/name before reading anything", async () => {
     let made = 0;
     const deps = { repositoryReader: async () => { made += 1; return treeReader({}); } };
@@ -409,5 +417,224 @@ describe("the run cache in the table", () => {
     await cache.set("k", "n", value);
     value.list.push(2);
     expect(await cache.get("k", "n")).toEqual({ list: [1] });
+  });
+});
+
+// ---- Fix round 1 (review I1 to I4, M2 to M4)
+
+describe("workflow_run chains (review I1)", () => {
+  const A = ".github/workflows/a.yml";
+  const B = ".github/workflows/b.yml";
+  const C = ".github/workflows/c.yml";
+  const chained = (name: string, from: string, run: string) => `name: ${name}\non:\n  workflow_run:\n    workflows: [${from}]\n    types: [completed]\njobs:\n  j:\n    runs-on: x\n    steps:\n      - run: ${run}\n`;
+  const base = (): Record<string, string> => ({
+    [A]: "name: Triage\non: issue_comment\njobs:\n  j:\n    runs-on: x\n    steps:\n      - run: echo hi\n",
+    [B]: chained("Ship", "Triage", "./deploy.sh"),
+    "deploy.sh": "echo deploy",
+  });
+
+  it("hashes a workflow_run workflow, and what it reaches, whenever the repository triggers", async () => {
+    const result = await scan(base());
+    expect(result.files).toEqual([A, B, "deploy.sh"].sort());
+    expect((await scan({ ...base(), "deploy.sh": "echo changed" })).digest).not.toBe(result.digest);
+    expect((await scan({ ...base(), [B]: chained("Ship", "Triage", "./deploy.sh --now") })).digest).not.toBe(result.digest);
+  });
+
+  it("hashes one that names no triggering workflow, a second link in the chain, and one added later", async () => {
+    const files = { ...base(), [C]: chained("Notify", "Ship", "./notify.sh"), "notify.sh": "x", ".github/workflows/d.yml": chained("Other", "Something else", "./other.sh"), "other.sh": "y" };
+    const result = await scan(files);
+    expect(result.files).toEqual([A, B, C, ".github/workflows/d.yml", "deploy.sh", "notify.sh", "other.sh"].sort());
+    expect((await scan({ ...base(), [C]: chained("Notify", "Ship", "./notify.sh"), "notify.sh": "x" })).digest).not.toBe((await scan(base())).digest);
+  });
+
+  it("reaches through a workflow_run workflow's local actions too", async () => {
+    const files = { ...base(), [B]: `${base()[B]!}      - uses: ./.github/actions/ship\n`, ".github/actions/ship/action.yml": "runs:\n  using: composite\n  steps:\n    - run: ./ship.sh\n      shell: bash\n", "ship.sh": "z" };
+    expect((await scan(files)).files).toEqual(expect.arrayContaining([".github/actions/ship/action.yml", "ship.sh"]));
+  });
+
+  it("does so when only a bot config makes the repository trigger, and not when nothing does", async () => {
+    const withBot = await scan({ [B]: chained("Ship", "Triage", "./deploy.sh"), "deploy.sh": "x", "bors.toml": "status = []" });
+    expect(withBot.files).toEqual([B, "bors.toml", "deploy.sh"].sort());
+    expect(await scan({ [B]: chained("Ship", "Triage", "./deploy.sh"), "deploy.sh": "x" })).toMatchObject({ triggers: false, files: [] });
+  });
+
+  it("reads `on: workflow_run` in every spelling", async () => {
+    for (const on of ["workflow_run", "[push, workflow_run]", "{ workflow_run: { workflows: [Triage] } }"]) {
+      const text = `name: S\non: ${on}\njobs:\n  j:\n    runs-on: x\n    steps:\n      - run: ./deploy.sh\n`;
+      expect((await scan({ ...base(), [B]: text })).files, on).toEqual([A, B, "deploy.sh"].sort());
+    }
+  });
+});
+
+describe("what a local action's directory holds (review I2)", () => {
+  const WORKFLOW_FILE = ".github/workflows/ci.yml";
+  const using = (path: string) => `name: w\non: issue_comment\njobs:\n  j:\n    runs-on: x\n    steps:\n      - uses: ${path}\n`;
+  const action = (run: string) => `name: ship\nruns:\n  using: composite\n  steps:\n    - run: ${run}\n      shell: bash\n`;
+  const DIR = ".github/actions/ship";
+
+  it.each<[string, string, string]>([
+    ["${{ github.action_path }}/ship.sh", "ship.sh", "script"],
+    ["${{github.action_path}}/ship.sh", "ship.sh", "script, no spaces"],
+    ["bash $GITHUB_ACTION_PATH/ship.sh", "ship.sh", "variable"],
+    ["bash ${GITHUB_ACTION_PATH}/ship.sh", "ship.sh", "braced variable"],
+    ["$GITHUB_ACTION_PATH/ship", "ship", "extensionless script"],
+    ["${{ github.action_path }}/bin/tool", "bin/tool", "nested extensionless script"],
+  ])("hashes a script run through the action path: %s (%s)", async (run, name) => {
+    const files = { [WORKFLOW_FILE]: using("./.github/actions/ship"), [`${DIR}/action.yml`]: action(run), [`${DIR}/${name}`]: "echo one" };
+    const result = await scan(files);
+    expect(result.files).toContain(`${DIR}/${name}`);
+    expect((await scan({ ...files, [`${DIR}/${name}`]: "echo two" })).digest).not.toBe(result.digest);
+  });
+
+  it.each<[string, string]>([
+    ["${{ github.workspace }}/scripts/w.sh", "scripts/w.sh"],
+    ["$GITHUB_WORKSPACE/scripts/w.sh", "scripts/w.sh"],
+    ["${GITHUB_WORKSPACE}/scripts/w", "scripts/w"],
+  ])("hashes a script run through the workspace: %s", async (run, path) => {
+    const files = { [WORKFLOW_FILE]: using("./.github/actions/ship"), [`${DIR}/action.yml`]: action(run), [path]: "echo one" };
+    expect((await scan(files)).files).toContain(path);
+    // The same in a workflow's own run line.
+    const inWorkflow = { [WORKFLOW_FILE]: `name: w\non: issue_comment\njobs:\n  j:\n    runs-on: x\n    steps:\n      - run: ${run}\n`, [path]: "echo one" };
+    expect((await scan(inWorkflow)).files).toContain(path);
+  });
+
+  it("hashes every file under a local action's directory, nested ones included, though no run line names them", async () => {
+    const files = { [WORKFLOW_FILE]: using("./.github/actions/ship"), [`${DIR}/action.yml`]: action("echo hi"), [`${DIR}/lib/helper.js`]: "one", [`${DIR}/lib/deep/data.json`]: "{}", [`${DIR}/README.md`]: "r" };
+    const result = await scan(files);
+    expect(result.files).toEqual([WORKFLOW_FILE, `${DIR}/action.yml`, `${DIR}/lib/helper.js`, `${DIR}/lib/deep/data.json`, `${DIR}/README.md`].sort());
+    expect((await scan({ ...files, [`${DIR}/lib/deep/data.json`]: "{\"a\":1}" })).digest).not.toBe(result.digest);
+  });
+
+  it("counts the directory's files against the 50, failing closed beyond them", async () => {
+    const dir = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, index) => [`${DIR}/f${String(index)}.txt`, "x"]));
+    expect(await scan({ [WORKFLOW_FILE]: using("./.github/actions/ship"), [`${DIR}/action.yml`]: action("echo"), ...dir(49) })).toMatchObject({ failedClosed: false });
+    expect(await scan({ [WORKFLOW_FILE]: using("./.github/actions/ship"), [`${DIR}/action.yml`]: action("echo"), ...dir(50) })).toMatchObject({ triggers: true, failedClosed: true });
+  });
+
+  it("fails closed for an entry of the directory it can't read (a link, a submodule) and for a truncated directory listing", async () => {
+    const files = { [WORKFLOW_FILE]: using("./.github/actions/ship"), [`${DIR}/action.yml`]: action("echo"), [`${DIR}/link`]: "target" };
+    expect(await scan(files, { types: { [`${DIR}/link`]: "symlink" } })).toMatchObject({ failedClosed: true });
+    expect(await scan(files, { truncated: [DIR] })).toMatchObject({ failedClosed: true });
+  });
+
+  it("leaves a root action to its action file: the whole repository is not its directory", async () => {
+    const files = { [WORKFLOW_FILE]: using("./"), "action.yml": action("echo"), "src/big.ts": "x", "README.md": "r" };
+    expect((await scan(files)).files).toEqual([WORKFLOW_FILE, "action.yml"].sort());
+  });
+});
+
+describe("defaults.run.working-directory (review I3)", () => {
+  const WORKFLOW_FILE = ".github/workflows/ci.yml";
+
+  it("applies the workflow's default to a step's script", async () => {
+    const files = { [WORKFLOW_FILE]: "name: w\non: issue_comment\ndefaults:\n  run:\n    working-directory: tools\njobs:\n  j:\n    runs-on: x\n    steps:\n      - run: ./deploy.sh\n", "tools/deploy.sh": "one" };
+    const result = await scan(files);
+    expect(result.files).toContain("tools/deploy.sh");
+    expect((await scan({ ...files, "tools/deploy.sh": "two" })).digest).not.toBe(result.digest);
+  });
+
+  it("applies a job's default, which wins over the workflow's", async () => {
+    const files = {
+      [WORKFLOW_FILE]: "name: w\non: issue_comment\ndefaults:\n  run:\n    working-directory: wf\njobs:\n  j:\n    runs-on: x\n    defaults:\n      run:\n        working-directory: job\n    steps:\n      - run: ./deploy.sh\n  k:\n    runs-on: x\n    steps:\n      - run: ./other.sh\n",
+      "job/deploy.sh": "one", "wf/deploy.sh": "no", "wf/other.sh": "three",
+    };
+    const result = await scan(files);
+    expect(result.files).toEqual(expect.arrayContaining(["job/deploy.sh", "wf/other.sh"]));
+    expect(result.files).not.toContain("wf/deploy.sh");
+  });
+
+  it("lets a step's own working-directory win over the defaults", async () => {
+    const files = {
+      [WORKFLOW_FILE]: "name: w\non: issue_comment\ndefaults:\n  run:\n    working-directory: a\njobs:\n  j:\n    runs-on: x\n    steps:\n      - working-directory: b\n        run: ./x.sh\n",
+      "a/x.sh": "no", "b/x.sh": "yes",
+    };
+    const result = await scan(files);
+    expect(result.files).toContain("b/x.sh");
+    expect(result.files).not.toContain("a/x.sh");
+  });
+
+  it("applies a default in a composite action to its steps", async () => {
+    const files = {
+      [WORKFLOW_FILE]: "name: w\non: issue_comment\njobs:\n  j:\n    runs-on: x\n    steps:\n      - uses: ./act\n",
+      "act/action.yml": "runs:\n  using: composite\n  steps:\n    - working-directory: sub\n      run: ./go.sh\n      shell: bash\n",
+      "sub/go.sh": "x",
+    };
+    expect((await scan(files)).files).toContain("sub/go.sh");
+  });
+});
+
+describe("what a files entry may be (review I4)", () => {
+  const trigger = (extra: string, run = "echo") => `name: w\non: issue_comment\njobs:\n  j:\n    runs-on: x\n    steps:\n${extra}      - run: ${run}\n`;
+
+  it.each<[string]>([
+    ["actions/checkout@v4"], ["acme/tools/deploy@v1.2.3"], ["acme/tools/.github/workflows/x.yml@refs/heads/main"], ["docker://alpine:3.20"], ["docker://ghcr.io/acme/tool@sha256:abc123"],
+  ])("lists the remote action %s", async (uses) => {
+    const result = await scan({ [WORKFLOW]: trigger(`      - uses: ${uses}\n`) });
+    expect(result).toMatchObject({ failedClosed: false });
+    expect(result.files).toContain(uses);
+  });
+
+  it.each<[string, string]>([
+    ["a bidi override and an escape", "evil/x@v1\\u202E\\u001b[2J"],
+    ["a zero-width space", "evil/x@v1\\u200B"],
+    ["a name with no ref", "just-a-name"],
+    ["an owner/repo with no @ref", "acme/tools"],
+    ["a space", "acme/to ols@v1"],
+    ["a docker image with a space", "docker://alpine 3.20"],
+    ["an empty docker reference", "docker://"],
+    ["a ref with a quote", "acme/tools@v1'x"],
+  ])("fails closed for a remote action with %s", async (_name, uses) => {
+    expect(await scan({ [WORKFLOW]: trigger(`      - uses: "${uses}"\n`) })).toMatchObject({ triggers: true, failedClosed: true, files: [] });
+  });
+
+  it("fails closed for a path with a control or format character, in a listed file, a script and a bot config", async () => {
+    const bidi = "tools/\u202Ehs.yolped";
+    expect(await scan({ [WORKFLOW]: trigger("", `./${bidi}`), [bidi]: "x" })).toMatchObject({ triggers: true, failedClosed: true });
+    expect(await scan({ ".github/workflows/\u200Bci.yml": workflow("issue_comment") })).toMatchObject({ triggers: true, failedClosed: true });
+    // The same path, with the character, but no file there: nothing is hashed, so nothing odd is listed.
+    expect(await scan({ [WORKFLOW]: trigger("", `./${bidi}`) })).toMatchObject({ failedClosed: false, files: [WORKFLOW] });
+  });
+});
+
+describe("the same repository named remotely (review M3)", () => {
+  const deploy = ".github/workflows/deploy.yml";
+  const caller = (uses: string) => `name: w\non: issue_comment\njobs:\n  call:\n    uses: ${uses}\n`;
+  const reusable = "name: d\non: workflow_call\njobs:\n  j:\n    runs-on: x\n    steps:\n      - run: ./go.sh\n";
+
+  it("hashes a reusable workflow or action of this repository named at its default branch as a local file", async () => {
+    const files = { [WORKFLOW]: caller(`example/demo/${deploy}@main`), [deploy]: reusable, "go.sh": "x" };
+    const result = await scan(files);
+    expect(result.files).toEqual([WORKFLOW, deploy, "go.sh"].sort());
+    expect(result.files.some((file) => file.includes("@"))).toBe(false);
+    expect((await scan({ ...files, "go.sh": "y" })).digest).not.toBe(result.digest);
+    const action = await scan({ [WORKFLOW]: `name: w\non: issue_comment\njobs:\n  j:\n    runs-on: x\n    steps:\n      - uses: Example/Demo/.github/actions/x@main\n`, ".github/actions/x/action.yml": "runs:\n  using: composite\n  steps: []\n" });
+    expect(action.files).toContain(".github/actions/x/action.yml");
+  });
+
+  it("keeps another ref of this repository, and another repository, as remote and unhashed", async () => {
+    const files = { [WORKFLOW]: caller(`example/demo/${deploy}@v1`), [deploy]: reusable };
+    expect((await scan(files)).files).toEqual([WORKFLOW, `example/demo/${deploy}@v1`].sort());
+    expect((await scan({ [WORKFLOW]: caller(`example/other/${deploy}@main`), [deploy]: reusable })).files).toEqual([WORKFLOW, `example/other/${deploy}@main`].sort());
+  });
+});
+
+describe("package managers and make (review M4)", () => {
+  const trigger = (run: string, extra = "") => `name: w\non: issue_comment\njobs:\n  j:\n    runs-on: x\n${extra}    steps:\n      - run: ${run}\n`;
+
+  it.each<[string, string]>([
+    ["npm run triage", "package.json"], ["npm ci && npm test", "package.json"], ["yarn deploy", "package.json"], ["pnpm run x", "package.json"], ["npx tsx go", "package.json"],
+    ["make deploy", "Makefile"], ["make -C app deploy", "Makefile"],
+  ])("hashes %s's manifest (%s)", async (run, manifest) => {
+    const files = { [WORKFLOW]: trigger(run), [manifest]: "one" };
+    const result = await scan(files);
+    expect(result.files).toContain(manifest);
+    expect((await scan({ ...files, [manifest]: "two" })).digest).not.toBe(result.digest);
+  });
+
+  it("hashes the manifest in a step's working directory too, ignores one that is not there, and hashes nothing for a workflow that runs neither", async () => {
+    const files = { [WORKFLOW]: `name: w\non: issue_comment\njobs:\n  j:\n    runs-on: x\n    steps:\n      - working-directory: app\n        run: npm run x\n`, "app/package.json": "x", "package.json": "y" };
+    expect((await scan(files)).files).toEqual([WORKFLOW, "app/package.json", "package.json"].sort());
+    expect((await scan({ [WORKFLOW]: trigger("npm test") })).files).toEqual([WORKFLOW]);
+    expect((await scan({ [WORKFLOW]: trigger("echo hi"), "package.json": "x", Makefile: "y" })).files).toEqual([WORKFLOW]);
   });
 });

@@ -228,8 +228,20 @@ describe("agentRepositoryReader", () => {
     const reader = await providerOf(github).agentRepositoryReader(REPOSITORY, { orgId: TEST_ORG });
     expect(await reader.list("missing")).toBeUndefined();
     expect(await reader.read("missing", 100)).toBeUndefined();
+    // A directory read as a file is not a file there (a script name that is a folder); the answers below are not "absent".
     expect(await reader.read("scripts", 100)).toBeUndefined();
-    expect(await reader.list("bors.toml")).toBeUndefined();
+  });
+
+  it("reads only a 404 as absent: a 200 that is not a listing, or not a file, throws", async () => {
+    const github = repo({
+      "bors.toml": file("bors.toml", "x"),
+      link: { type: "symlink", name: "link", path: "link", sha: "e".repeat(40), size: 4, target: "elsewhere" },
+      sub: { type: "submodule", name: "sub", path: "sub", sha: "e".repeat(40), size: 0 },
+      odd: "text",
+    });
+    const reader = await providerOf(github).agentRepositoryReader(REPOSITORY, { orgId: TEST_ORG });
+    for (const path of ["bors.toml", "link", "sub", "odd"]) expect((await refusal(reader.list(path))).code, `list ${path}`).toBe("RUNTIME_UNAVAILABLE");
+    for (const path of ["link", "sub", "odd"]) expect((await refusal(reader.read(path, 100))).code, `read ${path}`).toBe("RUNTIME_UNAVAILABLE");
   });
 
   it("does not read a file over the size it was asked for, and says so", async () => {
@@ -305,5 +317,42 @@ describe("listAgentRepositoryLabels", () => {
     expect((await refusal(providerOf(odd).listAgentRepositoryLabels(REPOSITORY, { orgId: TEST_ORG }))).code).toBe("RUNTIME_UNAVAILABLE");
     const badEntry = fakeGithub({ handler: (request) => (request.path === "/repos/example/demo/labels" ? Response.json([{ id: "1", node_id: "x", name: "y" }]) : undefined) });
     expect((await refusal(providerOf(badEntry).listAgentRepositoryLabels(REPOSITORY, { orgId: TEST_ORG }))).code).toBe("RUNTIME_UNAVAILABLE");
+  });
+});
+
+// ---- Fix round 1 (review M5): the project repository's pinned installation
+
+describe("a pinned installation id", () => {
+  const NOT_CONNECTED = { code: "GITHUB_NOT_CONNECTED", message: expect.stringContaining("example/demo") as string };
+  const pull = { number: 12, state: "open", merged: false, head: { sha: HEAD, ref: "x" }, base: { ref: "main" } };
+  const world = () => fakeGithub({
+    handler: (request) => {
+      if (request.path === "/repos/example/demo/pulls/12") return Response.json(pull);
+      if (request.path === "/repos/example/demo") return Response.json({ default_branch: "main" });
+      if (request.path === "/repos/example/demo/git/ref/heads/main") return Response.json({ object: { sha: COMMIT } });
+      if (request.path === "/repos/example/demo/labels") return Response.json([]);
+      return undefined;
+    },
+  });
+
+  it("is compared at the mint: a repository under another installation than the project pinned gets no token", async () => {
+    const github = world();
+    const provider = providerOf(github);
+    expect(await refusal(provider.createAgentInstallationToken(REPOSITORY, { issues: "read" }, { orgId: TEST_ORG }, { installationId: 99 }))).toMatchObject(NOT_CONNECTED);
+    expect(await refusal(provider.getAgentPullRequestHead(REPOSITORY, 12, { orgId: TEST_ORG }, { installationId: 99 }))).toMatchObject(NOT_CONNECTED);
+    expect(await refusal(provider.agentRepositoryReader(REPOSITORY, { orgId: TEST_ORG }, { installationId: 99 }))).toMatchObject(NOT_CONNECTED);
+    expect(await refusal(provider.listAgentRepositoryLabels(REPOSITORY, { orgId: TEST_ORG }, { installationId: 99 }))).toMatchObject(NOT_CONNECTED);
+    expect(github.minted()).toEqual([]);
+  });
+
+  it("lets the pinned installation through, and an unpinned repository as before", async () => {
+    const github = world();
+    const provider = providerOf(github);
+    await provider.createAgentInstallationToken(REPOSITORY, { issues: "read" }, { orgId: TEST_ORG }, { installationId: 55 });
+    expect((await provider.getAgentPullRequestHead(REPOSITORY, 12, { orgId: TEST_ORG }, { installationId: 55 })).headSha).toBe(HEAD);
+    expect((await provider.agentRepositoryReader(REPOSITORY, { orgId: TEST_ORG }, { installationId: 55 })).commit).toBe(COMMIT);
+    expect(await provider.listAgentRepositoryLabels(REPOSITORY, { orgId: TEST_ORG }, { installationId: 55 })).toEqual([]);
+    await provider.createAgentInstallationToken(REPOSITORY, { issues: "read" }, { orgId: TEST_ORG });
+    expect(github.minted()).toHaveLength(5);
   });
 });

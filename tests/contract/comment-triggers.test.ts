@@ -10,6 +10,7 @@ import {
   COMMENT_TRIGGER_STALE_TEXT,
   agentGuardrailsKey,
   commentSignal,
+  projectRevisionKey,
   commentTriggerOptOutKey,
   commentTriggerLapseNotice,
   projectMetaKey,
@@ -746,6 +747,72 @@ describe("GET /v1/app/org/agent-guardrails lists the opt-outs", () => {
     expect(saved.body).not.toHaveProperty("commentTriggerOptOuts");
     expect(w.db.get(agentGuardrailsKey(TEST_ORG).pk, "META")).toBeDefined();
     expect(await listOptOutViews(w.deps, TEST_ORG)).toHaveLength(1);
+  });
+});
+
+// ---- Fix round 1
+
+describe("a project with several repositories (review M7)", () => {
+  /** Adds a second revision of `payments` with a second repository, as the broker reads the project. */
+  function withTwoRepositories(w: Awaited<ReturnType<typeof world>>) {
+    const first = w.db.get(projectRevisionKey(TEST_ORG, "payments", 1).pk, projectRevisionKey(TEST_ORG, "payments", 1).sk) as { definition: { repositories: unknown[] } } & Record<string, unknown>;
+    const second = { ...first, ...projectRevisionKey(TEST_ORG, "payments", 2), definition: { ...first.definition, revision: 2, repositories: [...first.definition.repositories, { name: "api", url: "https://github.com/example/api.git", path: "repo/api", defaultBranch: "main", credentialRef: "github-app" }] } };
+    w.db.set(second);
+  }
+
+  it("asks for the repository to be named instead of scanning every one in one request", async () => {
+    const w = await world();
+    withTwoRepositories(w);
+    const reply = await w.review();
+    expect(reply.status).toBe(400);
+    expect(errorOf(reply)).toEqual({ code: "CONFIG_INVALID", message: "repository: this project has several repositories; name one with ?repository= (example/api, example/demo)" });
+    expect(w.reads).toEqual([]);
+  });
+
+  it("scans the one that is named, and a project with one repository still needs no name", async () => {
+    const w = await world();
+    withTwoRepositories(w);
+    const named = await w.review(DANA, "payments", "?repository=example/api");
+    expect(named.status, JSON.stringify(named.body)).toBe(200);
+    expect(named.body.repositories).toMatchObject([{ repository: "example/api" }]);
+    expect(w.reads).toEqual([`https://github.com/example/api.git ${TEST_ORG}`]);
+    expect((await (await world()).review()).status).toBe(200);
+  });
+});
+
+describe("the reason is stored as it was validated (review M6)", () => {
+  it("trims it at the function boundary, whoever calls", async () => {
+    const w = await world();
+    const current = (await w.digest())[0]!;
+    const caller = { orgId: TEST_ORG, developerId: DANA.developerId, orgRole: "admin" as const };
+    await requestOptOut(w.deps, caller, { requestId: randomUUID(), project: "payments", repository: REPOSITORY, expectedDigest: current.digest, reason: "   padded reason   " });
+    expect(w.approvals()[0]!.subject).toMatchObject({ reason: "padded reason" });
+  });
+});
+
+describe("a lapse that loses to a newer opt-out (review mutant M8)", () => {
+  it("still treats a remaining opt-out of another digest as not opted out", async () => {
+    const w = await world();
+    await w.optOutThrough();
+    const key = commentTriggerOptOutKey(TEST_ORG, REPOSITORY, "payments");
+    const stored = w.db.get(key.pk, key.sk) as Record<string, unknown>;
+    w.setFiles({ ...baseFiles(), [SCRIPT]: "echo changed" });
+    // Another admin's opt-out for some other digest lands just as the lapse commits: the lapse is cancelled and that opt-out stays.
+    const original = w.db.send.bind(w.db) as (command: unknown) => Promise<unknown>;
+    let cancelled = 0;
+    (w.db as unknown as { send: (command: unknown) => Promise<unknown> }).send = async (command: unknown) => {
+      const items = (command as { input?: { TransactItems?: Array<{ Delete?: { Key: { pk: string; sk: string } } }> } }).input?.TransactItems;
+      if ((command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand" && items?.[0]?.Delete?.Key.sk === key.sk) {
+        cancelled += 1;
+        w.db.set({ ...stored, digest: "e".repeat(64), approvalId: "apr_cccccccccccccccccccc" });
+        throw Object.assign(new Error("cancelled"), { name: "TransactionCanceledException", CancellationReasons: [{ Code: "ConditionalCheckFailed" }] });
+      }
+      return original(command);
+    };
+    const after = await w.rule();
+    expect(cancelled).toBe(1);
+    expect((await readOptOut(w.deps, TEST_ORG, REPOSITORY, "payments"))?.digest).toBe("e".repeat(64));
+    expect(after).toMatchObject({ consequential: true, optedOut: false });
   });
 });
 
