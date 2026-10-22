@@ -229,6 +229,15 @@ async function grantWrite(deps: ProjectMembersDependencies, input: { orgId: OrgI
   } };
 }
 
+/**
+ * The check that the person is still a member of the org when the grant commits (final review M7). `resolveTarget` read the member row a moment
+ * earlier; a removal in between would otherwise leave a grant for someone outside the org, which comes back to life if they are invited again.
+ * When it fails the transaction is cancelled and the next attempt reads again, so the answer is the usual "that person isn't in your organization".
+ */
+function stillMember(deps: ProjectMembersDependencies, orgId: OrgId, developerId: string): Item {
+  return { ConditionCheck: { TableName: deps.tableName, Key: orgMemberKey(orgId, developerId), ConditionExpression: "attribute_exists(pk)" } };
+}
+
 /** The write that removes a developer's grant, or undefined when there is none to remove (the operator's `administrator` row is not a project role and stays). */
 async function revokeWrite(deps: ProjectMembersDependencies, orgId: OrgId, project: string, developerId: string): Promise<Item | undefined> {
   const existing = await readGrant(deps, orgId, developerId, project);
@@ -325,7 +334,7 @@ export async function setProjectMember(
     const developerId = await resolveTarget(deps, orgId, input.developerId);
     const response = { developerId, role: input.role };
     const grant = await grantWrite(deps, { orgId, project, developerId, role: input.role, grantedBy: { developerId: input.actor.developerId }, now: deps.now });
-    if (await commitWithRequest(deps, [grant, requestWrite(deps, orgId, project, input.requestId, { ...expected, response })])) return response;
+    if (await commitWithRequest(deps, [grant, stillMember(deps, orgId, developerId), requestWrite(deps, orgId, project, input.requestId, { ...expected, response })])) return response;
   }
   throw STALE();
 }
