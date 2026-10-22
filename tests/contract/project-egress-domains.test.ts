@@ -492,7 +492,7 @@ describe("the reconciles are bounded and isolated (follow-up N3)", () => {
         await new Promise((resolve) => setTimeout(resolve, 1));
         return await send(command as never);
       } finally { inFlight[kind] -= 1; }
-    }) as typeof t.db.send;
+    });
     return most;
   }
 

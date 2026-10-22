@@ -607,7 +607,7 @@ describe("the setup check's workspace and slot (final review I3)", () => {
       h.db.send = (async (command: { constructor: { name: string }; input?: { Key?: { sk?: string } } }) => {
         if (command.constructor.name === "DeleteCommand" && command.input?.Key?.sk === `${old(0)}#orphan`) throw new Error("throttled");
         return send(command as never);
-      }) as typeof h.db.send;
+      });
       const logs: Array<Record<string, unknown>> = [];
       const swept = await sweepStuckSetupChecks(h.db, "state", new Date(), vi.fn(async () => undefined), (entry) => { logs.push(entry); });
       expect(swept).toEqual({ closed: [id], dropped: 0, kept: 1 });
