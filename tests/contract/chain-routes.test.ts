@@ -158,6 +158,7 @@ async function setup(options: { widen?: boolean; audit?: boolean } = {}) {
 const errorOf = (reply: Reply) => reply.body.error as { code: string; message: string };
 const candidatesOf = (record: ApprovalRecord): string[] => [...(record.approvers as Extract<ApproverSpec, { kind: "rule" }>).candidates];
 const chainOf = (reply: Reply) => reply.body.chain as Record<string, unknown>;
+const thrownMessage = (attempt: Promise<unknown>) => attempt.then(() => undefined, (error: Error) => error.message);
 
 describe("create, draft, publish, show and rollback", () => {
   it("builds a chain, saves its draft, publishes it, shows it and rolls back", async () => {
@@ -899,6 +900,87 @@ describe("what the routes and the confirmation handlers hold to", () => {
       expect(reply.body.changes).toEqual(["investigate now uses Root-cause analyst version 2 instead of Root-cause analyst version 1", finding]);
       expect((await s.state(s.chainId)).currentVersion).toBe(1);
     });
+  });
+});
+
+describe("sharing a chain with the whole company waits for the page", () => {
+  const member = (who: Developer, level = "view") => ({ principal: { kind: "member", developerId: who.developerId }, level });
+  const company = (level: string) => ({ principal: { kind: "org" }, level });
+  const sharesPath = (chainId: string) => `/v1/app/chains/${chainId}/shares`;
+
+  it("answers 202 and stores nothing for a company-wide share, and for raising what the company can do", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [member(EVE)] });
+    const asked = await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [member(EVE), company("use")] });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    expect(asked.body).toMatchObject({ status: "NEEDS_CONFIRMATION", changes: [`Shares ${(await s.state(chainId)).name} with everyone in your company, who can then run it`] });
+    expect(await s.chains.listShares(TEST_ORG, chainId)).toHaveLength(1);
+    expect((await s.call(CARL, "GET", `/v1/app/chains/${chainId}`)).status).toBe(404);
+    expect(s.approvals()[0]).toMatchObject({ kind: "change", status: "PENDING", subject: { kind: "chain_share", chainId, expectedSharesRevision: 1 }, approvers: { kind: "rule", rule: "chain_publish" } });
+    expect(candidatesOf(s.approvals()[0]!).sort()).toEqual([DANA.developerId, MAYA.developerId].sort());
+    // Once the company can see it, asking for more is a widening again.
+    await s.chains.replaceShares({ orgId: TEST_ORG, chainId, upsert: [{ principal: { kind: "org" }, level: "view" }], remove: [], expectedSharesRevision: (await s.state(chainId)).sharesRevision ?? 0, by: DANA.developerId });
+    const raise = await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [member(EVE), company("edit")] });
+    expect(raise.status).toBe(202);
+    expect(raise.body.changes).toEqual([`Shares ${(await s.state(chainId)).name} with everyone in your company, who can then change it`]);
+  });
+
+  it("applies at once a share that does not widen the company's: lowering it, removing it, or the same level", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    await s.chains.replaceShares({ orgId: TEST_ORG, chainId, upsert: [{ principal: { kind: "org" }, level: "edit" }], remove: [], expectedSharesRevision: 0, by: DANA.developerId });
+    expect((await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [company("edit")] })).status).toBe(200);
+    expect((await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [company("use")] })).status).toBe(200);
+    expect((await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [] })).status).toBe(200);
+    expect((await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [member(EVE, "edit")] })).status).toBe(200);
+    expect(s.approvals()).toEqual([]);
+  });
+
+  it("refuses a company-wide share that could not be applied before asking anyone, and one for an archived chain", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    expect((await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [company("use"), company("view")] })).status).toBe(400);
+    expect((await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [member(CARL), { principal: { kind: "project", project: "nope" }, level: "view" }, company("view")] })).status).toBe(400);
+    expect(s.approvals()).toEqual([]);
+    await s.call(MAYA, "POST", `/v1/app/chains/${chainId}/archive`, {});
+    const archived = await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [company("view")] });
+    expect(errorOf(archived).code).toBe("CHAIN_UNAVAILABLE");
+    expect(s.approvals()).toEqual([]);
+  });
+
+  it("applies exactly what was asked once a manager confirms, and not once the shares changed in between", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    const handler = getApprovalSubjectHandler("chain_share")!;
+    expect(handler).toBeDefined();
+    expect((await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [member(EVE), company("view")] })).status).toBe(202);
+    const stale = s.approvals()[0]!;
+    await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [member(EVE, "edit")] });
+    expect(await thrownMessage(handler(s.deps, { ...stale, decidedBy: DANA.developerId }))).toBe("CHAIN_REVISION_CONFLICT: Who this chain is shared with changed after this was asked. Share again.");
+    expect((await s.chains.listShares(TEST_ORG, chainId)).map((share) => share.principal.kind)).toEqual(["member"]);
+    expect((await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [member(EVE, "edit"), company("view")] })).status).toBe(202);
+    const fresh = s.approvals().find((record) => record.approvalId !== stale.approvalId)!;
+    expect(await thrownMessage(handler(s.deps, fresh))).toMatch(/not been decided/);
+    await handler(s.deps, { ...fresh, decidedBy: DANA.developerId });
+    expect((await s.chains.listShares(TEST_ORG, chainId)).map((share) => [share.principal.kind, share.level]).sort()).toEqual([["member", "edit"], ["org", "view"]]);
+    expect((await s.call(CARL, "GET", `/v1/app/chains/${chainId}`)).body.chain).toMatchObject({ access: "view" });
+  });
+
+  it("is decided on the page, with a title, by someone who manages the chain and not by an editor", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [member(EVE, "edit")] });
+    expect((await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [member(EVE, "edit"), company("view")] })).status).toBe(202);
+    const record = s.approvals()[0]!;
+    const target = { orgId: TEST_ORG, approvalId: record.approvalId };
+    const kind = approvalDecideKind(s.deps);
+    expect(await kind.inspect({ ...target, developerId: EVE.developerId })).toMatchObject({ status: "forbidden" });
+    expect(await kind.inspect({ ...target, developerId: DANA.developerId })).toMatchObject({ status: "open", view: { title: "Share a chain with the whole company" } });
+    const proof = { kind: "fresh_sign_in" as const, method: "email_code" as const, authTime: new Date().toISOString(), sessionRef: "a".repeat(64) };
+    await kind.decide({ ...target, developerId: DANA.developerId }, "approve", proof);
+    expect((await s.chains.listShares(TEST_ORG, chainId)).map((share) => share.principal.kind).sort()).toEqual(["member", "org"]);
+    expect(s.db.get(approvalKey(TEST_ORG, record.approvalId))?.["status"]).toBe("APPROVED_DONE");
   });
 });
 

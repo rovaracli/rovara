@@ -223,6 +223,15 @@ describe("agentx chains archive and share", () => {
     expect(h.calls.map((call) => call.path)).toEqual([`/v1/app/chains/${CHN}/archive`, `/v1/app/chains/${CHN}/unarchive`]);
   });
 
+  it("a company-wide share prints the confirmation link and what it changes, and does not claim the chain is shared", async () => {
+    const h = await agentsCli({ [`PUT /v1/app/chains/${CHN}/shares`]: Response.json({ status: "NEEDS_CONFIRMATION", confirmUrl: CONFIRM, changes: ["Shares Triage with everyone in your company, who can then run it"] }, { status: 202 }) });
+    const file = await h.file("shares.json", [{ principal: { kind: "org" }, level: "use" }]);
+    expect(await h.run(["chains", "share", CHN, "--file", file])).toBe(0);
+    expect(h.stdout()).toContain(CONFIRM);
+    expect(h.stdout()).toContain("Shares Triage with everyone in your company, who can then run it");
+    expect(h.stdout()).not.toContain("is now shared");
+  });
+
   it("shares from a file", async () => {
     const h = await agentsCli({ [`PUT /v1/app/chains/${CHN}/shares`]: Response.json({ shares: [{ principal: { kind: "org" }, level: "view" }] }) });
     const shares = [{ principal: { kind: "org" }, level: "view" }];
