@@ -89,7 +89,7 @@ function parseSecurityLine(line: string): string[] {
 }
 
 const nasty: StoredTokens = {
-  accessToken: 'ac"ce\\ss to\nken with \'quotes\', spaces, \\n and \\" é€ \u0001',
+  accessToken: 'ac"ce\\ss to\nken with \'quotes\', spaces, \\n and \\" é€ \u0001\u007f',
   refreshToken: 'ref\\"resh\r\n token \\\\ "end"',
   expiresAt: 1_900_000_000_000,
 };
