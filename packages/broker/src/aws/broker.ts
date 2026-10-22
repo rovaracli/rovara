@@ -850,18 +850,19 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     ...(agents.orgSourceOrder === undefined ? {} : { orgSourceOrder: agents.orgSourceOrder }),
     // A run that names a pull request of a project repository reads its head through the GitHub App, with an agent token (pull requests and contents,
     // read only) for the run's org (Task 15, PF16; Task 14b). Where the provider has no such read, nothing is read and the run fails closed.
-    pullRequestHead: agents.pullRequestHead ?? (async ({ orgId, repositoryUrl, number }) => {
+    pullRequestHead: agents.pullRequestHead ?? (async ({ orgId, repositoryUrl, number, installationId }) => {
       const read = dependencies.githubPullRequests.getAgentPullRequestHead;
       if (read === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "reading pull requests is not set up in this deployment");
-      return { headSha: (await read.call(dependencies.githubPullRequests, repositoryUrl, number, { orgId })).headSha };
+      return { headSha: (await read.call(dependencies.githubPullRequests, repositoryUrl, number, { orgId }, ...(installationId === undefined ? [] : [{ installationId }]))).headSha };
     }),
     // Task 14b: the scan of a repository's workflows for the comment rule and the opt-out reads the default branch with the same kind of token.
     ...(dependencies.githubPullRequests.agentRepositoryReader === undefined ? {} : {
-      repositoryReader: ({ orgId, repositoryUrl }: { orgId: OrgId; repositoryUrl: string }) => dependencies.githubPullRequests.agentRepositoryReader!(repositoryUrl, { orgId }),
+      repositoryReader: ({ orgId, repositoryUrl, installationId }: { orgId: OrgId; repositoryUrl: string; installationId?: number }) =>
+        dependencies.githubPullRequests.agentRepositoryReader!(repositoryUrl, { orgId }, ...(installationId === undefined ? [] : [{ installationId }])),
     }),
     projectRepositories: async (orgId: OrgId, project: string) => {
       try {
-        return (await requireLatestProject(dependencies, orgId, project)).definition.repositories.map((repository) => ({ name: repository.name, url: repository.url }));
+        return (await requireLatestProject(dependencies, orgId, project)).definition.repositories.map((repository) => ({ name: repository.name, url: repository.url, ...(repository.installationId === undefined ? {} : { installationId: repository.installationId }) }));
       } catch (error) {
         if (error instanceof AgentXError && error.code === "NOT_FOUND") return undefined;
         throw error;

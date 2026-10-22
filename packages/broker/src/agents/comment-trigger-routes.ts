@@ -45,7 +45,11 @@ async function repositoriesToReview(deps: ApprovalDependencies, orgId: OrgId, pr
     const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/iu.exec(repository.url);
     if (match !== null) found.push(`${match[1]!}/${match[2]!}`.toLowerCase());
   }
-  return found.slice(0, MAX_REVIEWED_REPOSITORIES);
+  // One scan can take most of the time a request has, so a project with several repositories is asked about one at a time.
+  if (found.length > 1) {
+    throw agentXError("CONFIG_INVALID", `repository: this project has several repositories; name one with ?repository= (${[...found].sort().slice(0, MAX_REVIEWED_REPOSITORIES).join(", ")})`);
+  }
+  return found;
 }
 
 async function review(deps: ApprovalDependencies, caller: AgentCaller, project: string, url: URL): Promise<{ project: string; repositories: RepositoryTriggerView[] }> {

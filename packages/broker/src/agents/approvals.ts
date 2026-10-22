@@ -40,9 +40,9 @@ export interface ApprovalDependencies extends AgentAccessDeps {
   /** The models some source the company can use serves (Task 26); without it, the models Rovara's own AI serves. */
   servableModels?: ServableModels;
   /** Task 14b: a read-only reader of a repository's default branch for an org, for the comment-triggered workflow scan. Without it, nothing can be reviewed or opted out. */
-  repositoryReader?: (input: { orgId: OrgId; repositoryUrl: string }) => Promise<AgentRepositoryReader>;
+  repositoryReader?: (input: { orgId: OrgId; repositoryUrl: string; installationId?: number }) => Promise<AgentRepositoryReader>;
   /** Task 14b: the repositories of a project as they are registered now (undefined when there is no such project in the org). */
-  projectRepositories?: (orgId: OrgId, project: string) => Promise<ReadonlyArray<{ name: string; url: string }> | undefined>;
+  projectRepositories?: (orgId: OrgId, project: string) => Promise<ReadonlyArray<{ name: string; url: string; installationId?: number | undefined }> | undefined>;
 }
 
 /** The part of the dependencies the record's own writes need. */
