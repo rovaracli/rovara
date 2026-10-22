@@ -57,6 +57,15 @@ function issueLine(issue: Record<string, unknown>): string {
   return `${clip(issue["shortId"], 40)} [${clip(issue["level"], 20)}, ${clip(issue["status"], 20)}] ${clip(issue["title"])} (${clip(issue["count"], 20)} events, ${clip(issue["userCount"], 20)} users, last seen ${clip(issue["lastSeen"], 40)}) ${clip(issue["permalink"], 200)}`;
 }
 
+/**
+ * The event tags the model is shown: the ones that describe the software and where it ran. An allowlist, not a deny list, because a real event carries whatever
+ * the customer's code tagged it with (`user`, `user.email`, `url`, `ip`, `client_ip`, `server_name`, an account id), and the tool promises to leave the person and
+ * the request out.
+ */
+const SHOWN_TAGS: ReadonlySet<string> = new Set([
+  "environment", "release", "level", "handled", "mechanism", "logger", "transaction", "runtime", "runtime.name", "browser", "browser.name", "os", "os.name", "device", "device.family",
+]);
+
 const listIssues: NativeTool<SentryRunScope> = {
   name: "list_issues",
   description: "List the issues of this Sentry project, newest activity first. Optionally filter with a Sentry search query, choose the stats period and limit how many are returned.",
@@ -75,7 +84,9 @@ const listIssues: NativeTool<SentryRunScope> = {
     const query: Record<string, string> = { limit: String(limit) };
     if (typeof args["query"] === "string") query["query"] = args["query"];
     if (typeof args["statsPeriod"] === "string") query["statsPeriod"] = args["statsPeriod"];
-    const issues = listOf(await sentryGet(ctx, `projects/${segment(ctx.scope.organization)}/${segment(ctx.scope.projectSlug)}/issues/`, query)).slice(0, limit).filter(isRecord);
+    // The endpoint is the project's own, but a free-form query is passed through and the answer is not trusted: only issues of this project are shown.
+    const issues = listOf(await sentryGet(ctx, `projects/${segment(ctx.scope.organization)}/${segment(ctx.scope.projectSlug)}/issues/`, query)).filter(isRecord)
+      .filter((issue) => recordOf(issue["project"])["slug"] === ctx.scope.projectSlug).slice(0, limit);
     const text = issues.length === 0 ? `No issues in ${ctx.scope.alias}.` : `${String(issues.length)} issue${issues.length === 1 ? "" : "s"} in ${ctx.scope.alias}:\n${issues.map(issueLine).join("\n")}`;
     return { text };
   },
@@ -106,7 +117,8 @@ const getLatestEvent: NativeTool<SentryRunScope> = {
     const issueId = String(args["issueId"]);
     const issue = await issueInScope(ctx, issueId);
     const event = recordOf(await sentryGet(ctx, `organizations/${segment(ctx.scope.organization)}/issues/${segment(issueId)}/events/latest/`));
-    const tags = listOf(event["tags"]).filter(isRecord).slice(0, 20).map((tag) => `${clip(tag["key"], 40)}=${clip(tag["value"], 80)}`);
+    const tags = listOf(event["tags"]).filter(isRecord).filter((tag) => typeof tag["key"] === "string" && SHOWN_TAGS.has(tag["key"])).slice(0, 20)
+      .map((tag) => `${clip(tag["key"], 40)}=${clip(tag["value"], 80)}`);
     const lines = [`Latest event ${clip(event["eventID"], 64)} of ${clip(issue["shortId"], 40)} at ${clip(event["dateCreated"], 40)}`, `Title: ${clip(event["title"])}`, `Platform: ${clip(event["platform"], 40)}`];
     if (tags.length > 0) lines.push(`Tags: ${tags.join(", ")}`);
     for (const entry of listOf(event["entries"]).filter(isRecord)) {
