@@ -315,6 +315,9 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion> {
     if (draft === undefined) throw notFound();
     if (chain.draftRevision !== input.expectedDraftRevision || draft.revision !== input.expectedDraftRevision) throw this.conflict();
     const pinned = this.checkPinned(draft.definition, input.pinned);
+    // The graph rules hold of what is stored, not only of what the caller checked: a loop with no limit, a step nothing reaches, a dangling edge.
+    const [problem] = chainGraphProblems(pinned);
+    if (problem !== undefined) throw coded("CONFIG_INVALID", formatChainProblem(problem));
     if (chainDigest(pinned) !== input.digest) throw coded("CONFIG_INVALID", "digest: must be the SHA-256 of the pinned definition");
     const checks = await this.pinChecks(input.orgId, draft.definition, pinned);
 
