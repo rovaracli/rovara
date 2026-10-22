@@ -572,8 +572,8 @@ describe("query_logs, checks the tool makes itself", () => {
     const credentials = { accessKeyId: "ASIADIRECT", secretAccessKey: "secret", sessionToken: "token", expiration: new Date(START_MS + 900_000) };
     const clients = fake.aws.clientsFor(credentials, "eu-west-1");
     const queryLogs = CLOUDWATCH_TOOLS.find((tool) => tool.name === "query_logs")!;
-    const scope = { alias: "bare", region: "eu-west-1", logGroupPrefixes: [], alarmNamePrefix: "", aws: { monitoring: clients.monitoring, logs: clients.logs, now: fake.aws.now, sleep: fake.aws.sleep } };
-    await expect(queryLogs.run({ query: "fields @message", fromMinutesAgo: 30 }, { scope, credential: { token: "t", bindings: {} }, fetch: (() => { throw new Error("no fetch"); }) as never }))
+    const scope = { alias: "bare", region: "eu-west-1", logGroupPrefixes: [], alarmNamePrefix: "", aws: { monitoring: clients.monitoring, logs: clients.logs, now: () => fake.aws.now(), sleep: (ms: number) => fake.aws.sleep(ms) } };
+    await expect(queryLogs.run({ query: "fields @message", fromMinutesAgo: 30 }, { scope, credential: { token: "t", bindings: {} }, fetch: () => { throw new Error("no fetch"); } }))
       .rejects.toMatchObject({ name: "NativeToolRefusal", message: "this scope names no log group prefixes, so it has no log search" });
     expect(fake.calls).toEqual([]);
   });
@@ -823,7 +823,7 @@ describe("the deployed broker's connection check", () => {
     seedMembership(h.db, DANA.developerId, { orgId: TEST_ORG, role: "admin" });
     const call = async (method: string, path: string, body?: Record<string, unknown>) => {
       const reply = await h.dev(DANA, method, path, body === undefined ? undefined : { requestId: randomUUID(), ...body });
-      return { status: reply.status, body: reply.body as Record<string, unknown> };
+      return { status: reply.status, body: reply.body };
     };
     const created = await call("POST", "/v1/app/connections", { connection: { type: "cloudwatch", label: "AWS prod", access: "read", roleArn: CUSTOMER_ROLE, regions: ["us-east-1"] } });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
