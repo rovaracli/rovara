@@ -2227,6 +2227,106 @@ describe("Task 22 review: a plain task's end by the reaper or a stuck cancel blo
     expect(events).toEqual([]);
     expect(rowsOf(t, plain.taskId)).toEqual([]);
   });
+
+  // Fix round 2 (re-check N1): the end of a plain task is told until it is finished, not at most once.
+  const dueNow = (t: World, taskId: string) => {
+    const row = rowsOf(t, taskId)[0]!;
+    t.db.set({ ...row, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
+  };
+  const failingOnce = () => {
+    const events: TaskEndEvent[] = [];
+    let failures = 1;
+    unregister.push(registerTaskEndHandler(async (_deps, event) => {
+      if (failures > 0) { failures -= 1; throw new Error("down"); }
+      events.push(event);
+    }));
+    return events;
+  };
+  const heldLease = (t: World, taskId: string, leaseUntil: number) =>
+    t.db.set({ pk: `DEVTASK#${taskId}`, sk: "TASK_END", entityType: "TASK_END", orgId: TEST_ORG, outcome: "failed", at: new Date().toISOString(), handlersTold: 0, done: false, leaseUntil });
+
+  it("N1 A: a handler that throws once is told again by the same row, which stays until the end is finished", async () => {
+    const t = await setup({ proxy: true });
+    const events = failingOnce();
+    const plain = await plainTurn(t);
+    const { failActiveOperation } = await import("../../packages/broker/src/aws/outbox-failure.js");
+    await failActiveOperation(t.db, "state", plain.workspaceId, "RUNTIME_UNAVAILABLE: workspace compute was lost");
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(events).toEqual([]);
+    expect(t.access!.blockKey).toHaveBeenCalledWith(keyIdOf(plain.key));
+    const row = rowsOf(t, plain.taskId)[0];
+    expect(row).toMatchObject({ kind: "operation_end", attempts: 1 });
+    expect(Date.parse(String(row!.nextAttemptAt))).toBeGreaterThan(Date.now());
+    dueNow(t, plain.taskId);
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(events).toEqual([expect.objectContaining({ taskId: plain.taskId, outcome: "failed" })]);
+    expect(rowsOf(t, plain.taskId)).toEqual([]);
+    expect(t.db.get(`DEVTASK#${plain.taskId}`, "TASK_END")).toMatchObject({ done: true });
+  });
+
+  it("N1 B: an end another call is telling keeps the row, due when its lease could have run out; when the holder dies the row finishes the end", async () => {
+    const t = await setup({ proxy: true });
+    const events = endHandler();
+    const plain = await plainTurn(t);
+    const { failActiveOperation } = await import("../../packages/broker/src/aws/outbox-failure.js");
+    await failActiveOperation(t.db, "state", plain.workspaceId, "RUNTIME_UNAVAILABLE: workspace compute was lost");
+    heldLease(t, plain.taskId, Date.now() + 60_000);
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(events).toEqual([]);
+    const row = rowsOf(t, plain.taskId)[0];
+    expect(row).toBeDefined();
+    expect(Date.parse(String(row!.nextAttemptAt))).toBeGreaterThan(Date.now() + 30_000);
+    // The holder died: its lease runs out, and the row is looked at again.
+    t.db.set({ ...t.db.get(`DEVTASK#${plain.taskId}`, "TASK_END")!, leaseUntil: Date.now() - 1 });
+    dueNow(t, plain.taskId);
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(events).toEqual([expect.objectContaining({ taskId: plain.taskId, outcome: "failed" })]);
+    expect(rowsOf(t, plain.taskId)).toEqual([]);
+  });
+
+  it("N1 C: the broker's own result path leaves a row when telling fails, and the row finishes the end", async () => {
+    const t = await setup({ proxy: true });
+    const events = failingOnce();
+    const plain = await plainTurn(t);
+    await t.finish(plain.workspaceId, plain.turn.id, "SUCCEEDED", { result: { status: "SUCCEEDED" } });
+    expect(events).toEqual([]);
+    expect(rowsOf(t, plain.taskId)[0]).toMatchObject({ kind: "operation_end", operationId: plain.turn.id });
+    dueNow(t, plain.taskId);
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(events).toEqual([expect.objectContaining({ taskId: plain.taskId, outcome: "succeeded" })]);
+    expect(rowsOf(t, plain.taskId)).toEqual([]);
+  });
+
+  it("N1 D: the broker's own result path leaves a row when another call holds the end, and finishes it once the holder is gone", async () => {
+    const t = await setup({ proxy: true });
+    const events = endHandler();
+    const plain = await plainTurn(t);
+    heldLease(t, plain.taskId, Date.now() + 60_000);
+    await t.finish(plain.workspaceId, plain.turn.id, "SUCCEEDED", { result: { status: "SUCCEEDED" } });
+    expect(events).toEqual([]);
+    const row = rowsOf(t, plain.taskId)[0];
+    expect(row).toMatchObject({ kind: "operation_end" });
+    expect(Date.parse(String(row!.nextAttemptAt))).toBeGreaterThan(Date.now() + 30_000);
+    t.db.set({ ...t.db.get(`DEVTASK#${plain.taskId}`, "TASK_END")!, leaseUntil: Date.now() - 1 });
+    dueNow(t, plain.taskId);
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(events).toHaveLength(1);
+    expect(rowsOf(t, plain.taskId)).toEqual([]);
+  });
+
+  it("N1 E: a handler that always fails stops being tried after the row's attempts are used up, and the keys are blocked all the same", async () => {
+    const t = await setup({ proxy: true });
+    unregister.push(registerTaskEndHandler(async () => { throw new Error("down for good"); }));
+    const plain = await plainTurn(t);
+    const { failActiveOperation } = await import("../../packages/broker/src/aws/outbox-failure.js");
+    await failActiveOperation(t.db, "state", plain.workspaceId, "RUNTIME_UNAVAILABLE: workspace compute was lost");
+    for (let round = 0; round < 12 && rowsOf(t, plain.taskId).length > 0; round += 1) {
+      dueNow(t, plain.taskId);
+      await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    }
+    expect(rowsOf(t, plain.taskId)).toEqual([]);
+    expect(t.access!.blockKey).toHaveBeenCalledWith(keyIdOf(plain.key));
+  });
 });
 
 describe("Task 22 review: a late handler_gave_up never fails a run that moved on (I3)", () => {
