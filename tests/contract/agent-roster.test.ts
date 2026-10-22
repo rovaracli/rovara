@@ -256,7 +256,7 @@ describe("the roster routes", () => {
     const { call, sharedWithWeb } = await setup();
     const agentId = await sharedWithWeb();
     expect((await call(MAX, "PUT", WEB_AGENT_PATH(agentId), { surprise: 1 })).status).toBe(400);
-    expect((await call(MAX, "GET", "/v1/app/projects/web/spend")).status).toBe(404);
+    expect((await call(MAX, "GET", "/v1/app/projects/web/connectors")).status).toBe(404);
     expect((await call(MAX, "GET", `${WEB_AGENT_PATH(agentId)}/more`)).status).toBe(404);
   });
 });

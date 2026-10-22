@@ -112,7 +112,7 @@ async function getOrgSpend(deps: Deps, caller: AgentCaller, month: string): Prom
     month, totalUsd: num(org?.["spentUsd"]), committedUsd: num(org?.["committedUsd"]), ...(limitUsd === undefined ? {} : { limitUsd }),
     byProject: bySpent(withPrefix("PROJECT#").map(({ name, item }) => ({ project: name, spentUsd: num(item["spentUsd"]), committedUsd: num(item["committedUsd"]) })), (row) => row.project),
     byMember: bySpent(withPrefix("MEMBER#").map(({ name, item }) => ({ developerId: name, spentUsd: num(item["spentUsd"]) })), (row) => row.developerId),
-    byAgent: bySpent(withPrefix(agentUsageCounter("" as AgentId)).map(({ name, item }) => ({ agentId: name, spentUsd: num(item["spentUsd"]) })), (row) => row.agentId),
+    byAgent: bySpent(withPrefix(agentUsageCounter("")).map(({ name, item }) => ({ agentId: name, spentUsd: num(item["spentUsd"]) })), (row) => row.agentId),
     bySource: bySpent(withPrefix(sourceCounter("")).map(({ name, item }) => ({ source: name, spentUsd: num(item["spentUsd"]) })), (row) => row.source),
     byModel: bySpent(withPrefix(modelCounter("")).map(({ name, item }) => ({ model: name, spentUsd: num(item["spentUsd"]) })), (row) => row.model),
   };

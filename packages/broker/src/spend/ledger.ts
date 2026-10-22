@@ -134,6 +134,8 @@ function recordItems(deps: LedgerDependencies, input: KeyInput, reserved: boolea
 
 function checkInput(input: KeyInput): void {
   if (input.scopes.length > MAX_SCOPES) throw agentXError("CONFIG_INVALID", "a model key counts against too many budgets");
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/u.test(input.month)) throw agentXError("CONFIG_INVALID", "a model key's spend is counted in a month, YYYY-MM");
+  if (!Number.isFinite(input.expiresAt)) throw agentXError("CONFIG_INVALID", "a model key has an expiry");
   if (!/^[0-9a-f]{64}$/u.test(input.keyId)) throw agentXError("CONFIG_INVALID", "a model key is known by its token id");
   if (!Number.isFinite(input.capUsd) || input.capUsd < 0) throw agentXError("CONFIG_INVALID", "a model key's cap is an amount of dollars");
 }
@@ -221,7 +223,7 @@ const overshoot = (spent: number, capUsd: number): number => Math.max(0, cleanUs
 /** The counters a key's spend is added to besides its scopes: the agent's usage, the model source, the model, and the agent's spend by where the run came from. */
 function extraCounters(record: ModelKeyRecord): string[] {
   return [
-    agentUsageCounter(record.tags.agentId as never),
+    agentUsageCounter(record.tags.agentId),
     sourceCounter(record.tags.source),
     ...(record.model === undefined ? [] : [modelCounter(record.model)]),
     originCounter(record.tags.agentId, spendOriginKind(record.tags.origin)),
@@ -248,7 +250,7 @@ async function settleOnce(deps: LedgerDependencies, record: ModelKeyRecord): Pro
       ...ledgerKey(orgId, record.month, iso(at), record.keyId, seq), entityType: "LEDGER", orgId, month: record.month, at: iso(at), keyId: record.keyId,
       usd: deltaUsd, settledUsd: spent, finalized: record.finalized, model: record.model, ...record.tags,
     }), ConditionExpression: NOT_EXISTS } },
-    upsert(deps, agentRunsKey(orgId, record.month, record.tags.agentId as never, record.tags.taskId ?? record.tags.operationId ?? record.keyId), "AGENT_RUN", {
+    upsert(deps, agentRunsKey(orgId, record.month, record.tags.agentId, record.tags.taskId ?? record.tags.operationId ?? record.keyId), "AGENT_RUN", {
       set: withoutUndefined({ orgId, agentId: record.tags.agentId, project: record.tags.project, origin: record.tags.origin, payerKind: record.tags.payerKind, taskId: record.tags.taskId, lastAt: iso(at) }),
       add: { usd: deltaUsd },
     }),
@@ -359,7 +361,7 @@ export async function blockOperationKeys(deps: LedgerDependencies, input: { orgI
       failure ??= error;
     }
   }
-  if (failure !== undefined) throw failure;
+  if (failure !== undefined) throw failure instanceof Error ? failure : new Error("a model key could not be blocked");
   return blocked;
 }
 

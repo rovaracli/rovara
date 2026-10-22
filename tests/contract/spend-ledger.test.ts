@@ -24,7 +24,7 @@ import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { fakeModelAccess, type FakeModelAccess } from "../support/fake-model-access.js";
 import { MAYA as DEV_MAYA, OMAR as DEV_OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
-import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, ensureWorkspace, markReady, registerSlackProject, serviceCall } from "../support/slack-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, registerSlackProject, serviceCall } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { singleOrgIdForEnv } from "../../packages/contracts/src/org.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
@@ -142,9 +142,18 @@ describe("reserve", () => {
     near(t.counter("PROJECT#web")?.committedUsd, 5);
   });
 
+  it("refuses a key with a month, expiry or id that is not one", async () => {
+    const t = setup();
+    for (const bad of [{ month: "2026-13" }, { month: "October" }, { expiresAt: Number.NaN }, { keyId: "sk-the-key-itself" }, { capUsd: -1 }]) {
+      await expect(registerKey(t.deps(), t.input(bad)), JSON.stringify(bad)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      await expect(reserve(t.deps(), t.input(bad)), JSON.stringify(bad)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    }
+    expect(t.db.find((item) => item.pk === "OPEN_MODEL_KEYS")).toEqual([]);
+  });
+
   it("refuses a key with more scopes than one transaction can hold", async () => {
     const t = setup();
-    const scopes = Array.from({ length: 40 }, (_, index) => ({ key: { kind: "project", project: `p${String(index)}` } as BudgetScope }));
+    const scopes = Array.from({ length: 40 }, (_, index): { key: BudgetScope } => ({ key: { kind: "project", project: `p${String(index)}` } }));
     await expect(reserve(t.deps(), t.input({ scopes }))).rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
 });
@@ -521,6 +530,18 @@ describe("blockOperationKeys and sweepSpend", () => {
     near(t.counter("ORG")?.spentUsd, 0.4);
   });
 
+  it("settles nothing for a finalized key once its day is over, even when asked directly", async () => {
+    const t = setup();
+    const key = t.input({ scopes: [{ key: ORG }], expiresAt: T0 + 1000 });
+    await reserve(t.deps(), key);
+    t.clock.now = T0 + 1000 + KEY_EXPIRY_GRACE_MS;
+    await sweepSpend(t.deps(), t.clock.now);
+    t.clock.now += FINALIZED_SETTLE_WINDOW_MS + 1;
+    t.spend(key, 0.9);
+    expect(await settleKey(t.deps(), t.orgId, key.keyId)).toMatchObject({ deltaUsd: 0 });
+    expect(t.counter("ORG")?.spentUsd).toBeUndefined();
+  });
+
   it("pages the open keys by cursor, 500 at a time by default", async () => {
     const t = setup({ pageSize: 2 });
     const keys = [t.input({ scopes: [{ key: ORG }] }), t.input({ scopes: [{ key: ORG }] }), t.input({ scopes: [{ key: ORG }] }), t.input({ scopes: [{ key: ORG }] }), t.input({ scopes: [{ key: ORG }] })];
@@ -598,7 +619,7 @@ describe("the ledger lines", () => {
       ledgerKey(t.orgId, MONTH, new Date(T0 + 1000).toISOString(), key.keyId, 2).sk,
     ]);
     for (const line of lines) expect(String(line.pk)).toBe(`ORG#${t.orgId}#LEDGER#${MONTH}`);
-    expect(setup({ orgId: OTHER_ORG as never }).ledger()).toEqual([]);
+    expect(setup({ orgId: OTHER_ORG }).ledger()).toEqual([]);
   });
 });
 
@@ -761,7 +782,7 @@ async function brokerSetup(options: { agents?: boolean } = {}) {
   const record = (key: string) => h.db.get(modelKeyKey(TEST_ORG, keyIdOf(key))) as (ModelKeyRecord & Record<string, unknown>) | undefined;
   const keyRecords = () => h.db.find((item) => item.entityType === "MODEL_KEY");
   const counter = (sk: string) => h.db.get(spendCounterKey(TEST_ORG, NOW_MONTH, sk)) as { spentUsd?: number; committedUsd?: number } | undefined;
-  const sweep = () => h.handler({ source: "agentx.spend-settlement" } as never);
+  const sweep = () => h.handler({ source: "agentx.spend-settlement" });
   return { ...h, access, startTask, mint, active, record, keyRecords, counter, sweep };
 }
 
@@ -837,7 +858,7 @@ describe("a key the broker mints", () => {
     const run = await t.sweep();
     expect(run.statusCode).toBe(200);
     expect(JSON.parse(run.body)).toMatchObject({ jobs: [{ name: "sweep-spend", ok: true, result: { settled: 1, complete: true } }] });
-    for (const sk of ["ORG", "PROJECT#payments", `MEMBER#${DEV_MAYA.developerId}`, "SOURCE#rovara", agentUsageCounter("rovara-code" as never)]) near(t.counter(sk)?.spentUsd, 1.2);
+    for (const sk of ["ORG", "PROJECT#payments", `MEMBER#${DEV_MAYA.developerId}`, "SOURCE#rovara", agentUsageCounter("rovara-code")]) near(t.counter(sk)?.spentUsd, 1.2);
     await t.finish(workspaceId, operationId, "SUCCEEDED", {});
     t.access.setKeySpent(key, 1.5);
     // Its clock has not run out: settled, not finalized.
@@ -860,7 +881,7 @@ describe("a key the broker mints", () => {
     expect(run.statusCode).toBe(200);
     expect(JSON.parse(run.body)).toMatchObject({ skipped: true });
     const bare = createBroker({ extra: {} });
-    expect(JSON.parse((await bare.handler({ source: "agentx.spend-settlement" } as never)).body)).toMatchObject({ skipped: true });
+    expect(JSON.parse((await bare.handler({ source: "agentx.spend-settlement" })).body)).toMatchObject({ skipped: true });
   });
 
   it("reports a job that cannot run at all by its error's name, without its detail", async () => {
@@ -1009,7 +1030,7 @@ describe("the spend routes", () => {
   it("pages the ledger newest first, with a cursor that cannot reach another org's lines", async () => {
     const t = await seeded();
     for (let index = 0; index < 55; index += 1) {
-      await t.settle({ scopes: [{ kind: "org" }], usd: 0.01, tags: mintTagsFor({ payer: { kind: "member", developerId: DEV_MAYA.developerId }, place: { project: "payments" }, agentId: "rovara-code" as never, origin: "app", taskId: `task-${String(index)}`, operationId: `op-${String(index)}` }) });
+      await t.settle({ scopes: [{ kind: "org" }], usd: 0.01, tags: mintTagsFor({ payer: { kind: "member", developerId: DEV_MAYA.developerId }, place: { project: "payments" }, agentId: "rovara-code", origin: "app", taskId: `task-${String(index)}`, operationId: `op-${String(index)}` }) });
     }
     const first = await get(t, DEV_OMAR, "/v1/app/org/spend/ledger?month=2026-10");
     expect(first.status, JSON.stringify(first.body)).toBe(200);
@@ -1027,6 +1048,10 @@ describe("the spend routes", () => {
     expect(new Set([...lines, ...rest].map((line) => JSON.stringify(line))).size).toBe(59);
     // A cursor that is not one of ours is refused, not followed.
     expect((await get(t, DEV_OMAR, "/v1/app/org/spend/ledger?month=2026-10&cursor=not-a-cursor")).status).toBe(400);
+    for (const sk of ["x", "2026-10-21T12:00:00.000Z", `2026-10-21T12:00:00.000Z#${"a".repeat(64)}`, "ORG#other#LEDGER#2026-10"]) {
+      const odd = Buffer.from(JSON.stringify({ sk })).toString("base64url");
+      expect((await get(t, DEV_OMAR, `/v1/app/org/spend/ledger?month=2026-10&cursor=${odd}`)).status, sk).toBe(400);
+    }
   });
 
   it("does not show one org's spend or ledger to another org's admin", async () => {
@@ -1070,7 +1095,7 @@ describe("the spend routes", () => {
 
   it("splits an agent's spend by where the run came from, lists its recent runs, and shows its budget", async () => {
     const t = await seeded();
-    t.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code" as never), entityType: "BUILTIN_AGENT_SETTINGS", monthlyBudgetUsd: 20, maxPerRunUsd: 3 });
+    t.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", monthlyBudgetUsd: 20, maxPerRunUsd: 3 });
     const reply = await get(t, DEV_OMAR, "/v1/app/agents/rovara-code/spend?month=2026-10");
     expect(reply.status, JSON.stringify(reply.body)).toBe(200);
     expect(reply.body).toMatchObject({ month: "2026-10", totalUsd: 2.7, byOrigin: { person: 1.9, autonomous: 0.5, test: 0.3 }, budget: { limitUsd: 20, spentUsd: 0.5 }, maxPerRunUsd: 3 });
@@ -1078,16 +1103,23 @@ describe("the spend routes", () => {
     expect(runs.map((run) => [run.project, run.usd, run.origin]).sort()).toEqual([["payments", 0.3, "test_run"], ["payments", 0.5, "schedule"], ["payments", 1.2, "app"], ["secret", 0.7, "app"]].sort());
   });
 
-  it("shows only the runs in projects the caller has a role in, and at most 20", async () => {
+  it("leaves out the runs of a project the caller has no role in", async () => {
+    const t = await seeded();
+    const reply = await get(t, DEV_MAYA, "/v1/app/agents/rovara-code/spend?month=2026-10");
+    const runs = reply.body.recentRuns as Array<{ project: string; usd: number }>;
+    expect(runs.map((run) => run.project)).toEqual(["payments", "payments", "payments"]);
+    expect(runs.map((run) => run.usd).sort()).toEqual([0.3, 0.5, 1.2]);
+  });
+
+  it("shows at most 20 runs, newest first", async () => {
     const t = await seeded();
     for (let index = 0; index < 25; index += 1) {
-      await t.settle({ scopes: [{ kind: "org" }], usd: 0.01, tags: mintTagsFor({ payer: { kind: "member", developerId: DEV_MAYA.developerId }, place: { project: "payments" }, agentId: "rovara-code" as never, origin: "app", taskId: `many-${String(index)}`, operationId: `many-op-${String(index)}` }) });
+      await t.settle({ scopes: [{ kind: "org" }], usd: 0.01, tags: mintTagsFor({ payer: { kind: "member", developerId: DEV_MAYA.developerId }, place: { project: "payments" }, agentId: "rovara-code", origin: "app", taskId: `many-${String(index)}`, operationId: `many-op-${String(index)}` }) });
     }
     const reply = await get(t, DEV_MAYA, "/v1/app/agents/rovara-code/spend?month=2026-10");
     expect(reply.status, JSON.stringify(reply.body)).toBe(200);
     const runs = reply.body.recentRuns as Array<{ project: string; lastAt: string }>;
     expect(runs).toHaveLength(20);
-    expect(runs.every((run) => run.project === "payments")).toBe(true);
     expect([...runs].sort((a, b) => b.lastAt.localeCompare(a.lastAt))).toEqual(runs);
     // The budget and max-per-run are absent when the agent has none.
     expect(reply.body).not.toHaveProperty("budget");

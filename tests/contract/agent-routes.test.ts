@@ -1078,8 +1078,7 @@ describe("Plan 3's paths and Plan 2's (PF24)", () => {
   it("sends a project's agents, AI, spend and connectors paths to the agent router before Plan 2's project routes", async () => {
     const { call } = await setup();
     for (const path of [
-      "/v1/app/projects/web/spend", "/v1/app/projects/web/connectors",
-      "/v1/app/projects/web/connectors/github/comment-triggers", "/v1/app/budget", "/v1/app/org/spend",
+      "/v1/app/projects/web/connectors", "/v1/app/projects/web/connectors/github/comment-triggers",
     ]) {
       const reply = await call(MAYA, "GET", path);
       expect(reply.status, path).toBe(404);

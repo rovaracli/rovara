@@ -70,6 +70,8 @@ function parentRemainderDigest(template: TemplateJson): string {
   for (const id of Object.keys(conditions)) if (id.includes("InstallTaskPersonProof")) delete conditions[id];
   const resources = remainder.Resources ?? {};
   for (const id of Object.keys(resources)) if (id.startsWith("TaskPersonProof")) delete resources[id];
+  // Plan 3 Task 30's spend settlement schedule is no part of the proof-only addition either.
+  for (const id of Object.keys(resources)) if (id.startsWith("SpendSettlementSchedule")) delete resources[id];
   const dispatchers = Object.entries(resources).filter(([id, resource]) => id.startsWith("Dispatcher") && resource.Type === "AWS::Lambda::Function");
   expect(dispatchers, "the actual Dispatcher remains in the parent template remainder").toHaveLength(1);
   const variables = dispatchers[0]![1].Properties!.Environment as { Variables: Record<string, unknown> };
