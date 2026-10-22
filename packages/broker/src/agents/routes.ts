@@ -51,6 +51,8 @@ import {
   type AgentCaller,
   type AgentScope,
 } from "./access.js";
+import { COMMENT_TRIGGERS_PATH, routeCommentTriggers } from "./comment-trigger-routes.js";
+import { listOptOutViews, registerCommentTriggerApprovals } from "./comment-trigger-optouts.js";
 import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, updateGuardrails, type ChangeResult } from "./changes.js";
 import type { ApprovalDependencies } from "./approvals.js";
 import { readGuardrails, readGuardrailsWithRevision, requireBaseEnabled } from "./guardrails.js";
@@ -837,10 +839,14 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
     if (deps.connections === undefined) throw agentXError("NOT_FOUND", "connections are not set up in this deployment");
     return routeConnectionRequest({ store: deps.connections, documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller, request, url);
   }
-  // Task 13: a project's connectors. Task 14b's `…/connectors/github/comment-triggers` is answered above this line once its route is merged (PF24).
+  // Task 14b's `…/connectors/github/comment-triggers` is matched before Task 13's project connectors, which would otherwise take every `…/connectors/…` path (PF24).
+  const commentTriggers = COMMENT_TRIGGERS_PATH.exec(url.pathname);
+  if (commentTriggers !== null) return routeCommentTriggers(deps, caller, request, url, commentTriggers[1]!);
+  // Task 13: a project's connectors.
   if (isProjectConnectorRoute(url.pathname)) return routeProjectConnectorRequest(deps, caller, request, url);
   if (url.pathname === GUARDRAILS_PATH) {
-    if (request.method === "GET") return readGuardrailsWithRevision(deps, caller.orgId);
+    // The opt-outs of the comment rule are listed with the guardrails (Task 14b); they are read now, with the document.
+    if (request.method === "GET") return { ...await readGuardrailsWithRevision(deps, caller.orgId), commentTriggerOptOuts: await listOptOutViews(deps, caller.orgId) };
     if (request.method === "PUT") return putGuardrails(deps, caller, jsonBody(request));
     throw agentXError("NOT_FOUND", "route not found");
   }
@@ -926,3 +932,4 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
 
 registerAgentApprovals();
 registerProjectConnectorApprovals();
+registerCommentTriggerApprovals();

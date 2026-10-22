@@ -2,6 +2,7 @@ import { createHash, createSign } from "node:crypto";
 import { agentXError, createCandidateManifest, githubNotConnectedMessage, isSafeE2ESourcePath, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
 import type { RepositoryAccess, RepositoryCredential } from "./repository-access.js";
 import type { GithubMergeReadBudget } from "./aws/workflow-merge-recovery.js";
+import { checkAgentTokenPermissions, type GitHubAgentTokenPermissions } from "./agents/github-agent-tools.js";
 
 const GITHUB_APP_ID = /^[1-9][0-9]*$/;
 /** A GitHub user or organization login: letters, digits and single hyphens inside, at most 39 characters. */
@@ -113,6 +114,42 @@ const INSTALLATION_REPOSITORY_PAGES = 10;
 
 /** One repository an installation can reach, as GitHub lists it. */
 export interface GitHubInstallationRepository { fullName: string; githubRepositoryId: number; private: boolean; defaultBranch: string }
+
+/** The scope an agent's GitHub reads and tokens take: always an org's own work, never a system scope (Plan 3, PF10). */
+export type AgentGitHubScope = { orgId: OrgId };
+
+/**
+ * What an agent's mint may be held to: the installation the project pinned for this repository (`installationId` on the project's repository). A repository
+ * that GitHub now reaches through another installation gets no token (GITHUB_NOT_CONNECTED), whatever the org's bindings say.
+ */
+export interface AgentTokenOptions { installationId?: number | undefined }
+
+/** One entry of a repository directory, as GitHub lists it. */
+export interface AgentRepositoryEntry { name: string; path: string; type: "file" | "dir" | "symlink" | "submodule" | "other"; sha: string; size: number }
+/** A file's blob sha and size, and its text unless it is over the cap that was asked for (`tooLarge`). */
+export type AgentRepositoryFile = { sha: string; size: number } & ({ tooLarge: true } | { tooLarge?: false; text: string });
+
+/**
+ * A read-only view of one repository's default branch at one commit, made with a `contents: read` token for an org's run. Every read names the
+ * same commit, so a scan sees one consistent tree. A path that is not there reads as undefined; anything else that goes wrong throws.
+ */
+export interface AgentRepositoryReader {
+  defaultBranch: string;
+  /** The commit of the default branch's head that every read names. */
+  commit: string;
+  /** The entries of a directory (undefined when the path is not a directory). `truncated` when GitHub may have listed only part of it. */
+  list(path: string): Promise<{ entries: AgentRepositoryEntry[]; truncated: boolean } | undefined>;
+  /** A file's blob sha and size, and its text when it is at most `maxBytes` (undefined when the path is not a file). */
+  read(path: string, maxBytes: number): Promise<AgentRepositoryFile | undefined>;
+}
+
+/** A label of a repository as GitHub lists it: its numeric id, its node id and its name. */
+export interface AgentRepositoryLabel { id: number; nodeId: string; name: string }
+
+const AGENT_READ_TIMEOUT_MS = 8_000;
+/** GitHub lists at most this many entries of a directory in one answer, so a listing this long may be cut short. */
+const DIRECTORY_LISTING_LIMIT = 1_000;
+const AGENT_LABEL_PAGES = 10;
 
 /** The scope of a read made for a signed webhook delivery (or a bare installation lookup): it names no org. */
 const WEBHOOK_SCOPE: GitHubTokenScope = { system: "webhook" };
@@ -272,6 +309,140 @@ export class GitHubAppCredentialProvider {
       pull_requests: "read",
     }, scope);
     return this.getPullRequestWithToken(repository, number, token);
+  }
+
+  /**
+   * A token for one repository that an agent's tool (or the broker, reading for an agent's run) uses. It carries exactly `permissions` plus
+   * `metadata: read`, and nothing else: `contents: write`, `workflows`, `administration`, `actions: write` and every key outside issues,
+   * pull_requests, contents and metadata are refused (FORBIDDEN) before GitHub is asked. For an org on a cloud install the installation must
+   * be bound to the org, active, at this moment (`requireInstallationBound`), like every other mint (PF10).
+   */
+  async createAgentInstallationToken(repository: string | { owner: string; name: string }, permissions: GitHubAgentTokenPermissions, scope: AgentGitHubScope, options: AgentTokenOptions = {}): Promise<string> {
+    requireAgentScope(scope);
+    const checked = checkAgentTokenPermissions(permissions);
+    const installed = await this.installed(typeof repository === "string" ? parseGitHubRepository(repository) : repository, scope);
+    requirePinnedInstallation(installed, options);
+    return this.createInstallationToken(installed, { ...checked, metadata: "read" }, scope);
+  }
+
+  /** The repository as the installation spells it, checked for the org (once), with an agent token for it. */
+  private async installedWithAgentToken(repositoryUrl: string, permissions: GitHubAgentTokenPermissions, scope: AgentGitHubScope, options: AgentTokenOptions): Promise<{ repository: InstalledRepository; token: string }> {
+    requireAgentScope(scope);
+    const checked = checkAgentTokenPermissions(permissions);
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    requirePinnedInstallation(repository, options);
+    return { repository, token: await this.createInstallationToken(repository, { ...checked, metadata: "read" }, scope) };
+  }
+
+  /**
+   * The head commit of a pull request, read with an agent token (`pull_requests: read`, `contents: read`) for the org, so a run that reviews it
+   * checks out exactly that commit. A pull request that is not there is a clear refusal; anything else GitHub says is "unavailable".
+   */
+  async getAgentPullRequestHead(repositoryUrl: string, number: number, scope: AgentGitHubScope, options: AgentTokenOptions = {}): Promise<{ headSha: string; state: "open" | "closed" | "merged" }> {
+    if (!Number.isSafeInteger(number) || number < 1) throw agentXError("CONFIG_INVALID", "pull request number is invalid");
+    const { repository, token } = await this.installedWithAgentToken(repositoryUrl, { pull_requests: "read", contents: "read" }, scope, options);
+    const response = await this.fetchImplementation(pullRequestUrl(repository, number), { headers: githubHeaders(token), signal: AbortSignal.timeout(AGENT_READ_TIMEOUT_MS), redirect: "error" });
+    if (response.status === 404) {
+      await response.body?.cancel();
+      throw agentXError("CONFIG_INVALID", `pull request ${String(number)} of ${repository.owner}/${repository.name} doesn't exist`);
+    }
+    if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub pull request lookup failed with HTTP ${response.status}`);
+    const body: unknown = await response.json();
+    const record = body !== null && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {};
+    const head = record.head !== null && typeof record.head === "object" ? record.head as Record<string, unknown> : {};
+    if (record.number !== number || typeof head.sha !== "string" || !/^[a-f0-9]{40}$/u.test(head.sha) || (record.state !== "open" && record.state !== "closed") || typeof record.merged !== "boolean") {
+      throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid pull request response");
+    }
+    return { headSha: head.sha, state: record.merged ? "merged" : record.state };
+  }
+
+  /**
+   * A read-only view of the repository's default branch for an org's run: one `contents: read` agent token, the default branch's head commit
+   * read once, and every file and directory read at that commit. Nothing is cached beyond the reader's own life.
+   */
+  async agentRepositoryReader(repositoryUrl: string, scope: AgentGitHubScope, options: AgentTokenOptions = {}): Promise<AgentRepositoryReader> {
+    const { repository, token } = await this.installedWithAgentToken(repositoryUrl, { contents: "read" }, scope, options);
+    const base = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}`;
+    const get = (path: string, accept?: string): Promise<Response> =>
+      this.fetchImplementation(`${base}${path}`, { headers: { ...githubHeaders(token), ...(accept === undefined ? {} : { accept }) }, signal: AbortSignal.timeout(AGENT_READ_TIMEOUT_MS), redirect: "error" });
+    const json = async (response: Response, what: string): Promise<unknown> => {
+      if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub ${what} lookup failed with HTTP ${response.status}`);
+      return response.json();
+    };
+    const info = await json(await get(""), "repository");
+    const defaultBranch = info !== null && typeof info === "object" && "default_branch" in info && typeof info.default_branch === "string" ? info.default_branch : undefined;
+    if (defaultBranch === undefined || defaultBranch === "") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid repository response");
+    const ref = await json(await get(`/git/ref/heads/${defaultBranch.split("/").map(encodeURIComponent).join("/")}`), "branch");
+    const refObject = ref !== null && typeof ref === "object" && "object" in ref && ref.object !== null && typeof ref.object === "object" ? ref.object as Record<string, unknown> : {};
+    const commit = refObject.sha;
+    if (typeof commit !== "string" || !/^[a-f0-9]{40}$/u.test(commit)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid branch response");
+    const contents = (path: string): string => {
+      const segments = path.split("/");
+      if (path === "" || path.length > 512 || path.includes("\\") || segments.some((segment) => segment === "" || segment === "." || segment === "..")) throw agentXError("CONFIG_INVALID", "file path is invalid");
+      return `/contents/${segments.map(encodeURIComponent).join("/")}?ref=${commit}`;
+    };
+    return {
+      defaultBranch,
+      commit,
+      async list(path) {
+        const response = await get(contents(path));
+        if (response.status === 404) { await response.body?.cancel(); return undefined; }
+        const body = await json(response, "directory");
+        // Only a 404 is "not there": a 200 that is not a listing (a file, a link, a submodule) is something this reader can't read.
+        if (!Array.isArray(body)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not answer with a directory listing");
+        const entries = body.map((entry): AgentRepositoryEntry => {
+          const record = entry !== null && typeof entry === "object" ? entry as Record<string, unknown> : {};
+          if (typeof record.name !== "string" || typeof record.path !== "string" || typeof record.sha !== "string" || typeof record.size !== "number") {
+            throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid directory listing");
+          }
+          const type = record.type === "file" || record.type === "dir" || record.type === "symlink" || record.type === "submodule" ? record.type : "other";
+          return { name: record.name, path: record.path, type, sha: record.sha, size: record.size };
+        });
+        return { entries, truncated: entries.length >= DIRECTORY_LISTING_LIMIT };
+      },
+      async read(path, maxBytes) {
+        const response = await get(contents(path));
+        if (response.status === 404) { await response.body?.cancel(); return undefined; }
+        const body = await json(response, "file");
+        // A directory where a file was asked for is not a file there; anything else that is not a file (a link, a submodule, an odd answer) can't be read.
+        if (Array.isArray(body)) return undefined;
+        const record = body !== null && typeof body === "object" ? body as Record<string, unknown> : undefined;
+        if (record === undefined || record.type !== "file" || typeof record.sha !== "string" || typeof record.size !== "number") {
+          throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not answer with a file");
+        }
+        if (record.size > maxBytes) return { sha: record.sha, size: record.size, tooLarge: true };
+        if (record.encoding !== "base64" || typeof record.content !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid file response");
+        const bytes = Buffer.from(record.content, "base64");
+        if (bytes.byteLength !== record.size) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an incomplete file");
+        return { sha: record.sha, size: record.size, text: bytes.toString("utf8") };
+      },
+    };
+  }
+
+  /**
+   * The repository's labels, read with an agent token (`issues: read`) for the org: the numeric id and the node id of each with its name, so a
+   * label id in an agent's call can be turned into the name a trigger-label rule checks. More than 1,000 labels throws: an id that can't be
+   * looked up is treated as consequential by the caller.
+   */
+  async listAgentRepositoryLabels(repositoryUrl: string, scope: AgentGitHubScope, options: AgentTokenOptions = {}): Promise<AgentRepositoryLabel[]> {
+    const { repository, token } = await this.installedWithAgentToken(repositoryUrl, { issues: "read" }, scope, options);
+    const labels: AgentRepositoryLabel[] = [];
+    for (let page = 1; page <= AGENT_LABEL_PAGES; page += 1) {
+      const response = await this.fetchImplementation(
+        `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/labels?per_page=100&page=${String(page)}`,
+        { headers: githubHeaders(token), signal: AbortSignal.timeout(AGENT_READ_TIMEOUT_MS), redirect: "error" },
+      );
+      if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub label lookup failed with HTTP ${response.status}`);
+      const body: unknown = await response.json();
+      if (!Array.isArray(body)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid label listing");
+      for (const entry of body) {
+        const record = entry !== null && typeof entry === "object" ? entry as Record<string, unknown> : {};
+        if (!Number.isSafeInteger(record.id) || typeof record.node_id !== "string" || typeof record.name !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid label listing");
+        labels.push({ id: record.id as number, nodeId: record.node_id, name: record.name });
+      }
+      if (body.length < 100) return labels;
+    }
+    throw agentXError("RUNTIME_UNAVAILABLE", "this repository has too many labels to look up");
   }
 
   /** A bounded, stable merge-state read that cannot reuse or populate the singleton provider's caches. */
@@ -1124,6 +1295,19 @@ function matchesUpdate(details: GitHubPullRequestDetails, update: GitHubPullRequ
   return (update.title === undefined || details.title === update.title) &&
     (update.body === undefined || details.body === update.body) &&
     (update.state === undefined || details.state === update.state);
+}
+
+function requirePinnedInstallation(installed: { owner: string; name: string; installationId: number }, options: AgentTokenOptions): void {
+  if (options.installationId !== undefined && options.installationId !== installed.installationId) {
+    throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(`${installed.owner}/${installed.name}`));
+  }
+}
+
+/** Refuses (FORBIDDEN) any scope but an org's own: an agent's token is never minted for a system scope or for no one. */
+function requireAgentScope(scope: unknown): asserts scope is AgentGitHubScope {
+  if (scope === null || typeof scope !== "object" || !("orgId" in scope) || typeof scope.orgId !== "string" || "system" in scope) {
+    throw agentXError("FORBIDDEN", "An agent's GitHub token is minted only for an organization's own work.");
+  }
 }
 
 function githubHeaders(token: string): Record<string, string> {

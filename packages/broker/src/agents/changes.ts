@@ -73,7 +73,7 @@ async function requireWithinGuardrails(deps: ApprovalDependencies, orgId: OrgId,
 
 // ---- who is asked
 
-async function orgAdmins(deps: ApprovalDependencies, orgId: OrgId): Promise<string[]> {
+export async function orgAdmins(deps: ApprovalDependencies, orgId: OrgId): Promise<string[]> {
   const ids: string[] = [];
   let start: Record<string, unknown> | undefined;
   do {
@@ -104,7 +104,7 @@ export async function agentApprovers(deps: ApprovalDependencies, agent: AgentRec
   return { kind: "rule", rule, candidates: [...candidates] };
 }
 
-async function orgAdminApprovers(deps: ApprovalDependencies, orgId: OrgId): Promise<ApproverSpec> {
+export async function orgAdminApprovers(deps: ApprovalDependencies, orgId: OrgId): Promise<ApproverSpec> {
   return { kind: "rule", rule: "org_admin", candidates: await orgAdmins(deps, orgId) };
 }
 

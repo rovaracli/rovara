@@ -526,7 +526,7 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
@@ -872,10 +872,26 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     ...(agents.resolveSkill === undefined ? {} : { resolveSkill: agents.resolveSkill }),
     ...(agents.servableModels === undefined ? {} : { servableModels: agents.servableModels }),
     ...(agents.orgSourceOrder === undefined ? {} : { orgSourceOrder: agents.orgSourceOrder }),
-    // A run that names a pull request of a project repository reads its head through the GitHub App, for the run's org (Task 15, PF16).
-    pullRequestHead: agents.pullRequestHead ?? (async ({ orgId, repositoryUrl, number }) => ({
-      headSha: (await dependencies.githubPullRequests.getPullRequest(repositoryUrl, number, githubScope(dependencies, orgId))).headCommit,
-    })),
+    // A run that names a pull request of a project repository reads its head through the GitHub App, with an agent token (pull requests and contents,
+    // read only) for the run's org (Task 15, PF16; Task 14b). Where the provider has no such read, nothing is read and the run fails closed.
+    pullRequestHead: agents.pullRequestHead ?? (async ({ orgId, repositoryUrl, number, installationId }) => {
+      const read = dependencies.githubPullRequests.getAgentPullRequestHead;
+      if (read === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "reading pull requests is not set up in this deployment");
+      return { headSha: (await read.call(dependencies.githubPullRequests, repositoryUrl, number, { orgId }, ...(installationId === undefined ? [] : [{ installationId }]))).headSha };
+    }),
+    // Task 14b: the scan of a repository's workflows for the comment rule and the opt-out reads the default branch with the same kind of token.
+    ...(dependencies.githubPullRequests.agentRepositoryReader === undefined ? {} : {
+      repositoryReader: ({ orgId, repositoryUrl, installationId }: { orgId: OrgId; repositoryUrl: string; installationId?: number }) =>
+        dependencies.githubPullRequests.agentRepositoryReader!(repositoryUrl, { orgId }, ...(installationId === undefined ? [] : [{ installationId }])),
+    }),
+    projectRepositories: async (orgId: OrgId, project: string) => {
+      try {
+        return (await requireLatestProject(dependencies, orgId, project)).definition.repositories.map((repository) => ({ name: repository.name, url: repository.url, ...(repository.installationId === undefined ? {} : { installationId: repository.installationId }) }));
+      } catch (error) {
+        if (error instanceof AgentXError && error.code === "NOT_FOUND") return undefined;
+        throw error;
+      }
+    },
     // Task 22 removes this: only tests switch on runs of agents made of agent steps before the step engine exists.
     ...(agents.agentStepRuns === true ? { agentStepRuns: true } : {}),
     // A trial org keeps the placeholder limits (R49) on the budgets the routes set.

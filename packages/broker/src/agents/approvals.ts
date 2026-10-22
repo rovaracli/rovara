@@ -32,6 +32,7 @@ import type { ProjectConnectorDependencies } from "../connections/project-connec
 import type { AgentAccessDeps, AgentCaller, AgentShare } from "./access.js";
 import type { ServableModels } from "./guardrails.js";
 import type { ResolveOptions } from "./store.js";
+import type { AgentRepositoryReader } from "../github-app.js";
 
 /** What an agent's routes and the approvals that act on agents need: access checks, the store and where the page lives. */
 export interface ApprovalDependencies extends AgentAccessDeps {
@@ -44,6 +45,10 @@ export interface ApprovalDependencies extends AgentAccessDeps {
   servableModels?: ServableModels;
   /** What a project's connectors need (Task 13): the org's connections, the project revision write and the live connector status. Without it those routes answer 404 and a widening cannot be applied. */
   projectConnectors?: ProjectConnectorDependencies;
+  /** Task 14b: a read-only reader of a repository's default branch for an org, for the comment-triggered workflow scan. Without it, nothing can be reviewed or opted out. */
+  repositoryReader?: (input: { orgId: OrgId; repositoryUrl: string; installationId?: number }) => Promise<AgentRepositoryReader>;
+  /** Task 14b: the repositories of a project as they are registered now (undefined when there is no such project in the org). */
+  projectRepositories?: (orgId: OrgId, project: string) => Promise<ReadonlyArray<{ name: string; url: string; installationId?: number | undefined }> | undefined>;
 }
 
 /** The part of the dependencies the record's own writes need. */
@@ -75,9 +80,15 @@ export type AgentChangeSubject =
  */
 export interface ConnectorWidenSubject { kind: "connector_widen"; project: string; name: string; expectedRevision: number; connector: ConnectorConfig }
 
-/** The other kinds of change (opt-outs) carry their own details, typed by the task that makes them. */
-export type OtherChangeSubject = { kind: "opt_out" } & Record<string, unknown>;
-export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OtherChangeSubject;
+/**
+ * Task 14b: lets agents comment, review and label in a repository whose workflows act on comments, on one project, while the workflows still have
+ * the digest that was reviewed. `files` is what the admin saw.
+ */
+export interface OptOutChangeSubject { kind: "opt_out"; project: string; repository: string; expectedDigest: string; files: string[]; reason: string }
+
+/** The kinds of change that are not about an agent itself: connector widenings (Task 13) and comment-trigger opt-outs (Task 14b). */
+export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject;
+export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject;
 
 export interface ChangeApprovalRecord {
   orgId: OrgId;
@@ -151,8 +162,9 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
   }).strict(),
   z.object({ kind: z.literal("guardrails"), next: AgentGuardrailsSchema, expectedRevision: z.number().int().min(0) }).strict(),
   z.object({ kind: z.literal("connector_widen"), project: z.string(), name: z.string(), expectedRevision: z.number().int().min(1), connector: ConnectorConfigSchema }).strict(),
-  // The other kinds carry details their own tasks type; only the kind is checked here.
-  z.object({ kind: z.literal("opt_out") }).passthrough(),
+  z.object({
+    kind: z.literal("opt_out"), project: z.string(), repository: z.string(), expectedDigest: Hex64, files: z.array(z.string()), reason: z.string(),
+  }).strict(),
 ]);
 /** What a stored change record must look like to be read; `passthrough`, so a field a later task adds is kept. */
 const ChangeApprovalRecordSchema = z.object({

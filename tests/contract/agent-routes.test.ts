@@ -1077,10 +1077,11 @@ describe("Plan 3's paths and Plan 2's (PF24)", () => {
 
   it("sends a project's agents, AI, spend and connectors paths to the agent router before Plan 2's project routes", async () => {
     const { call } = await setup();
-    // Task 14b's comment-trigger route is not merged yet: the connectors router leaves its path alone, and answers it as not available.
+    // Task 14b's comment-trigger opt-out is matched before Task 13's project connectors (PF24): it reaches the 14b handler (an org owner or admin's, which
+    // Maya is not) and not the connectors router, which would answer PROJECT_NOT_FOUND for `web`.
     const triggers = await call(MAYA, "GET", "/v1/app/projects/web/connectors/github/comment-triggers");
-    expect(triggers.status).toBe(404);
-    expect(errorOf(triggers).message).toBe("that isn't available yet");
+    expect(triggers.status).toBe(403);
+    expect(errorOf(triggers).code).toBe("FORBIDDEN");
     // A project's connectors are Task 13's: the same router answers them (Maya has no role on `web` here).
     const connectors = await call(MAYA, "GET", "/v1/app/projects/web/connectors");
     expect(connectors.status).toBe(404);

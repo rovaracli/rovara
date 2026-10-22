@@ -995,13 +995,27 @@ describe("what the chain records", () => {
 });
 
 describe("route precedence (PF24)", () => {
-  it("keeps …/connectors/github/comment-triggers out of the connector named github until Task 14b's route is merged", async () => {
+  it("answers …/connectors/github/comment-triggers with Task 14b's route, not as the connector named github", async () => {
     const s = await install();
+    const admins = [DANA, OMAR];
     for (const who of [MIA, DANA, CARL, NOEL, OMAR]) {
       for (const [method, body] of [["GET", undefined], ["PUT", { enabled: true }], ["DELETE", {}]] as const) {
         const reply = await s.call(who, method, "/v1/app/projects/web/connectors/github/comment-triggers", body);
-        expect(reply.status, `${who.name} ${method}`).toBe(404);
-        expect(reply.body.error?.code, `${who.name} ${method}`).toBe("NOT_FOUND");
+        const label = `${who.name} ${method}`;
+        if (method === "DELETE") {
+          // Task 14b's route reads and sets an opt-out; it has no DELETE, and the connector named github is not touched.
+          expect(reply.status, label).toBe(404);
+          expect(reply.body.error?.message, label).toBe("route not found");
+        } else if (admins.includes(who)) {
+          // Only an org owner or admin reaches the opt-out itself (this install has no repository reader, and the PUT names no repository).
+          expect(reply.status, label).toBe(method === "GET" ? 404 : 400);
+          expect(reply.body.error?.code, label).toBe(method === "GET" ? "NOT_FOUND" : "CONFIG_INVALID");
+          if (method === "GET") expect(reply.body.error?.message, label).toMatch(/comment-triggered workflows/);
+        } else {
+          expect(reply.status, label).toBe(403);
+          expect(reply.body.error?.code, label).toBe("FORBIDDEN");
+          expect(reply.body.error?.message, label).toMatch(/comment-triggered workflow rule/);
+        }
       }
     }
     expect(s.revisions()).toHaveLength(1);
