@@ -32,7 +32,11 @@ export type DecideInspection =
   | { status: "open"; view: ConfirmView };
 
 /** What the page says once the decision was made (for example "Approved. The change was applied."); a failure to apply is thrown with its reason. */
-export interface DecideOutcome { message: string }
+export interface DecideOutcome {
+  message: string;
+  /** The page's heading when the default ("Approved" or "Declined") would mislead: an approval that was made but could not be applied. */
+  title?: string;
+}
 
 export interface DecideKind {
   /** Reads the approval in `target.orgId` and evaluates, live, whether the member may decide it now (`mayDecide`). */

@@ -16,7 +16,7 @@ import type { ServableModels } from "./guardrails.js";
 import { resolveMember, sameMember } from "./lifecycle.js";
 import type { ResolveOptions } from "./store.js";
 import type { AgentRepositoryReader } from "../github-app.js";
-import type { WriteGateRuntime } from "./write-gate.js";
+import type { DecideGuard, WriteGateRuntime } from "./write-gate.js";
 
 /** What an agent's routes and the approvals that act on agents need: access checks, the store and where the page lives. */
 export interface ApprovalDependencies extends AgentAccessDeps {
@@ -35,6 +35,10 @@ export interface ApprovalDependencies extends AgentAccessDeps {
   projectRepositories?: (orgId: OrgId, project: string) => Promise<ReadonlyArray<{ name: string; url: string; installationId?: number | undefined }> | undefined>;
   /** Task 21: what a write approval needs beyond the table (the connector call path, the agent's grant and the run owner's authority). Task 19 supplies it; without it a write approval can't be made or decided. */
   writeGate?: WriteGateRuntime;
+  /** Task 21a-wiring: the presence guard in front of the decide routes (the broker builds it over `requireDecideSession`). Without it, or `writeGate.requireDecide`, they answer 404. */
+  requireDecide?: DecideGuard;
+  /** Task 21a-wiring: the confirmation link for a token's member, with a decide ticket minted for them (after the same live check as `mayDecideApproval`); `GET /v1/app/approvals/{id}` shows it. */
+  mintConfirmUrl?: (caller: AgentCaller, approvalId: string) => Promise<string>;
 }
 
 /** The part of the dependencies the record's own writes need. */

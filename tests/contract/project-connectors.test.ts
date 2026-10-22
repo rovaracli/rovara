@@ -19,7 +19,8 @@ import { jiraConnectorType } from "../../packages/broker/src/aws/jira-connector-
 import { mcpConnectorType } from "../../packages/broker/src/aws/connector-presets.js";
 import { connectMcp } from "@agentx/gateway";
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor, requireDecideSession, type DecideRequestContext } from "../../packages/broker/src/developer/decide-session.js";
-import type { DecideKind, DecideTarget } from "../../packages/broker/src/developer/decide-kinds.js";
+import type { DecideKind } from "../../packages/broker/src/developer/decide-kinds.js";
+import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";
 import { OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
@@ -758,34 +759,7 @@ describe("confirming a widening applies exactly the stored connector", () => {
   });
 });
 
-/** The confirmation page's `apr` kind for a connector widening, made from what this task registers: Task 21a-wiring's `decideApproval` does the same around its own steps. */
-function widenKind(s: Install, decided: Array<{ by: string; proof: AuditProof }>): DecideKind {
-  const { deps } = decideSide(s);
-  const rule = getApproverRule("project_settings")!;
-  const tableDeps = { documentClient: deps.documentClient, tableName: "state" };
-  const callerFor = async (target: DecideTarget): Promise<AgentCaller> => {
-    const role = (s.h.db.get(orgMemberKey(target.orgId, target.developerId)) as { role?: OrgRole } | undefined)?.role ?? "member";
-    return { orgId: target.orgId, developerId: target.developerId, orgRole: role };
-  };
-  return {
-    async inspect(target) {
-      const record = await getApproval(tableDeps, target.orgId, target.approvalId);
-      if (record === undefined) return { status: "not_found" };
-      if (record.status !== "PENDING") return { status: "decided", by: record.decidedBy ?? "someone", at: record.decidedAt ?? "" };
-      if (!await rule(deps, record, await callerFor(target))) return { status: "forbidden", who: "a maintainer of this project" };
-      return { status: "open", view: { title: "Let a connector write", facts: [], paragraphs: record.changes } };
-    },
-    async decide(target, decision, proof) {
-      const record = (await getApproval(tableDeps, target.orgId, target.approvalId))!;
-      if (decision === "decline") return { message: "Declined." };
-      decided.push({ by: target.developerId, proof });
-      await getApprovalSubjectHandler("connector_widen")!(deps, { ...record, status: "EXECUTING", decidedBy: target.developerId }, { proof });
-      return { message: "Approved. The change was applied." };
-    },
-  };
-}
-
-describe("confirming on the page (Task 21a's presence machinery)", () => {
+describe("confirming on the page (Task 21a: the real apr kind)", () => {
   const CELL = "https://cell.example";
   function pageContext(s: Install, kind: DecideKind): { context: DecideRequestContext; store: DecideStore } {
     const store = new DecideStore({ documentClient: s.h.db, tableName: "signin", now: Date.now });
@@ -808,13 +782,11 @@ describe("confirming on the page (Task 21a's presence machinery)", () => {
     const s = await install();
     registerProjectConnectorApprovals();
     const { approvalId } = await waitingWidening(s);
-    const decided: Array<{ by: string; proof: AuditProof }> = [];
-    const { context } = pageContext(s, widenKind(s, decided));
+    const { context } = pageContext(s, approvalDecideKind(decideSide(s).deps));
     const request = (authorization: string) => ({ method: "POST", path: `/v1/app/approvals/${approvalId}/decide`, headers: { authorization }, body: "{}" });
     expect(await refusal(requireDecideSession(context, request("Bearer mia")))).toMatchObject({ code: "REAUTH_REQUIRED", status: 401 });
     expect(await refusal(requireDecideSession(context, request("Bearer dana")))).toMatchObject({ code: "REAUTH_REQUIRED", status: 401 });
     expect(await refusal(requireDecideSession(context, request("Bearer carl")))).toMatchObject({ code: "FORBIDDEN", status: 403 });
-    expect(decided).toEqual([]);
     expect(s.revisions()).toHaveLength(2);
     await s.fakeLinear.close();
   });
@@ -823,8 +795,7 @@ describe("confirming on the page (Task 21a's presence machinery)", () => {
     const s = await install();
     registerProjectConnectorApprovals();
     const { approvalId, wide } = await waitingWidening(s);
-    const decided: Array<{ by: string; proof: AuditProof }> = [];
-    const { context, store } = pageContext(s, widenKind(s, decided));
+    const { context, store } = pageContext(s, approvalDecideKind(decideSide(s).deps));
     const sha = async (value: string) => (await import("node:crypto")).createHash("sha256").update(value).digest("hex");
     const open = async (who: Developer) => {
       const cookie = `cookie-${who.name}-${"x".repeat(40)}`;
@@ -846,8 +817,59 @@ describe("confirming on the page (Task 21a's presence machinery)", () => {
     expect(done.statusCode, done.body).toBe(200);
     expect(s.revisions()).toHaveLength(3);
     expect(s.revision(3)!.definition).toMatchObject({ revision: 3, integrations: { connectors: [wide] } });
-    expect(decided).toHaveLength(1);
-    expect(s.audit.recordedBy("project_connector.changed").at(-1)).toMatchObject({ actor: { kind: "member", id: MIA.developerId }, proof: decided[0]!.proof, facts: { change: "widened", revision: 3 } });
+    expect(s.audit.recordedBy("project_connector.changed").at(-1)).toMatchObject({
+      actor: { kind: "member", id: MIA.developerId }, proof: { kind: "fresh_sign_in", method: "email_code" }, facts: { change: "widened", revision: 3 },
+    });
+    expect(await getApproval({ documentClient: { send: (command: unknown) => s.h.db.send(command as never) }, tableName: "state" }, TEST_ORG, approvalId)).toMatchObject({ status: "APPROVED_DONE", decidedBy: MIA.developerId });
+    await s.fakeLinear.close();
+  });
+});
+
+describe("confirming a widening end to end (Task 13 m5)", () => {
+  const CELL = "https://cell.example";
+  /** Opens the confirmation page for `who` and posts `decision` with its own CSRF token, through the real `apr` kind. */
+  async function decideOnPage(s: Install, approvalId: string, who: Developer, decision: "approve" | "decline") {
+    const store = new DecideStore({ documentClient: s.h.db, tableName: "signin", now: Date.now });
+    const context: DecideRequestContext = { store, now: Date.now, cellOrigin: CELL, kinds: { apr: approvalDecideKind(decideSide(s).deps) } };
+    const cookie = `cookie-${who.name}-${decision}-${"x".repeat(30)}`;
+    const sha = (await import("node:crypto")).createHash("sha256");
+    const signedInAt = Math.floor(Date.now() / 1000) - 30;
+    await store.putSession(cookie, { orgId: TEST_ORG, developerId: who.developerId, approvalId, signedInAt, method: "email_code", csrfHash: sha.update(csrfTokenFor(cookie)).digest("hex"), expiresAt: signedInAt + 600 });
+    const response = await routeDecidePage(context, {
+      method: "POST", path: `/v1/app/approve/${approvalId}`, requestId: "r",
+      headers: { origin: CELL, "content-type": "application/x-www-form-urlencoded", cookie: `${DECIDE_COOKIE}=${cookie}` },
+      body: new URLSearchParams({ csrf: csrfTokenFor(cookie), decision }).toString(),
+    }, new URL(`${CELL}/v1/app/approve/${approvalId}`));
+    return response;
+  }
+  const recordOf = (s: Install, approvalId: string) => getApproval({ documentClient: { send: (command: unknown) => s.h.db.send(command as never) }, tableName: "state" }, TEST_ORG, approvalId);
+
+  it("ends APPROVED_FAILED with the stale-settings words when the project moved on before the confirm, and writes no revision", async () => {
+    const s = await install();
+    registerProjectConnectorApprovals();
+    const { id, approvalId } = await waitingWidening(s);
+    // Someone else changes the project's settings after the widening was asked for.
+    expect((await s.put(PETE, "linear", linear(id, [{ name: "list_issues", access: "read" }, { name: "save_issue", access: "read" }], { attribution: false }), { expectedRevision: 2 })).status).toBe(200);
+    expect(s.revisions()).toHaveLength(3);
+    const page = await decideOnPage(s, approvalId, MIA, "approve");
+    expect(page.body).toContain(STALE.replace("'", "&#39;"));
+    expect(page.body).toContain("did not go through");
+    expect(await recordOf(s, approvalId)).toMatchObject({ status: "APPROVED_FAILED", decidedBy: MIA.developerId });
+    expect(String((await recordOf(s, approvalId))?.failure)).toContain(STALE);
+    expect(s.revisions()).toHaveLength(3);
+    await s.fakeLinear.close();
+  });
+
+  it("writes nothing when a maintainer declines", async () => {
+    const s = await install();
+    registerProjectConnectorApprovals();
+    const { approvalId } = await waitingWidening(s);
+    const page = await decideOnPage(s, approvalId, MIA, "decline");
+    expect(page.statusCode, page.body).toBe(200);
+    expect(page.body).toContain("Declined");
+    expect(await recordOf(s, approvalId)).toMatchObject({ status: "DECLINED", decidedBy: MIA.developerId });
+    expect(s.revisions()).toHaveLength(2);
+    expect(s.audit.recordedBy("project_connector.changed").filter((event) => (event.facts as { change?: string }).change === "widened")).toHaveLength(0);
     await s.fakeLinear.close();
   });
 });

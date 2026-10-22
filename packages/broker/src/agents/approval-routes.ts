@@ -4,13 +4,14 @@
 // a CLI or MCP token gets REAUTH_REQUIRED with the page link from it, a browser needs a fresh sign-in on the confirmation page. Without the guard wired
 // the decide route does not exist.
 import { z } from "zod";
-import { ApprovalIdSchema, agentXError } from "@agentx/contracts";
+import { AgentXError, ApprovalIdSchema, agentXError } from "@agentx/contracts";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { orgRoleOf, type AgentCaller } from "./access.js";
 import {
   confirmUrlFor, decideApproval, getAnyApproval, listApprovalsFor, mayDecideApproval, runOfApproval,
   type AnyApprovalRecord, type ApprovalDependencies, type ApprovalStatus,
 } from "./approvals.js";
+import { endOfFailure, settleSession, type DecisionEnd } from "../developer/decide-session.js";
 import { sameMember } from "./lifecycle.js";
 import { decideWriteApproval } from "./write-gate.js";
 
@@ -85,22 +86,48 @@ export async function routeApprovalRequest(deps: ApprovalDependencies, caller: A
   }
   if (action === undefined) {
     if (request.method !== "GET") throw agentXError("NOT_FOUND", "route not found");
-    return { approval: approvalView(deps, await readVisible(deps, caller, rawId), true) };
+    const record = await readVisible(deps, caller, rawId);
+    return { approval: { ...approvalView(deps, record, true), confirmUrl: await confirmUrlFrom(deps, caller, record) } };
   }
   if (request.method !== "POST") throw agentXError("NOT_FOUND", "route not found");
-  const gate = deps.writeGate;
-  if (gate?.requireDecide === undefined) throw agentXError("NOT_FOUND", "that isn't available yet");
-  const body = jsonBody(request);
+  const requireDecide = deps.requireDecide ?? deps.writeGate?.requireDecide;
+  if (requireDecide === undefined) throw agentXError("NOT_FOUND", "that isn't available yet");
+  // The CSRF field belongs to the guard (it checks it against the session), not to the decision: the decision's body takes only its own fields.
+  const { csrf: _csrf, ...body } = jsonBody(request) as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- checked by the guard
   // The guard says who is deciding: a browser session opened for this approval, signed in within the last 10 minutes. A token never gets past it.
-  const authority = await gate.requireDecide(request, rawId);
+  const authority = await requireDecide(request, rawId);
+  // What came of the decision decides what happens to the session (M-d): refused before or by the decision, it is given back; made, it is spent;
+  // a failure of ours after the decision began may have partly happened, so it stays spent.
+  let end: DecisionEnd = "refused";
   try {
     const orgRole = await orgRoleOf(deps, authority.orgId, authority.developerId);
     if (orgRole === undefined) throw notFound();
     const decider: AgentCaller = { orgId: authority.orgId, developerId: authority.developerId, orgRole, decideProof: authority.proof };
     const record = ApprovalIdSchema.safeParse(rawId).success ? await getAnyApproval(deps, decider.orgId, rawId) : undefined;
     if (record === undefined) throw notFound();
-    return record.kind === "write" ? await decideWriteApproval(deps, decider, rawId, body) : await decideApproval(deps, decider, rawId, body);
+    end = "failed";
+    const result = record.kind === "write" ? await decideWriteApproval(deps, decider, rawId, body) : await decideApproval(deps, decider, rawId, body);
+    end = "decided";
+    return result;
+  } catch (error) {
+    if (end === "failed") end = endOfFailure(error);
+    throw error;
   } finally {
-    await authority.finish();
+    await settleSession({ finish: () => authority.finish(), release: () => (authority.release ?? authority.finish).call(authority) }, end);
+  }
+}
+
+/**
+ * The link `GET /v1/app/approvals/{id}` shows: for a person who may decide it now, one carrying a decide ticket minted for them (what the CLI's
+ * `approvals show|open` and the MCP tool open); for anyone else, or when the limit on tickets is reached, the bare link, which the page's identify step handles.
+ */
+async function confirmUrlFrom(deps: ApprovalDependencies, caller: AgentCaller, record: AnyApprovalRecord): Promise<string> {
+  const bare = confirmUrlFor(deps, record);
+  if (deps.mintConfirmUrl === undefined || record.status !== "PENDING" || !await mayDecideApproval(deps, caller, record)) return bare;
+  try {
+    return await deps.mintConfirmUrl(caller, record.approvalId);
+  } catch (error) {
+    if (error instanceof AgentXError && error.code === "TOO_MANY_REQUESTS") return bare;
+    throw error;
   }
 }

@@ -119,9 +119,25 @@ export interface WriteGateRuntime {
   recordedResult(input: { orgId: OrgId; workspaceId: string; connector: string; requestId: string }): Promise<ConnectorResult | undefined>;
   /** Whether `caller` can view the task (Task 22 wires the task page's own access check). Without it only an approver or the task's owner sees an approval. */
   canViewTask?(caller: AgentCaller, task: { taskId: string; project: string; developerId: string }): Promise<boolean>;
-  /** Task 21a-wiring: the presence guard (`requireDecideSession`) in front of every decide route. Without it the decide routes answer 404. */
-  requireDecide?(request: AdaptedHttpRequest, approvalId: string): Promise<{ orgId: OrgId; developerId: string; proof: AuditProof; finish(): Promise<void> }>;
+  /** The presence guard in front of every decide route (see `DecideGuard`). The broker sets it on `ApprovalDependencies.requireDecide`, which takes precedence. */
+  requireDecide?: DecideGuard;
 }
+
+/** Who is deciding, and what to do with their session afterwards: `finish` once a decision was made, `release` when it was refused (M-d). */
+export interface DecideAuthority {
+  orgId: OrgId;
+  developerId: string;
+  proof: AuditProof;
+  finish(): Promise<void>;
+  release?(): Promise<void>;
+}
+
+/**
+ * Task 21a-wiring: the presence guard (`requireDecideSession`) in front of every decide route. A token is refused with `REAUTH_REQUIRED` and a
+ * `confirmUrl` (thrown); a browser session opened for this approval, signed in within 10 minutes, with the cell's Origin and its CSRF field,
+ * is returned. Without a guard the decide routes answer 404.
+ */
+export type DecideGuard = (request: AdaptedHttpRequest, approvalId: string) => Promise<DecideAuthority>;
 
 export interface DecideWriteInput {
   orgId: OrgId;

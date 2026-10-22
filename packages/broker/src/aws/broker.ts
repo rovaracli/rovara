@@ -366,8 +366,10 @@ import type { AgentRouteDependencies } from "../agents/routes.js";
 import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
 import { applyAgentStep, priorStepIds, stepForOperation, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
 import { readGuardrails } from "../agents/guardrails.js";
-import { DecideStore, DecideReauthRequired, type DecideRequestContext } from "../developer/decide-session.js";
+import { DecideStore, DecideReauthRequired, mintConfirmUrl, requireDecideSession, type DecideRequestContext } from "../developer/decide-session.js";
 import type { DecideKinds } from "../developer/decide-kinds.js";
+import { answerDecideInspect, isDecideInspectEvent, type DecideInspectEvent } from "../developer/decide-inspect.js";
+import { approvalDecideKind } from "../agents/approval-decide-kind.js";
 import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
 import { agentRunStarterOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
@@ -576,10 +578,12 @@ interface AwsBrokerDependencies {
    */
   agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; agentStepRuns?: boolean } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
-   * Plan 3, Task 21a-presence (R66): the kinds of approval a person can decide on the confirmation page (`apr_` and `spr_`), each saying whether
-   * a member may decide it now, what the page shows, and what deciding does. Absent, the confirmation page answers NOT_FOUND.
+   * Plan 3, Task 21a (R66): present, the decisions are made on the confirmation page (`/v1/app/approve/{id}`), the decide routes send a token
+   * there, and the sign-in function may ask `decide-inspect`. Absent, the page answers NOT_FOUND and nothing can be decided. The `apr_` kind (write,
+   * step and change approvals) is built here from the agent routes' dependencies; `kinds` adds or replaces kinds (Task 32 registers `spr_`; a test
+   * hands in a stand-in).
    */
-  decide?: { kinds: DecideKinds };
+  decide?: { kinds?: DecideKinds };
   /** The install's environment name, which its single org id derives from; defaults to the developer sign-in's, then AGENTX_ENV, then "default". */
   environmentName?: string;
   /** The GitHub MCP connector's own settings, and the issuer of its tokens: told whose work each is for (Plan 2, Task 15). */
@@ -811,8 +815,8 @@ async function decideEgress(dependencies: AwsBrokerDependencies, identity: Authe
   return { orgId, owner, domain, status: decision, ...(warning === undefined ? {} : { warning }) };
 }
 
-/** The confirmation page's dependencies; undefined without the kinds of approval or the developer sign-in they need. */
-function decideRequestContext(dependencies: AwsBrokerDependencies): DecideRequestContext | undefined {
+/** The confirmation page's dependencies; undefined without `decide` or the developer sign-in it needs. */
+function decideRequestContext(dependencies: AwsBrokerDependencies, agents: AgentRouteDependencies | undefined): DecideRequestContext | undefined {
   const { decide, developer } = dependencies;
   if (decide === undefined || developer === undefined) return undefined;
   return {
@@ -820,7 +824,8 @@ function decideRequestContext(dependencies: AwsBrokerDependencies): DecideReques
     now: Date.now,
     // The page is served by the cell, at the origin its access tokens are issued from.
     cellOrigin: new URL(developer.issuer).origin,
-    kinds: decide.kinds,
+    // `apr_`: write, step and change approvals, over the same dependencies as the agent routes; without them nothing is registered, so every approval is not found.
+    kinds: { ...(agents === undefined ? {} : { apr: approvalDecideKind(agents) }), ...decide.kinds },
     authenticateBearer: (authorization) => authenticateBearer({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, orgs: orgStoreOf(dependencies) }, authorization),
   };
 }
@@ -851,7 +856,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
   });
   const signInStore = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, now: Date.now });
   const connections = orgConnectionStoreOf(dependencies);
-  return {
+  const routeDependencies: AgentRouteDependencies = {
     store: new AgentStore({
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
       // A merged duplicate's agents count in the survivor's total of agent budgets (Task 28).
@@ -917,6 +922,26 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
       },
     },
   };
+  // Plan 3, Task 21a-wiring: decisions need a person present. The decide routes call this guard first (a token is sent to the page with a ticketed
+  // confirmUrl), and `GET /v1/app/approvals/{id}` mints the same ticket for the person who may decide it. Both use the page's own context.
+  if (dependencies.decide !== undefined) {
+    const context = () => decideRequestContext(dependencies, routeDependencies);
+    routeDependencies.requireDecide = async (request, approvalId) => {
+      const decide = context();
+      if (decide === undefined) throw agentXError("NOT_FOUND", "that isn't available yet");
+      return requireDecideSession(decide, { method: request.method, path: request.path, headers: request.headers, ...(request.body === undefined ? {} : { body: request.body }) }).then((authority) => {
+        // The path named this approval; the guard was asked about the same one.
+        if (authority.approvalId !== approvalId) throw agentXError("NOT_FOUND", "route not found");
+        return authority;
+      });
+    };
+    routeDependencies.mintConfirmUrl = (caller, approvalId) => {
+      const decide = context();
+      if (decide === undefined) throw agentXError("NOT_FOUND", "that isn't available yet");
+      return mintConfirmUrl(decide, { developerId: caller.developerId, orgId: caller.orgId }, approvalId);
+    };
+  }
+  return routeDependencies;
 }
 
 /**
@@ -1336,7 +1361,18 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   const agents = agentRouteDependencies(dependencies, tasks);
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
-  return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.audit-drain" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
+  return async (event: HttpApiV2Event | DecideInspectEvent | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.audit-drain" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
+    // Plan 3, Task 21a-wiring (hand-off 1): the sign-in function asks whether a member may decide an approval, by a direct invoke (never through
+    // API Gateway). The same live evaluation as the page, answered as one word (and the words for a refusal); a failure here is an error, never "open".
+    if (isDecideInspectEvent(event)) {
+      try {
+        const answer = await answerDecideInspect(decideRequestContext(dependencies, agents)?.kinds ?? {}, event);
+        return json(answer.body, "decide-inspect", answer.statusCode);
+      } catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "decide.inspect_failed", error: error instanceof Error ? error.name : "unknown" }));
+        return json({ error: "inspect_failed" }, "decide-inspect", 500);
+      }
+    }
     // Spec 025 E14: a Slack Confirm or Cancel press, invoked directly by the ingress (never through API Gateway).
     if (isAdminChangePressEvent(event)) {
       if (adminChanges === undefined) return json({ error: { code: "NOT_FOUND", message: "admin changes are not set up in this deployment" } }, "slack-ingress", 404);
@@ -1561,7 +1597,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Plan 2, Task 13: the GitHub install flow's callback and the confirm page's form post. No token here: see github-install-web.ts.
       if (isGithubInstallPath(url.pathname)) return await routeGithubInstall(githubConnectionOf(dependencies), request, url);
       // Plan 3, Task 21a-presence: the confirmation page. A browser's decide cookie, CSRF field and Origin authorize it, never a bearer token.
-      if (isDecidePagePath(url.pathname)) return await routeDecidePage(decideRequestContext(dependencies), request, url);
+      if (isDecidePagePath(url.pathname)) return await routeDecidePage(decideRequestContext(dependencies, agents), request, url);
       if (url.pathname === "/v1/github/webhooks") {
         if (request.method !== "POST") return json({ error: { code: "NOT_FOUND", message: "route not found" } }, request.requestId, 404);
         if (request.body === undefined || dependencies.githubWebhookSecret === undefined) {
@@ -13426,6 +13462,9 @@ export const handler = createAwsBrokerHandler({
   ...(developer ? { developer } : {}),
   // Plan 3: the agent routes (`/v1/app/agents*`), on the real project members; they need the developer sign-in.
   ...(developer ? { agents: {} } : {}),
+  // Plan 3, Task 21a-wiring: the confirmation page and the decide routes exist on a cloud install with the developer sign-in (the grants on the sign-in
+  // table's DECIDE_ keys are cloud only). Hard gate before any deploy: Task 37 confirms Cognito's `amr` first.
+  ...(developer && cloudOrgResolver !== undefined ? { decide: {} } : {}),
   ...(chatgpt ? { chatgpt } : {}),
   ...(modelAccess ? { modelAccess } : {}),
   ...(egressDomainsSync === undefined ? {} : { egressDomainsSync }),

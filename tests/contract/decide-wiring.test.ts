@@ -565,7 +565,7 @@ describe("the sign-in function's kinds ask the broker (hand-off 1)", () => {
   it("invokes the named function, waiting for its answer, and reads the broker's {statusCode, body}", async () => {
     const calls: Array<{ command: { constructor: { name: string }; input: { FunctionName?: string; InvocationType?: string; Payload?: Uint8Array } }; options: unknown }> = [];
     const respond = (payload: unknown, extra: Record<string, unknown> = {}) => ({ send: async (command: never, options?: unknown) => {
-      calls.push({ command: command as never, options });
+      calls.push({ command: command, options });
       return { StatusCode: 200, Payload: new TextEncoder().encode(JSON.stringify(payload)), ...extra };
     } });
     const request: DecideInspectRequest = { kind: "decide-inspect", ...target };
@@ -576,6 +576,8 @@ describe("the sign-in function's kinds ask the broker (hand-off 1)", () => {
     expect(JSON.parse(new TextDecoder().decode(calls[0]!.command.input.Payload))).toEqual(request);
     expect(calls[0]!.options).toMatchObject({ abortSignal: expect.anything() as unknown });
     // A function error, a non-200 answer, a non-JSON body, an empty payload and a failed call all throw.
+    // The broker's envelope puts its requestId beside the answer; the answer is the rest.
+    expect(await lambdaInspectInvoker(respond({ statusCode: 200, body: JSON.stringify({ status: "not_found", requestId: "decide-inspect" }) }), "f")(request)).toEqual({ status: "not_found" });
     await expect(lambdaInspectInvoker(respond({ errorMessage: "boom" }, { FunctionError: "Unhandled" }), "f")(request)).rejects.toThrow();
     await expect(lambdaInspectInvoker(respond({ statusCode: 400, body: "{}" }), "f")(request)).rejects.toThrow();
     await expect(lambdaInspectInvoker(respond({ statusCode: 200, body: "not json" }), "f")(request)).rejects.toThrow();
@@ -624,7 +626,7 @@ async function brokerWorld(options: { decide?: boolean } = {}) {
     const response = await h.handler({
       version: "2.0", rawPath: path.split("?")[0], rawQueryString: path.split("?")[1] ?? "", headers,
       ...(body === undefined ? {} : { body }), requestContext: { requestId: randomUUID(), http: { method } },
-    });
+    }) as { statusCode: number; headers: Record<string, string>; body: string };
     return response;
   };
   const session = async (who: Developer, approvalId: string) => {
@@ -725,8 +727,10 @@ describe("through the broker: a token is sent to the page, and the page decides"
 
 describe("the broker's decide-inspect event (what the sign-in function asks)", () => {
   const inspect = async (b: Awaited<ReturnType<typeof brokerWorld>>, event: Record<string, unknown>) => {
-    const response = await b.handler(event as never);
-    return { status: response.statusCode, body: JSON.parse(response.body) as Record<string, unknown> };
+    const response = await b.handler(event);
+    // The broker's envelope adds `requestId` to every JSON answer; the invoker on the sign-in side drops it (tested above).
+    const { requestId: _requestId, ...body } = JSON.parse(response.body) as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- the envelope's
+    return { status: response.statusCode, body };
   };
 
   it("answers open, forbidden, decided and not_found from the same live evaluation as the page, and never returns the approval", async () => {
@@ -766,7 +770,7 @@ describe("the broker's decide-inspect event (what the sign-in function asks)", (
       version: "2.0", rawPath: "/v1/app/approvals", rawQueryString: "", headers: {}, routeKey: "ANY /v1/app/{proxy+}",
       kind: "decide-inspect", orgId: TEST_ORG, developerId: B_DANA.developerId, approvalId: id,
       requestContext: { requestId: "r", http: { method: "GET" } },
-    } as never);
+    });
     expect(JSON.parse(viaHttp.body)).not.toHaveProperty("status", "open");
     expect(viaHttp.statusCode).toBeGreaterThanOrEqual(400);
     const viaBody = await b.raw("POST", "/v1/app/approvals", {}, JSON.stringify({ kind: "decide-inspect", orgId: TEST_ORG, developerId: B_DANA.developerId, approvalId: id }));

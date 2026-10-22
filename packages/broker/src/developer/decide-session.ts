@@ -215,9 +215,21 @@ export class DecideStore {
     }
   }
 
-  /** Gives back a claim whose decision was refused (nothing was decided), so the person can try again within the session's ten minutes. */
-  async releaseSession(_cookie: string): Promise<void> {
-    // not implemented
+  /**
+   * Gives back a claim whose decision was refused (nothing was decided), so the person can try again within the session's ten minutes (M-d). Only
+   * a claimed, unexpired session is touched; any other state is left as it is. The claim stays a claim until this runs, so two requests at once
+   * still cannot both decide.
+   */
+  async releaseSession(cookie: string): Promise<void> {
+    try {
+      await this.input.documentClient.send(new UpdateCommand({
+        TableName: this.input.tableName, Key: decideSessionKey(cookie), UpdateExpression: "REMOVE usedAt",
+        ConditionExpression: "attribute_exists(pk) AND attribute_exists(usedAt) AND expiresAt > :now",
+        ExpressionAttributeValues: { ":now": this.seconds() },
+      }));
+    } catch (error) {
+      if (!conditionFailed(error)) throw error;
+    }
   }
 
   async deleteSession(cookie: string): Promise<void> {
@@ -254,6 +266,26 @@ export interface DecideAuthority {
   finish(): Promise<void>;
   /** Gives the session back after a decision that was refused (M-d): nothing was decided, so it may be used again. */
   release(): Promise<void>;
+}
+
+/** How a decision that was tried ended, for the session: made (applied, declined, or approved and then failed to apply), refused, or failed on our side. */
+export type DecisionEnd = "decided" | "refused" | "failed";
+
+/** What a thrown error means for the session: one of our own answers below 500 is a refusal; anything else may have partly happened. */
+export const endOfFailure = (error: unknown): DecisionEnd => (error instanceof AgentXError && error.statusCode < 500 ? "refused" : "failed");
+
+/**
+ * Settles the session after a decision was tried (M-d). A decision that was made ends it (`finish`), whatever it came to. A decision that was
+ * refused (`FORBIDDEN`, `APPROVAL_CLOSED`, `CONFIG_INVALID`, or any other answer below 500) decided nothing, so the session is given back and
+ * the person can try again within its ten minutes. A failure on our side may have partly happened, so the session is spent (fail closed): the
+ * person signs in again. Never throws: the decision's own answer matters more.
+ */
+export async function settleSession(authority: Pick<DecideAuthority, "finish" | "release">, end: DecisionEnd, onError?: (error: unknown) => void): Promise<void> {
+  try {
+    await (end === "refused" ? authority.release() : authority.finish());
+  } catch (error) {
+    onError?.(error);
+  }
 }
 
 /** The proof of a decide session: `authTime` is when the person signed in (not when they decided), `sessionRef` the SHA-256 of the session's key. */
@@ -310,6 +342,20 @@ function csrfMatches(field: string | undefined, csrfHash: string): boolean {
 }
 
 /**
+ * The confirmation link for a token's member (R7-1): a decide ticket minted for them and this approval, after `mayDecide` says they may decide
+ * it now (else 404, 403 or `APPROVAL_CLOSED`, and no ticket). Used by the decide routes and by `GET /v1/app/approvals/{id}` (what the CLI's
+ * `approvals show|open` and the MCP tool return). A rate limit is a 429.
+ */
+export async function mintConfirmUrl(context: Pick<DecideRequestContext, "store" | "kinds" | "cellOrigin">, member: { developerId: string; orgId: OrgId }, approvalId: string): Promise<string> {
+  const inspection = await mayDecide(context.kinds, { orgId: member.orgId, developerId: member.developerId, approvalId });
+  if (inspection.status === "not_found") throw agentXError("NOT_FOUND", "approval not found");
+  if (inspection.status === "forbidden") throw agentXError("FORBIDDEN", `Only ${inspection.who} can decide this.`);
+  if (inspection.status === "decided") throw agentXError("APPROVAL_CLOSED", decidedWords(inspection));
+  const ticket = await context.store.mintTicket({ orgId: member.orgId, developerId: member.developerId, approvalId, mintedBy: "token" });
+  return confirmUrlWithTicket(context.cellOrigin, approvalId, ticket);
+}
+
+/**
  * Who is deciding, and may they now (R66, R67). Used by every decide route and by the confirmation page.
  * - A bearer token is refused with REAUTH_REQUIRED and a `confirmUrl` carrying a ticket minted for that token's member, after `mayDecide`
  *   says they may decide it now (else 403 or 404 and no ticket).
@@ -324,12 +370,7 @@ export async function requireDecideSession(context: DecideRequestContext, reques
   if (authorization !== undefined && authorization !== "") {
     if (context.authenticateBearer === undefined) throw agentXError("AUTH_REQUIRED", "a valid sign-in is required");
     const member = await context.authenticateBearer(authorization);
-    const inspection = await mayDecide(context.kinds, { orgId: member.orgId, developerId: member.developerId, approvalId });
-    if (inspection.status === "not_found") throw agentXError("NOT_FOUND", "approval not found");
-    if (inspection.status === "forbidden") throw agentXError("FORBIDDEN", `Only ${inspection.who} can decide this.`);
-    if (inspection.status === "decided") throw agentXError("APPROVAL_CLOSED", decidedWords(inspection));
-    const ticket = await context.store.mintTicket({ orgId: member.orgId, developerId: member.developerId, approvalId, mintedBy: "token" });
-    const confirmUrl = confirmUrlWithTicket(context.cellOrigin, approvalId, ticket);
+    const confirmUrl = await mintConfirmUrl(context, member, approvalId);
     throw new DecideReauthRequired(`Decisions are made in your browser. Open ${confirmUrl}.`, { confirmUrl });
   }
   const reauth = () => new DecideReauthRequired("Confirm this in your browser: sign in again to continue.", { signInUrl: signInUrlFor(approvalId) });

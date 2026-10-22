@@ -104,6 +104,19 @@ export function createDecideSignIn(ctx: DecideSignInContext) {
   const unavailable = () => ctx.page(503, "Confirmation is unavailable", ["Try opening the approval again in a moment."]);
   const refuse = (statusCode: number, title: string, paragraphs: string[], cookies: string[] = []): HttpResult => ({ ...ctx.page(statusCode, title, paragraphs), ...(cookies.length === 0 ? {} : { cookies }) });
 
+  /**
+   * Whether `developerId` may decide `approvalId` now, asked of the kinds (the broker, over an invoke). A question that can't be answered is not a
+   * yes (hand-off 1): undefined, and the caller answers a 503 page and does nothing else (no ticket, no Cognito call).
+   */
+  async function inspectNow(target: Parameters<typeof mayDecide>[1]): Promise<DecideInspection | undefined> {
+    try {
+      return await mayDecide(deps.kinds, target);
+    } catch (error) {
+      ctx.log({ event: "signin.decide_inspect_failed", approvalId: target.approvalId, error: codeOf(error) ?? (error instanceof Error ? error.name : "unknown") });
+      return undefined;
+    }
+  }
+
   /** What a person hears when the approval cannot be decided by them now. */
   function inspectionPage(inspection: Exclude<DecideInspection, { status: "open" }>, cookies: string[] = []): HttpResult {
     if (inspection.status === "forbidden") return refuse(403, "You can't decide this", [`Only ${inspection.who} can decide this.`], cookies);
@@ -175,7 +188,8 @@ export function createDecideSignIn(ctx: DecideSignInContext) {
       if (developerId === undefined || record?.revoked === true || membership === undefined) {
         return refuse(403, "You can't decide this", ["Only the people this was asked of can decide it."], cleared);
       }
-      const inspection = await mayDecide(deps.kinds, { orgId: membership.orgId, developerId, approvalId });
+      const inspection = await inspectNow({ orgId: membership.orgId, developerId, approvalId });
+      if (inspection === undefined) return { ...unavailable(), cookies: cleared };
       if (inspection.status !== "open") return inspectionPage(inspection, cleared);
       const ticket = await deps.store.mintTicket({ orgId: membership.orgId, developerId, approvalId, mintedBy: "identified_session" });
       ctx.log({ event: "signin.decide_ticket_minted", mintedBy: "identified_session", developerId, approvalId });
@@ -261,7 +275,8 @@ export function createDecideSignIn(ctx: DecideSignInContext) {
     if (!APPROVE_RETURN_PATTERN.test(returnPath)) return expiredPage();
     const record = await ctx.signIn.getDeveloper(ticket.developerId);
     if (record?.revoked === true) return refuse(403, "You can't decide this", ["Contact a Rovara administrator."]);
-    const inspection = await mayDecide(deps.kinds, { orgId: ticket.orgId, developerId: ticket.developerId, approvalId: ticket.approvalId });
+    const inspection = await inspectNow({ orgId: ticket.orgId, developerId: ticket.developerId, approvalId: ticket.approvalId });
+    if (inspection === undefined) return unavailable();
     if (inspection.status !== "open") return inspectionPage(inspection);
     const { emails } = await ctx.signIn.decideEmailsOf(ticket.developerId);
     const email = emails[0];

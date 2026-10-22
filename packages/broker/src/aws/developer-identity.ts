@@ -12,6 +12,7 @@ import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { createRemoteJWKSet, type JWTVerifyGetKey } from "jose";
 import { singleOrgIdForEnv, type OrgId, type ChannelByNameRequest, type ChannelInfoRequest, type ChannelMembersRequest, type DeveloperSignInMethod, type EndDeveloperSessionsRequest, type SlackAuthCheckRequest, type SlackUserByEmailRequest, type TaskChannelPeopleRequest, type TaskPersonProofRequest, type StartIdentityLinkRequest, type UnlinkIdentityRequest } from "@agentx/contracts";
 import { DecideStore } from "../developer/decide-session.js";
+import { brokerDecideKinds, lambdaInspectInvoker } from "../developer/decide-inspect.js";
 import { auditRuntimeFromEnvironment } from "../audit/runtime.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import { ProviderNotConfiguredError, githubSignInProvider, oidcSignInProvider, slackSignInProvider, type SignInProvider } from "../developer/providers.js";
@@ -261,12 +262,14 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     from: noticeFrom === "" ? undefined : noticeFrom,
     cellUrl: env.ROVARA_WEB_ORIGIN || new URL(config.issuer).origin,
   };
-  // Plan 3, Task 21a-presence: the decide flow (`/v1/auth/decide/*`) exists on a cloud install that names its pool. Its kinds of approval
-  // (who may decide `apr_` and `spr_` now) are registered by 21a-wiring; until then every approval is "not found", so nothing can be decided.
+  // Plan 3, Task 21a: the decide flow (`/v1/auth/decide/*`) exists on a cloud install that names its pool. Who may decide `apr_` and `spr_` now is the
+  // BROKER's question (hand-off 1): the kinds here invoke it (`decide-inspect`) and fail closed on any error. With no broker function named, every
+  // approval is "not found", so nothing can be decided.
+  const brokerFunction = env.DECIDE_INSPECT_FUNCTION_NAME ?? "";
   const userPoolId = env.DEVELOPER_CLOUD_USER_POOL_ID ?? "";
   const decide = config.cloud === undefined || config.cloudSettings === undefined || userPoolId === "" ? undefined : {
     store: new DecideStore({ documentClient, tableName: required(env, "DEVELOPER_SIGNIN_TABLE_NAME"), now }),
-    kinds: {},
+    kinds: brokerFunction === "" ? {} : brokerDecideKinds({ invoke: lambdaInspectInvoker(new LambdaClient(region), brokerFunction) }),
     cloudIssuer: config.cloudSettings.issuer.replace(/\/+$/, ""),
     cognito: { client: new CognitoIdentityProviderClient(region), userPoolId },
   };

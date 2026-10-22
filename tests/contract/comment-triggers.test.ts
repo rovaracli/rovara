@@ -2,7 +2,7 @@
 // workflows asks for an opt-out; an org admin confirms it on the confirmation page; it is bound to the digest of the files they reviewed and lapses by
 // itself when a scan finds another. These tests run the routes through the broker, the confirmation through the handler the page calls, and the run's
 // side (`commentTriggerRule`, which Task 20b's `classifyWrite` calls) directly, all on one fake table and an in-memory repository.
-import { createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -31,7 +31,10 @@ import {
 } from "../../packages/broker/src/agents/comment-trigger-optouts.js";
 import { repoCommandTriggers } from "../../packages/broker/src/agents/comment-trigger-scan.js";
 import { memoryRunCache } from "../../packages/broker/src/agents/run-cache.js";
+import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
+import { routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";
+import { DECIDE_COOKIE, DecideStore, csrfTokenFor, type DecideRequestContext } from "../../packages/broker/src/developer/decide-session.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
@@ -878,5 +881,86 @@ describe("requestOptOut at the function boundary", () => {
     await expect(requestOptOut(withoutReader, caller, base)).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(w.approvals()).toEqual([]);
     expect((await requestOptOut(w.deps, caller, base)).confirmUrl).toMatch(/\/v1\/app\/approve\/apr_/u);
+  });
+});
+
+
+describe("deciding an opt-out on the confirmation page (Task 21a-wiring, review M8)", () => {
+  const CELL = "https://cell.example.com";
+  /** The page for `who`, with a session that signed in 30 seconds ago, through the real `apr` kind. */
+  function pageFor(w: Awaited<ReturnType<typeof world>>) {
+    const store = new DecideStore({ documentClient: w.db, tableName: "signin", now: Date.now });
+    const context: DecideRequestContext = { store, now: Date.now, cellOrigin: CELL, kinds: { apr: approvalDecideKind(w.deps) } };
+    return async (who: Developer, approvalId: string, decision?: "approve" | "decline") => {
+      const cookie = `cookie-${who.name}-${randomUUID()}`.padEnd(40, "x");
+      const signedInAt = Math.floor(Date.now() / 1000) - 30;
+      await store.putSession(cookie, {
+        orgId: TEST_ORG, developerId: who.developerId, approvalId, signedInAt, method: "email_code",
+        csrfHash: createHash("sha256").update(csrfTokenFor(cookie)).digest("hex"), expiresAt: signedInAt + 600,
+      });
+      const url = new URL(`${CELL}/v1/app/approve/${approvalId}`);
+      return routeDecidePage(context, decision === undefined
+        ? { method: "GET", path: url.pathname, requestId: "r", headers: { cookie: `${DECIDE_COOKIE}=${cookie}` } }
+        : {
+          method: "POST", path: url.pathname, requestId: "r", body: new URLSearchParams({ csrf: csrfTokenFor(cookie), decision }).toString(),
+          headers: { origin: CELL, "content-type": "application/x-www-form-urlencoded", cookie: `${DECIDE_COOKIE}=${cookie}` },
+        }, url);
+    };
+  }
+
+  it("shows the reviewed files and digest to an org admin, applies exactly the stored opt-out when they approve, and records them as the reviewer", async () => {
+    const w = await world();
+    const current = (await w.digest())[0]!;
+    expect((await w.ask(DANA)).status).toBe(202);
+    const record = w.approvals()[0]!;
+    const page = pageFor(w);
+    const shown = await page(DANA, record.approvalId);
+    expect(shown.statusCode).toBe(200);
+    for (const expected of [REPOSITORY, "payments", current.digest, ...current.files, "Only our own triage bot reacts", "Approve", "Decline"]) expect(shown.body, expected).toContain(expected);
+    // Nothing is applied by looking.
+    expect(await readOptOut(w.deps, TEST_ORG, REPOSITORY, "payments")).toBeUndefined();
+    const done = await page(DANA, record.approvalId, "approve");
+    expect(done.statusCode, done.body).toBe(200);
+    expect(await readOptOut(w.deps, TEST_ORG, REPOSITORY, "payments")).toMatchObject({ digest: current.digest, files: current.files, reviewedBy: DANA.developerId, approvalId: record.approvalId });
+    expect(w.approvals()[0]).toMatchObject({ status: "APPROVED_DONE", decidedBy: DANA.developerId });
+    expect(w.audit.recordedBy("comment_trigger_opt_out.applied")).toHaveLength(1);
+    expect((await consequential(w, "Looks right to me.")).repositoryRule).toBe(false);
+  });
+
+  it("gives a maintainer who is not an org admin, and a member, 403 on the page and applies nothing", async () => {
+    const w = await world();
+    expect((await w.ask(DANA)).status).toBe(202);
+    const record = w.approvals()[0]!;
+    const page = pageFor(w);
+    for (const who of [MAX, EVE]) {
+      const shown = await page(who, record.approvalId);
+      expect(shown.statusCode, who.name).toBe(403);
+      expect(shown.body).toContain("Only an organization owner or admin can decide this.");
+      expect((await page(who, record.approvalId, "approve")).statusCode, who.name).toBe(403);
+    }
+    expect(await readOptOut(w.deps, TEST_ORG, REPOSITORY, "payments")).toBeUndefined();
+    expect(w.approvals()[0]).toMatchObject({ status: "PENDING" });
+  });
+
+  it("ends APPROVED_FAILED with the stale words when the workflows changed after the request, and stores nothing", async () => {
+    const w = await world();
+    expect((await w.ask(DANA)).status).toBe(202);
+    const record = w.approvals()[0]!;
+    w.setFiles({ ...baseFiles(), [SCRIPT]: "echo something else" });
+    const done = await pageFor(w)(DANA, record.approvalId, "approve");
+    expect(done.body).toContain("did not go through");
+    expect(done.body).toContain(COMMENT_TRIGGER_STALE_TEXT.replace(/'/g, "&#39;"));
+    expect(w.approvals()[0]).toMatchObject({ status: "APPROVED_FAILED" });
+    expect(await readOptOut(w.deps, TEST_ORG, REPOSITORY, "payments")).toBeUndefined();
+  });
+
+  it("applies nothing when an org admin declines", async () => {
+    const w = await world();
+    expect((await w.ask(DANA)).status).toBe(202);
+    const record = w.approvals()[0]!;
+    expect((await pageFor(w)(OWEN, record.approvalId, "decline")).statusCode).toBe(200);
+    expect(w.approvals()[0]).toMatchObject({ status: "DECLINED", decidedBy: OWEN.developerId });
+    expect(await readOptOut(w.deps, TEST_ORG, REPOSITORY, "payments")).toBeUndefined();
+    expect(w.audit.recorded()).toEqual([expect.objectContaining({ action: "approval.decided" })]);
   });
 });

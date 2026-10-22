@@ -786,13 +786,13 @@ describe("the sign-in function asks the broker whether a member may decide (Plan
   function pointsAt(value: unknown, known: Set<string>, found = new Set<string>()): Set<string> {
     if (Array.isArray(value)) { for (const item of value) pointsAt(item, known, found); return found; }
     if (typeof value !== "object" || value === null) return found;
-    for (const [key, inner] of Object.entries(value)) {
+    for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
       if (key === "Ref" && typeof inner === "string" && known.has(inner)) found.add(inner);
-      else if (key === "Fn::GetAtt") { const target = Array.isArray(inner) ? inner[0] : String(inner).split(".")[0]; if (typeof target === "string" && known.has(target)) found.add(target); }
+      else if (key === "Fn::GetAtt") { const target: unknown = Array.isArray(inner) ? (inner as unknown[])[0] : String(inner).split(".")[0]; if (typeof target === "string" && known.has(target)) found.add(target); }
       else if (key === "Fn::Sub") {
-        const text = Array.isArray(inner) ? inner[0] : inner;
+        const text: unknown = Array.isArray(inner) ? (inner as unknown[])[0] : inner;
         if (typeof text === "string") for (const match of text.matchAll(/\$\{([A-Za-z0-9]+)(?:\.[A-Za-z0-9]+)?\}/g)) if (known.has(match[1]!)) found.add(match[1]!);
-        if (Array.isArray(inner)) pointsAt(inner[1], known, found);
+        if (Array.isArray(inner)) pointsAt((inner as unknown[])[1], known, found);
       } else pointsAt(inner, known, found);
     }
     return found;

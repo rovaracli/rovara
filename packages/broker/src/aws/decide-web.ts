@@ -6,8 +6,8 @@ import { AgentXError, agentXError } from "@agentx/contracts";
 import { confirmPage, decidedPage, forbiddenPage, notFoundPage, reauthPage, refusedPage, resultPage, type PageResponse } from "../developer/confirm-page.js";
 import { kindPrefixOf, mayDecide, type DecideKind } from "../developer/decide-kinds.js";
 import {
-  APPROVAL_ID_PATTERN, DECIDE_COOKIE, DecideReauthRequired, TICKET_PATTERN, cookieOf, csrfTokenFor, decidedWords, requireDecideSession,
-  type DecideRequestContext,
+  APPROVAL_ID_PATTERN, DECIDE_COOKIE, DecideReauthRequired, TICKET_PATTERN, cookieOf, csrfTokenFor, decidedWords, endOfFailure, requireDecideSession, settleSession,
+  type DecideRequestContext, type DecisionEnd,
 } from "../developer/decide-session.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 
@@ -65,7 +65,10 @@ async function decide(context: DecideRequestContext, request: DecideRequest, app
     if (error instanceof AgentXError && error.code === "FORBIDDEN") return refusedPage(403, "Nothing was decided", wordsOf(error));
     throw error;
   }
-  // The session is spent from here: a decision, or the reason there was none, ends it.
+  // The session is claimed from here (one decision at a time). What happens to it next depends on what came of the decision (M-d): a decision
+  // that was made spends it; one that was refused decided nothing, so it is given back and the person can try again within its ten minutes;
+  // a failure on our side after the decision began may have partly happened, so it stays spent.
+  let end: DecisionEnd = "refused";
   try {
     if (decision !== "approve" && decision !== "decline") return refusedPage(400, "Nothing was decided", "Choose Approve or Decline. Open the approval again.");
     const target = { orgId: authority.orgId, developerId: authority.developerId, approvalId };
@@ -76,15 +79,17 @@ async function decide(context: DecideRequestContext, request: DecideRequest, app
     if (kind === undefined || inspection.status === "not_found") return notFoundPage();
     if (inspection.status === "forbidden") return forbiddenPage(`Only ${inspection.who} can decide this.`);
     if (inspection.status === "decided") return decidedPage(decidedWords(inspection));
+    end = "failed";
     try {
       const outcome = await kind.decide(target, decision, authority.proof);
-      return resultPage(decision === "approve" ? "Approved" : "Declined", outcome.message);
+      end = "decided";
+      return resultPage(outcome.title ?? (decision === "approve" ? "Approved" : "Declined"), outcome.message);
     } catch (error) {
-      if (error instanceof AgentXError) return refusedPage(error.statusCode >= 500 ? 503 : 409, "Nothing was changed", wordsOf(error));
+      end = endOfFailure(error);
+      if (error instanceof AgentXError) return refusedPage(error.statusCode >= 500 ? 503 : error.statusCode === 403 || error.statusCode === 404 ? error.statusCode : 409, "Nothing was changed", wordsOf(error));
       throw error;
     }
   } finally {
-    await authority.finish();
+    await settleSession(authority, end);
   }
 }
-
