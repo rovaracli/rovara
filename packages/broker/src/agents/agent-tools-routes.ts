@@ -497,8 +497,9 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
   const toolRequest = { requestId: request.requestId, scope: request.scope, tool: request.tool, schemaHash: request.schemaHash, arguments: prepared.args };
   const executing = connector.type === "github" ? agentGitHubConnector(connector, deps, { orgId, tool: request.tool }) : connector;
   /** The call through the connector call path, with the connector's ledger: a repeated request id replays what the ledger holds, and nothing is sent twice. */
-  const callThrough = () => callConnector({
+  const callThrough = (options: { durable?: boolean } = {}) => callConnector({
     connector: executing, workspace: run.workspace, context: frame.context, catalogs: deps.catalogs, ledger, request: toolRequest,
+    ...(options.durable === true ? { durable: true } : {}),
     ...(connector.attribution ? { attribution: attributionOf(task, frame.agentName) } : {}),
   });
 
@@ -511,10 +512,13 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
     const recorded = await ledger.get(request.requestId);
     if (recorded === undefined) return undefined;
     const held = (recorded as Invocation & { approvalId?: unknown }).approvalId;
-    // An ordinary record: the engine replays it (its claim fails) after the same checks, and sends nothing.
-    if (typeof held !== "string") return { result: await callThrough() };
-    if (recorded.ownerKey !== frame.context.ownerKey || recorded.workspaceId !== run.workspace.id) throw agentXError("NOT_FOUND", "MCP invocation not found");
+    // The checks the engine makes on a recorded request id: the same owner and workspace, nobody on whose behalf it was asked (an agent has no requester), and
+    // the same call. A different tool or different arguments under the id is a conflict, and nothing is sent.
+    if (recorded.ownerKey !== frame.context.ownerKey || recorded.workspaceId !== run.workspace.id || recorded.requestedBy !== undefined) throw agentXError("NOT_FOUND", "MCP invocation not found");
     if (recorded.fingerprint !== requestFingerprint(toolRequest)) throw agentXError("IDEMPOTENCY_CONFLICT", "MCP request ID already used with different inputs");
+    // An ordinary record is answered from the record itself, never by calling the connector: the engine reads the ledger only for a durable call, so a call of a
+    // tool approved for reading would be sent again, with no gate and no approval.
+    if (typeof held !== "string") return { result: { ...recorded.result, replayed: true } };
     // A call held for a person: the approval answers (waiting, its result once it ran, or decided).
     const answer = await deps.heldCall?.(orgId, held);
     if (answer === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the approval this call waits on can't be read");
@@ -561,8 +565,10 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
     };
   }
 
-  // Run: through the connector call path.
-  const result = await callThrough();
+  // Run: through the connector call path. Whatever is not a plain read is claimed in the ledger when it runs, whatever access the project gave the tool, so a
+  // call that could be held for a person (and a hold that races this run) finds the request id taken.
+  const klass = classification === undefined ? undefined : (await classification).class;
+  const result = await callThrough(klass === "read" ? {} : { durable: true });
   // What a create made is the run's own to change afterwards. The create already happened, so a record that fails never fails the call.
   if (result.status === "SUCCEEDED" && !result.replayed) {
     await recordOwnItems({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, { orgId, taskId: task.taskId, tool: classifyTool, args: classifyArgs, resultText: result.text });
