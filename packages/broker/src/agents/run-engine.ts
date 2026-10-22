@@ -355,6 +355,8 @@ async function reportToSlack(deps: AgentRunEngineDependencies, loaded: Loaded): 
   const channel = channels[0];
   if (channel === undefined) {
     // No channel is bound: nothing is posted, and the owner is told why on the task's page (always so on Rovara Cloud until Slack is set up there).
+    // The engine, not the notifier, appends this event: the binding is known here, and the page then does not depend on the notifier being deployed. The key
+    // (`EVENT#<endedAt>#report`) is the same on every try, so a repeat overwrites the one event (a ruling of the Task 22 review, recorded as a deviation).
     await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { pk: `DEVTASK#${task.taskId}`, sk: `EVENT#${at}#report`, entityType: "TASK_EVENT", orgId, kind: "status", at,
       text: `No Slack channel is set up for ${task.project}, so the report is only on this page.` } }));
     return;
@@ -590,7 +592,11 @@ function chosenBranch(recipe: ResolvedRecipe, run: AgentRunState, stepId: string
   return branch !== undefined && stepId === lastAgentStepId(recipe) && run.resultContract?.branches.some((entry) => entry.id === branch) === true ? branch : undefined;
 }
 
-/** The step goes on to its continuation, or is done and the run moves to its next step. */
+/**
+ * The step goes on to its continuation, or is done and the run moves to its next step. What the model hears of the approvals is ONE continuation of the SAME step
+ * (its earlier report and an `Outcomes of the actions that needed approval:` block), the reading of the task's Interfaces text that the Task 22 review accepted
+ * for the brief's "the next step's inputs".
+ */
 async function afterApprovals(deps: AgentRunEngineDependencies, loaded: Loaded, recipe: ResolvedRecipe, step: ResolvedStep, approvals: WriteApprovalRecord[], branch?: string): Promise<Moved> {
   const { run } = loaded;
   const state = run.steps.find((entry) => entry.id === step.id)!;

@@ -3,6 +3,10 @@
 // model keys and tells every handler registered with `registerTaskEndHandler`, which is how Plan 4's chains and Plan 5's participants hear that work they
 // started is over. A budget pause is not an end: it calls the handlers of `registerTaskPauseHandler` instead (`onTaskPaused`).
 //
+// Which end is told: the FIRST one a task has. An agent-step run and a workflow task end once, when the run or the workflow does. A plain task (no workflow, no
+// run) ends when its first operation ends, so one that is continued afterwards tells its handlers `succeeded` once and never again (Plan 5 should read "a plain
+// task's end" as "its first operation's end").
+//
 // The end is recorded on the task (`TASK_END`) first, so a second call finds it and tells nobody again; the number of handlers already told is kept
 // with it, so a call that was cut short is taken up again from the first handler not told. Handlers must still be safe to hear twice: a process can stop
 // between a handler returning and the record being written.
