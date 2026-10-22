@@ -4,6 +4,13 @@
   "private": true,
   "description": "Offline verifier for Rovara audit ledger exports. Node built-ins only.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PrepLabsAI/rovara-audit-verifier.git"
+  },
+  "engines": {
+    "node": ">=22.19.0 <23"
+  },
   "type": "module",
   "exports": {
     ".": {
@@ -14,5 +21,11 @@
   "types": "./dist/index.d.ts",
   "bin": {
     "rovara-audit-verify": "./dist/cli.js"
-  }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ]
 }
