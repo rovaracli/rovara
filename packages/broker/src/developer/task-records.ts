@@ -27,6 +27,7 @@ import {
   type DeveloperTaskShare,
   type DeveloperTaskStatus,
   type Operation,
+  type PauseScope,
   type WorkflowSnapshot,
   type WorkflowReviewBase,
   type DeveloperSignInMethod,
@@ -130,11 +131,13 @@ export interface DeveloperTaskRecord {
   /** Plan 3, Task 15: the agent's cap on one run as it was when the run started; absent when the agent set none. */
   maxPerRunUsd?: number;
   /**
-   * Plan 3, Task 15: set on a run started with a run limit of 0. Nothing was dispatched or charged: the workspace and its prepare operation
-   * exist (`firstDispatch.operationId`) but the prepare has no outbox item, no workspace slot is taken and no setup watch runs. Task 32's
-   * approval of the run limit takes the slot, writes the outbox and the watch, and removes this field.
+   * Plan 3, Tasks 15 and 31: what the run is waiting on for money. `scope` is the limit that was reached (`PauseScope`) and `at` when it was written.
+   * A run started with a run limit of 0 has `firstDispatch.operationId` too: nothing was dispatched or charged, the workspace and its prepare
+   * operation exist but the prepare has no outbox item, no workspace slot is taken and no setup watch runs. A run that was refused a model key
+   * mid-run (`mintOperationKey`) has no `firstDispatch`, and keeps the first pause it was given. Task 32's approval of the raise clears this field
+   * (and, for `firstDispatch`, takes the slot and writes the outbox and the watch).
    */
-  budgetPause?: { scope: { kind: "task"; taskId: string }; firstDispatch: { operationId: string } };
+  budgetPause?: { scope: PauseScope; at: string; firstDispatch?: { operationId: string } };
 }
 
 /** C1: a shared task's thread, as the task record keeps it. */

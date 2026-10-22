@@ -1,14 +1,14 @@
 // Monthly AI budgets (ruling R29 for the numbers). An org has one monthly limit and each member one, with
 // per-member overrides; the model proxy enforces them, and this module keeps the proxy told what they are
 // (syncBudgets), asks it what has been spent (ModelAccess, ruling R28; the broker never talks to LiteLLM itself),
-// and refuses work at its start when little is left (admitSpend). Caps are soft by at least one request (ruling
+// and refuses work at its start when little is left (`admitWork`, in spend/admission.ts, which also caps each key). Caps are soft by at least one request (ruling
 // R23), so a remainder is always clamped at 0 and nothing here promises an exact cap. LiteLLM's spend is the
 // authoritative figure (ruling R22).
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
-  DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, TASK_BUDGET_EXCEEDED_PREFIX,
+  DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD,
   AgentXError, agentXError, budgetSyncedKey, orgSettingsKey, type AuditActor, type AuditEventInput, type BudgetScope, type OrgId, type OrgKey,
 } from "@agentx/contracts";
 import { auditBudgetChanged, auditOccurrence } from "../audit/events.js";
@@ -17,7 +17,7 @@ import { auditTransact, tryAuditEvents, type AuditRuntime } from "../audit/outbo
 import type { MintKeyInput, MintedKey, ModelAccess, SpendFigures } from "../model-proxy/access.js";
 import type { OrgStore } from "./store.js";
 import { readTopUp, withTopUp } from "../spend/top-ups.js";
-import { admitMachineTime, admitTrial, monthOf } from "./trial.js";
+import { monthOf } from "./trial.js";
 
 export interface OrgBudgetSettings {
   /** Absent: the org has no monthly limit (a private or single-org install until an operator sets one, ruling R47). */
@@ -45,9 +45,9 @@ export interface AdmissionDependencies extends BudgetDependencies {
   cloud: boolean;
 }
 
-/** What a kind of work needs left, in US dollars, to be started: a quick task, a full workflow, or a chat turn. */
-export type SpendPath = "QUICK" | "FULL" | "CHAT";
-export const MINIMUM_REMAINING_USD: Record<SpendPath, number> = { QUICK: 0.5, FULL: 2, CHAT: 0.05 };
+/** What a kind of work needs left, in US dollars, to be started: a quick task, a full workflow, a chat turn, a task an agent runs, or an agent-step run. */
+export type SpendPath = "QUICK" | "FULL" | "CHAT" | "TASK" | "AGENT";
+export const MINIMUM_REMAINING_USD: Record<SpendPath, number> = { QUICK: 0.5, FULL: 2, CHAT: 0.05, TASK: 0.5, AGENT: 0.1 };
 
 /** The largest limit a setting may carry; the model proxy's protocol refuses more. */
 export const MAX_BUDGET_USD = 1_000_000;
@@ -170,7 +170,7 @@ export async function writeBudgets(
 }
 
 /** A call to the proxy for a budget decision: whatever goes wrong with it, the answer is MODEL_PROXY_UNAVAILABLE, with none of its detail. */
-async function viaProxy<T>(call: () => Promise<T>): Promise<T> {
+export async function viaProxy<T>(call: () => Promise<T>): Promise<T> {
   try {
     return await call();
   } catch (error) {
@@ -289,11 +289,11 @@ export async function ensureSynced(deps: BudgetDependencies, orgId: OrgId, devel
   return settings;
 }
 
-const dollars = (amount: number): string => amount.toFixed(2);
+export const dollars = (amount: number): string => amount.toFixed(2);
 /** Subtraction of cents leaves float dust (29 - 28.8); a key's cap is never given more precision than a millionth of a dollar. */
-const clean = (amount: number): number => Number(amount.toFixed(6));
+export const clean = (amount: number): number => Number(amount.toFixed(6));
 /** What is left, clamped at 0 (R23) and cleaned, so float dust (a millionth of a dollar) is nothing left rather than a key capped at nearly 0. */
-const remaining = (figures: SpendFigures): number => clean(Math.max(0, figures.limitUsd - figures.spentUsd));
+export const remaining = (figures: SpendFigures): number => clean(Math.max(0, figures.limitUsd - figures.spentUsd));
 
 export const budgetExceeded = (spent: number, limit: number) =>
   agentXError("BUDGET_EXCEEDED", `Your monthly AI budget is used up ($${dollars(spent)} of $${dollars(limit)}). Ask an admin to raise it.`);
@@ -332,7 +332,7 @@ export async function mintKeyHealing(deps: BudgetDependencies, input: MintKeyInp
   return healingLostProxyState(deps, input.orgId, input.developerId, () => deps.access.mintKey(input));
 }
 
-async function figuresFor(deps: BudgetDependencies, orgId: OrgId, developerId: string | undefined): Promise<{ member?: SpendFigures; org: SpendFigures }> {
+export async function figuresFor(deps: BudgetDependencies, orgId: OrgId, developerId: string | undefined): Promise<{ member?: SpendFigures; org: SpendFigures }> {
   // viaProxy is outermost: the proxy's own refusal must reach the healing as it is, and only what is left of it becomes MODEL_PROXY_UNAVAILABLE.
   return viaProxy(() => healingLostProxyState(deps, orgId, developerId, async () => {
     if (developerId === undefined) return { org: await deps.access.orgSpend(orgId) };
@@ -340,55 +340,8 @@ async function figuresFor(deps: BudgetDependencies, orgId: OrgId, developerId: s
   }));
 }
 
-/**
- * Whether work may start. On a cloud install, first the org's trial must be unlocked and its month's machine time not used up
- * (both answered from the org's own records, before the proxy is asked anything; a private install has neither limit, R42), then the budgets (ruling R23: soft caps, remainders clamped at 0). The member (when there is one: Slack work
- * of an unlinked requester answers to the org alone) must have at least the path's minimum left, then the org must.
- * Answers the most a key for this work may spend: what is left to the member and the org, never more than one task's
- * budget. The proxy's own failures propagate, MODEL_PROXY_UNAVAILABLE among them, before anything is charged.
- */
-export async function admitSpend(deps: AdmissionDependencies, input: { orgId: OrgId; developerId?: string | undefined; path: SpendPath }): Promise<{ maxBudgetUsd: number }> {
-  if (deps.cloud) {
-    await admitTrial(deps, input.orgId);
-    await admitMachineTime(deps, input.orgId);
-  }
-  const settings = await ensureSynced(deps, input.orgId, input.developerId);
-  const { member, org } = await figuresFor(deps, input.orgId, input.developerId);
-  const needed = MINIMUM_REMAINING_USD[input.path];
-  // Ruling R47: a limit that is not set is not checked, and does not narrow the key; the per-task cap still does.
-  const memberLeft = member === undefined || input.developerId === undefined || memberLimitOf(settings, input.developerId) === undefined ? undefined : remaining(member);
-  const orgLeft = settings.orgMonthlyUsd === undefined ? undefined : remaining(org);
-  if (member !== undefined && memberLeft !== undefined && memberLeft < needed) throw budgetExceeded(member.spentUsd, member.limitUsd);
-  if (orgLeft !== undefined && orgLeft < needed) throw orgBudgetExceeded();
-  return { maxBudgetUsd: clean(Math.min(memberLeft ?? Infinity, orgLeft ?? Infinity, PER_TASK_BUDGET_USD)) };
-}
-
 /** LiteLLM's token id for a key: the lowercase hex SHA-256 of it. Safe to store; the key is not recoverable from it. */
 export const keyIdOf = (key: string): string => createHash("sha256").update(key).digest("hex");
-
-/**
- * Ruling R30: what a task's next key may spend. The task's budget less what its earlier keys have spent (so a re-mint
- * never restores a spent budget), further limited by what the member and the org have left. Refuses when any of the
- * three is 0: a key capped at nothing could be read by the proxy as no cap.
- */
-export async function mintCap(deps: BudgetDependencies, input: { orgId: OrgId; developerId?: string | undefined; budgetUsd: number; previousKeyIds: readonly string[]; budgetBaselineUsd?: number | undefined }): Promise<{ maxBudgetUsd: number }> {
-  const settings = await ensureSynced(deps, input.orgId, input.developerId);
-  const [taskSpent, figures] = await Promise.all([viaProxy(() => deps.access.keySpend(input.previousKeyIds)), figuresFor(deps, input.orgId, input.developerId)]);
-  const { member, org } = figures;
-  // Ruling R47: a limit that is not set is not checked, and does not narrow the key.
-  const memberLeft = member === undefined || input.developerId === undefined || memberLimitOf(settings, input.developerId) === undefined ? undefined : remaining(member);
-  const orgLeft = settings.orgMonthlyUsd === undefined ? undefined : remaining(org);
-  if (member !== undefined && memberLeft !== undefined && memberLeft <= 0) throw budgetExceeded(member.spentUsd, member.limitUsd);
-  if (orgLeft !== undefined && orgLeft <= 0) throw orgBudgetExceeded();
-  // Ruling R38: a human Continue starts a new window, so what the task's keys had spent by then no longer counts against its cap.
-  const windowSpent = clean(Math.max(0, taskSpent - (input.budgetBaselineUsd ?? 0)));
-  const taskRemaining = clean(Math.max(0, input.budgetUsd - windowSpent));
-  if (taskRemaining <= 0) {
-    // Ruling R38: the way on is the owner's Continue, which starts a new window of this task's cap; a new task would lose its work.
-    throw agentXError("BUDGET_EXCEEDED", `${TASK_BUDGET_EXCEEDED_PREFIX} ($${dollars(windowSpent)} of $${dollars(input.budgetUsd)}). Choose Continue to resume this task with a fresh budget.`);
-  }
-  return { maxBudgetUsd: clean(Math.min(taskRemaining, memberLeft ?? Infinity, orgLeft ?? Infinity)) };
-}
 
 /**
  * Ruling R38: the cumulative spend of a task's keys so far, which a Continue records as the start of the task's new cap window.

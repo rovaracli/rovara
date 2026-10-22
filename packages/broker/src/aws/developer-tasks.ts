@@ -150,12 +150,14 @@ import {
   workflowReviewRoles,
   workflowVerificationPosition,
   capText,
+  ROVARA_CODE_AGENT_ID,
   type ProjectRole,
 } from "@agentx/contracts";
 import { z } from "zod";
 import { channelLabel, decideMode, decideShare, type BoundChannel, type ShareDecision } from "../developer/share.js";
 import { PULL_REQUEST_PARTIAL_REVIEW_LINE, PULL_REQUEST_STATUS_END, PULL_REQUEST_STATUS_START } from "../developer/pull-request-feedback-section.js";
-import { admitSpend, taskSpendBaseline } from "../org/budget.js";
+import { taskSpendBaseline, type SpendPath } from "../org/budget.js";
+import { admitWork } from "../spend/admission.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { chargeConflict, chargeItems, developerCharge, limitReached, readWorkspaceLimits, releaseConflict, releaseItems, type ChargeConflict, type WorkspaceLimits } from "../developer/limits.js";
 import {
@@ -1423,7 +1425,16 @@ async function shareFor(
 }
 
 /** What admission refuses a start with (the trial, the month's machine time, a budget): each is a recorded refusal, not a failure. */
-export const ADMISSION_REFUSALS: ReadonlySet<string> = new Set(["TRIAL_LOCKED", "MACHINE_TIME_EXCEEDED", "BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED"]);
+export const ADMISSION_REFUSALS: ReadonlySet<string> = new Set([
+  "TRIAL_LOCKED", "MACHINE_TIME_EXCEEDED", "BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "AGENT_BUDGET_REQUIRED", "TEST_ALLOWANCE_USED",
+]);
+
+/** What a start needs left to be admitted: an agent-step run, a coding workflow (quick or full), a coding run an agent was chosen for, or a plain task. */
+function admissionPath(input: { asWorkflow: boolean; workflowPath: "QUICK" | "FULL"; prepared: PreparedRun | undefined }): SpendPath {
+  if (input.prepared?.runner === "agent_steps") return "AGENT";
+  if (input.asWorkflow) return input.workflowPath === "FULL" ? "FULL" : "QUICK";
+  return input.prepared === undefined ? "QUICK" : "TASK";
+}
 
 const NOT_A_MEMBER = PRIVATE_CHANNEL_NOT_A_MEMBER;
 const PRIVACY_UNKNOWN = "Slack could not be reached to check whether that channel is private; try again shortly";
@@ -1562,17 +1573,20 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   const workflowPath = request.workflowPath ?? "QUICK";
   // What a coding run is asked: the text as sent, or the text with its context rendered and cut to the request limit (G3).
   const requestText = prepared?.runner === "coding" && request.input !== undefined ? codingRequestText(request.input, DEVELOPER_INSTRUCTIONS_MAX_BYTES) : request.instructions;
-  // The budget comes first (ruling R23: soft caps, so this is a floor, not a promise): before the limit's counters are read
-  // and before any write. A proxy that cannot answer fails the start with nothing recorded; a refusal is audited like any other.
-  // Task 31 replaces this with `admitWork` at this point, after the agent is resolved and before the workspace charge.
+  // The budget comes first (ruling R23: soft caps, so this is a floor, not a promise): after the agent is resolved, before the limit's counters are read
+  // and before any write. Every budget the run counts against is checked (Task 31): the payer's, the project's, the agent's when it pays, and a test run's
+  // allowance. A proxy that cannot answer fails the start with nothing recorded; a refusal is audited like any other.
   let admitted: { maxBudgetUsd: number } | undefined;
-  // Task 29: a member's own limit applies only when that member pays; a project or an agent that pays answers to the org alone until Task 31's levels.
-  const payingMember = prepared === undefined ? caller.developerId : prepared.payer.kind === "member" ? prepared.payer.developerId : undefined;
   if (deps.modelAccess !== undefined) {
     try {
-      admitted = await admitSpend({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, now: () => deps.now(), cloud: deps.cloud === true }, {
-        orgId: deps.orgId, ...(payingMember === undefined ? {} : { developerId: payingMember }),
-        path: asWorkflow && workflowPath === "FULL" ? "FULL" : "QUICK",
+      admitted = await admitWork({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, now: () => deps.now(), cloud: deps.cloud === true }, {
+        orgId: deps.orgId, project: request.project,
+        // A run with no agent (an install without agents) is Rovara Code's and the caller's own.
+        payer: prepared?.payer ?? { kind: "member", developerId: caller.developerId },
+        agentId: prepared?.ref.agentId ?? ROVARA_CODE_AGENT_ID, agentName: prepared?.ref.name ?? "Rovara Code",
+        path: admissionPath({ asWorkflow, workflowPath, prepared }),
+        // A draft agent's test run is counted on its starter's testing allowance, as `paymentOfTask` counts it afterwards.
+        ...(prepared?.origin === "test_run" ? { testRunBy: startedBy?.developerId ?? caller.developerId } : {}),
       });
     } catch (error) {
       if (error instanceof AgentXError && ADMISSION_REFUSALS.has(error.code)) return refused(error);
@@ -1614,7 +1628,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       ...(startedBy === undefined ? {} : { startedBy }),
       ...(prepared.chain === undefined ? {} : { chain: prepared.chain }),
       ...(prepared.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: prepared.maxPerRunUsd }),
-      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, firstDispatch: { operationId: preparation.operationId } } } : {}),
+      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, at: receivedAt, firstDispatch: { operationId: preparation.operationId } } } : {}),
     }),
   };
   const index: DeveloperTaskIndexRecord = {

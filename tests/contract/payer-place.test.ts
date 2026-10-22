@@ -8,8 +8,8 @@ import { startAgentRun, type AgentRunRequest } from "../../packages/broker/src/a
 import { agentUsageCounter, budgetScopesFor, paymentOfTask, resolvePayer, type ResolvePayerInput } from "../../packages/broker/src/spend/payer.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { WORK_ORIGINS, PlaceSchema, type Payer, type WorkOrigin } from "../../packages/contracts/src/agent-run.js";
-import { scopeKey } from "../../packages/contracts/src/spend.js";
-import { projectAgentKey, projectAiKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { PER_TEST_CAP_USD, scopeKey } from "../../packages/contracts/src/spend.js";
+import { agentKey, projectAgentKey, projectAiKey, projectMemberKey, spendCounterKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import type { AgentId } from "../../packages/contracts/src/agent.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import { MAYA as DEV_MAYA, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
@@ -252,7 +252,9 @@ async function setup(options: { agents?: boolean } = {}) {
     return { input: access.mintKey.mock.calls.at(-1)![0], operationId };
   };
   const taskCount = () => h.db.find((item) => item.entityType === "DEVELOPER_TASK").length;
-  return { ...h, access, call: call_, agentOf, projectPays, addKit, starter, request, autonomous, meta, mintFor, taskCount };
+  /** The error codes of the starts that were refused and audited as such (Task 31's admission refusals are recorded like any other). */
+  const refusedWith = () => h.db.find((item) => typeof item.pk === "string" && item.pk.startsWith("TASK#") && item.phase === "refused").map((item) => (item.error as { code: string }).code);
+  return { ...h, access, call: call_, agentOf, projectPays, addKit, starter, request, autonomous, meta, mintFor, taskCount, refusedWith };
 }
 
 describe("a person-started run records its payer and place", () => {
@@ -293,6 +295,21 @@ describe("a person-started run records its payer and place", () => {
     expect(refused.status).toBe(402);
   });
 
+  it("refuses a draft test run at its start when the starter's testing allowance is used up, and not another person's", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf();
+    const month = new Date().toISOString().slice(0, 7);
+    t.db.set({ ...spendCounterKey(TEST_ORG, month, `TESTING#${DEV_MAYA.developerId}`), entityType: "SPEND_COUNTER", spentUsd: 9.8, committedUsd: 9.8 });
+    const mark = t.db.commandNames().length;
+    const reply = await t.call(DEV_MAYA, "POST", `/v1/app/agents/${agentId}/runs`, { project: "payments", version: "draft", input: { text: "Try it" } });
+    expect(reply).toMatchObject({ status: 402, body: { error: { code: "TEST_ALLOWANCE_USED" } } });
+    expect(t.db.commandNames().slice(mark)).not.toContain("TransactWriteCommand");
+    expect(t.refusedWith()).toEqual(["TEST_ALLOWANCE_USED"]);
+    // A run the member starts as a normal task is not a test run.
+    const normal = await t.call(DEV_MAYA, "POST", "/v1/app/agents/rovara-code/runs", { project: "payments", input: { text: "Fix it" } });
+    expect(normal.status, JSON.stringify(normal.body)).toBe(202);
+  });
+
   it("makes a draft test run the project's expense with the starter's allowance, never the member's", async () => {
     const t = await setup();
     const agentId = await t.agentOf();
@@ -307,6 +324,10 @@ describe("a person-started run records its payer and place", () => {
     const { input } = await t.mintFor(taskId);
     expect(input).not.toHaveProperty("developerId");
     expect(input.tags).toMatchObject({ payerKind: "project", payerId: "payments", origin: "test_run", project: "payments", agentId });
+    // Task 31: a test run's key is capped at the per-test cap, and the cap is held on the starter's testing allowance.
+    expect(input.maxBudgetUsd).toBe(PER_TEST_CAP_USD);
+    const month = new Date().toISOString().slice(0, 7);
+    expect(t.db.get(spendCounterKey(TEST_ORG, month, `TESTING#${DEV_MAYA.developerId}`))).toMatchObject({ committedUsd: PER_TEST_CAP_USD });
   });
 });
 
@@ -337,6 +358,8 @@ describe("startAgentRun resolves the payer from the origin", () => {
   it("starts an event or schedule run the agent pays for, as its owner, with no one as the starter", async () => {
     const t = await setup();
     const agentId = await t.agentOf();
+    // An agent that pays has a budget (Task 31: without one the start is refused with AGENT_BUDGET_REQUIRED).
+    t.db.set({ ...t.db.get(agentKey(TEST_ORG, agentId, "META"))!, monthlyBudgetUsd: 50 });
     const started = await startAgentRun(t.starter(), t.autonomous({ agent: { agentId }, payer: { kind: "agent", agentId } }));
     expect(started.paused).toBe(false);
     expect(t.meta(started.taskId)).toMatchObject({ payer: { kind: "agent", agentId }, place: { project: "payments" }, origin: "schedule", developerId: DEV_MAYA.developerId });
@@ -350,6 +373,29 @@ describe("startAgentRun resolves the payer from the origin", () => {
       const again = await startAgentRun(t.starter(), t.autonomous({ origin, agent: { agentId }, payer: { kind: "agent", agentId } }));
       expect(t.meta(again.taskId)).toMatchObject({ payer: { kind: "agent", agentId }, origin });
     }
+  });
+
+  it("refuses an autonomous run whose agent has no budget, before any task is made", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf();
+    const error = await refusal(startAgentRun(t.starter(), t.autonomous({ agent: { agentId }, payer: { kind: "agent", agentId } })));
+    expect(error).toMatchObject({ code: "AGENT_BUDGET_REQUIRED" });
+    expect(error?.message).toMatch(/has no monthly budget, so it can't run work that no person started\. Ask its owner to set one\.$/u);
+    expect(t.taskCount()).toBe(0);
+    expect(t.access.mintKey).not.toHaveBeenCalled();
+    expect(t.refusedWith()).toEqual(["AGENT_BUDGET_REQUIRED"]);
+  });
+
+  it("refuses an autonomous run whose agent has used up its budget, and audits the refusal", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf();
+    t.db.set({ ...t.db.get(agentKey(TEST_ORG, agentId, "META"))!, monthlyBudgetUsd: 20 });
+    const month = new Date().toISOString().slice(0, 7);
+    t.db.set({ ...spendCounterKey(TEST_ORG, month, `AGENT#${agentId}`), entityType: "SPEND_COUNTER", spentUsd: 19.95, committedUsd: 19.95 });
+    const error = await refusal(startAgentRun(t.starter(), t.autonomous({ agent: { agentId }, payer: { kind: "agent", agentId } })));
+    expect(error).toMatchObject({ code: "AGENT_BUDGET_EXCEEDED" });
+    expect(t.taskCount()).toBe(0);
+    expect(t.refusedWith()).toEqual(["AGENT_BUDGET_EXCEEDED"]);
   });
 
   it("refuses an autonomous run whose payer is not its agent, and one that names a starter", async () => {
@@ -516,6 +562,24 @@ describe("fix round 1", () => {
     const scopes = paymentOfTask(stored as never).scopes.map(scopeKey);
     expect(scopes).toEqual(["ORG", "PROJECT#payments", `TESTING#${KIT}`]);
     expect(scopes).not.toContain(`TESTING#${DEV_MAYA.developerId}`);
+  });
+
+  it("counts a draft test run's allowance at its start on the person who started it, not the run's owner", async () => {
+    const t = await setup();
+    t.addKit();
+    const agentId = await t.agentOf();
+    const month = new Date().toISOString().slice(0, 7);
+    const used = (developerId: string) => t.db.set({ ...spendCounterKey(TEST_ORG, month, `TESTING#${developerId}`), entityType: "SPEND_COUNTER", spentUsd: 9.8, committedUsd: 9.8 });
+    const draftRun = () => {
+      const { payer: _payer, ...unnamed } = t.request({ agent: { agentId, version: "draft" }, owner: { developerId: DEV_MAYA.developerId }, startedBy: { developerId: KIT } }); // eslint-disable-line @typescript-eslint/no-unused-vars -- the rules name the payer
+      return unnamed;
+    };
+    // The owner's allowance is used up, the starter's is not: the run starts.
+    used(DEV_MAYA.developerId);
+    expect((await startAgentRun(t.starter(), draftRun())).paused).toBe(false);
+    // The starter's is used up: it does not.
+    used(KIT);
+    expect(await refusal(startAgentRun(t.starter(), draftRun()))).toMatchObject({ code: "TEST_ALLOWANCE_USED" });
   });
 
   it("records who started every run with agents set up, and falls back to the owner for an old task", async () => {

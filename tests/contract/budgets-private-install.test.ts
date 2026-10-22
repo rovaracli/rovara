@@ -3,7 +3,8 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, budgetSyncedKey, orgSettingsKey, singleOrgIdForEnv } from "../../packages/contracts/src/index.js";
-import { MAX_BUDGET_USD, admitSpend, mintCap, readBudgets, syncBudgets } from "../../packages/broker/src/org/budget.js";
+import { MAX_BUDGET_USD, readBudgets, syncBudgets } from "../../packages/broker/src/org/budget.js";
+import { admitMember, nextKeyCap } from "../support/admission.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { adminCall, createAdminBroker } from "../support/admin-broker.js";
 import { MAYA, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
@@ -45,14 +46,14 @@ describe("budget settings on a private or single-org install", () => {
     access.setOrgSpent(TEST_ORG, 90000);
     const deps = { documentClient: db, tableName: "state", access, cloud: false };
     for (const path of ["QUICK", "FULL", "CHAT"] as const) {
-      expect(await admitSpend(deps, { orgId: TEST_ORG, developerId: "dev1", path })).toEqual({ maxBudgetUsd: PER_TASK_BUDGET_USD });
+      expect(await admitMember(deps, { orgId: TEST_ORG, developerId: "dev1", path })).toEqual({ maxBudgetUsd: PER_TASK_BUDGET_USD });
     }
-    expect(await mintCap(deps, { orgId: TEST_ORG, developerId: "dev1", budgetUsd: PER_TASK_BUDGET_USD, previousKeyIds: [] })).toEqual({ maxBudgetUsd: PER_TASK_BUDGET_USD });
+    expect(await nextKeyCap(deps, { orgId: TEST_ORG, developerId: "dev1", budgetUsd: PER_TASK_BUDGET_USD, previousKeyIds: [] })).toEqual({ maxBudgetUsd: PER_TASK_BUDGET_USD });
     // The per-task cap still applies, and a Continue's baseline still resets it.
     access.setKeySpent("sk-old", 25);
     const previousKeyIds = [(await import("../../packages/broker/src/org/budget.js")).keyIdOf("sk-old")];
-    expect((await rejection(mintCap(deps, { orgId: TEST_ORG, developerId: "dev1", budgetUsd: PER_TASK_BUDGET_USD, previousKeyIds }))).code).toBe("BUDGET_EXCEEDED");
-    expect(await mintCap(deps, { orgId: TEST_ORG, developerId: "dev1", budgetUsd: PER_TASK_BUDGET_USD, previousKeyIds, budgetBaselineUsd: 25 })).toEqual({ maxBudgetUsd: PER_TASK_BUDGET_USD });
+    expect((await rejection(nextKeyCap(deps, { orgId: TEST_ORG, developerId: "dev1", budgetUsd: PER_TASK_BUDGET_USD, previousKeyIds }))).code).toBe("BUDGET_EXCEEDED");
+    expect(await nextKeyCap(deps, { orgId: TEST_ORG, developerId: "dev1", budgetUsd: PER_TASK_BUDGET_USD, previousKeyIds, budgetBaselineUsd: 25 })).toEqual({ maxBudgetUsd: PER_TASK_BUDGET_USD });
   });
 
   it("apply once an operator has set them", async () => {
@@ -61,13 +62,13 @@ describe("budget settings on a private or single-org install", () => {
     access.setMemberSpent(TEST_ORG, "dev1", 120);
     access.setOrgSpent(TEST_ORG, 300);
     const deps = { documentClient: db, tableName: "state", access, cloud: false };
-    expect((await admitSpend(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" })).maxBudgetUsd).toBe(PER_TASK_BUDGET_USD);
+    expect((await admitMember(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" })).maxBudgetUsd).toBe(PER_TASK_BUDGET_USD);
     db.set({ ...orgSettingsKey(TEST_ORG, "BUDGET"), orgMonthlyUsd: 1000, memberDefaultMonthlyUsd: 100, memberOverrides: {} });
-    expect((await rejection(admitSpend(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" }))).code).toBe("BUDGET_EXCEEDED");
+    expect((await rejection(admitMember(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" }))).code).toBe("BUDGET_EXCEEDED");
     db.set({ ...orgSettingsKey(TEST_ORG, "BUDGET"), orgMonthlyUsd: 310, memberOverrides: {} });
-    expect(await admitSpend(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" })).toEqual({ maxBudgetUsd: 10 });
+    expect(await admitMember(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" })).toEqual({ maxBudgetUsd: 10 });
     db.set({ ...orgSettingsKey(TEST_ORG, "BUDGET"), orgMonthlyUsd: 300, memberOverrides: {} });
-    expect((await rejection(admitSpend(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" }))).code).toBe("ORG_BUDGET_EXCEEDED");
+    expect((await rejection(admitMember(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" }))).code).toBe("ORG_BUDGET_EXCEEDED");
   });
 });
 
@@ -107,7 +108,7 @@ describe("PUT /v1/admin/org/budget", () => {
     access.setMemberSpent(INSTALL_ORG, "dev1", 149.8);
     access.setOrgSpent(INSTALL_ORG, 10);
     await access.upsertMember(INSTALL_ORG, "dev1", 150);
-    const error = await rejection(admitSpend({ documentClient: db, tableName: "state", access, cloud: false }, { orgId: INSTALL_ORG, developerId: "dev1", path: "QUICK" }));
+    const error = await rejection(admitMember({ documentClient: db, tableName: "state", access, cloud: false }, { orgId: INSTALL_ORG, developerId: "dev1", path: "QUICK" }));
     expect(error.code).toBe("BUDGET_EXCEEDED");
   });
 

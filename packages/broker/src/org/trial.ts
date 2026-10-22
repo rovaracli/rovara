@@ -1,5 +1,5 @@
 // A new org starts on a trial that is locked until a GitHub account is connected (one trial per GitHub account), and
-// every org has a monthly allowance of EC2 machine time. Both are checked at admission (`admitSpend` calls
+// every org has a monthly allowance of EC2 machine time. Both are checked at admission (`admitWork` calls
 // `admitTrial` then `admitMachineTime`, before the proxy is asked anything and before anything is charged); machine
 // time is recorded when compute stops (`recordMachineTime`, called by the session manager at every stop).
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";

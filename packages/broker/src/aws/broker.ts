@@ -350,11 +350,12 @@ import type { OrgConnectionDeps } from "../connections/store.js";
 import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
-import { admitSpend, changeBudgets, keyIdOf, mintCap, mintKeyHealing, recordMintedKey, type OrgBudgetSettings } from "../org/budget.js";
+import { changeBudgets, keyIdOf, mintKeyHealing, type OrgBudgetSettings } from "../org/budget.js";
+import { admitWork, mintOperationKey, type MintOperationKeyInput } from "../spend/admission.js";
 import { blockOperationKeys, forgetKey, registerKey, type LedgerDependencies } from "../spend/ledger.js";
 import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTask, resolvePayer } from "../spend/payer.js";
 import { runSettlementJobs, runSpendSweep } from "../spend/settlement-job.js";
-import { readProjectAi } from "../spend/settings.js";
+import { readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
 import { SkillStore, servedSkills } from "../agents/skills.js";
 import { followMerges, type ProjectMembers } from "../agents/access.js";
@@ -3815,11 +3816,14 @@ async function admitSlackWork(dependencies: AwsBrokerDependencies, identity: Aut
   if (modelAccess === undefined || identity.slack === undefined) return;
   const orgId = requireOrgId(identity.orgId);
   // Task 29: with agents set up, the member's own limit applies only when that member pays (not when the project does).
-  const paying = dependencies.agents === undefined ? undefined : await slackWorkPayment(dependencies, orgId, identity.slack.binding.projectName, identity.slack.requester);
-  const developerId = paying === undefined ? await linkedRequester(dependencies, orgId, identity.slack.requester) : keyMember(paying.payer);
-  await admitSpend(
+  const project = identity.slack.binding.projectName;
+  const paying = dependencies.agents === undefined ? undefined : await slackWorkPayment(dependencies, orgId, project, identity.slack.requester);
+  const linked = paying === undefined ? await linkedRequester(dependencies, orgId, identity.slack.requester) : undefined;
+  // Work of an unlinked requester answers to the project (and the org) alone.
+  const payer: Payer = paying?.payer ?? (linked === undefined ? { kind: "project", project } : { kind: "member", developerId: linked });
+  await admitWork(
     { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
-    { orgId, developerId, path: "CHAT" },
+    { orgId, payer, project, agentId: ROVARA_CODE_AGENT_ID, agentName: ROVARA_CODE_NAME, path: "CHAT" },
   );
 }
 
@@ -5244,7 +5248,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
   // A developer task names its org, owner and budget, and the keys already minted for it. Work with no task record (a Slack
   // thread's) is minted for from the signed operation: its org, the operation as the reference and as the record that keeps its
   // keys, and the default per-task budget (ruling R31; its start was admitted in ensureThreadWorkspace). Read afresh each attempt.
-  const loadScope = async () => {
+  const loadScope = async (): Promise<ModelKeyScope | undefined> => {
     const current = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
     const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(current.workspaceId));
     const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
@@ -5254,11 +5258,27 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     if (task !== undefined) {
       if (task.orgId === undefined) return undefined;
       const payment = withAgents ? paymentOfTask(task) : undefined;
+      const runLimitUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
+      const taskKeyIds = task.modelKeyIds ?? [];
+      const testCapUsd = payment?.origin === "test_run" ? (await readSpendPolicy(dependencies, task.orgId)).perTestCapUsd : undefined;
+      const stepBudgetUsd = payment === undefined ? undefined : await stepBudgetOf(dependencies, task, current);
       return {
-        orgId: task.orgId, developerId: payment === undefined ? task.developerId as string | undefined : keyMember(payment.payer), refId: task.taskId, budgetUsd: task.budgetUsd ?? PER_TASK_BUDGET_USD,
-        previousKeyIds: task.modelKeyIds ?? [], owner: taskKey(task.taskId), budgetBaselineUsd: task.budgetBaselineUsd ?? 0,
-        tags: payment === undefined ? undefined : mintTagsFor({ ...payment, origin: payment.origin ?? "cli", taskId: task.taskId, operationId: current.id, stepId: current.programStepId }),
-        scopes: payment?.scopes,
+        orgId: task.orgId, developerId: payment === undefined ? task.developerId : keyMember(payment.payer), refId: task.taskId,
+        runLimitUsd, stopAtUsd: task.maxPerRunUsd === undefined ? runLimitUsd : Math.min(runLimitUsd, task.maxPerRunUsd),
+        taskKeyIds, budgetBaselineUsd: task.budgetBaselineUsd ?? 0,
+        // Task 31: with agents set up, the key is held on every budget the task counts against, recorded on the operation as well as the task, and a refusal
+        // pauses the task with the scope that is full.
+        ...(payment === undefined ? { recordOn: [{ key: taskKey(task.taskId), knownCount: taskKeyIds.length }] } : {
+          agentName: task.agent?.name ?? ROVARA_CODE_NAME,
+          tags: mintTagsFor({ ...payment, origin: payment.origin ?? "cli", taskId: task.taskId, operationId: current.id, stepId: current.programStepId }),
+          scopes: payment.scopes,
+          operationKeyIds: current.modelKeyIds ?? [],
+          planning: current.workflowMode === "PLAN",
+          ...(testCapUsd === undefined ? {} : { testCapUsd }),
+          ...(stepBudgetUsd === undefined ? {} : { stepBudgetUsd }),
+          pause: { taskId: task.taskId, key: taskKey(task.taskId) },
+          recordOn: [{ key: taskKey(task.taskId), knownCount: taskKeyIds.length }, { key: operationKey(current.workspaceId, current.id) }],
+        }),
       };
     }
     if (current.orgId === undefined) return undefined;
@@ -5268,14 +5288,20 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       console.log(JSON.stringify({ component: "broker", event: "model_access.payer_unreadable", operationId: current.id, errorName: error instanceof Error ? error.name : "unknown" }));
       throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
     });
+    const taskKeyIds = current.modelKeyIds ?? [];
     return {
       orgId: current.orgId, developerId: slack === undefined ? await linkedRequester(dependencies, current.orgId, current.requestedBy) : keyMember(slack.payer), refId: current.id,
-      budgetUsd: PER_TASK_BUDGET_USD, previousKeyIds: current.modelKeyIds ?? [], owner: operationKey(current.workspaceId, current.id), budgetBaselineUsd: 0,
-      tags: slack === undefined ? undefined : mintTagsFor({ ...slack, origin: "slack", operationId: current.id, stepId: current.programStepId }),
-      scopes: slack === undefined ? undefined : budgetScopesFor(slack.payer, slack.place, { agentId: slack.agentId }),
+      runLimitUsd: PER_TASK_BUDGET_USD, stopAtUsd: PER_TASK_BUDGET_USD, taskKeyIds, budgetBaselineUsd: 0,
+      recordOn: [{ key: operationKey(current.workspaceId, current.id), knownCount: taskKeyIds.length }],
+      ...(slack === undefined ? {} : {
+        agentName: ROVARA_CODE_NAME,
+        tags: mintTagsFor({ ...slack, origin: "slack", operationId: current.id, stepId: current.programStepId }),
+        scopes: budgetScopesFor(slack.payer, slack.place, { agentId: slack.agentId }),
+      }),
     };
   };
-  const budgets = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true };
+  const budgets = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true, now: Date.now };
+  const ledger = ledgerOf(dependencies);
   let scope = await loadScope();
   if (scope === undefined) throw agentXError("NOT_FOUND", "this operation belongs to no organisation");
   try {
@@ -5284,38 +5310,39 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (attempt > 0) scope = await loadScope();
       if (scope === undefined) throw new Error("the operation lost its organisation");
-      // Ruling R30: the key's cap is what the task has left across all its keys, further limited by the member's and the org's remainder.
-      const { maxBudgetUsd } = await mintCap(budgets, { orgId: scope.orgId, developerId: scope.developerId, budgetUsd: scope.budgetUsd, previousKeyIds: scope.previousKeyIds, budgetBaselineUsd: scope.budgetBaselineUsd });
-      const minted = await mintKeyHealing(budgets, {
-        orgId: scope.orgId, ...(scope.developerId === undefined ? {} : { developerId: scope.developerId }), purpose: "task", refId: scope.refId,
-        maxBudgetUsd, ttlSeconds: MODEL_KEY_TTL_SECONDS, ...(scope.tags === undefined ? {} : { tags: scope.tags }),
-      });
-      // Task 30: the key is known to the ledger before anything else keeps it, so its spend is counted; a key that can't be recorded is given back.
-      const ledger = scope.tags === undefined || scope.scopes === undefined ? undefined : ledgerOf(dependencies);
-      if (ledger !== undefined) {
-        try {
-          await registerKey(ledger, { orgId: scope.orgId, month: monthOf(Date.now()), keyId: keyIdOf(minted.key), capUsd: maxBudgetUsd, scopes: scope.scopes!.map((key) => ({ key })), tags: scope.tags!, expiresAt: minted.expiresAt });
-        } catch (error) {
-          // The write may have committed with its answer lost: a revoked key must not stay on the sweep's list.
-          await modelAccess.access.revokeKey(minted.key).catch(() => undefined);
-          await forgetKey(ledger, scope.orgId, keyIdOf(minted.key)).catch(() => undefined);
-          throw error;
-        }
-      }
-      if (await recordMintedKey(budgets, scope.owner, keyIdOf(minted.key), scope.previousKeyIds.length)) {
-        return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
-      }
-      // The key never reached the worker and has spent nothing; best effort, it expires on its own otherwise.
-      await modelAccess.access.revokeKey(minted.key).catch(() => undefined);
-      if (ledger !== undefined) await forgetKey(ledger, scope.orgId, keyIdOf(minted.key)).catch(() => undefined);
+      // Ruling R30 and Task 31: the key's cap is the least of what the run's limits, the step, the member, the org and every budget the task counts against
+      // have left; it is reserved before it is handed out, and recorded on the task and the operation.
+      const minted = await mintOperationKey({ ...budgets, ledger }, { ...scope, ttlSeconds: MODEL_KEY_TTL_SECONDS });
+      if (minted.outcome === "minted") return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
     }
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   } catch (error) {
     // A spent budget is the member's to know about (402); every other failure is the proxy's, and says nothing of it.
-    if (error instanceof AgentXError && (error.code === "BUDGET_EXCEEDED" || error.code === "ORG_BUDGET_EXCEEDED")) throw error;
+    if (error instanceof AgentXError && ADMISSION_REFUSALS.has(error.code)) throw error;
     console.log(JSON.stringify({ component: "broker", event: "model_access.mint_failed", operationId: operation.id, errorName: error instanceof Error ? error.name : "unknown" }));
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   }
+}
+
+/** What `handleModelAccess` knows of the work a key is for: the input of `mintOperationKey` less the key's lifetime. */
+type ModelKeyScope = Omit<MintOperationKeyInput, "ttlSeconds">;
+
+/** The name an agent-less run is called in a budget message. */
+const ROVARA_CODE_NAME = "Rovara Code";
+
+/**
+ * Task 31: the budget of the recipe step an operation runs, when the task's frozen recipe sets one. A task whose snapshot is not there has none (the dispatch
+ * refused to run it without one).
+ */
+async function stepBudgetOf(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, operation: OperationRecord): Promise<number | undefined> {
+  if (task.agent === undefined || task.orgId === undefined) return undefined;
+  const frozen = await readTaskRecipe(dependencies, task.taskId, task.orgId);
+  if (frozen === undefined) return undefined;
+  // The digest is computed from the recipe itself, as the dispatch does: a snapshot that is not the one the task recorded sets no budget.
+  if (recipeDigest(frozen.recipe) !== task.agent.digest) throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
+  const step = stepForOperation(frozen.recipe, operation.workflowMode, operation.programStepId);
+  const budget = step?.kind === "check" ? undefined : step?.settings.stepBudgetUsd;
+  return typeof budget === "number" ? budget : undefined;
 }
 
 /**
@@ -5342,10 +5369,11 @@ async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, reque
     const slack = dependencies.agents === undefined ? undefined : await slackWorkPayment(dependencies, teamOrg, binding.projectName, requester);
     const developerId = slack === undefined ? await linkedRequester(dependencies, teamOrg, requester) : keyMember(slack.payer);
     // Ruling R50: a turn is admitted like any chat work (which also syncs the proxy, the lazy half of syncBudgets), and its key is
-    // capped at what the member and the org have left, never above one turn's allowance. Nothing left is a 402, before any key.
-    const admitted = await admitSpend(
+    // capped at what every budget it counts against has left, never above one turn's allowance. Nothing left is a 402, before any key.
+    const admitted = await admitWork(
       { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
-      { orgId: teamOrg, developerId, path: "CHAT" },
+      { orgId: teamOrg, payer: slack?.payer ?? (developerId === undefined ? { kind: "project", project: binding.projectName } : { kind: "member", developerId }),
+        project: binding.projectName, agentId: ROVARA_CODE_AGENT_ID, agentName: ROVARA_CODE_NAME, path: "CHAT" },
     );
     const maxBudgetUsd = Math.min(PER_TURN_BUDGET_USD, admitted.maxBudgetUsd);
     const tags = slack === undefined ? undefined : mintTagsFor({ ...slack, origin: "slack" });

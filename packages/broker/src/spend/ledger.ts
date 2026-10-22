@@ -149,7 +149,7 @@ const uniqueScopes = (scopes: readonly KeyScope[]): KeyScope[] => {
 };
 
 /**
- * Records a key that reserved nothing (a Slack turn's key, an orchestrator's, or a task key until Task 31 reserves): it settles into the counters,
+ * Records a key that reserved nothing (a Slack turn's key, an orchestrator's; every task operation's key reserves, Task 31): it settles into the counters,
  * and its spend adds to `committedUsd` as it comes. A key already recorded answers its record and writes nothing.
  */
 export async function registerKey(deps: LedgerDependencies, input: KeyInput): Promise<ModelKeyRecord> {
@@ -170,8 +170,8 @@ export async function registerKey(deps: LedgerDependencies, input: KeyInput): Pr
 
 /**
  * Holds `capUsd` on every scope's `committedUsd` and records the key, in one transaction: each limited scope must still have room
- * (`committedUsd <= limit - cap`), or the whole reservation is refused with the first scope that is full and nothing is written. Task 31 calls this
- * before it mints, so the caller names the key's id up front. A repeat of the same key answers its record and holds nothing more.
+ * (`committedUsd <= limit - cap`), or the whole reservation is refused with the first scope that is full and nothing is written. Task 31's `mintOperationKey` calls
+ * this after the key is minted and before it is handed to anyone (the id is the key's SHA-256). A repeat of the same key answers its record and holds nothing more.
  */
 export async function reserve(deps: LedgerDependencies, input: KeyInput): Promise<ModelKeyRecord> {
   checkInput(input);
@@ -212,6 +212,23 @@ export async function reserve(deps: LedgerDependencies, input: KeyInput): Promis
       throw error;
     }
   }
+}
+
+/** What a scope's counter holds for a month: what was spent, and what was spent plus what open keys hold (`committedUsd`, the figure a limit is checked against). */
+export interface ScopeCounter {
+  spentUsd: number;
+  committedUsd: number;
+}
+
+/** The counters of the given scopes for a month, by `scopeKey`; a scope nothing was counted on has zero of both. */
+export async function readScopeCounters(deps: LedgerDependencies, orgId: OrgId, month: string, scopes: readonly BudgetScope[]): Promise<Map<string, ScopeCounter>> {
+  const counters = new Map<string, ScopeCounter>();
+  await Promise.all(scopes.map(async (scope) => {
+    const item = await getItem(deps, spendCounterKey(orgId, month, scopeKey(scope)));
+    const number = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? cleanUsd(value) : 0);
+    counters.set(scopeKey(scope), { spentUsd: number(item?.["spentUsd"]), committedUsd: number(item?.["committedUsd"]) });
+  }));
+  return counters;
 }
 
 export interface SettleOutcome {
@@ -356,6 +373,27 @@ export async function finalizeKey(deps: LedgerDependencies, orgId: OrgId, keyId:
     }
   }
   return false;
+}
+
+/**
+ * Takes back a reservation whose key was never handed out and will never be used (the mint was refused, or its answer was lost): the record and its
+ * index item are deleted and the whole cap goes back to each scope, in one transaction that holds only while the key is open and has counted nothing.
+ * Answers false when there is nothing to take back (no record, a key that was settled or finalized, or one that reserved nothing).
+ */
+export async function abandonKey(deps: LedgerDependencies, orgId: OrgId, keyId: string): Promise<boolean> {
+  const record = await readRecord(deps, orgId, keyId);
+  if (record === undefined || !record.reserved || record.finalized || record.settleCount > 0 || record.settledUsd > 0) return false;
+  try {
+    await send(deps, [
+      { Delete: { TableName: deps.tableName, Key: modelKeyKey(orgId, keyId), ConditionExpression: "settleCount = :none AND finalized = :open", ExpressionAttributeValues: { ":none": 0, ":open": false } } },
+      { Delete: { TableName: deps.tableName, Key: openModelKeysKey(iso(record.createdAt), orgId, keyId) } },
+      ...record.scopes.map((scope) => upsert(deps, spendCounterKey(orgId, record.month, scopeKey(scope)), "SPEND_COUNTER", { add: { committedUsd: -cleanUsd(record.capUsd) } })),
+    ]);
+    return true;
+  } catch (error) {
+    if (failedIndexes(error) !== undefined) return false;
+    throw error;
+  }
 }
 
 /**

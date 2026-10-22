@@ -912,7 +912,7 @@ describe("a key the broker mints", () => {
     const { key, operationId } = await t.mint(workspaceId);
     const stored = t.record(key)!;
     const input = t.access.mintKey.mock.calls.at(-1)![0];
-    expect(stored).toMatchObject({ orgId: TEST_ORG, keyId: keyIdOf(key), month: NOW_MONTH, capUsd: input.maxBudgetUsd, settledUsd: 0, reserved: false, finalized: false, expiresAt: Date.parse("2026-10-19T13:00:00.000Z") });
+    expect(stored).toMatchObject({ orgId: TEST_ORG, keyId: keyIdOf(key), month: NOW_MONTH, capUsd: input.maxBudgetUsd, settledUsd: 0, reserved: true, finalized: false, expiresAt: Date.parse("2026-10-19T13:00:00.000Z") });
     expect(stored.tags).toEqual(input.tags);
     expect(stored.tags).toMatchObject({ taskId, operationId, payerKind: "member", payerId: DEV_MAYA.developerId, project: "payments" });
     const task = t.db.get(`DEVTASK#${taskId}`, "META") as Parameters<typeof paymentOfTask>[0];

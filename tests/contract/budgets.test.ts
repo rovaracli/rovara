@@ -6,7 +6,8 @@ import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_
 // The package the broker imports, not its source: the broker tests an error for that package's class.
 import { agentXError as proxyError } from "@agentx/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
-import { MINIMUM_REMAINING_USD, admitSpend, ensureSynced, keyIdOf, mintCap, mintKeyHealing, readBudgets, syncBudgets } from "../../packages/broker/src/org/budget.js";
+import { MINIMUM_REMAINING_USD, ensureSynced, keyIdOf, mintKeyHealing, readBudgets, syncBudgets } from "../../packages/broker/src/org/budget.js";
+import { admitMember, nextKeyCap } from "../support/admission.js";
 import { resolveOrgOnSignIn } from "../../packages/broker/src/org/sign-in.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
@@ -96,7 +97,7 @@ describe("budget settings", () => {
   });
 });
 
-describe("admitSpend", () => {
+describe("admitWork", () => {
   async function admission(spent: { member?: number; org?: number }, input: { developerId?: string | undefined; path?: "QUICK" | "FULL" | "CHAT" } = {}, limits?: { memberDefaultMonthlyUsd?: number; orgMonthlyUsd?: number; memberOverrides?: Record<string, number> }) {
     const db = new FakeDynamoDb();
     const access = fakeModelAccess();
@@ -104,7 +105,7 @@ describe("admitSpend", () => {
     access.setMemberSpent(TEST_ORG, "dev1", spent.member ?? 0);
     access.setOrgSpent(TEST_ORG, spent.org ?? 0);
     const developerId = "developerId" in input ? input.developerId : "dev1";
-    return { db, access, run: () => admitSpend({ documentClient: db, tableName: "state", access, cloud: true }, { orgId: TEST_ORG, ...(developerId === undefined ? {} : { developerId }), path: input.path ?? "QUICK" }) };
+    return { db, access, run: () => admitMember({ documentClient: db, tableName: "state", access, cloud: true }, { orgId: TEST_ORG, ...(developerId === undefined ? {} : { developerId }), path: input.path ?? "QUICK" }) };
   }
 
   it("answers what is left to the member, never more than one task's budget", async () => {
@@ -120,7 +121,7 @@ describe("admitSpend", () => {
   });
 
   it("applies each path's minimum: quick 0.50, full 2, chat 0.05", async () => {
-    expect(MINIMUM_REMAINING_USD).toEqual({ QUICK: 0.5, FULL: 2, CHAT: 0.05 });
+    expect(MINIMUM_REMAINING_USD).toEqual({ QUICK: 0.5, FULL: 2, CHAT: 0.05, TASK: 0.5, AGENT: 0.1 });
     // $1.50 left: enough for QUICK and CHAT, not FULL.
     await expect((await admission({ member: 27.5 }, { path: "QUICK" })).run()).resolves.toEqual({ maxBudgetUsd: 1.5 });
     await expect((await admission({ member: 27.5 }, { path: "CHAT" })).run()).resolves.toEqual({ maxBudgetUsd: 1.5 });
@@ -165,13 +166,13 @@ describe("admitSpend", () => {
   });
 });
 
-describe("mintCap (ruling R30)", () => {
+describe("the next key's cap (ruling R30)", () => {
   function setup() {
     const db = new FakeDynamoDb();
     const access = fakeModelAccess();
     access.setMemberSpent(TEST_ORG, "dev1", 0);
     access.setOrgSpent(TEST_ORG, 0);
-    const mint = (budgetUsd: number, previousKeyIds: string[] = []) => mintCap({ documentClient: db, tableName: "state", access, cloud: true }, { orgId: TEST_ORG, developerId: "dev1", budgetUsd, previousKeyIds });
+    const mint = (budgetUsd: number, previousKeyIds: string[] = []) => nextKeyCap({ documentClient: db, tableName: "state", access, cloud: true }, { orgId: TEST_ORG, developerId: "dev1", budgetUsd, previousKeyIds });
     return { db, access, mint };
   }
 
@@ -237,20 +238,20 @@ describe("lost proxy state heals (the proxy's database restored or replaced)", (
   it("admission clears the markers, tells the proxy again and asks again, once", async () => {
     const { db, access, deps } = await synced();
     access.forgetEverything();
-    expect(await admitSpend(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" })).toEqual({ maxBudgetUsd: 25 });
+    expect(await admitMember(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" })).toEqual({ maxBudgetUsd: 25 });
     expect(access.upsertOrg).toHaveBeenCalledTimes(2);
     expect(access.upsertMember).toHaveBeenCalledTimes(2);
     expect(db.get(budgetSyncedKey(TEST_ORG))).toMatchObject({ limitUsd: 500 });
     expect(db.get(budgetSyncedKey(TEST_ORG, "dev1"))).toMatchObject({ limitUsd: 29 });
     // Nothing is left to heal on the next call.
-    await admitSpend(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" });
+    await admitMember(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" });
     expect(access.upsertOrg).toHaveBeenCalledTimes(2);
   });
 
   it("heals the org alone for work no known member started", async () => {
     const { access, deps } = await synced();
     access.forgetEverything();
-    expect((await admitSpend(deps, { orgId: TEST_ORG, path: "CHAT" })).maxBudgetUsd).toBeGreaterThan(0);
+    expect((await admitMember(deps, { orgId: TEST_ORG, path: "CHAT" })).maxBudgetUsd).toBeGreaterThan(0);
     expect(access.upsertOrg).toHaveBeenCalledTimes(2);
     expect(access.upsertMember).toHaveBeenCalledTimes(1);
   });
@@ -258,7 +259,7 @@ describe("lost proxy state heals (the proxy's database restored or replaced)", (
   it("asks again only once: a proxy that still does not know them is the proxy's fault", async () => {
     const { access, deps } = await synced();
     access.spend.mockRejectedValue(proxyError("NOT_FOUND", "model proxy refused the request (404): team does not exist"));
-    expect((await rejection(admitSpend(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" }))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+    expect((await rejection(admitMember(deps, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" }))).code).toBe("MODEL_PROXY_UNAVAILABLE");
     expect(access.spend).toHaveBeenCalledTimes(2);
   });
 

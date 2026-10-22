@@ -81,6 +81,19 @@ function mintTagPaths(record: unknown, path = ""): Array<{ path: string; value: 
   return found;
 }
 
+/**
+ * Plan 3 Task 31: with agents set up a minted key is recorded on the operation as well as the task (change 3), so the operation as the record shows it ends with
+ * the ids of its keys. Every operation in the record that has them, with the path of its `modelKeyIds`.
+ */
+function operationKeyPaths(record: unknown, path = ""): Array<{ path: string; value: unknown }> {
+  if (record === null || typeof record !== "object") return [];
+  const here = record as Record<string, unknown>;
+  const found: Array<{ path: string; value: unknown }> = [];
+  if (!Array.isArray(record) && here.entityType === "OPERATION" && Array.isArray(here.modelKeyIds)) found.push({ path: `${path}.modelKeyIds`, value: here.modelKeyIds });
+  for (const [key, child] of Object.entries(here)) found.push(...operationKeyPaths(child, Array.isArray(record) ? `${path}[${key}]` : path === "" ? key : `${path}.${key}`));
+  return found;
+}
+
 describe("Rovara Code with agents switched on", () => {
   const STARTS: GoldenScenario[] = [
     "plan-quick", "plan-full-requirements", "plan-review-decision", "implement", "checks", "review", "task-no-workflow", "task-no-workflow-no-proxy", "shared-task", "plan-ready-quick",
@@ -88,7 +101,7 @@ describe("Rovara Code with agents switched on", () => {
   const latest = BUILTIN_AGENTS["rovara-code"].versions.at(-1)!;
 
   for (const scenario of STARTS) {
-    it(`${scenario} differs from its golden fixture only by the task's agent, origin, payer, place, the keys' tags and the RECIPE item`, async () => {
+    it(`${scenario} differs from its golden fixture only by the task's agent, origin, payer, place, the keys' tags, the operation's key ids and the RECIPE item`, async () => {
       if (updatingGolden()) return;
       const record = await recordGolden(scenario, { brokerExtra: { agents: {} } });
       const items = record.taskItems as Array<Record<string, unknown>>;
@@ -110,6 +123,7 @@ describe("Rovara Code with agents switched on", () => {
         { path: `taskItems[${String(meta)}].place`, expected: { project: "payments" }, change: 5 },
         { path: `taskItems[${String(meta)}].startedBy`, expected: { developerId: payer.developerId }, change: 5 },
         ...tagged.map(({ path, value }) => ({ path, expected: value, change: 5 as const })),
+        ...operationKeyPaths(record).map(({ path, value }) => ({ path, expected: value, change: 3 as const })),
       ]);
     }, 120_000);
   }

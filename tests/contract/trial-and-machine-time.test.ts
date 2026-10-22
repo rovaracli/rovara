@@ -1,5 +1,5 @@
 // Task 19: a new org's trial stays locked until GitHub is connected (one trial per GitHub account), and every org has a
-// monthly allowance of EC2 machine time. Both are checked inside admitSpend, before the proxy is asked and before any charge.
+// monthly allowance of EC2 machine time. Both are checked inside admitWork, before the proxy is asked and before any charge.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -7,7 +7,8 @@ import {
 } from "../../packages/contracts/src/index.js";
 import { createReaperHandler } from "../../packages/broker/src/aws/session-reaper.js";
 import { SessionManager, computeMeteringFromEnvironment, machineTimeRecorder, openComputeMarker, type ComputeStop } from "../../packages/broker/src/aws/sessions.js";
-import { admitSpend, type AdmissionDependencies } from "../../packages/broker/src/org/budget.js";
+import type { AdmissionDependencies } from "../../packages/broker/src/org/budget.js";
+import { admitMember } from "../support/admission.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import {
   TEAM_MACHINE_HOURS_PER_MONTH, TRIAL_MACHINE_HOURS_PER_MONTH, admitMachineTime, admitTrial, machineSecondsUsed, monthOf, openCompute, recordMachineTime, unlockTrial,
@@ -339,7 +340,7 @@ describe("admitMachineTime", () => {
   });
 });
 
-describe("admitSpend", () => {
+describe("admitWork", () => {
   function setup(plan: "trial" | "team", extra: Record<string, unknown> = {}, cloud = true) {
     const db = new FakeDynamoDb();
     seedOrg(db, TEST_ORG, plan, extra);
@@ -347,7 +348,7 @@ describe("admitSpend", () => {
     access.setMemberSpent(TEST_ORG, "dev1", 0);
     access.setOrgSpent(TEST_ORG, 0);
     const admission: AdmissionDependencies = { documentClient: db, tableName: "state", access, now: () => NOW, cloud };
-    return { db, access, run: () => admitSpend(admission, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" }) };
+    return { db, access, run: () => admitMember(admission, { orgId: TEST_ORG, developerId: "dev1", path: "QUICK" }) };
   }
 
   it("refuses a locked trial before the proxy is asked anything", async () => {
@@ -413,7 +414,7 @@ describe("admitSpend", () => {
     access.setMemberSpent(orgId, "dev1", 0);
     access.setOrgSpent(orgId, 0);
     for (const cloud of [false, true]) {
-      expect(await admitSpend({ documentClient: db, tableName: "state", access, now: () => NOW, cloud }, { orgId, developerId: "dev1", path: "QUICK" })).toEqual({ maxBudgetUsd: 25 });
+      expect(await admitMember({ documentClient: db, tableName: "state", access, now: () => NOW, cloud }, { orgId, developerId: "dev1", path: "QUICK" })).toEqual({ maxBudgetUsd: 25 });
     }
   });
 });
