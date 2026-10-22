@@ -8,8 +8,9 @@ import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 import type { OrgId } from "../../packages/contracts/src/org.js";
 import { runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { SPEND_REQUEST_TTL_DAYS } from "../../packages/contracts/src/spend.js";
+import { AgentRunStateSchema } from "../../packages/contracts/src/agent-run.js";
 import { MAYA } from "../support/developer-task-broker.js";
-import { BEN, PREPARED, setup, type World } from "../support/spend-world.js";
+import { BEN, PREPARED, TRIAGE, setup, type World } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 
@@ -134,5 +135,41 @@ describe("a plan blocked on its run limit, through the real spend request", () =
     expect(w.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
     expect(await escalateOwnerRequests(w.deps(), { budgetMs: 5_000 })).toMatchObject({ heldStarts: 0 });
     expect(implementations()).toHaveLength(1);
+  });
+});
+
+describe("Task 22's run state through Task 32's resume", () => {
+  const runItem = (w: World, taskId: string) => w.db.get(`DEVTASK#${taskId}`, "AGENT_RUN") as Record<string, unknown> & { state: string; steps: Array<Record<string, unknown>>; revision: number };
+
+  it("does not start a step for a paused run whose cancel was asked for: the approval's resume ends it CANCELLED", async () => {
+    const w = await setup();
+    const agentId = await w.agentOf(TRIAGE);
+    const run = await w.runOf(agentId);
+    await w.set(run.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+    await w.pauseAndEnd(run);
+    expect(runItem(w, run.taskId)).toMatchObject({ state: "PAUSED_BUDGET" });
+    const paused = runItem(w, run.taskId);
+    w.db.set({ ...paused, cancelRequestedAt: new Date().toISOString(), revision: paused.revision + 1 });
+    const [request] = w.requestOf(run.taskId);
+    await w.decide(BEN, request!.spendRequestId);
+    expect(w.taskOps(run.workspaceId)).toHaveLength(1);
+    expect(runItem(w, run.taskId)).toMatchObject({ state: "CANCELLED" });
+  });
+
+  it("keeps a step's pending branch on the run it resumes, and the run still reads as a run", async () => {
+    const w = await setup();
+    const agentId = await w.agentOf(TRIAGE);
+    const run = await w.runOf(agentId);
+    await w.set(run.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+    await w.pauseAndEnd(run);
+    const paused = runItem(w, run.taskId);
+    const steps = paused.steps.map((step, index) => (index === 1 ? { ...step, pendingBranch: "ship" } : step));
+    w.db.set({ ...paused, steps, revision: paused.revision + 1 });
+    const [request] = w.requestOf(run.taskId);
+    await w.decide(BEN, request!.spendRequestId);
+    const resumed = runItem(w, run.taskId);
+    expect(AgentRunStateSchema.safeParse(Object.fromEntries(Object.entries(resumed).filter(([key]) => !["pk", "sk", "entityType"].includes(key)))).success).toBe(true);
+    expect(resumed.steps[1]).toMatchObject({ pendingBranch: "ship" });
+    expect(resumed.state).toBe("RUNNING");
   });
 });

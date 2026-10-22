@@ -629,13 +629,14 @@ describe("approving the plan", () => {
     });
   });
 
-  it("does not say it asked while the seam is not wired, and creates no request", async () => {
+  it("asks through the broker's own seam when none was injected (the merge with Task 32): the words say so, and a run_limit request exists", async () => {
     const t = await world({ requestRunLimit: "none" });
     seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
     const { taskId, workspaceId, plan } = await t.planned("QUICK");
     expect((await t.decide(taskId, plan)).status).toBe(200);
-    expect(t.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", blockReason: "This plan's run limit is $20, which needs a project maintainer's approval." });
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", blockReason: "This plan's run limit is $20, which needs a project maintainer's approval. I've asked for it." });
     expect(t.operations(workspaceId).filter((item) => item.workflowMode === "IMPLEMENT")).toEqual([]);
+    expect(t.h.db.find((item) => item.entityType === "SPEND_REQUEST" && item.taskId === taskId)).toMatchObject([{ kind: "run_limit", status: "PENDING", resume: "implement", newLimitUsd: 20 }]);
   });
 
   it("does not say it asked when the seam made no request, and says an admin's for a larger limit", async () => {
