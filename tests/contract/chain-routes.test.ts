@@ -738,6 +738,19 @@ describe("what the routes and the confirmation handlers hold to", () => {
     expect(s.approvals()).toEqual([]);
   });
 
+  it("asks a person when an edit sends a gate's rejection to the step the gate guards, which the gate used to lead to only by approval", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    const rejectTo = (to: string) => variant({ approve_fix: { onReject: { to, maxTraversals: 2 } } as Partial<Step> });
+    await s.seed(chainId, rejectTo("investigate"));
+    await s.call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "edit" }] });
+    expect((await s.putDraft(EVE, chainId, rejectTo("fix"))).status).toBe(200);
+    const asked = await s.publish(EVE, chainId);
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    expect(asked.body.changes).toContain('fix can now be reached without passing "approve_fix"');
+    expect((await s.state(chainId)).currentVersion).toBe(1);
+  });
+
   it("answers a retry of a publish the page already confirmed with that version, and publishes nothing more", async () => {
     const s = await publishedBaseline();
     await s.putDraft(MAYA, s.chainId, raised(60));

@@ -144,7 +144,16 @@ describe("chainLessSafeChanges", () => {
           { kind: "agent", id: "b", name: "b", agent: { agentId: "ticket-triage", version: "current" }, next: { kind: "end" } },
         ],
       });
-      expect(await chainLessSafeChanges(two("$end"), two("b"), lookups())).toEqual(["a rejection at g1 now carries on to b", 'b can now be reached without passing "g2"']);
+      // A rejection is not an approval: b is now reached around g1 as well as around g2.
+      expect(await chainLessSafeChanges(two("$end"), two("b"), lookups())).toEqual(["a rejection at g1 now carries on to b", 'b can now be reached without passing "g1"', 'b can now be reached without passing "g2"']);
+    });
+
+    it("counts a rejection sent to a step behind the gate as a way around it, whatever the rejection led to before", async () => {
+      // "Send it back": a rejection used to go back to investigate, and now goes straight to fix, which only an approval used to reach.
+      const rejectTo = (to: string) => variant({ approve_fix: { onReject: { to, maxTraversals: 2 } } });
+      expect(await chainLessSafeChanges(rejectTo("investigate"), rejectTo("fix"), lookups())).toEqual(['fix can now be reached without passing "approve_fix"', 'review can now be reached without passing "approve_fix"']);
+      // A rejection that goes back to an earlier step, or to a step that is behind no gate, is not.
+      expect(await chainLessSafeChanges(rejectTo("fix"), rejectTo("investigate"), lookups())).toEqual([]);
     });
 
     it("says nothing about a gate that is gone (the removal says it), or a step that was never behind it", async () => {
@@ -207,6 +216,13 @@ describe("chainLessSafeChanges", () => {
 });
 
 describe("gatesOnEveryPath", () => {
+  it("passes a gate only through its approval: a step its rejection reaches is not behind it", () => {
+    const def = variant({ approve_fix: { onReject: { to: "fix", maxTraversals: 2 } } });
+    expect(gatesOnEveryPath(def, "fix")).toEqual([]);
+    expect(gatesOnEveryPath(def, "review")).toEqual([]);
+    expect(gatesOnEveryPath(variant({ approve_fix: { onReject: { to: "investigate", maxTraversals: 2 } } }), "fix")).toEqual(["approve_fix"]);
+  });
+
   const design = (definition: ChainDefinitionInput = INVESTIGATE_THEN_FIX) => ChainDefinitionSchema.parse(definition);
 
   it("names the gates every path from the start to a step passes", () => {
