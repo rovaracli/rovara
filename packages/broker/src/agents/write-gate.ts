@@ -12,6 +12,7 @@ import {
   OrgIdSchema,
   AgentXError,
   ApprovalIdSchema,
+  ConnectorCallRequestSchema,
   agentXError,
   canonicalJson,
   capText,
@@ -44,6 +45,7 @@ import { classifyAgentWrite, recordOwnItems, type ClassifyAgentWriteDependencies
 
 export const WRITE_APPROVER_RULE = "write_approver";
 
+const SHAPE_CHECK_REQUEST_ID = "00000000-0000-4000-8000-000000000000";
 const ID = /^[A-Za-z0-9_-]{1,100}$/;
 const STEP = /^[a-z][a-z0-9_]{0,23}$/;
 
@@ -238,6 +240,9 @@ export async function decideWrite(deps: ApprovalDependencies, input: DecideWrite
     throw agentXError("CONFIG_INVALID", "the task, operation or step is not a valid id");
   }
   const { tool, call, run } = input;
+  // The call must be one the connector path would accept, so what is stored is something that can be run (and read back).
+  const shape = ConnectorCallRequestSchema.safeParse({ requestId: SHAPE_CHECK_REQUEST_ID, scope: call.scope, tool: tool.upstreamName, schemaHash: call.schemaHash, arguments: call.arguments });
+  if (!shape.success) throw agentXError("CONFIG_INVALID", `call.${shape.error.issues[0]?.path.join(".") || "arguments"}: is not valid`);
   const found = await githubRepositoryOf(deps, input.orgId, run.project, tool, call.arguments);
   if (found === "refused") return { outcome: "refuse", reason: OTHER_REPOSITORY_TEXT };
 

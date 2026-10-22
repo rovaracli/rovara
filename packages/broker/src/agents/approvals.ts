@@ -953,10 +953,10 @@ export async function expireApprovals(deps: ApprovalDependencies, now: number, c
   const remove = (item: Record<string, unknown>) => deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Delete: { TableName: deps.tableName, Key: { pk: item["pk"], sk: item["sk"] } } }] }));
   for (const item of page.Items ?? []) {
     const sk = String(item["sk"]);
-    if (sk.slice(0, 24) > until) return report;
+    const parts = DUE_SK.exec(sk);
+    if (parts !== null && sk.slice(0, 24) > until) return report;
     if (options.deadline !== undefined && deps.now() >= options.deadline) return { ...report, ...(resumeAfter === undefined ? {} : { next: resumeAfter }), stopped: true };
     resumeAfter = sk;
-    const parts = DUE_SK.exec(sk);
     if (parts === null || item["orgId"] !== parts[2] || item["approvalId"] !== parts[3]) {
       log(deps, "approval.open_item_rejected", { reason: "malformed" });
       await remove(item);

@@ -11,7 +11,7 @@ import {
 import { describeAction } from "../../packages/contracts/src/action-class.js";
 import type { AgentCaller } from "../../packages/broker/src/agents/access.js";
 import {
-  createStepApproval, decideApproval, expireApprovals, getAnyApproval, listApprovalsFor, registerApprovalSubjectHandler, registerApproverRule,
+  createPendingChange, createStepApproval, decideApproval, expireApprovals, getAnyApproval, listApprovalsFor, registerApprovalSubjectHandler, registerApproverRule,
   type AnyApprovalRecord, type ApprovalDependencies, type StepApprovalRecord, type WriteApprovalRecord,
 } from "../../packages/broker/src/agents/approvals.js";
 import { routeApprovalRequest } from "../../packages/broker/src/agents/approval-routes.js";
@@ -915,6 +915,191 @@ describe("step approvals", () => {
     const step = await createStepApproval(w.deps, stepInput());
     expect(await decideApproval(w.deps, w.caller(BOB), step.approvalId, { requestId: REQ(1), decision: "DECLINE" })).toEqual({ status: "DECLINED" });
     expect(seen).toEqual(["DECLINED"]);
+  });
+});
+
+describe("what is checked before anything is stored", () => {
+  it("refuses a call the connector path would not accept, and stores nothing", async () => {
+    const w = world();
+    for (const call of [
+      { scope: "eng", schemaHash: "nope", arguments: { id: "ENG-12", stateId: "s1" } },
+      { scope: "Not A Scope!", schemaHash: SCHEMA, arguments: { id: "ENG-12", stateId: "s1" } },
+      { scope: "eng", schemaHash: SCHEMA, arguments: { id: "ENG-12", stateId: "x".repeat(70_000) } },
+    ]) {
+      expect(await code(decideWrite(w.deps, w.input({ call })))).toMatchObject({ code: "CONFIG_INVALID" });
+    }
+    expect(await code(decideWrite(w.deps, w.input({ stepId: "Bad Step" })))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(decideWrite(w.deps, w.input({ taskId: "../x" })))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(w.db.find((item) => item.entityType === "APPROVAL")).toHaveLength(0);
+  });
+
+  it("fails closed when the deployment has no write gate", async () => {
+    const w = world();
+    delete w.deps.writeGate;
+    expect(await code(w.ask(1))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+
+  it("makes the record, the open item, the event and up to 90 approver items in one transaction", async () => {
+    const w = world();
+    const many = Array.from({ length: 120 }, (_, index) => index.toString(16).padStart(64, "0"));
+    const id = await w.waiting(1, { approvers: { kind: "rule", rule: WRITE_APPROVER_RULE, candidates: many } });
+    expect(w.db.find((item) => item.entityType === "APPROVER_INDEX")).toHaveLength(90);
+    expect(((await w.write(id)).approvers as unknown as { candidates: string[] }).candidates).toHaveLength(120);
+    const transactions = w.db.commandNames().filter((name) => name === "TransactWriteCommand");
+    expect(transactions.length).toBeGreaterThan(0);
+  });
+
+  it("writes the record, the index items, the counter and the event together or not at all", async () => {
+    const w = world();
+    w.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" }, times: 1 });
+    await expect(w.ask(1)).rejects.toThrow();
+    expect(w.db.find((item) => String(item.pk).includes("STEP_APPROVALS") || item.pk === "OPEN_APPROVALS" || item.entityType === "APPROVAL" || item.entityType === "TASK_EVENT")).toEqual([]);
+    expect((await w.ask(1)).outcome).toBe("wait");
+  });
+});
+
+describe("the audit trail", () => {
+  it("records the decision with the decider, the proof and the class, the execution with its status, and the expiry", async () => {
+    const w = world({ audit: true });
+    const id = await w.waiting(1);
+    const proof = { kind: "fresh_sign_in", method: "email_code", authTime: "2026-10-22T08:58:00.000Z", sessionRef: "e".repeat(64) } as const;
+    await decideApproval(w.deps, { ...w.caller(BOB), decideProof: proof }, id, { requestId: REQ(1), decision: "APPROVE" });
+    const decided = w.audit!.recordedBy("approval.decided");
+    expect(decided).toHaveLength(1);
+    expect(decided[0]).toMatchObject({ actor: { kind: "member", id: BOB }, target: { kind: "approval", id }, proof, facts: { kind: "write", decision: "APPROVE", subjectKind: "agent_run", class: "consequential" } });
+    expect(w.audit!.recordedBy("write.executed")).toMatchObject([{ actor: { kind: "system" }, facts: { connectorType: "linear", tool: "save_issue", status: "APPROVED_DONE" } }]);
+    const second = await w.waiting(2);
+    w.clock.now += 8 * DAY;
+    await w.sweep();
+    expect(w.audit!.recordedBy("approval.expired")).toMatchObject([{ target: { id: second }, facts: { kind: "write", subjectKind: "agent_run" } }]);
+  });
+
+  it("puts the audit items in the same transaction as the decision", async () => {
+    const w = world({ audit: true });
+    const id = await w.waiting(1);
+    w.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" }, times: 1 });
+    await expect(w.approve(BOB, id)).rejects.toThrow();
+    expect(w.audit!.recordedBy("approval.decided")).toEqual([]);
+    expect((await w.record(id)).status).toBe("PENDING");
+  });
+});
+
+describe("a decision racing an expiry", () => {
+  it("lets exactly one of them win", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.clock.now += 7 * DAY + MINUTE;
+    const [decided, swept] = await Promise.allSettled([w.approve(BOB, id), w.sweep()]);
+    expect(swept.status).toBe("fulfilled");
+    const status = (await w.record(id)).status;
+    expect(["APPROVED_DONE", "EXPIRED"]).toContain(status);
+    expect(w.vendor.state.vendorCalls).toHaveLength(status === "APPROVED_DONE" ? 1 : 0);
+    expect(w.handled).toHaveLength(1);
+    if (status === "EXPIRED") expect(decided.status).toBe("rejected");
+  });
+});
+
+describe("the index the sweep reads", () => {
+  it("drops an item that does not agree with its own key, and one whose record is gone", async () => {
+    const w = world();
+    const past = "2026-10-22T08:00:00.000Z";
+    w.db.set({ pk: "OPEN_APPROVALS", sk: `${past}#${ORG_A}#apr_zzzzzzzzzzzzzzzzzzzz`, orgId: ORG_B, approvalId: "apr_zzzzzzzzzzzzzzzzzzzz" });
+    w.db.set({ pk: "OPEN_APPROVALS", sk: `${past}#${ORG_A}#apr_yyyyyyyyyyyyyyyyyyyy`, orgId: ORG_A, approvalId: "apr_yyyyyyyyyyyyyyyyyyyy" });
+    w.db.set({ pk: "OPEN_APPROVALS", sk: "garbage", orgId: ORG_A });
+    await w.sweep();
+    expect(w.open()).toEqual([]);
+  });
+
+  it("never reads another org's record through an item that names it", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.clock.now += 8 * DAY;
+    const item = w.open()[0]!;
+    w.db.delete({ pk: item.pk as string, sk: item.sk as string });
+    w.db.set({ ...item, sk: String(item.sk).replace(ORG_A, ORG_B), orgId: ORG_B });
+    await w.sweep();
+    expect((await w.record(id)).status).toBe("PENDING");
+  });
+});
+
+describe("a change approval is decided the same way", () => {
+  const change = async (w: World, over: Record<string, unknown> = {}) => createPendingChange(w.deps, {
+    orgId: ORG_A, requestId: REQ(70), requestedBy: ALICE, changes: ["Raises something"], approvers: { kind: "ids", ids: [BOB] },
+    subject: { kind: "agent_publish", agentId: "agt_00000000000000000001", draftRevision: 1, digest: "d".repeat(64) }, ...over,
+  } as never);
+
+  it("claims it, hands the handler the record with who decided it and how, and ends it APPROVED_DONE", async () => {
+    const w = world();
+    const seen: Array<{ decidedBy?: string; status: string; proof?: unknown }> = [];
+    registerApprovalSubjectHandler("agent_publish", async (_deps, record, decision) => { seen.push({ decidedBy: record.decidedBy, status: record.status, proof: decision?.proof }); });
+    const record = await change(w);
+    const proof = { kind: "button", via: "slack" } as const;
+    expect(await decideApproval(w.deps, { ...w.caller(BOB), decideProof: proof }, record.approvalId, { requestId: REQ(1), decision: "APPROVE" })).toEqual({ status: "APPROVED_DONE" });
+    expect(seen).toEqual([{ decidedBy: BOB, status: "EXECUTING", proof }]);
+    expect(await getAnyApproval(w.deps, ORG_A, record.approvalId)).toMatchObject({ status: "APPROVED_DONE", decidedBy: BOB });
+    expect(await code(decideApproval(w.deps, w.caller(BOB), record.approvalId, { requestId: REQ(2), decision: "APPROVE" }))).toMatchObject({ code: "APPROVAL_CLOSED" });
+  });
+
+  it("ends it APPROVED_FAILED with the handler's words when it can no longer be applied, without the error code", async () => {
+    const w = world();
+    registerApprovalSubjectHandler("agent_publish", async () => { throw agentXError("AGENT_REVISION_CONFLICT", "The draft changed after this was asked. Publish again."); });
+    const record = await change(w);
+    expect(await decideApproval(w.deps, w.caller(BOB), record.approvalId, { requestId: REQ(1), decision: "APPROVE" })).toEqual({ status: "APPROVED_FAILED" });
+    expect(await getAnyApproval(w.deps, ORG_A, record.approvalId)).toMatchObject({ status: "APPROVED_FAILED", failure: "The draft changed after this was asked. Publish again." });
+  });
+
+  it("leaves it EXECUTING when the handler dies, and the sweep applies it", async () => {
+    const w = world();
+    let dies = true;
+    const applied: string[] = [];
+    registerApprovalSubjectHandler("agent_publish", async (_deps, record) => { if (dies) throw new Error("down"); applied.push(record.approvalId); });
+    const record = await change(w);
+    expect(await decideApproval(w.deps, w.caller(BOB), record.approvalId, { requestId: REQ(1), decision: "APPROVE" })).toEqual({ status: "EXECUTING" });
+    dies = false;
+    w.clock.now += 6 * MINUTE;
+    await w.sweep();
+    expect(applied).toEqual([record.approvalId]);
+    expect((await getAnyApproval(w.deps, ORG_A, record.approvalId))?.status).toBe("APPROVED_DONE");
+  });
+
+  it("declines without calling the handler, and expires without calling it", async () => {
+    const w = world();
+    const called: string[] = [];
+    registerApprovalSubjectHandler("agent_publish", async (_deps, record) => { called.push(record.approvalId); });
+    const a = await change(w);
+    expect(await decideApproval(w.deps, w.caller(BOB), a.approvalId, { requestId: REQ(1), decision: "DECLINE" })).toEqual({ status: "DECLINED" });
+    const b = await change(w, { requestId: REQ(71) });
+    w.clock.now += 8 * DAY;
+    await w.sweep();
+    expect((await getAnyApproval(w.deps, ORG_A, b.approvalId))?.status).toBe("EXPIRED");
+    expect(called).toEqual([]);
+    expect(w.open()).toEqual([]);
+  });
+
+  it("lists it for the people it names, in the same list as the writes", async () => {
+    const w = world();
+    registerApprovalSubjectHandler("agent_publish", async () => undefined);
+    const record = await change(w);
+    const id = await w.waiting(1);
+    expect((await listApprovalsFor(w.deps, w.caller(BOB), "PENDING")).map((entry) => entry.approvalId).sort()).toEqual([id, record.approvalId].sort());
+  });
+});
+
+describe("the step approval's creation", () => {
+  it("refuses a subject kind nothing is registered to continue", async () => {
+    const w = world();
+    registerApproverRule("t_step", async () => true);
+    expect(await code(createStepApproval(w.deps, { orgId: ORG_A, subject: { kind: "never_registered", taskId: TASK, stepId: "x" } as never, prompt: "Go?", approvers: { kind: "rule", rule: "t_step", candidates: [] } }))).toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
+  it("evaluates write_approver on a step from its task when the creator named no run", async () => {
+    const w = world();
+    const step = await createStepApproval(w.deps, {
+      orgId: ORG_A, subject: { kind: "agent_run", taskId: TASK, stepId: "gate" }, prompt: "Go?", approvers: { kind: "rule", rule: WRITE_APPROVER_RULE, candidates: await writeApproversFor(w.deps, { orgId: ORG_A, project: "web", owner: { developerId: ALICE } }) },
+    });
+    expect(await code(decideApproval(w.deps, w.caller(CARA), step.approvalId, { requestId: REQ(1), decision: "APPROVE" }))).toMatchObject({ code: "FORBIDDEN" });
+    expect((await decideApproval(w.deps, w.caller(BOB), step.approvalId, { requestId: REQ(2), decision: "APPROVE" })).status).toBe("APPROVED");
+    expect(w.handled).toEqual([{ kind: "step", status: "APPROVED", approvalId: step.approvalId }]);
   });
 });
 
