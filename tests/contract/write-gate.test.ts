@@ -1473,7 +1473,8 @@ describe("fix round 1: what a finished approval leaves behind", () => {
     w.clock.now += 6 * MINUTE;
     await w.sweep();
     expect(calls).toBe(2);
-    // An old item left from before (due at once) while the record waits 10 minutes more.
+    // The lease on it is old by now, and the record still waits (it is due at 09:16); an old item left from before is due at once.
+    w.clock.now += 6 * MINUTE;
     w.db.set({ pk: "OPEN_APPROVALS", sk: `2026-10-22T09:00:00.000Z#${ORG_A}#${id}`, orgId: ORG_A, approvalId: id });
     await w.sweep();
     expect(calls).toBe(2);
