@@ -746,6 +746,9 @@ describe("a check's fetch (review I1, M7)", () => {
     const check = vi.fn(async ({ fetch: held }: { fetch: typeof fetch }) => {
       outcomes.push((await held(own, { redirect: "follow", headers: { authorization: "x" } })).status === 200 ? "own ok" : "own failed");
       outcomes.push((await held(new URL(own))).status === 200 ? "url ok" : "url failed");
+      outcomes.push((await held(new Request(own))).status === 200 ? "request ok" : "request failed");
+      // A login in the address does not change its origin, so it is refused by name.
+      outcomes.push(await held(own.replace("https://", "https://user:pw@")).then(() => "reached", (error: Error) => error.message));
       for (const url of elsewhere) outcomes.push(await held(url).then(() => "reached", (error: Error) => error.message));
       outcomes.push(await held(new Request(own.replace(origin, "https://evil.example"))).then(() => "reached", (error: Error) => error.message));
       return { ok: true };
@@ -753,10 +756,10 @@ describe("a check's fetch (review I1, M7)", () => {
     const store = storeOf(deps, { fetch: base, checks: { [connection.type]: check } });
     await store.put({ orgId: ORG_A, connection, secret: secretFor(connection), by: ALICE });
     expect(await store.check(ORG_A, CON_A)).toEqual({ ok: true });
-    expect(outcomes).toEqual(["own ok", "url ok", ...elsewhere.map(() => "a request to anywhere but the vendor's address was refused"), "a request to anywhere but the vendor's address was refused"]);
-    // Two calls got through, each told never to follow a redirect, whatever the caller asked for.
-    expect(base).toHaveBeenCalledTimes(2);
-    expect(base.mock.calls.map((call) => (call as unknown as [unknown, RequestInit])[1].redirect)).toEqual(["error", "error"]);
+    expect(outcomes).toEqual(["own ok", "url ok", "request ok", "a request to anywhere but the vendor's address was refused", ...elsewhere.map(() => "a request to anywhere but the vendor's address was refused"), "a request to anywhere but the vendor's address was refused"]);
+    // Three calls got through, each told never to follow a redirect, whatever the caller asked for.
+    expect(base).toHaveBeenCalledTimes(3);
+    expect(base.mock.calls.map((call) => (call as unknown as [unknown, RequestInit])[1].redirect)).toEqual(["error", "error", "error"]);
   });
 
   it("gives CloudWatch's check a fetch that reaches nowhere, since it speaks to AWS through its own client", async () => {

@@ -907,8 +907,7 @@ function orgConnectionStoreOf(dependencies: AwsBrokerDependencies): OrgConnectio
     tableName: dependencies.tableName,
     ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
     checkEndpoint: async (url) => { await checkEndpointUrl(url, dnsResolveHost); },
-    // The checks of an MCP endpoint and a Grafana address go over a connection pinned to the addresses checked, through the broker's own guard when it has one.
-    ...(dependencies.mcpEndpointGuard === undefined ? {} : { endpointGuard: dependencies.mcpEndpointGuard }),
+    // The checks of an MCP endpoint and a Grafana address go over a connection pinned to the addresses checked (the store's default guard is `mcpEndpointGuard()`).
     ...dependencies.connectionChecks,
   });
 }
