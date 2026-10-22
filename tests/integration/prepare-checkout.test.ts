@@ -105,6 +105,8 @@ describe("preparing a workspace for a run that looks at a pull request", () => {
     const later = await git(source.directory, "rev-parse", "HEAD");
     await git(source.directory, "update-ref", "refs/pull/12/head", later);
     await git(source.directory, "checkout", "--quiet", "main");
+    // The recorded commit is on no branch any more (a fork's pull request, force-pushed): only its sha can still name it.
+    await git(source.directory, "branch", "--quiet", "-D", "feature");
     const root = await mkdtemp(join(tmpdir(), "agentx-pr-workspace-"));
     const manifest = await prepareWorkspace({
       rootPath: root, project: project(), materializer: materializer(source.directory), pullRequestRemote: () => pathToFileURL(source.directory).href,
@@ -123,6 +125,8 @@ describe("preparing a workspace for a run that looks at a pull request", () => {
     });
     await expect(verifyCheckedOutHeads(root, manifest, checkout)).resolves.toBeUndefined();
     await expect(verifyCheckedOutHeads(root, manifest, [])).resolves.toBeUndefined();
+    // A second head named for the same repository is not the one preparation checked out, and is not looked at.
+    await expect(verifyCheckedOutHeads(root, manifest, [...checkout, { repository: "demo", pullRequest: 13, headSha: "c".repeat(40) }])).resolves.toBeUndefined();
     // The workspace was moved off the commit (or never held it): the step does not run.
     await git(join(root, "repo", "demo"), "checkout", "--quiet", "--detach", source.main);
     await expect(verifyCheckedOutHeads(root, manifest, checkout)).rejects.toThrow("pull request 12");

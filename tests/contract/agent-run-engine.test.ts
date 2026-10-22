@@ -2033,6 +2033,48 @@ describe("Task 22 review: cancelling stops the run (C1)", () => {
     expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED" });
     expect(t.stepOps(run.workspaceId)).toHaveLength(1);
   });
+
+  it("a decision for a step that has nothing more to be told still ends a cancelled run instead of completing it", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Looked.");
+    const last = t.stepOps(run.workspaceId)[1]!;
+    const deps = t.routeDeps();
+    const write = await askWrite(t, deps, { taskId: run.taskId, stepId: "report", operationId: last.id, summary: "comment on LIN-12" });
+    // The step has been handed outcomes four times already: a fifth is not made, so a decision would complete the run.
+    const item = t.db.get(`DEVTASK#${run.taskId}`, "AGENT_RUN") as Record<string, unknown> & { steps: Array<{ id: string; operationIds: string[] }> };
+    t.db.set({ ...item, steps: item.steps.map((step) => (step.id === "report" ? { ...step, operationIds: [randomUUID(), randomUUID(), randomUUID(), randomUUID(), last.id] } : step)) });
+    await t.finishStep(run, last.id, "Report.");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL" });
+    await recordIntent(t, run.taskId);
+    await approve(deps, write.approvalId);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED" });
+  });
+
+  it("an approval step that is the last step does not complete a cancelled run when it is approved", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf({ instructions: "Draft, then ask.", sequence: [agentStep("draft", "Draft"), { id: "gate", name: "Ship it", kind: "approval" as const, prompt: "Send the report?" }] });
+    const run = await t.start(agentId);
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "The draft.");
+    const [approvalId] = t.runItem(run.taskId)!.steps[1]!.approvalIds;
+    await recordIntent(t, run.taskId);
+    await approve(t.routeDeps(), approvalId!);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED" });
+  });
+
+  it("a run resumed after a budget pause does not dispatch when its task was closed meanwhile", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "SET budgetPause = :pause", ExpressionAttributeValues: { ":pause": { scope: { kind: "task", taskId: run.taskId }, at: new Date().toISOString() } } }));
+    await t.finish(run.workspaceId, t.stepOps(run.workspaceId)[0]!.id, "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "SET closedAt = :now REMOVE budgetPause", ExpressionAttributeValues: { ":now": new Date().toISOString() } }));
+    expect(await advanceAgentRun(t.routeDeps(), run.taskId)).toBe("ended");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED", endReason: "The task was closed." });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+  });
 });
 
 describe("Task 22 review: closing a task ends a run that waits (I1)", () => {
@@ -2082,6 +2124,24 @@ describe("Task 22 review: closing a task ends a run that waits (I1)", () => {
     expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED", endReason: "The task was closed." });
     expect((await getAnyApproval(deps, TEST_ORG, write.approvalId as never))!.status).toBe("EXPIRED");
     expect(events).toHaveLength(1);
+  });
+
+  it("closing ends the run itself, even when the run's dispatch row is gone (nothing else would look at it)", async () => {
+    const { t, run, deps, write } = await waitingOnWrite();
+    await t.db.send(new DeleteCommand({ TableName: "state", Key: { pk: "WORKFLOW_DISPATCH", sk: `${run.taskId}#agent` } }));
+    await t.call(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/close`, {});
+    await t.finish(run.workspaceId, t.operations(run.workspaceId).find((operation) => operation.kind === "close")!.id, "SUCCEEDED", { result: { safeToClose: true, repositories: [] } });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED", endReason: "The task was closed." });
+    expect((await getAnyApproval(deps, TEST_ORG, write.approvalId))!.status).toBe("EXPIRED");
+  });
+
+  it("a close that another call finished first still ends the run when this call finds it done", async () => {
+    const { t, run, deps } = await waitingOnWrite();
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "SET closedAt = :now", ExpressionAttributeValues: { ":now": new Date().toISOString() } }));
+    await t.db.send(new DeleteCommand({ TableName: "state", Key: { pk: "WORKFLOW_DISPATCH", sk: `${run.taskId}#agent` } }));
+    const { finishTaskClose } = await import("../../packages/broker/src/aws/developer-tasks.js");
+    await finishTaskClose({ tableName: "state", actions: t.actions, documentClient: t.db, agentEngine: deps }, t.db.get(`DEVTASK#${run.taskId}`, "META") as never, undefined, []);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED", endReason: "The task was closed." });
   });
 });
 
@@ -2225,6 +2285,19 @@ describe("Task 22 review: a late handler_gave_up never fails a run that moved on
     await t.finish(run.workspaceId, t.stepOps(run.workspaceId)[0]!.id, "FAILED", { error: "the model gave up" });
     expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
     expect(t.operations(run.workspaceId).filter((operation) => operation.kind === "cancel")).toEqual([]);
+  });
+
+  it("an approval that was already handed back to the model belongs to an earlier round: its late hook does not fail a run that waits on the next one", async () => {
+    const { t, run, deps, write } = await waitingOnWrite();
+    await approve(deps, write.approvalId);
+    const continuation = t.stepOps(run.workspaceId)[1]!;
+    const second = await askWrite(t, deps, { taskId: run.taskId, stepId: "investigate", operationId: continuation.id, summary: "comment on LIN-13" });
+    await t.finishStep(run, continuation.id, "More to approve.");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL" });
+    await onApprovalGaveUp(deps, (await getAnyApproval(deps, TEST_ORG, write.approvalId))!);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL" });
+    await onApprovalGaveUp(deps, (await getAnyApproval(deps, TEST_ORG, second.approvalId))!);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
   });
 });
 
@@ -2399,5 +2472,18 @@ describe("Task 22 review: one gate for every dispatch (M1), the step's pending c
     await t.finishStep(run, continuation.id, "Done after the comment.");
     expect(t.runItem(run.taskId)).toMatchObject({ state: "COMPLETE" });
     expect(t.runItem(run.taskId)!.branch).toBeUndefined();
+  });
+
+  it("M7: a continuation that was cut by the budget is run again with the outcomes it had been told, since the new run starts from the request alone", async () => {
+    const { t, run, first, deps, write } = await waitingOnWrite();
+    await t.finishStep(run, first.id, "Waiting.");
+    await approve(deps, write.approvalId);
+    const continuation = t.stepOps(run.workspaceId)[1]!;
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "SET budgetPause = :pause", ExpressionAttributeValues: { ":pause": { scope: { kind: "task", taskId: run.taskId }, at: new Date().toISOString() } } }));
+    await t.finish(run.workspaceId, continuation.id, "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "REMOVE budgetPause" }));
+    await advanceAgentRun(deps, run.taskId);
+    const rerun = t.stepOps(run.workspaceId)[2]!;
+    expect(t.invocationOf(rerun.id).payload.agentStep!.inputs).toContain("Approved and done: comment on LIN-12");
   });
 });

@@ -437,14 +437,15 @@ function watchdogMs(step: ResolvedStep): number {
 interface Continuation { ownReport?: string; lines: string[]; told: string[] }
 
 /**
- * A step that is to run again after a budget pause is handed what came of the writes its first run asked for (decided while it was paused), so it does not ask
- * for them again: the same lines a continuation has (Task 22 review, M7).
+ * A step that is to run again after a budget pause is handed what came of the writes its earlier runs asked for (decided before or while it was paused), so it does
+ * not ask for them again: the same lines a continuation has (Task 22 review, M7). The new run starts from the request alone, so every decided write is told again,
+ * the ones an earlier continuation was told as well.
  */
 async function rerunOutcomes(deps: AgentRunEngineDependencies, loaded: Loaded, step: ResolvedStep): Promise<Continuation | undefined> {
   const existing = loaded.run.steps.find((entry) => entry.id === step.id);
   if (existing === undefined || existing.operationIds.length === 0) return undefined;
   const approvals = (await taskApprovals(deps, loaded.task, loaded.run))
-    .filter((record): record is WriteApprovalRecord => record.kind === "write" && record.subject.stepId === step.id && !isOpen(record) && !(existing.told ?? []).includes(record.approvalId));
+    .filter((record): record is WriteApprovalRecord => record.kind === "write" && record.subject.stepId === step.id && !isOpen(record));
   if (approvals.length === 0) return undefined;
   const own = loaded.run.reports.find((report) => report.stepId === step.id)?.text;
   return { ...(own === undefined ? {} : { ownReport: own }), lines: approvals.map(outcomeLine), told: approvals.map((record) => record.approvalId) };
