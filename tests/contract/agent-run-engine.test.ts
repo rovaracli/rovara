@@ -10,7 +10,7 @@ import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import {
-  advanceAgentRun, onAgentStepFinished, onTaskEnded, onWriteDecided, prepareSlackReport, registerTaskEndHandler, registerTaskPauseHandler,
+  advanceAgentRun, cancelAgentRun, onAgentStepFinished, onTaskEnded, onWriteDecided, prepareSlackReport, registerTaskEndHandler, registerTaskPauseHandler,
   type TaskEndEvent, type TaskPauseEvent,
 } from "../../packages/broker/src/agents/run-engine.js";
 import {
@@ -27,15 +27,14 @@ import { AGENT_WORKER_OUTDATED, AgentStepPayloadSchema } from "../../packages/co
 import { createEc2Delivery, type Ec2DeliveryDependencies } from "../../packages/broker/src/aws/ec2-delivery.js";
 import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
-import type { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { approvalKey, approverIndexKey, projectAgentKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { approvalKey, approverIndexKey, projectAgentKey, slackBindingKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org.js";
 import type { AgentId } from "../../packages/contracts/src/agent.js";
 import { DEV_ISSUER, MAYA, OMAR, bindChannel, createDeveloperTaskBroker, grantProject, recordStream, unbindChannel, type Developer } from "../support/developer-task-broker.js";
 import { taskPageUrl } from "../../packages/broker/src/aws/developer-tasks.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { SLACK_CHANNEL, call, loadSlackBroker } from "../support/slack-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, call, loadSlackBroker, registerSlackProject } from "../support/slack-broker.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 import { createNotifierHandler } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { noticesOf, type Notice } from "../../packages/broker/src/developer/notifications.js";
@@ -77,11 +76,13 @@ interface TaskViewShape {
 }
 type Op = Record<string, unknown> & { id: string; kind: string; status: string; programStepId?: string; createdAt: string; fence: number };
 
-async function setup(options: { proxy?: boolean; brokerExtra?: Record<string, unknown>; guardrails?: Partial<typeof DEFAULT_AGENT_GUARDRAILS> } = {}) {
+async function setup(options: { proxy?: boolean; brokerExtra?: Record<string, unknown>; readyChecks?: boolean } = {}) {
   const access = options.proxy === true ? fakeModelAccess() : undefined;
   const h = await createDeveloperTaskBroker({
+    ...(options.readyChecks === true ? { register: false } : {}),
     brokerExtra: { agents: {}, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }), ...options.brokerExtra },
   });
+  if (options.readyChecks === true) await registerSlackProject(h.handler, { readiness: [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }] });
   if (access !== undefined) {
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
@@ -1306,5 +1307,508 @@ describe("a run that looks at a pull request: an old worker", () => {
     await current.handler({ Records: [{ messageId: "new-worker", body: JSON.stringify(record) }] });
     expect(current.post).toHaveBeenCalledTimes(1);
     expect(current.markDelivered).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// Survivors of the first mutation run: each guard below is pinned by a test that fails without it
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("what a step's result may and may not change", () => {
+  it("changes nothing once the run is over, or for a step that is no longer running", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const deps = t.routeDeps();
+    await t.finishStep(run, first.id, "One.");
+    // The step is done: a late copy with another report changes nothing.
+    await onAgentStepFinished(deps, { taskId: run.taskId, operationId: first.id, outcome: "SUCCEEDED", report: "Something else." });
+    expect(t.runItem(run.taskId)!.reports).toEqual([{ stepId: "investigate", name: "Investigate", text: "One." }]);
+    // The run is over: a result for its running step does nothing either.
+    const second = t.stepOps(run.workspaceId)[1]!;
+    await cancelAgentRun(deps, run.taskId);
+    await onAgentStepFinished(deps, { taskId: run.taskId, operationId: second.id, outcome: "SUCCEEDED", report: "Too late." });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED" });
+    expect(t.runItem(run.taskId)!.reports).toHaveLength(1);
+    expect(t.runItem(run.taskId)!.finalReport).toBeUndefined();
+  });
+
+  it("keeps a report redacted, and takes the branch only from the last agent step", async () => {
+    const t = await setup();
+    const contract = { branches: [{ id: "fix", description: "A fix is needed" }, { id: "close", description: "Nothing to do" }] };
+    const run = await startWithContract(t, contract);
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Token ghp_abcdefghijklmnopqrstuvwxyz0123456789 was in the log.", { branch: "fix" });
+    expect(t.runItem(run.taskId)!.reports[0]!.text).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+    expect(t.runItem(run.taskId)!.branch).toBeUndefined();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[1]!.id, "Done.");
+    expect(t.runItem(run.taskId)!.branch).toBeUndefined();
+  });
+
+  it("does not hand an outcome back while the approval is being carried out (EXECUTING is not decided)", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const deps = t.routeDeps();
+    const write = await askWrite(t, deps, { taskId: run.taskId, stepId: "investigate", operationId: first.id, summary: "comment on LIN-12" });
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: approvalKey(TEST_ORG, write.approvalId), UpdateExpression: "SET #status = :executing", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":executing": "EXECUTING" } }));
+    await t.finishStep(run, first.id, "Waiting.");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL" });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+  });
+
+  it("hands the outcomes back at most four times, then lets the step end", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const deps = t.routeDeps();
+    for (let round = 0; round < 6; round += 1) {
+      const ops = t.stepOps(run.workspaceId);
+      const current = ops.at(-1)!;
+      if (current.programStepId !== "investigate") break;
+      const write = await askWrite(t, deps, { taskId: run.taskId, stepId: "investigate", operationId: current.id, summary: `action ${String(round)}` });
+      await t.finishStep(run, current.id, `Report ${String(round)}.`);
+      if (t.runItem(run.taskId)!.state === "WAITING_FOR_APPROVAL") await approve(deps, write.approvalId);
+      await new Promise((resolve) => setTimeout(resolve, 3));
+    }
+    const investigateOps = t.stepOps(run.workspaceId).filter((operation) => operation.programStepId === "investigate");
+    expect(investigateOps).toHaveLength(1 + 4);
+    expect(t.stepOps(run.workspaceId).at(-1)).toMatchObject({ programStepId: "report" });
+  });
+
+  it("shortens each earlier report so the next step's inputs stay in the payload limit, and keeps the stored reports inside the run's budget", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf({ instructions: "Four.", sequence: [agentStep("a", "A"), agentStep("b", "B"), agentStep("c", "C"), agentStep("d", "D")] });
+    const big: RunInput = { text: "x".repeat(8000), context: Array.from({ length: 10 }, (_, index) => ({ kind: "text" as const, ref: `item-${String(index)}`, body: "e".repeat(16_000) })) };
+    const run = await t.start(agentId, big);
+    await run.finishPrepare();
+    for (const [index, name] of ["a", "b", "c"].entries()) await t.finishStep(run, t.stepOps(run.workspaceId)[index]!.id, name.repeat(40_000));
+    const inputs = t.invocationOf(t.stepOps(run.workspaceId)[3]!.id).payload.agentStep!.inputs;
+    expect(Buffer.byteLength(inputs, "utf8")).toBeLessThanOrEqual(262_144);
+    expect(inputs).toContain(SHORTENED_MARKER);
+    const stored = t.runItem(run.taskId)!.reports.reduce((total, report) => total + Buffer.byteLength(report.text, "utf8"), 0);
+    expect(stored).toBeLessThanOrEqual(150 * 1024);
+  });
+
+  it("hands a continuation the step's own earlier report, and says it in the step's event", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const deps = t.routeDeps();
+    const write = await askWrite(t, deps, { taskId: run.taskId, stepId: "investigate", operationId: first.id, summary: "comment on LIN-12" });
+    await t.finishStep(run, first.id, "My first findings.");
+    await approve(deps, write.approvalId);
+    const inputs = t.invocationOf(t.stepOps(run.workspaceId)[1]!.id).payload.agentStep!.inputs;
+    expect(inputs).toContain("Your report for this step before the outcomes were known:\nMy first findings.");
+    expect((await t.view(MAYA, run.taskId)).events.map((event) => event.text)).toContain("Carrying on with Investigate now that the outcomes of the actions that needed approval are known.");
+  });
+
+  it("is not told of a run another org's item names, or of an approval that belongs to another task", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const deps = t.routeDeps();
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "AGENT_RUN" }, UpdateExpression: "SET orgId = :other", ExpressionAttributeValues: { ":other": "org_bbbbbbbbbbbbbbbbbbbb" } }));
+    expect(await advanceAgentRun(deps, run.taskId)).toBe("no_run");
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "AGENT_RUN" }, UpdateExpression: "SET orgId = :mine", ExpressionAttributeValues: { ":mine": TEST_ORG } }));
+    // An approval of another task, named by an event in this task's partition, is not this task's.
+    const stranger = await askWrite(t, deps, { taskId: randomUUID(), stepId: "investigate", operationId: randomUUID(), summary: "a stranger's action" });
+    t.db.set({ ...approvalTaskEventKey(run.taskId, new Date().toISOString(), stranger.approvalId), entityType: "TASK_EVENT", orgId: TEST_ORG, kind: "status", text: "x", at: new Date().toISOString() });
+    await t.finishStep(run, first.id, "One.");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING", steps: [{ status: "done" }, { status: "running" }] });
+  });
+
+  it("leaves a running step a watchdog row that is not due for a long while", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const row = t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)[0]!;
+    expect(Date.parse(String(row.nextAttemptAt)) - Date.now()).toBeGreaterThan(10 * 60_000);
+  });
+});
+
+describe("the agent step's payload", () => {
+  it("carries the layered instructions, the step's time limit and no instruction section in the prompt", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf({ instructions: "House rules.", sequence: [agentStep("work", "Work", "none", { settings: { instructions: "Be brief.", timeoutMinutes: 30 } })] });
+    const run = await t.start(agentId);
+    await run.finishPrepare();
+    const payload = t.invocationOf(t.stepOps(run.workspaceId)[0]!.id).payload;
+    expect(payload.agentStep).toMatchObject({ timeoutMs: 1_800_000 });
+    expect(payload.agentStep!.instructions).toMatch(/^From [^\n]+:\nHouse rules\.\n\nFrom [^\n]+:\nBe brief\.$/);
+    expect(String(payload.prompt)).not.toContain("Instructions from your company's agent");
+    expect(String(payload.prompt)).not.toContain("House rules.");
+  });
+
+  it("refuses instructions too long for the worker, and puts the step's own name in its operation", async () => {
+    const { applyAgentStep } = await import("../../packages/broker/src/agents/dispatch.js");
+    const { EMPTY_RECIPE } = await import("../../packages/contracts/src/agent-recipe.js");
+    const { DEFAULT_AGENT_GUARDRAILS } = await import("../../packages/contracts/src/agent-guardrails.js");
+    const step = { id: "work", name: "Work", kind: "agent" as const, workspace: "none" as const, settings: { instructions: [{ agentName: "A", text: "y".repeat(70_000) }] } };
+    const recipe = { ...structuredClone(EMPTY_RECIPE), chain: [{ agentId: "agt_aaaaaaaaaaaaaaaaaaaa" as AgentId, name: "A", version: 1, builtin: false }], steps: [step] };
+    expect(() => applyAgentStep({ recipe, ref: { agentId: "agt_aaaaaaaaaaaaaaaaaaaa", name: "A", version: 1, builtin: false }, guardrails: { ...DEFAULT_AGENT_GUARDRAILS }, project: "payments", priorOperations: [], agentRun: { step, inputs: "Request:\nx" } })).toThrow(/too long to send to the worker/);
+  });
+
+  it("holds a step that must differ in company from an earlier agent step to it, as it does for coding steps", async () => {
+    const t = await setup({ brokerExtra: { agents: { servableModels: async () => [{ provider: "anthropic", modelId: "claude-sonnet-4-6" }, { provider: "openai", modelId: "gpt-5.5" }] } } });
+    const sonnet = { provider: "anthropic", modelId: "claude-sonnet-4-6" };
+    const refused = await t.start(await t.agentOf({ instructions: "Two.", sequence: [agentStep("one", "One", "none", { settings: { model: sonnet } }), agentStep("two", "Two", "none", { settings: { model: sonnet, differentCompanyFrom: "one" } })] }));
+    await refused.finishPrepare();
+    await t.finishStep(refused, t.stepOps(refused.workspaceId)[0]!.id, "One.");
+    expect(t.runItem(refused.taskId)).toMatchObject({ state: "FAILED" });
+    expect(t.runItem(refused.taskId)!.endReason).toContain("different AI company");
+    const allowed = await t.start(await t.agentOf({ instructions: "Two.", sequence: [agentStep("one", "One", "none", { settings: { model: sonnet } }), agentStep("two", "Two", "none", { settings: { model: { provider: "openai", modelId: "gpt-5.5" }, differentCompanyFrom: "one" } })] }));
+    await allowed.finishPrepare();
+    await t.finishStep(allowed, t.stepOps(allowed.workspaceId)[0]!.id, "One.");
+    expect(t.stepOps(allowed.workspaceId)).toHaveLength(2);
+  });
+
+  it("does not run an agent step of a run on its owner's ChatGPT plan", async () => {
+    const plan = { [MAYA.developerId]: { connected: true, status: "connected", models: ["gpt-6.1-sol"] } };
+    const chatgpt = {
+      settings: async () => ({ enabled: true, preferredModel: "gpt-6.1-sol" }), view: async (developerId: string) => (plan as Record<string, unknown>)[developerId] ?? { connected: false },
+      accessToken: async () => ({ access: "token", expiresAt: Date.now() + 3_600_000, models: [] }), markStatus: async () => undefined, refreshModels: async () => undefined,
+    };
+    const t = await setup({ brokerExtra: { chatgpt } });
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const op = t.stepOps(run.workspaceId)[0]!;
+    expect(t.invocationOf(op.id).payload).not.toHaveProperty("chatgpt");
+    expect(op.chatgptDeveloperId).toBeUndefined();
+  });
+
+  it("sends no readiness checks with an agent step, though the project has some", async () => {
+    const t = await setup({ readyChecks: true });
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    expect(t.invocationOf(t.stepOps(run.workspaceId)[0]!.id).payload).not.toHaveProperty("readiness");
+  });
+});
+
+describe("prepareSlackReport: what only the full normalisation and the exact forms catch", () => {
+  const options = { orgId: TEST_ORG, taskUrl: TASK_LINK, reportLinkDomains: [], extraCommandWords: [] };
+  it("finds a command written with a look-alike letter that the text clean-up alone does not fold", () => {
+    expect(prepareSlackReport("rollbаck", options)).toEqual({ kind: "link_only", text: `Report available in Rovara: ${TASK_LINK}` });
+  });
+  it("does not leave a link inside a link's label", () => {
+    const result = prepareSlackReport("see <https://evil.example/x|https://good.example/y>", options);
+    expect(result.text).not.toContain("https://");
+    expect(result.text).toContain("(evil.example)");
+  });
+  it("takes a plain @here out with the space after it", () => {
+    expect(prepareSlackReport("Ping @here now", options)).toEqual({ kind: "text", text: "Ping now" });
+  });
+  it("is the org's domain list that decides, not a look-alike ending", () => {
+    expect(prepareSlackReport("<https://evilacme.example/x|a>", { ...options, reportLinkDomains: ["acme.example"] })).toEqual({ kind: "text", text: "a (evilacme.example)" });
+  });
+});
+
+describe("the guardrails that shape the Slack report", () => {
+  async function finishedWith(report: string, guardrails: { extraCommandWords?: string[]; reportLinkDomains?: string[] }) {
+    const t = await setup();
+    const current = await readGuardrailsWithRevision({ documentClient: t.db, tableName: "state" }, TEST_ORG);
+    await t.store.putGuardrails({ orgId: TEST_ORG, guardrails: { ...current.guardrails, ...guardrails }, expectedRevision: current.revision, by: MAYA.developerId });
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Looked.");
+    await t.finishStep(run, t.stepOps(run.workspaceId)[1]!.id, report);
+    return { t, run, post: t.db.get(`DEVTASK#${run.taskId}`, "AGENT_REPORT") as { kind: string; text: string } | undefined };
+  }
+  it("withholds a report that holds the org's own command word", async () => {
+    const { post } = await finishedWith("the deploy script failed", { extraCommandWords: ["deploy"] });
+    expect(post).toMatchObject({ kind: "link_only" });
+  });
+  it("keeps a link to a host the org allows", async () => {
+    const { post } = await finishedWith("see <https://docs.acme.example/runbook|the runbook>", { reportLinkDomains: ["acme.example"] });
+    expect(post).toMatchObject({ kind: "text", text: "see <https://docs.acme.example/runbook|the runbook>" });
+  });
+  it("leaves nothing for the notifier, and says nothing about Slack, when the run failed", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Looked.");
+    await t.finish(run.workspaceId, t.stepOps(run.workspaceId)[1]!.id, "FAILED", { error: "the model gave up" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
+    expect(t.db.get(`DEVTASK#${run.taskId}`, "AGENT_REPORT")).toBeUndefined();
+    expect(t.taskEvents(run.taskId).map((event) => String(event.text)).filter((text) => text.startsWith("No Slack channel"))).toEqual([]);
+  });
+});
+
+describe("approval steps check the task before they ask", () => {
+  async function atTheGate(change: (t: World) => Promise<void>) {
+    const t = await setup();
+    const run = await t.start(await t.agentOf(WITH_GATE));
+    await run.finishPrepare();
+    await change(t);
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "The draft.");
+    return { t, run };
+  }
+  it("does not ask when the creator left meanwhile, and ends the run creator_removed", async () => {
+    const { t, run } = await atTheGate(async (w) => {
+      await w.db.send(new DeleteCommand({ TableName: "state", Key: orgMemberKey(TEST_ORG, MAYA.developerId) }));
+      w.db.set({ ...orgRemovedKey(TEST_ORG, MAYA.developerId), entityType: "ORG_REMOVED", removedAt: "2026-10-21T00:00:00.000Z" });
+    });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED" });
+    expect(t.meta(run.taskId)).toMatchObject({ outcome: "creator_removed" });
+    expect(t.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);
+  });
+  it("does not ask when the company forbade a model of the agent meanwhile", async () => {
+    const agent = { provider: "anthropic", modelId: "claude-sonnet-4-6" };
+    const t = await setup();
+    const id = await t.agentOf({ instructions: "x", sequence: [agentStep("draft", "Draft"), { id: "gate", name: "Ship it", kind: "approval" as const, prompt: "Go?" }, agentStep("send", "Send", "none", { settings: { model: agent } })] });
+    const run = await t.start(id);
+    await run.finishPrepare();
+    const current = await readGuardrailsWithRevision({ documentClient: t.db, tableName: "state" }, TEST_ORG);
+    await t.store.putGuardrails({ orgId: TEST_ORG, guardrails: { ...current.guardrails, forbiddenModels: [agent] }, expectedRevision: current.revision, by: MAYA.developerId });
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "The draft.");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
+    expect(t.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);
+  });
+  it("hears an approval that was decided before the run was waiting on it", async () => {
+    const t = await setup();
+    const run = await t.start(await t.agentOf(WITH_GATE));
+    await run.finishPrepare();
+    const deps = t.routeDeps();
+    const owner = { developerId: MAYA.developerId, name: MAYA.name };
+    const early = await createStepApproval(deps, { orgId: TEST_ORG, subject: { kind: "agent_run", taskId: run.taskId, stepId: "gate" }, prompt: "Send the report to customers?", approvers: { kind: "rule", rule: "write_approver", candidates: [MAYA.developerId] }, project: "payments", owner });
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: approvalKey(TEST_ORG, early.approvalId), UpdateExpression: "SET #status = :yes", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":yes": "APPROVED" } }));
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "The draft.");
+    expect(t.stepOps(run.workspaceId)).toHaveLength(2);
+    expect(t.stepOps(run.workspaceId)[1]).toMatchObject({ programStepId: "send" });
+  });
+});
+
+describe("the end handlers' unit contract", () => {
+  const taskOf = (t: World, taskId: string) => t.db.get(`DEVTASK#${taskId}`, "META") as never;
+  const endDeps = (t: World) => ({ documentClient: t.db, tableName: "state", now: Date.now });
+
+  it("tells a handler once when two calls meet, and keeps the lease off when a handler fails", async () => {
+    const t = await setup();
+    const started = await t.call(MAYA, "POST", "/v1/dev/tasks", { project: "payments", instructions: "Fix the bug", client: "test-client" });
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    let told = 0;
+    unregister.push(registerTaskEndHandler(async () => { told += 1; await new Promise((resolve) => setTimeout(resolve, 20)); }));
+    const results = await Promise.all([onTaskEnded(endDeps(t), taskOf(t, taskId), "closed"), onTaskEnded(endDeps(t), taskOf(t, taskId), "closed")]);
+    expect(told).toBe(1);
+    expect([...results].sort()).toEqual(["already_ended", "called"]);
+  });
+
+  it("takes a failed handler up at once on the next call", async () => {
+    const t = await setup();
+    const started = await t.call(MAYA, "POST", "/v1/dev/tasks", { project: "payments", instructions: "Fix the bug", client: "test-client" });
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    let fail = true;
+    let told = 0;
+    unregister.push(registerTaskEndHandler(async () => { if (fail) { fail = false; throw new Error("down"); } told += 1; }));
+    await expect(onTaskEnded(endDeps(t), taskOf(t, taskId), "closed")).rejects.toThrow("down");
+    expect(await onTaskEnded(endDeps(t), taskOf(t, taskId), "closed")).toBe("called");
+    expect(told).toBe(1);
+  });
+
+  it("tells the task's budget as it stands now, the cap on the run, and the spend; a spend that can't be read is told as nothing", async () => {
+    const t = await setup();
+    const started = await t.call(MAYA, "POST", "/v1/dev/tasks", { project: "payments", instructions: "Fix the bug", client: "test-client" });
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    const stale = structuredClone(taskOf(t, taskId)) as Record<string, unknown>;
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${taskId}`, sk: "META" }, UpdateExpression: "SET budgetUsd = :raised, maxPerRunUsd = :cap", ExpressionAttributeValues: { ":raised": 40, ":cap": 10 } }));
+    const events = endHandler();
+    const spend = async () => { throw new Error("proxy down"); };
+    await onTaskEnded({ ...endDeps(t), agentRuns: { spentUsd: spend } }, stale as never, "closed");
+    expect(events).toEqual([expect.objectContaining({ runLimitUsd: 40, stopAtUsd: 10, spentUsd: 0, outcome: "closed" })]);
+  });
+
+  it("tells nobody about a task that belongs to no org, and writes nothing", async () => {
+    const t = await setup();
+    const events = endHandler();
+    const task = { taskId: randomUUID() } as never;
+    expect(await onTaskEnded(endDeps(t), task, "closed")).toBe("not_listening");
+    expect(events).toEqual([]);
+  });
+
+  it("writes no record of a merged workflow task's end when no handler listens", async () => {
+    const t = await setup();
+    const started = await t.call(MAYA, "POST", "/v1/dev/tasks", { project: "payments", instructions: "Fix the bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    const record = t.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown>;
+    record.workflow = { ...(record.workflow as Record<string, unknown>), stage: "MERGED", state: "COMPLETE", outcome: "MERGED" };
+    const { releaseFinishedTaskQuietly } = await import("../../packages/broker/src/aws/developer-tasks.js");
+    await releaseFinishedTaskQuietly({ tableName: "state", actions: t.actions, documentClient: t.db }, taskId);
+    expect(t.db.get(`DEVTASK#${taskId}`, "TASK_END")).toBeUndefined();
+  });
+
+  it("is told of a pause handler that failed again until it hears", async () => {
+    const t = await setup();
+    let fail = true;
+    const paused: TaskPauseEvent[] = [];
+    unregister.push(registerTaskPauseHandler(async (_deps, event) => { if (fail) { fail = false; throw new Error("down"); } paused.push(event); }));
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "SET budgetPause = :pause", ExpressionAttributeValues: { ":pause": { scope: { kind: "task", taskId: run.taskId }, at: new Date().toISOString() } } }));
+    await t.finish(run.workspaceId, t.stepOps(run.workspaceId)[0]!.id, "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "PAUSED_BUDGET" });
+    expect(paused).toEqual([]);
+    expect(t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)).toHaveLength(1);
+    const row = t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)[0]!;
+    t.db.set({ ...row, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(paused).toHaveLength(1);
+    expect(t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)).toEqual([]);
+  });
+
+  it("blocks the model keys when a run completes and when a plain task is cancelled", async () => {
+    const t = await setup({ proxy: true });
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    await call(t.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": t.invocationOf(first.id).callbackCapability } });
+    const key = t.access!.mintedKeys()[0]!;
+    await t.finishStep(run, first.id, "One.");
+    // The first operation's own end blocks its key; the run's end finds it blocked and blocks nothing more.
+    const afterFirst = t.access!.blockKey.mock.calls.length;
+    expect(t.access!.blockKey).toHaveBeenCalledWith(keyIdOf(key));
+    await t.finishStep(run, t.stepOps(run.workspaceId)[1]!.id, "Two.");
+    expect(t.access!.blockKey.mock.calls.length).toBe(afterFirst);
+
+    const plain = await t.call(MAYA, "POST", "/v1/dev/tasks", { project: "payments", instructions: "Fix the bug", client: "test-client" });
+    const plainId = (plain.body.task as { taskId: string }).taskId;
+    const { workspaceId } = t.meta(plainId);
+    await t.finish(workspaceId, String(t.operations(workspaceId).find((operation) => operation.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    const turn = t.stepOps(workspaceId)[0]!;
+    await call(t.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": t.invocationOf(turn.id).callbackCapability } });
+    const plainKey = t.access!.mintedKeys().at(-1)!;
+    expect(t.access!.blockKey).not.toHaveBeenCalledWith(keyIdOf(plainKey));
+    await t.call(MAYA, "POST", `/v1/dev/tasks/${plainId}/cancel`, {});
+    await t.finish(workspaceId, t.operations(workspaceId).find((operation) => operation.kind === "cancel")!.id, "SUCCEEDED");
+    expect(t.access!.blockKey).toHaveBeenCalledWith(keyIdOf(plainKey));
+  });
+});
+
+describe("the broker's side of a run", () => {
+  it("answers who may see an approval only for the task's own project", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    const deps = t.routeDeps();
+    expect(await deps.writeGate!.canViewTask!(t.caller(MAYA.developerId), { taskId: run.taskId, project: "another", developerId: MAYA.developerId })).toBe(false);
+  });
+
+  it("keeps a step's report once however often it is saved, and reads only the project's own Slack channels", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const deps = t.routeDeps();
+    const task = t.meta(run.taskId) as never;
+    const host = deps.agentRuns!;
+    const a = await host.saveReport!({ task, operationId: first.id, stepId: "investigate", text: "Report." });
+    const b = await host.saveReport!({ task, operationId: first.id, stepId: "investigate", text: "Report." });
+    expect(a).toBe(b);
+    expect(t.db.find((item) => item.entityType === "ARTIFACT" && item.name === "agent-step-investigate.md")).toHaveLength(1);
+    t.db.set({ ...slackBindingKey(TEST_ORG, SLACK_TEAM, "C0OTHER0001"), entityType: "SLACK_BINDING", orgId: TEST_ORG, teamId: SLACK_TEAM, channelId: "C0OTHER0001", projectName: "billing" });
+    expect(await host.slackChannels!(TEST_ORG, "payments")).toEqual([SLACK_CHANNEL]);
+  });
+
+  it("wakes the engine for a step, a preparation and a stopped step, and for nothing else or nobody else's", async () => {
+    const { agentRunWakeItems } = await import("../../packages/broker/src/aws/agent-run-wakeup.js");
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const wake = (operation: Record<string, unknown>) => agentRunWakeItems(t.db, "state", operation as never, run.taskId, new Date().toISOString());
+    expect(await wake({ ...first })).toHaveLength(1);
+    expect(await wake({ kind: "prepare", id: run.prepareId, workspaceId: run.workspaceId })).toHaveLength(1);
+    expect(await wake({ kind: "publish", id: "x", workspaceId: run.workspaceId })).toEqual([]);
+    expect(await wake({ kind: "task", id: "x", workspaceId: run.workspaceId, workflowMode: "PLAN" })).toEqual([]);
+    expect(await wake({ kind: "cancel", id: "c", workspaceId: run.workspaceId, targetOperationId: first.id })).toHaveLength(1);
+    expect(await wake({ kind: "cancel", id: "c", workspaceId: run.workspaceId, targetOperationId: run.prepareId })).toHaveLength(1);
+    expect(await wake({ kind: "cancel", id: "c", workspaceId: run.workspaceId, targetOperationId: randomUUID() })).toEqual([]);
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "AGENT_RUN" }, UpdateExpression: "SET orgId = :other", ExpressionAttributeValues: { ":other": "org_bbbbbbbbbbbbbbbbbbbb" } }));
+    expect(await wake({ ...first })).toEqual([]);
+  });
+
+  it("fails a run whose preparation could not be delivered, instead of leaving it", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    const outbox = t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === run.prepareId)[0]!;
+    const { failOutboxOperation } = await import("../../packages/broker/src/aws/outbox-failure.js");
+    await failOutboxOperation(t.db, "state", outbox as never, "RUNTIME_UNAVAILABLE: the worker could not be reached");
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
+    expect(t.runItem(run.taskId)!.endReason).toContain("the worker could not be reached");
+  });
+
+  it("shows a failed run's reason in the task view and says in the release record that its run ended", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finish(run.workspaceId, t.stepOps(run.workspaceId)[0]!.id, "FAILED", { error: "the model gave up" });
+    const view = await t.view(MAYA, run.taskId);
+    expect(view).toMatchObject({ status: "FAILED" });
+    expect((view as unknown as { failure: { message: string } }).failure.message).toContain("the model gave up");
+    expect(JSON.stringify(t.db.find((item) => item.action === "close" && item.taskId === run.taskId))).toContain("its run ended");
+  });
+});
+
+describe("the notifier's report notice", () => {
+  const noticeOf = (next: Record<string, unknown>, previous?: Record<string, unknown>) => noticesOf(previous, next, "2026-10-22T10:00:00.000Z", "e1");
+  it("is made once, when the report is written pending", () => {
+    const item = { entityType: "AGENT_REPORT_POST", taskId: "t1", status: "PENDING" };
+    expect(noticeOf(item)).toEqual([expect.objectContaining({ kind: "agent_report", taskId: "t1", id: "t1:agent_report" })]);
+    expect(noticeOf(item, item)).toEqual([]);
+    expect(noticeOf({ ...item, status: "SENT" })).toEqual([]);
+  });
+
+  it("does not post again a report that may have landed, and does not claim one twice", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Looked.");
+    await t.finishStep(run, t.stepOps(run.workspaceId)[1]!.id, "Done.");
+    const post = vi.fn(async () => ({ ts: "1.1" }));
+    const queued: Notice[] = [];
+    const handler = createNotifierHandler({ documentClient: t.db, tableName: "state", enqueue: async (notices) => { queued.push(...notices); }, retryLater: async () => undefined, post, now: () => Date.now(), log: () => undefined, deliveryFailed: () => undefined });
+    const notice: Notice = { id: `${run.taskId}:agent_report`, kind: "agent_report", taskId: run.taskId, at: new Date().toISOString() };
+    const message = (id: string) => ({ eventSource: "aws:sqs", messageId: id, receiptHandle: id, body: JSON.stringify(notice), attributes: { ApproximateReceiveCount: "1" } });
+    const key = { pk: `DEVTASK#${run.taskId}`, sk: "AGENT_REPORT" };
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: key, UpdateExpression: "SET #status = :unknown", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":unknown": "UNKNOWN" } }));
+    await handler({ Records: [message("m1")] });
+    expect(post).not.toHaveBeenCalled();
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: key, UpdateExpression: "SET #status = :pending", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":pending": "PENDING" } }));
+    await Promise.all([handler({ Records: [message("m2")] }), handler({ Records: [message("m3")] })]);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(t.db.get(key.pk, key.sk)).toMatchObject({ status: "SENT", attempts: 1 });
+    void queued;
+  });
+});
+
+describe("an approval the sweep gave up on, when the run can't be ended yet", () => {
+  it("is not given up for good until the run has been told, and then fails the run", async () => {
+    const clock = { now: Date.now() };
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const base = t.routeDeps(clock);
+    const write = await askWrite(t, base, { taskId: run.taskId, stepId: "investigate", operationId: first.id, summary: "comment on LIN-12" });
+    await t.finishStep(run, first.id, "Waiting.");
+    const down = true;
+    const failing = { ...base, agentRuns: { ...base.agentRuns!, startStep: async () => { throw new Error("gone"); }, blockKeys: async () => { if (down) throw new Error("proxy down"); } } } as ApprovalDependencies;
+    await approve(failing, write.approvalId);
+    let failedAt = -1;
+    for (let round = 0; round < 14 && failedAt < 0; round += 1) {
+      clock.now += 7 * 3_600_000;
+      await expireApprovals(failing, clock.now);
+      if (t.runItem(run.taskId)!.state === "FAILED") failedAt = round;
+    }
+    // The run was ended by the hook, but ending it did not finish (the proxy is down): the hook failed, so the record is still owed and tried again.
+    expect(failedAt).toBeGreaterThan(0);
+    expect((await getAnyApproval(failing, TEST_ORG, write.approvalId))!.handlerDone).not.toBe(true);
+    clock.now += 7 * 3_600_000;
+    await expireApprovals(failing, clock.now);
+    expect((await getAnyApproval(failing, TEST_ORG, write.approvalId))!.handlerDone).toBe(true);
+    void down;
   });
 });

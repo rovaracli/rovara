@@ -93,6 +93,24 @@ async function get<T>(deps: TaskEndDependencies, key: { pk: string; sk: string }
   return ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: T }).Item;
 }
 
+/** How long a call that is telling the handlers keeps the others out; a process that dies holds it no longer than this. */
+const END_LEASE_MS = 60_000;
+
+/** Takes the right to tell the handlers: one call does at a time, so two that meet do not tell twice. */
+async function claimEnd(deps: TaskEndDependencies, key: { pk: string; sk: string }): Promise<boolean> {
+  const now = deps.now();
+  try {
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: key, UpdateExpression: "SET leaseUntil = :until", ConditionExpression: "attribute_exists(pk) AND (attribute_not_exists(leaseUntil) OR leaseUntil < :now)",
+      ExpressionAttributeValues: { ":until": now + END_LEASE_MS, ":now": now },
+    }));
+    return true;
+  } catch (error) {
+    if (errorName(error) === "ConditionalCheckFailedException") return false;
+    throw error;
+  }
+}
+
 /** The event the handlers are told, from the task as it is NOW (its budget may have been raised since the caller read it). */
 async function eventOf(deps: TaskEndDependencies, task: DeveloperTaskRecord, outcome: TaskEndOutcome, detail: { finalReport?: string; branch?: string }): Promise<TaskEndEvent> {
   const fresh = await get<DeveloperTaskRecord>(deps, taskKey(task.taskId)) ?? task;
@@ -155,6 +173,7 @@ export async function onTaskEnded(
     }
   }
   if (record === undefined || record.orgId !== orgId) return "already_ended";
+  if (record.done !== true && !await claimEnd(deps, key)) return "already_ended";
   // What ending a task does besides telling: keys first (a request already admitted still settles), then the workspace. Done on every call that has the
   // means, also after the handlers were told: an earlier call without them (a creator check, a release) recorded the end and told, and this one finishes it.
   if (deps.agentRuns?.blockKeys !== undefined) await deps.agentRuns.blockKeys(task);
@@ -169,6 +188,8 @@ export async function onTaskEnded(
         await handlers[index]!(deps, event);
       } catch (error) {
         log(deps, "task_end.handler_failed", { taskId: task.taskId, orgId, error: errorName(error) });
+        // The next call takes it up at once, not when the lease runs out.
+        await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "REMOVE leaseUntil", ConditionExpression: "attribute_exists(pk)" })).catch(() => undefined);
         throw error;
       }
       await deps.documentClient.send(new UpdateCommand({
@@ -177,7 +198,7 @@ export async function onTaskEnded(
     }
   }
   await deps.documentClient.send(new UpdateCommand({
-    TableName: deps.tableName, Key: key, UpdateExpression: "SET done = :done, doneAt = :at", ConditionExpression: "attribute_exists(pk)",
+    TableName: deps.tableName, Key: key, UpdateExpression: "SET done = :done, doneAt = :at REMOVE leaseUntil", ConditionExpression: "attribute_exists(pk)",
     ExpressionAttributeValues: { ":done": true, ":at": new Date(deps.now()).toISOString() },
   }));
   return "called";
