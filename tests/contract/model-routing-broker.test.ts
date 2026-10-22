@@ -42,9 +42,25 @@ async function seedSources(db: unknown, setup: { sources?: ModelSource[]; order:
   return store;
 }
 
-async function taskSetup(options: { agents?: boolean } = {}) {
+const HAIKU_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
+const PROJECT_MODELS = {
+  default: { provider: "amazon-bedrock", modelId: HAIKU_ID, label: "Fast" },
+  approved: [{ provider: "amazon-bedrock", modelId: HAIKU_ID, label: "Fast" }, { provider: "amazon-bedrock", modelId: DEFAULT_ID, label: "Balanced" }],
+};
+
+/** Maya's ChatGPT plan, as the install's connections report it, with the install-wide switch on. */
+const MAYA_PLAN = {
+  settings: async () => ({ enabled: true, preferredModel: "gpt-5.4" }),
+  view: async (developerId: string) => (developerId === MAYA.developerId ? { connected: true, status: "connected", models: ["gpt-5.4"] } : { connected: false }),
+  accessToken: async () => ({ access: "token", expiresAt: Date.now() + 3_600_000, models: [] }),
+  markStatus: async () => undefined,
+  refreshModels: async () => undefined,
+};
+
+async function taskSetup(options: { agents?: boolean; models?: boolean; plan?: boolean } = {}) {
   const access = fakeModelAccess();
-  const h = await createDeveloperTaskBroker({ brokerExtra: { ...(options.agents === false ? {} : { agents: { modelSources: { launch: LAUNCH } } }), modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+  const h = await createDeveloperTaskBroker({ register: options.models !== true, brokerExtra: { ...(options.agents === false ? {} : { agents: { modelSources: { launch: LAUNCH } } }), ...(options.plan === true ? { chatgpt: MAYA_PLAN } : {}), modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+  if (options.models === true) await registerSlackProject(h.handler, { models: PROJECT_MODELS });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
   const start = () => h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "claude-code" });
@@ -133,6 +149,28 @@ describe("a task's operation is routed to the first source that serves its model
     expect(t.access.mintKey).not.toHaveBeenCalled();
   });
 
+  it("routes the project's own model, and scopes the key to it", async () => {
+    const t = await taskSetup({ models: true });
+    await t.seed({ order: ["rovara"] });
+    const r = await t.running();
+    expect(r.payload()).toMatchObject({ model: { provider: "amazon-bedrock", modelId: HAIKU_ID } });
+    expect(r.payload()).not.toHaveProperty("modelRoute");
+    expect(r.operation().modelRoute).toEqual({ sourceId: "rovara", alias: HAIKU_ID, model: { provider: "amazon-bedrock", modelId: HAIKU_ID } });
+    expect((await r.ask()).status).toBe(200);
+    expect(t.access.mintKey.mock.calls[0]![0]).toMatchObject({ models: [HAIKU_ID], tags: { source: "rovara" } });
+  });
+
+  it("sends a company source's route for the project's own model when that source comes first, keeping the model for the worker's report", async () => {
+    const t = await taskSetup({ models: true });
+    const haiku = { provider: "anthropic", modelId: "claude-haiku-4-5" };
+    await t.seed({ sources: [ModelSourceSchema.parse({ kind: "anthropic", sourceId: SRC_ANTHROPIC, label: "Anthropic", models: [{ catalog: SONNET }, { catalog: haiku }] })], order: [SRC_ANTHROPIC, "rovara"] });
+    const r = await t.running();
+    const alias = sourceAlias(TEST_ORG, SRC_ANTHROPIC, haiku);
+    expect(r.payload()).toMatchObject({ model: { modelId: HAIKU_ID }, modelRoute: { alias, api: "anthropic-messages", catalog: "claude-haiku-4-5" } });
+    expect((await r.ask()).status).toBe(200);
+    expect(t.access.mintKey.mock.calls[0]![0].models).toEqual([alias]);
+  });
+
   it("does nothing on an install without agents set up: the key is minted unscoped, as it always was", async () => {
     const t = await taskSetup({ agents: false });
     await t.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC] });
@@ -141,6 +179,45 @@ describe("a task's operation is routed to the first source that serves its model
     expect(r.operation()).not.toHaveProperty("modelRoute");
     expect((await r.ask()).status).toBe(200);
     expect(t.access.mintKey.mock.calls[0]![0]).not.toHaveProperty("models");
+  });
+});
+
+describe("a task on the owner's ChatGPT plan follows the order too", () => {
+  /** The store with the switch on, since an order that lists the plan needs it. */
+  async function planned(order: string[], sources: ModelSource[] = []) {
+    const t = await taskSetup({ plan: true });
+    const store = new ModelSourceStore({ documentClient: t.db, tableName: "state", now: Date.now, chatgptSwitch: async () => true });
+    for (const source of sources) await store.save({ orgId: TEST_ORG, source, mode: "create", by: "dev-owner" });
+    await store.setOrder({ orgId: TEST_ORG, order, by: "dev-owner" });
+    return t;
+  }
+
+  it("keeps the plan when it is first, and routes the backup the worker falls back to", async () => {
+    const t = await planned(["personal-chatgpt", "rovara"]);
+    const r = await t.running();
+    expect(r.payload().chatgpt).toEqual({ model: GPT });
+    expect(r.operation()).toMatchObject({ chatgptDeveloperId: MAYA.developerId, modelRoute: { sourceId: "rovara", alias: DEFAULT_ID } });
+    expect((await r.ask()).status).toBe(200);
+    expect(t.access.mintKey.mock.calls[0]![0].models).toEqual([DEFAULT_ID]);
+  });
+
+  it("leaves the plan when a company source that serves the plan's model comes before it", async () => {
+    const t = await planned([SRC_OPENAI, "personal-chatgpt", "rovara"], [openai()]);
+    const r = await t.running();
+    expect(r.payload()).not.toHaveProperty("chatgpt");
+    expect(r.operation().chatgptDeveloperId).toBeUndefined();
+    expect(r.operation().modelRoute).toMatchObject({ sourceId: "rovara" });
+  });
+
+  it("keeps the plan with no company backup, and issues no company key for it", async () => {
+    const t = await planned(["personal-chatgpt"]);
+    const r = await t.running();
+    expect(r.payload().chatgpt).toEqual({ model: GPT });
+    expect(r.operation().modelRoute).toBeNull();
+    const refused = await r.ask();
+    expect(refused.status).toBe(403);
+    expect(refused.body).toMatchObject({ error: { code: "MODEL_NOT_ALLOWED" } });
+    expect(t.access.mintKey).not.toHaveBeenCalled();
   });
 });
 

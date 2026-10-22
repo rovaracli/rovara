@@ -367,7 +367,7 @@ import { SkillStore, servedSkills } from "../agents/skills.js";
 import { followMerges, type ProjectMembers } from "../agents/access.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
-import { applyAgentStep, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
+import { applyAgentStep, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
 import { chatGptServing, effectiveSources, routeOnWire, servableModels, servingRoutes, type ModelRoute, type RoutingDependencies } from "../model-sources/routing.js";
 import { readGuardrails } from "../agents/guardrails.js";
@@ -5542,12 +5542,12 @@ async function routeTurn(routing: RoutingDependencies, orgId: OrgId, project: st
   if (assistant === undefined && !rovara) {
     throw agentXError("MODEL_NOT_ALLOWED", "Your company's AI sources don't include Rovara's AI, so Slack has no model to answer with. Ask an admin to set an assistant model.");
   }
-  const model: ModelIdentifier = assistant ?? body.model ?? { provider: "amazon-bedrock", modelId: DEFAULT_BEDROCK_MODELS.orchestrator };
+  const model: ModelIdentifier = assistant ?? body.model ?? { provider: "amazon-bedrock", modelId: inGeography(DEFAULT_BEDROCK_MODELS.orchestrator, routing.rovaraGeography) };
   const [route] = await servingRoutes(routing, { orgId, project, model });
   if (route?.alias === undefined) {
     throw agentXError("MODEL_NOT_ALLOWED", `Slack's model ${model.provider}/${model.modelId} isn't served by any AI source your company can use. Ask an admin to set another assistant model.`);
   }
-  const classifier: ModelIdentifier = body.classifierModel ?? { provider: "amazon-bedrock", modelId: DEFAULT_BEDROCK_MODELS.classifier };
+  const classifier: ModelIdentifier = body.classifierModel ?? { provider: "amazon-bedrock", modelId: inGeography(DEFAULT_BEDROCK_MODELS.classifier, routing.rovaraGeography) };
   const classifierRoute = rovara ? (await servingRoutes(routing, { orgId, project, model: classifier })).find((candidate) => candidate.sourceId === "rovara") : undefined;
   const wire = routeOnWire(route, model);
   return { route, models: [...new Set([route.alias, ...(classifierRoute?.alias === undefined ? [] : [classifierRoute.alias])])], ...(wire === undefined ? {} : { wire }) };

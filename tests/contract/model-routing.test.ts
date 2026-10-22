@@ -6,6 +6,7 @@ import { ModelSourceSchema, defaultModelSourceOrder, egressDomainsKey, sourceAli
 import { singleOrgIdForEnv } from "../../packages/contracts/src/org.js";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import { chatGptServing, modelNotAllowedText, routeModel, routeOnWire, servableModels, servingRoutes, type RoutingDependencies } from "../../packages/broker/src/model-sources/routing.js";
+import { defaultWorkerModel, routeStep } from "../../packages/broker/src/agents/dispatch.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -310,5 +311,80 @@ describe("servableModels and the wire form", () => {
     expect(routeOnWire({ sourceId: "rovara", alias: "us.anthropic.claude-sonnet-4-6", api: "anthropic-messages", catalog: "us.anthropic.claude-sonnet-4-6" }, SONNET))
       .toEqual({ alias: "us.anthropic.claude-sonnet-4-6", api: "anthropic-messages", catalog: "us.anthropic.claude-sonnet-4-6" });
     expect(routeOnWire({ sourceId: SRC_ANTHROPIC, alias: "a.b.c", api: "anthropic-messages", catalog: "claude-sonnet-4-6" }, DEFAULT_MODEL)).toEqual({ alias: "a.b.c", api: "anthropic-messages", catalog: "claude-sonnet-4-6" });
+  });
+});
+
+describe("routeStep: the operation's model, the plan and the install's geography", () => {
+  const plan = { serves: async (developerId: string, model: ModelIdentifier) => (developerId === "maya" && model.provider === "openai" && model.modelId === "gpt-5.4" ? "gpt-5.4" : undefined) };
+  const step = (model: ModelIdentifier | undefined, extra: Partial<Parameters<typeof routeStep>[1]> = {}) => ({ orgId: TEST_ORG, project: "web", agent: "Rovara Code", step: "Build", model, ...extra });
+
+  it("routes a step that names no model as the install's default worker model", async () => {
+    const t = install();
+    await t.order(["rovara"]);
+    const routed = await routeStep(t.deps, step(undefined));
+    expect(routed.requested).toEqual(DEFAULT_MODEL);
+    expect(routed.route).toMatchObject({ sourceId: "rovara", alias: "us.anthropic.claude-sonnet-4-6" });
+    expect(routed.wire).toBeUndefined();
+    expect(routed.keepChatgpt).toBe(false);
+  });
+
+  it("serves the default from a company source that comes first, and sends that route to the worker", async () => {
+    const t = install();
+    await t.add(anthropic());
+    await t.order([SRC_ANTHROPIC, "rovara"]);
+    const routed = await routeStep(t.deps, step(undefined));
+    expect(routed.route).toMatchObject({ sourceId: SRC_ANTHROPIC });
+    expect(routed.wire).toEqual({ alias: `${TEST_ORG}.${SRC_ANTHROPIC}.claude-sonnet-4-6`, api: "anthropic-messages", catalog: "claude-sonnet-4-6" });
+  });
+
+  it("refuses with the step's words when nothing serves the model, naming the model it would have run", async () => {
+    const t = install();
+    await t.add(openai());
+    await t.order([SRC_OPENAI]);
+    expect(await failure(routeStep(t.deps, step(undefined, { agent: "Ticket Triage", step: "Plan" })))).toMatchObject({
+      code: "MODEL_NOT_ALLOWED", message: "MODEL_NOT_ALLOWED: Ticket Triage's Plan step uses amazon-bedrock/us.anthropic.claude-sonnet-4-6, which isn't allowed on web. Ask the agent's owner to pick another model.",
+    });
+  });
+
+  it("keeps the ChatGPT plan only while it is the first source in the order that serves the plan's model", async () => {
+    const t = install({ chatgpt: plan });
+    await t.add(openai());
+    const withPlan = { plan: { developerId: "maya", model: GPT } };
+    await t.order(["personal-chatgpt", SRC_OPENAI, "rovara"]);
+    expect(await routeStep(t.deps, step(DEFAULT_MODEL, withPlan))).toMatchObject({ keepChatgpt: true, route: { sourceId: "rovara" } });
+    await t.order([SRC_OPENAI, "personal-chatgpt", "rovara"]);
+    expect(await routeStep(t.deps, step(DEFAULT_MODEL, withPlan))).toMatchObject({ keepChatgpt: false, route: { sourceId: "rovara" } });
+  });
+
+  it("lets a plan's backup go unserved without refusing the task, and records that no company key may stand in", async () => {
+    const t = install({ chatgpt: plan });
+    await t.order(["personal-chatgpt"]);
+    const routed = await routeStep(t.deps, step(DEFAULT_MODEL, { plan: { developerId: "maya", model: GPT } }));
+    expect(routed).toMatchObject({ keepChatgpt: true, route: null });
+    expect(routed.wire).toBeUndefined();
+    // The same unserved model without a plan is a refusal.
+    expect((await failure(routeStep(t.deps, step(DEFAULT_MODEL)))).code).toBe("MODEL_NOT_ALLOWED");
+  });
+
+  it("never lets the plan serve the model a task runs through the proxy", async () => {
+    const t = install({ chatgpt: plan });
+    await t.order(["personal-chatgpt", "rovara"]);
+    // GPT is served by the plan alone; the proxy-side route needs an alias, so an operation off the plan cannot be routed to it.
+    expect((await failure(routeStep(t.deps, step(GPT)))).code).toBe("MODEL_NOT_ALLOWED");
+  });
+
+  it("uses the install's Bedrock geography: an eu install's default and catalog are the eu profiles", async () => {
+    const t = install();
+    await t.order(["rovara"]);
+    const eu = { ...t.deps, rovaraGeography: "eu" as const };
+    expect(defaultWorkerModel("eu")).toEqual({ provider: "amazon-bedrock", modelId: "eu.anthropic.claude-sonnet-4-6" });
+    expect(defaultWorkerModel()).toEqual(DEFAULT_MODEL);
+    const routed = await routeStep(eu, step(undefined));
+    expect(routed.requested.modelId).toBe("eu.anthropic.claude-sonnet-4-6");
+    expect(routed.route).toMatchObject({ sourceId: "rovara", alias: "eu.anthropic.claude-sonnet-4-6" });
+    // A model named by another route is served from the geography's profile.
+    expect(await routeModel(eu, { orgId: TEST_ORG, project: "web", model: SONNET })).toMatchObject({ sourceId: "rovara", alias: "eu.anthropic.claude-sonnet-4-6" });
+    // A model that names its own geography keeps it.
+    expect(await routeModel(eu, { orgId: TEST_ORG, project: "web", model: DEFAULT_MODEL })).toMatchObject({ alias: "us.anthropic.claude-sonnet-4-6" });
   });
 });

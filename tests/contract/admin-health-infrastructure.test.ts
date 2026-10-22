@@ -123,6 +123,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/agents/store.ts", "packages/broker/src/agents/table-writes.ts",
       // A run's request item and an agent's task index item (Plan 3, Task 15): kept 90 days, then deleted by the TTL.
       "packages/broker/src/agents/runs.ts",
+      // A company AI source change's request item (Plan 3, Task 24b): kept 7 days so a retry is answered, then deleted by the TTL.
+      "packages/broker/src/model-sources/store.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);
