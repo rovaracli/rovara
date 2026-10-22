@@ -1324,6 +1324,15 @@ describe("the catalog cache", () => {
     expect(catalogs.get(connectorCatalogKey(ORG_B, "web", 1, "linear", "team"))).toBeDefined();
   });
 
+  it("a refresh by one org drops that org's entry and no other's", async () => {
+    const catalogs = new CatalogCache<ScopeDiscovery>({ ttlMs: 600_000, maxEntries: 16 });
+    for (const orgId of [ORG_A, ORG_B]) await discoverConnector({ connector: fake({ description: orgId }), workspace, context: context(orgId), catalogs });
+    const refreshed = await discoverConnector({ connector: fake({ description: "new A" }), workspace, context: context(ORG_A), catalogs, refresh: true });
+    expect(refreshed.tools[0]!.description).toContain("new A");
+    const stillB = await discoverConnector({ connector: fake({ description: "new B" }), workspace, context: context(ORG_B), catalogs });
+    expect(stillB.tools[0]!.description).toContain(ORG_B);
+  });
+
   it("puts the org in the key", () => {
     expect(connectorCatalogKey(ORG_A, "web", 1, "linear", "team")).not.toBe(connectorCatalogKey(ORG_B, "web", 1, "linear", "team"));
   });
