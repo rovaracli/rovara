@@ -12,7 +12,7 @@
 // Public surface (Plan 4 and Plan 5 build on these): `advanceAgentRun`, `onAgentStepFinished`, `onWriteDecided`, `cancelAgentRun`, `registerTaskEndHandler`,
 // `registerTaskPauseHandler`, `onTaskEnded`, `prepareSlackReport`.
 import { createHash } from "node:crypto";
-import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AGENT_REPORT_MAX_BYTES, AGENT_STEP_INPUTS_MAX_BYTES, AgentRunStateSchema, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, SHORTENED_MARKER,
   agentXError, redactText, renderRunInput, shortenToBytes,
@@ -23,7 +23,7 @@ import { WORKFLOW_DISPATCH_PK, agentRunDispatchItem, agentRunDispatchKey } from 
 import { taskAgentRunKey, taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import {
   createStepApproval, getAnyApproval, registerApprovalSubjectHandler,
-  type AnyApprovalRecord, type ApprovalDependencies, type StepApprovalRecord, type WriteApprovalRecord,
+  type AnyApprovalRecord, type ApprovalDependencies, type WriteApprovalRecord,
 } from "./approvals.js";
 import { expireApprovalNow } from "./approvals-decide.js";
 import { commitOrLost, errorNameOf, iso, log, registerApprovalGaveUpHandler, shownText, type TransactItem } from "./approvals-store.js";
@@ -177,7 +177,7 @@ async function taskApprovals(deps: AgentRunEngineDependencies, task: DeveloperTa
   const ids = new Set([...await writeApprovalIds(deps, orgId, task.taskId), ...run.steps.flatMap((step) => step.approvalIds)]);
   const found: AnyApprovalRecord[] = [];
   for (const id of ids) {
-    const record = await getAnyApproval(deps, orgId, id as never);
+    const record = await getAnyApproval(deps, orgId, id);
     if (record === undefined || record.kind === "change" || (record.subject as { taskId?: unknown }).taskId !== task.taskId) continue;
     found.push(record);
   }
@@ -251,7 +251,7 @@ function eventItem(deps: AgentRunEngineDependencies, task: DeveloperTaskRecord, 
 }
 
 const dispatchRow = (deps: AgentRunEngineDependencies, task: DeveloperTaskRecord, revision: number, dueInMs: number, operationId?: string): TransactItem =>
-  agentRunDispatchItem(deps.tableName, { taskId: task.taskId, orgId: task.orgId as string, revision, dueAt: iso(deps.now() + dueInMs), now: iso(deps.now()), ...(operationId === undefined ? {} : { operationId }) }) as TransactItem;
+  agentRunDispatchItem(deps.tableName, { taskId: task.taskId, orgId: task.orgId as string, revision, dueAt: iso(deps.now() + dueInMs), now: iso(deps.now()), ...(operationId === undefined ? {} : { operationId }) });
 
 const withStep = (run: AgentRunState, stepId: string, change: Partial<AgentRunState["steps"][number]>): AgentRunState["steps"] =>
   run.steps.map((step) => (step.id === stepId ? { ...step, ...change } : step));
@@ -344,7 +344,8 @@ async function endFor(deps: AgentRunEngineDependencies, loaded: Loaded, error: u
   if (!(error instanceof AgentXError)) return undefined;
   const reason = error.message.startsWith(`${error.code}: `) ? error.message.slice(error.code.length + 2) : error.message;
   if (error.code === "TASK_ACCESS_DENIED") return endRun(deps, loaded, { state: "CANCELLED", reason, outcome: "creator_removed" });
-  if (error.code === "MODEL_NOT_ALLOWED" || error.code === "CONFIG_INVALID") return endRun(deps, loaded, { state: "FAILED", reason });
+  // Refusals that trying again cannot change: the run ends with their own words instead of waiting through the sweep's tries.
+  if (error.code === "MODEL_NOT_ALLOWED" || error.code === "CONFIG_INVALID" || error.code === "PROJECT_ACCESS_DENIED" || error.code === "FORBIDDEN") return endRun(deps, loaded, { state: "FAILED", reason });
   return undefined;
 }
 
@@ -387,7 +388,7 @@ async function dispatchStep(
       task, requestId, operationId, prompt: `Agent step: ${step.name}`, step, inputs,
       ...(step.id === lastAgentStepId(recipe) && run.resultContract !== undefined ? { resultContract: run.resultContract } : {}),
       ...(run.checkout === undefined ? {} : { checkout: run.checkout }),
-      extra: (id) => [putRun(deps, task.taskId, run, next) as TransactItems[number], eventItem(deps, task, run.revision + 1, text) as TransactItems[number], dispatchRow(deps, task, run.revision + 1, watchdogMs(step), id) as TransactItems[number]],
+      extra: (id) => [putRun(deps, task.taskId, run, next), eventItem(deps, task, run.revision + 1, text), dispatchRow(deps, task, run.revision + 1, watchdogMs(step), id)],
     });
   } catch (error) {
     // The run moved on while the operation was being made (another process dispatched it, or ended the run): look again.
@@ -395,6 +396,9 @@ async function dispatchStep(
       const fresh = await load(deps, task.taskId);
       if (fresh !== undefined && (fresh.run.revision !== run.revision || ENDED.has(fresh.run.state))) return false;
     }
+    // The operation can't be made for a reason that will not go away (a model the company now forbids, the creator's lost access): the run ends with it.
+    const ended = await endFor(deps, loaded, error);
+    if (ended !== undefined) return ended;
     throw error;
   }
   return true;
@@ -668,8 +672,8 @@ export async function onApprovalGaveUp(deps: AgentRunEngineDependencies, record:
   await endRun(deps, loaded, { state: "FAILED", reason: GAVE_UP_REASON });
 }
 
-registerApprovalSubjectHandler("agent_run", (deps, record) => onWriteDecided(deps as AgentRunEngineDependencies, record));
-registerApprovalGaveUpHandler("agent_run", (deps, record) => onApprovalGaveUp(deps as AgentRunEngineDependencies, record));
+registerApprovalSubjectHandler("agent_run", (deps, record) => onWriteDecided(deps, record));
+registerApprovalGaveUpHandler("agent_run", (deps, record) => onApprovalGaveUp(deps, record));
 
 // ---- cancelling
 
@@ -808,7 +812,7 @@ export async function agentRunView(deps: Pick<ApprovalDependencies, "documentCli
   finalReport?: string; branch?: string; endReason?: string;
 } | undefined> {
   const engine = deps as AgentRunEngineDependencies;
-  const loaded = await load(engine, task.taskId, task.orgId as OrgId);
+  const loaded = await load(engine, task.taskId, task.orgId);
   if (loaded === undefined) return undefined;
   const { run } = loaded;
   const recipe = await recipeOf(engine, task).catch(() => undefined);
@@ -823,7 +827,7 @@ export async function agentRunView(deps: Pick<ApprovalDependencies, "documentCli
       return { id: step.id, name: nameOf(step.id), status: step.status, ...(report === undefined ? {} : { report: shownReport(report) }) };
     }),
     pendingApprovals: pending.flatMap((record) => (record.kind === "write" || record.kind === "step") ? [{
-      approvalId: record.approvalId, kind: record.kind, text: record.kind === "write" ? record.summary : (record as StepApprovalRecord).prompt,
+      approvalId: record.approvalId, kind: record.kind, text: record.kind === "write" ? record.summary : (record).prompt,
       ...(confirmOrigin === undefined ? {} : { confirmUrl: `${confirmOrigin}/v1/app/approve/${record.approvalId}` }),
     }] : []),
     ...(run.finalReport === undefined ? {} : { finalReport: run.finalReport }),

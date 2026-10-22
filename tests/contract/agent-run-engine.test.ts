@@ -15,22 +15,22 @@ import {
 } from "../../packages/broker/src/agents/run-engine.js";
 import {
   approvalTaskEventKey, createStepApproval, createWriteApprovalRecord, decideApproval, expireApprovals, getAnyApproval, registerWriteApprovalDriver,
-  type AnyApprovalRecord, type ApprovalDependencies, type StepApprovalRecord, type WriteApprovalRecord,
+  type ApprovalDependencies, type StepApprovalRecord, type WriteApprovalRecord,
 } from "../../packages/broker/src/agents/approvals.js";
 import { writeApproversFor } from "../../packages/broker/src/agents/write-gate.js";
 import { readGuardrailsWithRevision } from "../../packages/broker/src/agents/guardrails.js";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks.js";
 import { AgentRunStateSchema, SHORTENED_MARKER, renderRunInput, type RunInput } from "../../packages/contracts/src/agent-run.js";
+import { agentXError } from "@agentx/contracts";
 import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import { AGENT_WORKER_OUTDATED, AgentStepPayloadSchema } from "../../packages/contracts/src/protocol.js";
 import { createEc2Delivery, type Ec2DeliveryDependencies } from "../../packages/broker/src/aws/ec2-delivery.js";
 import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
+import type { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { approvalKey, approverIndexKey, projectAgentKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org.js";
 import type { AgentId } from "../../packages/contracts/src/agent.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
 import { DEV_ISSUER, MAYA, OMAR, bindChannel, createDeveloperTaskBroker, grantProject, recordStream, unbindChannel, type Developer } from "../support/developer-task-broker.js";
 import { taskPageUrl } from "../../packages/broker/src/aws/developer-tasks.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
@@ -61,7 +61,6 @@ afterEach(() => {
 });
 
 const agentStep = (id: string, name: string = id, workspace: "none" | "read" = "none", extra: Record<string, unknown> = {}) => ({ id, name, kind: "agent" as const, workspace, ...extra });
-const TWO_STEPS: RecipeOverlay = { instructions: "Look into it.", sequence: [agentStep("investigate", "Investigate", "read"), agentStep("report", "Report", "none", { report: { slack: true } })] };
 const WITH_GATE: RecipeOverlay = {
   instructions: "Draft, ask, send.",
   sequence: [agentStep("draft", "Draft"), { id: "gate", name: "Ship it", kind: "approval" as const, prompt: "Send the report to customers?" }, agentStep("send", "Send")],
@@ -69,6 +68,13 @@ const WITH_GATE: RecipeOverlay = {
 const INPUT: RunInput = { text: "Why did checkout fail at 14:02?", context: [{ kind: "ticket", ref: "LIN-12", title: "Checkout fails" }] };
 
 type Reply = { status: number; body: Record<string, unknown> };
+/** The fields of a task view these tests read. */
+interface TaskViewShape {
+  status: string;
+  events: Array<{ at: string; kind: string; text: string }>;
+  agent?: { agentId: string };
+  run: { state: string; currentStep?: { id: string; name: string }; steps: Array<Record<string, unknown>>; pendingApprovals: Array<Record<string, unknown>>; finalReport?: string; endReason?: string };
+}
 type Op = Record<string, unknown> & { id: string; kind: string; status: string; programStepId?: string; createdAt: string; fence: number };
 
 async function setup(options: { proxy?: boolean; brokerExtra?: Record<string, unknown>; guardrails?: Partial<typeof DEFAULT_AGENT_GUARDRAILS> } = {}) {
@@ -109,7 +115,7 @@ async function setup(options: { proxy?: boolean; brokerExtra?: Record<string, un
     return AgentRunStateSchema.parse(state);
   };
   const taskEvents = (taskId: string) => h.db.find((item) => item.pk === `DEVTASK#${taskId}` && typeof item.sk === "string" && item.sk.startsWith("EVENT#"));
-  const view = async (who: Developer, taskId: string) => (await call(who, "GET", `/v1/dev/tasks/${taskId}`)).body.task as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any -- the view is read by field
+  const view = async (who: Developer, taskId: string) => (await call(who, "GET", `/v1/dev/tasks/${taskId}`)).body.task as TaskViewShape;
   const routeDeps = (clock?: { now: number }): ApprovalDependencies => {
     const deps = createAgentRouteDependencies(h.brokerInput as never);
     if (deps === undefined) throw new Error("the broker has no agent route dependencies");
@@ -139,7 +145,7 @@ async function askWrite(t: World, deps: ApprovalDependencies, input: { taskId: s
   const approvalId = `apr_${randomUUID().replace(/-/g, "").slice(0, 20).replace(/[^0-9a-z]/g, "a")}`;
   const createdAt = new Date().toISOString();
   const record: WriteApprovalRecord = {
-    orgId: TEST_ORG, approvalId: approvalId as WriteApprovalRecord["approvalId"], kind: "write", subject: { kind: "agent_run", taskId: input.taskId, stepId: input.stepId }, operationId: input.operationId,
+    orgId: TEST_ORG, approvalId: approvalId, kind: "write", subject: { kind: "agent_run", taskId: input.taskId, stepId: input.stepId }, operationId: input.operationId,
     connector: "linear", connectorType: "linear", tool: "save_issue", toolAccess: "write", scope: "eng", schemaHash: "a".repeat(64), projectRevision: 1, scopeDigest: "b".repeat(64),
     arguments: { title: input.summary }, argumentsHash: "c".repeat(64), summary: input.summary, class: "consequential",
     approvers: input.approvers ?? { kind: "ids", ids: [MAYA.developerId] }, status: "PENDING", project: "payments", owner: { developerId: MAYA.developerId, name: MAYA.name },
@@ -350,7 +356,7 @@ async function startWithContract(t: World, resultContract: { branches: Array<{ i
   const { createAgentRunStarter } = await import("../../packages/broker/src/aws/broker.js");
   const starter = createAgentRunStarter(t.brokerInput as never)!;
   const started = await startAgentRun(starter, {
-    requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId: "root-cause-analyst" as AgentId }, input: INPUT, origin: "app",
+    requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId: "root-cause-analyst" }, input: INPUT, origin: "app",
     owner: { developerId: MAYA.developerId }, startedBy: { developerId: MAYA.developerId }, payer: { kind: "member", developerId: MAYA.developerId }, resultContract,
   });
   return t.handleOf(started.taskId);
@@ -771,7 +777,7 @@ describe("the end of a run", () => {
     expect(row[0]).toMatchObject({ kind: "agent_run", dispatchDuePk: "WORKFLOW_DISPATCH" });
     // Due: the watchdog the step's dispatch wrote has run out.
     t.db.set({ ...row[0]!, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row[0]!.sk)}` });
-    const reply = await t.handler({ source: "agentx.workflow-dispatch-recovery" } as never);
+    const reply = await t.handler({ source: "agentx.workflow-dispatch-recovery" });
     expect(reply).toBeDefined();
     expect(t.stepOps(run.workspaceId)).toHaveLength(2);
     expect(t.runItem(run.taskId)!.reports).toEqual([{ stepId: "investigate", name: "Investigate", text: "Found it." }]);
@@ -873,7 +879,7 @@ describe("approvals of a run: who can see them", () => {
     await run.finishPrepare();
     const first = t.stepOps(run.workspaceId)[0]!;
     const deps = t.routeDeps();
-    expect(deps.writeGate?.canViewTask).toBeTypeOf("function");
+    expect(deps.writeGate !== undefined && "canViewTask" in deps.writeGate).toBe(true);
     const write = await askWrite(t, deps, { taskId: run.taskId, stepId: "investigate", operationId: first.id, summary: "comment on LIN-12" });
     expect(await deps.writeGate!.canViewTask!(t.caller(MAYA.developerId), { taskId: run.taskId, project: "payments", developerId: MAYA.developerId })).toBe(true);
     expect(await deps.writeGate!.canViewTask!(t.caller("9".repeat(64)), { taskId: run.taskId, project: "payments", developerId: MAYA.developerId })).toBe(false);
@@ -982,7 +988,7 @@ describe("the final report in Slack", () => {
     expect(post).not.toHaveBeenCalled();
     const texts = t.taskEvents(run.taskId).map((event) => String(event.text));
     expect(texts.filter((text) => text === "No Slack channel is set up for payments, so the report is only on this page.")).toHaveLength(1);
-    expect((await t.view(MAYA, run.taskId)).events.map((event: { text: string }) => event.text)).toContain("No Slack channel is set up for payments, so the report is only on this page.");
+    expect((await t.view(MAYA, run.taskId)).events.map((event) => event.text)).toContain("No Slack channel is set up for payments, so the report is only on this page.");
   });
 
   it("posts nothing for a step that does not report to Slack", async () => {
@@ -1059,7 +1065,7 @@ describe("the engine under repeats, races and lost work", () => {
     expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL" });
     await t.db.send(new UpdateCommand({ TableName: "state", Key: approvalKey(TEST_ORG, write.approvalId), UpdateExpression: "SET #status = :done", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":done": "APPROVED_DONE" } }));
     // Heard as an approval of another org (the record names it): the task is not theirs, so nothing moves.
-    await onWriteDecided(deps, { ...(await getAnyApproval(deps, TEST_ORG, write.approvalId))!, orgId: "org_bbbbbbbbbbbbbbbbbbbb" as never });
+    await onWriteDecided(deps, { ...(await getAnyApproval(deps, TEST_ORG, write.approvalId))!, orgId: "org_bbbbbbbbbbbbbbbbbbbb" });
     expect(t.stepOps(run.workspaceId)).toHaveLength(1);
     expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL" });
   });
@@ -1079,7 +1085,7 @@ describe("the engine under repeats, races and lost work", () => {
     // A run that waits is looked at again after hours, not at the next sweep.
     expect(Date.parse(String(row.nextAttemptAt)) - Date.now()).toBeGreaterThan(5 * 3_600_000);
     t.db.set({ ...row, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
-    await t.handler({ source: "agentx.workflow-dispatch-recovery" } as never);
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
     expect(t.stepOps(run.workspaceId)).toHaveLength(2);
     expect(t.invocationOf(t.stepOps(run.workspaceId)[1]!.id).payload.agentStep!.inputs).toContain("Approved and done: comment on LIN-12");
   });
@@ -1094,7 +1100,7 @@ describe("the engine under repeats, races and lost work", () => {
     await t.finishStep(run, first.id, "Waiting.");
     const row = t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)[0]!;
     t.db.set({ ...row, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
-    await t.handler({ source: "agentx.workflow-dispatch-recovery" } as never);
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
     expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL" });
     expect(t.stepOps(run.workspaceId)).toHaveLength(1);
     const again = t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)[0]!;
@@ -1127,7 +1133,7 @@ describe("the engine under repeats, races and lost work", () => {
     await failOutboxOperation(t.db, "state", outbox as never, "RUNTIME_UNAVAILABLE: the worker could not be reached");
     const row = t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)[0]!;
     expect(Date.parse(String(row.nextAttemptAt))).toBeLessThanOrEqual(Date.now() + 1000);
-    await t.handler({ source: "agentx.workflow-dispatch-recovery" } as never);
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
     expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
     expect(t.runItem(run.taskId)!.endReason).toContain("the worker could not be reached");
   });
@@ -1141,14 +1147,10 @@ describe("the engine under repeats, races and lost work", () => {
     // Nine failed tries already; the tenth gives up.
     t.db.set({ ...row, attempts: 9, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
     await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `WORKSPACE#${run.workspaceId}`, sk: `OPERATION#${first.id}` }, UpdateExpression: "SET #status = :done, #result = :result", ExpressionAttributeNames: { "#status": "status", "#result": "result" }, ExpressionAttributeValues: { ":done": "SUCCEEDED", ":result": { agentStepResult: { report: "Found it.", outcome: "SUCCEEDED" } } } }));
-    // The engine cannot reach the workspace: starting the next step fails every time.
-    const spy = vi.spyOn(t.actions, "acceptTask");
-    spy.mockImplementation(async () => { throw new Error("down"); });
     await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `WORKSPACE#${run.workspaceId}`, sk: "META" }, UpdateExpression: "SET #status = :ready REMOVE activeOperationId", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":ready": "READY" } }));
-    // Not the harness's own broker: the sweep builds its own actions, so make its operation start fail through the table instead.
-    spy.mockRestore();
+    // Starting the next step fails every time: the workspace is held by an operation the engine knows nothing about.
     await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `WORKSPACE#${run.workspaceId}`, sk: "META" }, UpdateExpression: "SET #status = :busy, activeOperationId = :other", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":busy": "BUSY", ":other": randomUUID() } }));
-    await t.handler({ source: "agentx.workflow-dispatch-recovery" } as never);
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
     expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
     expect(t.runItem(run.taskId)!.endReason).toBe("Rovara couldn't continue this run. Start it again.");
     expect(t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)).toEqual([]);
@@ -1179,6 +1181,25 @@ describe("the engine under repeats, races and lost work", () => {
     // Seen again (a repeat of the result) it is not kept twice.
     await onAgentStepFinished(t.routeDeps(), { taskId: run.taskId, operationId: t.stepOps(run.workspaceId)[0]!.id, outcome: "SUCCEEDED", report: "The 14:02 deploy removed the retry." });
     expect(t.db.find((item) => item.entityType === "ARTIFACT" && item.name === "agent-step-investigate.md")).toHaveLength(1);
+  });
+});
+
+describe("a refusal that trying again cannot change", () => {
+  it("ends the run with the refusal's own words when the step's operation can't be made, and keeps retrying one that can pass", async () => {
+    const t = await setup();
+    const events = endHandler();
+    const run = await t.start("root-cause-analyst");
+    const base = t.routeDeps();
+    // The preparation succeeded in the table and nothing went on from it.
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `WORKSPACE#${run.workspaceId}`, sk: `OPERATION#${run.prepareId}` }, UpdateExpression: "SET #status = :done", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":done": "SUCCEEDED" } }));
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `WORKSPACE#${run.workspaceId}`, sk: "META" }, UpdateExpression: "SET #status = :ready REMOVE activeOperationId", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":ready": "READY" } }));
+    const failing = (code: "MODEL_NOT_ALLOWED" | "RUNTIME_UNAVAILABLE", message: string) => ({ ...base, agentRuns: { ...base.agentRuns!, startStep: async () => { throw agentXError(code, message); } } }) as ApprovalDependencies;
+    // A temporary failure is thrown on to the sweep, which tries again.
+    await expect(advanceAgentRun(failing("RUNTIME_UNAVAILABLE", "the proxy is down"), run.taskId)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING" });
+    await advanceAgentRun(failing("MODEL_NOT_ALLOWED", "Root-cause analyst needs its Report step from a different AI company than its Investigate step, and none is allowed on payments. Ask an admin to add one."), run.taskId);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED", endReason: "Root-cause analyst needs its Report step from a different AI company than its Investigate step, and none is allowed on payments. Ask an admin to add one." });
+    expect(events).toEqual([expect.objectContaining({ outcome: "failed" })]);
   });
 });
 
@@ -1245,7 +1266,7 @@ describe("task-end handlers", () => {
     expect(t.runItem(run.taskId)).toMatchObject({ state: "COMPLETE" });
     const row = t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)[0]!;
     t.db.set({ ...row, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
-    await t.handler({ source: "agentx.workflow-dispatch-recovery" } as never);
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
     expect(order).toEqual(["first", "second", "second", "third"]);
     expect(t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)).toEqual([]);
     expect(t.db.get(`DEVTASK#${run.taskId}`, "TASK_END")).toMatchObject({ done: true, handlersTold: 3, outcome: "succeeded" });

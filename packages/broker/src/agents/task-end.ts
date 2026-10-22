@@ -198,5 +198,5 @@ export async function onTaskPaused(deps: TaskEndDependencies, task: DeveloperTas
       failure ??= error;
     }
   }
-  if (failure !== undefined) throw failure;
+  if (failure !== undefined) throw failure instanceof Error ? failure : new Error("a pause handler failed");
 }
