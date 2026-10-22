@@ -999,10 +999,11 @@ describe("a key the broker mints", () => {
     t.access.setKeySpent(key, 1.2);
     const run = await t.sweep();
     expect(run.statusCode).toBe(200);
-    // The run's jobs, in order (Task 11's drain, Task 21's approvals, Task 24b's source sweep, the spend sweep, Task 26's key audit): none has anything to do with this one.
+    // The run's jobs, in order (Task 11's drain, Task 21's approvals, Task 32's escalation, Task 24b's source sweep, the spend sweep, Task 26's key audit): none has anything to do with this one.
     expect((JSON.parse(run.body) as { jobs: unknown }).jobs).toEqual([
       expect.objectContaining({ name: "drain-member-merges", ok: true }),
       expect.objectContaining({ name: "expire-approvals", ok: true }),
+      expect.objectContaining({ name: "escalate-owner-requests", ok: true }),
       expect.objectContaining({ name: "sweep-model-sources", ok: true }),
       expect.objectContaining({ name: "sweep-spend", ok: true, result: expect.objectContaining({ settled: 1, complete: true }) as unknown }),
       expect.objectContaining({ name: "audit-model-keys", ok: true }),
@@ -1032,13 +1033,13 @@ describe("a key the broker mints", () => {
       const run = await t.sweep();
       expect(t.access.auditKeys).toHaveBeenCalledWith({ budgetMs: 4_000 });
       const jobs = (JSON.parse(run.body) as { jobs: Array<{ name: string; ok: boolean; result?: unknown }> }).jobs;
-      expect(jobs.map((job) => job.name)).toEqual(["drain-member-merges", "expire-approvals", "sweep-model-sources", "sweep-spend", "audit-model-keys"]);
+      expect(jobs.map((job) => job.name)).toEqual(["drain-member-merges", "expire-approvals", "escalate-owner-requests", "sweep-model-sources", "sweep-spend", "audit-model-keys"]);
       expect(jobs.at(-1)).toMatchObject({ ok: true, result: { checked: 7, blocked: 1, truncated: true } });
       expect(logged.mock.calls.map((call) => String(call[0])).some((line) => line.includes("model_keys.audit_truncated"))).toBe(true);
       // An audit that fails does not stop the sweeps that ran before it, and is reported by its error's name alone.
       t.access.auditKeys.mockRejectedValueOnce(Object.assign(new Error("secret detail"), { name: "BlockFailed" }));
       const failed = await t.sweep();
-      expect(JSON.parse(failed.body)).toMatchObject({ jobs: [{ ok: true }, { ok: true }, { ok: true }, { name: "sweep-spend", ok: true }, { name: "audit-model-keys", ok: false, error: "BlockFailed" }] });
+      expect(JSON.parse(failed.body)).toMatchObject({ jobs: [{ ok: true }, { ok: true }, { ok: true }, { ok: true }, { name: "sweep-spend", ok: true }, { name: "audit-model-keys", ok: false, error: "BlockFailed" }] });
       expect(failed.body).not.toContain("secret detail");
       // What an audit that threw had done is logged: the counts travel in its error's words.
       t.access.auditKeys.mockRejectedValueOnce(Object.assign(new Error("MODEL_PROXY_UNAVAILABLE: the audit could not block 1 of 3 drifted keys (checked 9, blocked 2)"), { name: "AgentXError" }));
@@ -1065,6 +1066,7 @@ describe("a key the broker mints", () => {
     expect((JSON.parse(run.body) as { jobs: unknown }).jobs).toEqual([
       expect.objectContaining({ name: "drain-member-merges", ok: true }),
       expect.objectContaining({ name: "expire-approvals", ok: true }),
+      expect.objectContaining({ name: "escalate-owner-requests", ok: true }),
       expect.objectContaining({ name: "sweep-model-sources", ok: true }),
       { name: "sweep-spend", ok: false, error: "InternalServerError" },
       expect.objectContaining({ name: "audit-model-keys", ok: true }),
@@ -1377,18 +1379,18 @@ describe("the scheduled run's time", () => {
   it("gives the short jobs their caps, the spend sweep what is left, and the audit what it needs, all inside one deadline of 27 seconds", async () => {
     const { SETTLEMENT_BUDGETS_MS, SETTLEMENT_TOTAL_LIMIT_MS, settlementBudgets } = await import("../../packages/broker/src/spend/settlement-job.js");
     expect(SETTLEMENT_TOTAL_LIMIT_MS).toBe(27_000);
-    // The caps of Tasks 11, 21, 24b and 26.
-    expect(SETTLEMENT_BUDGETS_MS).toStrictEqual({ drain: 5_000, approvals: 4_000, sources: 5_000, audit: 4_000 });
-    expect(settlementBudgets(0)).toStrictEqual({ drain: 5_000, approvals: 4_000, sources: 5_000, spend: 23_000, audit: 4_000 });
+    // The caps of Tasks 11, 21, 32, 24b and 26.
+    expect(SETTLEMENT_BUDGETS_MS).toStrictEqual({ drain: 5_000, approvals: 4_000, escalate: 2_000, sources: 5_000, audit: 4_000 });
+    expect(settlementBudgets(0)).toStrictEqual({ drain: 5_000, approvals: 4_000, escalate: 2_000, sources: 5_000, spend: 23_000, audit: 4_000 });
     // Each later job gets what remains: spend keeps the audit's reserve, and nothing is ever negative or past the deadline.
     expect(settlementBudgets(2_000)).toMatchObject({ spend: 21_000, audit: 4_000 });
     expect(settlementBudgets(12_000)).toMatchObject({ drain: 5_000, spend: 11_000, audit: 4_000 });
-    expect(settlementBudgets(24_000)).toStrictEqual({ drain: 3_000, approvals: 3_000, sources: 3_000, spend: 0, audit: 3_000 });
+    expect(settlementBudgets(24_000)).toStrictEqual({ drain: 3_000, approvals: 3_000, escalate: 2_000, sources: 3_000, spend: 0, audit: 3_000 });
     expect(settlementBudgets(26_500)).toMatchObject({ drain: 500, spend: 0, audit: 500 });
-    expect(settlementBudgets(40_000)).toStrictEqual({ drain: 0, approvals: 0, sources: 0, spend: 0, audit: 0 });
+    expect(settlementBudgets(40_000)).toStrictEqual({ drain: 0, approvals: 0, escalate: 0, sources: 0, spend: 0, audit: 0 });
     // Run one after another, each taking all it is given, the jobs end at the deadline and not after it.
     let elapsed = 0;
-    for (const name of ["drain", "approvals", "sources", "spend", "audit"] as const) elapsed += settlementBudgets(elapsed)[name];
+    for (const name of ["drain", "approvals", "escalate", "sources", "spend", "audit"] as const) elapsed += settlementBudgets(elapsed)[name];
     expect(elapsed).toBeLessThanOrEqual(SETTLEMENT_TOTAL_LIMIT_MS);
   });
 

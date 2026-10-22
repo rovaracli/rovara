@@ -28,6 +28,7 @@ import {
   type DeveloperTaskStatus,
   type Operation,
   type PauseScope,
+  type RunCheckout,
   type WorkflowSnapshot,
   type WorkflowReviewBase,
   type DeveloperSignInMethod,
@@ -137,7 +138,7 @@ export interface DeveloperTaskRecord {
    * mid-run (`mintOperationKey`) has no `firstDispatch`, and keeps the first pause it was given. Task 32's approval of the raise clears this field
    * (and, for `firstDispatch`, takes the slot and writes the outbox and the watch).
    */
-  budgetPause?: { scope: PauseScope; at: string; firstDispatch?: { operationId: string } };
+  budgetPause?: { scope: PauseScope; at: string; firstDispatch?: { operationId: string; checkout?: RunCheckout[] } };
   /**
    * Plan 3, Task 22: set in the transaction that ends an agent-step run (COMPLETE, FAILED or CANCELLED), with when. An ended run is finished the way a
    * merged workflow task is: it gives back its workspace slot and its workspace (`workflowTaskFinished`, `releaseFinishedTask`).

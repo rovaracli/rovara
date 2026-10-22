@@ -147,7 +147,7 @@ describe("admitWork", () => {
     t.seedCounter({ kind: "member", developerId: MAYA }, { spentUsd: 3, committedUsd: 28.8 });
     const member = await rejection(admitWork(t.deps, memberWork()));
     expect(member).toMatchObject({ code: "BUDGET_EXCEEDED", statusCode: 402 });
-    expect(member.message).toBe("BUDGET_EXCEEDED: Your monthly AI budget is committed to work that is running ($28.80 of $29.00). Try again when it finishes, or ask an admin to raise it.");
+    expect(member.message).toBe("BUDGET_EXCEEDED: Your monthly AI budget is used or held for work that is running ($28.80 of $29.00). Try again when it finishes, or ask an admin to raise it.");
     expect(member.message).not.toContain("$3.00");
     const o = setup();
     o.limitOrg(10);

@@ -117,6 +117,7 @@ import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
+import { requestForPausedTask, withdrawTaskSpendRequests } from "../spend/requests.js";
 import { createFeedbackReviewWeb } from "./feedback-review-web.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION, TASK_STATUS, createTaskWeb } from "./task-web.js";
 import { TASK_PAGE_API_PREFIX, createTaskWebApi } from "./task-web-api.js";
@@ -1285,6 +1286,13 @@ export function agentRunStarterOf(deps: DeveloperRouteDependencies): AgentRunSta
     startTask: async (caller, body, run) => {
       const answer = await startTask(developerTaskRouteDependencies(deps, caller), caller, body, run);
       if (answer.run === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the run did not report its limits");
+      // Plan 3, Task 32 (PF17): a run started with a run limit of 0 waits for its limit: the run_limit request asks for it. The start stands either way; a
+      // request that can't be made now is asked for again by the next pause, or by a repeat of the start (the request is once per task).
+      if (answer.run.paused && deps.agents !== undefined) {
+        await requestForPausedTask(deps.agents, answer.task.taskId).catch((error: unknown) => {
+          logDeveloperEvent({ event: "spend_request.not_asked", error: errorName(error) });
+        });
+      }
       return { task: answer.task, run: answer.run };
     },
   };
@@ -1357,6 +1365,7 @@ export function developerTaskRouteDependencies(
       ...(trustedCaller === null ? {} : { trustedCaller }),
     };
   };
+  const agents = deps.agents;
   return {
     documentClient: deps.documentClient,
     tableName: deps.tableName,
@@ -1370,7 +1379,7 @@ export function developerTaskRouteDependencies(
     ...(deps.workflowE2EPublicationChecks === undefined ? {} : { workflowE2EPublicationChecks: deps.workflowE2EPublicationChecks }),
     ...(deps.registeredRepositoryIdentity === undefined ? {} : { registeredRepositoryIdentity: deps.registeredRepositoryIdentity }),
     ...(deps.requireRepositoriesConnected === undefined ? {} : { requireRepositoriesConnected: deps.requireRepositoriesConnected }),
-    ...(deps.agents === undefined ? {} : { agentRuns: deps.agents, agentEngine: deps.agents }),
+    ...(agents === undefined ? {} : { agentRuns: agents, agentEngine: agents, withdrawSpendRequests: (task: DeveloperTaskRecord) => withdrawTaskSpendRequests(agents, task) }),
     ...(deps.developer.taskPeopleConfiguration === undefined ? {} : { taskPeopleConfiguration: deps.developer.taskPeopleConfiguration }),
     ...(deps.developer.workflowDependenciesEnabled === undefined ? {} : { workflowDependenciesEnabled: deps.developer.workflowDependenciesEnabled }),
     checkTaskPerson: async (task, developerId, admission) => {

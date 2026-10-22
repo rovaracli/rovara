@@ -34,6 +34,7 @@ import {
   type BaseRef,
   type BuiltinAgentId,
   type OrgId,
+  type OwnerCapChange,
   type ProjectAiSettings,
   type ResolvedRecipe,
   type RunInput,
@@ -45,6 +46,8 @@ import {
   listVisibleAgents,
   orgRoleOf,
   requireAgentAccess,
+  requireAccountable,
+  requireAgentBudgetAllowed,
   requireOwnerAllowed,
   resolveSurvivor,
   type AccessibleAgent,
@@ -63,7 +66,9 @@ import { addToRoster, checkRosterChange, listRoster, removeFromRoster, roleOnPro
 import type { SkillRecord } from "./skills.js";
 import type { OrgStore } from "../org/store.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
+import { readTopUp } from "../spend/top-ups.js";
 import { routeSpendRequest } from "../spend/routes.js";
+import { effectiveOwnerCap, isSpendRequestRoute, requestOwnerCap, routeSpendRequests, type SpendRequestHost } from "../spend/requests.js";
 import { isConnectionRoute, routeConnectionRequest, type ConnectionRouteDependencies } from "../connections/routes.js";
 import { isProjectConnectorRoute, registerProjectConnectorApprovals, routeProjectConnectorRequest } from "../connections/project-connectors.js";
 import { routeModelSourceRequest, type ModelSourceRouteDependencies } from "../model-sources/routes.js";
@@ -92,6 +97,8 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
   connections?: ConnectionRouteDependencies["store"];
   /** Starts a person's run (Task 15). The developer API supplies it, since it holds the task start; without it the route answers NOT_FOUND. */
   startRun?: (caller: AgentCaller, input: { requestId: string; project: string; agent: { agentId: AgentId; version?: number | "draft" }; input: RunInput }) => Promise<{ task: unknown }>;
+  /** Task 32: what a spend request's approval does with the task it is about (the developer tasks' resume and continue-as-task). */
+  spendRequests?: SpendRequestHost;
 }
 
 /**
@@ -401,16 +408,6 @@ async function markRequest(deps: AgentRouteDependencies, caller: AgentCaller, ro
 
 // ---- writes
 
-/** Someone who may answer for a project's agent: in the org, holding `manage_agents` on the project. Returned as the survivor of any merge. */
-async function requireAccountable(deps: AgentRouteDependencies, orgId: OrgId, project: string, developerId: string): Promise<{ developerId: string }> {
-  const survivor = await resolveSurvivor(deps, orgId, developerId);
-  const orgRole = await orgRoleOf(deps, orgId, survivor);
-  if (orgRole === undefined) throw agentXError("CONFIG_INVALID", "accountable: nobody in your company has that ID");
-  const role = await deps.projectMembers.roleOf(orgId, project, { developerId: survivor, orgRole });
-  if (role === undefined || !projectAllows(role, "manage_agents")) throw agentXError("CONFIG_INVALID", `accountable: that person needs to be a maintainer of ${project}`);
-  return { developerId: survivor };
-}
-
 async function createAgent(deps: AgentRouteDependencies, caller: AgentCaller, body: unknown): Promise<StatusReply> {
   const input = parseBody(CreateBodySchema, body);
   const { mark, replay } = await markRequest(deps, caller, "create", "", input);
@@ -497,17 +494,18 @@ async function rollback(deps: AgentRouteDependencies, caller: AgentCaller, agent
   return result.applied ? { agent: customView(result.value, access) } : waiting(result);
 }
 
-async function setArchived(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown, archive: boolean): Promise<Shown> {
+async function setArchived(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown, archive: boolean): Promise<Shown | StatusReply> {
   const input = parseBody(RequestOnlySchema, body);
   const { access } = await requireAgentAccess(deps, caller, agentId, "manage");
   const { mark, replay } = await markRequest(deps, caller, archive ? "archive" : "unarchive", agentId, input);
-  if (replay !== undefined) return { agent: customView(replay.result as AgentRecord, access) };
+  if (replay !== undefined) return waitingReplay(replay.result) ?? { agent: customView(replay.result as AgentRecord, access) };
   if (archive) return { agent: customView(await deps.store.archive(caller.orgId, agentId, caller.developerId, mark), access) };
   // Unarchiving puts the agent's budget back in its owner's total; an archived agent's budget counted for no one.
   const current = await deps.store.get(caller.orgId, agentId);
   const unarchived = current === undefined || current.status !== "archived"
     ? await deps.store.unarchive(caller.orgId, agentId, caller.developerId, mark)
-    : await holdingCap(deps, caller, current, withBudgetFields(current, { status: "active" }), (options) => deps.store.unarchive(caller.orgId, agentId, caller.developerId, mark, options));
+    : await holdingCap(deps, caller, agentId, current, withBudgetFields(current, { status: "active" }), { op: "unarchive" }, mark, (options) => deps.store.unarchive(caller.orgId, agentId, caller.developerId, mark, options));
+  if (unarchived instanceof StatusReply) return unarchived;
   return { agent: customView(unarchived, access) };
 }
 
@@ -527,26 +525,28 @@ async function putShares(deps: AgentRouteDependencies, caller: AgentCaller, agen
   return result.applied ? { shares: result.value } : waiting(result);
 }
 
-async function putOwner(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<Shown> {
+async function putOwner(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<Shown | StatusReply> {
   const input = parseBody(OwnerBodySchema, body);
   const { agent, access } = await requireAgentAccess(deps, caller, agentId, "manage");
   if (!("owner" in agent)) throw agentXError("CONFIG_INVALID", `${deps.store.builtinName(agentId)} is built in and belongs to the whole company`);
   const { mark, replay } = await markRequest(deps, caller, "owner", agentId, input);
-  if (replay !== undefined) return { agent: customView(replay.result as AgentRecord, access) };
+  if (replay !== undefined) return waitingReplay(replay.result) ?? { agent: customView(replay.result as AgentRecord, access) };
   // Store the owner this returns, not the one asked for: a member who was merged into another is named by the survivor.
   const owner = await requireOwnerAllowed(deps, caller, input.owner, agent.owner);
   const accountable = input.accountable === undefined ? undefined : owner.kind === "project" ? await requireAccountable(deps, caller.orgId, owner.project, input.accountable.developerId) : input.accountable;
   // The agent's budget leaves its owner's total and joins the new owner's (the maintainer accountable for a project's agent).
   const { accountable: _before, ...kept } = agent; // eslint-disable-line @typescript-eslint/no-unused-vars -- the new owner decides it
-  const updated = await holdingCap(deps, caller, agent, { ...kept, owner, ...(accountable === undefined ? {} : { accountable }) }, (options) => deps.store.setOwner(caller.orgId, agentId, owner, caller.developerId, accountable, mark, options));
+  const change: OwnerCapChange = { op: "set_owner", owner, ...(accountable === undefined ? {} : { accountable }) };
+  const updated = await holdingCap(deps, caller, agentId, agent, { ...kept, owner, ...(accountable === undefined ? {} : { accountable }) }, change, mark, (options) => deps.store.setOwner(caller.orgId, agentId, owner, caller.developerId, accountable, mark, options));
+  if (updated instanceof StatusReply) return updated;
   return { agent: customView(updated, access) };
 }
 
-async function putAccountable(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<Shown> {
+async function putAccountable(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<Shown | StatusReply> {
   const input = parseBody(AccountableBodySchema, body);
   const { agent } = await requireAgentAccess(deps, caller, agentId, "manage");
   const { mark, replay } = await markRequest(deps, caller, "accountable", agentId, input);
-  if (replay !== undefined) return replay.result as Shown;
+  if (replay !== undefined) return waitingReplay(replay.result) ?? replay.result as Shown;
   let accountable: { developerId: string };
   if (!("owner" in agent)) {
     // A built-in has no project: its accountable person is one of the org's owners or admins.
@@ -561,7 +561,8 @@ async function putAccountable(deps: AgentRouteDependencies, caller: AgentCaller,
   }
   // The agent's budget moves from the old accountable maintainer's total to the new one's.
   const current = "owner" in agent ? agent : await deps.store.ensureBuiltinSettings(caller.orgId, agentId, caller.developerId);
-  await holdingCap(deps, caller, current, withBudgetFields(current, { accountable }), (options) => deps.store.setAccountable(caller.orgId, agentId, accountable, caller.developerId, mark, options));
+  const done = await holdingCap(deps, caller, agentId, current, withBudgetFields(current, { accountable }), { op: "set_accountable", accountable }, mark, (options) => deps.store.setAccountable(caller.orgId, agentId, accountable, caller.developerId, mark, options));
+  if (done instanceof StatusReply) return done;
   return { accountable };
 }
 
@@ -704,33 +705,49 @@ async function requireWithinTrial(deps: AgentRouteDependencies, orgId: OrgId, la
   throw agentXError("CONFIG_INVALID", `${label}: a trial organization's ${what} is at most $${String(capUsd)} a month; upgrade the plan to raise it`);
 }
 
-async function ownerName(deps: AgentRouteDependencies, developerId: string): Promise<string> {
-  return (await deps.signInStore.getDeveloper(developerId))?.displayName ?? "That person";
-}
-
 /**
- * Runs a write that moves an agent's budget from `before` to `after`, held to the cap. It refuses first, in words, a change that would take
- * someone's agent budgets past `ownerAgentBudgetCapUsd` (owners read as their survivors, the way the store counts them). If the store
- * still refuses it for the cap (the total moved after this read), the refusal is put in the same words with the figures as they are now.
- * Task 32 turns the refusal into an `owner_cap` request (see `ownerBudgetRefusal`).
+ * Runs a write that moves an agent's budget from `before` to `after`, held to the cap. A change that would take someone's effective total (their agent
+ * budgets plus this month's top-ups, Task 33 fix round 1, I-1) past `ownerAgentBudgetCapUsd` (owners read as their survivors, the way the store counts
+ * them) is not made: an org admin is asked with an `owner_cap`
+ * request holding `change`, and the answer is `202 { status: "NEEDS_ADMIN_APPROVAL", spendRequestId, message }` (PF27). The same happens when the store
+ * refuses it for the cap (the total moved after this read), with the figures as they are now. The request's R18 item is `mark`, so a repeat answers 202 again.
  */
-async function holdingCap<T>(deps: AgentRouteDependencies, caller: AgentCaller, before: Parameters<typeof ownerShare>[0], after: Parameters<typeof ownerShare>[0], run: (options: { ownerCap: OwnerCap }) => Promise<T>): Promise<T> {
+async function holdingCap<T>(
+  deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, before: Parameters<typeof ownerShare>[0], after: Parameters<typeof ownerShare>[0],
+  change: OwnerCapChange, mark: RequestMark, run: (options: { ownerCap: OwnerCap }) => Promise<T>,
+): Promise<T | StatusReply> {
   const shares = async () => {
     const survivor = async (share: ReturnType<typeof ownerShare>) => (share === undefined ? undefined : { ...share, owner: await resolveSurvivor(deps, caller.orgId, share.owner) });
-    return ownerBudgetRefusal(deps, caller.orgId, await survivor(ownerShare(before)), await survivor(ownerShare(after)), (developerId) => ownerName(deps, developerId));
+    const [from, to] = [await survivor(ownerShare(before)), await survivor(ownerShare(after))];
+    // Fix round 2 (N-1): the agent's top-up for the month goes with it to an owner it newly counts for.
+    const carried = to !== undefined && from?.owner !== to.owner ? await readTopUp(deps, caller.orgId, new Date(deps.now()).toISOString().slice(0, 7), { kind: "agent", agentId }) : 0;
+    return ownerBudgetRefusal(deps, caller.orgId, from, to, (owner) => effectiveOwnerCap(deps, caller.orgId, owner), carried);
+  };
+  const ask = async (over: { owner: string; wouldBeUsd: number; capUsd: number }): Promise<StatusReply> => {
+    const newOwner = change.op === "set_owner" ? (change.owner.kind === "member" ? change.owner.developerId : change.accountable?.developerId) : change.op === "set_accountable" ? change.accountable.developerId : undefined;
+    const monthly = ownerShare(after)?.usd;
+    const { record, message } = await requestOwnerCap(deps, {
+      orgId: caller.orgId, agentId, requestedBy: caller.developerId, owner: over.owner, wouldBeUsd: over.wouldBeUsd, capUsd: over.capUsd, change, request: mark,
+      ...(monthly === undefined ? {} : { newLimitUsd: monthly }), ...(newOwner === undefined ? {} : { newOwner }),
+    });
+    return new StatusReply(202, { status: "NEEDS_ADMIN_APPROVAL", spendRequestId: record.spendRequestId, message });
   };
   const answer = await shares();
-  if ("message" in answer) throw agentXError("CONFIG_INVALID", answer.message);
+  if ("over" in answer) return ask(answer.over);
   try {
     return await run({ ownerCap: answer.ownerCap });
   } catch (error) {
-    if (isOwnerCapRefusal(error) !== undefined) {
-      const now = await shares();
-      if ("message" in now) throw agentXError("CONFIG_INVALID", now.message);
-    }
-    throw error;
+    if (isOwnerCapRefusal(error) === undefined) throw error;
+    // The total moved after the read (a raise, a top-up): over the cap now asks an admin; still within it (only the version moved) is written once more.
+    const now = await shares();
+    if ("over" in now) return ask(now.over);
+    return run({ ownerCap: now.ownerCap });
   }
 }
+
+/** A request whose first answer was a 202 (it waits for an org admin) answers 202 again (R18). */
+const waitingReplay = (result: unknown): StatusReply | undefined =>
+  (typeof result === "object" && result !== null && (result as { status?: unknown }).status === "NEEDS_ADMIN_APPROVAL" ? new StatusReply(202, result) : undefined);
 
 async function projectAiView(deps: AgentRouteDependencies, orgId: OrgId, stored: { settings: ProjectAiSettings; revision: number }): Promise<Shown> {
   const orgOrder = deps.orgSourceOrder === undefined ? defaultModelSourceOrder(false) : await deps.orgSourceOrder(orgId);
@@ -766,27 +783,21 @@ async function putProjectAiSettings(deps: AgentRouteDependencies, caller: AgentC
   return projectAiView(deps, caller.orgId, written);
 }
 
-async function putAgentBudget(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<Shown> {
+async function putAgentBudget(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<Shown | StatusReply> {
   const input = parseBody(BudgetBodySchema, body);
   // `manage` on a built-in is held by org owners and admins only.
   const { agent, access } = await requireAgentAccess(deps, caller, agentId, "manage");
   const { mark, replay } = await markRequest(deps, caller, "budget", agentId, input);
   const shown = (written: AgentRecord | BuiltinSettings): Promise<Shown> | Shown => ("owner" in written ? customView(written, access) : view(deps, caller, { agentId: agentId as BuiltinAgentId }, access, undefined, written));
-  if (replay !== undefined) return { agent: await shown(replay.result as AgentRecord | BuiltinSettings) };
+  if (replay !== undefined) return waitingReplay(replay.result) ?? { agent: await shown(replay.result as AgentRecord | BuiltinSettings) };
   if (input.monthlyUsd === undefined && input.maxPerRunUsd === undefined) throw agentXError("CONFIG_INVALID", "body: name at least one of monthlyUsd and maxPerRunUsd");
-  // Task 8 stored the guardrails' ceilings; this is where they hold.
-  const guardrails = await readGuardrails(deps, caller.orgId);
-  if (typeof input.monthlyUsd === "number" && input.monthlyUsd > guardrails.maxAgentMonthlyUsd) {
-    throw agentXError("CONFIG_INVALID", `monthlyUsd: your company's guardrails allow at most $${String(guardrails.maxAgentMonthlyUsd)} a month for one agent`);
-  }
-  if (typeof input.maxPerRunUsd === "number" && input.maxPerRunUsd > guardrails.maxPerRunCeilingUsd) {
-    throw agentXError("CONFIG_INVALID", `maxPerRunUsd: your company's guardrails allow at most $${String(guardrails.maxPerRunCeilingUsd)} for one run`);
-  }
-  await requireWithinTrial(deps, caller.orgId, "monthlyUsd", input.monthlyUsd, TRIAL_LIMITS_R49.agentMonthlyUsd, "agent budget");
+  // Task 8 stored the guardrails' ceilings; this is where they hold (and again when an admin approves it over the owner cap).
+  await requireAgentBudgetAllowed(deps, caller.orgId, input);
   const current: AgentRecord | BuiltinSettings = "owner" in agent ? agent : await deps.store.ensureBuiltinSettings(caller.orgId, agentId, caller.developerId);
   const monthlyBudgetUsd = typeof input.monthlyUsd === "number" ? input.monthlyUsd : input.monthlyUsd === null ? undefined : current.monthlyBudgetUsd;
   const change = { ...(input.monthlyUsd === undefined ? {} : { monthlyUsd: input.monthlyUsd }), ...(input.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: input.maxPerRunUsd }) };
-  const written = await holdingCap(deps, caller, current, withBudgetFields(current, { monthlyBudgetUsd }), (options) => deps.store.setBudget(caller.orgId, agentId, change, caller.developerId, mark, options));
+  const written = await holdingCap(deps, caller, agentId, current, withBudgetFields(current, { monthlyBudgetUsd }), { op: "set_budget", budget: change }, mark, (options) => deps.store.setBudget(caller.orgId, agentId, change, caller.developerId, mark, options));
+  if (written instanceof StatusReply) return written;
   return { agent: await shown(written) };
 }
 
@@ -839,6 +850,8 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
   if (spend !== undefined) return spend;
   // Task 21: the approvals (`/v1/app/approvals*`).
   if (isApprovalRoute(url.pathname)) return routeApprovalRequest(deps, caller, request, url);
+  // Task 32: the spend requests (`/v1/app/spend-requests*`) and a test run's continue-as-task.
+  if (isSpendRequestRoute(url.pathname)) return routeSpendRequests(deps, caller, request, url);
   if (isConnectionRoute(url.pathname)) {
     if (deps.connections === undefined) throw agentXError("NOT_FOUND", "connections are not set up in this deployment");
     return routeConnectionRequest({ store: deps.connections, documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller, request, url);

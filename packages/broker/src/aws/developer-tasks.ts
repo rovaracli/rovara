@@ -4,6 +4,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  SPEND_RESUME_INSTRUCTIONS,
+  scopeKey,
+  spendRequestKey,
+  spendRequestSlotKey,
   CHANNEL_PRIVACY_NOT_SET_UP,
   PLAN_WHY_REQUEST_MAX_CHARS,
   PRIVATE_CHANNEL_NOT_A_MEMBER,
@@ -161,6 +165,7 @@ import { channelLabel, decideMode, decideShare, type BoundChannel, type ShareDec
 import { PULL_REQUEST_PARTIAL_REVIEW_LINE, PULL_REQUEST_STATUS_END, PULL_REQUEST_STATUS_START } from "../developer/pull-request-feedback-section.js";
 import { taskSpendBaseline, type SpendPath } from "../org/budget.js";
 import { admitWork } from "../spend/admission.js";
+import { readSpendPolicy } from "../spend/settings.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { chargeConflict, chargeItems, developerCharge, limitReached, readWorkspaceLimits, releaseConflict, releaseItems, type ChargeConflict, type WorkspaceLimits } from "../developer/limits.js";
 import {
@@ -179,6 +184,7 @@ import {
   TASK_OWNER_LABEL,
   startIdempotencyKey,
   taskIndexKey,
+  taskAgentRunKey,
   taskKey,
   taskOwnerKey,
   taskOwnerLabel,
@@ -224,8 +230,8 @@ import {
 import type { TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
 import { requireCreatorStillMember } from "../developer/creator-member.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
-import { prepareRun, readRunRequest, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
-import { agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
+import { prepareRun, readRunRequest, resolveRunPayer, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
+import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
 import { onTaskEnded, type TaskEndOutcome } from "../agents/task-end.js";
 
 export interface DeveloperTaskRouteDependencies {
@@ -294,6 +300,16 @@ export interface DeveloperTaskRouteDependencies {
   agentRuns?: AgentRunDependencies;
   /** Plan 3, Task 22: the agent-step engine's dependencies (the same object as `agentRuns` where agents are set up); a cancel of a run that waits ends the run through it. */
   agentEngine?: AgentRunEngineDependencies;
+  /**
+   * Plan 3, Task 32: set only when a spend request's approval resumes the task as its owner. The approval already set the limits, and reset the cap window
+   * where it should (`keepWindow` false); otherwise a retry keeps the window instead of starting a new one as a person's retry does (R38).
+   */
+  spendResume?: { keepWindow: boolean };
+  /**
+   * Plan 3, Task 32 (fix round 1, I-3): the open spend request of the pause a person's Continue removes, ended in the Continue's own transaction (the items),
+   * with its audit flushed once that committed. Absent where agents are not set up.
+   */
+  withdrawSpendRequests?(task: DeveloperTaskRecord): Promise<{ items: TransactItems; flush(): Promise<void> }>;
 }
 
 /** Ruling R60: refuses a task whose creator is no longer a member of its org, before any other access check (see developer/creator-member.ts). */
@@ -1287,13 +1303,16 @@ export async function taskView(
   // Plan 3, Task 22: an agent-step run's status is the run's, not the last operation's (a step that finished is not a run that finished).
   const run = task.agent === undefined || task.workflow !== undefined ? undefined : await agentRunView({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, task, deps.issuer === undefined ? undefined : new URL(deps.issuer).origin);
   const derived = run === undefined ? derivedWithE2E : statusOfRun(derivedWithE2E, run, task);
+  // Plan 3, Task 32: a task waiting for money says so, with its request, what planning found and a test's offer.
+  const pausedView = await pauseViewOf(deps, task, operations);
   // #225: a task whose setup failed shows its prepare's events (the failure the broker recorded).
   const eventsOf = derived.current ?? derived.failedPrepare;
   const operationEvents = eventsOf === undefined || options.events === 0
     ? []
     : recentTaskEvents(await deps.actions.eventsNewestFirst(eventsOf.id, 200), options.events);
   // The run's own events and the approval events of its steps (Task 21 writes them in the task's partition) are the task's too.
-  const events = run === undefined || options.events === 0
+  // The run's events, and the spend requests' events of any agent task (Task 32), are the task's too.
+  const events = (run === undefined && (task.agent === undefined || task.workflow !== undefined)) || options.events === 0
     ? operationEvents
     : [...operationEvents, ...await taskLevelEvents({ documentClient: deps.documentClient, tableName: deps.tableName }, task)].sort((left, right) => left.at.localeCompare(right.at)).slice(-options.events);
   const details = options.details && derived.status !== "STARTING" && derived.status !== "RUNNING" ? await taskDetails(deps, task, operations) : {};
@@ -1364,6 +1383,7 @@ export async function taskView(
     ...(derived.closing ? { closing: true } : {}),
     ...(task.agent === undefined ? {} : { agent: { agentId: task.agent.agentId, name: task.agent.name, version: task.agent.version, builtin: task.agent.builtin } }),
     ...(run === undefined ? {} : { run }),
+    ...pausedView,
     createdAt: task.createdAt,
     // #225: a failed setup's task changed when its prepare ended, not when it was made.
     updatedAt: derived.failedPrepare?.updatedAt !== undefined && derived.failedPrepare.updatedAt > task.updatedAt ? derived.failedPrepare.updatedAt : derived.current?.createdAt ?? task.updatedAt,
@@ -1653,7 +1673,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       ...(startedBy === undefined ? {} : { startedBy }),
       ...(prepared.chain === undefined ? {} : { chain: prepared.chain }),
       ...(prepared.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: prepared.maxPerRunUsd }),
-      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, at: receivedAt, firstDispatch: { operationId: preparation.operationId } } } : {}),
+      // The pull requests the held preparation checks out are kept with the pause: its dispatch is built again when the run limit is raised (Task 32).
+      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, at: receivedAt, firstDispatch: { operationId: preparation.operationId, ...(prepared.checkout.length === 0 ? {} : { checkout: [...prepared.checkout] }) } } } : {}),
     }),
   };
   const index: DeveloperTaskIndexRecord = {
@@ -1940,13 +1961,33 @@ function busy(error: unknown, taskId: string): never {
  * Undefined on an install with no model proxy, where there is no cap to reset.
  */
 async function capWindowBaseline(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): Promise<number | undefined> {
-  return deps.modelAccess === undefined ? undefined
+  // A spend approval's resume keeps the window the approval left (Task 32).
+  return deps.modelAccess === undefined || deps.spendResume?.keepWindow === true ? undefined
     : taskSpendBaseline({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, task.modelKeyIds ?? []);
 }
 
-/** The clause and values that record the window in the same update that moves the task, since one transaction cannot touch a record twice. */
-function capWindowUpdate(baseline: number | undefined): { clause: string; values: Record<string, number> } {
-  return baseline === undefined ? { clause: "", values: {} } : { clause: ", budgetBaselineUsd = :budgetBaseline", values: { ":budgetBaseline": baseline } };
+/** Task 32 (Task 31's concern 1): a pause written mid-run is stale once someone goes on with the task; a run held at its start keeps it until its approval. */
+const staleBudgetPause = (task: DeveloperTaskRecord): boolean => task.budgetPause !== undefined && task.budgetPause.firstDispatch === undefined;
+
+/**
+ * The clause and values that record the window in the same update that moves the task, since one transaction cannot touch a record twice. The clause comes
+ * last in its update: with `task`, it also removes a stale mid-run pause (Task 32).
+ */
+function capWindowUpdate(baseline: number | undefined, task?: DeveloperTaskRecord): { clause: string; values: Record<string, number> } {
+  const pause = task !== undefined && staleBudgetPause(task) ? " REMOVE budgetPause" : "";
+  return baseline === undefined ? { clause: pause, values: {} } : { clause: `, budgetBaselineUsd = :budgetBaseline${pause}`, values: { ":budgetBaseline": baseline } };
+}
+
+/** The task's update in a Continue: the new cap window (R38) and, Task 32, the removal of a stale mid-run pause; nothing when neither applies. */
+function windowAndPauseUpdate(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, baseline: number | undefined): TransactItems {
+  const removes = staleBudgetPause(task) ? " REMOVE budgetPause" : "";
+  if (baseline === undefined && removes === "") return [];
+  return [{ Update: {
+    TableName: deps.tableName, Key: taskKey(task.taskId),
+    UpdateExpression: baseline === undefined ? `SET updatedAt = :now${removes}` : `SET budgetBaselineUsd = :baseline${removes}`,
+    ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt)",
+    ExpressionAttributeValues: baseline === undefined ? { ":now": iso(deps) } : { ":baseline": baseline },
+  } }];
 }
 
 async function continueTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
@@ -1969,16 +2010,14 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   const baseline = deps.modelAccess === undefined ? undefined
     : await taskSpendBaseline({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, task.modelKeyIds ?? []);
   const receivedAt = iso(deps);
+  // Task 32: the request the stale pause asked for is withdrawn with it, so a later approval starts no second turn.
+  const withdrawal = staleBudgetPause(task) && deps.withdrawSpendRequests !== undefined ? await deps.withdrawSpendRequests(task) : undefined;
   try {
     // acceptTask answers a repeated requestId with its first operation and writes nothing, and
     // refuses a second running turn (TASK_BUSY) before anything is written.
     await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId: request.requestId, conversationId: task.conversationId, prompt: request.instructions }, (operation) => [
-      ...(baseline === undefined ? [] : [{ Update: {
-        TableName: deps.tableName, Key: taskKey(task.taskId),
-        UpdateExpression: "SET budgetBaselineUsd = :baseline",
-        ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt)",
-        ExpressionAttributeValues: { ":baseline": baseline },
-      } }]),
+      ...windowAndPauseUpdate(deps, task, baseline),
+      ...(withdrawal?.items ?? []),
       // R12: the accepted record commits with the operation or not at all.
       putNew(turns, aiToolTurn({
         party: partyOfTaskActor(task, caller), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
@@ -1990,9 +2029,185 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
     if (isConditional(error)) await authorizeTaskAction(deps, caller, taskId, "work");
     return busyOrClosing(deps, task, error);
   }
+  await withdrawal?.flush();
   const view = await taskView(deps, task, { events: 0, details: false });
   await syncIndex(deps, task, view.status, view.updatedAt);
   return { task: view };
+}
+
+// ---- Plan 3, Task 32: going on after a spend request was approved
+
+/** A request id derived from the spend request (one resume per request, so a repeat of the resume is the same request and starts nothing new, R18). */
+function resumeRequestId(spendRequestId: string, what: string): string {
+  const hex = createHash("sha256").update(`rovara-spend-resume|${what}|${spendRequestId}`).digest("hex").slice(0, 32).split("");
+  hex[12] = "4";
+  hex[16] = "89ab"[Number.parseInt(hex[16]!, 16) % 4]!;
+  const joined = hex.join("");
+  return `${joined.slice(0, 8)}-${joined.slice(8, 12)}-${joined.slice(12, 16)}-${joined.slice(16, 20)}-${joined.slice(20)}`;
+}
+
+/**
+ * A run held at its start (run limit 0) is dispatched now that its limit was raised (Task 15's paused start): in one transaction, conditional on the pause
+ * still naming that preparation, the workspace slot is taken, the preparation's outbox item is written (with a new capability and repository grant), its
+ * setup watch starts and the pause is removed. The preparation's success then starts the task, or wakes the agent-step engine.
+ */
+async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): Promise<void> {
+  const held = task.budgetPause?.firstDispatch;
+  if (held === undefined) return;
+  const project = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
+  if (project === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${task.project}\` revision ${task.startingRevision} is no longer registered`);
+  const { workspace, items: outbox } = await deps.actions.preparationDispatch(project, task.workspaceId, held.operationId, task.ownerKey, held.checkout === undefined ? {} : { checkout: held.checkout });
+  const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.orgId, deps.actions.limitDefaults);
+  const charge = task.charge ?? developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: task.slackUserId, developerId: task.developerId });
+  const items: TransactItems = [
+    // First, at positions 0 and 1: chargeConflict reads the cancellation reasons by position.
+    ...chargeItems(deps.tableName, charge, limits, task.taskId),
+    ...outbox,
+    putNew(deps.tableName, { ...setupWatchKey(workspace.createdAt, workspace.id), entityType: "SETUP_WATCH", workspaceId: workspace.id, operationId: held.operationId, taskId: task.taskId, createdAt: workspace.createdAt }),
+    { Update: {
+      TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET updatedAt = :now REMOVE budgetPause",
+      ConditionExpression: "budgetPause.firstDispatch.operationId = :operation AND attribute_not_exists(closedAt)",
+      ExpressionAttributeValues: { ":now": iso(deps), ":operation": held.operationId },
+    } },
+  ];
+  try {
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+  } catch (error) {
+    const conflict = await chargeFailure(deps, charge, task.taskId, error);
+    if (conflict === "member" || conflict === "organization") throw await limitError(deps, { developerId: task.developerId } as DeveloperCaller, conflict, limits);
+    // Another resume dispatched it first, or the task closed meanwhile: either way there is nothing to dispatch.
+    if (isConditional(error)) return;
+    throw error;
+  }
+}
+
+/** The task's owner, as whom the system goes on with it (a retry or a Continue is theirs). */
+export interface SpendResumeInput {
+  orgId: OrgId;
+  taskId: string;
+  spendRequestId: string;
+  resetRunWindow: boolean;
+  firstDispatch: boolean;
+}
+
+/**
+ * `resumeTaskAfterSpendApproval`: the task goes on where it stopped once a spend request raised its limit. A run held at its start is dispatched
+ * (`firstDispatch`); an agent-step run runs the same step again (`advanceAgentRun`); a workflow task that the budget stopped runs its stage again (the owner's
+ * retry, made by the system); a task with no workflow gets the system's Continue, "Your AI budget was raised. Continue where you stopped." The cap window is
+ * reset only where the approval reset it (`resetRunWindow`). A task still paused on another limit, closed, or not the org's is left as it is.
+ */
+export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDependencies, owner: DeveloperCaller, input: SpendResumeInput): Promise<void> {
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(input.taskId));
+  if (task === undefined || task.orgId !== deps.orgId || task.orgId !== input.orgId || task.closedAt !== undefined) return;
+  // Ruling R60, first: a task whose creator was removed is not resumed, nor a held start dispatched.
+  await creatorGuard(deps, task);
+  if (input.firstDispatch) {
+    await dispatchHeldStart(deps, task);
+    return;
+  }
+  if (task.budgetPause !== undefined) return;
+  const resumed: DeveloperTaskRouteDependencies = { ...deps, spendResume: { keepWindow: !input.resetRunWindow } };
+  if (task.agent !== undefined && task.workflow === undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) {
+    if (deps.agentEngine === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "agents are not set up in this deployment");
+    await advanceAgentRun(deps.agentEngine, task.taskId);
+    return;
+  }
+  const requestId = resumeRequestId(input.spendRequestId, "resume");
+  if (task.workflow !== undefined) {
+    if (task.workflow.state !== "BLOCKED" || task.workflow.blockReason !== WORKFLOW_BLOCK_REASONS.budgetPaused) return;
+    await retryTaskWorkflow(resumed, owner, task.taskId, { requestId, instructions: SPEND_RESUME_INSTRUCTIONS, expectedRevision: task.workflow.revision });
+    return;
+  }
+  // A task with no workflow: the system's Continue (its window is the approval's).
+  await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt: SPEND_RESUME_INSTRUCTIONS }, () => [], { sharedTask: task.shared === true });
+  const fresh = await get<DeveloperTaskRecord>(deps, taskKey(task.taskId));
+  if (fresh !== undefined) {
+    const view = await taskView(deps, fresh, { events: 0, details: false });
+    await syncIndex(deps, fresh, view.status, view.updatedAt);
+  }
+}
+
+const ContinueAsTaskSchema = z.object({ requestId: z.string().uuid() }).strict();
+
+/**
+ * `POST /v1/app/tasks/{id}/continue-as-task` [the task's owner]: a test run that reached its cap goes on as a normal task. It is paid as the owner's own start
+ * would be (`resolveRunPayer`, origin `app`), keeps its run limit, and resumes where it stopped; what it spent before stays on the testing allowance (the
+ * ledger lines already written name it). Conditional on the test's pause still being there, so a repeat changes nothing; anyone else gets the 404 a task
+ * they can't see gets.
+ */
+export async function continueAsTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
+  const request = parse(ContinueAsTaskSchema, value, deps, "continue-as-task");
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  if (task === undefined || task.orgId !== deps.orgId || task.developerId !== caller.developerId) throw agentXError("TASK_NOT_FOUND", `task ${taskId} doesn't exist`);
+  await creatorGuard(deps, task);
+  if (task.origin === "app" && task.budgetPause === undefined && task.startedBy !== undefined) return { task: await taskView(deps, task, { events: 0, details: false }) };
+  if (task.origin !== "test_run" || task.budgetPause?.scope.kind !== "test" || task.agent === undefined) {
+    throw agentXError("CONFIG_INVALID", "only a test run that reached its cap can continue as a normal task");
+  }
+  if (deps.agentRuns === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "agents are not set up in this deployment");
+  const { payer, place } = await resolveRunPayer(deps.agentRuns, { orgId: deps.orgId, project: task.project, agentId: task.agent.agentId, origin: "app", startedBy: { developerId: caller.developerId } });
+  try {
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: taskKey(taskId),
+      UpdateExpression: "SET origin = :app, payer = :payer, place = :place, startedBy = :startedBy, updatedAt = :now REMOVE budgetPause",
+      ConditionExpression: "origin = :test AND budgetPause.#scope.#kind = :testScope AND attribute_not_exists(closedAt)",
+      ExpressionAttributeNames: { "#scope": "scope", "#kind": "kind" },
+      ExpressionAttributeValues: { ":app": "app", ":payer": payer, ":place": place, ":startedBy": { developerId: caller.developerId }, ":now": iso(deps), ":test": "test_run", ":testScope": "test" },
+    }));
+  } catch (error) {
+    if (!isConditional(error)) throw error;
+    const now = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+    if (now?.origin === "app") return { task: await taskView(deps, now, { events: 0, details: false }) };
+    throw agentXError("TASK_BUSY", `task ${taskId} changed meanwhile; refresh it and try again`);
+  }
+  await resumeTaskAfterSpendApproval(deps, caller, { orgId: deps.orgId, taskId, spendRequestId: request.requestId, resetRunWindow: false, firstDispatch: false });
+  const fresh = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  return { task: await taskView(deps, fresh ?? task, { events: 0, details: false }) };
+}
+
+/** The slots a month's request for `scope` may be in: each month, each asker. */
+const monthSlots = (months: readonly string[], scope: string, askers: readonly string[]): Array<{ subject: string; kind: string }> =>
+  months.flatMap((month) => askers.map((asker) => ({ subject: `MONTH#${month}#${scope}#${asker}`, kind: "month" })));
+
+/** Plan 3, Task 32: what the view says of a task waiting for money: the pause and its request, what planning found, a test's offer to continue. */
+async function pauseViewOf(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, operations: readonly Operation[]): Promise<Pick<DeveloperTaskView, "paused" | "planningSoFar" | "testOffer">> {
+  const pause = task.budgetPause;
+  if (pause === undefined || task.orgId === undefined) return {};
+  const scope = Object.fromEntries(Object.entries(pause.scope).filter(([, value]) => typeof value === "string")) as Record<string, string>;
+  // A run's own limit has its task's request. A month's budget has the month's request: the one the pause asked for, else one the task's starter or owner
+  // asked for themselves (Task 33 fix round 1, M-4), looked for by the pause's month first and then this month's (M-3).
+  const months = [...new Set([pause.at.slice(0, 7), iso(deps).slice(0, 7)])];
+  const askers = [...new Set(["system", task.startedBy?.developerId ?? task.developerId, task.developerId])];
+  const slots: Array<{ subject: string; kind: string }> = pause.scope.kind === "task" ? [{ subject: `TASK#${task.taskId}`, kind: "run_limit" }]
+    : pause.scope.kind === "max_per_run" || pause.scope.kind === "planning" ? [{ subject: `TASK#${task.taskId}`, kind: pause.scope.kind }]
+      : pause.scope.kind === "test" ? []
+        : monthSlots(months, scopeKey(pause.scope), askers);
+  let spendRequestId: string | undefined;
+  let message: string | undefined;
+  for (const slotOf of slots) {
+    const slot: { spendRequestId?: string } | undefined = await get<{ spendRequestId?: string }>(deps, spendRequestSlotKey(task.orgId, slotOf.subject, slotOf.kind));
+    const id: string | undefined = slot?.spendRequestId;
+    const record: { orgId?: string; status?: string; reason?: string } | undefined = id === undefined ? undefined : await get<{ orgId?: string; status?: string; reason?: string }>(deps, spendRequestKey(task.orgId, id));
+    if (record?.orgId === task.orgId && record.status === "PENDING") {
+      spendRequestId = id;
+      message = record.reason;
+      break;
+    }
+  }
+  const out: Pick<DeveloperTaskView, "paused" | "planningSoFar" | "testOffer"> = {
+    paused: { reason: "budget", scope, ...(spendRequestId === undefined ? {} : { spendRequestId }), ...(message === undefined ? {} : { message: capText(message, 300).text }) },
+  };
+  if (pause.scope.kind === "test") {
+    const capUsd = (await readSpendPolicy(deps, task.orgId)).perTestCapUsd;
+    out.testOffer = { capUsd };
+    out.paused = { ...out.paused!, message: `This test reached its $${String(Number(capUsd.toFixed(2)))} cap. Continue it as a normal task? It will then count against your monthly limit and ${task.project}'s budget.` };
+  }
+  if (pause.scope.kind === "planning") {
+    const plan = [...operations].filter((operation) => operation.kind === "task" && operation.workflowMode === "PLAN").sort(byCreated).at(-1);
+    const said = plan === undefined ? undefined : lastAssistantResponse((await deps.actions.eventsNewestFirst(plan.id, 500)).reverse());
+    if (said !== undefined) out.planningSoFar = Array.from(said).slice(0, 4096).join("");
+  }
+  return out;
 }
 
 /**
@@ -2449,7 +2664,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
     const selected = workflowSelectedChecks({ ...policy, selectedOptionalIds, selectedProposedIds });
     if (selected.length === 0) throw agentXError("CONFIG_INVALID", "keep at least one check before retrying verification, or close the task");
     await actionableWorkspace(deps, task);
-    const cap = capWindowUpdate(await capWindowBaseline(deps, task));
+    const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
     const receivedAt = iso(deps);
     const { blockReason: _previousBlockReason, ...unblocked } = workflow;
     void _previousBlockReason;
@@ -2564,7 +2779,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
     throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
   }
   await actionableWorkspace(deps, task);
-  const cap = capWindowUpdate(await capWindowBaseline(deps, task));
+  const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
   const receivedAt = iso(deps);
   const unblocked = { ...task.workflow };
   delete unblocked.blockReason;
@@ -2774,7 +2989,7 @@ async function queueWorkflowCoding(
   const { task } = access;
   const { workflow } = task;
   // Every coding restart here is a human's retry or send-back (rulings R38 and R39): the task's cap window starts anew.
-  const cap = capWindowUpdate(await capWindowBaseline(deps, task));
+  const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
   const receivedAt = iso(deps);
   try {
     await withCurrentThreadNotes(deps, task, input.requestId, (current, notes) => {

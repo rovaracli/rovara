@@ -93,6 +93,30 @@ export function auditSpendRequestExpired(input: AuditBuilderBase & SpendRequestF
   return build("spend_request.expired", input, { kind: "spend_request", id: input.spendRequestId }, spendFacts(input));
 }
 
+/** `occurrence`: the spend request id. Nobody answered an owner's request in time, so the org's owners and admins were added. */
+export function auditSpendRequestEscalated(input: AuditBuilderBase & SpendRequestFacts): AuditEventInput {
+  return build("spend_request.escalated", input, { kind: "spend_request", id: input.spendRequestId }, spendFacts(input));
+}
+
+/**
+ * `occurrence`: the spend request id and the move's number. Rovara moved who a pending spend request is asked of because a member was merged into another
+ * (`mode` `merged`) or removed (`removed`), when `from` and `to` are member ids kept in `related`; or because an owner's total moved under an approval
+ * (`recounted`, Task 33), when `from` and `to` are the routes and nobody is named.
+ */
+export function auditSpendRequestRerouted(input: AuditBuilderBase & { spendRequestId: string; kind: string; mode: "merged" | "removed" | "recounted"; from: string; to: string }): AuditEventInput {
+  // A recount moves the request between routes, not between people: no member is named.
+  const related = input.mode === "recounted" ? input.related : [input.from, input.to, ...(input.related ?? [])];
+  return build("spend_request.rerouted", { ...input, ...(related === undefined ? {} : { related }) }, { kind: "spend_request", id: input.spendRequestId }, { kind: input.kind, mode: input.mode });
+}
+
+/**
+ * `occurrence`: the due resume's sort key. Rovara dropped a month resume it could not make (Task 33 fix round 2): the task's creator or owner left the org
+ * (`cause` `member_left`), so the task can't go on and the settlement run stops trying. The target is the task; the spend request is in `related`.
+ */
+export function auditSpendRequestResumeDropped(input: AuditBuilderBase & { spendRequestId: string; taskId: string; kind: string; cause: string }): AuditEventInput {
+  return build("spend_request.resume_dropped", { ...input, related: [input.spendRequestId, ...(input.related ?? [])] }, { kind: "task", id: input.taskId }, { kind: input.kind, cause: input.cause });
+}
+
 // Budgets and policy -----------------------------------------------------------------------------------------------------
 
 /**
