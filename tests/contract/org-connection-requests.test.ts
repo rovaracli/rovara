@@ -160,7 +160,7 @@ describe("an MCP endpoint is checked when a connection is saved", () => {
     const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
     const tools = vi.fn(async () => [{ name: "a" }]);
     const store = new OrgConnectionStore({ ...deps, fetch: fetchSpy, listMcpTools: tools as never, checkEndpoint: async (url) => { await checkEndpointUrl(url, resolver); }, endpointGuard: mcpEndpointGuard({ resolveHost: resolver }) });
-    await store.put({ orgId: ORG_A, connection: MCP, secret: { token: "t" }, by: ALICE });
+    await store.put({ orgId: ORG_A, connection: MCP, secret: { token: "token-0123456789" }, by: ALICE });
     expect(await store.check(ORG_A, CON_A)).toEqual({ ok: true, message: "1 tool" });
     address = "10.1.2.3";
     const result = await store.check(ORG_A, CON_A);
@@ -309,7 +309,7 @@ describe("a lookup that fails during a check is not a result", () => {
     const tools = vi.fn(async () => [{ name: "a" }]);
     const resolver = async () => { if (failing) throw new Error("ETIMEOUT"); return ["52.1.2.3"]; };
     const store = new OrgConnectionStore({ ...deps, listMcpTools: tools as never, checkEndpoint: async (url) => { await checkEndpointUrl(url, resolver); }, endpointGuard: mcpEndpointGuard({ resolveHost: resolver }) });
-    await store.put({ orgId: ORG_A, connection: MCP, secret: { token: "t" }, by: ALICE });
+    await store.put({ orgId: ORG_A, connection: MCP, secret: { token: "token-0123456789" }, by: ALICE });
     failing = true;
     const failed = await code(store.check(ORG_A, CON_A, request(R1)));
     expect(failed?.code).toBe("RUNTIME_UNAVAILABLE");
