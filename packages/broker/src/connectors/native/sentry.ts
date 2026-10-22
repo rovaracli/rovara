@@ -77,7 +77,7 @@ const listIssues: NativeTool<SentryRunScope> = {
     if (typeof args["statsPeriod"] === "string") query["statsPeriod"] = args["statsPeriod"];
     const issues = listOf(await sentryGet(ctx, `projects/${segment(ctx.scope.organization)}/${segment(ctx.scope.projectSlug)}/issues/`, query)).slice(0, limit).filter(isRecord);
     const text = issues.length === 0 ? `No issues in ${ctx.scope.alias}.` : `${String(issues.length)} issue${issues.length === 1 ? "" : "s"} in ${ctx.scope.alias}:\n${issues.map(issueLine).join("\n")}`;
-    return { text, structured: issues.map((issue) => ({ id: issue["id"], shortId: issue["shortId"], title: clip(issue["title"]), level: issue["level"], status: issue["status"], count: issue["count"], lastSeen: issue["lastSeen"] })) };
+    return { text };
   },
 };
 
