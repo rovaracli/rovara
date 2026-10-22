@@ -226,6 +226,9 @@ describe("create and read", () => {
     expect(await code(create("Two", { description: "bad\u0007" }))).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringMatching(/^description: /) as string });
     await expect(create("Three", { description: "d".repeat(500) })).resolves.toBeDefined();
     await expect(create("Four", { description: "line one\nline two" })).resolves.toBeDefined();
+    // 300 emoji are 300 characters, though 600 UTF-16 units.
+    await expect(create("Five", { description: "\u{1F600}".repeat(300) })).resolves.toBeDefined();
+    expect(await code(create("Six", { description: "\u{1F600}".repeat(501) }))).toMatchObject({ code: "CONFIG_INVALID" });
   });
 
   it("needs an accountable maintainer for a project's chain and none for a member's", async () => {
@@ -246,10 +249,11 @@ describe("create and read", () => {
 
   it("writes the created event, one per write, and refuses a name taken without leaving an event behind", async () => {
     const { create, events, db } = setup();
-    const chain = await create("Investigate");
+    const chain = await create("Writes");
     expect(events(ORG_A, chain.chainId).map((item) => item["kind"])).toEqual(["created"]);
+    expect(events(ORG_A, chain.chainId)[0]).toMatchObject({ entityType: "CHAIN_EVENT", orgId: ORG_A, chainId: chain.chainId, by: ALICE, name: "Writes" });
     const before = db.find(() => true).length;
-    await code(create("investigate"));
+    await code(create("writes"));
     expect(db.find(() => true).length).toBe(before);
   });
 });
@@ -657,6 +661,41 @@ describe("the owner's monthly total", () => {
     expect(await code(ctx.chains.setOwner(ORG_A, chain.chainId, WEB_OWNS, DAN))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(await code(ctx.chains.setOwner(ORG_A, chain.chainId, ALICE_OWNS, DAN, { developerId: BOB }))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(await code(ctx.chains.setAccountable(ORG_A, (await ctx.create("Mine")).chainId, { developerId: BOB }, DAN))).toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
+  it("does not count an archived chain, or one with no budget, when it builds a total", async () => {
+    const ctx = setup();
+    const archived = await ctx.create("Archived");
+    await ctx.chains.setBudget(ORG_A, archived.chainId, 10, ALICE);
+    await ctx.chains.archive(ORG_A, archived.chainId, ALICE);
+    const live = await ctx.create("Live");
+    await ctx.chains.setBudget(ORG_A, live.chainId, 2, ALICE);
+    await ctx.create("Unbudgeted");
+    ctx.db.delete(ownerBudgetKey(ORG_A, ALICE));
+    expect(await ctx.agents.rebuildOwnerTotal(ORG_A, ALICE)).toBe(2);
+    expect(ctx.total(ALICE)).toBe(2);
+    // Another person's chain is not in this person's total.
+    const bobs = await ctx.create("Bobs", { owner: { kind: "member", developerId: BOB }, by: BOB });
+    await ctx.chains.setBudget(ORG_A, bobs.chainId, 7, BOB);
+    expect(ctx.total(ALICE)).toBe(2);
+    expect(ctx.total(BOB)).toBe(7);
+  });
+
+  it("answers CHAIN_REVISION_CONFLICT when the spend policy moved since the cap was read, and when the total moved under a lowering", async () => {
+    const ctx = setup();
+    const chain = await ctx.create("Investigate");
+    await ctx.chains.setBudget(ORG_A, chain.chainId, 8, ALICE);
+    // The cap was read at policy revision 3, but the policy is not there (revision 0): the policy moved.
+    expect(await code(ctx.chains.setBudget(ORG_A, chain.chainId, 9, ALICE, undefined, { ownerCap: { usd: 100, policyRevision: 3 } }))).toEqual({
+      code: "CHAIN_REVISION_CONFLICT", message: "Your company's spend policy changed just now. Reload and make your change again.",
+    });
+    expect(ctx.total(ALICE)).toBe(8);
+    // The owner's total is lowered by someone else between the read and the write: a decrease needs the room it takes out.
+    ctx.hooks.push(() => { ctx.db.set({ ...ctx.db.get(ownerBudgetKey(ORG_A, ALICE))!, totalUsd: 1 }); });
+    expect(await code(ctx.chains.setBudget(ORG_A, chain.chainId, 2, ALICE))).toEqual({
+      code: "CHAIN_REVISION_CONFLICT", message: "Someone else changed this person's agent budgets just now. Reload and make your change again.",
+    });
+    expect((await ctx.chains.get(ORG_A, chain.chainId))!.monthlyBudgetUsd).toBe(8);
   });
 
   it("holds a raise to the cap it is given, and refuses with the owner named", async () => {
