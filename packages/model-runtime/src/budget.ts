@@ -44,3 +44,31 @@ export function budgetExhaustedFromMarker(message: string | undefined): ModelBud
   const scope = message === undefined ? undefined : MARKER.exec(message)?.[1];
   return scope === undefined ? undefined : new ModelBudgetExhaustedError(scope as ModelBudgetScope);
 }
+
+// ---- a model no source serves (Plan 3 Task 26)
+
+/** The control plane refused to issue a key because no AI source serves the step's model; its words say what to do. The task ends on it, with those words. */
+export class ModelNotAllowedError extends Error {
+  constructor(readonly text: string) {
+    super(text);
+    this.name = "ModelNotAllowedError";
+  }
+}
+
+const NOT_ALLOWED_MARKER = /^Model not allowed: ([^\p{Cc}]{1,300})$/u;
+
+/** What a stream's error message says when the control plane refused the model: Pi carries only text, so the words travel in it. */
+export const modelNotAllowedMarker = (text: string): string => `Model not allowed: ${text}`;
+
+/** The error a stream message stands for, when it is a refusal of the model (see {@link modelNotAllowedMarker}). */
+export function modelNotAllowedFromMarker(message: string | undefined): ModelNotAllowedError | undefined {
+  const text = message === undefined ? undefined : NOT_ALLOWED_MARKER.exec(message)?.[1];
+  return text === undefined ? undefined : new ModelNotAllowedError(text);
+}
+
+/** The control plane's words for a refusal, as safe text: printable characters only, at most 300. */
+export function refusalText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const cleaned = value.replace(/[\p{Cc}\p{Cf}]/gu, "").trim().slice(0, 300);
+  return cleaned === "" ? undefined : cleaned;
+}

@@ -1017,6 +1017,25 @@ describe("a key the broker mints", () => {
     expect(writes).toEqual([]);
   });
 
+  it("runs the key audit last, with a time budget, and says when it stopped short (Task 26 review I2)", async () => {
+    const t = await brokerSetup();
+    t.access.auditKeys.mockResolvedValueOnce({ checked: 7, blocked: 1, truncated: true });
+    const logged = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const run = await t.sweep();
+      expect(t.access.auditKeys).toHaveBeenCalledWith({ budgetMs: 6_000 });
+      const jobs = (JSON.parse(run.body) as { jobs: Array<{ name: string; ok: boolean; result?: unknown }> }).jobs;
+      expect(jobs.map((job) => job.name)).toEqual(["sweep-model-sources", "sweep-spend", "audit-model-keys"]);
+      expect(jobs.at(-1)).toMatchObject({ ok: true, result: { checked: 7, blocked: 1, truncated: true } });
+      expect(logged.mock.calls.map((call) => String(call[0])).some((line) => line.includes("model_keys.audit_truncated"))).toBe(true);
+      // An audit that fails does not stop the sweeps that ran before it, and is reported by its error's name alone.
+      t.access.auditKeys.mockRejectedValueOnce(Object.assign(new Error("secret detail"), { name: "BlockFailed" }));
+      const failed = await t.sweep();
+      expect(JSON.parse(failed.body)).toMatchObject({ jobs: [{ ok: true }, { name: "sweep-spend", ok: true }, { name: "audit-model-keys", ok: false, error: "BlockFailed" }] });
+      expect(failed.body).not.toContain("secret detail");
+    } finally { logged.mockRestore(); }
+  });
+
   it("is left alone by the scheduled run on an install without agents or a model proxy", async () => {
     const t = await brokerSetup({ agents: false });
     const run = await t.sweep();

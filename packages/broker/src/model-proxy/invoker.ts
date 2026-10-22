@@ -56,8 +56,8 @@ export class ModelAccessInvoker implements ModelAccess {
     return this.parseResult(await this.invoke({ op: "mintKey", args }), MintedKeyResultSchema);
   }
 
-  async auditKeys(): Promise<KeyAudit> {
-    return this.parseResult(await this.invoke({ op: "auditKeys", args: {} }), KeyAuditResultSchema);
+  async auditKeys(options?: { budgetMs?: number }): Promise<KeyAudit> {
+    return this.parseResult(await this.invoke({ op: "auditKeys", args: options?.budgetMs === undefined ? {} : { budgetMs: options.budgetMs } }), KeyAuditResultSchema);
   }
 
   async upsertSource(input: UpsertSourceInput): Promise<void> {

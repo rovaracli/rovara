@@ -358,6 +358,32 @@ describe("turnModelAccessSource", () => {
     expect(JSON.parse(bodyText(bare.mock.calls[0]![1]))).toEqual({ orgId: TEST_ORG, turnId: "Ev1", classifierModel: classifier });
   });
 
+  describe("a refusal for want of a model (Task 26 review I3)", () => {
+    const TEXT = "Your company's AI sources don't include Rovara's AI, so Slack has no model to answer with. Ask an admin to set an assistant model.";
+    const refused = (status: number, code: string, message: unknown) => vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ error: { code, message } }), { status }));
+    const failure = async (signed: typeof fetch): Promise<{ code: string; message: string }> => {
+      try { await turnModelAccessSource(input(signed, Date.now))(); } catch (error) { return error as { code: string; message: string }; }
+      throw new Error("expected a refusal");
+    };
+
+    it("passes MODEL_NOT_ALLOWED and its words through, so the member is told what to ask for", async () => {
+      expect(await failure(refused(403, "MODEL_NOT_ALLOWED", TEXT))).toMatchObject({ code: "MODEL_NOT_ALLOWED", message: `MODEL_NOT_ALLOWED: ${TEXT}` });
+    });
+
+    it("keeps the words bounded and free of control characters", async () => {
+      const error = await failure(refused(403, "MODEL_NOT_ALLOWED", `Ask\u001b[31m an\u0000 admin ${"x".repeat(900)}`));
+      expect(error.code).toBe("MODEL_NOT_ALLOWED");
+      expect(error.message).not.toMatch(/\p{Cc}/u);
+      expect(error.message.length).toBeLessThanOrEqual(330);
+    });
+
+    it("still hides every other refusal behind its code alone", async () => {
+      expect(await failure(refused(403, "FORBIDDEN", "secret detail"))).toMatchObject({ code: "FORBIDDEN", message: expect.not.stringContaining("secret detail") as unknown });
+      expect(await failure(refused(503, "MODEL_PROXY_UNAVAILABLE", "secret detail"))).toMatchObject({ code: "MODEL_PROXY_UNAVAILABLE", message: expect.not.stringContaining("secret detail") as unknown });
+      expect(await failure(refused(403, "MODEL_NOT_ALLOWED", 5))).toMatchObject({ code: "MODEL_PROXY_UNAVAILABLE" });
+    });
+  });
+
   it("shares one request between concurrent callers", async () => {
     const signed = vi.fn<typeof fetch>(async () => answer("sk-proxy-a", Date.now() + 900_000));
     const source = turnModelAccessSource(input(signed, Date.now));

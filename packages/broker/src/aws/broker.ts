@@ -1369,7 +1369,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(sources === undefined ? [] : [{ name: "sweep-model-sources", run: () => sweepModelSources(sources, { budgetMs: MODEL_SOURCE_SWEEP_BUDGET_MS }) }]),
           ...(ledger === undefined ? [] : [{ name: "sweep-spend", run: () => runSpendSweep(ledger, { budgetMs: SPEND_SWEEP_BUDGET_MS }) }]),
           // Last: it reads the proxy's keys over several calls and must not take time the sweeps need (Task 26).
-          ...(keyAudit === undefined ? [] : [{ name: "audit-model-keys", run: () => keyAudit.auditKeys() }]),
+          ...(keyAudit === undefined ? [] : [{ name: "audit-model-keys", run: () => auditModelKeys(keyAudit) }]),
         ],
         (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
       );
@@ -5021,6 +5021,7 @@ async function taskOperationParts(
     model: applied?.model ?? resolvedModel.model,
     ...(chatgpt === undefined || planOwner === undefined ? {} : { plan: { developerId: planOwner, model: chatgpt.model } }),
   });
+  const payloadModel: ModelSelection | undefined = applied?.model ?? resolvedModel.model ?? (routed?.route == null ? undefined : routed.requested);
   const leftThePlan = chatgpt !== undefined && routed?.keepChatgpt === false;
   if (leftThePlan) chatgpt = undefined;
   const operationId = input.operationId ?? randomUUID();
@@ -5130,7 +5131,8 @@ async function taskOperationParts(
       ...(input.workflowReviewFeedback === undefined ? {} : { workflowReviewFeedback: input.workflowReviewFeedback }),
       ...(input.workflowReviewNote === undefined ? {} : { workflowReviewNote: input.workflowReviewNote }),
       ...(input.workflowReviewers === undefined ? {} : { workflowReviewers: [...input.workflowReviewers] }),
-      ...((applied?.model ?? resolvedModel.model) === undefined ? {} : { model: applied?.model ?? resolvedModel.model }),
+      // Task 26 (review I1): when a route was chosen the worker is told the model it was chosen for, never left to its install setting, which the key may not allow.
+      ...(payloadModel === undefined ? {} : { model: payloadModel }),
       ...(chatgpt === undefined ? {} : { chatgpt: { model: chatgpt.model } }),
       ...(routed?.wire === undefined ? {} : { modelRoute: routed.wire }),
       ...(applied?.agentStep === undefined ? {} : { agentStep: applied.agentStep }),
@@ -10427,6 +10429,15 @@ function isSpendSettlementEvent(event: unknown): event is { source: "agentx.spen
 
 /** The broker's function has 30 seconds; a sweep that has not finished by then stops and the next run resumes from where it was. */
 const SPEND_SWEEP_BUDGET_MS = 20_000;
+/** The audit of the proxy's scoped keys is the last job and gets what is left of the function's time; what it did not reach it says. */
+const KEY_AUDIT_BUDGET_MS = 6_000;
+
+async function auditModelKeys(access: { auditKeys(options?: { budgetMs?: number }): Promise<{ checked: number; blocked: number; truncated: boolean }> }) {
+  const result = await access.auditKeys({ budgetMs: KEY_AUDIT_BUDGET_MS });
+  if (result.truncated) console.log(JSON.stringify({ component: "broker", event: "model_keys.audit_truncated", checked: result.checked, blocked: result.blocked }));
+  return result;
+}
+
 /** The company AI sources' sweep runs before the spend sweep and leaves it its 20 seconds. */
 const MODEL_SOURCE_SWEEP_BUDGET_MS = 5_000;
 

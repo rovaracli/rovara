@@ -28,6 +28,13 @@ export interface TurnModelAccessInput {
   now?: () => number;
 }
 
+/** The control plane's words for a refusal, as text a member can be shown: printable characters only, at most 300. */
+function refusalWords(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const cleaned = value.replace(/[\p{Cc}\p{Cf}]/gu, "").trim().slice(0, 300);
+  return cleaned === "" ? undefined : cleaned;
+}
+
 const KEY_PATTERN = /^[^\s]{1,16384}$/u;
 
 /** The control plane's answer; anything else is refused without echoing it. */
@@ -63,8 +70,11 @@ export function turnModelAccessSource(input: TurnModelAccessInput): () => Promis
         const response = await input.signedFetch(url, { method: "POST", headers: { "content-type": "application/json" }, body });
         if (!response.ok) {
           // Only the code is kept: the control plane's words are not shown to the member.
-          const code = ((await response.json().catch(() => undefined)) as { error?: { code?: unknown } } | undefined)?.error?.code;
-          throw agentXError(code === "FORBIDDEN" ? "FORBIDDEN" : "MODEL_PROXY_UNAVAILABLE", `model access request failed with HTTP ${response.status}`);
+          const error = ((await response.json().catch(() => undefined)) as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
+          // Task 26: no AI source serves the turn's model. Its words say what an admin must do, so the member is shown them; no other refusal's words are kept.
+          const refused = error?.code === "MODEL_NOT_ALLOWED" ? refusalWords(error.message) : undefined;
+          if (refused !== undefined) throw agentXError("MODEL_NOT_ALLOWED", refused);
+          throw agentXError(error?.code === "FORBIDDEN" ? "FORBIDDEN" : "MODEL_PROXY_UNAVAILABLE", `model access request failed with HTTP ${response.status}`);
         }
         current = parseTurnModelAccess(await response.json().catch(() => undefined));
         return current;

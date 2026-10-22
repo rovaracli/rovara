@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { INFERENCE_PATHS, type AgentXError } from "@agentx/contracts";
 import { describe, expect, it, vi } from "vitest";
 import type { ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
-import { ModelProxyClient } from "../../packages/broker/src/model-proxy/client.js";
+import { AUDIT_MAX_PAGES, ModelProxyClient } from "../../packages/broker/src/model-proxy/client.js";
 import { createModelAccessHandler } from "../../packages/broker/src/model-proxy/handler.js";
 import { ModelAccessInvoker } from "../../packages/broker/src/model-proxy/invoker.js";
 
@@ -56,7 +56,9 @@ function litellm(options: { teams?: Record<string, string[] | undefined>; store?
     if (entry.method === "GET" && entry.path === "/key/list") {
       const size = options.pageSize ?? Number(params.get("size") ?? 100);
       const page = Number(params.get("page") ?? 1);
+      // Newest first when asked: the fake keeps keys in the order they were made, oldest first.
       const live = keys.filter((candidate) => candidate.deleted !== true);
+      if (params.get("sort_by") === "created_at" && params.get("sort_order") === "desc") live.reverse();
       return json({ keys: live.slice((page - 1) * size, page * size).map((found) => ({ ...found, key: undefined })), total_count: live.length, current_page: page, total_pages: Math.max(1, Math.ceil(live.length / size)) });
     }
     if (entry.method === "POST" && entry.path === "/key/block") {
@@ -164,9 +166,18 @@ describe("verify_minted: the key LiteLLM stored is read back and must be what wa
     expect((await failure(client(proxy).mintKey(mint()))).code).toBe("MODEL_PROXY_UNAVAILABLE");
   });
 
-  it("accepts a key whose stored models are in another order, and whose info does not list the routes", async () => {
-    const proxy = litellm({ store: () => ({ models: [CATALOG[0]!, OWN], allowed_routes: undefined }) });
+  it("accepts a key whose stored models are in another order", async () => {
+    const proxy = litellm({ store: () => ({ models: [CATALOG[0]!, OWN] }) });
     await expect(client(proxy).mintKey(mint([OWN, CATALOG[0]!]))).resolves.toMatchObject({ key: "sk-virtual-1" });
+  });
+
+  // The Task 25 spike does not show whether /key/info echoes `allowed_routes` (it shows only that the route list is stored and enforced), so a key whose info
+  // omits or nulls the list cannot be shown to be limited to the inference routes. Task 37 checks the real shape on staging.
+  it.each([["omits the route list", undefined], ["nulls the route list", null]])("revokes and refuses a key whose info %s, since its routes cannot be shown", async (_what, routes) => {
+    const proxy = litellm({ store: () => ({ allowed_routes: routes as never }) });
+    expect((await failure(client(proxy).mintKey(mint()))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+    expect(proxy.calls()).toEqual(["GET /team/info", "POST /key/generate", "GET /key/info", "POST /key/delete"]);
+    expect(proxy.keys[0]!.deleted).toBe(true);
   });
 });
 
@@ -182,7 +193,7 @@ describe("the /key/list audit", () => {
     ];
     proxy.keys.push(good, ...bad);
     const result = await client(proxy).auditKeys();
-    expect(result).toEqual({ checked: 1 + bad.length, blocked: bad.length });
+    expect(result).toEqual({ checked: 1 + bad.length, blocked: bad.length, truncated: false });
     expect(proxy.keys.filter((key) => key.blocked === true).map((key) => key.token).sort()).toEqual(bad.map((key) => key.token).sort());
     expect(good.blocked).toBeUndefined();
     expect(proxy.seen.filter((entry) => entry.path === "/key/block").every((entry) => /^[0-9a-f]{64}$/.test(String(entry.body!.key)))).toBe(true);
@@ -196,15 +207,79 @@ describe("the /key/list audit", () => {
       scoped(["*"], { expires: "2020-01-01T00:00:00Z" }),
       scoped([OWN]),
     );
-    expect(await client(proxy).auditKeys()).toEqual({ checked: 1, blocked: 0 });
+    expect(await client(proxy).auditKeys()).toEqual({ checked: 1, blocked: 0, truncated: false });
   });
 
   it("reads every page, and stops at the last", async () => {
     const proxy = litellm({ pageSize: 2 });
     for (let index = 0; index < 5; index += 1) proxy.keys.push(scoped([OWN]));
     proxy.keys[4]!.models = ["*"];
-    expect(await client(proxy).auditKeys()).toEqual({ checked: 5, blocked: 1 });
+    expect(await client(proxy).auditKeys()).toEqual({ checked: 5, blocked: 1, truncated: false });
     expect(proxy.seen.filter((entry) => entry.path === "/key/list").map((entry) => new URLSearchParams(entry.search).get("page"))).toEqual(["1", "2", "3"]);
+  });
+
+  it("blocks a scoped key whose routes are missing or have widened, and leaves one with fewer routes alone", async () => {
+    const proxy = litellm();
+    const widened = [scoped([OWN], { allowed_routes: ["llm_api_routes"] }), scoped([OWN], { allowed_routes: [...ROUTES, "/model/info"] }), scoped([OWN], { allowed_routes: [] }), scoped([OWN], { allowed_routes: undefined })];
+    const fewer = scoped([OWN], { allowed_routes: ["/v1/messages"] });
+    proxy.keys.push(fewer, ...widened);
+    expect(await client(proxy).auditKeys()).toEqual({ checked: 5, blocked: 4, truncated: false });
+    expect(fewer.blocked).toBeUndefined();
+  });
+
+  it("asks for the newest keys first, so a proxy with many old keys still has its recent ones audited", async () => {
+    const proxy = litellm();
+    proxy.keys.push(scoped([OWN]));
+    await client(proxy).auditKeys();
+    const query = new URLSearchParams(proxy.seen.find((entry) => entry.path === "/key/list")!.search);
+    expect([query.get("sort_by"), query.get("sort_order")]).toEqual(["created_at", "desc"]);
+  });
+
+  it("stops at the page limit, says it did, and has audited the newest keys", async () => {
+    const proxy = litellm({ pageSize: 1 });
+    const oldest = scoped(["*"]);
+    proxy.keys.push(oldest);
+    for (let index = 0; index < AUDIT_MAX_PAGES + 4; index += 1) proxy.keys.push(scoped([OWN]));
+    const newest = scoped(["*"]);
+    proxy.keys.push(newest);
+    const result = await client(proxy).auditKeys();
+    expect(result).toEqual({ checked: AUDIT_MAX_PAGES, blocked: 1, truncated: true });
+    expect(proxy.seen.filter((entry) => entry.path === "/key/list")).toHaveLength(AUDIT_MAX_PAGES);
+    // The newest drifted key is on the first page and is blocked; the oldest, past the limit, waits for a run that reaches it.
+    expect(newest.blocked).toBe(true);
+    expect(oldest.blocked).toBeUndefined();
+  });
+
+  it("stops at its time budget, says so, and does not stop short of a list it finished", async () => {
+    let clock = 0;
+    const proxy = litellm({ pageSize: 1, failOn: (seen) => { if (seen.path === "/key/list") clock += 1_000; return undefined; } });
+    for (let index = 0; index < 10; index += 1) proxy.keys.push(scoped([OWN]));
+    expect(await client(proxy, { now: () => clock }).auditKeys({ budgetMs: 2_500 })).toEqual({ checked: 3, blocked: 0, truncated: true });
+    clock = 0;
+    const small = litellm({ pageSize: 1, failOn: (seen) => { if (seen.path === "/key/list") clock += 1_000; return undefined; } });
+    small.keys.push(scoped([OWN]), scoped([OWN]));
+    expect(await client(small, { now: () => clock }).auditKeys({ budgetMs: 2_500 })).toEqual({ checked: 2, blocked: 0, truncated: false });
+  });
+
+  it("stops at the first page made only of expired keys, since every older key has expired too", async () => {
+    const proxy = litellm({ pageSize: 2 });
+    proxy.keys.push(scoped(["*"]), scoped(["*"]), scoped([OWN], { expires: "2020-01-01T00:00:00Z" }), scoped([OWN], { expires: "2020-01-01T00:00:00Z" }));
+    expect(await client(proxy).auditKeys()).toEqual({ checked: 0, blocked: 0, truncated: false });
+    expect(proxy.seen.filter((entry) => entry.path === "/key/list")).toHaveLength(1);
+  });
+
+  it("goes on to the other drifted keys when one block fails, counts the failure, and then fails visibly", async () => {
+    let blocks = 0;
+    const proxy = litellm({ failOn: (seen) => (seen.path === "/key/block" && (blocks += 1) === 1 ? json({ error: "down" }, 503) : undefined) });
+    const first = scoped(["*"]);
+    const second = scoped([]);
+    const third = scoped([`${OTHER_ORG}.${SRC}.claude-sonnet-4-6`]);
+    proxy.keys.push(first, second, third);
+    const refused = await failure(client(proxy).auditKeys());
+    expect(refused.code).toBe("MODEL_PROXY_UNAVAILABLE");
+    expect(refused.message).toContain("1 of 3");
+    expect(proxy.seen.filter((entry) => entry.path === "/key/block")).toHaveLength(3);
+    expect([first.blocked, second.blocked, third.blocked].filter((blocked) => blocked === true)).toHaveLength(2);
   });
 
   it("fails visibly when the list cannot be read, and when a block is refused, rather than reporting a clean audit", async () => {
@@ -226,17 +301,22 @@ describe("the /key/list audit", () => {
 
   it("is a request of its own for the handler and the invoker, and the handler refuses an argument", async () => {
     const never = async () => { throw new Error("not used"); };
-    const auditKeys = vi.fn(async () => ({ checked: 3, blocked: 1 }));
+    const auditKeys = vi.fn(async () => ({ checked: 3, blocked: 1, truncated: true }));
     const access = {
       upsertOrg: never, upsertMember: never, spend: never, orgSpend: never, keySpend: never, mintKey: never, revokeKey: never, blockKey: never,
       upsertSource: never, removeSource: never, checkSource: never, listSources: never, auditKeys,
     } as unknown as ModelAccess;
     const run = createModelAccessHandler({ access, log: () => undefined });
-    expect(await run({ op: "auditKeys", args: {} })).toEqual({ ok: true, result: { checked: 3, blocked: 1 } });
+    expect(await run({ op: "auditKeys", args: {} })).toEqual({ ok: true, result: { checked: 3, blocked: 1, truncated: true } });
+    expect(auditKeys).toHaveBeenLastCalledWith(undefined);
+    expect(await run({ op: "auditKeys", args: { budgetMs: 4_000 } })).toMatchObject({ ok: true });
+    expect(auditKeys).toHaveBeenLastCalledWith({ budgetMs: 4_000 });
+    expect(await run({ op: "auditKeys", args: { budgetMs: -1 } })).toMatchObject({ ok: false });
     expect(await run({ op: "auditKeys", args: { orgId: ORG } })).toMatchObject({ ok: false });
-    const lambda = { send: vi.fn(async () => ({ Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: { checked: 3, blocked: 1 } })) })) };
-    expect(await new ModelAccessInvoker({ functionName: "fn", lambda: lambda as never }).auditKeys()).toEqual({ checked: 3, blocked: 1 });
-    lambda.send.mockImplementationOnce(async () => ({ Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: { checked: -1, blocked: 0 } })) }));
+    const lambda = { send: vi.fn(async () => ({ Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: { checked: 3, blocked: 1, truncated: true } })) })) };
+    expect(await new ModelAccessInvoker({ functionName: "fn", lambda: lambda as never }).auditKeys({ budgetMs: 4_000 })).toEqual({ checked: 3, blocked: 1, truncated: true });
+    expect(JSON.parse(Buffer.from((lambda.send.mock.calls[0] as unknown as [{ input: { Payload: Uint8Array } }])[0].input.Payload).toString("utf8"))).toEqual({ op: "auditKeys", args: { budgetMs: 4_000 } });
+    lambda.send.mockImplementationOnce(async () => ({ Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: { checked: -1, blocked: 0, truncated: false } })) }));
     await expect(new ModelAccessInvoker({ functionName: "fn", lambda: lambda as never }).auditKeys()).rejects.toThrow("unexpected result");
   });
 });

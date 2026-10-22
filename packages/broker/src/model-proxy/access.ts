@@ -33,6 +33,8 @@ export type SourceCheck = { ok: true; health: "healthy" | "unknown" } | { ok: fa
 export interface KeyAudit {
   checked: number;
   blocked: number;
+  /** The audit stopped at its page limit or its time budget with keys unread; the next run starts from the newest again. */
+  truncated: boolean;
 }
 
 export interface UpsertSourceInput {
@@ -96,7 +98,7 @@ export interface ModelAccess {
    * Reads the proxy's keys and blocks every scoped key that no longer holds to its invariants: models that are only its own org's aliases and Rovara AI
    * catalog ids, no wildcard, no alias map, a team. A backstop for the checks at the mint; the older unscoped keys are not part of it.
    */
-  auditKeys(): Promise<KeyAudit>;
+  auditKeys(options?: { budgetMs?: number }): Promise<KeyAudit>;
   revokeKey(key: string): Promise<void>;
   /**
    * Blocks a key by its id (the SHA-256 of the key): the proxy refuses it from then on, and its spend stays readable (`keySpend`), which a

@@ -7,6 +7,7 @@ import { ModelSourceSchema, modelCounter, modelKeyKey, modelSourcesKey, scopeKey
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 import { settleKey, type LedgerDependencies, type ModelKeyRecord } from "../../packages/broker/src/spend/ledger.js";
+import { resolveTaskModel } from "../../packages/worker/src/task-model.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall } from "../support/slack-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
@@ -123,6 +124,8 @@ describe("a task's operation is routed to the first source that serves its model
     const r = await t.running();
     expect(r.payload()).not.toHaveProperty("modelRoute");
     expect(r.operation().modelRoute).toEqual({ sourceId: "rovara", alias: DEFAULT_ID, model: { provider: "amazon-bedrock", modelId: DEFAULT_ID } });
+    // The worker is told the model its key allows, so it never falls back on its own install setting.
+    expect(r.payload().model).toEqual({ provider: "amazon-bedrock", modelId: DEFAULT_ID });
     expect((await r.ask()).status).toBe(200);
     expect(t.access.mintKey.mock.calls[0]![0]).toMatchObject({ models: [DEFAULT_ID], tags: { source: "rovara" } });
   });
@@ -183,6 +186,56 @@ describe("a task's operation is routed to the first source that serves its model
   });
 });
 
+describe("the worker runs exactly the model its key allows", () => {
+  const INSTALL = { AGENTX_MODEL_PROVIDER: "amazon-bedrock", AGENTX_MODEL_ID: "us.anthropic.claude-opus-4-6", PI_CACHE_RETENTION: "short" };
+
+  it("names the model in the payload when the step and the project name none, so an install whose worker setting is another model still runs the key's model", async () => {
+    const t = await taskSetup();
+    await t.seed({ order: ["rovara"] });
+    const r = await t.running();
+    expect((await r.ask()).status).toBe(200);
+    const sent = r.payload().model as { provider: string; modelId: string };
+    // What the worker resolves with its install setting on another model is the payload's, which is what the key allows.
+    expect(resolveTaskModel(sent as never, INSTALL)).toMatchObject({ provider: "amazon-bedrock", modelId: DEFAULT_ID });
+    expect(t.access.mintKey.mock.calls[0]![0].models).toEqual([sent.modelId]);
+    // Without it the worker would have run its setting, which the key does not allow.
+    expect(resolveTaskModel(undefined, INSTALL).modelId).toBe("us.anthropic.claude-opus-4-6");
+  });
+
+  it("names it beside a company source's route too, and keeps the project's own model and level when it has one", async () => {
+    const t = await taskSetup();
+    await t.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC] });
+    const r = await t.running();
+    expect(r.payload()).toMatchObject({ model: { provider: "amazon-bedrock", modelId: DEFAULT_ID }, modelRoute: { api: "anthropic-messages" } });
+    const withModels = await taskSetup({ models: true });
+    await withModels.seed({ order: ["rovara"] });
+    expect((await withModels.running()).payload().model).toEqual({ provider: "amazon-bedrock", modelId: HAIKU_ID });
+  });
+
+  it("names the default of an eu install's own geography", async () => {
+    const was = process.env.AWS_REGION;
+    process.env.AWS_REGION = "eu-west-1";
+    try {
+      const t = await taskSetup();
+      await t.seed({ order: ["rovara"] });
+      const r = await t.running();
+      expect(r.payload().model).toEqual({ provider: "amazon-bedrock", modelId: "eu.anthropic.claude-sonnet-4-6" });
+      expect(r.operation().modelRoute).toMatchObject({ alias: "eu.anthropic.claude-sonnet-4-6" });
+    } finally {
+      if (was === undefined) delete process.env.AWS_REGION; else process.env.AWS_REGION = was;
+    }
+  });
+
+  it("leaves the model alone when no route was chosen (a plan with no backup)", async () => {
+    const t = await taskSetup({ plan: true });
+    const store = new ModelSourceStore({ documentClient: t.db, tableName: "state", now: Date.now, chatgptSwitch: async () => true });
+    await store.setOrder({ orgId: TEST_ORG, order: ["personal-chatgpt"], by: "dev-owner" });
+    const r = await t.running();
+    expect(r.operation().modelRoute).toBeNull();
+    expect(r.payload()).not.toHaveProperty("model");
+  });
+});
+
 describe("a task on the owner's ChatGPT plan follows the order too", () => {
   /** The store with the switch on, since an order that lists the plan needs it. */
   async function planned(order: string[], sources: ModelSource[] = []) {
@@ -200,6 +253,16 @@ describe("a task on the owner's ChatGPT plan follows the order too", () => {
     expect(r.operation()).toMatchObject({ chatgptDeveloperId: MAYA.developerId, modelRoute: { sourceId: "rovara", alias: DEFAULT_ID } });
     expect((await r.ask()).status).toBe(200);
     expect(t.access.mintKey.mock.calls[0]![0].models).toEqual([DEFAULT_ID]);
+  });
+
+  it("sends a company source's route beside the plan, as the fallback the worker uses if the plan fails, and mints the key for it", async () => {
+    const t = await planned(["personal-chatgpt", SRC_ANTHROPIC], [anthropic()]);
+    const r = await t.running();
+    const alias = sourceAlias(TEST_ORG, SRC_ANTHROPIC, SONNET);
+    expect(r.payload()).toMatchObject({ chatgpt: { model: GPT }, model: { modelId: DEFAULT_ID }, modelRoute: { alias, api: "anthropic-messages", catalog: "claude-sonnet-4-6" } });
+    expect(r.operation()).toMatchObject({ chatgptDeveloperId: MAYA.developerId, modelRoute: { sourceId: SRC_ANTHROPIC, alias } });
+    expect((await r.ask()).status).toBe(200);
+    expect(t.access.mintKey.mock.calls[0]![0]).toMatchObject({ models: [alias], tags: { source: SRC_ANTHROPIC } });
   });
 
   it("leaves the plan when a company source that serves the plan's model comes before it", async () => {

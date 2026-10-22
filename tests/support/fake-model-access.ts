@@ -78,7 +78,7 @@ export function fakeModelAccess(options: { key?: string; mintFailure?: Error } =
     removeSource: vi.fn(async () => { guard(); }),
     checkSource: vi.fn(async () => { guard(); return { ok: true as const, health: "healthy" as const }; }),
     listSources: vi.fn(async () => { guard(); return []; }),
-    auditKeys: vi.fn(async () => { guard(); return { checked: minted.length, blocked: 0 }; }),
+    auditKeys: vi.fn(async () => { guard(); return { checked: minted.length, blocked: 0, truncated: false }; }),
     mintKey: vi.fn(async (input) => {
       guard();
       if (options.mintFailure !== undefined) throw options.mintFailure;

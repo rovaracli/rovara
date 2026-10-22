@@ -26,7 +26,7 @@ const MAX_MESSAGE_LENGTH = 300;
 const KEY_INFO_AT_ONCE = 10;
 /** The audit reads this many keys a page and stops after this many pages; the next run reads again (blocked and expired keys fall out of it). */
 const AUDIT_PAGE_SIZE = 100;
-const AUDIT_MAX_PAGES = 30;
+export const AUDIT_MAX_PAGES = 30;
 
 /** Assumes a customer's role to test its trust policy. Resolves true when the role was assumed and false when AWS denied it; anything else throws. */
 export interface RoleAssumer {
@@ -230,7 +230,9 @@ export class ModelProxyClient implements ModelAccess {
       const info = reply.status === 200 && isRecord(reply.body) ? reply.body.info : undefined;
       drifted = !isRecord(info) || !Array.isArray(info.models) || !sameModels(info.models, requested) || info.team_id !== orgId
         || (isRecord(info.aliases) && Object.keys(info.aliases).length > 0) || (info.aliases !== undefined && info.aliases !== null && !isRecord(info.aliases))
-        || (Array.isArray(info.allowed_routes) && !sameModels(info.allowed_routes, KEY_INFERENCE_ROUTES));
+        // The Task 25 spike shows the route list is stored and enforced, not that /key/info echoes it; a key whose info does not list it cannot be shown to be
+        // limited to the inference routes, so it is refused (Task 37 checks the real shape on staging).
+        || !Array.isArray(info.allowed_routes) || !sameModels(info.allowed_routes, KEY_INFERENCE_ROUTES);
     } catch {
       drifted = true;
     }
@@ -240,32 +242,53 @@ export class ModelProxyClient implements ModelAccess {
     throw unavailable("the model proxy issued a key that does not match the request");
   }
 
-  async auditKeys(): Promise<KeyAudit> {
+  async auditKeys(options: { budgetMs?: number } = {}): Promise<KeyAudit> {
     const catalog = this.teamCatalog();
     const master = await this.master();
-    const audit: KeyAudit = { checked: 0, blocked: 0 };
-    for (let page = 1; page <= AUDIT_MAX_PAGES; page += 1) {
-      const reply = await this.request("GET", `/key/list?return_full_object=true&size=${String(AUDIT_PAGE_SIZE)}&page=${String(page)}`, master, undefined);
+    const started = this.input.now();
+    const audit: KeyAudit = { checked: 0, blocked: 0, truncated: false };
+    let drifted = 0;
+    let failed = 0;
+    for (let page = 1; ; page += 1) {
+      // Newest keys first, so a proxy that holds more keys than one run reads still has its recent ones audited; what is left unread is said so.
+      if (page > AUDIT_MAX_PAGES || (page > 1 && options.budgetMs !== undefined && this.input.now() - started >= options.budgetMs)) {
+        audit.truncated = true;
+        break;
+      }
+      const reply = await this.request("GET", `/key/list?return_full_object=true&sort_by=created_at&sort_order=desc&size=${String(AUDIT_PAGE_SIZE)}&page=${String(page)}`, master, undefined);
       if (reply.status !== 200) throw refusal(reply);
       const body = isRecord(reply.body) ? reply.body : {};
-      for (const entry of Array.isArray(body.keys) ? body.keys : []) {
+      const entries: unknown[] = Array.isArray(body.keys) ? body.keys : [];
+      // A page of nothing but expired keys ends the audit: every key older than these has expired too.
+      if (entries.length > 0 && entries.every((entry) => this.isExpired(entry))) break;
+      for (const entry of entries) {
         const verdict = this.auditVerdict(entry, catalog);
         if (verdict === undefined) continue;
         audit.checked += 1;
-        if (verdict.violation) {
+        if (!verdict.violation) continue;
+        drifted += 1;
+        // One key that cannot be blocked does not leave the rest of the page unchecked; the audit fails at the end instead of reporting itself clean.
+        try {
           await this.blockKey(verdict.token);
           audit.blocked += 1;
+        } catch {
+          failed += 1;
         }
       }
       if (page >= (numberOf(body.total_pages) ?? 1)) break;
     }
+    if (failed > 0) throw unavailable(`the audit could not block ${String(failed)} of ${String(drifted)} drifted keys`);
     return audit;
+  }
+
+  private isExpired(entry: unknown): boolean {
+    return isRecord(entry) && typeof entry.expires === "string" && Date.parse(entry.expires) <= this.input.now();
   }
 
   /** Whether one listed key holds to its invariants; undefined for a key the audit does not cover (older unscoped, blocked, expired, or unreadable). */
   private auditVerdict(entry: unknown, catalog: readonly string[]): { token: string; violation: boolean } | undefined {
     if (!isRecord(entry) || typeof entry.token !== "string" || !/^[0-9a-f]{64}$/u.test(entry.token) || entry.blocked === true) return undefined;
-    if (typeof entry.expires === "string" && Date.parse(entry.expires) <= this.input.now()) return undefined;
+    if (this.isExpired(entry)) return undefined;
     const models = Array.isArray(entry.models) ? entry.models : [];
     const routes = Array.isArray(entry.allowed_routes) ? entry.allowed_routes : [];
     const scopedRoutes = routes.length > 0 && routes.every((route) => typeof route === "string" && KEY_INFERENCE_ROUTES.includes(route));
@@ -273,7 +296,7 @@ export class ModelProxyClient implements ModelAccess {
     if (models.length === 0 && !scopedRoutes) return undefined;
     const team = typeof entry.team_id === "string" ? entry.team_id : undefined;
     const metadataOrg = isRecord(entry.metadata) ? entry.metadata.orgId : undefined;
-    const violation = team === undefined || models.length === 0
+    const violation = team === undefined || models.length === 0 || !scopedRoutes
       || !models.every((model) => typeof model === "string" && ownOrCatalog(team, model, catalog))
       || (isRecord(entry.aliases) && Object.keys(entry.aliases).length > 0)
       || (typeof metadataOrg === "string" && metadataOrg !== team);

@@ -107,6 +107,15 @@ function mintModelPaths(record: unknown, path = ""): Array<{ path: string; value
   for (const [key, child] of Object.entries(here)) found.push(...mintModelPaths(child, Array.isArray(record) ? `${path}[${key}]` : path === "" ? key : `${path}.${key}`));
   return found;
 }
+/** Change 2 again: the worker is told the model its key allows, so a task payload (it has a prompt and `conversationStarted`) now carries `model`. */
+function payloadModelPaths(record: unknown, path = ""): Array<{ path: string; value: unknown }> {
+  if (record === null || typeof record !== "object") return [];
+  const here = record as Record<string, unknown>;
+  const found: Array<{ path: string; value: unknown }> = [];
+  if (!Array.isArray(record) && "conversationStarted" in here && "prompt" in here && "model" in here) found.push({ path: `${path}.model`, value: here.model });
+  for (const [key, child] of Object.entries(here)) found.push(...payloadModelPaths(child, Array.isArray(record) ? `${path}[${key}]` : path === "" ? key : `${path}.${key}`));
+  return found;
+}
 function operationRoutePaths(record: unknown, path = ""): Array<{ path: string; value: unknown }> {
   if (record === null || typeof record !== "object") return [];
   const here = record as Record<string, unknown>;
@@ -139,6 +148,8 @@ describe("Rovara Code with agents switched on", () => {
       for (const { value } of tagged) {
         expect(value).toMatchObject({ agentId: "rovara-code", project: "payments", payerKind: "member", payerId: payer.developerId, source: "rovara", origin: "cli" });
       }
+      // Every key that carries tags carries `models` too: a mint that lost its scope would match the fixture (which has none) and go unlisted otherwise.
+      expect(mintModelPaths(record), "every minted key is scoped").toHaveLength(tagged.length);
       expectGolden(scenario, { ...record, taskItems: kept }, [
         { path: `taskItems[${String(meta)}].agent`, expected: { agentId: "rovara-code", name: "Rovara Code", version: latest.version, builtin: true, digest: recipeDigest(latest.recipe) }, change: 5 },
         { path: `taskItems[${String(meta)}].origin`, expected: "cli", change: 5 },
@@ -149,6 +160,7 @@ describe("Rovara Code with agents switched on", () => {
         ...operationKeyPaths(record).map(({ path, value }) => ({ path, expected: value, change: 3 as const })),
         // Task 26, change 2: with the default order (Rovara only) a key may call Rovara's default model and nothing else, and it says so by value.
         ...mintModelPaths(record).map(({ path }) => ({ path, expected: [ROVARA_DEFAULT], change: 2 as const })),
+        ...payloadModelPaths(record).map(({ path }) => ({ path, expected: { provider: "amazon-bedrock", modelId: ROVARA_DEFAULT }, change: 2 as const })),
         // Change 5: the operation says where its model comes from. The invocation is unchanged: it carries no `modelRoute`.
         ...operationRoutePaths(record).map(({ path }) => ({ path, expected: { sourceId: "rovara", alias: ROVARA_DEFAULT, model: { provider: "amazon-bedrock", modelId: ROVARA_DEFAULT } }, change: 5 as const })),
       ]);
