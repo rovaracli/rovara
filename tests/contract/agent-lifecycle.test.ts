@@ -805,6 +805,25 @@ describe("drainMemberMerges", () => {
     expect(w.logs.filter((entry) => entry.event === "owner_cap.exceeded_by_move")).toMatchObject([{ fields: { owner: ALICE, totalUsd: 130, capUsd: 100, reason: "member_merged" } }]);
   });
 
+  it("looks at the survivor's cap on a run that moves nothing at all (M1)", async () => {
+    const w = agentWorld();
+    await w.memberAgent(ALICE, "Alice's first", 70);
+    await w.memberAgent(ALICE, "Alice's second", 60);
+    w.merged(OLD_ALICE, ALICE);
+    w.queue(at(1), ORG_A, ALICE, OLD_ALICE);
+    expect(await drainMemberMerges(w.deps, T0)).toEqual({ processed: 1, rejected: 0, failed: 0 });
+    expect(w.logs.filter((entry) => entry.event === "owner_cap.exceeded_by_move")).toMatchObject([{ fields: { owner: ALICE, totalUsd: 130, reason: "member_merged" } }]);
+  });
+
+  it("looks at the first owner's cap on a removal that moves nothing at all (M1)", async () => {
+    const w = agentWorld();
+    await w.memberAgent(OWEN, "Owen's first", 70);
+    await w.memberAgent(OWEN, "Owen's second", 60);
+    w.db.delete(orgMemberKey(ORG_A, ERIN));
+    await onMemberRemoved(w.deps, { orgId: ORG_A, developerId: ERIN, by: OLIVE });
+    expect(w.logs.filter((entry) => entry.event === "owner_cap.exceeded_by_move")).toMatchObject([{ fields: { owner: OWEN, totalUsd: 130, reason: "member_removed" } }]);
+  });
+
   it("remembers who a removal's accountable moves went to, and looks at their cap when a later run succeeds (M1)", async () => {
     const w = agentWorld();
     await w.memberAgent(CARA, "Cara's own", 40);
