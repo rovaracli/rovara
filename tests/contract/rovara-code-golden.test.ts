@@ -25,10 +25,64 @@ const SHA256SUMS_SHA256 = "3b29f748b9fb372ece9eecd541b80cb97feac4047d09d77cdc39c
 
 beforeAll(async () => { await loadSlackBroker(); });
 
+// Plan 3 Task 34, change 1: a workflow task starts at its planning limit ($2 Quick, $6 Full) and a task with no workflow at the TASK estimate's run limit ($10
+// with no history), instead of the $25 per-task cap; approving a coding plan sets the run limit its estimate gave ($6 Quick with no history) and starts the
+// window at what planning spent. Change 4: a coding plan that reaches review carries that estimate (`task.runEstimate`), and the plan-ready message says it.
+const NO_HISTORY_ESTIMATE = { basis: "default", highUsd: 3, lowUsd: 1, runLimitUsd: 6, samples: 0, stopAtUsd: 6 };
+const READY_WITH_ESTIMATE = "*Coding plan v1 is ready for your approval.* No code has changed yet.\n> Payments that fail with a timeout are retried.\n> A payment is never charged twice.\nAnd 1 more claim.\nApprove here uses AgentX's answers for 1 decision and includes the open comments (up to 25) from the task page.\nNo automated checks apply. Review only.\nEstimated cost: about $1\u2013$3. Run limit: $6.\nI couldn't link the full coding plan; ask an AgentX admin to check the task page.";
+/** The limit each scenario's task has when the scenario is recorded; `baseline` and `estimate` are fields the task gains by then, `readyText` the post that gains the estimate line. */
+const RUN_LIMITS: Partial<Record<GoldenScenario, { budgetUsd: number; baseline?: true; estimate?: true; readyText?: true }>> = {
+  "plan-quick": { budgetUsd: 2 },
+  "plan-full-requirements": { budgetUsd: 6 },
+  "plan-full-design": { budgetUsd: 6 },
+  "plan-full-implementation-plan": { budgetUsd: 6 },
+  "plan-review-decision": { budgetUsd: 2, estimate: true },
+  implement: { budgetUsd: 6, baseline: true, estimate: true },
+  checks: { budgetUsd: 6, estimate: true },
+  review: { budgetUsd: 6, baseline: true, estimate: true },
+  "feedback-review": { budgetUsd: 2 },
+  "task-no-workflow": { budgetUsd: 10 },
+  "shared-task": { budgetUsd: 10 },
+  "plan-ready-quick": { budgetUsd: 2, estimate: true, readyText: true },
+  "plan-ready-full": { budgetUsd: 6 },
+};
+function nodePaths(record: unknown, matches: (node: Record<string, unknown>) => boolean, path = ""): string[] {
+  if (record === null || typeof record !== "object") return [];
+  const here = record as Record<string, unknown>;
+  const found = !Array.isArray(record) && matches(here) ? [path] : [];
+  for (const [key, child] of Object.entries(here)) found.push(...nodePaths(child, matches, Array.isArray(record) ? `${path}[${key}]` : path === "" ? key : `${path}.${key}`));
+  return found;
+}
+function stringPaths(record: unknown, matches: (text: string) => boolean, path = ""): string[] {
+  if (typeof record === "string") return matches(record) ? [path] : [];
+  if (record === null || typeof record !== "object") return [];
+  return Object.entries(record).flatMap(([key, child]) => stringPaths(child, matches, Array.isArray(record) ? `${path}[${key}]` : path === "" ? key : `${path}.${key}`));
+}
+/** The deliberate changes of change 1 and change 4 in one record, each by value. */
+function runLimitChanges(scenario: GoldenScenario, record: unknown): Array<{ path: string; expected: unknown; change: 1 | 4 }> {
+  const limit = RUN_LIMITS[scenario];
+  if (limit === undefined) return [];
+  const mints = nodePaths(record, (node) => "purpose" in node && "refId" in node && "maxBudgetUsd" in node);
+  expect(mints, `${scenario} shows the keys it minted`).not.toHaveLength(0);
+  const items = (record as { taskItems: Array<{ entityType?: string }> }).taskItems;
+  const task = items.findIndex((item) => item.entityType === "DEVELOPER_TASK");
+  expect(task, `${scenario} shows its task`).toBeGreaterThanOrEqual(0);
+  const ready = limit.readyText === true ? stringPaths(record, (text) => text.includes("Coding plan v1 is ready for your approval.")) : [];
+  if (limit.readyText === true) expect(ready, `${scenario} says the plan is ready in its post, its blocks and its notice`).toHaveLength(3);
+  return [
+    ...mints.map((path) => ({ path: `${path}.maxBudgetUsd`, expected: limit.budgetUsd, change: 1 as const })),
+    { path: `taskItems[${String(task)}].budgetUsd`, expected: limit.budgetUsd, change: 1 as const },
+    ...(limit.baseline === true ? [{ path: `taskItems[${String(task)}].budgetBaselineUsd`, expected: 0, change: 1 as const }] : []),
+    ...(limit.estimate === true ? [{ path: `taskItems[${String(task)}].runEstimate`, expected: NO_HISTORY_ESTIMATE, change: 4 as const }] : []),
+    ...ready.map((path) => ({ path, expected: READY_WITH_ESTIMATE, change: 4 as const })),
+  ];
+}
+
 describe("Rovara Code before agents", () => {
   for (const scenario of GOLDEN_SCENARIOS) {
-    it(`${scenario} matches its golden fixture`, async () => {
-      expectGolden(scenario, await recordGolden(scenario));
+    it(`${scenario} matches its golden fixture, apart from change 1 and change 4`, async () => {
+      const record = await recordGolden(scenario);
+      expectGolden(scenario, record, updatingGolden() ? [] : runLimitChanges(scenario, record));
     }, 120_000);
   }
 
@@ -140,7 +194,7 @@ describe("Rovara Code with agents switched on", () => {
   const latest = BUILTIN_AGENTS["rovara-code"].versions.at(-1)!;
 
   for (const scenario of STARTS) {
-    it(`${scenario} differs from its golden fixture only by the task's agent, origin, payer, place, the keys' tags, the operation's key ids and the RECIPE item`, async () => {
+    it(`${scenario} differs from its golden fixture only by the task's agent, origin, payer, place, the keys' tags, the operation's key ids, the RECIPE item and change 1 and 4`, async () => {
       if (updatingGolden()) return;
       const record = await recordGolden(scenario, { brokerExtra: { agents: {} } });
       const items = record.taskItems as Array<Record<string, unknown>>;
@@ -160,7 +214,9 @@ describe("Rovara Code with agents switched on", () => {
       // Every task payload names the model its key allows: one that lost it would match the fixture (which has none) and go unlisted otherwise.
       // (The one scenario without a model proxy chooses no route.)
       if (scenario !== "task-no-workflow-no-proxy") expect(payloadModelPaths(record), "every task payload names its model").toHaveLength(taskPayloadCount(record));
-      expectGolden(scenario, { ...record, taskItems: kept }, [
+      const recorded = { ...record, taskItems: kept };
+      expectGolden(scenario, recorded, [
+        ...runLimitChanges(scenario, recorded),
         { path: `taskItems[${String(meta)}].agent`, expected: { agentId: "rovara-code", name: "Rovara Code", version: latest.version, builtin: true, digest: recipeDigest(latest.recipe) }, change: 5 },
         { path: `taskItems[${String(meta)}].origin`, expected: "cli", change: 5 },
         { path: `taskItems[${String(meta)}].payer`, expected: payer, change: 5 },

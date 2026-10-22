@@ -5327,7 +5327,9 @@ describe("Spec 059 ordered workflow broker review regressions", () => {
 
 describe("a workflow task's cap window restarts when its owner retries or sends it back (rulings R38 and R39)", () => {
   const PROXY = "http://internal-proxy.example.test:4000";
-  const SPENT_CAP = 25;
+  // Task 34: planning runs under the planning limit ($2 on the Quick path), and approving the plan sets the run limit its estimate gave ($6 with no history).
+  const PLANNING_LIMIT = 2;
+  const RUN_LIMIT = 6;
 
   async function install() {
     const access = fakeModelAccess();
@@ -5341,10 +5343,10 @@ describe("a workflow task's cap window restarts when its owner retries or sends 
       return call(harness.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": capability } });
     };
     const record = (taskId: string) => harness.db.get(`DEVTASK#${taskId}`, "META") as { budgetBaselineUsd?: number };
-    /** The operation spent its whole cap on the one key it was given. */
-    const spendCap = async (operationId: string) => {
+    /** The operation spent its whole cap, `capUsd`, on the one key it was given. */
+    const spendCap = async (operationId: string, capUsd: number) => {
       expect((await ask(operationId)).status).toBe(200);
-      access.setKeySpent(access.mintedKeys().at(-1)!, SPENT_CAP + (access.mintedKeys().length - 1) * SPENT_CAP);
+      access.setKeySpent(access.mintedKeys().at(-1)!, capUsd + (access.mintedKeys().length - 1) * capUsd);
       expect(await ask(operationId)).toMatchObject({ status: 402, body: { error: { code: "BUDGET_EXCEEDED" } } });
     };
     return { ...harness, access, ask, record, spendCap };
@@ -5354,16 +5356,16 @@ describe("a workflow task's cap window restarts when its owner retries or sends 
     const h = await install();
     const { taskId, workspaceId } = await workflowAtVerification(h);
     const implementation = operations(h, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
-    await h.spendCap(String(implementation.id));
+    await h.spendCap(String(implementation.id), RUN_LIMIT);
     await h.finish(workspaceId, String(implementation.id), "FAILED", { error: "This task has used its AI budget" });
     const blocked = taskWorkflow(h, taskId);
     expect(blocked).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
     const requestId = randomUUID();
     expect((await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId, expectedRevision: blocked.revision, instructions: "Try again." })).status).toBe(200);
-    expect(h.record(taskId).budgetBaselineUsd).toBe(SPENT_CAP);
+    expect(h.record(taskId).budgetBaselineUsd).toBe(RUN_LIMIT);
     const coding = operations(h, workspaceId).find((item) => item.requestId === requestId)!;
     expect((await h.ask(String(coding.id))).status).toBe(200);
-    expect(h.access.mintKey.mock.calls.at(-1)![0].maxBudgetUsd).toBe(25);
+    expect(h.access.mintKey.mock.calls.at(-1)![0].maxBudgetUsd).toBe(RUN_LIMIT);
   });
 
   it("does the same after a retry of blocked planning", async () => {
@@ -5373,22 +5375,22 @@ describe("a workflow task's cap window restarts when its owner retries or sends 
     const workspaceId = (h.db.get(`DEVTASK#${taskId}`, "META") as { workspaceId: string }).workspaceId;
     await h.finish(workspaceId, String(operations(h, workspaceId).find((item) => item.kind === "prepare")?.id), "SUCCEEDED", PREPARED);
     const planning = operations(h, workspaceId).find((item) => item.workflowMode === "PLAN")!;
-    await h.spendCap(String(planning.id));
+    await h.spendCap(String(planning.id), PLANNING_LIMIT);
     await h.finish(workspaceId, String(planning.id), "FAILED", { error: "This task has used its AI budget" });
     const blocked = taskWorkflow(h, taskId);
     const requestId = randomUUID();
     expect((await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId, expectedRevision: blocked.revision, instructions: "Plan it again." })).status).toBe(200);
-    expect(h.record(taskId).budgetBaselineUsd).toBe(SPENT_CAP);
+    expect(h.record(taskId).budgetBaselineUsd).toBe(PLANNING_LIMIT);
     const again = operations(h, workspaceId).find((item) => item.requestId === requestId)!;
     expect((await h.ask(String(again.id))).status).toBe(200);
-    expect(h.access.mintKey.mock.calls.at(-1)![0].maxBudgetUsd).toBe(25);
+    expect(h.access.mintKey.mock.calls.at(-1)![0].maxBudgetUsd).toBe(PLANNING_LIMIT);
   });
 
   it("does the same after a send-back to coding", async () => {
     const h = await install();
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(h);
     const implementation = operations(h, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
-    await h.spendCap(String(implementation.id));
+    await h.spendCap(String(implementation.id), RUN_LIMIT);
     await finishImplementation();
     const review = operations(h, workspaceId).find((item) => item.workflowMode === "REVIEW")!;
     const now = new Date().toISOString();
@@ -5396,13 +5398,14 @@ describe("a workflow task's cap window restarts when its owner retries or sends 
       { operationId: review.id, candidateDigest: candidate.digest, role: "CRITIC", provider: "t", version: "1", status: "FINDINGS", findings: [{ text: "The parser drops the last line.", origin: "INTRODUCED", severity: "HIGH" }], readOnly: true, recordedAt: now },
       { operationId: review.id, candidateDigest: candidate.digest, role: "SECURITY", provider: "t", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: now },
     ] } });
-    expect(h.record(taskId).budgetBaselineUsd).toBeUndefined();
+    // Approving the plan started the window at what planning had spent: nothing.
+    expect(h.record(taskId).budgetBaselineUsd).toBe(0);
     const requestId = randomUUID();
     expect((await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/send-back`, { requestId, expectedRevision: taskWorkflow(h, taskId).revision, instructions: "Fix it." })).status).toBe(200);
-    expect(h.record(taskId).budgetBaselineUsd).toBe(SPENT_CAP);
+    expect(h.record(taskId).budgetBaselineUsd).toBe(RUN_LIMIT);
     const coding = operations(h, workspaceId).find((item) => item.requestId === requestId)!;
     expect((await h.ask(String(coding.id))).status).toBe(200);
-    expect(h.access.mintKey.mock.calls.at(-1)![0].maxBudgetUsd).toBe(25);
+    expect(h.access.mintKey.mock.calls.at(-1)![0].maxBudgetUsd).toBe(RUN_LIMIT);
   });
 
   it("refuses a retry and a send-back with 503 while the proxy is down, and changes nothing", async () => {
@@ -5416,7 +5419,8 @@ describe("a workflow task's cap window restarts when its owner retries or sends 
     h.access.goDown();
     const refused = await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId: randomUUID(), expectedRevision: blocked.revision, instructions: "Try again." });
     expect(refused).toMatchObject({ status: 503, body: { error: { code: "MODEL_PROXY_UNAVAILABLE" } } });
-    expect(h.record(taskId).budgetBaselineUsd).toBeUndefined();
+    // The window approving the plan started stays as it was.
+    expect(h.record(taskId).budgetBaselineUsd).toBe(0);
     expect(taskWorkflow(h, taskId)).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", revision: blocked.revision });
     expect(JSON.stringify(h.db.find(() => true))).toBe(before);
   });

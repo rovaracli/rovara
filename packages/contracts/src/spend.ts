@@ -29,6 +29,26 @@ export const DEFAULT_RUN_ESTIMATE_USD = {
   AGENT: { lowUsd: 0.5, highUsd: 2 },
 } as const satisfies Record<"QUICK" | "FULL" | "TASK" | "AGENT", RunEstimateRange>;
 
+/** A run's expected cost and the limits that follow from it (Task 34); `basis` says whether the range came from the org's own runs or the default. */
+export const RunEstimateSchema = z.object({
+  lowUsd: z.number().finite().min(0),
+  highUsd: z.number().finite().min(0),
+  runLimitUsd: z.number().finite().min(0),
+  stopAtUsd: z.number().finite().min(0),
+  basis: z.enum(["history", "default"]),
+  samples: z.number().int().min(0),
+}).strict();
+export type RunEstimate = z.infer<typeof RunEstimateSchema>;
+
+/** How the words a workflow blocks with begin when approving its plan needs a higher tier to accept the run limit (Task 34). */
+export const RUN_LIMIT_BLOCK_PREFIX = "This plan's run limit is $";
+/**
+ * The words the workflow blocks with when the approver may not accept the run limit: who has to approve and, only when a request was actually made, that it
+ * has been asked for.
+ */
+export const runLimitBlockText = (runLimitUsd: number, needs: "maintainer" | "admin", asked = true): string =>
+  `${RUN_LIMIT_BLOCK_PREFIX}${String(runLimitUsd)}, which needs ${needs === "maintainer" ? "a project maintainer's" : "an admin's"} approval.${asked ? " I've asked for it." : ""}`;
+
 /** The limit on a workflow task's planning phase, before a plan is approved. */
 export const DEFAULT_PLANNING_LIMIT_USD = { QUICK: 2, FULL: 6 } as const;
 

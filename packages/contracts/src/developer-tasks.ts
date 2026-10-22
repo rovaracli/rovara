@@ -5,6 +5,7 @@ import { z } from "zod";
 import { AgentIdSchema, ApprovalIdSchema, SpendRequestIdSchema } from "./agent.js";
 import { AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES, RunInputSchema } from "./agent-run.js";
 import { StepIdSchema } from "./agent-recipe.js";
+import { RunEstimateSchema } from "./spend.js";
 import { cleanDisplayName } from "./display-name.js";
 import { OperationStatusSchema } from "./operation.js";
 import { DeveloperShareModeSchema } from "./project.js";
@@ -346,6 +347,8 @@ export const DeveloperTaskViewSchema = z.object({
   planningSoFar: z.string().max(4096).optional(),
   /** Plan 3, Task 32: a test run that reached its cap may go on as a normal task (`POST /v1/app/tasks/{id}/continue-as-task`). */
   testOffer: z.object({ capUsd: z.number().nonnegative() }).strict().optional(),
+  /** Plan 3, Task 34: what the coding plan under review is expected to cost and the run limit approving it accepts. */
+  runEstimate: RunEstimateSchema.optional(),
 });
 export type DeveloperTaskView = z.infer<typeof DeveloperTaskViewSchema>;
 

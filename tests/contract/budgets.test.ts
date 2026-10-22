@@ -11,6 +11,7 @@ import { admitMember, nextKeyCap } from "../support/admission.js";
 import { resolveOrgOnSignIn } from "../../packages/broker/src/org/sign-in.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
+import { seedTaskRunLimit } from "../support/run-history.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { fakeModelAccess, type FakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -307,6 +308,8 @@ describe("a developer task start", () => {
   async function install(options: { memberSpent?: number; orgSpent?: number } = {}) {
     const access = fakeModelAccess();
     const harness = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+    // A task with no workflow starts at the TASK estimate's run limit (Task 34); these tests are written for a task budget of $25.
+    seedTaskRunLimit(harness.db);
     access.setMemberSpent(TEST_ORG, MAYA.developerId, options.memberSpent ?? 0);
     access.setOrgSpent(TEST_ORG, options.orgSpent ?? 0);
     const start = (extra: Record<string, unknown> = {}) => harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "claude-code", ...extra });
@@ -437,6 +440,8 @@ describe("a task's keys across re-mints (ruling R30)", () => {
   async function runningTask(options: { memberSpent?: number } = {}) {
     const access = fakeModelAccess();
     const h = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+    // A task with no workflow starts at the TASK estimate's run limit (Task 34); these tests are written for a task budget of $25.
+    seedTaskRunLimit(h.db);
     access.setMemberSpent(TEST_ORG, MAYA.developerId, options.memberSpent ?? 0);
     access.setOrgSpent(TEST_ORG, 0);
     const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "claude-code" });

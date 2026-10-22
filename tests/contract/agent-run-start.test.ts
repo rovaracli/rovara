@@ -435,12 +435,13 @@ describe("startAgentRun", () => {
 
   it("lets a request lower the run limit but never raise it", async () => {
     const t = await setup({ proxy: true });
-    const lowered = await startAgentRun(t.starter(), t.request({ runLimitUsd: 5 }));
-    expect(lowered).toMatchObject({ runLimitUsd: 5, stopAtUsd: 5, paused: false });
-    expect(t.meta(lowered.taskId).budgetUsd).toBe(5);
+    // Rovara Code runs as a Quick workflow, which starts at the $2 planning limit (Task 34).
+    const lowered = await startAgentRun(t.starter(), t.request({ runLimitUsd: 1 }));
+    expect(lowered).toMatchObject({ runLimitUsd: 1, stopAtUsd: 1, paused: false });
+    expect(t.meta(lowered.taskId).budgetUsd).toBe(1);
     const raised = await startAgentRun(t.starter(), t.request({ runLimitUsd: 500 }));
-    expect(raised).toMatchObject({ runLimitUsd: PER_TASK_BUDGET_USD, stopAtUsd: PER_TASK_BUDGET_USD });
-    expect(t.meta(raised.taskId).budgetUsd).toBe(PER_TASK_BUDGET_USD);
+    expect(raised).toMatchObject({ runLimitUsd: 2, stopAtUsd: 2 });
+    expect(t.meta(raised.taskId).budgetUsd).toBe(2);
     expect(await refusal(startAgentRun(t.starter(), t.request({ runLimitUsd: -1 })))).toMatchObject({ code: "CONFIG_INVALID" });
   });
 

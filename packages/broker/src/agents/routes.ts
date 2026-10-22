@@ -10,9 +10,7 @@ import {
   AgentOwnerSchema,
   AgentXNameSchema,
   BUILTIN_AGENTS,
-  DEFAULT_RUN_ESTIMATE_USD,
   ModelSourceIdSchema,
-  RUN_LIMIT_MULTIPLIER,
   RecipeOverlaySchema,
   RunInputSchema,
   SkillIdSchema,
@@ -65,6 +63,7 @@ import type { PullRequestHeadReader } from "./runs.js";
 import { addToRoster, checkRosterChange, listRoster, removeFromRoster, roleOnProject, rosterAgentView, type RosterEntry } from "./roster.js";
 import type { SkillRecord } from "./skills.js";
 import type { OrgStore } from "../org/store.js";
+import { suggestMaxPerRun, type RequestRunLimit } from "../spend/estimate.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
 import { readTopUp } from "../spend/top-ups.js";
 import { routeSpendRequest } from "../spend/routes.js";
@@ -93,6 +92,8 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
   modelSources?: ModelSourceRouteDependencies;
   /** Reads a pull request's head commit for a run whose context names one (Task 15); the broker supplies the GitHub App's. */
   pullRequestHead?: PullRequestHeadReader;
+  /** Task 34's seam to Task 32: makes the `run_limit` request when approving a plan needs a higher tier than the approver's; the developer API reads it from here (`AgentRunDependencies.requestRunLimit`). */
+  requestRunLimit?: RequestRunLimit;
   /** Task 12b: the org's connections (`/v1/app/connections*`). Without it (no connection secrets role) those routes answer NOT_FOUND. */
   connections?: ConnectionRouteDependencies["store"];
   /** Starts a person's run (Task 15). The developer API supplies it, since it holds the task start; without it the route answers NOT_FOUND. */
@@ -256,11 +257,12 @@ async function view(deps: AgentRouteDependencies, caller: AgentCaller, agent: Ac
   return builtinView(deps, caller.orgId, agent.agentId, level, disabled ?? (await readGuardrails(deps, caller.orgId)).disabledBuiltins.some((id) => id === agent.agentId), settings);
 }
 
-/** The most one run of an agent may be limited to by default, shown beside the agent. Display only. */
-function suggestedMaxPerRunUsd(recipe: ResolvedRecipe | undefined): number {
-  const path = recipe !== undefined && recipeRunner(recipe) === "coding" ? DEFAULT_RUN_ESTIMATE_USD.FULL : DEFAULT_RUN_ESTIMATE_USD.AGENT;
-  return path.highUsd * RUN_LIMIT_MULTIPLIER;
-}
+/**
+ * What the agent's page suggests as its max per run (Task 34): twice the p80 of its last runs once it has five, else twice the high end of the default for
+ * its usual path (FULL for a coding recipe, AGENT otherwise). Display only.
+ */
+const suggestedMaxPerRunUsd = (deps: AgentRouteDependencies, orgId: OrgId, agentId: AgentId, recipe: ResolvedRecipe | undefined): Promise<number> =>
+  suggestMaxPerRun({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, { orgId, agentId, coding: recipe !== undefined && recipeRunner(recipe) === "coding" });
 
 // ---- reads
 
@@ -300,7 +302,7 @@ async function getAgent(deps: AgentRouteDependencies, caller: AgentCaller, agent
   if (!("owner" in agent)) {
     const version = shown["pinnedVersion"] as number;
     const recipe = deps.store.builtinRecipe(agentId, version);
-    return { agent: shown, current: { version, recipe, changed: false }, suggestedMaxPerRunUsd: suggestedMaxPerRunUsd(recipe), ...(shown["maxPerRunUsd"] === undefined ? {} : { maxPerRunUsd: shown["maxPerRunUsd"] }) };
+    return { agent: shown, current: { version, recipe, changed: false }, suggestedMaxPerRunUsd: await suggestedMaxPerRunUsd(deps, caller.orgId, agentId, recipe), ...(shown["maxPerRunUsd"] === undefined ? {} : { maxPerRunUsd: shown["maxPerRunUsd"] }) };
   }
   // A published version that can't be resolved now (the agent it builds on was archived since) is reported beside the agent, not as a failure to show it.
   let current: ResolvedRecipe | undefined;
@@ -321,7 +323,7 @@ async function getAgent(deps: AgentRouteDependencies, caller: AgentCaller, agent
   return {
     agent: shown,
     ...(agent.currentVersion === undefined ? {} : { current: { version: agent.currentVersion, ...(current === undefined ? {} : { recipe: current }), changed, ...(currentProblem === undefined ? {} : { problem: currentProblem }) } }),
-    suggestedMaxPerRunUsd: suggestedMaxPerRunUsd(current),
+    suggestedMaxPerRunUsd: await suggestedMaxPerRunUsd(deps, caller.orgId, agentId, current),
     ...(agent.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: agent.maxPerRunUsd }),
   };
 }

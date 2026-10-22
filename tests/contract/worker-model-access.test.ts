@@ -233,12 +233,13 @@ describe("GET /v1/internal/model-access", () => {
     return { ...harness, task, taskId, operationId, capability, ask, mintKey };
   }
 
+  // A task with no workflow starts at the TASK estimate's run limit, $10 without history (Task 34).
   it("mints a key for the task's org, developer and task, and answers where the proxy is", async () => {
     const h = await runningTask();
     const response = await h.ask();
     expect(response).toMatchObject({ status: 200, body: { baseUrl: PROXY_URL, apiKey: PROXY_KEY, expiresAt: Date.parse("2026-10-19T13:00:00.000Z") } });
     expect(h.mintKey).toHaveBeenCalledTimes(1);
-    expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, developerId: MAYA.developerId, purpose: "task", refId: h.taskId, maxBudgetUsd: PER_TASK_BUDGET_USD, ttlSeconds: 3600 });
+    expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, developerId: MAYA.developerId, purpose: "task", refId: h.taskId, maxBudgetUsd: 10, ttlSeconds: 3600 });
   });
 
   it("uses the task record's own budget when it has one", async () => {
