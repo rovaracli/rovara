@@ -301,7 +301,10 @@ describe("attaching a connection", () => {
     expect(extra.body.error?.code).toBe("CONFIG_INVALID");
     expect(JSON.stringify(extra.body)).not.toContain("SECRET_FIELD");
     const asana = await s.put(MIA, "asana", { name: "asana", type: "asana", credentialRef: "x" });
-    expect(asana.body.error).toMatchObject({ code: "CONFIG_INVALID", message: "type: a project connector is one of github, linear, jira, mcp" });
+    expect(asana.body.error).toMatchObject({ code: "CONFIG_INVALID", message: "type: a project connector is one of github, linear, jira, mcp, sentry, datadog, cloudwatch, github-actions, grafana, vercel, pagerduty" });
+    // B-M2 (review): the refusal names every type PUT accepts, so a misspelt one is told what it could have been.
+    const typo = await s.put(MIA, "sentyr", { name: "sentyr", type: "sentyr", credentialRef: "x" });
+    expect(typo.body.error).toMatchObject({ code: "CONFIG_INVALID", message: "type: a project connector is one of github, linear, jira, mcp, sentry, datadog, cloudwatch, github-actions, grafana, vercel, pagerduty" });
     const named = await s.put(MIA, "other", linear(id));
     expect(named.body.error).toMatchObject({ code: "CONFIG_INVALID", message: "name: must be the name in the path" });
     expect((await s.put(MIA, "linear", "nope")).body.error).toMatchObject({ code: "CONFIG_INVALID", message: "connector: must be an object" });
@@ -1558,6 +1561,24 @@ describe("Plan 4 Task 12: the schemas of the seven new types", () => {
     const extra = ConnectorConfigSchema.safeParse(sample(type, { somethingElse: 1 }));
     expect(extra.success).toBe(false);
     if (!extra.success) expect(extra.error.issues[0]).toMatchObject({ code: "unrecognized_keys" });
+  });
+
+  it.each(NEW_TYPES.filter((type) => type !== "github-actions"))("%s refuses a field it does not take inside a scope too (review B-M3)", (type) => {
+    const scope = (sample(type)["scopes"] as Array<Record<string, unknown>>)[0]!;
+    const extra = ConnectorConfigSchema.safeParse(sample(type, { scopes: [{ ...scope, somethingElse: 1 }] }));
+    expect(extra.success).toBe(false);
+    if (!extra.success) expect(extra.error.issues[0]).toMatchObject({ code: "unrecognized_keys", path: ["scopes", 0] });
+  });
+
+  it("holds a project to one github-actions connector, as it does one github connector (review B-M4)", () => {
+    const two = [sample("github-actions"), sample("github-actions", { name: "gha-two" })];
+    const refused = ConnectorsSchema.safeParse(two);
+    expect(refused.success).toBe(false);
+    if (!refused.success) expect(refused.error.issues.map((issue) => issue.message)).toContain("at most one github-actions connector is supported");
+    expect(StoredConnectorsSchema.safeParse(two).success).toBe(false);
+    // One of each is fine, and two of any other native type are too (each names its own project or service set).
+    expect(ConnectorsSchema.safeParse([sample("github-actions"), { name: "github", type: "github", scopes: "all-repositories", tools: THINGS }]).success).toBe(true);
+    expect(ConnectorsSchema.safeParse([sample("sentry"), sample("sentry", { name: "sentry-two" })]).success).toBe(true);
   });
 
   it("keeps the schema's options in the order the types landed", () => {
