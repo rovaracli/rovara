@@ -79,6 +79,14 @@ describe("a pause on a month's budget", () => {
     expect(pausedUnder(t, MEMBER)).toEqual([]);
   });
 
+  it("tops up by the amount the admin approved, not the amount asked for", async () => {
+    const t = await setup();
+    const task = await t.plainTask();
+    await t.pauseAndEnd(task, MEMBER);
+    await t.decide(DEB, monthRequests(t)[0]!.spendRequestId, "APPROVE", { amountUsd: 12 });
+    expect(topUp(t, MEMBER)).toBe(12);
+  });
+
   it("a denied request leaves the tasks paused and listed", async () => {
     const t = await setup();
     const task = await t.plainTask();
