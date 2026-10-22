@@ -335,14 +335,14 @@ describe("classifyWrite: tracker creates", () => {
     const tool = saveIssue();
     const prepared = prepareAgentWrite(tool, { title: "Broken", labels: ["bug"] }, { allowMentions: false });
     expect(prepared.args).toEqual({ title: "Broken", labels: ["bug", "rovara"] });
-    expect(classOf(tool, prepared.args as Record<string, unknown>)).toBe("safe");
+    expect(classOf(tool, prepared.args)).toBe("safe");
   });
 
   it("keeps a Jira create consequential: its schema declares no label argument", () => {
     const jira = grant("jira", "create_issue", { itemArguments: [] });
     const prepared = prepareAgentWrite(jira, { summary: "Broken", labels: ["bug"] }, { allowMentions: false });
     expect(prepared.args).toEqual({ summary: "Broken", labels: ["bug"] });
-    expect(classOf(jira, prepared.args as Record<string, unknown>)).toBe("consequential");
+    expect(classOf(jira, prepared.args)).toBe("consequential");
   });
 
   it("does not take a label in another argument, a label that only contains rovara, or one that is not in the declared argument", () => {
@@ -388,14 +388,14 @@ describe("classifyWrite: commands in comments", () => {
     const prepared = prepareAgentWrite(linearComment(), { issueId: "ENG-1", body: "cc @alice" }, { allowMentions: false });
     expect(prepared.args).toEqual({ issueId: "ENG-1", body: "cc alice" });
     expect(prepared.strippedMentions).toEqual(["@alice"]);
-    expect(classOf(linearComment(), prepared.args as Record<string, unknown>)).toBe("safe");
+    expect(classOf(linearComment(), prepared.args)).toBe("safe");
   });
 
   it("keeps a mention when the recipe allows them, and then asks", () => {
     const prepared = prepareAgentWrite(linearComment(), { issueId: "ENG-1", body: "cc @alice" }, { allowMentions: true });
     expect(prepared.args).toEqual({ issueId: "ENG-1", body: "cc @alice" });
     expect(prepared.strippedMentions).toEqual([]);
-    expect(classOf(linearComment(), prepared.args as Record<string, unknown>, { allowMentions: true })).toBe("consequential");
+    expect(classOf(linearComment(), prepared.args, { allowMentions: true })).toBe("consequential");
   });
 
   it("does not read an item reference, or a path or URL argument the schema declares, as a command", () => {
@@ -443,7 +443,7 @@ describe("classifyWrite: project rules only raise", () => {
   });
 
   it("limits a rule to the calls that set its argument", () => {
-    const rule = { tool: "create_comment", connector: "linear", outcome: "ask", whenArguments: ["assigneeId"] } as const;
+    const rule: ActionPolicy["rules"][number] = { tool: "create_comment", connector: "linear", outcome: "ask", whenArguments: ["assigneeId"] };
     expect(classOf(linearComment(), { issueId: "1", body: PLAIN }, { projectPolicy: policy(rule) })).toBe("safe");
     expect(classOf(linearComment(), { issueId: "1", body: PLAIN, assigneeId: "u" }, { projectPolicy: policy(rule) })).toBe("consequential");
   });
@@ -508,7 +508,9 @@ describe("classifyWrite: overrides", () => {
   });
 
   it("does not lower a tool the project approved only as a read", () => {
-    expect(classOf(mcp("acknowledge_alert", { access: "read" }), { alertId: "a1" }, { overrides })).toBe("consequential");
+    expect(classOf(mcp("update_alert", { access: "read" }), { alertId: "a1" }, { overrides: { mcp: { update_alert: "safe" } } })).toBe("consequential");
+    // A read stays a read with an override of its own that says nothing about it.
+    expect(classOf(mcp("acknowledge_alert", { access: "read" }), { alertId: "a1" }, { overrides })).toBe("read");
   });
 
   it("applies an override only to the connector type and tool it names", () => {
@@ -571,7 +573,7 @@ describe("prepareAgentWrite", () => {
     for (const labels of [7, { a: 1 }, [1, 2], true]) {
       const prepared = prepareAgentWrite(saveIssue(), { title: "t", labels }, { allowMentions: false });
       expect(prepared.args).toEqual({ title: "t", labels });
-      expect(classOf(saveIssue(), prepared.args as Record<string, unknown>), JSON.stringify(labels)).toBe("consequential");
+      expect(classOf(saveIssue(), prepared.args), JSON.stringify(labels)).toBe("consequential");
     }
   });
 
@@ -591,7 +593,7 @@ describe("prepareAgentWrite", () => {
   it("refuses arguments nested too deeply to check, as stripMentions does", () => {
     let deep: unknown = "x";
     for (let level = 0; level < 100; level += 1) deep = { deeper: deep };
-    expect(() => prepareAgentWrite(mcp("create_note"), { deep } as Record<string, unknown>, { allowMentions: false })).toThrow(/nested too deeply/u);
+    expect(() => prepareAgentWrite(mcp("create_note"), { deep }, { allowMentions: false })).toThrow(/nested too deeply/u);
   });
 });
 
@@ -614,7 +616,7 @@ function wrapper(options: { files?: Record<string, string>; down?: boolean; list
   const deps = {
     documentClient: db, tableName: "state", now: Date.now, audit: audit.audit,
     repositoryReader: readerFor,
-    labelListers: options.lists ?? { github, linear: vi.fn(async () => new Map([["lbl-bug", "bug"], ["lbl-deploy", "deploy"]])) as LabelLister },
+    labelListers: options.lists ?? { github, linear: vi.fn(async () => new Map([["lbl-bug", "bug"], ["lbl-deploy", "deploy"]])) },
     runCache: (scope: { orgId: OrgId; taskId: string }) => taskRunCache({ documentClient: db, tableName: "state", now: Date.now }, scope),
   };
   const base = { orgId: TEST_ORG, taskId: "task-1", project: "payments", repository: "example/demo", rules: { alwaysAsk: [] }, autonomy: "run" as const, allowMentions: false };
@@ -690,7 +692,7 @@ describe("classifyAgentWrite", () => {
   it("reads the run's own items from the table, under the org and the task", async () => {
     const w = wrapper();
     const tool = saveIssue({ resultItemArguments: ["identifier"] });
-    const created = prepareAgentWrite(tool, { title: "Broken" }, { allowMentions: false }).args as Record<string, unknown>;
+    const created = prepareAgentWrite(tool, { title: "Broken" }, { allowMentions: false }).args;
     expect((await classifyAgentWrite(w.deps, { ...w.base, tool, args: created })).class).toBe("safe");
     const recorded = await recordOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1", tool, args: created, resultText: JSON.stringify({ id: "uuid-1", identifier: "ENG-12" }) });
     expect(recorded).toEqual({ recorded: 2, failed: false });
@@ -762,8 +764,8 @@ describe("recordOwnItems and loadOwnItems", () => {
   it("skips values it won't key on: empty, control characters, very long, not a string or number", async () => {
     const w = wrapper();
     const outcome = await recordOwnItems(w.deps, {
-      orgId: TEST_ORG, taskId: "task-1", tool: mcp("create_thing", { itemArguments: ["id"], resultItemArguments: ["ids[]", "obj"] }), args: { title: "t" },
-      resultText: JSON.stringify({ id: "ok-1", ids: ["", "bad\u0000id", "x".repeat(300), "fine-2"], obj: { a: 1 } }),
+      orgId: TEST_ORG, taskId: "task-1", tool: mcp("create_thing", { itemArguments: ["id"], resultItemArguments: ["items[].id", "obj"] }), args: { title: "t" },
+      resultText: JSON.stringify({ id: "ok-1", items: [{ id: "" }, { id: "bad\u0000id" }, { id: "x".repeat(300) }, { id: "fine-2" }, { id: true }], obj: { a: 1 } }),
     });
     expect(outcome).toEqual({ recorded: 2, failed: false });
     expect(await loadOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1" })).toEqual(new Set(["mcp#ok-1", "mcp#fine-2"]));
@@ -785,7 +787,7 @@ describe("recordOwnItems and loadOwnItems", () => {
   it("reports a failed write instead of throwing, so a create that happened is not reported as failed", async () => {
     const w = wrapper();
     const broken = { ...w.deps, documentClient: { send: async () => { throw new Error("table down"); } } };
-    const outcome = await recordOwnItems(broken as never, { orgId: TEST_ORG, taskId: "task-1", tool, args: { title: "t" }, resultText: JSON.stringify({ identifier: "ENG-12" }) });
+    const outcome = await recordOwnItems(broken, { orgId: TEST_ORG, taskId: "task-1", tool, args: { title: "t" }, resultText: JSON.stringify({ identifier: "ENG-12" }) });
     expect(outcome).toEqual({ recorded: 0, failed: true });
   });
 
@@ -800,8 +802,8 @@ describe("recordOwnItems and loadOwnItems", () => {
 
   it("keeps at most 50 items of one result, in one transaction, so a later change to the rest asks", async () => {
     const w = wrapper();
-    const ids = Array.from({ length: 150 }, (_, index) => `id-${String(index)}`);
-    const outcome = await recordOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1", tool: mcp("create_things", { itemArguments: ["id"], resultItemArguments: ["ids[]"] }), args: { title: "t" }, resultText: JSON.stringify({ ids }) });
+    const items = Array.from({ length: 150 }, (_, index) => ({ id: `id-${String(index)}` }));
+    const outcome = await recordOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1", tool: mcp("create_things", { itemArguments: ["id"], resultItemArguments: ["items[].id"] }), args: { title: "t" }, resultText: JSON.stringify({ items }) });
     expect(outcome).toEqual({ recorded: 50, failed: false });
     expect(w.db.find((item) => String(item.pk).includes("AGENT_ITEMS#"))).toHaveLength(50);
   });

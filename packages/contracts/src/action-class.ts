@@ -1,5 +1,6 @@
 import { itemPathHolders, itemPathValues } from "./item-paths.js";
 import { toolPatternMatches, type ActionPolicy, type ActionPolicyRule } from "./action-policy.js";
+import type { AgentConnectorType } from "./agent-recipe.js";
 import type { ToolHints } from "./connectors.js";
 import { redactText } from "./redaction.js";
 
@@ -20,6 +21,45 @@ export interface ToolFacts {
    * `tasks[].task`: empty when it offers none, absent when the connector declares none.
    */
   itemArguments?: readonly string[] | undefined;
+  /**
+   * Task 20b: what a tracker's or connector's schema says about labels, for the broker's write classification. Task 19's `resolveToolGrants` fills them.
+   * The tool argument (a path such as `labels` or `fields.labels`) that takes label names: Rovara adds its own `rovara` label there on a tracker create.
+   */
+  labelArgument?: string | undefined;
+  /** How `labelArgument` holds its labels when the call leaves it out: a list (the default) or one comma-separated string. */
+  labelArgumentShape?: "array" | "comma_list" | undefined;
+  /** Arguments that take label ids (beyond `labelIds`, `addedLabelIds` and `addLabels`, which are always read as ids), resolved to names through the connector's label list. */
+  labelIdArguments?: readonly string[] | undefined;
+  /** The read tool of an MCP connector that lists its labels (`id` to `name`), for `labelIdArguments`. */
+  labelListTool?: string | undefined;
+  /**
+   * Arguments that are not content: a repository's `owner` and `repo`, a path, a URL, an enum choice. They are not scanned for commands or
+   * mentions, left as given when mentions are stripped, and not read as an assignee (`owner`). A URL here still counts as an outward send.
+   */
+  nonTextArguments?: readonly string[] | undefined;
+  /** The paths in a create's result that name the new item (Linear `identifier`, GitHub `number`), besides `itemArguments`, so a later change to it is the run's own. */
+  resultItemArguments?: readonly string[] | undefined;
+}
+
+/**
+ * The write classes of an agent's connector call (Plan 3, Task 20b). `read` runs; `safe` runs; `consequential` waits for a person; `merge` waits
+ * for a person and is never lowered by anything.
+ */
+export type WriteClass = "read" | "safe" | "consequential" | "merge";
+
+/**
+ * A connector tool an agent is granted for a run (Task 19's `resolveToolGrants` builds it). `access` is what the project approved the tool for;
+ * `facts` is what the classifier knows about it.
+ */
+export interface GrantedTool {
+  /** The project's name for the connector. */
+  connector: string;
+  type: AgentConnectorType;
+  upstreamName: string;
+  /** The name the model sees. */
+  presentedName: string;
+  access: "read" | "write";
+  facts: ToolFacts;
 }
 
 /** A decision the rules or the built-in defaults reached without the classifier. */
@@ -258,6 +298,14 @@ function ruleMatches(rule: ActionPolicyRule, name: string, facts: ToolFacts | un
   // whenArguments matches the call's own top-level argument names only, never nested or inherited keys.
   if (rule.whenArguments === undefined) return true;
   return isPlainObject(args) && rule.whenArguments.some((key) => Object.hasOwn(args, key) && isSet(args[key]));
+}
+
+/**
+ * The 1-based numbers of the project's rules that match a call (by tool pattern, connector and `whenArguments`), whatever they decide. The write
+ * classifier (Task 20b) reads them to refuse on a deny, to raise on an ask, and to list the rules it ignores.
+ */
+export function matchingPolicyRules(input: { name: string; facts?: ToolFacts | undefined; args: Record<string, unknown>; policy?: ActionPolicy | undefined }): number[] {
+  return (input.policy?.rules ?? []).flatMap((rule, index) => ruleMatches(rule, input.name, input.facts, input.args) ? [index + 1] : []);
 }
 
 /**
