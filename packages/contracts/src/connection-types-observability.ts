@@ -22,7 +22,7 @@ const Common = (type: ObservabilityConnectionType) => ({ connectionId: Connectio
 export const SentryRegionSchema = z.enum(["us", "de"]);
 export const SentryOrgSlugSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,49}$/);
 
-export const DATADOG_SITES = ["datadoghq.com", "us3.datadoghq.com", "us5.datadoghq.com", "datadoghq.eu", "ap1.datadoghq.com", "ap2.datadoghq.com", "ddog-gov.com"] as const;
+export const DATADOG_SITES = ["datadoghq.com", "us3.datadoghq.com", "us5.datadoghq.com", "datadoghq.eu", "ap1.datadoghq.com", "ap2.datadoghq.com", "ddog-gov.com", "us2.ddog-gov.com", "uk1.datadoghq.com"] as const;
 export const DatadogSiteSchema = z.enum(DATADOG_SITES);
 
 /** An IAM role in any AWS partition (`aws`, `aws-cn`, `aws-us-gov`, ...): the role Rovara assumes in the customer's account. */
