@@ -334,6 +334,18 @@ describe("attaching a connection", () => {
     await s.fakeLinear.close();
   });
 
+  it("does not believe a revision another request made first: two maintainers who save the very same connector at once, one wins and the other is told to reload", async () => {
+    const s = await install();
+    const id = await s.connection({ type: "linear", label: "Team Linear", access: "read" });
+    const answers = await Promise.all([s.put(MIA, "linear", linear(id)), s.put(PETE, "linear", linear(id))]);
+    expect(answers.map((answer) => answer.status).sort()).toEqual([200, 409]);
+    expect(answers.find((answer) => answer.status === 409)!.body.error).toMatchObject({ code: "PROJECT_REVISION_MISMATCH", message: STALE });
+    expect(s.revisions()).toHaveLength(2);
+    expect(s.requestItems()).toHaveLength(1);
+    expect(s.audit.recordedBy("project_connector.changed")).toHaveLength(1);
+    await s.fakeLinear.close();
+  });
+
   it("holds a project to eight connectors and to one GitHub connector", async () => {
     const s = await install();
     const id = await s.connection({ type: "linear", label: "Team Linear", access: "read" });

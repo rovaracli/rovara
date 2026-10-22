@@ -466,17 +466,14 @@ export async function routeProjectConnectorRequest(deps: ApprovalDependencies, c
 
 // ---- what confirming does
 
-const isOrgAdmin = (orgRole: string): boolean => orgRole === "owner" || orgRole === "admin";
-
 /**
- * Whether `caller` may confirm a connector widening now (R68, PF5): a maintainer of the project (`edit_settings`) or an org owner or admin,
- * both read now, never from the session. A person removed from the org, or demoted since the request was made, may not.
+ * Whether `caller` may confirm a connector widening now (R68, PF5): a maintainer of the project (`edit_settings`), which an org owner or admin is of
+ * every project of the org; read now, never from the session. A person removed from the org, or demoted since the request was made, may not.
  */
 async function mayConfirmWidening(deps: ApprovalDependencies, record: ApprovalRecord, caller: AgentCaller): Promise<boolean> {
   if (caller.orgId !== record.orgId || record.subject.kind !== "connector_widen") return false;
   const orgRole = await orgRoleOf(deps, record.orgId, caller.developerId);
   if (orgRole === undefined) return false;
-  if (isOrgAdmin(orgRole)) return true;
   const role = await deps.projectMembers.roleOf(record.orgId, record.subject.project, { developerId: await resolveSurvivor(deps, record.orgId, caller.developerId), orgRole });
   return role !== undefined && projectAllows(role, "edit_settings");
 }
