@@ -7,7 +7,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AuditProof, OrgId, OrgRole } from "../../packages/contracts/src/index.js";
 import { orgMemberKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { getApproval, getApprovalSubjectHandler, getApproverRule, type ApprovalDependencies, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
+import { getApproval, getApprovalSubjectHandler, getApproverRule, type ApprovalDependencies, type ApprovalRecord, type ConnectorWidenSubject } from "../../packages/broker/src/agents/approvals.js";
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
@@ -444,7 +444,7 @@ describe("a tool newly approved to write waits for a person on the page (R9-3, R
       approvers: { kind: "rule", rule: "project_settings" },
     });
     // The maintainers and the org admin are listed; the contributor and the viewer are not.
-    const listed = (record.approvers as { candidates: string[] }).candidates;
+    const listed = (record!.approvers as unknown as { candidates: string[] }).candidates;
     expect(listed).toEqual(expect.arrayContaining([MIA.developerId, PETE.developerId, DANA.developerId]));
     expect(listed).not.toContain(CARL.developerId);
     expect(listed).not.toContain(VERA.developerId);
@@ -596,7 +596,7 @@ describe("who may confirm a widening, read now (R68)", () => {
     const { record } = await waitingWidening(s);
     const { deps } = decideSide(s);
     const rule = getApproverRule("project_settings")!;
-    expect((record.approvers as { candidates: string[] }).candidates).toContain(MIA.developerId);
+    expect((record.approvers as unknown as { candidates: string[] }).candidates).toContain(MIA.developerId);
     expect(await rule(deps, record, callerOf(MIA, "member"))).toBe(true);
     s.grant(MIA, "contributor");
     expect(await rule(deps, record, callerOf(MIA, "member"))).toBe(false);
@@ -637,6 +637,38 @@ describe("confirming a widening applies exactly the stored connector", () => {
     await s.fakeLinear.close();
   });
 
+  it("is done when applied again after it was applied (a decision re-driven), and writes no second revision or event", async () => {
+    const s = await install();
+    registerProjectConnectorApprovals();
+    const { record, wide } = await waitingWidening(s);
+    const { deps } = decideSide(s);
+    const handler = getApprovalSubjectHandler("connector_widen")!;
+    const decided = { ...record, status: "EXECUTING" as const, decidedBy: MIA.developerId };
+    await handler(deps, decided);
+    await expect(handler(deps, decided)).resolves.toBeUndefined();
+    expect(s.revisions()).toHaveLength(3);
+    expect(s.audit.recordedBy("project_connector.changed").filter((event) => event.facts?.["change"] === "widened")).toHaveLength(1);
+    // Past the revision with the connector changed again, it is not applied again: the change is no longer there.
+    expect((await s.put(PETE, "linear", { ...wide, tools: READ_TOOLS }, { expectedRevision: 3 })).status).toBe(200);
+    await expect(handler(deps, decided)).rejects.toMatchObject({ code: "PROJECT_REVISION_MISMATCH" });
+    expect(s.revisions()).toHaveLength(4);
+    await s.fakeLinear.close();
+  });
+
+  it("applies nothing for a record whose connector or project cannot be what the route stored", async () => {
+    const s = await install();
+    registerProjectConnectorApprovals();
+    const { record } = await waitingWidening(s);
+    const { deps } = decideSide(s);
+    const handler = getApprovalSubjectHandler("connector_widen")!;
+    const subject = record.subject as ConnectorWidenSubject;
+    for (const forged of [{ ...subject, name: "other" }, { ...subject, project: "../api" }]) {
+      await expect(handler(deps, { ...record, subject: forged, decidedBy: MIA.developerId })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    }
+    expect(s.revisions()).toHaveLength(2);
+    await s.fakeLinear.close();
+  });
+
   it("fails with the stale-settings text when the project moved on, and writes nothing", async () => {
     const s = await install();
     registerProjectConnectorApprovals();
@@ -672,7 +704,8 @@ describe("confirming a widening applies exactly the stored connector", () => {
     const handler = getApprovalSubjectHandler("connector_widen")!;
     await expect(handler(deps, record)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     await expect(handler({ ...deps, projectConnectors: { ...deps.projectConnectors!, cloud: false } }, { ...record, decidedBy: MIA.developerId })).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining(PRIVATE) as string });
-    await expect(handler({ ...deps, projectConnectors: undefined }, { ...record, decidedBy: MIA.developerId })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    const { projectConnectors: _unset, ...withoutConnectors } = deps; // eslint-disable-line @typescript-eslint/no-unused-vars -- the deployment has none
+    await expect(handler(withoutConnectors, { ...record, decidedBy: MIA.developerId })).rejects.toMatchObject({ code: "NOT_FOUND" });
     s.h.db.set({ ...projectMetaKey(TEST_ORG, "web"), entityType: "PROJECT_META", name: "web", status: "archived", createdAt: "x", createdBy: "x" });
     await expect(handler(deps, { ...record, decidedBy: MIA.developerId })).rejects.toMatchObject({ code: "PROJECT_ARCHIVED" });
     expect(s.revisions()).toHaveLength(2);

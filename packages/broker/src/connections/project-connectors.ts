@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   AgentXError,
+  AgentXNameSchema,
   ConnectionIdSchema,
   ConnectorConfigSchema,
   ConnectorNameSchema,
@@ -480,20 +481,39 @@ async function mayConfirmWidening(deps: ApprovalDependencies, record: ApprovalRe
   return role !== undefined && projectAllows(role, "edit_settings");
 }
 
-/** Applies a confirmed widening: exactly the stored connector, while the project is still at the revision that was shown. */
+/**
+ * Applies a confirmed widening: exactly the stored connector, while the project is still at the revision that was shown. Applying it again (the
+ * decision stopped before it was recorded, and is re-driven) finds the project past that revision with the connector as approved, and is done.
+ */
 async function confirmWidening(deps: ApprovalDependencies, record: ApprovalRecord, decision?: { proof?: AuditProof }): Promise<void> {
   // Nobody having decided it means the events would credit the person who asked.
   if (record.decidedBy === undefined) throw invalid("this change has not been decided by anyone, so it can't be applied");
   const subject = record.subject as ConnectorWidenSubject;
+  // The record was made by the route, which checked these; they are checked again because what is written is read from it.
+  if (!AgentXNameSchema.safeParse(subject.project).success || subject.connector.name !== subject.name) throw invalid("this change is not one that can be applied");
   const connectorDeps = requireConnectorDeps(deps);
   if (!connectorDeps.projectConnectors.cloud) throw agentXError("FORBIDDEN", PRIVATE_INSTALL_MESSAGE);
-  const latest = await loadCurrent(connectorDeps, record.orgId, subject.project, subject.expectedRevision);
+  let latest: LatestRevision;
+  try {
+    latest = await loadCurrent(connectorDeps, record.orgId, subject.project, subject.expectedRevision);
+  } catch (error) {
+    if (error instanceof AgentXError && error.code === "PROJECT_REVISION_MISMATCH" && await alreadyApplied(connectorDeps, record.orgId, subject)) return;
+    throw error;
+  }
   // The connection may have been removed, or lowered to read-only, since this was asked.
   await validateConnector(connectorDeps, record.orgId, latest.definition, subject.connector);
   await writeRevision(connectorDeps, {
     orgId: record.orgId, project: subject.project, by: record.decidedBy, name: subject.name, next: subject.connector, latest,
     approval: { approvalId: record.approvalId, ...(decision?.proof === undefined ? {} : { proof: decision.proof }) },
   });
+}
+
+/** Whether the project is past the revision that was shown and holds the connector as it was approved: the change is there, whoever wrote it. */
+async function alreadyApplied(deps: Deps, orgId: OrgId, subject: ConnectorWidenSubject): Promise<boolean> {
+  const latest = await latestRevision(deps, orgId, subject.project);
+  if (latest === undefined || latest.definition.revision <= subject.expectedRevision) return false;
+  const stored = storedConnectors(latest.definition).find((entry) => entry.name === subject.name);
+  return stored !== undefined && canonicalJson(stored) === canonicalJson(subject.connector);
 }
 
 /** Registers the `project_settings` rule and the `connector_widen` handler. Safe to call more than once. */
