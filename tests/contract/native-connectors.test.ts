@@ -3,7 +3,7 @@
 // reaches its vendor: one allowed host, https, no redirect, a bounded answer, and no credential in a failure. `safeLookup` refuses a non-public address when
 // the connection is made. No test here reaches a network.
 import { PassThrough } from "node:stream";
-import { ToolRefusal, discoverTools, executeTool, type ConnectorDefinition, type Ledger } from "@agentx/gateway";
+import { CredentialUnavailable, ToolRefusal, discoverTools, executeTool, type ConnectorDefinition, type Ledger } from "@agentx/gateway";
 import { describe, expect, it, vi } from "vitest";
 import { lookupFetch, pinnedLookup } from "../../packages/broker/src/connections/pinned-endpoint.js";
 import { NATIVE_TEXT_LIMIT, NativeToolRefusal, nativeConnection, type NativeTool } from "../../packages/broker/src/connectors/native/runtime.js";
@@ -143,6 +143,64 @@ describe("nativeConnection", () => {
   });
 });
 
+describe("nativeConnection with a credential per call (Plan 4 Task 17)", () => {
+  const showsToken: NativeTool<Scope> = {
+    name: "shows_token", description: "Shows the token it runs with", inputSchema: { type: "object", properties: { text: { type: "string", maxLength: 10 } }, required: [], additionalProperties: false },
+    run: async (_args, ctx) => ({ text: `ran as ${ctx.credential.token} in ${ctx.scope.organization}/${ctx.scope.projectSlug}` }),
+  };
+  const CALL_TOKEN = "ghs_PERCALLTOKEN0123456789";
+  const build = (credentialFor: (tool: string, scope: Scope) => Promise<{ token: string }>, tools: readonly NativeTool<Scope>[] = [showsToken, echo]) =>
+    nativeConnection<Scope>(tools, tools.map((tool) => tool.name), { credential: { token: TOKEN, bindings: {} }, fetch: vi.fn() as never, routing: ROUTING, credentialFor: async (tool, scope) => ({ ...(await credentialFor(tool, scope)), bindings: {} }) });
+
+  it("asks for the call's credential once, after the arguments are checked, with the tool and its scope, and runs the tool with it", async () => {
+    const credentialFor = vi.fn(async () => ({ token: CALL_TOKEN }));
+    const result = await build(credentialFor).call("shows_token", { ...SCOPE_ARGS, text: "hi" });
+    expect(credentialFor).toHaveBeenCalledTimes(1);
+    expect(credentialFor).toHaveBeenCalledWith("shows_token", { organization: "acme", projectSlug: "web-app" });
+    // The tool ran as the call's credential, and the answer is scrubbed of it.
+    expect(textOf(result)).toBe("ran as [REDACTED] in acme/web-app");
+    expect(textOf(result)).not.toContain(CALL_TOKEN);
+  });
+
+  it("asks for nothing when the call is refused first: an unknown tool, a missing or wrong routing value, a bad argument", async () => {
+    const credentialFor = vi.fn(async () => ({ token: CALL_TOKEN }));
+    const connection = build(credentialFor);
+    await expect(connection.call("not_a_tool", SCOPE_ARGS)).rejects.toThrow("MCP tool not allowed or unavailable");
+    expect(textOf(await connection.call("shows_token", { organization: "acme" }))).toBe("shows_token: projectSlug is required");
+    expect(textOf(await connection.call("shows_token", { ...SCOPE_ARGS, organization: 5 }))).toBe("shows_token: organization is not allowed");
+    expect(textOf(await connection.call("shows_token", { ...SCOPE_ARGS, text: "x".repeat(11) }))).toBe("shows_token: text is not allowed");
+    expect(textOf(await connection.call("shows_token", { ...SCOPE_ARGS, extra: 1 }))).toBe("shows_token: extra is not allowed");
+    expect(credentialFor).not.toHaveBeenCalled();
+  });
+
+  it("scrubs the call's credential and the connection's own, before the cap", async () => {
+    const both: NativeTool<Scope> = { name: "both", description: "Both", inputSchema: { type: "object", properties: {}, additionalProperties: false }, run: async (_args, ctx) => ({ text: `${"x".repeat(NATIVE_TEXT_LIMIT - 30)}${ctx.credential.token}${TOKEN}${"y".repeat(500)}` }) };
+    const text = textOf(await build(async () => ({ token: CALL_TOKEN }), [both]).call("both", SCOPE_ARGS));
+    expect(text.length).toBeLessThanOrEqual(NATIVE_TEXT_LIMIT);
+    for (const secret of [CALL_TOKEN, TOKEN]) for (let start = 0; start + 8 <= secret.length; start += 1) expect(text.includes(secret.slice(start, start + 8)), secret.slice(start, start + 8)).toBe(false);
+    expect(textOf(await build(async () => ({ token: CALL_TOKEN }), [leaking]).call("leaking", SCOPE_ARGS))).toBe("the vendor echoed [REDACTED] back");
+  });
+
+  it("lets a credential that is unavailable through, so the engine says the connector is not connected", async () => {
+    const error = await build(async () => { throw new CredentialUnavailable("GitHub isn't connected"); }).call("shows_token", SCOPE_ARGS).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(CredentialUnavailable);
+    expect(error).toMatchObject({ message: "GitHub isn't connected" });
+  });
+
+  it("answers a refusal in the credential step as a refusal, and any other failure without naming it", async () => {
+    const refused = await build(async () => { throw new NativeToolRefusal(`no token for ${CALL_TOKEN}`, "vendor_error"); }).call("shows_token", SCOPE_ARGS).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(ToolRefusal);
+    expect(refused).toMatchObject({ message: "no token for [REDACTED]", reason: "vendor_error" });
+    const crashed = await build(async () => { throw new Error(`boom ${TOKEN}`); }).call("shows_token", SCOPE_ARGS);
+    expect(crashed.isError).toBe(true);
+    expect(textOf(crashed)).toBe("shows_token failed");
+  });
+
+  it("keeps the connection's own credential when there is no credentialFor", async () => {
+    expect(textOf(await connection(["leaking"]).call("leaking", SCOPE_ARGS))).toBe("the vendor echoed [REDACTED] back");
+  });
+});
+
 /** A `fetch` stand-in that answers with `respond` and records how it was called. */
 function fakeFetch(respond: (url: URL, init: RequestInit | undefined) => Response | Promise<Response>) {
   const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
@@ -191,6 +249,29 @@ describe("vendorFetch", () => {
       await expect(vendorFetch({ url, allowedHosts: HOSTS, fetch: fn }), url).rejects.toThrow("the request is not to an allowed vendor address");
     }
     expect(calls).toEqual([]);
+  });
+
+  it("returns a redirect's status and Location, and follows nothing, only when asked to capture it (Plan 4 Task 17)", async () => {
+    const redirect = () => new Response(null, { status: 302, headers: { location: "https://pipelines.actions.githubusercontent.com/abc/log.txt?sig=1" } });
+    const { fn, calls } = fakeFetch(redirect);
+    const captured = await vendorFetch({ url: URL_OK, allowedHosts: HOSTS, captureRedirect: true, fetch: fn });
+    expect(captured).toEqual({ status: 302, location: "https://pipelines.actions.githubusercontent.com/abc/log.txt?sig=1" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.init?.redirect).toBe("error");
+    // Without it, the same answer is the same refusal as ever.
+    await expect(vendorFetch({ url: URL_OK, allowedHosts: HOSTS, fetch: fakeFetch(redirect).fn })).rejects.toThrow("the vendor answered with a redirect, which is refused");
+    // A redirect with no Location is captured as that: the caller decides what it means.
+    const bare = await vendorFetch({ url: URL_OK, allowedHosts: HOSTS, captureRedirect: true, fetch: fakeFetch(() => new Response(null, { status: 302 })).fn });
+    expect(bare).toEqual({ status: 302 });
+    // A 200 is unchanged by the option.
+    expect((await vendorFetch({ url: URL_OK, allowedHosts: HOSTS, captureRedirect: true, fetch: fakeFetch(() => new Response("{}", { status: 200 })).fn })).status).toBe(200);
+  });
+
+  it("vendorFetcher passes the capture request through, for one request only", async () => {
+    const { fn } = fakeFetch(() => new Response(null, { status: 302, headers: { location: "https://x.blob.core.windows.net/a" } }));
+    const fetcher = vendorFetcher({ base: new URL("https://us.sentry.io/api/0/"), fetch: fn });
+    expect(await fetcher("logs", { redirect: "capture" })).toEqual({ status: 302, location: "https://x.blob.core.windows.net/a" });
+    await expect(fetcher("logs")).rejects.toThrow("the vendor answered with a redirect, which is refused");
   });
 
   it("names no token, header or URL in a failure, however the transport words it", async () => {
@@ -267,6 +348,26 @@ describe("safeLookup (rebinding, Review Focus 6)", () => {
     const answer = await new Promise<unknown[]>((resolve) => seen[0]!.lookup("us.sentry.io", { all: true }, (...args) => resolve(args)));
     expect((answer[0] as Error).message).toContain("not public");
     expect(resolveHost).toHaveBeenCalledWith("us.sentry.io");
+  });
+
+  it("hands a redirect back to the caller to read, only when the fetch was built to (Plan 4 Task 17), and never follows it", async () => {
+    const redirecting = ((_url: URL, _options: unknown, callback?: (response: unknown) => void) => ({
+      on: () => undefined,
+      destroy: () => undefined,
+      end: () => { callback?.(Object.assign(new PassThrough(), { statusCode: 302, headers: { location: "https://x.blob.core.windows.net/a?sig=1" }, statusMessage: "Found" })); },
+    })) as never;
+    await expect(lookupFetch(pinnedLookup(["52.1.2.3"]), { request: redirecting })("https://api.github.com/x")).rejects.toThrow("a redirect was refused");
+    const returned = await lookupFetch(pinnedLookup(["52.1.2.3"]), { request: redirecting, returnRedirects: true })("https://api.github.com/x");
+    expect(returned.status).toBe(302);
+    expect(returned.headers.get("location")).toBe("https://x.blob.core.windows.net/a?sig=1");
+    expect(returned.body).toBeNull();
+    const resolveHost = async () => ["52.1.2.3"];
+    await expect(safeVendorFetch({ resolveHost, request: redirecting })("https://api.github.com/x")).rejects.toThrow("a redirect was refused");
+    expect((await safeVendorFetch({ resolveHost, request: redirecting, returnRedirects: true })("https://api.github.com/x")).status).toBe(302);
+    // The default fetch is still the refusing one, and is not the one that returns redirects.
+    expect(safeVendorFetch()).toBe(safeVendorFetch());
+    expect(safeVendorFetch({ returnRedirects: true })).toBe(safeVendorFetch({ returnRedirects: true }));
+    expect(safeVendorFetch({ returnRedirects: true })).not.toBe(safeVendorFetch());
   });
 });
 

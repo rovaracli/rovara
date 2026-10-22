@@ -348,3 +348,140 @@ export function fakeVercel(options: FakeVercelOptions): { handler: VendorHandler
   };
   return { handler, requests };
 }
+
+// ---- GitHub Actions (Task 17)
+
+export interface FakeGitHubActionsOptions {
+  /** Answers every Actions and deployments request with this status. */
+  status?: number;
+  /** The text of job 7001's log, or a function of the installation tokens minted so far (to put one in the log). */
+  logText?: string | ((tokens: readonly string[]) => string);
+  /** Where the log request is redirected: a URL, or `null` for a 302 with no Location header. Default: a GitHub storage host. */
+  logRedirect?: string | null;
+  /** What the log request answers when it is not a redirect (a 200 with the text itself). */
+  logInline?: boolean;
+  /** The storage answers with a second redirect (to another storage host). */
+  storageRedirects?: boolean;
+  /** The lists answer with other repositories' items too, as a misbehaving vendor could. */
+  leak?: boolean;
+}
+
+export interface RecordedGitHubRequest { method: string; url: string; authorization: string | undefined; body: unknown }
+
+/** The repositories the fake knows, all under installation 55 of the owner `example`. */
+export const FAKE_GITHUB_REPOSITORIES = { demo: 4242, other: 777, legacy: 5151 } as const;
+export const FAKE_GITHUB_STORAGE_HOST = "pipelinesghubeus6.actions.githubusercontent.com";
+
+/**
+ * GitHub as the GitHub Actions connector uses it. The App endpoints (a repository's installation, an installation access token) take any bearer; every
+ * repository endpoint takes only a token this fake minted, for a repository that token names, with the permission the endpoint needs (`actions` for
+ * `/actions/...`, `deployments` for `/deployments`), and answers like GitHub otherwise. Storage hosts answer the log, and refuse an Authorization header.
+ */
+export function fakeGitHubActions(options: FakeGitHubActionsOptions = {}): { handler: VendorHandler; requests: RecordedGitHubRequest[]; minted(): RecordedGitHubRequest[]; tokens: string[] } {
+  const requests: RecordedGitHubRequest[] = [];
+  const tokens: string[] = [];
+  const grants = new Map<string, { repositories: string[]; permissions: Record<string, string> }>();
+  const api = (repository: string) => `https://api.github.com/repos/example/${repository}`;
+  const run = (id: number, repository: keyof typeof FAKE_GITHUB_REPOSITORIES, over: Record<string, unknown> = {}) => ({
+    id, name: "CI", display_title: `run ${String(id)}`, head_branch: "main", head_sha: "a".repeat(40), status: "completed", conclusion: "success", event: "push", run_number: id - 9000,
+    created_at: "2026-10-22T09:00:00Z", updated_at: "2026-10-22T09:05:00Z", html_url: `https://github.com/example/${repository}/actions/runs/${String(id)}`,
+    actor: { login: "dana", id: 1 }, repository: { id: FAKE_GITHUB_REPOSITORIES[repository], full_name: `example/${repository}` }, ...over,
+  });
+  const runs = [
+    run(9001, "demo", { display_title: "Fix checkout", conclusion: "failure" }),
+    run(9002, "demo", { display_title: "Try a thing", status: "in_progress", conclusion: null, head_branch: "feature" }),
+    run(9003, "demo", { display_title: "Docs", conclusion: "success" }),
+    run(9101, "other", { display_title: "Other repository secret work" }),
+  ];
+  const job = (id: number, runId: number, repository: string, over: Record<string, unknown> = {}) => ({
+    id, run_id: runId, run_url: `${api(repository)}/actions/runs/${String(runId)}`, name: "build", status: "completed", conclusion: "failure",
+    started_at: "2026-10-22T09:00:10Z", completed_at: "2026-10-22T09:04:00Z",
+    steps: [{ name: "Set up job", status: "completed", conclusion: "success", number: 1 }, { name: "npm test", status: "completed", conclusion: "failure", number: 2 }], ...over,
+  });
+  const deployment = (id: number, repository: string, environment: string) => ({
+    id, sha: "b".repeat(40), ref: "main", task: "deploy", environment, created_at: "2026-10-22T10:00:00Z", updated_at: "2026-10-22T10:01:00Z", creator: { login: "dana" }, repository_url: api(repository),
+  });
+  const deployments = [deployment(5001, "demo", "production"), deployment(5002, "demo", "staging"), deployment(6001, "other", "production")];
+  const status = (id: number, repository: string, deploymentId: number, state: string) => ({
+    id, state, description: `deployment ${state}`, environment: "production", target_url: "https://shop.example/", log_url: "", created_at: "2026-10-22T10:02:00Z",
+    deployment_url: `${api(repository)}/deployments/${String(deploymentId)}`, repository_url: api(repository),
+  });
+  const logLines = (): string => Array.from({ length: 300 }, (_unused, index) => `2026-10-22T09:00:${String(index % 60).padStart(2, "0")}.0000000Z line ${String(index + 1)} of the log`).join("\n");
+  const handler: VendorHandler = async (url, init) => {
+    const headers = new Headers(init?.headers);
+    const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+    const authorization = headers.get("authorization") ?? undefined;
+    const isStorage = url.hostname.endsWith(".actions.githubusercontent.com") || url.hostname.endsWith(".blob.core.windows.net");
+    if (url.hostname !== "api.github.com" && !isStorage) return undefined;
+    requests.push({ method: init?.method ?? "GET", url: url.href, authorization, body });
+    if (isStorage) {
+      if (authorization !== undefined) return json({ message: "storage takes no Authorization header" }, 400);
+      if (options.storageRedirects === true) return new Response(null, { status: 302, headers: { location: `https://${FAKE_GITHUB_STORAGE_HOST}/second/log.txt` } });
+      const text = typeof options.logText === "function" ? options.logText(tokens) : options.logText ?? logLines();
+      return new Response(text, { status: 200, headers: { "content-type": "text/plain" } });
+    }
+    const installation = /^\/repos\/([^/]+)\/([^/]+)\/installation$/.exec(url.pathname);
+    if (installation !== null) return installation[1] === "example" ? json({ id: 55, account: { login: "example" } }) : json({ message: "Not Found" }, 404);
+    if (init?.method === "POST" && url.pathname === "/app/installations/55/access_tokens") {
+      const asked = body as { repositories: string[]; permissions: Record<string, string> };
+      const token = `ghs_fake${String(tokens.length + 1)}_${Object.keys(asked.permissions).sort().join("_")}`;
+      tokens.push(token);
+      grants.set(token, asked);
+      return json({ token }, 201);
+    }
+    const repo = /^\/repos\/example\/([^/]+)\/(.*)$/.exec(url.pathname);
+    if (repo === null) return json({ message: "Not Found" }, 404);
+    const grant = authorization?.startsWith("Bearer ") ? grants.get(authorization.slice(7)) : undefined;
+    if (grant === undefined) return json({ message: "Bad credentials" }, 401);
+    const name = repo[1]!;
+    const rest = repo[2]!;
+    if (!grant.repositories.includes(name)) return json({ message: "Not Found" }, 404);
+    const needed = rest.startsWith("actions/") ? "actions" : rest.startsWith("deployments") ? "deployments" : "contents";
+    if (grant.permissions[needed] !== "read") return json({ message: "Resource not accessible by integration" }, 403);
+    if (options.status !== undefined) return json({ message: "fake outage with secret-detail-xyz" }, options.status);
+    const limit = Number(url.searchParams.get("per_page") ?? "30");
+    const known = (id: number) => name === "demo" && id > 0;
+    if (rest === "actions/runs") {
+      const wanted = url.searchParams.get("status");
+      const branch = url.searchParams.get("branch");
+      const found = runs.filter((entry) => (options.leak === true || entry.repository.full_name === `example/${name}`)
+        && (branch === null || entry.head_branch === branch)
+        && (wanted === null || entry.status === wanted || entry.conclusion === wanted));
+      return json({ total_count: found.length, workflow_runs: found.slice(0, limit) });
+    }
+    const oneRun = /^actions\/runs\/(\d+)$/.exec(rest);
+    if (oneRun !== null) {
+      const found = runs.find((entry) => entry.id === Number(oneRun[1]) && (options.leak === true || entry.repository.full_name === `example/${name}`));
+      return found === undefined ? json({ message: "Not Found" }, 404) : json(found);
+    }
+    const jobs = /^actions\/runs\/(\d+)\/jobs$/.exec(rest);
+    if (jobs !== null) {
+      const id = Number(jobs[1]);
+      if (!runs.some((entry) => entry.id === id && entry.repository.full_name === `example/${name}`)) return json({ message: "Not Found" }, 404);
+      const list = [job(7001, id, name), job(7002, id, name, { name: "lint", conclusion: "success", steps: [] }),
+        ...(options.leak === true ? [job(7999, 9101, "other", { name: "other-repo-job" }), job(7998, id + 1, name, { name: "another-run-job" })] : [])];
+      return json({ total_count: list.length, jobs: list });
+    }
+    const log = /^actions\/jobs\/(\d+)\/logs$/.exec(rest);
+    if (log !== null) {
+      if (!known(Number(log[1])) || Number(log[1]) !== 7001) return json({ message: "Not Found" }, 404);
+      if (options.logInline === true) return new Response("inline log", { status: 200 });
+      const location = options.logRedirect === undefined ? `https://${FAKE_GITHUB_STORAGE_HOST}/abc/log.txt?sig=1` : options.logRedirect;
+      return new Response(null, { status: 302, headers: location === null ? {} : { location } });
+    }
+    if (rest === "deployments") {
+      const environment = url.searchParams.get("environment");
+      const found = deployments.filter((entry) => (options.leak === true || entry.repository_url === api(name)) && (environment === null || entry.environment === environment));
+      return json(found.slice(0, limit));
+    }
+    const statuses = /^deployments\/(\d+)\/statuses$/.exec(rest);
+    if (statuses !== null) {
+      const id = Number(statuses[1]);
+      if (!deployments.some((entry) => entry.id === id && entry.repository_url === api(name))) return json({ message: "Not Found" }, 404);
+      return json([status(1, name, id, "success"), status(2, name, id, "in_progress"),
+        ...(options.leak === true ? [status(3, "other", 6001, "failure")] : [])]);
+    }
+    return json({ message: "Not Found" }, 404);
+  };
+  return { handler, requests, minted: () => requests.filter((request) => request.url.endsWith("/access_tokens")), tokens };
+}
