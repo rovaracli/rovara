@@ -350,6 +350,14 @@ export function openSpendRequestsKey(orgId: OrgId, createdAt: string, requestId:
   return { pk: orgScoped(orgId, "SPEND_REQUESTS#OPEN"), sk: `${canonicalInstant(createdAt)}#${requestId}` };
 }
 
+/**
+ * The one PENDING request of a kind for a subject (a task, or for `owner_cap` an agent or a person): put in the transaction that makes the request and
+ * deleted in the one that ends it, so a second pause on the same subject finds the first request instead of making another.
+ */
+export function spendRequestSlotKey(orgId: OrgId, subject: string, kind: string): OrgKey {
+  return { pk: orgScoped(orgId, `SPEND_REQUEST_FOR#${subject}`), sk: kind };
+}
+
 /** A task paused for a budget; `pauseKey` names what it waits for, so raising that budget finds every task to resume. */
 export function pausedTasksKey(orgId: OrgId, pauseKey: string, taskId: string): OrgKey {
   return { pk: orgScoped(orgId, `PAUSED_TASKS#${pauseKey}`), sk: taskId };

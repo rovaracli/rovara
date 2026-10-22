@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { ModelSourceIdSchema, type AgentId } from "./agent.js";
 import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD } from "./org-budget.js";
+import type { OrgId } from "./org.js";
 
 /** A run's limit is its estimate's high end times this. */
 export const RUN_LIMIT_MULTIPLIER = 2;
@@ -192,3 +193,70 @@ export const TRIAL_LIMITS_R49 = {
   agentMonthlyUsd: DEFAULT_MEMBER_MONTHLY_BUDGET_USD,
   ownerAgentBudgetCapUsd: DEFAULT_MEMBER_MONTHLY_BUDGET_USD,
 } as const;
+
+// ---- spend requests (Task 32)
+
+/** What a request asks for: a run's limit, an agent's max per run for one run, the planning limit, a month's budget (Task 33), or an owner's cap. */
+export const SPEND_REQUEST_KINDS = ["run_limit", "max_per_run", "planning", "month", "owner_cap"] as const;
+export type SpendRequestKind = (typeof SPEND_REQUEST_KINDS)[number];
+export const SPEND_REQUEST_STATUSES = ["PENDING", "APPROVED", "DENIED", "EXPIRED"] as const;
+export type SpendRequestStatus = (typeof SPEND_REQUEST_STATUSES)[number];
+/** Who a request was routed to: the payer, the project's maintainers, the agent's owner, or the org's owners and admins. */
+export const SPEND_APPROVER_ROLES = ["payer", "project_maintainer", "agent_owner", "org_admin"] as const;
+export type SpendApproverRole = (typeof SPEND_APPROVER_ROLES)[number];
+/** The longest reason a request carries, in code points. */
+export const SPEND_REQUEST_REASON_MAX = 300;
+/** What a task with no workflow is told when its budget was raised (the system's Continue). */
+export const SPEND_RESUME_INSTRUCTIONS = "Your AI budget was raised. Continue where you stopped.";
+
+/**
+ * The change an `owner_cap` request holds until an admin decides: nothing changes while it is PENDING, and approving applies exactly this, as an override of the
+ * cap. `confirm_move` is Rovara's own move (a member merged or removed), which already applied: approving it only records that an admin saw it.
+ */
+export type OwnerCapChange =
+  | { op: "set_budget"; budget: { monthlyUsd?: number | null; maxPerRunUsd?: number | null } }
+  | { op: "set_owner"; owner: { kind: "member"; developerId: string } | { kind: "project"; project: string }; accountable?: { developerId: string } }
+  | { op: "set_accountable"; accountable: { developerId: string } }
+  | { op: "unarchive" }
+  | { op: "confirm_move"; owner: string; cause: "member_merged" | "member_removed" };
+
+/** A request for more spend, at `spendRequestKey(orgId, spendRequestId)`; the open ones are listed at `openSpendRequestsKey`. */
+export interface SpendRequestRecord {
+  orgId: OrgId;
+  spendRequestId: string;
+  kind: SpendRequestKind;
+  /** What the request raises: a run's own limit (`task`, `max_per_run`, `planning`), or the agent whose owner's cap it is. */
+  scope?: PauseScope;
+  taskId?: string;
+  /** For an owner change held by the cap: the person who would own the agent. */
+  newOwner?: { developerId: string };
+  /** How much more is asked for (for `owner_cap`: the dollars over the cap). */
+  amountUsd: number;
+  /** The limit the request would set: a run's new limit, the raised stop, or the agent's requested monthly budget. */
+  newLimitUsd?: number;
+  /** What the person deciding is told, at most `SPEND_REQUEST_REASON_MAX` code points. */
+  reason: string;
+  requestedBy: { kind: "member"; developerId: string } | { kind: "system" };
+  approverRole: SpendApproverRole;
+  /** Who it was routed to when it was made (and moved since); who may decide is read live (`spendApprovers`), never from this list. */
+  approverIds: string[];
+  /** Set when an owner did not answer within `OWNER_ANSWER_HOURS` and the org's owners and admins were added. */
+  escalatedAt?: string;
+  status: SpendRequestStatus;
+  decidedBy?: string;
+  decidedAt?: string;
+  approvedAmountUsd?: number;
+  /** How the task goes on once approved: a task's Continue, the implementation after a plan, or the plan itself. */
+  resume?: "continue" | "implement" | "plan";
+  /** The change an `owner_cap` request applies once approved. */
+  change?: OwnerCapChange;
+  /** The agent an `owner_cap` request is about. */
+  agentId?: AgentId;
+  createdAt: string;
+  expiresAt: string;
+}
+
+/** What a paused run asks for by default: half its limit again, rounded up to whole dollars, and never less than $5. */
+export function suggestedTopUpUsd(limitUsd: number): number {
+  return Math.max(5, Math.ceil(limitUsd * 0.5));
+}
