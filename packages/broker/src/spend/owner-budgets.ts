@@ -4,6 +4,7 @@
 // the first time it is needed and rebuilt from them after a member merge, so the two stores must share one `OwnerBudgets`.
 import { PutCommand, UpdateCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { orgSettingsKey, ownerBudgetKey, type OrgId } from "@agentx/contracts";
+import type { OwnedKind } from "../agents/owned-store.js";
 import { NOT_EXISTS, coded, errorName, type Aliases, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { budgetOwnerOf, ownerShare, ownerTotalItems, type BudgetSubject, type OwnerShare } from "./owner-total.js";
 import { cleanUsd } from "./top-ups.js";
@@ -60,14 +61,24 @@ export function budgetGuard(subject: BudgetSubject): (aliases: Aliases) => strin
   };
 }
 
+/** The table a store writes: a ledger takes sources only from stores on the table it counts in. */
+export interface OwnerBudgetTable { documentClient: unknown; tableName: string }
+
 export class OwnerBudgets {
-  private readonly sources: OwnerBudgetSource[] = [];
+  /** One source per kind of item: a second registration of a kind (a store built again on the same ledger) replaces the first, so nothing is counted twice. */
+  private readonly sources = new Map<OwnedKind, OwnerBudgetSource>();
 
   constructor(private readonly input: OwnerBudgetsInput) {}
 
-  /** Adds the budgets of one more kind of item to every total this ledger builds. */
-  register(source: OwnerBudgetSource): void {
-    if (!this.sources.includes(source)) this.sources.push(source);
+  /**
+   * Sets the source of one kind of item's budgets in every total this ledger builds, replacing the one registered for that kind before. A store
+   * on another table than the ledger's is refused: its budgets are not in the table the totals are kept in.
+   */
+  register(kind: OwnedKind, source: OwnerBudgetSource, table: OwnerBudgetTable): void {
+    if (table.documentClient !== this.input.documentClient || table.tableName !== this.input.tableName) {
+      throw new Error(`the ${kind} budgets of a store on another table can't be added to this ledger`);
+    }
+    this.sources.set(kind, source);
   }
 
   private iso(): string {
@@ -95,7 +106,7 @@ export class OwnerBudgets {
       return (await found) === owner;
     };
     let total = 0;
-    for (const source of this.sources) total += await source.sum(orgId, owner, counts);
+    for (const source of this.sources.values()) total += await source.sum(orgId, owner, counts);
     return cleanUsd(total);
   }
 

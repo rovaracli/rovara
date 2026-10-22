@@ -166,7 +166,7 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion> {
     this.newId = input.newId ?? (() => newPrefixedId("chn"));
     this.agents = input.agents;
     this.ownerBudgets = input.agents.ownerBudgets;
-    this.ownerBudgets.register({ sum: (orgId, _owner, counts) => this.sumChainBudgets(orgId, counts) });
+    this.ownerBudgets.register("chain", { sum: (orgId, _owner, counts) => this.sumChainBudgets(orgId, counts) }, input);
   }
 
   // ---- reads

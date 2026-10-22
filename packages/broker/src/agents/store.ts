@@ -220,7 +220,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion> {
     this.builtins = input.builtins ?? SHIPPED_BUILTINS;
     this.skills = input.skills ?? new SkillStore({ documentClient: input.documentClient, tableName: input.tableName, now: input.now });
     this.ownerBudgets = input.ownerBudgets ?? new OwnerBudgets({ documentClient: input.documentClient, tableName: input.tableName, now: input.now, ...(input.resolveOwner === undefined ? {} : { resolveOwner: input.resolveOwner }) });
-    this.ownerBudgets.register({ sum: (orgId, owner, counts) => this.sumAgentBudgets(orgId, counts) });
+    this.ownerBudgets.register("agent", { sum: (orgId, _owner, counts) => this.sumAgentBudgets(orgId, counts) }, input);
   }
 
   // ---- reads
