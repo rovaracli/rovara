@@ -1,6 +1,6 @@
 import { AgentXError, ConnectionIdSchema, itemPathProblems, type ConnectorPreflight, type ProjectDefinition, type RegistrationPreflight } from "@agentx/contracts";
 import { ConnectorNotConnected, isObject, presentCatalog, TARGET_CONFLICT_REASON, type CatalogTool, type GuardedItemTools, type SkippedTool } from "@agentx/gateway";
-import { discoverScope, stripCode, type ConnectorContextBase, type ScopeDiscovery } from "./connector-routes.js";
+import { discoverScope, stripCode, type ScopeContextBase, type ScopeDiscovery } from "./connector-routes.js";
 import type { ResolvedConnector } from "./connector-types.js";
 import { credentialSetupCommand, hostPinProblem, type ConnectorCredentials } from "./credentials.js";
 
@@ -61,7 +61,7 @@ async function preflightConnector(
       refusals: pathProblems.map((problem) => `connector ${connector.name}: ${problem}`),
     };
   }
-  const context: ConnectorContextBase = { workspaceId: "registration", ownerKey, settingsRevision: definition.revision };
+  const context: ScopeContextBase = { workspaceId: "registration", ownerKey, settingsRevision: definition.revision };
   const settled = await Promise.allSettled(connector.scopes.map((scope) => discoverScope(connector, resolved, scope, context)));
   const notConnected = settled.find((entry): entry is PromiseRejectedResult => entry.status === "rejected" && entry.reason instanceof ConnectorNotConnected);
   const failed = settled.find((entry): entry is PromiseRejectedResult => entry.status === "rejected");

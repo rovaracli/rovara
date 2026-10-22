@@ -1,4 +1,4 @@
-import { agentXError, type ConnectorCallRequest, type ConnectorCatalog, type ConnectorResult, type SlackRequester, type WorkspaceInstance } from "@agentx/contracts";
+import { agentXError, type ConnectorCallRequest, type ConnectorCatalog, type ConnectorResult, type OrgId, type SlackRequester, type WorkspaceInstance } from "@agentx/contracts";
 import {
   ConnectorNotConnected,
   discoverTools,
@@ -18,17 +18,22 @@ import type { ConnectorScope, ResolvedConnector } from "./connector-types.js";
 /** One scope's discovered tools and the approved tools it could not offer. */
 export interface ScopeDiscovery { tools: CatalogTool[]; skipped: SkippedTool[] }
 
-/** Who a connector call or discovery is for, and the project revision whose policy authorizes it. */
-export interface ConnectorContextBase {
+/** What an uncached discovery or a call needs to know: who it is for, and the project revision whose policy authorizes it. */
+export interface ScopeContextBase {
   workspaceId: string;
   ownerKey: string;
   requestedBy?: SlackRequester;
   settingsRevision: number;
 }
 
-/** The catalog cache key shared by the connector and legacy GitHub routes. */
-export function connectorCatalogKey(projectName: string, revision: number, connector: string, alias: string): string {
-  return JSON.stringify([projectName, revision, connector, alias]);
+/** `ScopeContextBase` and the org the project belongs to, which keys every catalog the process caches (project names, revisions and connector names repeat across orgs). */
+export interface ConnectorContextBase extends ScopeContextBase {
+  orgId: OrgId;
+}
+
+/** The catalog cache key shared by the connector and legacy GitHub routes: per org, so one org's tools are never served to another. */
+export function connectorCatalogKey(orgId: OrgId, projectName: string, revision: number, connector: string, alias: string): string {
+  return JSON.stringify([orgId, projectName, revision, connector, alias]);
 }
 
 /** Asks the vendor for one scope's tools, uncached. Registration preflight reuses it. */
@@ -36,7 +41,7 @@ export function discoverScope<Scope>(
   connector: ResolvedConnector<Scope>,
   definition: ConnectorDefinition<Scope>,
   scope: ConnectorScope<Scope>,
-  context: ConnectorContextBase,
+  context: ScopeContextBase,
 ): Promise<ScopeDiscovery> {
   return discoverTools(definition, scopeContext(connector, scope, context), connector.connect ? { connect: connector.connect } : {});
 }
@@ -54,7 +59,7 @@ export async function discoverCachedScope<Scope>(input: {
   catalogs: CatalogCache<ScopeDiscovery>;
 }): Promise<ScopeDiscovery> {
   const { connector, scope, projectName, context, catalogs } = input;
-  const key = connectorCatalogKey(projectName, context.settingsRevision, connector.name, scope.alias);
+  const key = connectorCatalogKey(context.orgId, projectName, context.settingsRevision, connector.name, scope.alias);
   const cached = catalogs.get(key);
   if (cached) return cached;
   const discovery = await discoverScope(connector, input.definition, scope, context);
@@ -92,7 +97,7 @@ export async function discoverConnector(input: {
   // stale catalog, so this request skips the cache and stores what the vendor returns now.
   if (input.refresh === true) {
     for (const scope of connector.scopes) {
-      catalogs.delete(connectorCatalogKey(workspace.projectName, context.settingsRevision, connector.name, scope.alias));
+      catalogs.delete(connectorCatalogKey(context.orgId, workspace.projectName, context.settingsRevision, connector.name, scope.alias));
     }
   }
   const scopes: ScopeCatalog[] = [];
@@ -154,7 +159,7 @@ export async function callConnector(input: {
       ...(connector.connect ? { connect: connector.connect } : {}),
       ...(attribution === undefined ? {} : { attribution }),
       onAttributionDropped: attributionDroppedLog(workspace.projectName, revision, connector.name, scope.alias, request.requestId),
-      onDefinitionChanged: () => catalogs.delete(connectorCatalogKey(workspace.projectName, revision, connector.name, scope.alias)),
+      onDefinitionChanged: () => catalogs.delete(connectorCatalogKey(context.orgId, workspace.projectName, revision, connector.name, scope.alias)),
       ledger,
     },
   );
@@ -200,7 +205,7 @@ export function attributionDroppedLog(projectName: string, revision: number, con
   }));
 }
 
-function scopeContext<Scope>(connector: ResolvedConnector<Scope>, scope: ConnectorScope<Scope>, context: ConnectorContextBase): ConnectorContext<Scope> {
+function scopeContext<Scope>(connector: ResolvedConnector<Scope>, scope: ConnectorScope<Scope>, context: ScopeContextBase): ConnectorContext<Scope> {
   return {
     workspaceId: context.workspaceId,
     ownerKey: context.ownerKey,

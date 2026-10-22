@@ -103,13 +103,15 @@ export function resolveToolGrants(input: ResolveToolGrantsInput): GrantedTool[] 
 
 /**
  * The connector tool patterns of an agent step: its `tools` setting less the workspace tools (Pi's `read`, `grep`, ...), which are not connector tools.
- * Undefined when the step names none, which narrows nothing.
+ * `tools` is an allow-list, so a list that names only workspace tools allows no connector tool (an empty list); only a step with no `tools` setting
+ * narrows nothing (undefined).
  */
 export function stepToolPatterns(step: ResolvedStep | undefined): string[] | undefined {
   if (step === undefined || step.kind !== "agent") return undefined;
+  const listed = step.settings.tools;
+  if (listed === undefined) return undefined;
   const pi: readonly string[] = PI_TOOL_NAMES;
-  const patterns = (step.settings.tools ?? []).filter((pattern) => !pi.includes(pattern));
-  return patterns.length === 0 ? undefined : patterns;
+  return listed.filter((pattern) => !pi.includes(pattern));
 }
 
 // ---------------------------------------------------------------------------------------------

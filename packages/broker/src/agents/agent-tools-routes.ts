@@ -105,7 +105,8 @@ export const approvalsNotWiredGate: AgentWriteGate = async (input) => {
   }
   if (classification.class === "read" || classification.class === "safe") return { decision: "run" };
   return {
-    decision: "refuse", code: "RUNTIME_UNAVAILABLE",
+    // Not RUNTIME_UNAVAILABLE (a 503 reads as "try again"): this stays refused until approvals exist.
+    decision: "refuse", code: "FORBIDDEN",
     message: "Changes that need a person's approval aren't available in this release yet, so this call was not sent. Nothing was changed.",
   };
 };
@@ -307,7 +308,7 @@ async function frameOf(deps: AgentToolsDependencies, run: AgentToolsRun): Promis
     agentName: task.agent?.name ?? last?.name ?? "This agent",
     stepTools: stepToolPatterns(step),
     connectors: deps.connectors({ orgId, definition: project.definition }),
-    context: { workspaceId: run.workspace.id, ownerKey: task.ownerKey, settingsRevision: project.definition.revision },
+    context: { orgId, workspaceId: run.workspace.id, ownerKey: task.ownerKey, settingsRevision: project.definition.revision },
   };
 }
 

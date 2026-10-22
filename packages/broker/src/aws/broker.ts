@@ -2237,7 +2237,7 @@ async function routeWorkspaceRequest(
       ...(attribution === undefined ? {} : { attribution }),
       onAttributionDropped: attributionDroppedLog(workspace.projectName, revision, github.name, repository.name, parsed.data.requestId),
       store: new DynamoConnectorLedger(dependencies.documentClient, dependencies.tableName, workspace.id, GITHUB_LEDGER, github.name),
-      onDefinitionChanged: () => dependencies.catalogs.delete(connectorCatalogKey(workspace.projectName, revision, github.name, repository.name)),
+      onDefinitionChanged: () => dependencies.catalogs.delete(connectorCatalogKey(requireOrgId(identity.orgId), workspace.projectName, revision, github.name, repository.name)),
     });
     return json({ result }, request.requestId);
   }
@@ -2385,7 +2385,7 @@ export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "
 }
 
 function connectorContext(identity: AuthenticatedIdentity, workspace: WorkspaceInstance, project: RegisteredProjectRecord): ConnectorContextBase {
-  return { workspaceId: workspace.id, ownerKey: identity.ownerKey, settingsRevision: project.definition.revision, ...slackRequesterOf(identity) };
+  return { orgId: requireOrgId(identity.orgId), workspaceId: workspace.id, ownerKey: identity.ownerKey, settingsRevision: project.definition.revision, ...slackRequesterOf(identity) };
 }
 
 type GitHubConnector = NonNullable<ReturnType<typeof githubConnectorOf>>;

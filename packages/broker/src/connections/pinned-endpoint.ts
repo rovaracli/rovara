@@ -43,11 +43,14 @@ export function pinnedLookup(addresses: readonly string[]): (hostname: string, o
   };
 }
 
+/** Headers node sets for itself from the URL and the body: forwarding the caller's would let a header steer routing on the pinned address or disagree with the body. */
+const OWN_HEADERS: ReadonlySet<string> = new Set(["host", "connection", "transfer-encoding", "content-length"]);
+
 function headersOf(init: RequestInit | undefined, request: Request | undefined): Record<string, string> {
   const merged = new Headers(request?.headers);
   new Headers(init?.headers).forEach((value, key) => merged.set(key, value));
   const out: Record<string, string> = {};
-  merged.forEach((value, key) => { out[key] = value; });
+  merged.forEach((value, key) => { if (!OWN_HEADERS.has(key.toLowerCase())) out[key] = value; });
   return out;
 }
 
@@ -69,11 +72,15 @@ const REDIRECTS = new Set([301, 302, 303, 307, 308]);
  * signal. It speaks what the MCP transport sends: a method, headers and a string body, and answers a streaming `Response`. Which addresses are allowed is
  * the caller's check (`mcpEndpointGuard`); this only keeps the connection to them.
  */
-export function pinnedFetch(addresses: readonly string[], options: { request?: RequestFunction } = {}): typeof fetch {
+export function pinnedFetch(addresses: readonly string[], options: { request?: RequestFunction; origin?: string } = {}): typeof fetch {
   const lookup = pinnedLookup(addresses);
   return async (input, init) => {
     const original = input instanceof Request ? input : undefined;
     const url = new URL(original?.url ?? (input instanceof URL ? input.href : input));
+    // Held to the endpoint that was checked: the lookup pins a DNS name, but an IP literal is connected to directly and `http:` is not the checked scheme.
+    if (options.origin !== undefined && (url.origin !== options.origin || url.protocol !== "https:" || isIP(url.hostname.replace(/^\[|\]$/gu, "")) !== 0)) {
+      throw new TypeError("a request to anywhere but the checked endpoint was refused");
+    }
     const signal = init?.signal ?? original?.signal ?? undefined;
     if (signal?.aborted === true) throw asError(signal.reason ?? new DOMException("This operation was aborted", "AbortError"));
     const method = (init?.method ?? original?.method ?? "GET").toUpperCase();
@@ -116,7 +123,7 @@ export function mcpEndpointGuard(options: { resolveHost?: ResolveHost; request?:
   const resolveHost = options.resolveHost ?? dnsResolveHost;
   return async (endpoint) => {
     const checked = await checkEndpointUrl(endpoint.href, resolveHost);
-    return pinnedFetch(checked.addresses, options.request === undefined ? {} : { request: options.request });
+    return pinnedFetch(checked.addresses, { origin: checked.url.origin, ...(options.request === undefined ? {} : { request: options.request }) });
   };
 }
 
