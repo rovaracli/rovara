@@ -206,10 +206,45 @@ function lostScopeCheck(previous: StoredEntry, next: ConnectorConfig): boolean {
   return next.scoping.mode === "credential" && (before["mode"] !== "credential" || (before["acknowledgeUnscopedWrites"] !== true && next.scoping.acknowledgeUnscopedWrites === true));
 }
 
+/** The words of a scoping rule, which say the same thing to the person however they are phrased: they are not compared. */
+const WORDING_KEYS = new Set(["itemNoun", "itemNounPlural", "message"]);
+const withoutWording = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(withoutWording);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !WORDING_KEYS.has(key)).map(([key, inner]) => [key, withoutWording(inner)]));
+};
+
+/** The values of a list as a set of what they are, so order does not matter. */
+const asSet = (values: unknown): Set<string> => new Set(Array.isArray(values) ? values.map((value) => canonicalJson(value)) : []);
+const isSubset = (inner: Set<string>, outer: Set<string>): boolean => [...inner].every((value) => outer.has(value));
+
+/** Whether a write tool's limits (the arguments it may take, the values they may have) are looser than the confirmed tool's. A limit added or tightened is not. */
+function limitsLoosened(old: Fields, now: Fields): boolean {
+  const allowed = old["allowedArguments"];
+  if (Array.isArray(allowed) && !(Array.isArray(now["allowedArguments"]) && isSubset(asSet(now["allowedArguments"]), asSet(allowed)))) return true;
+  const values = old["argumentValues"];
+  if (typeof values !== "object" || values === null) return false;
+  const nowValues = (typeof now["argumentValues"] === "object" && now["argumentValues"] !== null ? now["argumentValues"] : {}) as Fields;
+  return Object.entries(values).some(([argument, list]) => !Object.hasOwn(nowValues, argument) || !isSubset(asSet(nowValues[argument]), asSet(list)));
+}
+
+/** What changed in an MCP connector's guards that a person confirmed with its write tools: its scoping, other than wording, and the arguments that name an item or the requester. */
+function mcpGuardsChanged(previous: StoredEntry, next: ConnectorConfig): string[] {
+  if (next.type !== "mcp") return [];
+  const before = previous as Fields;
+  const after = next as Fields;
+  const words: string[] = [];
+  if (lostScopeCheck(previous, next)) words.push("act without a scope check");
+  else if (canonicalJson(withoutWording(before["scoping"] ?? null)) !== canonicalJson(withoutWording(after["scoping"] ?? null))) words.push("act under different scope rules");
+  if (canonicalJson(before["itemArguments"] ?? null) !== canonicalJson(after["itemArguments"] ?? null)) words.push("use other item arguments");
+  if (canonicalJson(before["attributionKeys"] ?? null) !== canonicalJson(after["attributionKeys"] ?? null)) words.push("use other attribution keys");
+  return words;
+}
+
 /**
  * What `next` makes newly able to write (R9-3, R69), in the words the page shows; nothing when it has no write tool. A write tool counts as already
- * confirmed only for the same target (type, connection, and for MCP endpoint and bind) and where it was `write`; and on the same target a scope
- * added, or a scope check given up, widens what the confirmed tools reach.
+ * confirmed only for the same target (type, connection, and for MCP endpoint and bind), where it was `write`, and with limits no looser than it had; and
+ * on the same target a scope added, or an MCP connector's scoping, item arguments or attribution keys changed, widens what the confirmed tools reach.
  */
 export function widenings(previous: StoredEntry | undefined, next: ConnectorConfig, project: string): string[] {
   const writes = next.tools.filter((tool) => tool.access === "write");
@@ -217,17 +252,19 @@ export function widenings(previous: StoredEntry | undefined, next: ConnectorConf
   const where = `On ${project}, lets the ${next.name} connector's`;
   const moved = previous === undefined ? undefined : targetMoved(previous, next);
   const stored: unknown = previous === undefined || moved !== undefined ? undefined : (previous as Fields)["tools"];
-  const before = new Map<string, unknown>();
-  if (Array.isArray(stored)) for (const tool of stored as Array<{ name?: unknown; access?: unknown }>) before.set(String(tool.name), tool.access);
-  const words = writes.filter((tool) => before.get(tool.name) !== "write").map((tool) => {
-    const note = moved !== undefined ? ` (${moved})` : before.get(tool.name) === "read" ? " (it could only read before)" : "";
-    return `${where} ${tool.name} tool make changes${note}`;
+  const before = new Map<string, Fields>();
+  if (Array.isArray(stored)) for (const tool of stored as Fields[]) before.set(String(tool["name"]), tool);
+  const words = writes.flatMap((tool) => {
+    const old = before.get(tool.name);
+    if (old?.["access"] === "write") return limitsLoosened(old, tool) ? [`${where} ${tool.name} tool make changes (fewer argument limits)`] : [];
+    const note = moved !== undefined ? ` (${moved})` : old?.["access"] === "read" ? " (it could only read before)" : "";
+    return [`${where} ${tool.name} tool make changes${note}`];
   });
   if (previous === undefined || moved !== undefined) return words;
   return [
     ...words,
     ...addedScopes(previous, next).map((scope) => `${where} write tools reach ${scope}`),
-    ...(lostScopeCheck(previous, next) ? [`${where} write tools act without a scope check`] : []),
+    ...mcpGuardsChanged(previous, next).map((change) => `${where} write tools ${change}`),
   ];
 }
 
