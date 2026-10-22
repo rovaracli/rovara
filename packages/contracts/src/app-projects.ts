@@ -60,6 +60,35 @@ export type AppProjectDetail = z.infer<typeof AppProjectDetailSchema>;
 export const ProjectArchiveResponseSchema = z.object({ project: AppProjectDetailSchema, warnings: z.array(z.string()) });
 export type ProjectArchiveResponse = z.infer<typeof ProjectArchiveResponseSchema>;
 
+/** Where a person's role in a project comes from: a grant on the project, or their org role (an owner or admin maintains every project). */
+export const ProjectMemberSourceSchema = z.enum(["grant", "org_role"]);
+export type ProjectMemberSource = z.infer<typeof ProjectMemberSourceSchema>;
+
+/** One person in a project (Plan 2, Task 21), as `GET /v1/app/projects/{name}/members` lists them. `grantedBy` is absent when the operator console made the grant. */
+export const ProjectMemberSchema = z.object({
+  developerId: z.string(),
+  name: z.string(),
+  email: z.string().optional(),
+  role: ProjectRoleSchema,
+  source: ProjectMemberSourceSchema,
+  grantedBy: z.object({ developerId: z.string(), name: z.string() }).optional(),
+});
+export type ProjectMember = z.infer<typeof ProjectMemberSchema>;
+
+export const ProjectMembersResponseSchema = z.object({ members: z.array(ProjectMemberSchema) });
+export type ProjectMembersResponse = z.infer<typeof ProjectMembersResponseSchema>;
+
+/** `PUT /v1/app/projects/{name}/members/{developerId}`: a maintainer gives a member of the org a role in the project. */
+export const PutProjectMemberBodySchema = z.object({ requestId: z.string().uuid(), role: ProjectRoleSchema }).strict();
+export type PutProjectMemberBody = z.infer<typeof PutProjectMemberBodySchema>;
+export const ProjectMemberChangeResponseSchema = z.object({ member: z.object({ developerId: z.string(), role: ProjectRoleSchema }) });
+export type ProjectMemberChangeResponse = z.infer<typeof ProjectMemberChangeResponseSchema>;
+
+/** `DELETE /v1/app/projects/{name}/members/{developerId}`: the body carries only the request id; `removed` is false when the person had no grant. */
+export const RemoveProjectMemberBodySchema = z.object({ requestId: z.string().uuid() }).strict();
+export const ProjectMemberRemoveResponseSchema = z.object({ developerId: z.string(), removed: z.boolean() });
+export type ProjectMemberRemoveResponse = z.infer<typeof ProjectMemberRemoveResponseSchema>;
+
 export const AppProjectsResponseSchema = z.object({ projects: z.array(AppProjectSummarySchema) });
 export type AppProjectsResponse = z.infer<typeof AppProjectsResponseSchema>;
 

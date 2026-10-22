@@ -88,8 +88,8 @@ describe("GET /v1/dev/projects (FR-016, FR-013)", () => {
     expect(JSON.parse(response.body)).toEqual({
       developer: { id: developerId, name: "Maya Chen", provider: "slack", slackUserId: "U0MAYA001", orgRole: "member" },
       projects: [
-        { name: "payments-api", latestRevision: 7, access: "channel", channels: [{ channelId: "C0PAY0001" }], tasks: { enabled: true, share: "optional", shareMode: { default: "view", allowContinue: true }, channelMembersMayUse: true } },
-        { name: "solo", latestRevision: 1, access: "granted", channels: [], tasks: { enabled: true, share: "optional", shareMode: { default: "view", allowContinue: true }, channelMembersMayUse: true } },
+        { name: "payments-api", latestRevision: 7, access: "channel", channels: [{ channelId: "C0PAY0001" }], role: "contributor", roleSource: "channel", tasks: { enabled: true, share: "optional", shareMode: { default: "view", allowContinue: true }, channelMembersMayUse: true } },
+        { name: "solo", latestRevision: 1, access: "granted", channels: [], role: "contributor", roleSource: "grant", tasks: { enabled: true, share: "optional", shareMode: { default: "view", allowContinue: true }, channelMembersMayUse: true } },
       ],
       notices: [],
       requestId: "r",

@@ -36,6 +36,10 @@ import {
   type AppProjectDetail,
   type AppProjectSummary,
   type AppProjectsResponse,
+  type ProjectMember,
+  type ProjectMemberChangeResponse,
+  type ProjectMemberRemoveResponse,
+  type ProjectMembersResponse,
   type ProjectRole,
   type ProjectSetupStatus,
   type ChannelByNameRequest,
@@ -63,6 +67,8 @@ import {
   type OrgRole,
   OrgIdSchema,
   OrgRoleSchema,
+  PutProjectMemberBodySchema,
+  RemoveProjectMemberBodySchema,
   type SlackAuthCheckRequest,
   type SlackAuthCheckResponse,
   type SlackChannelBinding,
@@ -79,7 +85,8 @@ import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import { applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
 import { updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
-import { effectiveProjectRole, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
+import { effectiveProjectRole, grantRoleOf, grantedByOf, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
+import { createProjectMembers, listProjectMembers, removeProjectMember, setProjectMember, type ProjectMembers, type ProjectMembersDependencies } from "../org/project-members.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
 import { DEFAULT_ROVARA_WEB_ORIGIN, inviteUrl } from "../org/invite-url.js";
 import { parseCreateProjectBody, type CreateProjectInput } from "../org/cloud-projects.js";
@@ -186,6 +193,11 @@ export interface DeveloperRouteDependencies {
    * waits for the scheduled sync, and the caller is told it will apply within 5 minutes.
    */
   egressSync?: EgressDomainsDependencies["sync"];
+  /**
+   * Plan 2, Task 21: who has which role in a project (the agents platform reads people through this). Built from the route dependencies
+   * (`projectMembersOf`) when absent.
+   */
+  projectMembers?: ProjectMembers;
   /** Plan 2, Task 13: starts connecting GitHub to the caller's org (the broker's `startGithubConnect`). Without it the route answers NOT_FOUND. */
   githubConnect?: {
     start(caller: DeveloperCaller): Promise<{ installUrl: string; expiresAt: string; orgName?: string; ownerName?: string }>;
@@ -675,22 +687,33 @@ const describeChannel = (channelId: string, names: Map<string, { name: string; i
 };
 
 /**
- * FR-013: only `developer` rows are grants. A developer ID is built like an admin owner key, so an
- * admin's `administrator` rows can sit under the same key when both sign in through one IdP.
+ * FR-013: a grant is a row that gives a project role: `developer` (a maintainer or contributor) or, since Plan 2, Task 21, `viewer`. An
+ * admin's `administrator` rows are the operator's and give none (a developer ID is built like an admin owner key, so they can sit under the
+ * same key when both sign in through one IdP). Each row is returned whole: its role and who made it are read from it.
  */
-async function grantsOf(deps: DeveloperRouteDependencies, caller: ProjectAccessCaller): Promise<string[]> {
-  return (await queryAll<{ projectName: string; role?: string }>(deps, memberGrantsPk(caller.orgId, caller.developerId), MEMBER_GRANT_SK_PREFIX))
-    .filter((membership) => membership.role === "developer")
-    .map((membership) => membership.projectName);
+async function grantRowsOf(deps: DeveloperRouteDependencies, caller: ProjectAccessCaller): Promise<Array<{ projectName: string; grant: GrantRow }>> {
+  const rows = await queryAll<GrantRow & { projectName?: string }>(deps, memberGrantsPk(caller.orgId, caller.developerId), MEMBER_GRANT_SK_PREFIX);
+  return rows.flatMap((row) => (typeof row.projectName === "string" && grantRoleOf(row) !== undefined ? [{ projectName: row.projectName, grant: row }] : []));
 }
+type GrantRow = { role?: unknown; projectRole?: unknown; grantedBy?: unknown };
 
 /** The install's Slack team's channel bindings inside one org. */
 async function bindingsOf(deps: DeveloperRouteDependencies, orgId: OrgId): Promise<SlackChannelBinding[]> {
   return deps.developer.slackTeamId === undefined ? [] : queryAll<SlackChannelBinding>(deps, slackBindingPk(orgId, deps.developer.slackTeamId), SLACK_BINDING_SK_PREFIX);
 }
 
+/** A developer's name for display: their sign-in record's, else "Unknown". */
+async function nameOf(deps: DeveloperRouteDependencies, developerId: string): Promise<string> {
+  return (await signInStoreOf(deps).getDeveloper(developerId))?.displayName ?? "Unknown";
+}
+
 async function listProjects(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<DeveloperProjectsResponse> {
-  const grants = await grantsOf(deps, caller);
+  const grantRows = await grantRowsOf(deps, caller);
+  const grantOf = new Map(grantRows.map((row) => [row.projectName, row.grant]));
+  // An org owner or admin reaches every project of their org (Task 11, I4), so each one in the org's catalog is theirs to list.
+  const orgMaintainer = caller.orgRole === "owner" || caller.orgRole === "admin";
+  const catalogNames = orgMaintainer ? (await queryAll<{ name?: unknown }>(deps, orgProjectCatalogPk(caller.orgId), "PROJECT#")).flatMap((entry) => (typeof entry.name === "string" ? [entry.name] : [])) : [];
+  const grants = [...new Set([...grantRows.map((row) => row.projectName), ...catalogNames])];
   const bindings = await bindingsOf(deps, caller.orgId);
   const policies = await projectsWithPolicy(deps, caller.orgId, [...grants, ...bindings.map((binding) => binding.projectName)]);
   const access = await resolveDeveloperAccess({
@@ -704,10 +727,25 @@ async function listProjects(deps: DeveloperRouteDependencies, caller: DeveloperC
   const listed = [...access.projects].filter(([name]) => policies.has(name));
   // Like checkProjectAccess: a caller with no Slack link is never shown channel names.
   const names = caller.slackUserId === undefined ? new Map<string, { name: string; isPrivate: boolean }>() : await channelNames(deps, listed.flatMap(([, entry]) => entry.channels));
+  // Who added the caller, for the projects a grant of a person gave them (Task 21): one name lookup per person.
+  const adders = new Map<string, string>();
+  for (const [name] of listed) {
+    const by = orgMaintainer ? undefined : grantedByOf(grantOf.get(name));
+    if (by !== undefined && "developerId" in by) adders.set(by.developerId, "Unknown");
+  }
+  await mapLimit([...adders.keys()], REVISION_READS_AT_ONCE, async (id) => { adders.set(id, await nameOf(deps, id)); });
   const projects: DeveloperProjectsResponse["projects"] = [];
   for (const [name, entry] of listed) {
     const known = policies.get(name)!;
-    projects.push({ name, latestRevision: known.revision, access: entry.access, channels: entry.channels.map((channelId) => describeChannel(channelId, names)), tasks: known.policy });
+    const grant = grantOf.get(name);
+    const role = effectiveProjectRole(caller, grant, entry.access === "channel");
+    const source = orgMaintainer ? "org_role" as const : grant !== undefined ? "grant" as const : "channel" as const;
+    const by = source === "grant" ? grantedByOf(grant) : undefined;
+    projects.push({
+      name, latestRevision: known.revision, access: entry.access, channels: entry.channels.map((channelId) => describeChannel(channelId, names)), tasks: known.policy,
+      ...(role === undefined ? {} : { role, roleSource: source }),
+      ...(by === undefined || !("developerId" in by) ? {} : { addedBy: { developerId: by.developerId, name: adders.get(by.developerId) ?? "Unknown" } }),
+    });
   }
   return {
     developer: {
@@ -796,7 +834,9 @@ async function visibleProjectRoles(deps: DeveloperRouteDependencies, caller: Dev
     for (const name of names) roles.set(name, effectiveProjectRole(caller, undefined, false)!);
     return roles;
   }
-  const grants = (await grantsOf(deps, caller)).filter((name) => only === undefined || name === only);
+  const grantRows = (await grantRowsOf(deps, caller)).filter((row) => only === undefined || row.projectName === only);
+  const grantOf = new Map(grantRows.map((row) => [row.projectName, row.grant]));
+  const grants = grantRows.map((row) => row.projectName);
   const bindings = (await bindingsOf(deps, caller.orgId)).filter((binding) => only === undefined || binding.projectName === only);
   const policies = await projectsWithPolicy(deps, caller.orgId, [...grants, ...bindings.map((binding) => binding.projectName)]);
   const access = await resolveDeveloperAccess({
@@ -806,7 +846,7 @@ async function visibleProjectRoles(deps: DeveloperRouteDependencies, caller: Dev
     channelMembers: safeChannelMembers(deps),
   });
   for (const [name, entry] of access.projects) {
-    const role = effectiveProjectRole(caller, entry.access === "granted" ? { role: "developer" } : undefined, entry.access === "channel");
+    const role = effectiveProjectRole(caller, grantOf.get(name), entry.access === "channel");
     if (role !== undefined && policies.has(name)) roles.set(name, role);
   }
   return roles;
@@ -898,6 +938,119 @@ async function changeProjectArchive(deps: DeveloperRouteDependencies, caller: De
 }
 
 /**
+ * What reads and writes a project's people: the table, a developer's sign-in record (for `mergedInto`), and the two ways a Slack channel
+ * gives access (a project the person reaches, and whether one project's channel gives it to them). Slack failing closes the channel route
+ * only; the person's grants and org role still answer.
+ */
+function projectMembersDepsOf(deps: DeveloperRouteDependencies): ProjectMembersDependencies {
+  const store = signInStoreOf(deps);
+  const slackUserOf = async (developerId: string) => (await store.getDeveloper(developerId))?.slackUserId;
+  return {
+    documentClient: deps.documentClient,
+    tableName: deps.tableName,
+    developerRecord: (developerId) => store.getDeveloper(developerId),
+    channelAccess: async (orgId, project, developerId) => {
+      const slackUserId = await slackUserOf(developerId);
+      if (slackUserId === undefined) return false;
+      const known = (await projectsWithPolicy(deps, orgId, [project])).get(project);
+      if (known === undefined || !known.policy.channelMembersMayUse) return false;
+      const bindings = (await bindingsOf(deps, orgId)).filter((binding) => binding.projectName === project);
+      if (bindings.length === 0) return false;
+      const access = await resolveDeveloperAccess({ grants: [], bindings, slackUserId, channelMembersMayUse: () => true, channelMembers: safeChannelMembers(deps) });
+      return access.projects.get(project)?.access === "channel";
+    },
+    channelProjects: async (orgId, developerId) => {
+      const slackUserId = await slackUserOf(developerId);
+      if (slackUserId === undefined) return [];
+      const bindings = await bindingsOf(deps, orgId);
+      const policies = await projectsWithPolicy(deps, orgId, bindings.map((binding) => binding.projectName));
+      const access = await resolveDeveloperAccess({
+        grants: [], bindings, slackUserId, channelMembersMayUse: (project) => policies.get(project)?.policy.channelMembersMayUse === true, channelMembers: safeChannelMembers(deps),
+      });
+      return [...access.projects].filter(([name, entry]) => entry.access === "channel" && policies.has(name)).map(([name]) => name);
+    },
+  };
+}
+
+/** Who has which role in a project (Plan 2, Task 21): the injected `projectMembers` when there is one, else built from these dependencies. */
+export function projectMembersOf(deps: DeveloperRouteDependencies): ProjectMembers {
+  return deps.projectMembers ?? createProjectMembers(projectMembersDepsOf(deps));
+}
+
+/** The caller's role in a project named in a route's path, or the same 404 PROJECT_NOT_FOUND as no access and no such project (never 403). */
+async function projectRoleForRoute(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole }> {
+  const notFound = () => agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
+  let name: string;
+  try { name = decodeURIComponent(rawName); } catch { throw notFound(); }
+  if (!AgentXNameSchema.safeParse(name).success) throw notFound();
+  const role = (await visibleProjectRoles(deps, caller, name)).get(name);
+  if (role === undefined || await latestDefinition(deps, caller.orgId, name) === undefined) throw notFound();
+  return { name, role };
+}
+
+const ROLE_ORDER: Record<ProjectRole, number> = { maintainer: 0, contributor: 1, viewer: 2 };
+
+/**
+ * `GET /v1/app/projects/{name}/members`: everyone with a role in the project and where it comes from, for anyone who can see the project.
+ * Org owners and admins are listed as maintainers by their org role (`org_role`), once, whatever grants they also hold.
+ */
+async function getProjectMembers(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string): Promise<ProjectMembersResponse> {
+  const { name } = await projectRoleForRoute(deps, caller, rawName);
+  const rows = await listProjectMembers(projectMembersDepsOf(deps), caller.orgId, name);
+  const store = signInStoreOf(deps);
+  const cards = new Map<string, { name: string; email?: string }>();
+  const ids = [...new Set(rows.flatMap((row) => [row.developerId, ...(row.grantedBy !== undefined && "developerId" in row.grantedBy ? [row.grantedBy.developerId] : [])]))];
+  await mapLimit(ids, REVISION_READS_AT_ONCE, async (id) => {
+    const [record, identities] = await Promise.all([store.getDeveloper(id), store.identitiesOf(id)]);
+    const email = record?.email ?? identities.find((identity) => identity.email !== undefined)?.email;
+    cards.set(id, { name: record?.displayName ?? "Unknown", ...(email === undefined ? {} : { email }) });
+  });
+  const members: ProjectMember[] = rows.map((row) => {
+    const card = cards.get(row.developerId)!;
+    const by = row.grantedBy;
+    return {
+      developerId: row.developerId, name: card.name, ...(card.email === undefined ? {} : { email: card.email }), role: row.role, source: row.source,
+      // The operator console's grants have no person to name.
+      ...(row.source !== "grant" || by === undefined || !("developerId" in by) ? {} : { grantedBy: { developerId: by.developerId, name: cards.get(by.developerId)?.name ?? "Unknown" } }),
+    };
+  });
+  members.sort((left, right) => ROLE_ORDER[left.role] - ROLE_ORDER[right.role] || left.name.localeCompare(right.name) || left.developerId.localeCompare(right.developerId));
+  return { members };
+}
+
+const MANAGE_MEMBERS_MESSAGE = "only a project maintainer can change who is in a project";
+
+/**
+ * `PUT /v1/app/projects/{name}/members/{developerId}`: a maintainer of the project (or an org owner or admin) gives a member of the org a role
+ * in it. A contributor or viewer is refused (403), so nobody can grant themselves or another a higher role. The person must be in the caller's
+ * org; an owner or admin takes no role. A replay of the request id answers the stored outcome.
+ */
+async function putProjectMember(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, developerId: string, body: unknown): Promise<ProjectMemberChangeResponse> {
+  const { name, role } = await projectRoleForRoute(deps, caller, rawName);
+  if (!projectAllows(role, "manage_members")) throw agentXError("FORBIDDEN", MANAGE_MEMBERS_MESSAGE);
+  const parsed = PutProjectMemberBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  const member = await setProjectMember({ ...projectMembersDepsOf(deps), now: () => new Date(deps.now()) }, caller.orgId, name, {
+    requestId: parsed.data.requestId, developerId, role: parsed.data.role, actor: { developerId: caller.developerId },
+  });
+  logDeveloperEvent({ event: "developer.project_member_set", orgId: caller.orgId, project: name, role: member.role });
+  return { member };
+}
+
+/** `DELETE /v1/app/projects/{name}/members/{developerId}`: the same people may take a person's grant away. `removed` is false when they had none. */
+async function deleteProjectMember(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, developerId: string, body: unknown): Promise<ProjectMemberRemoveResponse> {
+  const { name, role } = await projectRoleForRoute(deps, caller, rawName);
+  if (!projectAllows(role, "manage_members")) throw agentXError("FORBIDDEN", MANAGE_MEMBERS_MESSAGE);
+  const parsed = RemoveProjectMemberBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  const removed = await removeProjectMember({ ...projectMembersDepsOf(deps), now: () => new Date(deps.now()) }, caller.orgId, name, {
+    requestId: parsed.data.requestId, developerId, actor: { developerId: caller.developerId },
+  });
+  logDeveloperEvent({ event: "developer.project_member_removed", orgId: caller.orgId, project: name, removed: String(removed.removed) });
+  return removed;
+}
+
+/**
  * `GET /v1/app/github/repositories?installation=<id>` (Plan 2, Task 15): the repositories one of the org's installations reaches, each marked with
  * the project of the caller's that already uses it. An installation that is not the org's answers NOT_FOUND, as a missing one does.
  */
@@ -956,12 +1109,13 @@ export async function checkProjectAccess(
   if (!AgentXNameSchema.safeParse(project).success) throw agentXError("PROJECT_NOT_FOUND", "that is not a valid AgentX project name");
   const known = (await projectsWithPolicy(deps, caller.orgId, [project])).get(project);
   if (known === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${project}\` doesn't exist in this AgentX`);
-  const grants = (await grantsOf(deps, caller)).filter((name) => name === project);
+  const grant = (await grantRowsOf(deps, caller)).find((row) => row.projectName === project)?.grant;
   const bindings = (await bindingsOf(deps, caller.orgId)).filter((binding) => binding.projectName === project);
   // An org owner or admin counts as granted on every project in their org, with no grant (Plan 2, Task 11, I4). A project of another org
   // is never reached: `known` and every row read above are this org's.
   const orgMaintainer = caller.orgRole === "owner" || caller.orgRole === "admin";
-  const projectMemberships = grants.length > 0 || orgMaintainer ? [{ projectName: project, role: "developer" }] : [];
+  // Any grant counts as granted here, a viewer's too: what the role may do is decided by the effective role, below and at the places new work starts.
+  const projectMemberships = grant !== undefined || orgMaintainer ? [{ projectName: project, role: "developer" }] : [];
   const evaluate = (freshMemberOf?: readonly string[]) => evaluateProjectAuthority({
     project,
     revision: { revision: known.revision, definition: { developerTasks: known.policy } },
@@ -995,7 +1149,7 @@ export async function checkProjectAccess(
   }
   // This function never refuses an archived project or a viewer: those refusals are requireNewWorkAllowed's, at the places new work
   // starts, because the E2E rechecks of a running task's creator also come through here.
-  const role = effectiveProjectRole(caller, grants.length > 0 ? { role: "developer" } : undefined, result.access === "channel");
+  const role = effectiveProjectRole(caller, grant, result.access === "channel");
   if (role === undefined) throw agentXError("PROJECT_ACCESS_DENIED", accessDeniedMessage(project, []));
   return { revision: result.revision, policy: result.policy, access: result.access, channelIds: result.channelIds, role };
 }
@@ -1248,6 +1402,12 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "GET" && appProject !== null) return getAppProject(deps, caller, appProject[1]!);
   const projectSettingsRoute = /^\/v1\/app\/projects\/([^/]+)\/settings$/.exec(url.pathname);
   if (request.method === "PUT" && projectSettingsRoute !== null) return putProjectSettings(deps, caller, projectSettingsRoute[1]!, jsonBody(request));
+  const projectMembersRoute = /^\/v1\/app\/projects\/([^/]+)\/members(?:\/([a-f0-9]{64}))?$/.exec(url.pathname);
+  if (projectMembersRoute !== null) {
+    if (request.method === "GET" && projectMembersRoute[2] === undefined) return getProjectMembers(deps, caller, projectMembersRoute[1]!);
+    if (request.method === "PUT" && projectMembersRoute[2] !== undefined) return putProjectMember(deps, caller, projectMembersRoute[1]!, projectMembersRoute[2], jsonBody(request));
+    if (request.method === "DELETE" && projectMembersRoute[2] !== undefined) return deleteProjectMember(deps, caller, projectMembersRoute[1]!, projectMembersRoute[2], jsonBody(request));
+  }
   const projectArchiveRoute = /^\/v1\/app\/projects\/([^/]+)\/(archive|restore)$/.exec(url.pathname);
   if (request.method === "POST" && projectArchiveRoute !== null) return changeProjectArchive(deps, caller, projectArchiveRoute[1]!, jsonBody(request), projectArchiveRoute[2] as "archive" | "restore");
   if (request.method === "POST" && url.pathname === "/v1/app/github/connect") {

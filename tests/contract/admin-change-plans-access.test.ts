@@ -75,7 +75,7 @@ describe("project access (E7, E8, FR-013.1)", () => {
     expect(signedIn.effect).toBe("Grant Nia Park (signs in with Slack) access to project payments. They have no grant today. They can then hand tasks to payments from their AI tool.");
     expect(stateHash(signedIn.snapshot)).not.toBe(stateHash(plan.snapshot));
     await signedIn.apply(identity);
-    expect(db.get(projectMemberKey(TEST_ORG, developerId, "payments"))).toMatchObject({ role: "developer", ownerKey: developerId, projectName: "payments", grantedBy: { issuer: admin.issuer, subject: admin.subject } });
+    expect(db.get(projectMemberKey(TEST_ORG, developerId, "payments"))).toMatchObject({ role: "developer", projectRole: "contributor", ownerKey: developerId, projectName: "payments", grantedBy: { system: "admin" }, grantedByAdmin: { issuer: admin.issuer, subject: admin.subject } });
     await expect(planChange(deps, identity, { kind: "grant_project_access", project: "payments", developer: "U0NEW00001" })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: "CONFIG_INVALID: Nia Park (signs in with Slack) already has a grant for payments; there is nothing to change" });
     // An applier who no longer administers the project changes nothing.
     const other = await planChange(deps, identity, { kind: "grant_project_access", project: "payments", developer: MAYA.developerId });
@@ -109,6 +109,17 @@ describe("project access (E7, E8, FR-013.1)", () => {
     db.delete(String(membership.pk), String(membership.sk));
     await expect(plan.apply(identity)).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(db.get(projectMemberKey(TEST_ORG, MAYA.developerId, "payments"))).toMatchObject({ role: "developer" });
+  });
+
+  it("will not plan a grant for a viewer (their role is changed in the project), but plans the revoke of their role", async () => {
+    const { deps, identity, db } = await harness();
+    db.set({ ...projectMemberKey(TEST_ORG, MAYA.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "payments", role: "viewer", projectRole: "viewer", grantId: randomUUID() });
+    await expect(planChange(deps, identity, { kind: "grant_project_access", project: "payments", developer: MAYA.developerId })).rejects.toMatchObject({
+      code: "CONFIG_INVALID", message: expect.stringContaining("is a viewer of payments; change their role with agentx project add-member") as string,
+    });
+    const revoke = await planChange(deps, identity, { kind: "revoke_project_access", project: "payments", developer: MAYA.developerId });
+    await revoke.apply(identity);
+    expect(db.get(projectMemberKey(TEST_ORG, MAYA.developerId, "payments"))).toBeUndefined();
   });
 
   it("refuses a grant on a project the admin does not administer (FR-015)", async () => {

@@ -1,5 +1,5 @@
 // agentx whoami and agentx logout (FR-011).
-import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, AppProjectDetailSchema, ProjectArchiveResponseSchema, ProjectSettingsResponseSchema, type AppProjectDetail, type ProjectSettingsBody, type ProjectSettingsResponse, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, StartIdentityLinkAppResponseSchema, UnlinkIdentityAppResponseSchema, UnlinkableSignInMethodSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, AppProjectDetailSchema, ProjectArchiveResponseSchema, ProjectSettingsResponseSchema, type AppProjectDetail, type ProjectSettingsBody, type ProjectSettingsResponse, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, StartIdentityLinkAppResponseSchema, UnlinkIdentityAppResponseSchema, UnlinkableSignInMethodSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProject, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerTokenKey, removeDeveloperEnvironment, resolveDeveloperEnvironment } from "./config.js";
 import { developerAccessToken, type DeveloperSessionDeps } from "./session.js";
@@ -100,6 +100,27 @@ function refusalMessage(body: unknown): string | undefined {
 /** How a developer signed in, for whoami: "Rovara sign-in" and "GitHub" are Rovara Cloud's. */
 const SIGN_IN_METHOD_TEXT = { slack: "Slack", oidc: "your company sign-in", cloud: "Rovara sign-in", github: "GitHub" } as const;
 
+/** The channels a Slack-channel role comes through: `#name` when it has a public name, else the channel's ID. */
+const channelText = (project: DeveloperProject) => project.channels.map((channel) => (channel.name === undefined ? channel.channelId : `#${sanitizeServerText(channel.name)}`)).join(", ");
+
+/**
+ * What a person is in one project, and why (Plan 2, Task 21): "maintainer (you created it)", "<role> (added by <name>)", "maintainer (as org
+ * owner|admin)" or "contributor (through #<channel>)". A control plane from before project roles sends none, and the line says only how.
+ */
+function projectRoleText(project: DeveloperProject, developer: DeveloperProjectsResponse["developer"]): string {
+  if (project.role === undefined) return project.access === "granted" ? "you have access" : `through ${channelText(project)}`;
+  const { role } = project;
+  switch (project.roleSource) {
+    case "org_role": return `${role} (as org ${developer.orgRole === "owner" || developer.orgRole === "admin" ? developer.orgRole : "owner or admin"})`;
+    case "channel": return `${role} (through ${channelText(project)})`;
+    default: {
+      if (project.addedBy === undefined) return `${role} (added by an admin)`;
+      if (project.addedBy.developerId === developer.id) return role === "maintainer" ? `${role} (you created it)` : `${role} (added by you)`;
+      return `${role} (added by ${sanitizeServerText(project.addedBy.name)})`;
+    }
+  }
+}
+
 export function whoamiText(result: { env: string; url: string; projects: DeveloperProjectsResponse; identities?: LinkedIdentity[] }): string {
   const { developer, projects, notices } = result.projects;
   const method = SIGN_IN_METHOD_TEXT[developer.provider];
@@ -123,10 +144,7 @@ export function whoamiText(result: { env: string; url: string; projects: Develop
     }
   } else {
     lines.push("Projects you can use:");
-    for (const project of projects) {
-      const how = project.access === "granted" ? "an admin granted you access" : `you are in its Slack channel ${project.channels.map((channel) => channel.channelId).join(", ")}`;
-      lines.push(`  ${project.name}  (${how})`);
-    }
+    for (const project of projects) lines.push(`  ${sanitizeServerText(project.name)}: ${projectRoleText(project, developer)}`);
   }
   if (notices.includes("slack_unavailable")) lines.push("Slack could not be reached, so projects you use through a Slack channel are not listed; try again later.");
   return `${lines.join("\n")}\n`;

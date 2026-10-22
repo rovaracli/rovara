@@ -79,24 +79,30 @@ export async function resolveDeveloper(deps: AdminActionDependencies, reference:
   throw agentXError("CONFIG_INVALID", "developer must be a developer ID, an email or a Slack user ID such as U0123456789");
 }
 
-/** The membership row's role, and when it was granted (null for a row without that, such as an administrator's). */
-export async function projectGrant(deps: AdminActionDependencies, orgId: OrgId, project: string, developerId: string): Promise<{ role: "developer" | "administrator"; grantedAt: string | null } | undefined> {
+/** The membership row's role, and when it was granted (null for a row without that, such as an administrator's). A `viewer` row is a person's own project role (Plan 2, Task 21). */
+export async function projectGrant(deps: AdminActionDependencies, orgId: OrgId, project: string, developerId: string): Promise<{ role: "developer" | "viewer" | "administrator"; grantedAt: string | null } | undefined> {
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: projectMemberKey(orgId, developerId, project), ConsistentRead: true })) as { Item?: { role?: unknown; grantedAt?: unknown } };
   const role = response.Item?.role;
-  if (role !== "developer" && role !== "administrator") return undefined;
+  if (role !== "developer" && role !== "viewer" && role !== "administrator") return undefined;
   return { role, grantedAt: typeof response.Item?.grantedAt === "string" ? response.Item.grantedAt : null };
 }
 
-/** FR-013.1: a `developer` ProjectMembership row. An administrator row for the same key is kept as it is. */
+const VIEWER_NOT_CHANGED = (project: string) => `that developer is a viewer of ${project}; change their role with agentx project add-member, so there is nothing to grant here`;
+
+/**
+ * FR-013.1: a `developer` ProjectMembership row, a contributor made by the operator console (`grantedBy: { system: "admin" }`; the operator is
+ * kept as `grantedByAdmin`). An administrator row for the same key is kept as it is, and so is a person's own viewer role.
+ */
 export async function grantProjectAccess(deps: AdminActionDependencies, orgId: OrgId, admin: { issuer: string; subject: string }, project: string, developerId: string): Promise<{ granted: true; already: boolean }> {
   const current = await projectGrant(deps, orgId, project, developerId);
   if (current?.role === "administrator") throw agentXError("CONFIG_INVALID", `that developer already administers ${project}, so there is nothing to grant`);
+  if (current?.role === "viewer") throw agentXError("CONFIG_INVALID", VIEWER_NOT_CHANGED(project));
   if (current?.role === "developer") return { granted: true, already: true };
   try {
     await deps.documentClient.send(new PutCommand({
       TableName: deps.tableName,
-      Item: { ...projectMemberKey(orgId, developerId, project), entityType: "MEMBERSHIP", ownerKey: developerId, projectName: project, role: "developer",
-        grantId: randomUUID(), grantedBy: admin, grantedAt: new Date(deps.now()).toISOString() },
+      Item: { ...projectMemberKey(orgId, developerId, project), entityType: "MEMBERSHIP", ownerKey: developerId, projectName: project, role: "developer", projectRole: "contributor",
+        grantId: randomUUID(), grantedBy: { system: "admin" }, grantedByAdmin: admin, grantedAt: new Date(deps.now()).toISOString() },
       ConditionExpression: "attribute_not_exists(pk)",
     }));
   } catch (error) {
@@ -104,6 +110,7 @@ export async function grantProjectAccess(deps: AdminActionDependencies, orgId: O
     // A row appeared between the read and the write: say what it is rather than assume.
     const raced = await projectGrant(deps, orgId, project, developerId);
     if (raced?.role === "administrator") throw agentXError("CONFIG_INVALID", `that developer already administers ${project}, so there is nothing to grant`);
+    if (raced?.role === "viewer") throw agentXError("CONFIG_INVALID", VIEWER_NOT_CHANGED(project));
     return { granted: true, already: true };
   }
   return { granted: true, already: false };
@@ -114,10 +121,10 @@ export async function revokeProjectAccess(deps: AdminActionDependencies, orgId: 
     await deps.documentClient.send(new DeleteCommand({
       TableName: deps.tableName,
       Key: projectMemberKey(orgId, developerId, project),
-      // Only a grant: an administrator row is never removed by revoking a developer's access.
-      ConditionExpression: "#role = :developer",
+      // Only a grant (a maintainer's, contributor's or viewer's): an administrator row is never removed by revoking a developer's access.
+      ConditionExpression: "#role = :developer OR #role = :viewer",
       ExpressionAttributeNames: { "#role": "role" },
-      ExpressionAttributeValues: { ":developer": "developer" },
+      ExpressionAttributeValues: { ":developer": "developer", ":viewer": "viewer" },
     }));
     return { revoked: true };
   } catch (error) {

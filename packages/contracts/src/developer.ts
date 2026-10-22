@@ -1,6 +1,7 @@
 // Spec 025 phase 25a: the developer sign-in's shared names and wire shapes. The CLI parses server
 // responses with the non-strict schemas here, so a newer control plane can add fields.
 import { z } from "zod";
+import { ProjectRoleSchema } from "./app-projects.js";
 import { EnvironmentNameSchema } from "./environments.js";
 export { normalizeEmail } from "./email.js";
 import { looseCopy } from "./loose.js";
@@ -136,6 +137,11 @@ export const DeveloperProjectSchema = z.object({
   channels: z.array(z.object({ channelId: SlackChannelIdSchema, name: z.string().optional(), isPrivate: z.boolean().optional() })),
   // Absent from a 1.0 control plane.
   tasks: DeveloperProjectTaskPolicySchema.optional(),
+  // Plan 2, Task 21: the caller's role in the project, where it comes from, and who added them (absent for the operator console's grants).
+  // Absent from an older control plane.
+  role: ProjectRoleSchema.optional(),
+  roleSource: z.enum(["grant", "org_role", "channel"]).optional(),
+  addedBy: z.object({ developerId: z.string(), name: z.string() }).optional(),
 });
 export type DeveloperProject = z.infer<typeof DeveloperProjectSchema>;
 

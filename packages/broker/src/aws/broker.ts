@@ -203,6 +203,7 @@ import {
   OrgIdSchema,
   OrgRoleSchema,
   type OrgRole,
+  type ProjectRole,
   PROJECT_REVISION_SK_PREFIX,
   orgMemberKey,
   orgProjectCatalogKey,
@@ -403,8 +404,13 @@ interface MembershipRecord {
   entityType: "MEMBERSHIP";
   ownerKey: string;
   projectName: string;
-  role: "developer" | "administrator";
+  /** `developer` for a maintainer or contributor, `viewer` for a viewer (Plan 2, Task 21), `administrator` for the operator's own. */
+  role: "developer" | "viewer" | "administrator";
   grantId: string;
+  /** Task 21: the project role, who made the grant (a person of the org, or the operator console) and when. Rows from before it have none. */
+  projectRole?: ProjectRole;
+  grantedBy?: unknown;
+  grantedAt?: string;
 }
 
 interface ProjectModelSelectionRecord {
@@ -2313,8 +2319,10 @@ export async function registerProjectFor(
     registeredAt: now,
     ...(setupApprovalBinding === undefined ? {} : { setupApproval: setupApprovalBinding }),
   };
+  // The creator of a project on Rovara Cloud is its first maintainer (Plan 2, Task 21). The operator's own registration keeps its administrator row.
   const membership = options.creatorMembership === "none" ? undefined
-    : membershipRecord(orgId, actor.ownerKey, definition.name, options.creatorMembership === "administrator" ? "administrator" : "developer");
+    : options.creatorMembership === "administrator" ? membershipRecord(orgId, actor.ownerKey, definition.name, "administrator")
+      : membershipRecord(orgId, actor.ownerKey, definition.name, "developer", { projectRole: "maintainer", grantedBy: { developerId: actor.ownerKey }, grantedAt: now });
   const metaKey = projectMetaKey(orgId, definition.name);
   const metaItem = {
     ...metaKey, entityType: "PROJECT_META", name: definition.name, status: "active",
@@ -2941,6 +2949,7 @@ async function newWorkspacePreparation(
     targetOwnerKey,
     projectName,
     existingMembership?.role ?? "developer",
+    grantDetailsOf(existingMembership),
   );
   return {
     workspace,
@@ -3724,7 +3733,7 @@ async function createUnpreparedThreadWorkspace(
         Item: { pk: `OWNER#${identity.ownerKey}`, sk: `PROJECT#${projectName}`, entityType: "DEFAULT_WORKSPACE", workspaceId: workspace.id },
         ConditionExpression: "attribute_not_exists(pk)",
       } },
-      { Put: { TableName: dependencies.tableName, Item: membershipRecord(requireOrgId(identity.orgId), identity.ownerKey, projectName, existingMembership?.role ?? "developer") } },
+      { Put: { TableName: dependencies.tableName, Item: membershipRecord(requireOrgId(identity.orgId), identity.ownerKey, projectName, existingMembership?.role ?? "developer", grantDetailsOf(existingMembership)) } },
       { Put: {
         TableName: dependencies.tableName,
         Item: { pk: `IDEMPOTENCY#${identity.ownerKey}#THREAD`, sk: `REQUEST#${requestId}`, entityType: "IDEMPOTENCY", workspaceId: workspace.id },
@@ -7858,7 +7867,7 @@ async function workflowE2ECurrentAuthorityIsValid(
   }
 }
 
-async function workflowE2ECreatorAuthorityProof(
+export async function workflowE2ECreatorAuthorityProof(
   dependencies: AwsBrokerDependencies,
   task: DeveloperTaskRecord,
   membership: Record<string, unknown> | undefined,
@@ -12264,8 +12273,18 @@ function workspaceItem(orgId: OrgId, workspace: WorkspaceInstance) {
   };
 }
 
-function membershipRecord(orgId: OrgId, ownerKey: string, projectName: string, role: MembershipRecord["role"]): MembershipRecord {
-  return { ...projectMemberKey(orgId, ownerKey, projectName), entityType: "MEMBERSHIP", ownerKey, projectName, role, grantId: randomUUID() };
+function membershipRecord(orgId: OrgId, ownerKey: string, projectName: string, role: MembershipRecord["role"], details: Pick<MembershipRecord, "projectRole" | "grantedBy" | "grantedAt"> = {}): MembershipRecord {
+  return { ...projectMemberKey(orgId, ownerKey, projectName), entityType: "MEMBERSHIP", ownerKey, projectName, role, grantId: randomUUID(), ...details };
+}
+
+/** What a row being written again keeps of the grant it replaces: the project role, who made it and when (Plan 2, Task 21). */
+function grantDetailsOf(existing: MembershipRecord | undefined): Pick<MembershipRecord, "projectRole" | "grantedBy" | "grantedAt"> {
+  if (existing === undefined) return {};
+  return {
+    ...(existing.projectRole === undefined ? {} : { projectRole: existing.projectRole }),
+    ...(existing.grantedBy === undefined ? {} : { grantedBy: existing.grantedBy }),
+    ...(existing.grantedAt === undefined ? {} : { grantedAt: existing.grantedAt }),
+  };
 }
 
 function githubRepositoryFullName(repositoryUrl: string): string {

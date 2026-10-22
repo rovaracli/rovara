@@ -19,6 +19,7 @@ import {
   OrgRoleSchema,
   agentXError,
   type ProjectDefinition,
+  type ProjectRole,
 } from "@agentx/contracts";
 import { DEFAULT_DIRECT_MODELS } from "@agentx/model-runtime/config";
 import { CloudFormationClient } from "@aws-sdk/client-cloudformation";
@@ -44,6 +45,7 @@ import { loginWithPkce, openSystemBrowser, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
 import { archiveProjectQuestion, archiveProjectText, changeDeveloperProjectArchive, changeDeveloperProjectSettings, createDeveloperProject, restoreProjectText, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
+import { projectAddMember, projectAddMemberText, projectMembers, projectMembersText, projectRemoveMember, projectRemoveMemberText } from "./developer/project-members.js";
 import { orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
 import { LOOPBACK_HOSTS, developerLogin } from "./developer/login.js";
@@ -1278,6 +1280,37 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const globals = globalOptions(command);
       const result = await changeDeveloperProjectArchive(developerSession(), developerEnv(command), name, "restore", randomUUID());
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project, warnings: result.warnings }, true) : restoreProjectText(result));
+    });
+  // Plan 2, Task 21: the people in a project and their roles. Anyone who can see the project lists them; a maintainer changes them.
+  projectCommand
+    .command("members")
+    .description("list the people in a project: each person's role (maintainer, contributor or viewer) and who added them")
+    .argument("<name>", "the project's name")
+    .action(async (name: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await projectMembers(developerSession(), developerEnv(command), name);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, members: result.members }, true) : projectMembersText({ ...result, project: name }));
+    });
+  projectCommand
+    .command("add-member")
+    .description("give someone in your organization a role in a project, or change it (a maintainer of the project)")
+    .argument("<name>", "the project's name")
+    .argument("<email-or-id>", "the person's email or developer ID, from agentx org members")
+    .addOption(new Option("--role <role>", "what they may do: maintainer (manage the project and its people), contributor (start tasks) or viewer (look only)").choices(["maintainer", "contributor", "viewer"]).makeOptionMandatory())
+    .action(async (name: string, who: string, options: { role: ProjectRole }, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await projectAddMember(developerSession(), developerEnv(command), name, who, options.role);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, member: { developerId: result.member.developerId, role: result.role } }, true) : projectAddMemberText(result));
+    });
+  projectCommand
+    .command("remove-member")
+    .description("take away someone's role in a project (a maintainer of the project); org owners and admins keep maintaining every project")
+    .argument("<name>", "the project's name")
+    .argument("<email-or-id>", "the person's email or developer ID, from agentx project members")
+    .action(async (name: string, who: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await projectRemoveMember(developerSession(), developerEnv(command), name, who);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, developerId: result.member.developerId, removed: result.removed }, true) : projectRemoveMemberText(result));
     });
   const collect = (value: string, previous: string[]) => [...previous, value];
   projectCommand

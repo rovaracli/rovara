@@ -133,8 +133,8 @@ describe("whoamiText", () => {
   });
 
   it("lists projects as it did, and adds no creation hint when there are some", () => {
-    const listed = text("cloud", "owner", [{ name: "web", latestRevision: 1, access: "granted", channels: [] }]);
-    expect(listed).toContain("Projects you can use:\n  web  (an admin granted you access)");
+    const listed = text("cloud", "owner", [{ name: "web", latestRevision: 1, access: "granted", channels: [], role: "maintainer", roleSource: "org_role" }]);
+    expect(listed).toContain("Projects you can use:\n  web: maintainer (as org owner)");
     expect(listed).not.toContain("agentx project create");
   });
 });
