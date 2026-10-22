@@ -779,7 +779,7 @@ describe("what the routes and the confirmation handlers hold to", () => {
     await s.putDraft(MAYA, chainId, variant({ investigate: { name: "third" } }));
     const revision = await s.revisionOf(EVE, chainId);
     // The route has read the chain (version 2 runs) when a rollback to version 1 lands; the edit is safe against version 2, but version 2 no longer runs.
-    s.triggers.betweenReadAndWrite = async () => { await s.chains.rollback({ orgId: TEST_ORG, chainId, version: 1, expectedCurrentVersion: 2, by: DANA.developerId }); };
+    s.triggers.betweenReadAndWrite = async () => { await s.chains.rollback({ orgId: TEST_ORG, chainId, version: 1, expectedCurrentVersion: 2, guardrailsRevision: 1, by: DANA.developerId }); };
     const refused = await s.call(EVE, "POST", `/v1/app/chains/${chainId}/publish`, { expectedDraftRevision: revision });
     expect(refused.status).toBe(409);
     expect(errorOf(refused).code).toBe("CHAIN_REVISION_CONFLICT");

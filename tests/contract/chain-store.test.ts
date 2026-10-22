@@ -371,7 +371,7 @@ describe("publish, versions and rollback", () => {
     expect([v1.version, v2.version]).toEqual([1, 2]);
     expect(v2.definition.steps[0]).toMatchObject({ name: "second look" });
     expect(await chains.get(ORG_A, chain.chainId)).toMatchObject({ currentVersion: 2, latestVersion: 2 });
-    const rolled = await chains.rollback({ orgId: ORG_A, chainId: chain.chainId, version: 1, expectedCurrentVersion: 2, by: ALICE });
+    const rolled = await chains.rollback({ orgId: ORG_A, chainId: chain.chainId, version: 1, expectedCurrentVersion: 2, guardrailsRevision: 0, by: ALICE });
     expect(rolled).toMatchObject({ currentVersion: 1, latestVersion: 2 });
     expect(await chains.get(ORG_A, chain.chainId)).toMatchObject({ currentVersion: 1, latestVersion: 2 });
     // The versions did not change.
@@ -387,9 +387,9 @@ describe("publish, versions and rollback", () => {
     await publish(chain.chainId);
     await edit(chain.chainId);
     await publish(chain.chainId);
-    expect(await code(chains.rollback({ orgId: ORG_A, chainId: chain.chainId, version: 1, expectedCurrentVersion: 1, by: ALICE }))).toEqual({ code: "CHAIN_REVISION_CONFLICT", message: CONFLICT });
-    expect(await code(chains.rollback({ orgId: ORG_A, chainId: chain.chainId, version: 9, expectedCurrentVersion: 2, by: ALICE }))).toEqual({ code: "NOT_FOUND", message: "Investigate has no version 9" });
-    expect(await code(chains.rollback({ orgId: ORG_B, chainId: chain.chainId, version: 1, expectedCurrentVersion: 2, by: ALICE }))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await code(chains.rollback({ orgId: ORG_A, chainId: chain.chainId, version: 1, expectedCurrentVersion: 1, guardrailsRevision: 0, by: ALICE }))).toEqual({ code: "CHAIN_REVISION_CONFLICT", message: CONFLICT });
+    expect(await code(chains.rollback({ orgId: ORG_A, chainId: chain.chainId, version: 9, expectedCurrentVersion: 2, guardrailsRevision: 0, by: ALICE }))).toEqual({ code: "NOT_FOUND", message: "Investigate has no version 9" });
+    expect(await code(chains.rollback({ orgId: ORG_B, chainId: chain.chainId, version: 1, expectedCurrentVersion: 2, guardrailsRevision: 0, by: ALICE }))).toMatchObject({ code: "NOT_FOUND" });
     expect((await chains.get(ORG_A, chain.chainId))!.currentVersion).toBe(2);
   });
 
@@ -689,7 +689,7 @@ describe("every write leaves one event", () => {
       seen.push(...added);
       if (kind === "published" && count === 2) {
         const rolled = ctx.events(ORG_A, chain.chainId).length;
-        await ctx.chains.rollback({ orgId: ORG_A, chainId: chain.chainId, version: 1, expectedCurrentVersion: 2, by: ALICE });
+        await ctx.chains.rollback({ orgId: ORG_A, chainId: chain.chainId, version: 1, expectedCurrentVersion: 2, guardrailsRevision: 0, by: ALICE });
         expect(kinds().slice(rolled)).toEqual(["rolled_back"]);
         seen.push("rolled_back");
       }
@@ -702,7 +702,7 @@ describe("every write leaves one event", () => {
     const chain = await ctx.create("Investigate");
     const before = ctx.events(ORG_A, chain.chainId).length;
     await code(ctx.chains.saveDraft({ orgId: ORG_A, chainId: chain.chainId, definition: TWO_STEPS, expectedRevision: 7, by: ALICE }));
-    await code(ctx.chains.rollback({ orgId: ORG_A, chainId: chain.chainId, version: 3, expectedCurrentVersion: 1, by: ALICE }));
+    await code(ctx.chains.rollback({ orgId: ORG_A, chainId: chain.chainId, version: 3, expectedCurrentVersion: 1, guardrailsRevision: 0, by: ALICE }));
     await code(ctx.chains.publish({ ...(await ctx.publishInput(chain.chainId)), expectedDraftRevision: 9 }));
     expect(ctx.events(ORG_A, chain.chainId)).toHaveLength(before);
   });
@@ -968,7 +968,7 @@ describe("audit events", () => {
     await ctx.publish(chain.chainId);
     await ctx.edit(chain.chainId);
     await ctx.publish(chain.chainId);
-    await ctx.chains.rollback({ orgId: ORG_A, chainId: chain.chainId, version: 1, expectedCurrentVersion: 2, by: BOB });
+    await ctx.chains.rollback({ orgId: ORG_A, chainId: chain.chainId, version: 1, expectedCurrentVersion: 2, guardrailsRevision: 0, by: BOB });
     await ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, DAN);
     await ctx.chains.setBudget(ORG_A, chain.chainId, 12, BOB);
     const audit = ctx.audit!;

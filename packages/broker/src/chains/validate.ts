@@ -5,6 +5,7 @@
 import {
   agentXError,
   AgentXError,
+  type AgentId,
   isBuiltinAgentId,
   recipeRunner,
   type ChainDefinition,
@@ -169,6 +170,31 @@ interface StepPin {
   problems: ChainProblem[];
 }
 
+type AgentFound = Awaited<ReturnType<typeof requireAgentAccess>>;
+
+/** Whether the caller holds `use` on an agent: what they found, or the problem (a missing agent and one the caller cannot see read the same). */
+async function useAgent(deps: ChainValidateDeps, caller: AgentCaller, agentId: AgentId, at: string): Promise<{ found: AgentFound } | { problems: ChainProblem[] }> {
+  try {
+    return { found: await requireAgentAccess(deps, caller, agentId, "use") };
+  } catch (error) {
+    if (error instanceof AgentXError && error.code === "NOT_FOUND") return { problems: [{ path: at, message: UNKNOWN_AGENT }] };
+    if (error instanceof AgentXError && error.code === "FORBIDDEN") return { problems: [{ path: at, message: plainMessage(error) }] };
+    throw error;
+  }
+}
+
+/** The version of an agent resolved to its recipe, and what the org's guardrails say of that recipe. */
+async function recipeOfVersion(deps: ChainValidateDeps, orgId: OrgId, agentId: AgentId, version: number, at: string): Promise<{ recipe?: ResolvedRecipe; problems: ChainProblem[] }> {
+  let recipe: ResolvedRecipe;
+  try {
+    recipe = await resolveAgent(deps.store, orgId, agentId, version);
+  } catch (error) {
+    if (error instanceof AgentXError) return { problems: [{ path: at, message: plainMessage(error) }] };
+    throw error;
+  }
+  return { recipe, problems: (await validateRecipeForOrg(deps, orgId, recipe)).map((found) => ({ path: `${at}.${found.path}`, message: found.message })) };
+}
+
 /**
  * Pins one agent step. The caller needs `use` on the agent (a missing agent and one the caller cannot see read the same: `unknown agent`); a built-in
  * is pinned to the org's chosen release (or the newest when it has chosen none), a custom agent to its current version; the recipe that version
@@ -179,14 +205,9 @@ async function pinAgentStep(deps: ChainValidateDeps, caller: AgentCaller, orgId:
   const { agentId } = step.agent;
   const problem = (path: string, message: string): StepPin => ({ problems: [{ path, message }] });
 
-  let found;
-  try {
-    found = await requireAgentAccess(deps, caller, agentId, "use");
-  } catch (error) {
-    if (error instanceof AgentXError && error.code === "NOT_FOUND") return problem(at, UNKNOWN_AGENT);
-    if (error instanceof AgentXError && error.code === "FORBIDDEN") return problem(at, plainMessage(error));
-    throw error;
-  }
+  const access = await useAgent(deps, caller, agentId, at);
+  if ("problems" in access) return { problems: access.problems };
+  const { found } = access;
 
   const wanted = step.agent.version;
   let version: number;
@@ -211,14 +232,8 @@ async function pinAgentStep(deps: ChainValidateDeps, caller: AgentCaller, orgId:
     }
   }
 
-  let recipe: ResolvedRecipe;
-  try {
-    recipe = await resolveAgent(deps.store, orgId, agentId, version);
-  } catch (error) {
-    if (error instanceof AgentXError) return problem(at, plainMessage(error));
-    throw error;
-  }
-  const problems: ChainProblem[] = (await validateRecipeForOrg(deps, orgId, recipe)).map((found) => ({ path: `${at}.${found.path}`, message: found.message }));
+  const { recipe, problems } = await recipeOfVersion(deps, orgId, agentId, version, at);
+  if (recipe === undefined) return { problems };
   if (step.next.kind === "branch" && recipeRunner(recipe) === "coding") {
     problems.push({ path: `steps.${String(index)}.next`, message: "a coding agent can't choose a branch; add a step after it to decide" });
   }
@@ -253,6 +268,31 @@ export async function validateChainForPublish(
     steps.push(pin.version === undefined ? step : { ...step, agent: { ...step.agent, version: pin.version } });
   }
   return { pinned: { ...def, steps: steps as PinnedStep[] }, problems, guardrailsRevision: guardrails.revision };
+}
+
+/**
+ * Checks a version that was published earlier against what holds today, before it is made current again: for each agent step, the caller still
+ * holds `use` on the agent, and the recipe of the pinned version passes the org's guardrails as they are now. A publish makes the same checks of a
+ * new design (`validateChainForPublish`); a rollback makes this version current without that, so it makes them here.
+ * `guardrailsRevision` is the revision of the guardrails this was checked against, for `ChainStore.rollback`.
+ */
+export async function validatePinnedChainForOrg(
+  deps: ChainValidateDeps,
+  caller: AgentCaller,
+  orgId: OrgId,
+  pinned: PinnedChainDefinition,
+): Promise<{ problems: ChainProblem[]; guardrailsRevision: number }> {
+  if (caller.orgId !== orgId) throw agentXError("FORBIDDEN", "you can't check a chain for another organization");
+  const guardrails = await readGuardrailsWithRevision(deps, orgId);
+  const problems: ChainProblem[] = [];
+  for (const [index, step] of pinned.steps.entries()) {
+    if (step.kind !== "agent") continue;
+    const at = `steps.${String(index)}.agent`;
+    const access = await useAgent(deps, caller, step.agent.agentId, at);
+    if ("problems" in access) problems.push(...access.problems);
+    else problems.push(...(await recipeOfVersion(deps, orgId, step.agent.agentId, step.agent.version, at)).problems);
+  }
+  return { problems, guardrailsRevision: guardrails.revision };
 }
 
 // ---- event and schedule triggers

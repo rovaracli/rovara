@@ -32,7 +32,7 @@ import {
 } from "./access.js";
 import { chainLessSafeChanges, type ChainLessSafeLookups } from "./less-safe.js";
 import { chainDigest, type ChainRecord, type ChainStore, type ChainVersion } from "./store.js";
-import { chainGraphProblems, formatChainProblem, validateChainForPublish, type ChainProblem } from "./validate.js";
+import { chainGraphProblems, formatChainProblem, validateChainForPublish, validatePinnedChainForOrg, type ChainProblem } from "./validate.js";
 
 /** What the chain routes ask of the trigger code (Plan 4 Tasks 18 and 20), which builds it: until then there are no triggers and all three do nothing. */
 export interface ChainTriggerHooks {
@@ -252,6 +252,14 @@ async function putDraft(deps: ChainRouteDependencies, caller: AgentCaller, chain
   return { draft };
 }
 
+/** The version that runs, which a change is compared with: a chain that has one whose record can't be read is not compared with nothing. */
+async function runningVersion(deps: ChainRouteDependencies, chain: ChainRecord): Promise<ChainVersion | undefined> {
+  if (chain.currentVersion === undefined) return undefined;
+  const running = await deps.chains.getVersion(chain.orgId, chain.chainId, chain.currentVersion);
+  if (running === undefined) throw agentXError("RUNTIME_UNAVAILABLE", `${chain.name} can't be changed right now: the version it runs could not be read. Try again in a moment.`);
+  return running;
+}
+
 /** While a chain has an enabled trigger, changing the version it runs is for someone who manages it. */
 async function requireManagerWhileTriggered(deps: ChainRouteDependencies, chain: ChainRecord, access: AgentAccessLevel): Promise<void> {
   if (atLeast(access, "manage")) return;
@@ -282,7 +290,7 @@ async function publishChain(deps: ChainRouteDependencies, caller: AgentCaller, c
   const [problem] = checked.problems;
   if (problem !== undefined) throw agentXError("CONFIG_INVALID", formatChainProblem(problem));
   const digest = chainDigest(checked.pinned);
-  const running = chain.currentVersion === undefined ? undefined : await deps.chains.getVersion(chain.orgId, chain.chainId, chain.currentVersion);
+  const running = await runningVersion(deps, chain);
   // A draft that is what already runs publishes nothing: a retry after the page confirmed this very draft is answered with that version.
   if (running !== undefined && running.digest === digest) return { version: running, chain: chainView(chain, access), disabledTriggers: [] };
   const changes = await chainLessSafeChanges(running?.definition, checked.pinned, lookupsOf(deps, chain.orgId));
@@ -315,13 +323,19 @@ async function rollbackChain(deps: ChainRouteDependencies, caller: AgentCaller, 
   if (input.version === chain.currentVersion) throw agentXError("CONFIG_INVALID", `version: ${String(input.version)} is already the current version`);
   const target = await deps.chains.getVersion(chain.orgId, chain.chainId, input.version);
   if (target === undefined) throw agentXError("NOT_FOUND", `${chain.name} has no version ${String(input.version)}`);
-  const running = await deps.chains.getVersion(chain.orgId, chain.chainId, chain.currentVersion);
+  const running = await runningVersion(deps, chain);
+  // The version was valid when it was published; it is made current only if it still is, for this person, under the guardrails of today.
+  const checked = await validatePinnedChainForOrg(deps, caller, chain.orgId, target.definition);
+  const [problem] = checked.problems;
+  if (problem !== undefined) throw agentXError("CONFIG_INVALID", formatChainProblem(problem));
   const changes = await chainLessSafeChanges(running?.definition, target.definition, lookupsOf(deps, chain.orgId));
   if (changes.length > 0) {
     const subject: ChainChangeSubject = { kind: "chain_rollback", chainId: chain.chainId, version: input.version, digest: target.digest, expectedCurrentVersion: chain.currentVersion };
     return waitForPerson(deps, caller, chain, input.requestId, subject, changes);
   }
-  const rolled = await deps.chains.rollback({ orgId: chain.orgId, chainId: chain.chainId, version: input.version, expectedCurrentVersion: chain.currentVersion, by: caller.developerId, request: mark });
+  const rolled = await deps.chains.rollback({
+    orgId: chain.orgId, chainId: chain.chainId, version: input.version, expectedCurrentVersion: chain.currentVersion, guardrailsRevision: checked.guardrailsRevision, by: caller.developerId, request: mark,
+  });
   return { chain: chainView(rolled, access), disabledTriggers: await recheck(deps, chain) };
 }
 
@@ -462,7 +476,12 @@ async function confirmRollback(deps: ChainApprovalDeps, record: ApprovalRecord):
   if (chain.currentVersion !== subject.expectedCurrentVersion) throw stale("The published version changed after this was asked. Roll back again.");
   const target = await chains.getVersion(record.orgId, chain.chainId, subject.version);
   if (target === undefined || target.digest !== subject.digest) throw stale("That version changed after this was asked. Roll back again.");
-  await chains.rollback({ orgId: record.orgId, chainId: chain.chainId, version: subject.version, expectedCurrentVersion: subject.expectedCurrentVersion, by });
+  // As the person who asked would see it now: their use of the agents, and the guardrails as they are.
+  const asker: AgentCaller = { orgId: record.orgId, developerId: record.requestedBy, orgRole: await orgRoleOf(deps, record.orgId, record.requestedBy) ?? "member" };
+  const checked = await validatePinnedChainForOrg(deps, asker, record.orgId, target.definition);
+  const [problem] = checked.problems;
+  if (problem !== undefined) throw agentXError("CONFIG_INVALID", formatChainProblem(problem));
+  await chains.rollback({ orgId: record.orgId, chainId: chain.chainId, version: subject.version, expectedCurrentVersion: subject.expectedCurrentVersion, guardrailsRevision: checked.guardrailsRevision, by });
   await deps.chainTriggers?.recheckTriggersForTarget(record.orgId, { kind: "chain", chainId: chain.chainId });
 }
 

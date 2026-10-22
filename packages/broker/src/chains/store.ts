@@ -604,15 +604,15 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
   /**
    * Makes an earlier published version the current one. Later versions stay, and the next publish still numbers after them.
    * It applies only while the current version is still `expectedCurrentVersion`, and, like a publish, only while each agent the version pins is
-   * still there and active (a custom agent), still allowed and not above the org's pin (a built-in), and the guardrails are as they were read.
+   * still there and active (a custom agent), still allowed and not above the org's pin (a built-in), and the guardrails are at
+   * `guardrailsRevision`, the revision the caller checked the version against (`validatePinnedChainForOrg`).
    */
-  async rollback(input: { orgId: OrgId; chainId: ChainId; version: number; expectedCurrentVersion: number; by: string; request?: RequestMark }): Promise<ChainRecord> {
-    const { chainId, ...rest } = input;
+  async rollback(input: { orgId: OrgId; chainId: ChainId; version: number; expectedCurrentVersion: number; guardrailsRevision: number; by: string; request?: RequestMark }): Promise<ChainRecord> {
+    const { chainId, guardrailsRevision, ...rest } = input;
     const target = await this.getVersion(input.orgId, chainId, input.version);
     if (target === undefined) return this.rollbackItem({ ...rest, id: chainId });
     const moved = () => coded("CHAIN_REVISION_CONFLICT", ROLLBACK_MOVED);
-    const guardrails = await readGuardrailsWithRevision(this.input, input.orgId);
-    const items = await this.pinChecks(input.orgId, target.definition, target.definition, guardrails.revision, moved);
+    const items = await this.pinChecks(input.orgId, target.definition, target.definition, guardrailsRevision, moved);
     return this.rollbackItem({ ...rest, id: chainId, checks: { items, refused: moved } });
   }
 
