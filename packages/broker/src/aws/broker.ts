@@ -864,7 +864,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     documentClient: dependencies.documentClient,
     tableName: dependencies.tableName,
     signInStore,
-    now: Date.now,
+    now: () => Date.now(),
     // The project AI settings and the spend policy are written by the routes themselves (Audit Task 19).
     ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
     // The confirmation page is served by the cell, at the origin its access tokens are issued from.
@@ -889,7 +889,8 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
       cloud: dependencies.cloud === true,
       ...(connections === undefined ? {} : { connections }),
       registerRevision: async (actor, input, extraItems) => {
-        const registered = await registerProjectFor(dependencies, actor, { ...input, preflight: true }, { creatorMembership: "none", extraItems });
+        const { credentialsChecked, ...revision } = input;
+        const registered = await registerProjectFor(dependencies, actor, { ...revision, preflight: true }, { creatorMembership: "none", extraItems, credentialsChecked });
         return { duplicate: registered.duplicate, ...(registered.preflight === undefined ? {} : { preflight: registered.preflight }) };
       },
       preflight: async (actor, definition) => {
@@ -2404,7 +2405,7 @@ function parseRegistrationInput(value: unknown): { definition: ProjectDefinition
 }
 
 /** Registration's refusals and preflight, for a new revision; registerProject and a change plan share them. */
-async function registrationChecks(dependencies: AwsBrokerDependencies, identity: RegistrationActor, definition: ProjectDefinition, wantsPreflight: boolean): Promise<PreflightOutcome | undefined> {
+async function registrationChecks(dependencies: AwsBrokerDependencies, identity: RegistrationActor, definition: ProjectDefinition, wantsPreflight: boolean, credentialsChecked?: readonly string[]): Promise<PreflightOutcome | undefined> {
   const budget = toolBudget(approvedToolCount(definition));
   const context = connectorTypeContext(dependencies, identity.orgId, async () => githubScope(dependencies, identity.orgId));
   const connectors = () => resolveConnectors(definition, context, dependencies.connectorTypes);
@@ -2414,7 +2415,8 @@ async function registrationChecks(dependencies: AwsBrokerDependencies, identity:
   // Spec 053 FR-003: Pi would clamp an unsupported level to another one; refuse the admin's choice instead.
   const levelProblems = definition.models === undefined ? [] : unsupportedThinkingLevels(definition.models);
   if (levelProblems.length > 0) throw agentXError("CONFIG_INVALID", levelProblems.join("; "));
-  const credentialProblems = await credentialRefusals(connectors(), context.credentialRegistry);
+  // The admin route checks every connector's credential; a change from the app checks only the connector it changes (the others show their own status).
+  const credentialProblems = await credentialRefusals(connectors().filter((connector) => credentialsChecked === undefined || credentialsChecked.includes(connector.name)), context.credentialRegistry);
   if (credentialProblems.length > 0) throw agentXError("CONFIG_INVALID", credentialProblems.join("; "));
   // A repository the GitHub App cannot reach would otherwise fail only at prepare (#123).
   for (const repository of definition.repositories) {
@@ -2459,7 +2461,7 @@ export async function registerProjectFor(
   dependencies: AwsBrokerDependencies,
   actor: RegistrationActor,
   value: unknown,
-  options: { creatorMembership: "administrator" | "developer" | "none"; requireNewName?: boolean; description?: string; extraItems?: Array<Record<string, unknown>>; checked?: { preflight?: PreflightOutcome } },
+  options: { creatorMembership: "administrator" | "developer" | "none"; requireNewName?: boolean; description?: string; extraItems?: Array<Record<string, unknown>>; checked?: { preflight?: PreflightOutcome }; credentialsChecked?: readonly string[] },
 ): Promise<RegistrationResult> {
   const checked = options.checked;
   const orgId = actor.orgId;
@@ -2583,7 +2585,7 @@ export async function registerProjectFor(
       ?? (wantsPreflight ? await preflightConnectors(connectors(), definition, actor.ownerKey) : undefined);
     return respond(withoutKeys(existing), true, preflight);
   }
-  const preflight = await registrationChecks(dependencies, actor, definition, wantsPreflight);
+  const preflight = await registrationChecks(dependencies, actor, definition, wantsPreflight, options.credentialsChecked);
   const now = new Date().toISOString();
   const record: RegisteredProjectRecord = {
     ...key,

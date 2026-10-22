@@ -62,7 +62,12 @@ export interface ProjectConnectorDependencies {
    * Registers one project revision (`registerProjectFor`, with no creator membership and the vendor preflight on), with `extraItems` in the same
    * transaction. `duplicate` is true when the revision was already registered, so none of the items was written.
    */
-  registerRevision(actor: { orgId: OrgId; ownerKey: string }, input: { definition: ProjectDefinition; runtimeBinding: unknown }, extraItems: TransactItem[]): Promise<{ duplicate: boolean; preflight?: RegistrationPreflight }>;
+  registerRevision(
+    actor: { orgId: OrgId; ownerKey: string },
+    /** `credentialsChecked`: the connectors whose credential registration must find (a change leaves the others' connections for their own status, as a removal leaves them all). */
+    input: { definition: ProjectDefinition; runtimeBinding: unknown; credentialsChecked: string[] },
+    extraItems: TransactItem[],
+  ): Promise<{ duplicate: boolean; preflight?: RegistrationPreflight }>;
   /** What the registration preflight says of each connector of a revision now, without registering it. */
   preflight(actor: { orgId: OrgId; ownerKey: string }, definition: StoredProjectDefinition): Promise<ConnectorPreflight[]>;
 }
@@ -91,7 +96,7 @@ function requireConnectorDeps(deps: ApprovalDependencies): Deps {
 
 const RequestIdSchema = z.string().uuid();
 const PutBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(1), connector: z.unknown() }).strict();
-const DeleteBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(1).optional() }).strict();
+const DeleteBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(1) }).strict();
 
 /** The body, or CONFIG_INVALID naming the field and never an unknown field's name or a value. */
 function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> {
@@ -154,12 +159,76 @@ function rebuildConnectors(definition: StoredProjectDefinition, name: string, ne
   return { previous, connectors };
 }
 
-/** The tools `next` approves to write that `previous` did not: the stored tool was `read`, or there was none (R9-3). */
-export function widenedTools(previous: StoredEntry | undefined, next: ConnectorConfig): Array<{ tool: string; was: "read" | "absent" }> {
-  const stored: unknown = (previous as { tools?: unknown } | undefined)?.tools;
+type Fields = Record<string, unknown>;
+
+const article = (type: string) => (type === "mcp" || type === "asana" ? "an" : "a");
+
+/**
+ * Whether a stored connector is the same target as `next`: the same type and connection and, for MCP, the same endpoint and bind. A write tool
+ * confirmed for one target says nothing about another, so a tool that keeps its name while the connection, type or address behind it changes is new.
+ */
+function targetMoved(previous: StoredEntry, next: ConnectorConfig): string | undefined {
+  const before = previous as Fields;
+  const after = next as Fields;
+  if (before["type"] !== next.type) return `now ${article(next.type)} ${next.type} connector`;
+  if (before["credentialRef"] !== after["credentialRef"]) return `now on connection ${String(after["credentialRef"])}`;
+  if (next.type === "mcp") {
+    if (before["endpoint"] !== after["endpoint"]) return "now at another address";
+    if (canonicalJson(before["bind"] ?? null) !== canonicalJson(after["bind"] ?? null)) return "now bound to other values";
+  }
+  return undefined;
+}
+
+/** The scopes of `next` that `previous` did not already cover, by what each names: a new alias, team, Jira site (or project), or repository. */
+function addedScopes(previous: StoredEntry, next: ConnectorConfig): string[] {
+  const before = (previous as Fields)["scopes"];
+  if (next.type === "github") {
+    if (next.scopes === "all-repositories") return before === "all-repositories" ? [] : ["all repositories"];
+    if (before === "all-repositories") return [];
+    const known = new Set(Array.isArray(before) ? before as string[] : []);
+    return next.scopes.filter((scope) => !known.has(scope)).map((scope) => `one more scope (${scope})`);
+  }
+  if (next.type === "asana") return [];
+  const stored = Array.isArray(before) ? before as Fields[] : [];
+  const aliases = new Set(stored.map((scope) => String(scope["alias"])));
+  const covered = (scope: Fields): boolean => stored.some((old) => {
+    if (next.type === "linear") return String(old["teamId"]).toLowerCase() === String(scope["teamId"]).toLowerCase();
+    if (next.type === "jira") return String(old["cloudId"]).toLowerCase() === String(scope["cloudId"]).toLowerCase() && (old["projectKey"] === undefined || old["projectKey"] === scope["projectKey"]);
+    return canonicalJson(old["values"] ?? null) === canonicalJson(scope["values"] ?? null);
+  });
+  return (next.scopes as Fields[]).filter((scope) => !aliases.has(String(scope["alias"])) || !covered(scope)).map((scope) => `one more scope (${String(scope["alias"])})`);
+}
+
+/** Whether an MCP connector that writes now acts without a scope check that it had before (an ownership rule to the credential's own reach, or an acknowledgement turned on). */
+function lostScopeCheck(previous: StoredEntry, next: ConnectorConfig): boolean {
+  if (next.type !== "mcp") return false;
+  const before = ((previous as Fields)["scoping"] ?? {}) as Fields;
+  return next.scoping.mode === "credential" && (before["mode"] !== "credential" || (before["acknowledgeUnscopedWrites"] !== true && next.scoping.acknowledgeUnscopedWrites === true));
+}
+
+/**
+ * What `next` makes newly able to write (R9-3, R69), in the words the page shows; nothing when it has no write tool. A write tool counts as already
+ * confirmed only for the same target (type, connection, and for MCP endpoint and bind) and where it was `write`; and on the same target a scope
+ * added, or a scope check given up, widens what the confirmed tools reach.
+ */
+export function widenings(previous: StoredEntry | undefined, next: ConnectorConfig, project: string): string[] {
+  const writes = next.tools.filter((tool) => tool.access === "write");
+  if (writes.length === 0) return [];
+  const where = `On ${project}, lets the ${next.name} connector's`;
+  const moved = previous === undefined ? undefined : targetMoved(previous, next);
+  const stored: unknown = previous === undefined || moved !== undefined ? undefined : (previous as Fields)["tools"];
   const before = new Map<string, unknown>();
   if (Array.isArray(stored)) for (const tool of stored as Array<{ name?: unknown; access?: unknown }>) before.set(String(tool.name), tool.access);
-  return next.tools.filter((tool) => tool.access === "write" && before.get(tool.name) !== "write").map((tool) => ({ tool: tool.name, was: before.get(tool.name) === "read" ? "read" : "absent" }));
+  const words = writes.filter((tool) => before.get(tool.name) !== "write").map((tool) => {
+    const note = moved !== undefined ? ` (${moved})` : before.get(tool.name) === "read" ? " (it could only read before)" : "";
+    return `${where} ${tool.name} tool make changes${note}`;
+  });
+  if (previous === undefined || moved !== undefined) return words;
+  return [
+    ...words,
+    ...addedScopes(previous, next).map((scope) => `${where} write tools reach ${scope}`),
+    ...(lostScopeCheck(previous, next) ? [`${where} write tools act without a scope check`] : []),
+  ];
 }
 
 // ---- checks
@@ -187,9 +256,10 @@ async function loadCurrent(deps: Deps, orgId: OrgId, project: string, expectedRe
 /**
  * Checks a connector against the org and the project as they are now: a GitHub connector's scopes are repositories of this project; any other names a
  * connection of this org of its own type that has a key saved, and a tool approved to write needs a connection that may write. Run when a connector is
- * saved and again when a confirmed widening is applied, so a connection removed or lowered since is felt.
+ * saved and again when a confirmed widening is applied, so a connection removed or lowered since is felt. `holdsApproval`: the change is a narrowing of
+ * the same target, which is let through even when its connection is gone.
  */
-async function validateConnector(deps: Deps, orgId: OrgId, definition: StoredProjectDefinition, connector: ConnectorConfig): Promise<void> {
+async function validateConnector(deps: Deps, orgId: OrgId, definition: StoredProjectDefinition, connector: ConnectorConfig, holdsApproval = false): Promise<void> {
   if (connector.type === "github") {
     if (connector.scopes !== "all-repositories") {
       for (const [index, scope] of connector.scopes.entries()) {
@@ -199,6 +269,8 @@ async function validateConnector(deps: Deps, orgId: OrgId, definition: StoredPro
     return;
   }
   if (connector.type === "asana") throw invalid(`type: a project connector is one of ${APP_CONNECTOR_TYPES.join(", ")}`);
+  // A change that adds no reach to a connector as it was confirmed (a narrowing, or the same tools again) needs no connection: it can only hold or shrink what is there.
+  if (holdsApproval) return;
   const connections = deps.projectConnectors.connections;
   if (connections === undefined) throw agentXError("NOT_FOUND", "connections are not set up in this deployment");
   // Keyed by the caller's org: another org's connection id reads exactly as one nobody has.
@@ -223,10 +295,11 @@ interface ConnectorView {
 }
 
 const UNKNOWN_PROBLEM = "Rovara could not check this connector just now";
+const NOT_WORKING_PROBLEM = "ask a maintainer of this project why it is not connected";
 const CHANGED_PROBLEM = "this connector was changed or removed after this request";
 
 /** A connector as the app shows it, with the status the preflight gave it (`unavailable` when no preflight entry names it). */
-function viewOf(entry: StoredEntry, preflight: ConnectorPreflight | undefined, fallback: string = UNKNOWN_PROBLEM): ConnectorView {
+function viewOf(entry: StoredEntry, preflight: ConnectorPreflight | undefined, fallback: string = UNKNOWN_PROBLEM, showProblem = true): ConnectorView {
   const stored = entry as { name: string; type: string; credentialRef?: unknown; scopes?: unknown; tools?: unknown };
   const tools = Array.isArray(stored.tools) ? (stored.tools as Array<{ name: string; access: string }>).map((tool) => ({ name: tool.name, access: tool.access })) : [];
   return {
@@ -236,14 +309,36 @@ function viewOf(entry: StoredEntry, preflight: ConnectorPreflight | undefined, f
     scopes: stored.scopes ?? [],
     tools,
     status: preflight?.status ?? "unavailable",
-    ...(preflight === undefined ? { problem: fallback } : preflight.problem === undefined ? {} : { problem: preflight.problem }),
+    // The vendor's and the registry's words are for those who can fix it; anyone else is told only that it is not working.
+    ...(preflight === undefined ? { problem: fallback } : preflight.problem === undefined ? {} : { problem: showProblem ? preflight.problem : NOT_WORKING_PROBLEM }),
   };
 }
 
-/** The statuses of a revision's connectors now. A check that fails as a whole marks every connector `unavailable`; it is logged by name only. */
+const STATUS_CACHE_MS = 60_000;
+const MAX_CACHED_STATUSES = 1_000;
+/** One cache per set of dependencies (so per broker): a connector's status by org, project, revision and name. */
+interface StatusEntry { at: number; entry: ConnectorPreflight | null }
+type StatusCache = Map<string, StatusEntry>;
+const statusCaches = new WeakMap<Connectors, StatusCache>();
+
+/**
+ * The statuses of a revision's connectors now, asked of the vendors at most once a minute for the same org, project, revision and connector, so a
+ * page that is read often does not spend the org's vendor rate limit. A check that fails as a whole marks every connector `unavailable`, is
+ * logged by name only, and is not remembered.
+ */
 async function liveStatuses(deps: Deps, caller: { orgId: OrgId; developerId: string }, definition: StoredProjectDefinition): Promise<ConnectorPreflight[]> {
+  const cache: StatusCache = statusCaches.get(deps.projectConnectors) ?? new Map<string, StatusEntry>();
+  statusCaches.set(deps.projectConnectors, cache);
+  const now = deps.now();
+  const keyOf = (name: string) => `${caller.orgId}|${definition.name}|${String(definition.revision)}|${name}`;
+  const names = storedConnectors(definition).map((entry) => entry.name);
+  const fresh = names.map((name) => cache.get(keyOf(name))).filter((found): found is NonNullable<typeof found> => found !== undefined && now - found.at < STATUS_CACHE_MS);
+  if (fresh.length === names.length) return fresh.flatMap((found) => (found.entry === null ? [] : [found.entry]));
   try {
-    return await deps.projectConnectors.preflight({ orgId: caller.orgId, ownerKey: caller.developerId }, definition);
+    const statuses = await deps.projectConnectors.preflight({ orgId: caller.orgId, ownerKey: caller.developerId }, definition);
+    if (cache.size >= MAX_CACHED_STATUSES) for (const [key, found] of cache) if (now - found.at >= STATUS_CACHE_MS) cache.delete(key);
+    for (const name of names) cache.set(keyOf(name), { at: now, entry: statuses.find((status) => status.name === name) ?? null });
+    return statuses;
   } catch (error) {
     console.error(JSON.stringify({ component: "broker", level: "error", event: "project_connectors.preflight_failed", error: error instanceof Error ? error.name : "unknown" }));
     return [];
@@ -306,6 +401,8 @@ interface WriteInput {
   request?: RequestMark;
   /** A confirmed widening: the approval, and how the decision was made. */
   approval?: { approvalId: string; proof?: AuditProof };
+  /** The connectors whose credential registration must find: the one being saved, none for a removal or a narrowing that holds what was confirmed. */
+  credentialsChecked: string[];
 }
 
 /**
@@ -331,7 +428,7 @@ async function writeRevision(deps: Deps, input: WriteInput): Promise<{ revision:
     const issue = parsed.error.issues[0];
     throw invalid(`${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
   }
-  const kind: ChangeKind = input.next === undefined ? "removed" : previous === undefined ? "added" : widenedTools(previous, input.next).length > 0 ? "widened" : "updated";
+  const kind: ChangeKind = input.next === undefined ? "removed" : previous === undefined ? "added" : widenings(previous, input.next, input.project).length > 0 ? "widened" : "updated";
   const at = new Date(deps.now()).toISOString();
   const type = (input.next ?? previous) as { type: string };
   const events = await tryAuditEvents(deps, () => [auditProjectConnectorChanged({
@@ -346,7 +443,7 @@ async function writeRevision(deps: Deps, input: WriteInput): Promise<{ revision:
   ];
   let registered: Awaited<ReturnType<Connectors["registerRevision"]>>;
   try {
-    registered = await deps.projectConnectors.registerRevision({ orgId: input.orgId, ownerKey: input.by }, { definition: parsed.data, runtimeBinding: latest.runtimeBinding }, extraItems);
+    registered = await deps.projectConnectors.registerRevision({ orgId: input.orgId, ownerKey: input.by }, { definition: parsed.data, runtimeBinding: latest.runtimeBinding, credentialsChecked: input.credentialsChecked }, extraItems);
   } catch (error) {
     // Another save took this revision number first, or the catalog moved under this one.
     if (error instanceof AgentXError && error.code === "PROJECT_REVISION_MISMATCH") throw agentXError("PROJECT_REVISION_MISMATCH", SETTINGS_STALE_MESSAGE);
@@ -360,11 +457,6 @@ async function writeRevision(deps: Deps, input: WriteInput): Promise<{ revision:
 
 // ---- handlers
 
-/** The sentence per tool a widening shows the person who confirms it. */
-function wideningWords(project: string, name: string, widened: ReturnType<typeof widenedTools>): string[] {
-  return widened.map(({ tool, was }) => `On ${project}, lets the ${name} connector's ${tool} tool make changes${was === "read" ? " (it could only read before)" : ""}`);
-}
-
 /** Who is listed for a widening: the maintainers of the project and the org's owners and admins (the project's members include them). The rule decides who may decide. */
 async function listedApprovers(deps: Deps, orgId: OrgId, project: string): Promise<string[]> {
   const members = await deps.projectMembers.list(orgId, project);
@@ -372,13 +464,13 @@ async function listedApprovers(deps: Deps, orgId: OrgId, project: string): Promi
 }
 
 async function listConnectors(deps: Deps, caller: AgentCaller, project: string): Promise<unknown> {
-  await roleOnProject(deps, caller, project);
+  const role = await roleOnProject(deps, caller, project);
   if (!deps.projectConnectors.cloud) throw agentXError("FORBIDDEN", PRIVATE_INSTALL_MESSAGE);
   const latest = await latestRevision(deps, caller.orgId, project);
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
   const statuses = await liveStatuses(deps, caller, latest.definition);
   const byName = new Map(statuses.map((status) => [status.name, status]));
-  return { revision: latest.definition.revision, connectors: storedConnectors(latest.definition).map((entry) => viewOf(entry, byName.get(entry.name))) };
+  return { revision: latest.definition.revision, connectors: storedConnectors(latest.definition).map((entry) => viewOf(entry, byName.get(entry.name), UNKNOWN_PROBLEM, projectAllows(role, "edit_settings"))) };
 }
 
 async function putConnector(deps: Deps, caller: AgentCaller, project: string, name: string, body: unknown): Promise<unknown> {
@@ -389,20 +481,22 @@ async function putConnector(deps: Deps, caller: AgentCaller, project: string, na
   const connector = parseConnector(input.connector, name);
   // A request that already made a waiting change is that change again (or a different request under the same id); it is answered before the revision is looked at.
   const earlier = await pendingChangeFor(deps, caller.orgId, caller.developerId, input.requestId);
-  if (earlier !== undefined) return waitingAnswer(deps, earlier, { project, name, expectedRevision: input.expectedRevision, connector });
+  if (earlier !== undefined) return waitingAnswer(deps, caller, earlier, { project, name, expectedRevision: input.expectedRevision, connector });
   const latest = await loadCurrent(deps, caller.orgId, project, input.expectedRevision);
-  await validateConnector(deps, caller.orgId, latest.definition, connector);
   const { previous } = rebuildConnectors(latest.definition, name, connector);
-  const widened = widenedTools(previous, connector);
+  const widened = widenings(previous, connector, project);
+  // The same target with nothing newly able to write holds or shrinks what was confirmed; it needs no connection to be there.
+  const holdsApproval = previous !== undefined && widened.length === 0 && targetMoved(previous, connector) === undefined;
+  await validateConnector(deps, caller.orgId, latest.definition, connector, holdsApproval);
   if (widened.length > 0) {
     const subject: ConnectorWidenSubject = { kind: "connector_widen", project, name, expectedRevision: input.expectedRevision, connector };
     const record = await createPendingChange(deps, {
-      orgId: caller.orgId, requestId: input.requestId, requestedBy: caller.developerId, subject, changes: wideningWords(project, name, widened),
+      orgId: caller.orgId, requestId: input.requestId, requestedBy: caller.developerId, subject, changes: widened,
       approvers: { kind: "rule", rule: "project_settings", candidates: await listedApprovers(deps, caller.orgId, project) },
     });
-    return waitingAnswer(deps, record, subject);
+    return waitingAnswer(deps, caller, record, subject);
   }
-  const written = await writeRevision(deps, { orgId: caller.orgId, project, by: caller.developerId, name, next: connector, latest, request: mark });
+  const written = await writeRevision(deps, { orgId: caller.orgId, project, by: caller.developerId, name, next: connector, latest, request: mark, credentialsChecked: holdsApproval ? [] : [name] });
   // A change that wrote nothing leaves the stored revision as it is, which is what the status is read from.
   const statuses = written.preflight ?? await liveStatuses(deps, caller, latest.definition);
   return { revision: written.revision, connector: viewOf(connector, statuses.find((status) => status.name === name)) };
@@ -413,19 +507,33 @@ async function deleteConnector(deps: Deps, caller: AgentCaller, project: string,
   const input = parseBody(DeleteBodySchema, body);
   const { mark, replay } = await markRequest(deps, caller, "delete", project, name, input);
   if (replay !== undefined) return replayAnswer(deps, caller, project, replay.result as Remembered);
+  // A request id that made a waiting widening is that request's, not a removal's.
+  if (await pendingChangeFor(deps, caller.orgId, caller.developerId, input.requestId) !== undefined) throw reusedRequest();
   const latest = await loadCurrent(deps, caller.orgId, project, input.expectedRevision);
-  const written = await writeRevision(deps, { orgId: caller.orgId, project, by: caller.developerId, name, next: undefined, latest, request: mark });
+  const written = await writeRevision(deps, { orgId: caller.orgId, project, by: caller.developerId, name, next: undefined, latest, request: mark, credentialsChecked: [] });
   return { removed: { name }, revision: written.revision };
 }
 
-/** The answer for a change waiting on the page: the same record again for a repeat of the request that made it. */
-function waitingAnswer(deps: Deps, record: ApprovalRecord, wanted: Omit<ConnectorWidenSubject, "kind">): StatusReply {
+/**
+ * The answer for a change that waits on the page: the same record again for a repeat of the request that made it. Once it was decided, a repeat is
+ * told what came of it: the connector and the revision as they are now when it was applied, otherwise how it ended.
+ */
+async function waitingAnswer(deps: Deps, caller: AgentCaller, record: ApprovalRecord, wanted: Omit<ConnectorWidenSubject, "kind">): Promise<unknown> {
   const subject = record.subject;
   if (subject.kind !== "connector_widen" || subject.project !== wanted.project || subject.name !== wanted.name || subject.expectedRevision !== wanted.expectedRevision
     || canonicalJson(subject.connector) !== canonicalJson(wanted.connector)) throw reusedRequest();
-  // A repeat of a request that was decided since is not waiting any more.
-  if (record.status !== "PENDING") throw agentXError("APPROVAL_CLOSED", "this request was already decided");
-  return new StatusReply(202, { status: "NEEDS_CONFIRMATION", confirmUrl: confirmUrlFor(deps, record), changes: record.changes });
+  switch (record.status) {
+    case "PENDING":
+      return new StatusReply(202, { status: "NEEDS_CONFIRMATION", confirmUrl: confirmUrlFor(deps, record), changes: record.changes });
+    case "EXECUTING":
+      return new StatusReply(202, { status: "EXECUTING" });
+    case "APPROVED_DONE": {
+      const latest = await latestRevision(deps, caller.orgId, subject.project);
+      return replayAnswer(deps, caller, subject.project, { revision: latest?.definition.revision ?? subject.expectedRevision + 1, connector: subject.connector });
+    }
+    default:
+      return { status: record.status, ...(record.failure === undefined ? {} : { failure: record.failure }) };
+  }
 }
 
 // ---- routing
@@ -500,7 +608,7 @@ async function confirmWidening(deps: ApprovalDependencies, record: ApprovalRecor
   // The connection may have been removed, or lowered to read-only, since this was asked.
   await validateConnector(connectorDeps, record.orgId, latest.definition, subject.connector);
   await writeRevision(connectorDeps, {
-    orgId: record.orgId, project: subject.project, by: record.decidedBy, name: subject.name, next: subject.connector, latest,
+    orgId: record.orgId, project: subject.project, by: record.decidedBy, name: subject.name, next: subject.connector, latest, credentialsChecked: [subject.name],
     approval: { approvalId: record.approvalId, ...(decision?.proof === undefined ? {} : { proof: decision.proof }) },
   });
 }

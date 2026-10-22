@@ -7,11 +7,12 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AuditProof, OrgId, OrgRole } from "../../packages/contracts/src/index.js";
 import { orgMemberKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
+import { approvalKey } from "../../packages/contracts/src/index.js";
 import { getApproval, getApprovalSubjectHandler, getApproverRule, type ApprovalDependencies, type ApprovalRecord, type ConnectorWidenSubject } from "../../packages/broker/src/agents/approvals.js";
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
-import { registerProjectConnectorApprovals, widenedTools } from "../../packages/broker/src/connections/project-connectors.js";
+import { registerProjectConnectorApprovals, widenings } from "../../packages/broker/src/connections/project-connectors.js";
 import { createProjectMembers } from "../../packages/broker/src/org/project-members.js";
 import { githubConnectorType, type ConnectorType } from "../../packages/broker/src/aws/connector-types.js";
 import { jiraConnectorType } from "../../packages/broker/src/aws/jira-connector-type.js";
@@ -50,7 +51,7 @@ const PETE = person("6", "Pete"); // a second maintainer of web
 const orgResolver: OrgResolver = async (subject) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG);
 
 beforeAll(async () => { await loadSlackBroker(); });
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 const READ_TOOLS = [{ name: "list_issues", access: "read" }, { name: "get_issue", access: "read" }];
 const WRITE_TOOLS = [{ name: "list_issues", access: "read" }, { name: "get_issue", access: "read" }, { name: "save_issue", access: "write" }];
@@ -133,8 +134,9 @@ async function install(options: { cloud?: boolean; people?: Array<[Developer, Or
   };
   const put = (who: Developer, name: string, connector: unknown, extra: Record<string, unknown> = {}, requestId?: string, project = "web") =>
     call(who, "PUT", `/v1/app/projects/${project}/connectors/${name}`, { expectedRevision: 1, connector, ...extra }, requestId);
+  /** A DELETE names the revision the person saw; by default the newest one. */
   const del = (who: Developer, name: string, extra: Record<string, unknown> = {}, requestId?: string, project = "web") =>
-    call(who, "DELETE", `/v1/app/projects/${project}/connectors/${name}`, { ...extra }, requestId);
+    call(who, "DELETE", `/v1/app/projects/${project}/connectors/${name}`, { expectedRevision: h.db.find((item) => item.entityType === "PROJECT" && item.pk === projectRevisionKey(TEST_ORG, project, 1).pk).length, ...extra }, requestId);
   const list = (who: Developer, project = "web") => call(who, "GET", `/v1/app/projects/${project}/connectors`);
   const revisions = (project = "web", orgId: OrgId = TEST_ORG) => h.db.find((item) => item.entityType === "PROJECT" && item.pk === projectRevisionKey(orgId, project, 1).pk)
     .sort((left, right) => (left.definition as { revision: number }).revision - (right.definition as { revision: number }).revision);
@@ -547,8 +549,8 @@ describe("a tool newly approved to write waits for a person on the page (R9-3, R
     const record = s.approvals()[0]!;
     s.h.db.set({ ...record, status: "APPROVED_DONE" });
     const closed = await s.put(MIA, "linear", linear(id, wide), { expectedRevision: 2 }, requestId);
-    expect(closed.status).toBe(409);
-    expect(closed.body.error?.code).toBe("APPROVAL_CLOSED");
+    expect(closed.status).toBe(200);
+    expect(closed.body).toMatchObject({ revision: 3, connector: { name: "linear" } });
     await s.fakeLinear.close();
   });
 
@@ -587,8 +589,9 @@ function decideSide(s: Install) {
       connections: s.connectionStore,
       registerRevision: async (actor, input, extraItems) => {
         registered.push(`${actor.ownerKey}@${input.definition.revision}`);
+        const { credentialsChecked, ...revision } = input;
         const { registerProjectFor } = await import("../../packages/broker/src/aws/broker.js");
-        const result = await registerProjectFor(s.h.brokerInput as never, actor, { ...input, preflight: true }, { creatorMembership: "none", extraItems: extraItems });
+        const result = await registerProjectFor(s.h.brokerInput as never, actor, { ...revision, preflight: true }, { creatorMembership: "none", extraItems, credentialsChecked });
         return { duplicate: result.duplicate, ...(result.preflight === undefined ? {} : { preflight: result.preflight }) };
       },
       preflight: async () => [],
@@ -626,6 +629,9 @@ describe("who may confirm a widening, read now (R68)", () => {
     // A person of another org is no one here, whatever role they claim.
     expect(await rule(deps, record, callerOf(OMAR, "admin", ORG_B))).toBe(false);
     expect(await rule(deps, record, callerOf(OMAR, "admin", TEST_ORG))).toBe(false);
+    // A person who is a member of the record's org, but whose session is in another org, is not asked here.
+    expect(await rule(deps, record, callerOf(DANA, "admin", ORG_B))).toBe(false);
+    expect(await rule(deps, record, callerOf(MIA, "member", ORG_B))).toBe(false);
     await s.fakeLinear.close();
   });
 
@@ -1017,13 +1023,292 @@ describe("route precedence (PF24)", () => {
   });
 });
 
-describe("widenedTools", () => {
-  const next = (tools: unknown[]) => ({ name: "linear", type: "linear", credentialRef: "con_aaaaaaaaaaaaaaaaaaaa", scopes: [{ alias: "a", teamId: CHARTERARC_TEAM_ID }], tools }) as never;
+/** Writes the next revision as an administrator's registration would have, holding `connectors` (so a write tool that was confirmed earlier is already there). */
+function seedConnectors(s: Install, connectors: unknown[]): number {
+  const latest = s.revisions().length;
+  const previous = s.revision(latest)!;
+  const next = latest + 1;
+  s.h.db.set({ ...projectRevisionKey(TEST_ORG, "web", next), entityType: "PROJECT", registeredBy: "seed", registeredAt: "2026-10-03T00:00:00.000Z", runtimeBinding: BINDING, definition: { ...previous.definition, revision: next, integrations: { connectors } } });
+  s.h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "web"), entityType: "PROJECT_CATALOG", name: "web", latestRevision: next, firstRegisteredAt: "2026-10-01T00:00:00.000Z" });
+  return next;
+}
+const sentry = (credentialRef: string, extra: Record<string, unknown> = {}) => ({
+  name: "sentry", type: "mcp", endpoint: "https://mcp.acme.dev/mcp", label: "Sentry issues", vendor: "Sentry", credentialRef,
+  scopes: [{ alias: "main", values: { project: "p1" } }], scoping: { mode: "credential", acknowledgeUnscopedWrites: true }, tools: [{ name: "save_issue", access: "write" }], ...extra,
+});
+const OTHER_TEAM = "0b6f3f7e-5d1a-4c1e-9a53-2f0f5a8f1c11";
+
+describe("a confirmed write tool does not move without the page (C1)", () => {
+  async function confirmed() {
+    const s = await install();
+    const a = await s.connection({ type: "linear", label: "Team A", access: "read_write" });
+    const b = await s.connection({ type: "linear", label: "Team B", access: "read_write" });
+    const mcpId = await s.connection({ type: "mcp", label: "Sentry", access: "read_write", endpoint: "https://mcp.acme.dev/mcp", vendor: "Sentry" }, { token: "sentry-token-0123456789" });
+    const revision = seedConnectors(s, [linear(a, WRITE_TOOLS)]);
+    return { s, a, b, mcpId, revision };
+  }
+
+  it("asks for the page when the connector moves to another connection, and not when it keeps only read tools", async () => {
+    const { s, b, revision } = await confirmed();
+    const asked = await s.put(MIA, "linear", linear(b, WRITE_TOOLS), { expectedRevision: revision });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    expect(asked.body["changes"]).toEqual([`On web, lets the linear connector's save_issue tool make changes (now on connection ${b})`]);
+    expect(s.revisions()).toHaveLength(revision);
+    expect(s.approvals()).toHaveLength(1);
+    // Read tools only: the new connection gets no write reach, so the change applies at once.
+    const narrowed = await s.put(MIA, "linear", linear(b, READ_TOOLS), { expectedRevision: revision });
+    expect(narrowed.status).toBe(200);
+    expect(s.revisions()).toHaveLength(revision + 1);
+    await s.fakeLinear.close();
+  });
+
+  it("asks for the page when the connector becomes another type", async () => {
+    const { s, mcpId, revision } = await confirmed();
+    const asked = await s.put(MIA, "linear", { ...sentry(mcpId), name: "linear", tools: [{ name: "save_issue", access: "write" }] }, { expectedRevision: revision });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    expect(asked.body["changes"]).toEqual(["On web, lets the linear connector's save_issue tool make changes (now an mcp connector)"]);
+    expect(s.revisions()).toHaveLength(revision);
+    await s.fakeLinear.close();
+  });
+
+  it("asks for the page when an MCP connector's endpoint or bind moves, and applies the same connector at once", async () => {
+    const { s, mcpId, revision } = await confirmed();
+    const first = await s.put(MIA, "sentry", sentry(mcpId), { expectedRevision: revision });
+    expect(first.status).toBe(202); // a new connector with a write tool
+    const at = seedConnectors(s, [sentry(mcpId)]);
+    expect((await s.put(MIA, "sentry", sentry(mcpId, { label: "Renamed" }), { expectedRevision: at })).status).toBe(200);
+    const moved = await s.put(MIA, "sentry", sentry(mcpId, { endpoint: "https://mcp.acme.dev/other" }), { expectedRevision: at + 1 });
+    expect(moved.status).toBe(202);
+    expect(moved.body["changes"]).toEqual(["On web, lets the sentry connector's save_issue tool make changes (now at another address)"]);
+    const bound = await s.put(MIA, "sentry", sentry(mcpId, { bind: { required: { project: "project" } } }), { expectedRevision: at + 1 });
+    expect(bound.status).toBe(202);
+    expect(s.revisions()).toHaveLength(at + 1);
+    await s.fakeLinear.close();
+  });
+});
+
+describe("a scope added to a connector that writes waits for the page (I3)", () => {
+  it("asks for the page for a new team or alias on a Linear connector with a write tool, and not for a narrower or read-only one", async () => {
+    const s = await install();
+    const id = await s.connection({ type: "linear", label: "Team Linear", access: "read_write" });
+    const revision = seedConnectors(s, [linear(id, WRITE_TOOLS)]);
+    const two = { scopes: [{ alias: "charterarc", teamId: CHARTERARC_TEAM_ID }, { alias: "other", teamId: OTHER_TEAM }] };
+    const asked = await s.put(MIA, "linear", linear(id, WRITE_TOOLS, two), { expectedRevision: revision });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    expect(asked.body["changes"]).toEqual(["On web, lets the linear connector's write tools reach one more scope (other)"]);
+    expect(s.revisions()).toHaveLength(revision);
+    // The same scopes with only read tools are not a widening.
+    expect((await s.put(MIA, "linear", linear(id, READ_TOOLS, two), { expectedRevision: revision })).status).toBe(200);
+    // And going back to one team, with the write tool kept, is a narrowing.
+    const wide = seedConnectors(s, [linear(id, WRITE_TOOLS, two)]);
+    expect((await s.put(MIA, "linear", linear(id, WRITE_TOOLS), { expectedRevision: wide })).status).toBe(200);
+    await s.fakeLinear.close();
+  });
+
+  it("asks for the page for all repositories on a GitHub connector with a write tool", async () => {
+    const s = await install();
+    const github = (scopes: unknown) => ({ name: "github", type: "github", scopes, tools: [{ name: "create_issue", access: "write" }] });
+    const revision = seedConnectors(s, [github(["web"])]);
+    const asked = await s.put(MIA, "github", github("all-repositories"), { expectedRevision: revision });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    expect(asked.body["changes"]).toEqual(["On web, lets the github connector's write tools reach all repositories"]);
+    expect(s.revisions()).toHaveLength(revision);
+    await s.fakeLinear.close();
+  });
+});
+
+describe("a removed connection does not block the other connectors (I1)", () => {
+  async function broken() {
+    const s = await install();
+    const gone = await s.connection({ type: "linear", label: "Gone Linear", access: "read_write" });
+    const alive = await s.connection({ type: "linear", label: "Live Linear", access: "read_write" });
+    const revision = seedConnectors(s, [linear(gone, WRITE_TOOLS), linear(alive, WRITE_TOOLS, { name: "other" })]);
+    expect((await s.call(DANA, "DELETE", `/v1/app/connections/${gone}`, {})).status).toBe(200);
+    return { s, gone, alive, revision };
+  }
+
+  it("lets another connector be added, narrowed and changed, and the broken one be removed", async () => {
+    const { s, alive, revision } = await broken();
+    const added = await s.put(MIA, "third", linear(alive, READ_TOOLS, { name: "third" }), { expectedRevision: revision });
+    expect(added.status, JSON.stringify(added.body)).toBe(200);
+    const narrowed = await s.put(MIA, "other", linear(alive, READ_TOOLS, { name: "other" }), { expectedRevision: revision + 1 });
+    expect(narrowed.status, JSON.stringify(narrowed.body)).toBe(200);
+    // The broken one shows as not connected, and a narrowing or removal of it itself goes through.
+    const read = await s.list(MIA);
+    expect(read.body.connectors).toEqual(expect.arrayContaining([expect.objectContaining({ name: "linear", status: "not_connected" })]));
+    const narrowedBroken = await s.put(MIA, "linear", linear(String(read.body.connectors!.find((c) => c["name"] === "linear")!["connectionId"]), READ_TOOLS), { expectedRevision: revision + 2 });
+    expect(narrowedBroken.status, JSON.stringify(narrowedBroken.body)).toBe(200);
+    expect((await s.del(MIA, "linear")).status).toBe(200);
+    await s.fakeLinear.close();
+  });
+
+  it("still refuses to give the broken connector new write reach, or to move it to a connection that is not there, in the plan's words", async () => {
+    const { s, gone, revision } = await broken();
+    const more = await s.put(MIA, "linear", linear(gone, [...WRITE_TOOLS, { name: "save_comment", access: "write" }]), { expectedRevision: revision });
+    expect(more.status).toBe(400);
+    expect(more.body.error).toMatchObject({ code: "CONFIG_INVALID", message: `credentialRef: no linear connection called ${gone} in your organization` });
+    expect(s.revisions()).toHaveLength(revision);
+    await s.fakeLinear.close();
+  });
+
+  it("words a registration refusal for a missing connection for a cloud user, naming the connector and what to do", async () => {
+    const { credentialRefusals } = await import("../../packages/broker/src/aws/registration-preflight.js");
+    const connector = { name: "linear", vendor: "Linear", credential: { ref: "con_aaaaaaaaaaaaaaaaaaaa", accepts: ["static-secret"] } } as never;
+    const registry = { typeOf: async () => undefined, registration: async () => undefined } as never;
+    expect(await credentialRefusals([connector], registry)).toEqual(["linear: its connection was removed; remove this connector or pick another connection first"]);
+    const legacy = { name: "linear", vendor: "Linear", credential: { ref: "my-linear", accepts: ["static-secret"] } } as never;
+    expect((await credentialRefusals([legacy], registry))[0]).toContain("is not registered; run");
+  });
+});
+
+describe("what a viewer is told of a connector's status (I2)", () => {
+  it("gives the status and a fixed sentence to a viewer and the vendor's text only to a maintainer", async () => {
+    const s = await install();
+    const id = await s.connection({ type: "linear", label: "Team Linear", access: "read" });
+    expect((await s.put(MIA, "linear", linear(id))).status).toBe(200);
+    expect((await s.call(DANA, "DELETE", `/v1/app/connections/${id}`, {})).status).toBe(200);
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 120_000 });
+    const viewer = (await s.list(VERA)).body.connectors![0]!;
+    expect(viewer).toMatchObject({ name: "linear", status: "not_connected", problem: "ask a maintainer of this project why it is not connected" });
+    expect(String(viewer["problem"])).not.toContain("con_");
+    const maintainer = (await s.list(MIA)).body.connectors![0]!;
+    expect(String(maintainer["problem"])).toContain(`credential ${id} is not registered`);
+    // A connected connector has no problem for anyone.
+    await s.fakeLinear.close();
+  });
+
+  it("asks the vendors once in a minute for the same revision, and again after that", async () => {
+    const s = await install();
+    const id = await s.connection({ type: "linear", label: "Team Linear", access: "read" });
+    expect((await s.put(MIA, "linear", linear(id))).status).toBe(200);
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 120_000 });
+    const asked = () => s.fakeLinear.headers.length;
+    const first = await s.list(CARL);
+    expect(first.body.connectors).toMatchObject([{ status: "connected" }]);
+    const afterFirst = asked();
+    expect(afterFirst).toBeGreaterThan(0);
+    for (const who of [CARL, VERA, MIA, DANA]) expect((await s.list(who)).body.connectors).toMatchObject([{ status: "connected" }]);
+    expect(asked()).toBe(afterFirst);
+    vi.setSystemTime(Date.now() + 61_000);
+    await s.list(CARL);
+    expect(asked()).toBeGreaterThan(afterFirst);
+    // Another revision is another key: a change is checked at once.
+    const before = asked();
+    expect((await s.put(MIA, "linear", linear(id, READ_TOOLS, { attribution: false }), { expectedRevision: 2 })).status).toBe(200);
+    await s.list(CARL);
+    expect(asked()).toBeGreaterThan(before);
+    await s.fakeLinear.close();
+  });
+});
+
+describe("DELETE holds to the revision and to its request id (m1, m2)", () => {
+  it("requires expectedRevision and refuses a stale one, so a connector added again under the name is not removed by an old click", async () => {
+    const s = await install();
+    const id = await s.connection({ type: "linear", label: "Team Linear", access: "read" });
+    expect((await s.put(MIA, "linear", linear(id))).status).toBe(200);
+    const unnamed = await s.call(MIA, "DELETE", "/v1/app/projects/web/connectors/linear", {});
+    expect(unnamed.status).toBe(400);
+    expect(unnamed.body.error).toMatchObject({ code: "CONFIG_INVALID", message: "expectedRevision: Invalid input: expected number, received undefined" });
+    expect((await s.del(MIA, "linear", { expectedRevision: 1 })).body.error).toMatchObject({ code: "PROJECT_REVISION_MISMATCH", message: STALE });
+    expect(s.revisions()).toHaveLength(2);
+    await s.fakeLinear.close();
+  });
+
+  it("does not let a request id that made a waiting widening be used for a DELETE, and the PUT's repeat still finds its page", async () => {
+    const s = await install();
+    const id = await s.connection({ type: "linear", label: "Team Linear", access: "read_write" });
+    const revision = seedConnectors(s, [linear(id, [{ name: "list_issues", access: "read" }, { name: "save_issue", access: "read" }])]);
+    const requestId = randomUUID();
+    const first = await s.put(MIA, "linear", linear(id, WRITE_TOOLS), { expectedRevision: revision }, requestId);
+    expect(first.status).toBe(202);
+    const reused = await s.del(MIA, "linear", { expectedRevision: revision }, requestId);
+    expect(reused.status).toBe(400);
+    expect(reused.body.error).toMatchObject({ code: "CONFIG_INVALID", message: "requestId: this request ID was already used for a different request" });
+    expect(s.revisions()).toHaveLength(revision);
+    expect(s.requestItems()).toHaveLength(0);
+    expect((await s.put(MIA, "linear", linear(id, WRITE_TOOLS), { expectedRevision: revision }, requestId)).body).toEqual(first.body);
+    await s.fakeLinear.close();
+  });
+});
+
+describe("a repeat of a widening after it was decided answers what happened (m3)", () => {
+  it("answers the current revision and the connector for a widening that was applied, and the outcome for the others", async () => {
+    const s = await install();
+    registerProjectConnectorApprovals();
+    const id = await s.connection({ type: "linear", label: "Team Linear", access: "read_write" });
+    const revision = seedConnectors(s, [linear(id, [{ name: "list_issues", access: "read" }, { name: "save_issue", access: "read" }])]);
+    const requestId = randomUUID();
+    const body = linear(id, WRITE_TOOLS);
+    const first = await s.put(MIA, "linear", body, { expectedRevision: revision }, requestId);
+    expect(first.status).toBe(202);
+    const approvalId = String(first.body["confirmUrl"]).split("/").pop()!;
+    const { deps } = decideSide(s);
+    const record = (await getApproval({ documentClient: { send: (command: unknown) => s.h.db.send(command as never) }, tableName: "state" }, TEST_ORG, approvalId))!;
+    await getApprovalSubjectHandler("connector_widen")!(deps, { ...record, status: "EXECUTING", decidedBy: PETE.developerId });
+    const stored = s.h.db.get(approvalKey(TEST_ORG, approvalId))!;
+    s.h.db.set({ ...stored, status: "APPROVED_DONE", decidedBy: PETE.developerId });
+    const done = await s.put(MIA, "linear", body, { expectedRevision: revision }, requestId);
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(done.body).toMatchObject({ revision: revision + 1, connector: { name: "linear", status: "connected", tools: [{ name: "list_issues" }, { name: "get_issue" }, { name: "save_issue", access: "write" }] } });
+    expect(s.revisions()).toHaveLength(revision + 1);
+    for (const [status, extra] of [["DECLINED", {}], ["EXPIRED", {}], ["APPROVED_FAILED", { failure: "PROJECT_REVISION_MISMATCH: someone changed this project's settings; reload and try again" }]] as const) {
+      s.h.db.set({ ...stored, status, ...extra });
+      const outcome = await s.put(MIA, "linear", body, { expectedRevision: revision }, requestId);
+      expect(outcome.status, status).toBe(200);
+      expect(outcome.body, status).toEqual({ status, ...extra });
+    }
+    s.h.db.set({ ...stored, status: "EXECUTING" });
+    const running = await s.put(MIA, "linear", body, { expectedRevision: revision }, requestId);
+    expect(running.status).toBe(202);
+    expect(running.body).toEqual({ status: "EXECUTING" });
+    await s.fakeLinear.close();
+  });
+});
+
+describe("widenings", () => {
+  const link = (extra: Record<string, unknown> = {}) => ({ name: "linear", type: "linear", credentialRef: "con_aaaaaaaaaaaaaaaaaaaa", scopes: [{ alias: "a", teamId: CHARTERARC_TEAM_ID }], tools: [{ name: "a", access: "write" }], ...extra }) as never;
   it("lists the tools newly approved to write, with what they were", () => {
-    const previous = { name: "linear", type: "linear", tools: [{ name: "a", access: "read" }, { name: "b", access: "write" }] } as never;
-    expect(widenedTools(previous, next([{ name: "a", access: "write" }, { name: "b", access: "write" }, { name: "c", access: "write" }, { name: "d", access: "read" }])))
-      .toEqual([{ tool: "a", was: "read" }, { tool: "c", was: "absent" }]);
-    expect(widenedTools(undefined, next([{ name: "a", access: "write" }]))).toEqual([{ tool: "a", was: "absent" }]);
-    expect(widenedTools(previous, next([{ name: "a", access: "read" }]))).toEqual([]);
+    const previous = link({ tools: [{ name: "a", access: "read" }, { name: "b", access: "write" }] });
+    expect(widenings(previous, link({ tools: [{ name: "a", access: "write" }, { name: "b", access: "write" }, { name: "c", access: "write" }, { name: "d", access: "read" }] }), "web"))
+      .toEqual([
+        "On web, lets the linear connector's a tool make changes (it could only read before)",
+        "On web, lets the linear connector's c tool make changes",
+      ]);
+    expect(widenings(undefined, link(), "web")).toEqual(["On web, lets the linear connector's a tool make changes"]);
+    expect(widenings(previous, link({ tools: [{ name: "a", access: "read" }] }), "web")).toEqual([]);
+  });
+
+  it("counts a stored write tool as approved only for the same type, connection and (for MCP) endpoint and bind", () => {
+    const stored = link();
+    expect(widenings(stored, link({ credentialRef: "con_bbbbbbbbbbbbbbbbbbbb" }), "web")).toEqual(["On web, lets the linear connector's a tool make changes (now on connection con_bbbbbbbbbbbbbbbbbbbb)"]);
+    expect(widenings(stored, { name: "linear", type: "mcp", credentialRef: "con_aaaaaaaaaaaaaaaaaaaa", endpoint: "https://mcp.acme.dev/mcp", scopes: [], tools: [{ name: "a", access: "write" }] } as never, "web"))
+      .toEqual(["On web, lets the linear connector's a tool make changes (now an mcp connector)"]);
+    const mcpStored = { name: "s", type: "mcp", credentialRef: "con_aaaaaaaaaaaaaaaaaaaa", endpoint: "https://mcp.acme.dev/mcp", bind: { required: { project: "project" } }, scopes: [{ alias: "m", values: { project: "p" } }], scoping: { mode: "credential", acknowledgeUnscopedWrites: true }, tools: [{ name: "a", access: "write" }] };
+    expect(widenings(mcpStored as never, { ...mcpStored } as never, "web")).toEqual([]);
+    expect(widenings(mcpStored as never, { ...mcpStored, endpoint: "https://mcp.acme.dev/other" } as never, "web")).toHaveLength(1);
+    expect(widenings(mcpStored as never, { ...mcpStored, bind: { required: { project: "other" } } } as never, "web")).toHaveLength(1);
+    // Nothing writes in the new connector: nothing is widened, whatever moved.
+    expect(widenings(stored, link({ credentialRef: "con_bbbbbbbbbbbbbbbbbbbb", tools: [{ name: "a", access: "read" }] }), "web")).toEqual([]);
+  });
+
+  it("counts a scope added to a connector that writes as a widening, and a narrower scope as none", () => {
+    const stored = link({ scopes: [{ alias: "a", teamId: CHARTERARC_TEAM_ID }] });
+    const other = "0b6f3f7e-5d1a-4c1e-9a53-2f0f5a8f1c11";
+    expect(widenings(stored, link({ scopes: [{ alias: "a", teamId: CHARTERARC_TEAM_ID }, { alias: "b", teamId: other }] }), "web")).toEqual(["On web, lets the linear connector's write tools reach one more scope (b)"]);
+    expect(widenings(stored, link({ scopes: [{ alias: "a", teamId: other }] }), "web")).toHaveLength(1);
+    expect(widenings(stored, link({ scopes: [{ alias: "renamed", teamId: CHARTERARC_TEAM_ID }] }), "web")).toHaveLength(1);
+    expect(widenings(link({ scopes: [{ alias: "a", teamId: CHARTERARC_TEAM_ID }, { alias: "b", teamId: other }] }), stored, "web")).toEqual([]);
+    expect(widenings(stored, link({ scopes: [{ alias: "a", teamId: CHARTERARC_TEAM_ID }, { alias: "b", teamId: other }], tools: [{ name: "a", access: "read" }] }), "web")).toEqual([]);
+    const gh = (scopes: unknown) => ({ name: "github", type: "github", scopes, tools: [{ name: "x", access: "write" }] }) as never;
+    expect(widenings(gh(["web"]), gh("all-repositories"), "web")).toEqual(["On web, lets the github connector's write tools reach all repositories"]);
+    expect(widenings(gh("all-repositories"), gh(["web"]), "web")).toEqual([]);
+    expect(widenings(gh(["web"]), gh(["web", "api"]), "web")).toEqual(["On web, lets the github connector's write tools reach one more scope (api)"]);
+    const jira = (scopes: unknown) => ({ name: "jira", type: "jira", credentialRef: "con_aaaaaaaaaaaaaaaaaaaa", scopes, tools: [{ name: "x", access: "write" }] }) as never;
+    const site = "5f2c1a9e-3b7d-4c6a-9e11-0a1b2c3d4e5f";
+    expect(widenings(jira([{ alias: "a", cloudId: site, projectKey: "AB" }]), jira([{ alias: "a", cloudId: site }]), "web")).toHaveLength(1);
+    expect(widenings(jira([{ alias: "a", cloudId: site }]), jira([{ alias: "a", cloudId: site, projectKey: "AB" }]), "web")).toEqual([]);
+    const sentry = (scoping: unknown) => ({ name: "s", type: "mcp", credentialRef: "con_aaaaaaaaaaaaaaaaaaaa", endpoint: "https://mcp.acme.dev/mcp", scopes: [{ alias: "m", values: { project: "p" } }], scoping, tools: [{ name: "x", access: "write" }] }) as never;
+    expect(widenings(sentry({ mode: "ownership", itemNoun: "issue", references: {}, lookup: {}, field: "p", equals: "project" }), sentry({ mode: "credential", acknowledgeUnscopedWrites: true }), "web"))
+      .toEqual(["On web, lets the s connector's write tools act without a scope check"]);
   });
 });

@@ -1,4 +1,4 @@
-import { AgentXError, itemPathProblems, type ConnectorPreflight, type ProjectDefinition, type RegistrationPreflight } from "@agentx/contracts";
+import { AgentXError, ConnectionIdSchema, itemPathProblems, type ConnectorPreflight, type ProjectDefinition, type RegistrationPreflight } from "@agentx/contracts";
 import { ConnectorNotConnected, isObject, presentCatalog, TARGET_CONFLICT_REASON, type CatalogTool, type GuardedItemTools, type SkippedTool } from "@agentx/gateway";
 import { discoverScope, stripCode, type ConnectorContextBase, type ScopeDiscovery } from "./connector-routes.js";
 import type { ResolvedConnector } from "./connector-types.js";
@@ -137,7 +137,10 @@ export async function credentialRefusals(connectors: readonly ResolvedConnector[
     if (!credential) continue;
     if (!registry) { refusals.push(`connector ${connector.name}: connector credentials are not configured in this deployment`); continue; }
     const type = await registry.typeOf(credential.ref);
-    if (type === undefined) refusals.push(`connector ${connector.name}: credential ${credential.ref} is not registered; run ${credentialSetupCommand(credential.accepts)} first`);
+    // An org connection (Rovara Cloud) is not set up with an administrator's command: a person has to remove the connector or pick another connection.
+    if (type === undefined) refusals.push(ConnectionIdSchema.safeParse(credential.ref).success
+      ? `${connector.name}: its connection was removed; remove this connector or pick another connection first`
+      : `connector ${connector.name}: credential ${credential.ref} is not registered; run ${credentialSetupCommand(credential.accepts)} first`);
     else if (!credential.accepts.includes(type)) refusals.push(`connector ${connector.name}: credential ${credential.ref} is ${type}; ${/^[AEIOU]/.test(connector.vendor) ? "an" : "a"} ${connector.vendor} connector needs ${credential.accepts.join(" or ")}`);
     else {
       const pinned = hostPinProblem(credential.ref, (await registry.registration(credential.ref))?.host, credential.pin);
