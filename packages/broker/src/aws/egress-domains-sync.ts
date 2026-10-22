@@ -5,13 +5,14 @@
 //
 // Every write that changes the union adds one to the sync marker's `dirtySeq` (see `EGRESS_SYNC_KEY`). A run reads the marker, then the union, sends
 // the union, and clears the marker only if `dirtySeq` is still what it read, so a change made meanwhile keeps it dirty and is sent next time.
-import { GetCommand, PutCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, QueryCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { GetFirewallDomainListCommand, UpdateFirewallDomainsCommand, type Route53ResolverClient } from "@aws-sdk/client-route53resolver";
 import {
   DEFAULT_AGENT_ALLOW_DOMAINS,
   EGRESS_DOMAINS_PK,
   EGRESS_SYNC_KEY,
   EgressSyncMarkerSchema,
+  PROJECT_REVISION_SK_PREFIX,
   isAllowedDomain,
   orgOfProjectPk,
   projectPk,
@@ -19,7 +20,7 @@ import {
   type OrgKey,
 } from "@agentx/contracts";
 import { reconcileProjectEgress } from "../org/project-archive.js";
-import { approvedUnion, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
+import { approvedUnion, listEgressItems, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
 
 /** Route 53 Resolver's UpdateFirewallDomains: "There is a limit of 1000 domains per request" (API reference, UpdateFirewallDomains, Domains). */
 export const FIREWALL_DOMAINS_PER_CALL = 1000;
@@ -222,7 +223,62 @@ export async function backfillLegacyEgress(deps: EgressDomainsDependencies): Pro
 }
 
 /**
- * The scheduled run (every 5 minutes): the one-off legacy backfill, the reconcile of project items with their META (Task 20), then the sync. A backfill or reconcile failure does not stop the sync (the firewall must
+ * An item written less than this long ago is left to the save that wrote it: a settings save writes the egress item and then its revision (ruling
+ * C29), and a reconcile that read the revision between the two would undo the item.
+ */
+export const EGRESS_RECONCILE_GRACE_MS = 120_000;
+
+/** The allowed domains of a project's CURRENT (newest) revision, or undefined when it has none registered. Domains every project has are left out. */
+async function currentRevisionDomains(deps: Pick<EgressDomainsDependencies, "documentClient" | "tableName">, orgId: OrgId, project: string): Promise<string[] | undefined> {
+  const page = await deps.documentClient.send(new QueryCommand({
+    TableName: deps.tableName,
+    KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+    ExpressionAttributeValues: { ":pk": projectPk(orgId, project), ":prefix": PROJECT_REVISION_SK_PREFIX },
+    ProjectionExpression: "#definition.#network",
+    ExpressionAttributeNames: { "#definition": "definition", "#network": "network" },
+    ConsistentRead: true,
+    Limit: 1,
+    ScanIndexForward: false,
+  })) as { Items?: Array<{ definition?: { network?: { allowedDomains?: unknown } } }> };
+  const newest = page.Items?.[0];
+  if (newest === undefined) return undefined;
+  const listed = newest.definition?.network?.allowedDomains;
+  const stored = Array.isArray(listed) ? listed.filter((entry): entry is string => typeof entry === "string").map((domain) => domain.toLowerCase()) : [];
+  return [...new Set(stored.filter((domain) => isAllowedDomain(domain) && !DEFAULT_AGENT_ALLOW_DOMAINS.includes(domain)))];
+}
+
+/**
+ * Final review I2. A settings save writes the egress item and then the revision, in that order; a save that stopped between the two, or whose
+ * revision then failed to land, leaves an item that disagrees with the project's CURRENT revision. This compares every project item's domains with
+ * its newest revision's and puts the item right through `putEgressDomains` as the system: a domain only the item holds is removed (audited), one only
+ * the revision lists is asked for (pending on Rovara Cloud), and a status both agree on is kept. A project with no revision, an owner that is not a
+ * project, and an item written within `EGRESS_RECONCILE_GRACE_MS` are left alone. One item failing does not stop the others; the run then throws.
+ */
+export async function reconcileEgressWithRevisions(deps: EgressDomainsDependencies): Promise<{ repaired: number }> {
+  let repaired = 0;
+  let failed = 0;
+  for (const item of await listEgressItems(deps)) {
+    if (item.owner.kind !== "project") continue;
+    if (deps.now().getTime() - Date.parse(item.updatedAt) < EGRESS_RECONCILE_GRACE_MS) continue;
+    try {
+      const wanted = await currentRevisionDomains(deps, item.orgId, item.owner.project);
+      if (wanted === undefined) continue;
+      const held = new Set(item.domains.map((entry) => entry.domain));
+      if (held.size === wanted.length && wanted.every((domain) => held.has(domain))) continue;
+      await putEgressDomains(deps, item.orgId, item.owner, wanted);
+      repaired += 1;
+      log("reconciled_with_revision", { orgId: item.orgId, project: item.owner.project });
+    } catch (error) {
+      failed += 1;
+      log("reconcile_with_revision_failed", { orgId: item.orgId, error: error instanceof Error ? error.name : "UnknownError" });
+    }
+  }
+  if (failed > 0) throw new Error(`${String(failed)} egress item(s) could not be reconciled with their revision`);
+  return { repaired };
+}
+
+/**
+ * The scheduled run (every 5 minutes): the one-off legacy backfill, the reconcile of project items with their META (Task 20) and with their current revision (I2), then the sync. A backfill or reconcile failure does not stop the sync (the firewall must
  * follow approvals either way) but makes the result `{ ok: false }` so the run is seen to have failed and tried again.
  */
 export async function runEgressDomainsSync(deps: EgressDomainsDependencies): Promise<{ ok: boolean; domains: number; backfilled: number }> {
@@ -238,6 +294,7 @@ export async function runEgressDomainsSync(deps: EgressDomainsDependencies): Pro
   let reconciled = true;
   try {
     await reconcileProjectEgress({ documentClient: deps.documentClient, tableName: deps.tableName, egress: deps });
+    await reconcileEgressWithRevisions(deps);
   } catch (error) {
     reconciled = false;
     log("reconcile_failed", { error: error instanceof Error ? error.name : "UnknownError" });

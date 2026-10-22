@@ -13,6 +13,7 @@ import {
 import { tokenStoreKey } from "../../packages/cli/src/auth.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";
+import { reconcileEgressWithRevisions } from "../../packages/broker/src/aws/egress-domains-sync.js";
 import {
   approvedUnion, clearOrgEgress, decideEgressDomain, listPendingEgress, putEgressDomains, setEgressOwnerActive, type EgressDomainsDependencies,
 } from "../../packages/broker/src/org/egress-domains.js";
@@ -183,21 +184,35 @@ describe("a settings save on Rovara Cloud", () => {
     expect((await h.staff("GET", "/v1/admin/egress/pending")).body).toMatchObject({ pending: [{ domain: "old.acme.dev" }] });
   });
 
-  it("takes the last domain out of the union even when the egress write failed on the save that removed it (Task 18 Minor 2)", async () => {
+  it("makes no revision when the egress write fails on the save that removes the last domain, and the retry then takes it out of the union (ruling C29)", async () => {
     const h = await install();
     await h.put(["a.acme.dev"]);
     await h.decide("approve", "a.acme.dev");
     expect(await approvedUnion(h.deps)).toEqual(["a.acme.dev"]);
-    // The revision with no domains is stored, then the egress write fails.
+    // The egress write comes first now: when it fails, no revision with no domains is stored.
     h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
     const failed = await h.dev(OMAR, "PUT", "/v1/app/projects/web/settings", { requestId: randomUUID(), expectedRevision: 2, allowedDomains: [] });
     expect(failed.status).toBe(503);
+    expect(h.db.get(projectRevisionKey(TEST_ORG, "web", 3))).toBeUndefined();
     expect(await approvedUnion(h.deps)).toEqual(["a.acme.dev"]);
-    // The next save, whatever it changes, reconciles the item with the project, which now has no domains.
-    const saved = await h.dev(OMAR, "PUT", "/v1/app/projects/web/settings", { requestId: randomUUID(), expectedRevision: 3, description: "words" });
-    expect(saved.status).toBe(200);
+    const retried = await h.dev(OMAR, "PUT", "/v1/app/projects/web/settings", { requestId: randomUUID(), expectedRevision: 2, allowedDomains: [] });
+    expect(retried.status).toBe(200);
     expect(h.item()!.domains).toEqual([]);
     expect(await approvedUnion(h.deps)).toEqual([]);
+  });
+
+  it("repairs, on the schedule, the item of a save whose revision then failed to land (final review I2)", async () => {
+    const h = await install();
+    await h.put(["a.acme.dev"]);
+    await h.decide("approve", "a.acme.dev");
+    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes('"entityType":"PROJECT"') && !JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
+    const failed = await h.dev(OMAR, "PUT", "/v1/app/projects/web/settings", { requestId: randomUUID(), expectedRevision: 2, allowedDomains: [] });
+    expect(failed.status).toBeGreaterThanOrEqual(500);
+    // The item lost the domain but the project (revision 2) still lists it.
+    expect(h.item()!.domains).toEqual([]);
+    const later = { ...h.deps, now: () => new Date(Date.now() + 600_000) };
+    expect(await reconcileEgressWithRevisions(later)).toEqual({ repaired: 1 });
+    expect(h.item()!.domains.map((entry) => entry.domain)).toEqual(["a.acme.dev"]);
   });
 
   it("does not put an archived project's first domains in the union (Task 18 Minor 7)", async () => {

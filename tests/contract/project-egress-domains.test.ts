@@ -7,7 +7,7 @@ import {
   EGRESS_SYNC_KEY, egressDomainsKey, isAllowedDomain, projectMetaKey, projectRevisionKey, type EgressAuditItem, type EgressDomainsItem, type EgressOwner, type OrgId,
 } from "../../packages/contracts/src/index.js";
 import {
-  EGRESS_BACKFILL_KEY, EMPTY_UNION_SENTINEL, FIREWALL_DOMAINS_PER_CALL, backfillLegacyEgress, runEgressDomainsSync, syncCellAllowList,
+  EGRESS_BACKFILL_KEY, EMPTY_UNION_SENTINEL, FIREWALL_DOMAINS_PER_CALL, backfillLegacyEgress, reconcileEgressWithRevisions, runEgressDomainsSync, syncCellAllowList,
 } from "../../packages/broker/src/aws/egress-domains-sync.js";
 import { decideEgressDomain, putEgressDomains, setEgressOwnerActive, type EgressDomainsDependencies } from "../../packages/broker/src/org/egress-domains.js";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
@@ -389,6 +389,78 @@ describe("the legacy backfill", () => {
     expect(await backfillLegacyEgress(t.deps(true))).toEqual({ ran: true, projects: 1 });
     expect(t.db.get(egressDomainsKey(TEST_ORG, API))).toMatchObject({ domains: [{ domain: "x.beta.dev" }] });
     expect(t.db.get(EGRESS_BACKFILL_KEY)).toBeDefined();
+  });
+});
+
+describe("the reconcile of egress items with the current revision (final review I2)", () => {
+  const audits = (db: FakeDynamoDb) => db.find((candidate) => candidate.pk === "EGRESS_AUDIT") as unknown as EgressAuditItem[];
+  const items = (t: ReturnType<typeof setup>, owner: EgressOwner = WEB, orgId: OrgId = TEST_ORG) => (t.db.get(egressDomainsKey(orgId, owner)) as unknown as EgressDomainsItem);
+  /** A clock that has moved well past the item's last write, so an in-flight save is not mistaken for a stopped one. */
+  const later = (t: ReturnType<typeof setup>) => ({ ...t.deps(true), now: () => new Date("2026-10-21T10:30:00.000Z") });
+
+  it("asks for a domain the current revision lists and the item lacks, and drops one the item holds and the revision no longer lists", async () => {
+    const t = setup();
+    // The save wrote its revision, then died before the item: the revision lists new.acme.dev, the item still holds the removed one.
+    await putEgressDomains(t.quiet(false), TEST_ORG, WEB, ["old.acme.dev"], { developerId: "dev-1" });
+    legacyProject(t.db, "web", undefined, { revisions: [["old.acme.dev"], ["new.acme.dev", "registry.npmjs.org"]] });
+    expect(await reconcileEgressWithRevisions(later(t))).toEqual({ repaired: 1 });
+    expect(items(t).domains.map((entry) => entry.domain)).toEqual(["new.acme.dev"]);
+    expect(items(t).domains[0]).toMatchObject({ status: "pending", requestedBy: "system" });
+    expect(audits(t.db).map((audit) => `${audit.domain}:${audit.action}`).sort()).toEqual(["new.acme.dev:requested", "old.acme.dev:auto_approved", "old.acme.dev:removed"]);
+    // A second run finds nothing to do.
+    expect(await reconcileEgressWithRevisions(later(t))).toEqual({ repaired: 0 });
+  });
+
+  it("keeps the status of a domain both agree on, and takes a removed approved domain out of the served union", async () => {
+    const t = setup();
+    const cloud = t.deps(true);
+    await putEgressDomains(cloud, TEST_ORG, WEB, ["keep.acme.dev", "gone.acme.dev"], { developerId: "dev-1" });
+    await decideEgressDomain(cloud, { orgId: TEST_ORG, owner: WEB, domain: "keep.acme.dev", decision: "approved", operatorId: "staff-1" });
+    await decideEgressDomain(cloud, { orgId: TEST_ORG, owner: WEB, domain: "gone.acme.dev", decision: "approved", operatorId: "staff-1" });
+    legacyProject(t.db, "web", undefined, { revisions: [["keep.acme.dev", "gone.acme.dev"], ["keep.acme.dev"]] });
+    t.resolver.send.mockClear();
+    const outcome = await runEgressDomainsSync({ ...later(t), sync: () => syncCellAllowList({ documentClient: t.db, tableName: "state", resolver: t.resolver, listId: LIST_ID, now: () => new Date("2026-10-21T10:30:00.000Z"), sleep: t.sleep }) });
+    expect(outcome.ok).toBe(true);
+    expect(items(t).domains).toMatchObject([{ domain: "keep.acme.dev", status: "approved" }]);
+    expect(t.resolver.updates().at(-1)).toEqual({ FirewallDomainListId: LIST_ID, Operation: "REPLACE", Domains: ["keep.acme.dev"] });
+  });
+
+  it("leaves an item written a moment ago alone: a save may be between its two writes", async () => {
+    const t = setup();
+    await putEgressDomains(t.quiet(true), TEST_ORG, WEB, ["new.acme.dev"], { developerId: "dev-1" });
+    legacyProject(t.db, "web", ["old.acme.dev"]);
+    expect(await reconcileEgressWithRevisions(t.deps(true))).toEqual({ repaired: 0 });
+    expect(items(t).domains.map((entry) => entry.domain)).toEqual(["new.acme.dev"]);
+  });
+
+  it("leaves a project with no revision, an owner that is not a project, and every other org's item alone", async () => {
+    const t = setup();
+    await putEgressDomains(t.quiet(true), TEST_ORG, WEB, ["a.acme.dev"], { developerId: "dev-1" });
+    await putEgressDomains(t.quiet(true), TEST_ORG, SOURCE, ["b.acme.dev"], { developerId: "dev-1" });
+    await putEgressDomains(t.quiet(true), OTHER_ORG, API, ["c.beta.dev"], { developerId: "dev-2" });
+    // The other org's revision for the same name lists something else: it must not be read for TEST_ORG's item, nor the reverse.
+    legacyProject(t.db, "api", ["c.beta.dev"], { orgId: OTHER_ORG });
+    legacyProject(t.db, "web", ["a.acme.dev"], { orgId: OTHER_ORG });
+    expect(await reconcileEgressWithRevisions(later(t))).toEqual({ repaired: 0 });
+    expect(items(t).domains.map((entry) => entry.domain)).toEqual(["a.acme.dev"]);
+  });
+
+  it("repairs an archived project's item without waking it", async () => {
+    const t = setup();
+    await putEgressDomains(t.quiet(true), TEST_ORG, WEB, ["old.acme.dev"], { developerId: "dev-1" });
+    await setEgressOwnerActive(t.quiet(true), TEST_ORG, WEB, false);
+    legacyProject(t.db, "web", undefined, { revisions: [["old.acme.dev"], ["new.acme.dev"]], status: "archived" });
+    expect(await reconcileEgressWithRevisions(later(t))).toEqual({ repaired: 1 });
+    expect(items(t)).toMatchObject({ active: false, domains: [{ domain: "new.acme.dev" }] });
+  });
+
+  it("skips a stored domain the firewall must never serve, and is part of the scheduled run", async () => {
+    const t = setup();
+    await putEgressDomains(t.quiet(true), TEST_ORG, WEB, ["old.acme.dev"], { developerId: "dev-1" });
+    legacyProject(t.db, "web", undefined, { revisions: [["old.acme.dev"], ["new.acme.dev", "*"]] });
+    const outcome = await runEgressDomainsSync({ ...later(t), sync: async () => ({ ok: true, domains: 0 }) });
+    expect(outcome.ok).toBe(true);
+    expect(items(t).domains.map((entry) => entry.domain)).toEqual(["new.acme.dev"]);
   });
 });
 
