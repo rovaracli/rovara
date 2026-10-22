@@ -552,11 +552,12 @@ describe("the model key carries the payer and the tags", () => {
     const t = await setup();
     t.projectPays(true);
     t.access.setMemberSpent(TEST_ORG, DEV_MAYA.developerId, 29);
-    t.access.setOrgSpent(TEST_ORG, 495);
+    // $1 left for the org: below the $2 planning limit a Rovara Code run starts with (Task 34), so the org's remainder alone caps the key.
+    t.access.setOrgSpent(TEST_ORG, 499);
     const reply = await t.call(DEV_MAYA, "POST", "/v1/app/agents/rovara-code/runs", { project: "payments", input: { text: "Fix it" } });
     const { input } = await t.mintFor((reply.body.task as { taskId: string }).taskId);
     expect(input).not.toHaveProperty("developerId");
-    expect(input.maxBudgetUsd).toBe(5);
+    expect(input.maxBudgetUsd).toBe(1);
     expect(input.tags).toMatchObject({ payerKind: "project", payerId: "payments", project: "payments" });
     expect(t.access.upsertMember).not.toHaveBeenCalledWith(TEST_ORG, DEV_MAYA.developerId, expect.anything());
   });

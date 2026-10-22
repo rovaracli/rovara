@@ -13,6 +13,7 @@ import { modelAccessSource } from "../../packages/worker/src/model-access.js";
 import { createDefaultPiSessionAdapter } from "../../packages/worker/src/pi-session.js";
 import { runTaskInvocation } from "../../packages/worker/src/run-task.js";
 import { MAYA, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
+import { seedTaskRunLimit } from "../support/run-history.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { call } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -228,6 +229,8 @@ describe("continuing after the budget ran out (ruling R38)", () => {
   async function exhausted() {
     const access = fakeModelAccess();
     const h = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true } });
+    // A task with no workflow starts at the TASK estimate's run limit (Task 34); these tests are written for a task budget of $25.
+    seedTaskRunLimit(h.db);
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
     const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "claude-code" });
