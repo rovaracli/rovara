@@ -235,6 +235,9 @@ import {
   isAdminChangePressEvent,
   type AdminChangeOutcome,
   type AdminChangePressEvent,
+  AUDIT_SDK_REQUEST_TIMEOUT_MS,
+  auditOperatorId,
+  auditPullRequestId,
   INDEX_EXPIRY_ATTRIBUTE,
   indexExpiresAt,
   WORKFLOW_RESOLVE_FINDINGS_MAX,
@@ -267,13 +270,23 @@ import { pressAdminChange, routeAdminChange, type AdminChangeDependencies } from
 import type { AdminChangeHandlers, PlanDependencies } from "./admin-change-plans.js";
 import { ZodError, z } from "zod";
 import { healthProbes } from "./health-probes.js";
+import { runAuditDrain } from "../audit/drain.js";
+import type { AuditExportClientDeps } from "../audit/export.js";
+import { exportInvoker, exportLinkSigner, exportPurger } from "../audit/export-wiring.js";
+import type { AuditEraseDeps } from "../audit/erase.js";
+import { routeAuditAdminRequest } from "../audit/admin-routes.js";
+import { isAuditViewPath } from "../audit/view-page.js";
+import { AuditKeyring } from "../audit/keyring.js";
+import { auditPending, auditTransact, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPullRequestOpened } from "../audit/events.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
 import { releaseFailedPreparation, slackThreadKey } from "./failed-preparation.js";
 import { releaseFailedCancelWorkspace } from "./failed-cancel-release.js";
 import { assertNoUntrustedRoutingFields, authorizeWorkspace } from "../authorization.js";
 import type { GitHubAppCredentialProvider, GitHubTokenScope } from "../github-app.js";
 import type { InstallationLifecycleEvent } from "../org/github-connection.js";
-import { GithubMergeRateLimitError, isWebhookSecretMissing } from "../github-app.js";
+import { GithubMergeRateLimitError, isWebhookSecretMissing, parseGitHubRepository } from "../github-app.js";
 import { createGitHubAppCredentials } from "./github-credentials.js";
 import { GITHUB_WEBHOOK_SIGNATURE_INVALID, GithubWebhookRefusal, GithubWebhookRetryableError, authorizeLinkedGithubWebhook, handleGithubWebhook, listDueGithubWebhookDeliveries, processGithubWebhookDelivery, reconcileTaskPullRequestFeedback, verifyTaskPullRequestFeedbackCurrent, type ReceivedGithubWebhook } from "./github-webhooks.js";
 import { CatalogCache, CredentialUnavailable } from "@agentx/gateway";
@@ -494,6 +507,12 @@ interface CodeBuildRecord {
 
 interface AwsBrokerDependencies {
   documentClient: DynamoDBDocumentClient;
+  /** The Audit Ledger's outbox (named environments only); absent on a legacy install, where every audit function does nothing. */
+  audit?: AuditRuntime;
+  /** What reading the Audit Ledger and starting its exports needs (Task 11); absent on a legacy install. The broker builds no export: its own function does. */
+  auditLedger?: AuditExportClientDeps;
+  /** What erasing a person's audit details needs (Task 15); absent on a legacy install, where the staff erase route does not exist. */
+  auditErase?: AuditEraseDeps;
   s3: S3Client;
   /** Starts deleting an ec2-ebs workspace's instance and volume (#84). */
   deleteEc2Session?: (workspaceId: string) => Promise<void>;
@@ -726,15 +745,19 @@ async function putInstallBudget(dependencies: AwsBrokerDependencies, identity: A
   // The install's org is created on first use; an operator may set its budgets before anyone has signed in.
   await orgs.ensureOrg(orgId, brokerEnvironmentName(dependencies));
   const budget = await changeBudgets(
-    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, orgs },
-    { orgId, body, updatedBy: `operator:${identity.subject}`, at: new Date().toISOString() },
+    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, orgs, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) },
+    // The chain names an operator by a pseudonymous id, never by their identity.
+    { orgId, body, updatedBy: `operator:${identity.subject}`, at: new Date().toISOString(), actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) } },
   );
   console.log(JSON.stringify({ component: "broker", event: "admin.org_budget_changed", orgId, overrides: Object.keys(budget.memberOverrides).length }));
   return { budget };
 }
 
 function egressDepsOf(dependencies: AwsBrokerDependencies): EgressDomainsDependencies {
-  return { documentClient: dependencies.documentClient, tableName: dependencies.tableName, cloud: dependencies.cloud === true, now: () => new Date(), sync: dependencies.egressDomainsSync ?? (async () => ({ ok: false })) };
+  return {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, cloud: dependencies.cloud === true, now: () => new Date(), sync: dependencies.egressDomainsSync ?? (async () => ({ ok: false })),
+    ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
+  };
 }
 
 /**
@@ -763,14 +786,19 @@ async function listEgressPending(dependencies: AwsBrokerDependencies, identity: 
  */
 async function decideEgress(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, decision: "approved" | "rejected", body: unknown): Promise<EgressDecisionResponse & { warning?: string }> {
   if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
-  const parsed: z.ZodSafeParseResult<{ orgId: OrgId; owner: EgressOwner; domain: string; reason?: string }> = decision === "approved"
+  const parsed: z.ZodSafeParseResult<{ requestId: string; orgId: OrgId; owner: EgressOwner; domain: string; reason?: string }> = decision === "approved"
     ? EgressApproveBodySchema.safeParse(body) : EgressRejectBodySchema.safeParse(body);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
   }
-  const { orgId, owner, domain, reason } = parsed.data;
-  const { warning } = await decideEgressDomain(egressDepsOf(dependencies), { orgId, owner, domain, decision, operatorId: identity.subject, ...(reason === undefined ? {} : { reason }) });
+  const { orgId, owner, domain, reason, requestId } = parsed.data;
+  const { warning } = await decideEgressDomain(egressDepsOf(dependencies), {
+    orgId, owner, domain, decision, operatorId: identity.subject, requestId,
+    // The chain names the staff member by a pseudonymous id, never by their identity.
+    auditActor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) },
+    ...(reason === undefined ? {} : { reason }),
+  });
   return { orgId, owner, domain, status: decision, ...(warning === undefined ? {} : { warning }) };
 }
 
@@ -846,6 +874,7 @@ function githubConnectionOf(dependencies: AwsBrokerDependencies): GithubConnecti
       ...(app.listInstallationRepositories === undefined ? {} : { listInstallationRepositories: (installationId, scope) => app.listInstallationRepositories!(installationId, scope) }),
     },
     identities: signIn, orgs: orgStoreOf(dependencies),
+    ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
     ...(dependencies.githubConnectedNotice === undefined ? {} : {
       notifyGithubConnected: async (notice) => { await sendGithubConnectedNotice(dependencies.githubConnectedNotice!, notice); },
       remindGithubRequester: async (reminder) => { await sendGithubRequestReminder(dependencies.githubConnectedNotice!, reminder); },
@@ -897,8 +926,16 @@ function repositoriesGateRoute(dependencies: AwsBrokerDependencies): { requireRe
   return gate === undefined ? {} : { requireRepositoriesConnected: (orgId, definition) => requireRepositoriesConnected(gate, orgId, definition) };
 }
 
-function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">): OrgStore {
-  return new OrgStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now });
+/** A person's name from their sign-in record, for the answer to an erasure (read before their details are erased). */
+async function developerDisplayName(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "developer">, developerId: string): Promise<string | undefined> {
+  const table = dependencies.developer?.signInTableName;
+  if (table === undefined) return undefined;
+  const out = await dependencies.documentClient.send(new GetCommand({ TableName: table, Key: { pk: `DEVELOPER#${developerId}`, sk: "META" } })) as { Item?: { displayName?: unknown } };
+  return typeof out.Item?.displayName === "string" ? out.Item.displayName : undefined;
+}
+
+function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName" | "audit">): OrgStore {
+  return new OrgStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) });
 }
 
 /**
@@ -1231,7 +1268,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   const agents = agentRouteDependencies(dependencies, tasks);
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
-  return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
+  return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.audit-drain" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
     // Spec 025 E14: a Slack Confirm or Cancel press, invoked directly by the ingress (never through API Gateway).
     if (isAdminChangePressEvent(event)) {
       if (adminChanges === undefined) return json({ error: { code: "NOT_FOUND", message: "admin changes are not set up in this deployment" } }, "slack-ingress", 404);
@@ -1240,6 +1277,14 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "admin_change.press_failed", changeId: event.changeId, error: error instanceof AgentXError ? error.code : error instanceof Error ? error.name : "unknown" }));
         return json({ outcome: "failed", changeId: event.changeId }, "slack-ingress", 500);
+      }
+    }
+    // The Audit Ledger's drain (R70): sends the pending audit items the flush after a commit did not deliver.
+    if (isAuditDrainEvent(event)) {
+      try { return json(await runAuditDrain(dependencies), "audit-drain"); }
+      catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "audit.drain_failed", level: "error", error: error instanceof Error ? error.name : "unknown" }));
+        return json({ error: "drain_failed" }, "audit-drain", 500);
       }
     }
     // Plan 2, Task 14 Step 6: the hourly sweep that reminds a requester once, two days after they asked their GitHub admin.
@@ -1422,8 +1467,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       const url = new URL(request.path, "https://agentx.invalid");
       // The browser page uses its own opaque revocable session cookie and reauthorizes each
       // request. Only API Gateway's exact public review route may reach this branch.
-      if (event.routeKey === FEEDBACK_REVIEW_ROUTE_KEY) {
-        if (!url.pathname.startsWith("/review/") || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
+      // The audit page (`/v1/app/audit/view`) is a browser page of the same kind: its own session cookie, no API Gateway authorizer.
+      if (event.routeKey === FEEDBACK_REVIEW_ROUTE_KEY || isAuditViewPath(url.pathname)) {
+        if (!(url.pathname.startsWith("/review/") || isAuditViewPath(url.pathname)) || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
         return await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),
@@ -1432,6 +1478,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
           registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : (url, orgId) => dependencies.githubPullRequests.getRepositoryIdentity!(url, githubScope(dependencies, orgId)),
           ...repositoriesGateRoute(dependencies),
+          ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
+          ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
           refreshTaskFeedback: taskId => refreshTaskFeedbackForOwnerDecision(dependencies, taskId) }, request, url) as { statusCode: number; headers: Record<string, string>; body: string };
       }
       // The /v1/dev route has no API Gateway authorizer, so what it carries goes to the developer API or nowhere.
@@ -1483,6 +1531,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
               installationLifecycle: (deliveryId: string, event: InstallationLifecycleEvent) => applyInstallationLifecycle({
                 documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
                 log: (entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry })),
+                ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
               }, deliveryId, event),
             } : {}),
             now: () => new Date().toISOString(),
@@ -1640,6 +1689,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
           registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : (url, orgId) => dependencies.githubPullRequests.getRepositoryIdentity!(url, githubScope(dependencies, orgId)),
           createProject: (caller, input) => createCloudProject(dependencies, caller, input),
+          ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
+          ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
           ...githubConnectRoute(dependencies),
           ...(agents === undefined ? {} : { agents }),
           ...repositoriesGateRoute(dependencies),
@@ -1681,6 +1732,16 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Spec 025 phase 25d: the admin read routes (FR-038), each behind the admin claim (A2).
       const adminRead = await routeAdminRead(adminReads, identity, request, url);
       if (adminRead !== undefined) return json(adminRead, request.requestId);
+      // Task 12: Rovara staff reading an org's audit log. Fail-closed: the staff read is recorded before anything is read.
+      const staffAudit = await routeAuditAdminRequest(
+        {
+          ledger: dependencies.auditLedger,
+          orgExists: async (orgId) => (await orgStoreOf(dependencies).getOrg(orgId)) !== undefined,
+          ...(dependencies.auditErase === undefined ? {} : { erase: dependencies.auditErase }),
+          personName: (developerId) => developerDisplayName(dependencies, developerId),
+        },
+        identity, { method: request.method, body, requestId: request.requestId }, url);
+      if (staffAudit !== undefined) return json(staffAudit.body, request.requestId, staffAudit.status);
 
       if (request.method === "POST" && url.pathname === "/v1/admin/runtime-installation/challenges") {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
@@ -9172,8 +9233,27 @@ async function reconcilePullRequest(
       throw agentXError("CALLBACK_FORBIDDEN", "the opened pull request is not the checked code");
     }
   }
+  // A worker that asks again (its answer was lost) is the same occurrence: on a ledger it keeps the first attempt's time, so the
+  // retry overwrites that attempt's pending audit item instead of adding a second one (R1-1). The audit's reads and builder run
+  // together, so a read that fails is logged and the callback goes on without an event.
+  const recordKey = pullRequestKey(operation.workspaceId, expected.repository, pullRequest.number);
+  let openedAt = new Date().toISOString();
+  const opened = await tryAuditEvent(dependencies, async () => {
+    const earlier = await getItem<PullRequestRecord>(dependencies, recordKey);
+    if (earlier?.createdByOperationId === operation.id) openedAt = earlier.updatedAt;
+    const repository = parseGitHubRepository(expected.repositoryUrl);
+    const repositoryFullName = `${repository.owner}/${repository.name}`;
+    const requester = operation.requestedBy;
+    return auditPullRequestOpened({
+      orgId: await orgOfRecord(dependencies, await getItem<Record<string, unknown>>(dependencies, workspaceKey(operation.workspaceId)) ?? {}),
+      actor: requester === undefined ? { kind: "system", id: "rovara" } : { kind: "member", id: "kind" in requester ? requester.developerId : developerIdForSlackUser(requester.userId) },
+      occurredAt: openedAt, occurrence: operation.id,
+      pullRequestId: auditPullRequestId(repositoryFullName, pullRequest.number), number: pullRequest.number,
+      details: [{ subject: "org", fields: { repository: repositoryFullName } }],
+    });
+  });
   const record: PullRequestRecord = {
-    ...pullRequestKey(operation.workspaceId, expected.repository, pullRequest.number),
+    ...recordKey,
     entityType: "PULL_REQUEST",
     workspaceId: operation.workspaceId,
     repository: expected.repository,
@@ -9190,7 +9270,7 @@ async function reconcilePullRequest(
     ...(expected.mode === "replace" && expected.targetPullRequestNumber !== undefined
       ? { replacementFor: expected.targetPullRequestNumber }
       : {}),
-    updatedAt: new Date().toISOString(),
+    updatedAt: openedAt,
   };
   if (expected.mode === "replace" && expected.targetPullRequestNumber !== undefined) {
     const original = await requirePullRequest(
@@ -9214,13 +9294,12 @@ async function reconcilePullRequest(
     await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
       { Put: { TableName: dependencies.tableName, Item: record } },
       { Put: { TableName: dependencies.tableName, Item: linkedOriginal } },
+      ...(opened === undefined ? [] : auditPending(dependencies, opened)),
     ] }));
   } else {
-    await dependencies.documentClient.send(new PutCommand({
-      TableName: dependencies.tableName,
-      Item: record,
-    }));
+    await auditTransact(dependencies, { Put: { TableName: dependencies.tableName, Item: record } }, opened === undefined ? [] : [opened]);
   }
+  if (opened !== undefined) await flushAuditEvents(dependencies, [opened]);
   // Ruling Z: the worker's result says whether the pull request is a draft, so the reply can say so.
   return { ...pullRequest, draft: draft === true };
 }
@@ -9910,7 +9989,7 @@ export async function processGithubWorkflowEvent(
       commitParents: (url: string, commit: string, orgId: OrgId | undefined) => dependencies.githubPullRequests.getCommitParents!(url, commit, githubScope(dependencies, orgId)),
     }),
     // A fix push taken for failed but landed: recorded as its result would have, together or not at all.
-    saveLandedPushes: async (taskId, expectedRevision, workflow, pushes) => {
+    saveLandedPushes: async (taskId, expectedRevision, workflow, pushes, extraItems = []) => {
       await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
         { Update: {
           TableName: dependencies.tableName, Key: taskKey(taskId),
@@ -9934,6 +10013,7 @@ export async function processGithubWorkflowEvent(
             ExpressionAttributeValues: { ":head": push.headSha, ":previous": push.previousHeadSha, ":state": push.state, ":now": workflow.updatedAt },
           } },
         ]),
+        ...extraItems,
       ] }));
       console.log(JSON.stringify({ component: "broker", event: "workflow.landed_fix_push_recorded", taskId, pullRequests: pushes.map((push) => push.number) }));
       // The fix is on the pull request as if its result had come: its description lists it too.
@@ -9972,15 +10052,23 @@ export async function processGithubWorkflowEvent(
       }
       return objectKey;
     },
-    saveWorkflow: async (taskId, expectedRevision, workflow) => {
-      await dependencies.documentClient.send(new UpdateCommand({
+    saveWorkflow: async (taskId, expectedRevision, workflow, extraItems = []) => {
+      const update = {
         TableName: dependencies.tableName, Key: taskKey(taskId),
         UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
         ConditionExpression: "workflow.revision = :revision AND attribute_not_exists(closedAt)",
         ExpressionAttributeValues: { ":workflow": workflow, ":now": workflow.updatedAt, ":revision": expectedRevision },
-      }));
+      };
+      // Pending audit items commit with the update or not at all; with none (no ledger, or nothing to record) it is the plain update.
+      // A cancelled transaction is a lost race like a failed condition: the caller reads the task again.
+      if (extraItems.length === 0) await dependencies.documentClient.send(new UpdateCommand(update));
+      else await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Update: update }, ...extraItems] }));
     },
     measure: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
+    ...(dependencies.audit === undefined ? {} : {
+      audit: dependencies.audit,
+      auditOrgId: async (taskId: string) => orgOfRecord(dependencies, await getItem<Record<string, unknown>>(dependencies, taskKey(taskId)) ?? {}),
+    }),
     now: new Date().toISOString(),
   });
   const linked = await getItem<GithubWorkflowPullRequestRecord>(dependencies, githubWorkflowPullRequestKey(event.fullName, event.number));
@@ -10142,6 +10230,10 @@ export async function retryGithubWebhookAsAdministrator(dependencies: AwsBrokerD
     { Put: { TableName: dependencies.tableName, Item: { pk: `GITHUB_DELIVERY#${deliveryId}`, sk: `RETRY#${now}`, entityType: "GITHUB_WEBHOOK_RETRY_AUDIT", deliveryId, actor: identity.subject, at: now }, ConditionExpression: "attribute_not_exists(pk)" } },
   ] }));
   return { deliveryId, status: "RETRY_QUEUED" as const };
+}
+
+function isAuditDrainEvent(event: unknown): event is { source: "agentx.audit-drain" } {
+  return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.audit-drain";
 }
 
 function isGithubInstallRequestReminderEvent(event: unknown): event is { kind: "github-install-request-reminders" } {
@@ -13114,6 +13206,50 @@ const modelAccess = modelAccessFunctionName === undefined || modelAccessFunction
 const cloudWatch = new CloudWatchClient(awsClientConfiguration);
 const sqs = new SQSClient(awsClientConfiguration);
 
+// The Audit Ledger's outbox (Task 6): set only where the control plane has the intake queue (named environments). Its
+// clients give up quickly (AUDIT_SDK_REQUEST_TIMEOUT_MS, two attempts) so that auditing can never hold an action for
+// long; the action's own writes use the broker's ordinary client.
+const auditQueueUrl = process.env.AUDIT_INTAKE_QUEUE_URL;
+const auditClientConfiguration = { ...awsClientConfiguration, maxAttempts: 2, requestHandler: { requestTimeout: AUDIT_SDK_REQUEST_TIMEOUT_MS, connectionTimeout: AUDIT_SDK_REQUEST_TIMEOUT_MS } };
+const audit: AuditRuntime | undefined = auditQueueUrl === undefined || auditQueueUrl === "" ? undefined : {
+  sqs: new SQSClient(auditClientConfiguration),
+  queueUrl: auditQueueUrl,
+  documentClient: DynamoDBDocumentClient.from(new DynamoDBClient(auditClientConfiguration), { marshallOptions: { removeUndefinedValues: true } }),
+  tableName: requiredEnvironment("STATE_TABLE_NAME"),
+  now: Date.now,
+  log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
+};
+
+// The Audit Ledger's reader and export client (Task 11): named environments only. The broker reads the ledger, the seals and the keys
+// tables (the key is the vault key's ARN) and writes none of them; it starts an export by invoking the export function
+// asynchronously, and signs the download link for a finished one. The export function (audit/export-handler.ts) builds it.
+const auditLedgerTable = process.env.AUDIT_LEDGER_TABLE_NAME;
+const auditLedger: AuditExportClientDeps | undefined = auditLedgerTable === undefined || auditLedgerTable === "" ? undefined : {
+  documentClient,
+  ledgerTable: auditLedgerTable,
+  sealsTable: requiredEnvironment("AUDIT_SEALS_TABLE_NAME"),
+  keyring: new AuditKeyring({ documentClient, keysTable: requiredEnvironment("AUDIT_KEYS_TABLE_NAME"), kms: new KMSClient(awsClientConfiguration), keyId: requiredEnvironment("AUDIT_VAULT_KEY_ARN"), now: Date.now }),
+  exportsBucket: requiredEnvironment("AUDIT_EXPORTS_BUCKET_NAME"),
+  tableName: requiredEnvironment("STATE_TABLE_NAME"),
+  ...(audit === undefined ? {} : { audit }),
+  now: Date.now,
+  log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
+  invokeExport: exportInvoker(lambdaClient, requiredEnvironment("AUDIT_EXPORT_FUNCTION_NAME")),
+  presign: exportLinkSigner(s3),
+};
+
+// Erasing a person's details (Task 15): the tombstone goes in the keys table with the audit.subject_erased event, in one transaction made
+// with the broker's own client; the export files are deleted by the export function (its role holds that grant), which the broker asks.
+const auditErase: AuditEraseDeps | undefined = auditLedger === undefined ? undefined : {
+  documentClient,
+  keysTable: requiredEnvironment("AUDIT_KEYS_TABLE_NAME"),
+  tableName: requiredEnvironment("STATE_TABLE_NAME"),
+  ...(audit === undefined ? {} : { audit }),
+  now: Date.now,
+  log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
+  purgeExports: exportPurger(lambdaClient, requiredEnvironment("AUDIT_EXPORT_FUNCTION_NAME")),
+};
+
 const githubNoticeSender = process.env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";
 
 // Plan 2, Task 19: set only on Rovara Cloud, where the foundation's DNS firewall has a "ProjectAllowList" for the approved egress domains.
@@ -13125,6 +13261,9 @@ const egressDomainsSync = projectAllowListId === undefined || projectAllowListId
 
 export const handler = createAwsBrokerHandler({
   documentClient,
+  ...(audit === undefined ? {} : { audit }),
+  ...(auditLedger === undefined ? {} : { auditLedger }),
+  ...(auditErase === undefined ? {} : { auditErase }),
   s3,
   tableName: requiredEnvironment("STATE_TABLE_NAME"),
   artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"),

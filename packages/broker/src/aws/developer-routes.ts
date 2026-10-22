@@ -96,6 +96,10 @@ import { parseCreateProjectBody, type CreateProjectInput } from "../org/cloud-pr
 import { changeBudgets, ensureSynced, memberLimitOf, type BudgetDependencies, type OrgBudgetSettings } from "../org/budget.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import type { OrgStore } from "../org/store.js";
+import type { AuditExportClientDeps } from "../audit/export.js";
+import type { AuditRuntime } from "../audit/outbox.js";
+import { isAuditOrgPath, routeAuditRequest } from "../audit/routes.js";
+import { createAuditViewPage, isAuditViewPath } from "../audit/view-page.js";
 import { checkTaskPersonIdentity, registerTaskChannelPeople, resolveTaskPickerPersonWithId, type ProjectAccessSubject, type TaskPersonIdentityDependencies } from "../developer/task-person-identity.js";
 import { taskPeopleDisplayAdmission, type TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
 import { DeveloperSignInStore, META, endedByAdmin, endedByUnlink, methodSince, startedBeforeMethodOn, type DeveloperMarks, type DeveloperRecord, type SessionRecord } from "../developer/store.js";
@@ -189,6 +193,10 @@ export interface DeveloperRouteDependencies {
    * has already checked the install, the caller's role and the body.
    */
   createProject?: (caller: DeveloperCaller, input: CreateProjectInput) => Promise<{ duplicate: boolean }>;
+  /** The Audit Ledger's reader and export client (Task 12). Absent on an install with no ledger: the audit routes then answer NOT_FOUND. */
+  auditLedger?: AuditExportClientDeps;
+  /** The Audit Ledger's outbox: what a route's audited action adds its pending item through. Absent on a legacy install, where nothing is recorded. */
+  audit?: AuditRuntime;
   /**
    * Plan 2, Task 17: what `PUT /v1/app/projects/{name}/settings` needs from the broker: registering a revision, and (for an added repository)
    * GitHub's view of it. Without it the route answers NOT_FOUND.
@@ -1056,7 +1064,7 @@ async function putProjectMember(deps: DeveloperRouteDependencies, caller: Develo
   if (!projectAllows(role, "manage_members")) throw agentXError("FORBIDDEN", MANAGE_MEMBERS_MESSAGE);
   const parsed = PutProjectMemberBodySchema.safeParse(body);
   if (!parsed.success) throw bodyError(parsed.error);
-  const member = await setProjectMember({ ...projectMembersDepsOf(deps), now: () => new Date(deps.now()) }, caller.orgId, name, {
+  const member = await setProjectMember({ ...projectMembersDepsOf(deps), now: () => new Date(deps.now()), ...(deps.audit === undefined ? {} : { audit: deps.audit }) }, caller.orgId, name, {
     requestId: parsed.data.requestId, developerId, role: parsed.data.role, actor: { developerId: caller.developerId },
   });
   logDeveloperEvent({ event: "developer.project_member_set", orgId: caller.orgId, project: name, role: member.role });
@@ -1069,7 +1077,7 @@ async function deleteProjectMember(deps: DeveloperRouteDependencies, caller: Dev
   if (!projectAllows(role, "manage_members")) throw agentXError("FORBIDDEN", MANAGE_MEMBERS_MESSAGE);
   const parsed = RemoveProjectMemberBodySchema.safeParse(body);
   if (!parsed.success) throw bodyError(parsed.error);
-  const removed = await removeProjectMember({ ...projectMembersDepsOf(deps), now: () => new Date(deps.now()) }, caller.orgId, name, {
+  const removed = await removeProjectMember({ ...projectMembersDepsOf(deps), now: () => new Date(deps.now()), ...(deps.audit === undefined ? {} : { audit: deps.audit }) }, caller.orgId, name, {
     requestId: parsed.data.requestId, developerId, actor: { developerId: caller.developerId },
   });
   logDeveloperEvent({ event: "developer.project_member_removed", orgId: caller.orgId, project: name, removed: String(removed.removed) });
@@ -1417,12 +1425,17 @@ export function developerTaskRouteDependencies(
 }
 
 export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
+  // The browser pages sign in with the opaque review session cookie, re-read (with the membership) on every request.
+  const authenticateSession = async (sessionId: string) => {
+    try { return await authenticateDeveloperSessionId(deps, sessionId); }
+    catch { return undefined; }
+  };
+  // The audit page (Task 13): a read-only view for the org's owners and admins; the org is the session's own.
+  if (isAuditViewPath(url.pathname)) {
+    return createAuditViewPage({ origin: new URL(deps.developer.issuer).origin, authenticateSession, ledger: deps.auditLedger })(request, url);
+  }
   if (url.pathname.startsWith("/review/")) {
     if (deps.tasks === undefined) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
-    const authenticateSession = async (sessionId: string) => {
-      try { return await authenticateDeveloperSessionId(deps, sessionId); }
-      catch { return undefined; }
-    };
     // Task 18: the read-only task page and its "moved on" check; every other /review/ path is the PR-feedback review.
     // Spec 061 slice 2: the page's JSON API is matched here too, so the PR-feedback page never sees its paths.
     if (TASK_PAGE.test(url.pathname) || TASK_PEOPLE_CONFIRMATION.test(url.pathname) || TASK_STATUS.test(url.pathname) || TASK_PAGE_API_PREFIX.test(url.pathname)) {
@@ -1528,6 +1541,12 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   if (url.pathname === CHATGPT_CONNECTION_PATH || url.pathname === `${CHATGPT_CONNECTION_PATH}/finish`) {
     return routeChatGptConnection(deps, caller, request, url);
+  }
+  // The audit log: the org is the session's, and owners and admins only (the route checks the role before it says anything else).
+  if (isAuditOrgPath(url.pathname)) {
+    const reply = await routeAuditRequest(deps.auditLedger, { developerId: caller.developerId, orgId: caller.orgId, orgRole: caller.orgRole },
+      { method: request.method, body: request.method === "POST" ? jsonBody(request) : {}, requestId: request.requestId }, url);
+    return reply.status === 200 ? reply.body : new StatusReply(reply.status, reply.body);
   }
   throw agentXError("NOT_FOUND", "route not found");
 }
@@ -1670,7 +1689,7 @@ async function changeMemberRole(deps: DeveloperRouteDependencies, caller: Develo
   if (caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can change roles");
   const parsed = ChangeRoleBodySchema.safeParse(body);
   if (!parsed.success) throw bodyError(parsed.error);
-  await deps.orgs.setRole({ orgId: caller.orgId, developerId, role: parsed.data.role });
+  await deps.orgs.setRole({ orgId: caller.orgId, developerId, role: parsed.data.role, by: { kind: "member", id: caller.developerId }, requestId: parsed.data.requestId });
   logDeveloperEvent({ event: "developer.org_role_changed", orgId: caller.orgId, role: parsed.data.role });
   return { developerId, role: parsed.data.role };
 }
@@ -1711,7 +1730,7 @@ async function removeOrganizationMember(deps: DeveloperRouteDependencies, caller
   if (caller.orgRole === "admin" && target.role !== "member") throw agentXError("FORBIDDEN", "an admin can remove members only; ask an owner to remove an owner or admin");
   const store = signInStoreOf(deps);
   const [record, emails] = await Promise.all([store.getDeveloper(developerId), emailsOf(store, developerId)]);
-  await deps.orgs.removeMember({ orgId: caller.orgId, developerId, emails, ban: deps.cloud !== true, expectedRole: target.role });
+  await deps.orgs.removeMember({ orgId: caller.orgId, developerId, emails, ban: deps.cloud !== true, expectedRole: target.role, by: { kind: "member", id: caller.developerId } });
   await endSessionsAfterRemoval(deps, developerId);
   const name = record?.displayName ?? "That person";
   logDeveloperEvent({ event: "developer.org_member_removed", orgId: caller.orgId, role: target.role, banned: String(deps.cloud !== true) });
@@ -1737,9 +1756,10 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
   if (sole) {
     await deps.orgs.closeOrg(caller.orgId, {
       archiveProjects: deps.closeOrgHooks?.archiveProjects ?? ((orgId) => archiveOrgProjects(archiveDepsOf(deps), orgId, { developerId: caller.developerId })), clearEgress: deps.closeOrgHooks?.clearEgress ?? ((orgId) => clearOrgEgress(egressDepsOf(deps), orgId)), emails,
+      by: { kind: "member", id: caller.developerId },
     });
   } else {
-    await deps.orgs.removeMember({ orgId: caller.orgId, developerId: caller.developerId, emails, ban: false });
+    await deps.orgs.removeMember({ orgId: caller.orgId, developerId: caller.developerId, emails, ban: false, by: { kind: "member", id: caller.developerId } });
   }
   await endSessionsAfterRemoval(deps, caller.developerId);
   logDeveloperEvent({ event: "developer.org_left", orgId: caller.orgId, role: caller.orgRole, closed: String(sole) });
@@ -1748,7 +1768,7 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
 
 function budgetDependencies(deps: DeveloperRouteDependencies): BudgetDependencies {
   if (deps.modelAccess === undefined) throw agentXError("NOT_FOUND", "budgets are not set up in this deployment");
-  return { documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, cloud: deps.cloud === true };
+  return { documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, cloud: deps.cloud === true, ...(deps.audit === undefined ? {} : { audit: deps.audit }) };
 }
 
 /** What the caller and their org have spent this month, and their limits: LiteLLM's figures (ruling R22), which a soft cap can leave over the limit (ruling R23). */

@@ -7,7 +7,7 @@ import { PROTECTED_PARTS, type DeployEvent, type DeployRequest, type StackDeploy
 import { currentLockHolder, withEnvironmentLock } from "../environments/lock.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 import { readEnvironmentSettings, writeEnvironmentSettings, type EnvironmentSettings } from "../environments/settings.js";
-import { CLOUD_NEEDS_CDK_MESSAGE } from "./answer-schemas.js";
+import { assertAuditLockNotLowered, CLOUD_NEEDS_CDK_MESSAGE } from "./answer-schemas.js";
 import { assertModelsServedByProxy } from "./proxy-models.js";
 import { installOrder, OPERATOR_PARAMETERS, SECRET_PARAMETERS, stackParameters, upgradeOrder, type DeployPart, type InstallAnswers, type StackOutputs } from "./parameters.js";
 import type { LoadedRelease } from "./release.js";
@@ -235,6 +235,16 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
     const existing = await readEnvironmentSettings(store, env);
     assertDeployAllowed(existing, mode, engine, input.parts, env, answers.cloud === true);
 
+    // The audit ledger's lock only moves up, and only when someone asks. The deployed profile is read from the control
+    // plane stack's parameters (the same reader an upgrade uses to keep the operator's settings): an explicit move down
+    // is refused before any stack deploys, and answers that leave the profile out keep the deployed one below, in every
+    // mode and for any subset of parts, so a missing answer can never change the lock (the template default is production).
+    let deployedAuditLock: string | undefined;
+    if (deploySet.has("control-plane") && input.deployedParameters !== undefined) {
+      deployedAuditLock = (await input.deployedParameters(environmentStackName(env, "control-plane")))?.AuditLockProfile;
+      assertAuditLockNotLowered(deployedAuditLock, answers.auditLock);
+    }
+
     const key = await callbackSigningKey(secrets, env);
 
     // Extra defense-in-depth, not itself the F24 "only the keys the template declares" fix (that is
@@ -301,6 +311,15 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
       let parameters = part === "control-plane" && developerSignIn !== undefined
         ? withDeclaredSignIn(rawParameters, declaredFor("control-plane"))
         : rawParameters;
+      // Nobody chose a profile in this deploy: the deployed one stays (an upgrade does the same through OPERATOR_PARAMETERS).
+      if (part === "control-plane" && mode !== "upgrade" && deployedAuditLock !== undefined && !Object.hasOwn(parameters, "AuditLockProfile")) {
+        parameters = { ...parameters, AuditLockProfile: deployedAuditLock };
+      }
+      // A release from before the ledger has no AuditLockProfile; CloudFormation refuses a parameter its template lacks.
+      if (part === "control-plane" && Object.hasOwn(parameters, "AuditLockProfile")) {
+        const declared = declaredFor("control-plane");
+        if (declared !== undefined && !declared.has("AuditLockProfile")) parameters = Object.fromEntries(Object.entries(parameters).filter(([name]) => name !== "AuditLockProfile"));
+      }
       if (mode === "upgrade" && OPERATOR_PARAMETERS[part].length > 0) {
         // The F6 guard above already refused this before anything deployed. Never skip carrying the
         // parameters: skipping would reset them to the template defaults, the bug this code prevents.

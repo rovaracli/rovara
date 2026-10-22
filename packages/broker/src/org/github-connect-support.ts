@@ -3,7 +3,8 @@
 // Secrets: the user token and the authorization code are never logged or stored.
 import { createHash } from "node:crypto";
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, githubConnectStateKey, type OrgId, type OrgRecord, type OrgRole } from "@agentx/contracts";
+import { agentXError, githubConnectStateKey, trialGithubKey, type OrgId, type OrgRecord, type OrgRole } from "@agentx/contracts";
+import type { AuditRuntime } from "../audit/outbox.js";
 import type { GitHubInstallation, GitHubInstallationRepository, GitHubTokenScope } from "../github-app.js";
 
 export const GITHUB_ISSUER = "https://github.com";
@@ -74,6 +75,8 @@ export interface GithubConnectionDependencies {
   fetch?: typeof fetch;
   /** Event names, ids and error names only. */
   log?: (entry: Record<string, unknown>) => void;
+  /** The Audit Ledger's outbox (Task 18): a connection, a disconnect and GitHub's own changes are recorded in the transaction that makes them. Absent on a legacy install. */
+  audit?: AuditRuntime;
 }
 
 export interface PendingBinding {
@@ -130,6 +133,18 @@ export async function consumeState(deps: GithubConnectionDependencies, stateHash
     if (conditionFailed(error)) return false;
     throw error;
   }
+}
+
+/**
+ * What unlocking the org's trial with this GitHub account will answer: `connected_trial_used` when the account already started another org's trial.
+ * The unlock runs after the bind commits (the confirmation) or from the notice outbox after it (a request bound by GitHub's webhook), so the audit
+ * event of the bind says what the unlock will answer, read just before. Two orgs binding with one account at the same moment can both read no claim:
+ * the loser's event then says `connected` and its unlock finds the trial used. Only the fact is affected; the claim stays the authority.
+ */
+export async function expectedTrialResult(deps: GithubConnectionDependencies, org: OrgRecord | undefined, githubUserId: string): Promise<"connected" | "connected_trial_used"> {
+  if (org?.plan !== "trial" || org.trialUnlockedAt !== undefined) return "connected";
+  const claim = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: trialGithubKey(githubUserId), ConsistentRead: true })) as { Item?: { orgId?: unknown } };
+  return claim.Item !== undefined && claim.Item.orgId !== org.orgId ? "connected_trial_used" : "connected";
 }
 
 export const isOwnerOrAdmin = (role: OrgRole) => role === "owner" || role === "admin";

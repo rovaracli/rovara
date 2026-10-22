@@ -1,7 +1,10 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { WORKFLOW_BLOCK_REASONS, WorkflowFeedbackBundleSchema, WorkflowFeedbackBundleCommentsSchema, WorkflowFeedbackBundleRefSchema, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles, type OrgId, type WorkflowFeedbackBundle, type WorkflowFeedbackBundleRef, type WorkflowFeedbackThreadObservation, observeWorkflowPullRequest, observeWorkflowPullRequestMergedWithFix, recordWorkflowPullRequestHeadTrees, recordWorkflowPullRequestUpdate, workflowFollowsOnlyMerge, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowFeedbackBundleSchema, WorkflowFeedbackBundleCommentsSchema, WorkflowFeedbackBundleRefSchema, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles, type OrgId, type WorkflowFeedbackBundle, type WorkflowFeedbackBundleRef, type WorkflowFeedbackThreadObservation, observeWorkflowPullRequest, observeWorkflowPullRequestMergedWithFix, recordWorkflowPullRequestHeadTrees, recordWorkflowPullRequestUpdate, workflowFollowsOnlyMerge, type WorkflowSnapshot, type AuditEventInput, auditPullRequestId } from "@agentx/contracts";
+import { auditOccurrence, auditPullRequestMerged } from "../audit/events.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPending, tryAuditEvents, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { githubWorkflowPullRequestKey, type GithubWorkflowPullRequestRecord } from "../developer/task-records.js";
 import { parseGitHubRepository, type GitHubPullRequestFeedback } from "../github-app.js";
 import { isConditional } from "./broker-shared.js";
@@ -156,7 +159,11 @@ export interface ReconcileTaskPullRequestFeedbackInput {
   getCurrentFeedback(repositoryUrl: string, number: number, orgId: OrgId | undefined): Promise<GitHubPullRequestFeedback>;
   /** Writes exact payload bytes to immutable content-addressed storage; never overwrites an artifact. */
   persistBundle(bundle: WorkflowFeedbackBundle, bytes: string, sha256: string): Promise<string>;
-  saveWorkflow(taskId: string, expectedRevision: number, workflow: WorkflowSnapshot): Promise<void>;
+  /**
+   * Saves the workflow if its revision is still `expectedRevision`. `extraItems` are written in the same transaction (the
+   * pending audit items of what the save records); none or an empty list is the plain conditional update.
+   */
+  saveWorkflow(taskId: string, expectedRevision: number, workflow: WorkflowSnapshot, extraItems?: TransactItem[]): Promise<void>;
   /** The head AgentX last pushed to a pull request (its pull request record), when it has one. */
   recordedHead?(workspaceId: string, repositoryId: string, number: number): Promise<string | undefined>;
   /** A commit's parents, as GitHub says. */
@@ -168,9 +175,14 @@ export interface ReconcileTaskPullRequestFeedbackInput {
   reviewedComments?(taskId: string, bundleDigests: readonly string[]): Promise<Array<{ id: string; updatedAt: string; bodyDigest: string }> | undefined>;
   /**
    * Saves the workflow with the fix pushes it records that were taken for failed but landed, together with each pull
-   * request's link to the task (now naming the fix) and its pull request record (now at the landed head).
+   * request's link to the task (now naming the fix) and its pull request record (now at the landed head). `extraItems` as for
+   * `saveWorkflow`.
    */
-  saveLandedPushes?(taskId: string, expectedRevision: number, workflow: WorkflowSnapshot, pushes: readonly LandedFixPush[]): Promise<void>;
+  saveLandedPushes?(taskId: string, expectedRevision: number, workflow: WorkflowSnapshot, pushes: readonly LandedFixPush[], extraItems?: TransactItem[]): Promise<void>;
+  /** The Audit Ledger's outbox; absent on a legacy install, where a merge records nothing. */
+  audit?: AuditRuntime;
+  /** The org a task belongs to, for its merge's audit event, when the task's record names none. */
+  auditOrgId?(taskId: string): Promise<OrgId>;
   /** Aggregate-only telemetry callback; must not add task/comment/user context. */
   measure?(entry: FeedbackReviewMeasure): void;
   now: string;
@@ -178,6 +190,34 @@ export interface ReconcileTaskPullRequestFeedbackInput {
 
 /** How long after AgentX records a push GitHub's read may still show the head before it (it takes seconds; this is generous). */
 export const GITHUB_HEAD_LAG_WINDOW_MS = 10 * 60_000;
+
+/**
+ * The `pull_request.merged` event of each pull request this save moves to MERGED (its record changes from anything else; a
+ * redelivered merge changes nothing and so records nothing). The chain names the pull request by an opaque id and not by
+ * the repository's name, which goes in `details`; the observer is Rovara, because GitHub's read does not say who merged.
+ * A builder or org lookup that fails is logged and the save goes on without the event. At most 32 events (a workflow's cap on
+ * pull requests), so even with a landed-push save (1 + 2 x 32 items) the transaction stays within the 100 items DynamoDB allows.
+ */
+function mergedPullRequestEvents(
+  input: ReconcileTaskPullRequestFeedbackInput,
+  task: { orgId?: OrgId | undefined },
+  taskId: string,
+  next: WorkflowSnapshot,
+  reads: ReadonlyArray<{ pr: { repositoryId: string; number: number; state: string }; fullName: string }>,
+): Promise<AuditEventInput[]> {
+  return tryAuditEvents(input, async () => {
+    const merged = reads.filter(({ pr }) => pr.state !== "MERGED"
+      && next.pullRequests?.some(after => after.repositoryId === pr.repositoryId && after.number === pr.number && after.state === "MERGED") === true);
+    if (merged.length === 0) return [];
+    const orgId = task.orgId ?? await input.auditOrgId?.(taskId);
+    if (orgId === undefined) throw new Error("the task's org is unknown");
+    return merged.map(({ pr, fullName }) => auditPullRequestMerged({
+      orgId, actor: { kind: "system", id: "rovara" }, occurredAt: input.now, occurrence: auditOccurrence(fullName, String(pr.number)),
+      pullRequestId: auditPullRequestId(fullName, pr.number), number: pr.number,
+      details: [{ subject: "org", fields: { repository: fullName } }],
+    }));
+  });
+}
 
 /** Event payloads are hints only. Recollect all linked PRs on every CAS retry. */
 export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullRequestFeedbackInput): Promise<boolean> {
@@ -227,8 +267,10 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
           candidateDigest: pr.candidateDigest, state, source: "GITHUB_API", observedAt: input.now }, input.now);
       }
       if (next === current) return false;
+      const events = await mergedPullRequestEvents(input, task, linked.taskId, next, reads);
       try {
-        await input.saveWorkflow(linked.taskId, current.revision, next);
+        await input.saveWorkflow(linked.taskId, current.revision, next, events.flatMap(event => auditPending(input, event)));
+        await flushAuditEvents(input, events);
         return true;
       } catch (error) {
         if (!isConditional(error)) throw error;
@@ -429,9 +471,12 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
       }
     }
     if (headTrees.length > 0) next = recordWorkflowPullRequestHeadTrees(next, headTrees, input.now);
+    const events = await mergedPullRequestEvents(input, task, linked.taskId, next, reads);
+    const extraItems = events.flatMap(event => auditPending(input, event));
     try {
-      if (recordedPushes.length > 0) await input.saveLandedPushes!(linked.taskId, current.revision, next, recordedPushes);
-      else await input.saveWorkflow(linked.taskId, current.revision, next);
+      if (recordedPushes.length > 0) await input.saveLandedPushes!(linked.taskId, current.revision, next, recordedPushes, extraItems);
+      else await input.saveWorkflow(linked.taskId, current.revision, next, extraItems);
+      await flushAuditEvents(input, events);
       if (reopenedFeedback) {
         const measure = feedbackReopenedMeasure(input.now);
         if (measure !== undefined) input.measure?.(measure);

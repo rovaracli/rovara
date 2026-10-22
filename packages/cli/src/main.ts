@@ -28,6 +28,7 @@ import { SSMClient } from "@aws-sdk/client-ssm";
 import { STSClient } from "@aws-sdk/client-sts";
 import { Command, Option } from "commander";
 import { authorizeCredential, expectedAccountEmail, secretsManagerAuthorizeSecrets, type AuthorizeSecrets } from "./admin/authorize.js";
+import { fetchStaffRecords, staffExportTransport, staffJustification, staffOrgId } from "./admin/audit.js";
 import { budgetText, parseBudgetUsd, setOrgBudget } from "./admin/budget.js";
 import { decideEgress, decisionText, listPendingEgress, parseOwnerArgument, pendingText } from "./admin/egress.js";
 import { listCredentials, registerCredential } from "./admin/credential.js";
@@ -45,6 +46,10 @@ import { loginWithPkce, openSystemBrowser, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
 import { archiveProjectQuestion, archiveProjectText, changeDeveloperProjectArchive, changeDeveloperProjectSettings, createDeveloperProject, restoreProjectText, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
+import {
+  assertNewFile, auditLogQuery, auditLogText, auditPageUrl, developerExportTransport, exportAuditFile, exportRange, fetchAuditRecords, jsonSafe, verifyAuditExport,
+  type AuditLogFlags, type AuditRuntime,
+} from "./developer/audit.js";
 import { projectAddMember, projectAddMemberText, projectMembers, projectMembersText, projectRemoveMember, projectRemoveMemberText } from "./developer/project-members.js";
 import { orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
@@ -74,7 +79,7 @@ import { parseConnectorsFlag } from "./init/finish-steps.js";
 import { runEnvAdopt, runEnvList, runEnvUse } from "./environments/commands.js";
 import { ssmParameterStore, type ParameterStore } from "./environments/parameter-store.js";
 import { settingsParameterName, type EnvironmentSettings } from "./environments/settings.js";
-import { formatError, formatSuccess } from "./output.js";
+import { ReportedFailure, formatError, formatSuccess } from "./output.js";
 import { realSetupContext, type SetupCommandContext } from "./setup/command-context.js";
 import { registerSetupCommands } from "./setup/cli.js";
 import { registerConfigCommands } from "./config/cli.js";
@@ -168,6 +173,8 @@ export interface CliDependencies {
   login?: { openBrowser?: (url: string) => Promise<void> };
   /** `chatgpt connect` overrides, for tests: another port, no browser, and no terminal check. */
   chatgpt?: { port?: number; openBrowser?: (url: string) => Promise<void>; isInteractive?: () => boolean };
+  /** `agentx audit` overrides, for tests: no waiting between export polls, fixed request IDs, and no browser. */
+  audit?: { sleep?: (ms: number) => Promise<void>; newRequestId?: () => string; openBrowser?: (url: string) => Promise<void> };
   /** `rovara loop` overrides, for tests: every outside program (gh, git, tmux, claude) and how to run this CLI. */
   loop?: { exec?: Exec; cliCommand?: readonly string[] };
   /** `agentx mcp` reads MCP messages from here; process.stdin by default. */
@@ -491,6 +498,70 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const globals = globalOptions(command);
       const result = await chatGptDisconnect(developerSession(), developerEnv(command));
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, ...result.connection }, true) : chatGptDisconnectText(result));
+    });
+
+  // The audit log (Task 14): an organization's owners and admins read, export and check it with their own sign-in.
+  const auditRuntime = (): AuditRuntime => ({
+    fetch: services.fetchImplementation,
+    sleep: dependencies.audit?.sleep ?? ((ms) => new Promise<void>((resolve) => { setTimeout(resolve, ms); })),
+    newRequestId: dependencies.audit?.newRequestId ?? randomUUID,
+  });
+  const collectTrust = (value: string, previous: string[]): string[] => [...previous, value];
+  const audit = program.command("audit").description("read, export and check your organization's audit log (organization owners and admins)");
+  audit
+    .command("log")
+    .description("show the records of your organization's audit log, with the names of the people in them")
+    .option("--from <record-or-time>", "start at this record number, or at this time, such as 2026-10-20T12:00:00Z")
+    .option("--to <record-or-time>", "stop at this record number, or at this time")
+    .option("--action <action>", "only records of this action, such as member.invited")
+    .option("--limit <count>", "how many records to show, 1 to 200 (50 by default)")
+    .option("--cursor <cursor>", "continue after the last page, with the cursor it printed")
+    .action(async (options: AuditLogFlags, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await fetchAuditRecords(developerSession(), developerEnv(command), auditLogQuery(options));
+      services.stdout.write(globals.json ? formatSuccess(jsonSafe({ env: result.env, url: result.url, ...result.records }), true) : auditLogText(result.records));
+    });
+  audit
+    .command("export")
+    .description("export a range of records to a file you can keep and check without trusting Rovara")
+    .option("--from <record>", "the first record number to export")
+    .option("--to <record>", "the last record number to export (at most 200,000 records)")
+    .option("--with-details", "include the names and other personal details", false)
+    .option("--out <file>", "where to save the export; it is never written over an existing file")
+    .action(async (options: { from?: string; to?: string; withDetails: boolean; out?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const range = exportRange(options.from, options.to);
+      if (options.out === undefined) throw agentXError("CONFIG_INVALID", "say where to save the export: --out <file>");
+      services.stdout.write(await exportAuditFile(developerExportTransport(developerSession(), developerEnv(command)), auditRuntime(), {
+        ...range, withDetails: options.withDetails, out: resolve(options.out), json: globals.json,
+      }));
+    });
+  audit
+    .command("verify")
+    .description("export a range without details and check it here: its chain, seals and timestamps, and with --extends that it continues an older export of yours")
+    .option("--from <record>", "the first record number to check")
+    .option("--to <record>", "the last record number to check (at most 200,000 records)")
+    .option("--extends <file>", "an older export you kept: check that this one keeps its history")
+    .option("--trust <label=pem-file>", "trust this root certificate for the timestamp authority with this label (repeatable)", collectTrust, [] as string[])
+    .option("--out <file>", "also keep the export you checked")
+    .action(async (options: { from?: string; to?: string; extends?: string; trust: string[]; out?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const range = exportRange(options.from, options.to);
+      const result = await verifyAuditExport(developerExportTransport(developerSession(), developerEnv(command)), auditRuntime(), {
+        ...range, trust: options.trust, extendsPath: options.extends, out: options.out === undefined ? undefined : resolve(options.out), json: globals.json,
+      });
+      services.stdout.write(result.text);
+      if (!result.ok) throw new ReportedFailure("VERIFICATION_FAILED", "This export did not pass verification; the report says which checks failed.");
+    });
+  audit
+    .command("open")
+    .description("open the audit log page of your organization in your browser")
+    .option("--no-browser", "print the link instead of opening a browser")
+    .action(async (options: { browser: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const url = await auditPageUrl({ home }, developerEnv(command));
+      if (options.browser) await (dependencies.audit?.openBrowser ?? openSystemBrowser)(url).catch(() => undefined);
+      services.stdout.write(globals.json ? formatSuccess({ url }, true) : `${options.browser ? "Opening" : "Open"} the audit log page: ${url}\nSign in there with the account you use for your organization.\n`);
     });
 
   // Plan 2, Task 4: the people in your organization.
@@ -1217,6 +1288,51 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       services.stderr.write(`${result.exported} change record${result.exported === 1 ? "" : "s"} since ${result.since}\n`);
     });
 
+  // Rovara staff read one organization's audit log (Task 14). The control plane records each read, with this reason, before it reads.
+  const adminAudit = admin.command("audit").description("read an organization's audit log as Rovara staff; every read is recorded in that organization's log with your reason");
+  adminAudit
+    .command("log")
+    .argument("<org>", "the organization's ID")
+    .description("show an organization's audit log records")
+    .option("--reason <text>", "why you are reading this log (1 to 300 characters); recorded in the organization's log")
+    .option("--ticket <id>", "a ticket or case reference, such as SUP-42")
+    .option("--from <record-or-time>", "start at this record number, or at this time, such as 2026-10-20T12:00:00Z")
+    .option("--to <record-or-time>", "stop at this record number, or at this time")
+    .option("--action <action>", "only records of this action")
+    .option("--limit <count>", "how many records to show, 1 to 200 (50 by default)")
+    .option("--cursor <cursor>", "continue after the last page, with the cursor it printed")
+    .action(async (org: string, options: AuditLogFlags & { reason?: string; ticket?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const orgId = staffOrgId(org);
+      const why = staffJustification(options.reason, options.ticket);
+      auditLogQuery(options);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const records = await fetchStaffRecords({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, fetch: services.fetchImplementation }, orgId, why, options);
+      services.stdout.write(globals.json ? formatSuccess(jsonSafe({ orgId, ...records }), true) : auditLogText(records));
+    });
+  adminAudit
+    .command("export")
+    .argument("<org>", "the organization's ID")
+    .description("export a range of an organization's audit log to a file; polls the staff path no more often than every 10 seconds")
+    .option("--reason <text>", "why you are reading this log (1 to 300 characters); recorded in the organization's log")
+    .option("--ticket <id>", "a ticket or case reference, such as SUP-42")
+    .option("--from <record>", "the first record number to export")
+    .option("--to <record>", "the last record number to export (at most 200,000 records)")
+    .option("--with-details", "include the names and other personal details", false)
+    .option("--out <file>", "where to save the export; it is never written over an existing file")
+    .action(async (org: string, options: { reason?: string; ticket?: string; from?: string; to?: string; withDetails: boolean; out?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const orgId = staffOrgId(org);
+      const why = staffJustification(options.reason, options.ticket);
+      const range = exportRange(options.from, options.to);
+      if (options.out === undefined) throw agentXError("CONFIG_INVALID", "say where to save the export: --out <file>");
+      const out = resolve(options.out);
+      await assertNewFile(out);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const transport = staffExportTransport({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, fetch: services.fetchImplementation }, orgId, why);
+      services.stdout.write(await exportAuditFile(transport, auditRuntime(), { ...range, withDetails: options.withDetails, out, json: globals.json }));
+    });
+
   registerSetupCommands(program, dependencies.setup ?? realSetupContext({
     parameterStore, fetch: services.fetchImplementation, tokenStore: services.tokenStore, stdout: services.stdout, stderr: services.stderr, home,
   }));
@@ -1527,6 +1643,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--github-sign-in-client-secret-arn <arn>", "with --rovara-cloud: the Secrets Manager secret holding the GitHub OAuth client secret as {\"clientSecret\": ...}")
     .option("--budget <usd>", "monthly AWS budget in whole US dollars; 0 for none (default 100)")
     .addOption(new Option("--budget-scope <scope>", "tag: costs tagged agentx:env; account: the whole account").choices(["tag", "account"]))
+    .addOption(new Option("--audit-lock <profile>", "production: audit records are locked for 3 years (default); trial: locked for 1 day and removable by an operator. An install can move from trial to production, never back").choices(["production", "trial"]))
     .option("--github-account <login>", "GitHub organization or user that will own the AgentX GitHub App")
     .addOption(new Option("--github-account-type <type>", "whether --github-account is an organization or a personal account").choices(["organization", "user"]))
     .option("--github-app-name <name>", "GitHub App name (unique on GitHub)")
@@ -1811,7 +1928,7 @@ interface InitCommandOptions extends SignInCommandOptions {
   openaiSecretArn?: string; openaiKeyFile?: string; openaiKeyEnv?: string;
   permissionBoundary?: string; operatorPrincipal?: string; orchestratorModel: string; classifierModel: string; workerModel: string;
   alertEmail?: string; alertWebhookFile?: string; alertWebhookEnv?: string; alerts: boolean;
-  budget?: string; budgetScope?: "tag" | "account";
+  budget?: string; budgetScope?: "tag" | "account"; auditLock?: "production" | "trial";
   githubAccount?: string; githubAccountType?: "organization" | "user"; githubAppName?: string;
   githubAppId?: string; githubInstallationId?: string; githubPrivateKeyFile?: string; githubPrivateKeyEnv?: string;
   slackAppName?: string; slackAppPostedMessages?: "accept" | "ignore"; slackInstall?: "installed" | "approval";
@@ -1866,7 +1983,7 @@ function initOptions(globals: GlobalOptions, options: InitCommandOptions, comman
     alertEmail: options.alertEmail,
     alertWebhook: secretSource(options.alertWebhookFile, options.alertWebhookEnv),
     alerts: typed("alerts", options.alerts),
-    budget: options.budget, budgetScope: options.budgetScope,
+    budget: options.budget, budgetScope: options.budgetScope, auditLock: options.auditLock,
     githubAccount: options.githubAccount, githubAccountType: options.githubAccountType, githubAppName: options.githubAppName,
     slackAppName: options.slackAppName, slackAppPostedMessages: options.slackAppPostedMessages,
     workerImage: options.workerImage, slackImage: options.slackImage, bootStage2Sha256: options.bootStage2Sha256,

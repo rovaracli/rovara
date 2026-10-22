@@ -52,6 +52,10 @@ export const AgentXErrorCodeSchema = z.enum([
   "AGENT_BUDGET_REQUIRED",
   "TEST_ALLOWANCE_USED",
   "APPROVAL_CLOSED",
+  "AUDIT_RANGE_INVALID",
+  "AUDIT_REASON_REQUIRED",
+  "AUDIT_UNAVAILABLE",
+  "AUDIT_FILTER_TOO_WIDE",
   "PROJECT_NAME_TAKEN",
   "PROJECT_ARCHIVED",
   "GITHUB_NOT_CONNECTED",
@@ -84,9 +88,9 @@ export function errorStatus(code: AgentXErrorCode): number {
   if (code === "REAUTH_REQUIRED" || code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED" || code === "AGENT_NOT_ON_PROJECT" || code === "AGENT_TOOL_NOT_GRANTED" || code === "MODEL_NOT_ALLOWED" || code === "REMOVED_FROM_ORG" || code === "GITHUB_NOT_CONNECTED") return 403;
   if (code === "NOT_FOUND" || code === "PROJECT_NOT_FOUND" || code === "TASK_NOT_FOUND") return 404;
   if (code === "BUDGET_EXCEEDED" || code === "ORG_BUDGET_EXCEEDED" || code === "MACHINE_TIME_EXCEEDED" || code === "PROJECT_BUDGET_EXCEEDED" || code === "AGENT_BUDGET_EXCEEDED" || code === "TEST_ALLOWANCE_USED") return 402;
-  if (code === "CONFIG_INVALID") return 400;
+  if (code === "CONFIG_INVALID" || code === "AUDIT_RANGE_INVALID" || code === "AUDIT_REASON_REQUIRED" || code === "AUDIT_FILTER_TOO_WIDE") return 400;
   if (code === "TOO_MANY_REQUESTS") return 429;
-  if (code === "RUNTIME_UNAVAILABLE" || code === "SLACK_UNAVAILABLE" || code === "MODEL_PROXY_UNAVAILABLE") return 503;
+  if (code === "RUNTIME_UNAVAILABLE" || code === "SLACK_UNAVAILABLE" || code === "MODEL_PROXY_UNAVAILABLE" || code === "AUDIT_UNAVAILABLE") return 503;
   return 409;
 }
 

@@ -12,6 +12,8 @@ import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { createRemoteJWKSet, type JWTVerifyGetKey } from "jose";
 import { singleOrgIdForEnv, type OrgId, type ChannelByNameRequest, type ChannelInfoRequest, type ChannelMembersRequest, type DeveloperSignInMethod, type EndDeveloperSessionsRequest, type SlackAuthCheckRequest, type SlackUserByEmailRequest, type TaskChannelPeopleRequest, type TaskPersonProofRequest, type StartIdentityLinkRequest, type UnlinkIdentityRequest } from "@agentx/contracts";
 import { DecideStore } from "../developer/decide-session.js";
+import { auditRuntimeFromEnvironment } from "../audit/runtime.js";
+import type { AuditRuntime } from "../audit/outbox.js";
 import { ProviderNotConfiguredError, githubSignInProvider, oidcSignInProvider, slackSignInProvider, type SignInProvider } from "../developer/providers.js";
 import { createDeveloperIdentityHandler, type DeveloperIdentityConfig } from "../developer/server.js";
 import { slackDirectory } from "../developer/slack-directory.js";
@@ -190,6 +192,18 @@ export function singleOrgIdFor(config: { env: string; cloud?: unknown }): OrgId 
   return config.cloud === undefined ? singleOrgIdForEnv(config.env) : undefined;
 }
 
+/**
+ * The two stores the sign-in function reads and writes with. With a ledger (`audit`), a sign-in method linked or unlinked and an invite
+ * accepted add their audit item to the transaction that does them (Task 18); without one they write what they always did.
+ */
+export function developerIdentityStores(input: { documentClient: DynamoDBDocumentClient; stateTableName: string; signInTableName: string; now: () => number; audit?: AuditRuntime }): { orgs: OrgStore; store: DeveloperSignInStore } {
+  const audit = input.audit === undefined ? {} : { audit: input.audit };
+  return {
+    orgs: new OrgStore({ documentClient: input.documentClient, tableName: input.stateTableName, now: input.now, ...audit }),
+    store: new DeveloperSignInStore({ documentClient: input.documentClient, tableName: input.signInTableName, now: input.now, ...audit }),
+  };
+}
+
 let built: ReturnType<typeof createDeveloperIdentityHandler> | undefined;
 
 function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentityHandler> {
@@ -230,11 +244,14 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
   const stateTableName = required(env, "STATE_TABLE_NAME");
   // Budgets reach the model proxy through its access function (ruling R28). Without MODEL_ACCESS_FUNCTION_NAME nothing is told
   // at sign-in, and the broker syncs lazily before the first key instead.
-  const orgs = new OrgStore({ documentClient, tableName: stateTableName, now });
+  const audit = auditRuntimeFromEnvironment(env, { component: "developer-identity", now });
+  const { orgs, store } = developerIdentityStores({
+    documentClient, stateTableName, signInTableName: required(env, "DEVELOPER_SIGNIN_TABLE_NAME"), now,
+    ...(audit === undefined ? {} : { audit }),
+  });
   const modelAccessFunction = env.MODEL_ACCESS_FUNCTION_NAME ?? "";
   const modelAccess = modelAccessFunction === "" ? undefined : new ModelAccessInvoker({ functionName: modelAccessFunction, lambda: new LambdaClient(region) });
   const singleOrg = singleOrgIdFor(config);
-  const store = new DeveloperSignInStore({ documentClient, tableName: required(env, "DEVELOPER_SIGNIN_TABLE_NAME"), now });
   // Plan 2, Task 8: the notice of a newly linked sign-in method goes out through the cloud sign-in's SES sender (empty: no sender, no notice).
   // SES identities are regional, so the client sends in the region of the sender's identity ARN when the stack names one.
   const noticeFrom = env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";

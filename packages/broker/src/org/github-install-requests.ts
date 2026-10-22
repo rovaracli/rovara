@@ -37,9 +37,12 @@ import {
   type OrgId,
   type OrgRole,
 } from "@agentx/contracts";
+import { auditGithubConnected } from "../audit/events.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPending, tryAuditEvent } from "../audit/outbox.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import {
-  GITHUB_ISSUER, conditionFailed, consumeState, errorName, exchangeCode, failedIndexes, isOwnerOrAdmin, log, readState, revokeUserToken, userGet,
+  GITHUB_ISSUER, conditionFailed, consumeState, errorName, exchangeCode, expectedTrialResult, failedIndexes, isOwnerOrAdmin, log, readState, revokeUserToken, userGet,
   type GithubConnectionDependencies,
 } from "./github-connect-support.js";
 
@@ -294,6 +297,16 @@ export async function bindRequestedInstallation(
     approver: { githubUserId: String(sender.id), login: sender.login },
     installationId: installation.id, accountLogin: current.account.login, deliveryId,
   });
+  // The connection is recorded in the bind's own transaction. Both GitHub logins are personal data: the requester's belongs to the person
+  // who asked (erased with them), the approver's and the account's to the org.
+  const event = await tryAuditEvent(deps, async () => auditGithubConnected({
+    orgId: request.orgId, actor: { kind: "member", id: request.developerId }, occurredAt: at, occurrence: deliveryId,
+    installationId: String(installation.id), accountType: "Organization", result: await expectedTrialResult(deps, await deps.orgs.getOrg(request.orgId), requesterId),
+    details: [
+      { subject: request.developerId, fields: { requesterGithubLogin: requester.login } },
+      { subject: "org", fields: { accountLogin: current.account.login, approverGithubLogin: sender.login } },
+    ],
+  }));
   // What must follow the bind, written with it: a commit without this item cannot happen, so the notice and the unlock are never lost.
   const outbox: GithubInstallNoticeOutboxRecord = {
     orgId: request.orgId, requesterDeveloperId: request.developerId, requesterGithubUserId: requesterId, requesterLogin: requester.login,
@@ -327,6 +340,7 @@ export async function bindRequestedInstallation(
           ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":owner": "owner", ":admin": "admin" },
         } },
         { Put: { TableName: deps.tableName, Item: { ...githubInstallNoticeOutboxKey(deliveryId), entityType: "GITHUB_INSTALL_NOTICE_OUTBOX", ...outbox }, ConditionExpression: "attribute_not_exists(pk)" } },
+        ...(event === undefined ? [] : auditPending(deps, event)),
       ],
     }));
   } catch (error) {
@@ -339,6 +353,7 @@ export async function bindRequestedInstallation(
     return ignored("request_changed", { orgId: request.orgId });
   }
   log(deps, { event: "github.install_request_bound", orgId: request.orgId, installationId: installation.id });
+  if (event !== undefined) await flushAuditEvents(deps, [event]);
 
   // After the commit: send now. Whatever fails here is not lost: the item stays, and the hourly sweep retries it. This never throws.
   try {

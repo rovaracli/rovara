@@ -9,8 +9,11 @@ import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/l
 import { z } from "zod";
 import {
   DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, TASK_BUDGET_EXCEEDED_PREFIX,
-  AgentXError, agentXError, budgetSyncedKey, orgSettingsKey, type BudgetScope, type OrgId, type OrgKey,
+  AgentXError, agentXError, budgetSyncedKey, orgSettingsKey, type AuditActor, type AuditEventInput, type BudgetScope, type OrgId, type OrgKey,
 } from "@agentx/contracts";
+import { auditBudgetChanged, auditOccurrence } from "../audit/events.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditTransact, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
 import type { MintKeyInput, MintedKey, ModelAccess, SpendFigures } from "../model-proxy/access.js";
 import type { OrgStore } from "./store.js";
 import { readTopUp, withTopUp } from "../spend/top-ups.js";
@@ -33,6 +36,8 @@ export interface BudgetDependencies {
   now?: () => number;
   /** Ruling R47: true on a cloud install, whose orgs start with the placeholder monthly limits; any other install's orgs start with none. */
   cloud?: boolean;
+  /** The Audit Ledger's outbox; absent on a legacy install, where a budget change records nothing. */
+  audit?: AuditRuntime;
 }
 
 export interface AdmissionDependencies extends BudgetDependencies {
@@ -92,12 +97,76 @@ export function withLimits(limits: { orgMonthlyUsd: number | undefined; memberDe
 /** The member's monthly limit, or undefined when they have none (ruling R47). */
 export const memberLimitOf = (settings: OrgBudgetSettings, developerId: string): number | undefined => settings.memberOverrides[developerId] ?? settings.memberDefaultMonthlyUsd;
 
-/** Writes the settings whole. The caller has validated them; `syncBudgets` then tells the proxy. */
-export async function writeBudgets(deps: BudgetDependencies, orgId: OrgId, settings: OrgBudgetSettings, updatedBy: string, at: string): Promise<void> {
-  await deps.documentClient.send(new PutCommand({
-    TableName: deps.tableName,
-    Item: { ...orgSettingsKey(orgId, "BUDGET"), entityType: "ORG_BUDGET", ...settings, updatedBy, updatedAt: at },
+/**
+ * The most `budget.changed` events one change may record. They commit in the same transaction as the settings, which holds
+ * 100 items: the write and at most 98 pending items (one item is left spare).
+ */
+export const BUDGET_CHANGE_EVENTS_MAX = 98;
+
+const toCents = (usd: number | undefined): number | undefined => usd === undefined ? undefined : Math.round(usd * 100);
+
+/**
+ * One `budget.changed` event for each limit this write changes: the org's, the members' default, and each member whose own
+ * limit moved (from what they had to what they have now, a removed override falling back to the default; an override that
+ * equals the default figure, added or removed, moves nothing). A member whose only change is the default is covered by the
+ * default's event. Each event has its own id, from the write's time and writer plus the limit it is about.
+ */
+function budgetChangeEvents(input: { orgId: OrgId; before: OrgBudgetSettings; after: OrgBudgetSettings; updatedBy: string; at: string; actor: AuditActor }): AuditEventInput[] {
+  const { orgId, before, after, updatedBy, at, actor } = input;
+  const event = (scopeKind: string, field: string, targetId: string, from: number | undefined, to: number | undefined, related?: string[]) => auditBudgetChanged({
+    orgId, actor, occurredAt: at, occurrence: auditOccurrence(at, updatedBy, field, targetId),
+    target: { kind: "budget", id: targetId }, scopeKind, field,
+    ...(from === undefined ? {} : { fromCents: toCents(from)! }), ...(to === undefined ? {} : { toCents: toCents(to)! }),
+    ...(related === undefined ? {} : { related }),
+  });
+  const events: AuditEventInput[] = [];
+  if (before.orgMonthlyUsd !== after.orgMonthlyUsd) events.push(event("org", "org_monthly_limit", orgId, before.orgMonthlyUsd, after.orgMonthlyUsd));
+  if (before.memberDefaultMonthlyUsd !== after.memberDefaultMonthlyUsd) events.push(event("org", "member_default_limit", orgId, before.memberDefaultMonthlyUsd, after.memberDefaultMonthlyUsd));
+  for (const developerId of [...new Set([...Object.keys(before.memberOverrides), ...Object.keys(after.memberOverrides)])].sort()) {
+    const from = memberLimitOf(before, developerId);
+    const to = memberLimitOf(after, developerId);
+    if (from === to) continue;
+    events.push(event("member", "member_monthly_limit", developerId, from, to, [developerId]));
+  }
+  return events;
+}
+
+/**
+ * The events a change would record: none on an install with no ledger, and none (the failure logged) when the settings to
+ * compare with cannot be read or an event cannot be built. `before` is read here when the caller has not.
+ */
+function plannedBudgetEvents(deps: BudgetDependencies, input: { orgId: OrgId; before?: OrgBudgetSettings | undefined; after: OrgBudgetSettings; updatedBy: string; at: string; actor?: AuditActor | undefined }): Promise<AuditEventInput[]> {
+  return tryAuditEvents(deps, async () => budgetChangeEvents({
+    ...input, before: input.before ?? await readBudgets(deps, input.orgId), actor: input.actor ?? { kind: "member", id: input.updatedBy },
   }));
+}
+
+/**
+ * A change that would record more events than fit in the settings' own transaction is refused, not split: the events must
+ * commit with the change or not at all. The message names a count and no value.
+ */
+function refuseUnrecordableChange(events: readonly AuditEventInput[]): void {
+  if (events.length > BUDGET_CHANGE_EVENTS_MAX) {
+    throw agentXError("CONFIG_INVALID", `body: this change would change ${String(events.length)} limits at once and at most ${String(BUDGET_CHANGE_EVENTS_MAX)} can be recorded in one request; change fewer in each`);
+  }
+}
+
+/**
+ * Writes the settings whole. The caller has validated them; `syncBudgets` then tells the proxy. On an install with a ledger the
+ * write is one transaction with a `budget.changed` pending item for each limit it changes, and the events are sent after the
+ * commit. A change of more than `BUDGET_CHANGE_EVENTS_MAX` limits is refused with CONFIG_INVALID before anything is written.
+ * `options.before` is the settings the caller has just read (read here when absent); `options.actor` is who changed them (the
+ * member `updatedBy` when absent).
+ */
+export async function writeBudgets(
+  deps: BudgetDependencies, orgId: OrgId, settings: OrgBudgetSettings, updatedBy: string, at: string,
+  options: { before?: OrgBudgetSettings; actor?: AuditActor } = {},
+): Promise<void> {
+  const item = { ...orgSettingsKey(orgId, "BUDGET"), entityType: "ORG_BUDGET", ...settings, updatedBy, updatedAt: at };
+  const events = await plannedBudgetEvents(deps, { orgId, before: options.before, after: settings, updatedBy, at, actor: options.actor });
+  refuseUnrecordableChange(events);
+  await auditTransact(deps, { Put: { TableName: deps.tableName, Item: item } }, events);
+  await flushAuditEvents(deps, events);
 }
 
 /** A call to the proxy for a budget decision: whatever goes wrong with it, the answer is MODEL_PROXY_UNAVAILABLE, with none of its detail. */
@@ -159,7 +228,7 @@ export const PutBudgetBodySchema = z.object({
  */
 export async function changeBudgets(
   deps: BudgetDependencies & { orgs: Pick<OrgStore, "orgForDeveloper" | "getOrg"> },
-  input: { orgId: OrgId; body: unknown; updatedBy: string; at: string },
+  input: { orgId: OrgId; body: unknown; updatedBy: string; at: string; /** Who is recorded as the changer; the member `updatedBy` when absent. */ actor?: AuditActor },
 ): Promise<OrgBudgetSettings> {
   const parsed = PutBudgetBodySchema.safeParse(input.body);
   if (!parsed.success) {
@@ -188,7 +257,9 @@ export async function changeBudgets(
     orgMonthlyUsd: orgMonthlyUsd ?? before.orgMonthlyUsd,
     memberDefaultMonthlyUsd: memberDefaultMonthlyUsd ?? before.memberDefaultMonthlyUsd,
   }, memberOverrides ?? before.memberOverrides);
-  await writeBudgets(deps, input.orgId, after, input.updatedBy, input.at);
+  // Refused before anything is written or the proxy is told, as writeBudgets would refuse it.
+  refuseUnrecordableChange(await plannedBudgetEvents(deps, { orgId: input.orgId, before, after, updatedBy: input.updatedBy, at: input.at, actor: input.actor }));
+  await writeBudgets(deps, input.orgId, after, input.updatedBy, input.at, { before, ...(input.actor === undefined ? {} : { actor: input.actor }) });
   await syncBudgets(deps, input.orgId, [...Object.keys(before.memberOverrides), ...Object.keys(after.memberOverrides)]);
   return after;
 }

@@ -3,7 +3,7 @@ import { DEFAULT_BEDROCK_MODELS, DEFAULT_DIRECT_MODELS, PROVIDER_KEY_MIN_LENGTH,
 // commander default never silently skips a question. An alert webhook carries its integration
 // key, so it is a secret: it is never a flag value and never stored in the answers.
 import { agentXError, ImageDigest, KEYED_MODEL_PROVIDERS, MODEL_PROVIDERS, keyedProviderSecretName, type KeyedModelProvider, type ModelProvider } from "@agentx/contracts";
-import { CLOUD_NEEDS_CDK_MESSAGE, CloudSignInAnswersSchema, DIRECT_PROVIDERS, bootStage2ImagesProblem, GITHUB_LOGIN_PATTERN, ModelsAnswersSchema, providerSecretArn, type DirectProvider } from "../deploy/answer-schemas.js";
+import { CLOUD_NEEDS_CDK_MESSAGE, CloudSignInAnswersSchema, defaultAuditLockProfile, DIRECT_PROVIDERS, bootStage2ImagesProblem, GITHUB_LOGIN_PATTERN, ModelsAnswersSchema, providerSecretArn, type DirectProvider } from "../deploy/answer-schemas.js";
 import type { BundleAnswers } from "../deploy/export-bundle.js";
 import { SecretAlreadyExistsError } from "../deploy/signing-key.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
@@ -69,6 +69,8 @@ export interface InitFlags {
   /** --budget: whole US dollars a month; "0" for none. */
   budget?: string;
   budgetScope?: "tag" | "account";
+  /** --audit-lock: the audit ledger's lock profile; production by default. */
+  auditLock?: "production" | "trial";
   githubAccount?: string; githubAccountType?: "organization" | "user"; githubAppName?: string;
   slackAppName?: string; slackAppPostedMessages?: "accept" | "ignore";
   workerImage?: string; slackImage?: string;
@@ -244,6 +246,9 @@ export async function collectInitAnswers(input: {
     if (scope === "tag") notes.push(BUDGET_TAG_NOTE);
   }
 
+  const typedAuditLock = values[SETTINGS_FIELD.auditLock];
+  const auditLock = flags.auditLock ?? (typedAuditLock === "trial" || typedAuditLock === "production" ? typedAuditLock : defaultAuditLockProfile(env));
+
   const githubAccount = flags.githubAccount ?? typed(SETTINGS_FIELD.githubAccount) ?? "";
   if (!GITHUB_LOGIN_PATTERN.test(githubAccount)) throw agentXError("CONFIG_INVALID", `--github-account ${githubAccount} is not a GitHub organization or user name`);
   // FR-020: GitHub says what the owner is; the question is asked only when it cannot.
@@ -273,6 +278,7 @@ export async function collectInitAnswers(input: {
       } }),
     alert,
     ...(budget === undefined ? {} : { budget }),
+    auditLock,
     ...(flags.rovaraCloud === true ? { cloud: true as const } : {}),
     ...(cloudSignIn === undefined ? {} : { cloudSignIn }),
     github: { account: githubAccount, accountType, appName },
@@ -492,6 +498,7 @@ const RESUME_CHECKS: Array<{ flag: string; key: keyof InitFlags; kind?: ResumeCh
   { flag: "--alert-email", key: "alertEmail", kind: "email", stored: (a) => (a.alert.kind === "email" ? a.alert.address : undefined) },
   { flag: "--budget", key: "budget", stored: (a) => String(a.budget?.monthlyUsd ?? 0) },
   { flag: "--budget-scope", key: "budgetScope", stored: (a) => a.budget?.scope },
+  { flag: "--audit-lock", key: "auditLock", stored: (a) => a.auditLock },
   { flag: "--github-account", key: "githubAccount", kind: "login", stored: (a) => a.github.account },
   { flag: "--github-account-type", key: "githubAccountType", stored: (a) => a.github.accountType },
   { flag: "--github-app-name", key: "githubAppName", stored: (a) => a.github.appName },

@@ -60,6 +60,9 @@ export function installPlanText(answers: InitAnswers, estimate: CostEstimate, no
     answers.budget === undefined
       ? "- Budget: none"
       : `- Budget agentx-${env}-monthly: $${answers.budget.monthlyUsd} a month for ${answers.budget.scope === "tag" ? `costs tagged agentx:env=${env}` : "the whole account"}, alerting at 80% spent and 100% forecast`,
+    ...(answers.auditLock === undefined ? [] : [answers.auditLock === "trial"
+      ? "- Audit ledger: trial lock. Records are locked for 1 day and an operator can remove them. You can move to the production lock later, never back."
+      : "- Audit ledger: production lock. Records are locked for 3 years and nobody can delete or shorten them."]),
     `- AgentX never answers itself or other bots. Messages other apps post for people: ${answers.slack.appPostedMessages === "accept" ? "answered" : "ignored"}.`,
     ...notes.map((note) => `Note: ${note}`),
     "",

@@ -99,6 +99,39 @@ describe("init deploy steps", () => {
     expect(context.deployer.requests.find((request) => request.part === "control-plane")?.parameters.SlackAppPostedMessages).toBe("ignore");
   });
 
+  describe("the audit ledger's lock profile on an environment that already exists", () => {
+    const deployedProfile = (profile: string) => ({ status: async () => undefined, parameters: async (name: string) => (name.endsWith("-control-plane") ? { AuditLockProfile: profile } : undefined) });
+    // fakeRelease's template() throws: only the cdk synth's set can say the control plane declares the parameter.
+    const contextFor = (answers: ReturnType<typeof sampleAnswers>, deployed: string) => {
+      const context = initContext({ answers, stackStatus: deployedProfile(deployed) });
+      const inner = context.deployment.bind(context);
+      context.deployment = async () => ({ ...(await inner()), declaredParameters: (part) => new Set(part === "control-plane" ? ["AuditLockProfile"] : []) });
+      return context;
+    };
+    const runControlPlane = async (context: ReturnType<typeof initContext>) => {
+      homes.push(context.home);
+      for (const id of ["access", "core", "control-plane"] as const) await deployStep({ id, title: id }).run(context, progressHandle());
+    };
+    const sent = (context: ReturnType<typeof initContext>) => context.deployer.requests.find((request) => request.part === "control-plane")?.parameters.AuditLockProfile;
+
+    it("refuses production to trial before the control plane deploys", async () => {
+      const context = contextFor(sampleAnswers({ engine: "cdk", auditLock: "trial" }), "production");
+      await expect(runControlPlane(context)).rejects.toThrow("audit ledger: an install in production mode can't go back to trial; its records are locked for 3 years");
+      expect(context.deployer.requests.map((request) => request.part)).not.toContain("control-plane");
+    });
+
+    it("allows trial to production, and keeps the deployed profile when the answers carry none", async () => {
+      const up = contextFor(sampleAnswers({ engine: "cdk", auditLock: "production" }), "trial");
+      await runControlPlane(up);
+      expect(sent(up)).toBe("production");
+      const noProfile = sampleAnswers({ engine: "cdk" });
+      delete noProfile.auditLock;
+      const kept = contextFor(noProfile, "trial");
+      await runControlPlane(kept);
+      expect(sent(kept)).toBe("trial");
+    });
+  });
+
   it("hands deployEnvironment the deployment's declared parameters, the cdk engine's synth (issue 152)", async () => {
     const context = initContext({ answers: sampleAnswers({ engine: "cdk" }) });
     homes.push(context.home);

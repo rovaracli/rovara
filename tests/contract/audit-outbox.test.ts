@@ -1,0 +1,773 @@
+// tests/contract/audit-outbox.test.ts
+// Task 6 of the Audit Ledger plan: the transactional outbox (ruling R70), the bounded flush, the drain and the event
+// builders. DynamoDB is FakeDynamoDb and the intake queue is FakeAuditSqs; the fake DynamoDB does not enforce IAM, so
+// what each function is allowed to do is pinned in audit-ledger-infrastructure.test.ts.
+import { TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  AUDIT_FLUSH_DEADLINE_MS,
+  AUDIT_PENDING_SHARDS,
+  AUDIT_PENDING_TTL_DAYS,
+  AuditEventInputSchema,
+  INDEX_EXPIRY_ATTRIBUTE,
+  type AuditEventInput,
+} from "@agentx/contracts";
+import { AUDIT_DRAIN_PAGE_SIZE, drainAuditPending, runAuditDrain } from "../../packages/broker/src/audit/drain.js";
+import * as builders from "../../packages/broker/src/audit/events.js";
+import { auditOccurrence } from "../../packages/broker/src/audit/events.js";
+import { flushAuditEvents, recordAuditEventDurably, recordAuditRead } from "../../packages/broker/src/audit/flush.js";
+import {
+  auditPending,
+  auditPendingItem,
+  auditPendingKey,
+  auditEventWithoutDetails,
+  auditPendingShard,
+  auditTransact,
+  type AuditDeps,
+  type AuditPendingItem,
+} from "../../packages/broker/src/audit/outbox.js";
+import { FakeAuditSqs } from "../support/fake-audit-sqs.js";
+import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+
+const ORG = "org_aaaaaaaaaaaaaaaaaaaa";
+const OTHER_ORG = "org_bbbbbbbbbbbbbbbbbbbb";
+const START = Date.parse("2026-10-20T12:00:00.000Z");
+const DAY = 86_400_000;
+
+afterEach(() => vi.useRealTimers());
+
+function harness() {
+  const db = new FakeDynamoDb();
+  const sqs = new FakeAuditSqs();
+  const logs: Array<Record<string, unknown>> = [];
+  const clock = { now: START };
+  const documentClient = { send: db.send } as unknown as DynamoDBDocumentClient;
+  const deps: AuditDeps = {
+    audit: { sqs: sqs.client, queueUrl: "https://sqs.test/agentx-test-audit-intake.fifo", documentClient, tableName: "state", now: () => clock.now, log: (entry) => logs.push(entry) },
+  };
+  return { db, sqs, logs, clock, deps, documentClient };
+}
+type Harness = ReturnType<typeof harness>;
+
+const pendingItems = (db: FakeDynamoDb): AuditPendingItem[] => db.find((item) => String(item.pk).startsWith("AUDIT_PENDING#")) as unknown as AuditPendingItem[];
+
+function pullRequest(occurrence: string, overrides: { occurredAt?: string; orgId?: string; details?: AuditEventInput["details"] } = {}): AuditEventInput {
+  return builders.auditPullRequestOpened({
+    orgId: overrides.orgId ?? ORG,
+    actor: { kind: "member", id: "dev_1" },
+    occurredAt: overrides.occurredAt ?? "2026-10-20T11:59:00.000Z",
+    occurrence,
+    pullRequestId: "pr_1",
+    number: 7,
+    ...(overrides.details === undefined ? {} : { details: overrides.details }),
+  });
+}
+
+/** An event whose id lands in `shard`: ids are hashes, so this tries occurrences until one fits. */
+function eventInShard(shard: number, serial: number, overrides: { occurredAt?: string } = {}): AuditEventInput {
+  for (let attempt = 0; ; attempt += 1) {
+    const event = pullRequest(`shard-${String(shard)}-${String(serial)}-${String(attempt)}`, overrides);
+    if (auditPendingShard(event.eventId) === shard) return event;
+  }
+}
+
+/** A hooked site: the action's own item and the pending item, in one transaction. */
+async function commitAction(h: Harness, event: AuditEventInput, key = "ACTION#1"): Promise<void> {
+  await h.documentClient.send(new TransactWriteCommand({
+    TransactItems: [{ Put: { TableName: "state", Item: { pk: key, sk: "META", done: true } } }, ...auditPending(h.deps, event)],
+  }));
+}
+
+describe("the pending item", () => {
+  it("is one unconditional Put of the plan's shape, in the shard of the event id", () => {
+    const h = harness();
+    const event = pullRequest("op-1");
+    const items = auditPending(h.deps, event);
+    expect(items).toHaveLength(1);
+    const put = items[0]!.Put!;
+    expect(put.ConditionExpression).toBeUndefined();
+    expect(put.TableName).toBe("state");
+    const shard = parseInt(event.eventId.slice(4, 6), 16) % AUDIT_PENDING_SHARDS;
+    expect(put.Item).toStrictEqual({
+      pk: `AUDIT_PENDING#${String(shard)}`,
+      sk: `2026-10-20T11:59:00.000Z#${ORG}#${event.eventId}`,
+      event,
+      attempts: 0,
+      createdAt: "2026-10-20T12:00:00.000Z",
+      [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(START / 1000) + AUDIT_PENDING_TTL_DAYS * 86_400,
+    });
+  });
+
+  it("writes the time at a fixed width, so that sort order is time order", () => {
+    expect(auditPendingKey({ eventId: pullRequest("a").eventId, orgId: ORG, occurredAt: "2026-10-20T12:00:00Z" }).sk).toMatch(/^2026-10-20T12:00:00\.000Z#/);
+  });
+
+  it("spreads one org's events over the shards", () => {
+    const shards = new Set(Array.from({ length: 60 }, (_, index) => auditPendingShard(pullRequest(`spread-${String(index)}`).eventId)));
+    expect(shards.size).toBeGreaterThan(5);
+    for (const shard of shards) expect(shard).toBeLessThan(AUDIT_PENDING_SHARDS);
+  });
+
+  it("is nothing on a legacy install: no item, no send, no query, no error", async () => {
+    const h = harness();
+    const none: AuditDeps = {};
+    const event = pullRequest("legacy");
+    expect(auditPending(none, event)).toStrictEqual([]);
+    await flushAuditEvents(none, [event]);
+    await recordAuditEventDurably(none, event);
+    await recordAuditRead(none, event);
+    expect(await drainAuditPending(none, START)).toStrictEqual({ examined: 0, sent: 0, failed: 0, stuck: 0, expiring: 0 });
+    expect(h.sqs.calls).toHaveLength(0);
+    expect(h.db.commandNames()).toHaveLength(0);
+  });
+});
+
+describe("Review Focus 2 (R70): the action and its pending item commit together", () => {
+  it("a hooked transaction commits the action and its pending item together", async () => {
+    const h = harness();
+    const event = pullRequest("op-1");
+    await commitAction(h, event);
+    expect(h.db.get("ACTION#1", "META")).toBeDefined();
+    expect(pendingItems(h.db).map((item) => item.event.eventId)).toStrictEqual([event.eventId]);
+    expect(h.db.commandNames()).toStrictEqual(["TransactWriteCommand"]);
+  });
+
+  it("with the flush never called (a simulated crash), the drain sends it once and deletes it", async () => {
+    const h = harness();
+    const event = pullRequest("op-1");
+    await commitAction(h, event);
+    const result = await drainAuditPending(h.deps, START + 31_000);
+    expect(result).toMatchObject({ examined: 1, sent: 1, failed: 0 });
+    expect(h.sqs.queue).toHaveLength(1);
+    expect(h.sqs.queue[0]).toMatchObject({ groupId: ORG, dedupId: event.eventId });
+    expect(JSON.parse(h.sqs.queue[0]!.body)).toStrictEqual(event);
+    expect(pendingItems(h.db)).toHaveLength(0);
+    // A second drain finds nothing to send.
+    await drainAuditPending(h.deps, START + 92_000);
+    expect(h.sqs.offered()).toBe(1);
+  });
+
+  it("with the flush succeeding, the drain sends nothing", async () => {
+    const h = harness();
+    const event = pullRequest("op-1");
+    await commitAction(h, event);
+    await flushAuditEvents(h.deps, [event]);
+    expect(h.sqs.queue).toHaveLength(1);
+    expect(pendingItems(h.db)).toHaveLength(0);
+    const result = await drainAuditPending(h.deps, START + 31_000);
+    expect(result.examined).toBe(0);
+    expect(h.sqs.offered()).toBe(1);
+  });
+
+  it("leaves the pending item alone for the first 30 seconds, which belong to the flush", async () => {
+    const h = harness();
+    await commitAction(h, pullRequest("op-1", { occurredAt: new Date(START).toISOString() }));
+    expect(await drainAuditPending(h.deps, START + 29_000)).toMatchObject({ examined: 0 });
+    expect(await drainAuditPending(h.deps, START + 31_000)).toMatchObject({ examined: 1, sent: 1 });
+  });
+
+  it("a failed condition on the action's item commits neither the action nor a pending item", async () => {
+    const h = harness();
+    h.db.set({ pk: "ACTION#1", sk: "META", revision: 1 });
+    const event = pullRequest("op-1");
+    await expect(auditTransact({ ...h.deps, documentClient: h.documentClient }, {
+      Put: { TableName: "state", Item: { pk: "ACTION#1", sk: "META", revision: 2 }, ConditionExpression: "attribute_not_exists(pk)" },
+    }, [event])).rejects.toMatchObject({ name: "ConditionalCheckFailedException" });
+    expect(h.db.get("ACTION#1", "META")).toStrictEqual({ pk: "ACTION#1", sk: "META", revision: 1 });
+    expect(pendingItems(h.db)).toHaveLength(0);
+  });
+});
+
+describe("crash points: no event is lost and none is recorded twice", () => {
+  it("crash before the commit: neither the action nor an event exists", async () => {
+    const h = harness();
+    h.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
+    await expect(commitAction(h, pullRequest("op-1"))).rejects.toThrow();
+    expect(h.db.get("ACTION#1", "META")).toBeUndefined();
+    expect(pendingItems(h.db)).toHaveLength(0);
+    await drainAuditPending(h.deps, START + 31_000);
+    expect(h.sqs.offered()).toBe(0);
+  });
+
+  it("the queue accepted the event and the delete failed: the drain resends it and the queue holds it once", async () => {
+    const h = harness();
+    const event = pullRequest("op-1");
+    await commitAction(h, event);
+    h.db.injectFault({ command: "DeleteCommand", error: { name: "InternalServerError" } });
+    await flushAuditEvents(h.deps, [event]);
+    expect(pendingItems(h.db)).toHaveLength(1);
+    expect(h.logs.map((entry) => entry.event)).toContain("audit.pending_delete_failed");
+    await drainAuditPending(h.deps, START + 31_000);
+    expect(h.sqs.offered()).toBe(2);
+    expect(h.sqs.queue).toHaveLength(1);
+    expect(pendingItems(h.db)).toHaveLength(0);
+  });
+
+  it("the queue is down: the event stays pending, is counted, and goes out once the queue is back", async () => {
+    const h = harness();
+    const event = pullRequest("op-1");
+    await commitAction(h, event);
+    h.sqs.mode = "throw";
+    await flushAuditEvents(h.deps, [event]);
+    expect(pendingItems(h.db)).toHaveLength(1);
+    await drainAuditPending(h.deps, START + 31_000);
+    await drainAuditPending(h.deps, START + 92_000);
+    expect(pendingItems(h.db)[0]!.attempts).toBe(2);
+    h.sqs.mode = "ok";
+    await drainAuditPending(h.deps, START + 153_000);
+    expect(h.sqs.queue).toHaveLength(1);
+    expect(pendingItems(h.db)).toHaveLength(0);
+  });
+
+  it("a send that fails for some entries keeps only those pending", async () => {
+    const h = harness();
+    const events = [pullRequest("a"), pullRequest("b"), pullRequest("c")];
+    h.db.set({ pk: "x", sk: "y" });
+    await h.documentClient.send(new TransactWriteCommand({ TransactItems: events.flatMap((event) => auditPending(h.deps, event)) }));
+    h.sqs.rejected.add(events[1]!.eventId);
+    await flushAuditEvents(h.deps, events);
+    expect(pendingItems(h.db).map((item) => item.event.eventId)).toStrictEqual([events[1]!.eventId]);
+    h.sqs.rejected.clear();
+    await drainAuditPending(h.deps, START + 31_000);
+    expect(h.sqs.queue.map((message) => message.dedupId).sort()).toStrictEqual(events.map((event) => event.eventId).sort());
+    expect(pendingItems(h.db)).toHaveLength(0);
+  });
+
+  it("an attempt count never recreates an item the flush has just deleted", async () => {
+    const h = harness();
+    const event = pullRequest("op-1");
+    await commitAction(h, event);
+    h.sqs.mode = "throw";
+    h.sqs.onCall = () => h.db.delete(auditPendingKey(event));
+    await drainAuditPending(h.deps, START + 31_000);
+    expect(pendingItems(h.db)).toHaveLength(0);
+  });
+});
+
+describe("I5: the flush never blocks", () => {
+  it("returns within the deadline when the queue never answers, and the pending item remains", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const event = pullRequest("op-1");
+    await commitAction(h, event);
+    h.sqs.mode = "hang";
+    let finished = false;
+    const startedAt = Date.now();
+    const flushed = flushAuditEvents(h.deps, [event]).then(() => { finished = true; });
+    await vi.advanceTimersByTimeAsync(AUDIT_FLUSH_DEADLINE_MS - 1);
+    expect(finished).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await flushed;
+    expect(finished).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThanOrEqual(AUDIT_FLUSH_DEADLINE_MS);
+    expect(pendingItems(h.db)).toHaveLength(1);
+    expect(h.logs.map((entry) => entry.event)).toContain("audit.flush_deadline");
+  });
+
+  it("makes three SendMessageBatch calls for 25 events, ten at a time, in order", async () => {
+    const h = harness();
+    const events = Array.from({ length: 25 }, (_, index) => pullRequest(`bulk-${String(index)}`));
+    await h.documentClient.send(new TransactWriteCommand({ TransactItems: events.flatMap((event) => auditPending(h.deps, event)) }));
+    await flushAuditEvents(h.deps, events);
+    expect(h.sqs.calls.map((call) => call.length)).toStrictEqual([10, 10, 5]);
+    expect(h.sqs.calls.flat().map((entry) => entry.MessageDeduplicationId)).toStrictEqual(events.map((event) => event.eventId));
+    expect(h.sqs.calls.flat().every((entry) => entry.MessageGroupId === ORG)).toBe(true);
+    expect(pendingItems(h.db)).toHaveLength(0);
+  });
+
+  it("uses the org as the message group and the event id for deduplication", async () => {
+    const h = harness();
+    const events = [pullRequest("one"), pullRequest("two", { orgId: OTHER_ORG })];
+    await h.documentClient.send(new TransactWriteCommand({ TransactItems: events.flatMap((event) => auditPending(h.deps, event)) }));
+    await flushAuditEvents(h.deps, events);
+    expect(h.sqs.queue.map((message) => [message.groupId, message.dedupId])).toStrictEqual(events.map((event) => [event.orgId, event.eventId]));
+  });
+
+  it("never throws, whatever fails", async () => {
+    const h = harness();
+    const event = pullRequest("op-1");
+    h.sqs.mode = "throw";
+    await expect(flushAuditEvents(h.deps, [event])).resolves.toBeUndefined();
+    h.sqs.mode = "ok";
+    h.db.injectFault({ command: "DeleteCommand", error: { name: "InternalServerError" } });
+    await expect(flushAuditEvents(h.deps, [event])).resolves.toBeUndefined();
+    await expect(flushAuditEvents(h.deps, [{ ...event, eventId: "nope" }])).resolves.toBeUndefined();
+  });
+});
+
+describe("auditTransact", () => {
+  it("maps a failed condition on the action's item to ConditionalCheckFailedException", async () => {
+    const h = harness();
+    h.db.set({ pk: "BUDGET#1", sk: "META", version: 1 });
+    let caught: unknown;
+    try {
+      await auditTransact({ ...h.deps, documentClient: h.documentClient }, {
+        Update: {
+          TableName: "state",
+          Key: { pk: "BUDGET#1", sk: "META" },
+          UpdateExpression: "SET version = :next",
+          ConditionExpression: "version = :expected",
+          ExpressionAttributeValues: { ":next": 3, ":expected": 2 },
+        },
+      }, [pullRequest("op-1")]);
+    } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).name).toBe("ConditionalCheckFailedException");
+    expect(h.db.get("BUDGET#1", "META")).toStrictEqual({ pk: "BUDGET#1", sk: "META", version: 1 });
+    expect(pendingItems(h.db)).toHaveLength(0);
+  });
+
+  it("commits the write and the pending items in one transaction, once per event id", async () => {
+    const h = harness();
+    const event = pullRequest("op-1");
+    const other = pullRequest("op-2");
+    await auditTransact({ ...h.deps, documentClient: h.documentClient }, { Put: { TableName: "state", Item: { pk: "BUDGET#1", sk: "META", version: 1 } } }, [event, other, event]);
+    expect(h.db.commandNames()).toStrictEqual(["TransactWriteCommand"]);
+    expect(h.db.get("BUDGET#1", "META")).toBeDefined();
+    expect(pendingItems(h.db).map((item) => item.event.eventId).sort()).toStrictEqual([event.eventId, other.eventId].sort());
+  });
+
+  it("overwrites a pending item that already exists for the event id, and the transaction succeeds (R1-1)", async () => {
+    const h = harness();
+    const event = pullRequest("op-1");
+    h.db.set({ ...auditPendingItem(event, START - 5000), attempts: 4 });
+    await auditTransact({ ...h.deps, documentClient: h.documentClient }, { Put: { TableName: "state", Item: { pk: "BUDGET#1", sk: "META", version: 1 } } }, [event]);
+    const items = pendingItems(h.db);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ attempts: 0, createdAt: new Date(START).toISOString() });
+  });
+
+  it("rethrows any other cancellation as it is", async () => {
+    const h = harness();
+    h.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "TransactionConflict" }, { Code: "None" }] } });
+    await expect(auditTransact({ ...h.deps, documentClient: h.documentClient }, { Put: { TableName: "state", Item: { pk: "A", sk: "B" } } }, [pullRequest("op-1")]))
+      .rejects.toMatchObject({ name: "TransactionCanceledException" });
+  });
+
+  it("does not map a failed condition that is not the first item's", async () => {
+    const h = harness();
+    h.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "None" }, { Code: "ConditionalCheckFailed" }] } });
+    await expect(auditTransact({ ...h.deps, documentClient: h.documentClient }, { Put: { TableName: "state", Item: { pk: "A", sk: "B" } } }, [pullRequest("op-1")]))
+      .rejects.toMatchObject({ name: "TransactionCanceledException" });
+  });
+
+  it("with no ledger, or no valid event, makes the write alone, with its own error", async () => {
+    const h = harness();
+    h.db.set({ pk: "A", sk: "B" });
+    await expect(auditTransact({ documentClient: h.documentClient }, { Put: { TableName: "state", Item: { pk: "A", sk: "B", x: 1 }, ConditionExpression: "attribute_not_exists(pk)" } }, [pullRequest("op-1")]))
+      .rejects.toMatchObject({ name: "ConditionalCheckFailedException" });
+    await auditTransact({ documentClient: h.documentClient }, { Delete: { TableName: "state", Key: { pk: "A", sk: "B" } } }, [pullRequest("op-1")]);
+    expect(h.db.get("A", "B")).toBeUndefined();
+    const invalid = { ...pullRequest("op-2"), facts: { notAFact: 1 } } as AuditEventInput;
+    await auditTransact({ ...h.deps, documentClient: h.documentClient }, { Put: { TableName: "state", Item: { pk: "C", sk: "D" } } }, [invalid]);
+    expect(h.db.commandNames().slice(-1)).toStrictEqual(["PutCommand"]);
+    expect(pendingItems(h.db)).toHaveLength(0);
+  });
+});
+
+describe("recordAuditEventDurably (staff reads)", () => {
+  const staffRead = () => builders.auditStaffRead({ orgId: ORG, actor: { kind: "operator", id: `op_${"a".repeat(24)}` }, occurredAt: "2026-10-20T12:00:00.000Z", occurrence: "req-1", fromSeq: 1, toSeq: 5, count: 5, via: "api" });
+
+  it("puts the pending item, sends, and deletes the item", async () => {
+    const h = harness();
+    await recordAuditEventDurably(h.deps, staffRead());
+    expect(h.sqs.queue).toHaveLength(1);
+    expect(pendingItems(h.db)).toHaveLength(0);
+    expect(h.db.commandNames()[0]).toBe("PutCommand");
+  });
+
+  it("throws AUDIT_UNAVAILABLE (503) when the put fails, and sends nothing", async () => {
+    const h = harness();
+    h.db.injectFault({ command: "PutCommand", error: { name: "InternalServerError" } });
+    await expect(recordAuditEventDurably(h.deps, staffRead())).rejects.toMatchObject({ code: "AUDIT_UNAVAILABLE", statusCode: 503, name: "AgentXError" });
+    expect(h.sqs.offered()).toBe(0);
+  });
+
+  it("resolves when only the send fails: the pending item is durable", async () => {
+    const h = harness();
+    h.sqs.mode = "throw";
+    await expect(recordAuditEventDurably(h.deps, staffRead())).resolves.toBeUndefined();
+    expect(pendingItems(h.db)).toHaveLength(1);
+  });
+
+  it("resolves within the deadline when the queue never answers", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    h.sqs.mode = "hang";
+    const done = recordAuditEventDurably(h.deps, staffRead());
+    await vi.advanceTimersByTimeAsync(AUDIT_FLUSH_DEADLINE_MS);
+    await expect(done).resolves.toBeUndefined();
+    expect(pendingItems(h.db)).toHaveLength(1);
+  });
+
+  it("throws AUDIT_UNAVAILABLE for an event that cannot be made durable, logging paths and codes only", async () => {
+    const h = harness();
+    await expect(recordAuditEventDurably(h.deps, { ...staffRead(), orgId: "not an org" })).rejects.toMatchObject({ code: "AUDIT_UNAVAILABLE" });
+    expect(h.logs.map((entry) => entry.event)).toStrictEqual(["audit.record_invalid"]);
+    expect(pendingItems(h.db)).toHaveLength(0);
+  });
+});
+
+describe("recordAuditRead (customer reads, the documented exception)", () => {
+  const read = () => builders.auditRead({ orgId: ORG, actor: { kind: "member", id: "dev_1" }, occurredAt: "2026-10-20T12:00:00.000Z", occurrence: "req-9", fromSeq: 1, toSeq: 5, count: 5, via: "api" });
+
+  it("sends, and writes no pending item when the send is accepted", async () => {
+    const h = harness();
+    await recordAuditRead(h.deps, read());
+    expect(h.sqs.queue).toHaveLength(1);
+    expect(pendingItems(h.db)).toHaveLength(0);
+    expect(h.db.commandNames()).toHaveLength(0);
+  });
+
+  it("puts the pending item when the send fails", async () => {
+    const h = harness();
+    h.sqs.mode = "throw";
+    await recordAuditRead(h.deps, read());
+    expect(pendingItems(h.db)).toHaveLength(1);
+  });
+
+  it("puts the pending item within the deadline when the queue never answers", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    h.sqs.mode = "hang";
+    let finished = false;
+    const done = recordAuditRead(h.deps, read()).then(() => { finished = true; });
+    await vi.advanceTimersByTimeAsync(AUDIT_FLUSH_DEADLINE_MS);
+    await done;
+    expect(finished).toBe(true);
+    expect(pendingItems(h.db)).toHaveLength(1);
+  });
+
+  it("logs audit.record_failed, without details, when both fail, and never throws", async () => {
+    const h = harness();
+    h.sqs.mode = "throw";
+    h.db.injectFault({ command: "PutCommand", error: { name: "InternalServerError" } });
+    const event = { ...read(), details: [{ subject: "org", fields: { note: "Jane Roe read it" } }] };
+    await expect(recordAuditRead(h.deps, event)).resolves.toBeUndefined();
+    const failed = h.logs.filter((entry) => entry.event === "audit.record_failed");
+    expect(failed).toHaveLength(1);
+    expect(JSON.stringify(failed[0])).not.toContain("Jane Roe");
+  });
+});
+
+describe("an invalid event never blocks the action", () => {
+  it("adds no pending item, and the log holds paths and codes but no value", async () => {
+    const h = harness();
+    const event = {
+      ...pullRequest("op-1"),
+      facts: { "jane@example.com": "Jane Roe", number: 7.5 },
+      details: [{ subject: "org", fields: { name: "Secret Person" } }, { subject: "org", fields: { name: "x".repeat(600) } }],
+    } as AuditEventInput;
+    expect(auditPending(h.deps, event)).toStrictEqual([]);
+    await commitAction(h, event);
+    expect(h.db.get("ACTION#1", "META")).toBeDefined();
+    expect(pendingItems(h.db)).toHaveLength(0);
+    expect(h.logs.length).toBeGreaterThan(0);
+    for (const entry of h.logs) {
+      expect(entry.event).toBe("audit.record_invalid");
+      const text = JSON.stringify(entry);
+      for (const secret of ["jane", "Jane", "example.com", "Secret", "x".repeat(20), "7.5"]) expect(text).not.toContain(secret);
+      for (const issue of entry.issues as Array<{ path: unknown[]; code: string }>) {
+        expect(Array.isArray(issue.path)).toBe(true);
+        expect(typeof issue.code).toBe("string");
+      }
+    }
+    const issues = h.logs.flatMap((entry) => entry.issues as Array<{ path: unknown[]; code: string }>);
+    expect(issues).toContainEqual({ path: ["facts", "*"], code: "custom" });
+    expect(issues.some((issue) => issue.path[0] === "details")).toBe(true);
+  });
+
+  it("an event with the wrong shape altogether is logged without its content", () => {
+    const h = harness();
+    expect(auditPending(h.deps, "a free text secret" as unknown as AuditEventInput)).toStrictEqual([]);
+    expect(auditPending(h.deps, null as unknown as AuditEventInput)).toStrictEqual([]);
+    expect(JSON.stringify(h.logs)).not.toContain("secret");
+  });
+});
+
+describe("the drain", () => {
+  it("logs audit.record_failed once, without details, for a pending item at day 13, and audit.pending_stuck each run", async () => {
+    const h = harness();
+    const event = pullRequest("old", { occurredAt: new Date(START - 13 * DAY).toISOString(), details: [{ subject: "org", fields: { repositoryName: "acme/secret-repo" } }] });
+    h.db.set(auditPendingItem(event, START - 13 * DAY) as unknown as Record<string, unknown>);
+    h.sqs.mode = "throw";
+    await drainAuditPending(h.deps, START);
+    await drainAuditPending(h.deps, START + 60_000);
+    const failed = h.logs.filter((entry) => entry.event === "audit.record_failed");
+    expect(failed).toHaveLength(1);
+    expect(JSON.stringify(failed[0])).not.toContain("secret-repo");
+    expect((failed[0]!.record as AuditEventInput).eventId).toBe(event.eventId);
+    expect(failed[0]!.record).not.toHaveProperty("details");
+    expect(h.logs.filter((entry) => entry.event === "audit.pending_stuck")).toHaveLength(2);
+  });
+
+  it("does not log a failure for a day-12 item, nor stuck for one under 10 minutes", async () => {
+    const h = harness();
+    h.db.set(auditPendingItem(pullRequest("a", { occurredAt: new Date(START - 12 * DAY).toISOString() }), START - 12 * DAY) as unknown as Record<string, unknown>);
+    h.db.set(auditPendingItem(pullRequest("b", { occurredAt: new Date(START - 5 * 60_000).toISOString() }), START - 5 * 60_000) as unknown as Record<string, unknown>);
+    h.sqs.mode = "throw";
+    await drainAuditPending(h.deps, START);
+    expect(h.logs.filter((entry) => entry.event === "audit.record_failed")).toHaveLength(0);
+    expect(h.logs.filter((entry) => entry.event === "audit.pending_stuck")).toHaveLength(1);
+  });
+
+  it("does not log a failure or a stuck item that the drain delivers", async () => {
+    const h = harness();
+    h.db.set(auditPendingItem(pullRequest("old", { occurredAt: new Date(START - 13 * DAY).toISOString() }), START - 13 * DAY) as unknown as Record<string, unknown>);
+    await drainAuditPending(h.deps, START);
+    expect(h.logs.filter((entry) => ["audit.record_failed", "audit.pending_stuck"].includes(String(entry.event)))).toHaveLength(0);
+    expect(h.sqs.queue).toHaveLength(1);
+  });
+
+  it("sends a shard's items oldest first", async () => {
+    const h = harness();
+    const times = ["2026-10-20T11:50:10.000Z", "2026-10-20T11:50:00.000Z", "2026-10-20T11:50:05.000Z"];
+    const events = times.map((occurredAt, index) => eventInShard(3, index, { occurredAt }));
+    for (const event of events) h.db.set(auditPendingItem(event, START) as unknown as Record<string, unknown>);
+    await drainAuditPending(h.deps, START + 31_000);
+    expect(h.sqs.queue.map((message) => message.dedupId)).toStrictEqual([events[1]!.eventId, events[2]!.eventId, events[0]!.eventId]);
+  });
+
+  it("pages 100 at a time, and resumes from its cursor without repeating or skipping", async () => {
+    const h = harness();
+    const events = Array.from({ length: 250 }, (_, index) => eventInShard(0, index, { occurredAt: new Date(START - 3_600_000 + index * 1000).toISOString() }));
+    for (const event of events) h.db.set(auditPendingItem(event, START) as unknown as Record<string, unknown>);
+    const first = await drainAuditPending(h.deps, START, undefined, { maxItems: 120 });
+    expect(first.cursor).toBeDefined();
+    expect(first.examined).toBe(200);
+    const second = await drainAuditPending(h.deps, START, first.cursor);
+    expect(second.cursor).toBeUndefined();
+    expect(second.examined).toBe(50);
+    expect(h.sqs.queue.map((message) => message.dedupId)).toStrictEqual(events.map((event) => event.eventId));
+    expect(h.sqs.offered()).toBe(250);
+    expect(pendingItems(h.db)).toHaveLength(0);
+    expect(AUDIT_DRAIN_PAGE_SIZE).toBe(100);
+    expect(h.db.commandNames().filter((name) => name === "QueryCommand").length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("runAuditDrain continues through the cursor within its budget", async () => {
+    const h = harness();
+    for (let index = 0; index < 600; index += 1) h.db.set(auditPendingItem(eventInShard(index % 4, index, { occurredAt: "2026-10-20T11:00:00.000Z" }), START) as unknown as Record<string, unknown>);
+    const result = await runAuditDrain(h.deps, { now: () => START + 61_000 });
+    expect(result).toMatchObject({ examined: 600, sent: 600, more: false });
+    expect(pendingItems(h.db)).toHaveLength(0);
+  });
+
+  it("when the queue is unreachable it tries once and then only does its bookkeeping", async () => {
+    const h = harness();
+    const fresh = eventInShard(1, 1, { occurredAt: "2026-10-20T11:55:00.000Z" });
+    const stale = eventInShard(2, 2, { occurredAt: new Date(START - 13 * DAY).toISOString() });
+    h.db.set(auditPendingItem(fresh, START - 5 * 60_000) as unknown as Record<string, unknown>);
+    h.db.set(auditPendingItem(stale, START - 13 * DAY) as unknown as Record<string, unknown>);
+    h.sqs.mode = "throw";
+    await drainAuditPending(h.deps, START);
+    expect(h.sqs.calls).toHaveLength(1);
+    expect(h.logs.filter((entry) => entry.event === "audit.record_failed")).toHaveLength(1);
+  });
+
+  it("counts a failed Query and stops, without throwing", async () => {
+    const h = harness();
+    h.db.injectFault({ command: "QueryCommand", error: { name: "InternalServerError" } });
+    await expect(drainAuditPending(h.deps, START)).resolves.toMatchObject({ examined: 0 });
+    expect(h.logs.map((entry) => entry.event)).toContain("audit.drain_failed");
+  });
+
+  it("an item whose stored event is invalid is logged as invalid, not sent", async () => {
+    const h = harness();
+    const event = pullRequest("a");
+    h.db.set({ ...auditPendingItem(event, START - 60_000), event: { ...event, facts: { notAFact: 1 } } });
+    await drainAuditPending(h.deps, START);
+    expect(h.sqs.offered()).toBe(0);
+    expect(h.logs.map((entry) => entry.event)).toContain("audit.record_invalid");
+  });
+});
+
+describe("failure logs hold no personal data", () => {
+  const NAME = "Acme Secret Project";
+  const NOTE = "Jane Roe asked for it";
+  const personal = (occurredAt = "2026-10-20T11:59:00.000Z"): AuditEventInput => builders.auditProjectMemberChanged({
+    orgId: ORG,
+    actor: { kind: "member", id: "dev_1" },
+    occurredAt,
+    occurrence: "req-1",
+    projectName: NAME,
+    memberId: "dev_2",
+    toRole: "admin",
+    details: [{ subject: "org", fields: { note: NOTE } }],
+  });
+  const expectClean = (h: Harness): void => {
+    expect(h.logs.length).toBeGreaterThan(0);
+    const text = JSON.stringify(h.logs);
+    for (const secret of [NAME, "Secret", "Acme", NOTE, "Jane"]) expect(text).not.toContain(secret);
+  };
+
+  it("the log-safe event keeps the ids, action and facts, drops details, and turns a name-keyed target into its kind", () => {
+    const event = personal();
+    expect(event.target).toStrictEqual({ kind: "project", name: NAME });
+    const safe = auditEventWithoutDetails(event);
+    expect(safe).toStrictEqual({ eventId: event.eventId, orgId: ORG, action: "project_member.changed", actor: { kind: "member", id: "dev_1" }, target: { kind: "project" }, occurredAt: event.occurredAt, related: ["dev_2"], facts: { toRole: "admin" } });
+    expect(auditEventWithoutDetails(pullRequest("a")).target).toStrictEqual({ kind: "pull_request", id: "pr_1" });
+  });
+
+  it("audit.record_failed from a read that could not be recorded", async () => {
+    const h = harness();
+    h.sqs.mode = "throw";
+    h.db.injectFault({ command: "PutCommand", error: { name: "InternalServerError" } });
+    await recordAuditRead(h.deps, personal());
+    expect(h.logs.map((entry) => entry.event)).toStrictEqual(["audit.record_failed"]);
+    expect((h.logs[0]!.record as AuditEventInput).target).toStrictEqual({ kind: "project" });
+    expectClean(h);
+  });
+
+  it("audit.record_failed and audit.pending_stuck from the drain, for an item at day 13", async () => {
+    const h = harness();
+    const event = personal(new Date(START - 13 * DAY).toISOString());
+    h.db.set(auditPendingItem(event, START - 13 * DAY) as unknown as Record<string, unknown>);
+    h.sqs.mode = "throw";
+    await drainAuditPending(h.deps, START);
+    expect(h.logs.map((entry) => entry.event)).toEqual(expect.arrayContaining(["audit.record_failed", "audit.pending_stuck"]));
+    for (const entry of h.logs.filter((line) => line.record !== undefined)) expect((entry.record as AuditEventInput).target).toStrictEqual({ kind: "project" });
+    expectClean(h);
+  });
+
+  it("audit.pending_stuck from the drain, for an item over 10 minutes", async () => {
+    const h = harness();
+    h.db.set(auditPendingItem(personal(new Date(START - 20 * 60_000).toISOString()), START - 20 * 60_000) as unknown as Record<string, unknown>);
+    h.sqs.mode = "throw";
+    await drainAuditPending(h.deps, START);
+    expect(h.logs.map((entry) => entry.event)).toContain("audit.pending_stuck");
+    expectClean(h);
+  });
+
+  it("the durable put, the flush, a failed drain query and a failed attempt count", async () => {
+    const h = harness();
+    h.db.injectFault({ command: "PutCommand", error: { name: "InternalServerError" } });
+    await expect(recordAuditEventDurably(h.deps, personal())).rejects.toMatchObject({ code: "AUDIT_UNAVAILABLE" });
+    h.sqs.mode = "throw";
+    await flushAuditEvents(h.deps, [personal()]);
+    h.db.set(auditPendingItem(personal(), START - 60_000) as unknown as Record<string, unknown>);
+    h.db.injectFault({ command: "UpdateCommand", error: { name: "InternalServerError" } });
+    await drainAuditPending(h.deps, START);
+    h.db.injectFault({ command: "QueryCommand", error: { name: "InternalServerError" } });
+    await drainAuditPending(h.deps, START);
+    expect(h.logs.map((entry) => entry.event)).toEqual(expect.arrayContaining(["audit.durable_put_failed", "audit.drain_failed"]));
+    expectClean(h);
+  });
+
+  it("audit.record_invalid for an invalid event with a name-keyed target", () => {
+    const h = harness();
+    expect(auditPending(h.deps, { ...personal(), facts: { toRole: "admin", [NOTE]: NAME } })).toStrictEqual([]);
+    expect(h.logs.map((entry) => entry.event)).toStrictEqual(["audit.record_invalid"]);
+    expectClean(h);
+  });
+});
+
+describe("I4: the builders", () => {
+  const base = { orgId: ORG, actor: { kind: "member", id: "dev_1" } as const, occurredAt: "2026-10-20T12:00:00.000Z" };
+  const PERSONAL = ["Jane Roe", "jane@example.com", "jroe-login", "Secret Project", "secret-repo", "evil.example.org"];
+  const details = [{ subject: "org", fields: { name: "Jane Roe", email: "jane@example.com", login: "jroe-login" } }];
+
+  /** Each builder with the same facts for any occurrence. Name-keyed targets use personal names, which must stay in target.name. */
+  const cases: Array<[string, (occurrence: string) => AuditEventInput]> = [
+    ["auditApprovalDecided", (occurrence) => builders.auditApprovalDecided({ ...base, occurrence, details, approvalId: "apr_1", kind: "write", decision: "approved", subjectKind: "write", class: "A" })],
+    ["auditApprovalExpired", (occurrence) => builders.auditApprovalExpired({ ...base, occurrence, details, approvalId: "apr_1", kind: "write", subjectKind: "write" })],
+    ["auditWriteExecuted", (occurrence) => builders.auditWriteExecuted({ ...base, occurrence, details, approvalId: "apr_1", connectorType: "linear", tool: "create_issue", status: "APPROVED_DONE", argumentsHash: "a".repeat(64) })],
+    ["auditSpendRequestCreated", (occurrence) => builders.auditSpendRequestCreated({ ...base, occurrence, details, spendRequestId: "spr_1", kind: "raise", scopeKind: "member", amountCents: 500 })],
+    ["auditSpendRequestDecided", (occurrence) => builders.auditSpendRequestDecided({ ...base, occurrence, details, spendRequestId: "spr_1", kind: "raise", scopeKind: "member", amountCents: 500, decision: "approved" })],
+    ["auditSpendRequestExpired", (occurrence) => builders.auditSpendRequestExpired({ ...base, occurrence, details, spendRequestId: "spr_1", kind: "raise", scopeKind: "member", amountCents: 500 })],
+    ["auditBudgetChanged", (occurrence) => builders.auditBudgetChanged({ ...base, occurrence, details, target: { kind: "budget", id: "dev_2" }, scopeKind: "member", field: "limit", fromCents: 50000, toCents: 80000 })],
+    ["auditSpendPolicyChanged", (occurrence) => builders.auditSpendPolicyChanged({ ...base, occurrence, details, field: "threshold", from: 100, to: 200 })],
+    ["auditPullRequestOpened", (occurrence) => builders.auditPullRequestOpened({ ...base, occurrence, details, pullRequestId: "pr_1", number: 7 })],
+    ["auditPullRequestMerged", (occurrence) => builders.auditPullRequestMerged({ ...base, occurrence, details, pullRequestId: "pr_1", number: 7 })],
+    ["auditMemberJoined", (occurrence) => builders.auditMemberJoined({ ...base, occurrence, details, memberId: "dev_2", role: "member", via: "invite" })],
+    ["auditMemberRoleChanged", (occurrence) => builders.auditMemberRoleChanged({ ...base, occurrence, details, memberId: "dev_2", fromRole: "member", toRole: "admin" })],
+    ["auditMemberRemoved", (occurrence) => builders.auditMemberRemoved({ ...base, occurrence, details, memberId: "dev_2", role: "member" })],
+    ["auditMemberLeft", (occurrence) => builders.auditMemberLeft({ ...base, occurrence, details, memberId: "dev_2", role: "member" })],
+    ["auditProjectMemberChanged", (occurrence) => builders.auditProjectMemberChanged({ ...base, occurrence, details, projectName: "Secret Project", memberId: "dev_2", fromRole: "viewer", toRole: "editor" })],
+    ["auditProjectMemberRemoved", (occurrence) => builders.auditProjectMemberRemoved({ ...base, occurrence, details, projectName: "Secret Project", memberId: "dev_2", role: "viewer" })],
+    ["auditIdentityLinked", (occurrence) => builders.auditIdentityLinked({ ...base, occurrence, details, memberId: "dev_2", provider: "github" })],
+    ["auditIdentityUnlinked", (occurrence) => builders.auditIdentityUnlinked({ ...base, occurrence, details, memberId: "dev_2", provider: "github" })],
+    ["auditOrgClosed", (occurrence) => builders.auditOrgClosed({ ...base, occurrence, details, plan: "team" })],
+    ["auditOwnerChanged (agent)", (occurrence) => builders.auditOwnerChanged({ ...base, occurrence, details, scope: "agent", targetId: "agt_1", field: "owner" })],
+    ["auditOwnerChanged (chain)", (occurrence) => builders.auditOwnerChanged({ ...base, occurrence, details, scope: "chain", targetId: "chn_1", field: "owner" })],
+    ["auditPublished (agent)", (occurrence) => builders.auditPublished({ ...base, occurrence, details, scope: "agent", targetId: "agt_1", version: 3, safety: "safe" })],
+    ["auditPublished (chain)", (occurrence) => builders.auditPublished({ ...base, occurrence, details, scope: "chain", targetId: "chn_1", version: 3, safety: "safe" })],
+    ["auditRolledBack (agent)", (occurrence) => builders.auditRolledBack({ ...base, occurrence, details, scope: "agent", targetId: "agt_1", fromVersion: 3, toVersion: 2 })],
+    ["auditRolledBack (chain)", (occurrence) => builders.auditRolledBack({ ...base, occurrence, details, scope: "chain", targetId: "chn_1", fromVersion: 3, toVersion: 2 })],
+    ["auditBuiltinAdopted", (occurrence) => builders.auditBuiltinAdopted({ ...base, occurrence, details, agentId: "agt_1", version: 4 })],
+    ["auditConnectionSaved", (occurrence) => builders.auditConnectionSaved({ ...base, occurrence, details, connectionId: "con_1", connectorType: "linear" })],
+    ["auditConnectionRemoved", (occurrence) => builders.auditConnectionRemoved({ ...base, occurrence, details, connectionId: "con_1", connectorType: "linear" })],
+    ["auditProjectConnectorChanged", (occurrence) => builders.auditProjectConnectorChanged({ ...base, occurrence, details, connectorId: "cnr_1", connectorType: "linear", revision: 3, change: "widened" })],
+    ["auditGuardrailsChanged", (occurrence) => builders.auditGuardrailsChanged({ ...base, occurrence, details, guardrailsId: "grd_1", revision: 3, widened: true })],
+    ["auditOptOutApplied", (occurrence) => builders.auditOptOutApplied({ ...base, occurrence, details, repositoryName: "secret-repo", scope: "repository" })],
+    ["auditOptOutLapsed", (occurrence) => builders.auditOptOutLapsed({ ...base, occurrence, details, repositoryName: "secret-repo", scope: "repository" })],
+    ["auditEgressDecided", (occurrence) => builders.auditEgressDecided({ ...base, occurrence, details, domain: "evil.example.org", decision: "approved" })],
+    ["auditTriggerEnabled", (occurrence) => builders.auditTriggerEnabled({ ...base, occurrence, details, triggerId: "trg_1", source: "github", type: "comment", targetKind: "agent" })],
+    ["auditTriggerDisabled", (occurrence) => builders.auditTriggerDisabled({ ...base, occurrence, details, triggerId: "trg_1", cause: "person", source: "github", type: "comment", targetKind: "agent" })],
+    ["auditGithubConnected", (occurrence) => builders.auditGithubConnected({ ...base, occurrence, details, installationId: "1234", accountType: "Organization", result: "connected" })],
+    ["auditGithubDisconnected", (occurrence) => builders.auditGithubDisconnected({ ...base, occurrence, details, installationId: "1234", accountType: "Organization" })],
+    ["auditGithubInstallationChanged", (occurrence) => builders.auditGithubInstallationChanged({ ...base, occurrence, details, installationId: "1234", status: "removed", accountType: "Organization" })],
+    ["auditRead", (occurrence) => builders.auditRead({ ...base, occurrence, details, fromSeq: 1, toSeq: 9, count: 9, via: "api" })],
+    ["auditStaffRead", (occurrence) => builders.auditStaffRead({ ...base, actor: { kind: "operator", id: `op_${"b".repeat(24)}` }, occurrence, details, fromSeq: 1, toSeq: 9, count: 9, via: "api" })],
+    ["auditExported", (occurrence) => builders.auditExported({ ...base, occurrence, details, exportId: "exp_1", fromSeq: 1, toSeq: 9, withDetails: true })],
+    ["auditSubjectErased", (occurrence) => builders.auditSubjectErased({ ...base, occurrence, details, subject: "dev_2" })],
+    ["auditShredScheduled", (occurrence) => builders.auditShredScheduled({ ...base, occurrence, details, shredAfterDays: 30 })],
+  ];
+
+  it("covers every builder the module exports (a new builder needs a case here)", () => {
+    const exported = Object.keys(builders).filter((name) => name.startsWith("audit") && name !== "auditOccurrence").sort();
+    const covered = [...new Set(cases.map(([name]) => name.replace(/ \(.*\)$/, "")))].sort();
+    expect(covered).toStrictEqual(exported);
+  });
+
+  for (const [name, make] of cases) {
+    describe(name, () => {
+      it("gives different ids to two occurrences with identical facts, and the same id to one occurrence twice", () => {
+        expect(make("occurrence-1").eventId).toBe(make("occurrence-1").eventId);
+        expect(make("occurrence-1").eventId).not.toBe(make("occurrence-2").eventId);
+        expect(make("occurrence-1")).toStrictEqual(make("occurrence-1"));
+      });
+
+      it("is a valid event", () => {
+        const parsed = AuditEventInputSchema.safeParse(make("occurrence-1"));
+        expect(parsed.error?.issues).toBeUndefined();
+        expect(parsed.success).toBe(true);
+      });
+
+      it("keeps names, emails and logins in details (or a name-keyed target) only", () => {
+        const event = make("occurrence-1");
+        const { details: kept, ...chain } = event;
+        const outside = JSON.stringify(chain.target !== undefined && "name" in chain.target ? { ...chain, target: { kind: chain.target.kind } } : chain);
+        for (const personal of PERSONAL) expect(outside, personal).not.toContain(personal);
+        expect(JSON.stringify(kept)).toContain("Jane Roe");
+      });
+    });
+  }
+
+  it("the id also depends on the pinned parts: the decision, the terminal status", () => {
+    const decided = (decision: string) => builders.auditApprovalDecided({ ...base, occurrence: "apr_1", approvalId: "apr_1", kind: "write", decision, subjectKind: "write" }).eventId;
+    expect(decided("approved")).not.toBe(decided("declined"));
+    const executed = (status: string) => builders.auditWriteExecuted({ ...base, occurrence: "apr_1", approvalId: "apr_1", connectorType: "linear", tool: "t", status, argumentsHash: "a".repeat(64) }).eventId;
+    expect(executed("APPROVED_DONE")).not.toBe(executed("APPROVED_FAILED"));
+    const spend = (decision: string) => builders.auditSpendRequestDecided({ ...base, occurrence: "spr_1", spendRequestId: "spr_1", kind: "raise", scopeKind: "member", amountCents: 1, decision }).eventId;
+    expect(spend("approved")).not.toBe(spend("declined"));
+  });
+
+  it("different actions of one occurrence get different ids", () => {
+    const removed = builders.auditMemberRemoved({ ...base, occurrence: "req-1", memberId: "dev_2", role: "member" });
+    const left = builders.auditMemberLeft({ ...base, occurrence: "req-1", memberId: "dev_2", role: "member" });
+    expect(removed.eventId).not.toBe(left.eventId);
+  });
+
+  it("composes several values into one occurrence without letting them run together", () => {
+    expect(auditOccurrence("a|b", "c")).not.toBe(auditOccurrence("a", "b|c"));
+    expect(auditOccurrence("a", "b")).toBe(auditOccurrence("a", "b"));
+    expect(auditOccurrence("x\ny")).not.toContain("\n");
+  });
+
+  it("puts a name-keyed target's name in the target and nowhere else", () => {
+    const event = builders.auditEgressDecided({ ...base, occurrence: "req-1", domain: "evil.example.org", decision: "approved" });
+    expect(event.target).toStrictEqual({ kind: "domain", name: "evil.example.org" });
+    expect(JSON.stringify({ ...event, target: undefined })).not.toContain("evil.example.org");
+  });
+});
