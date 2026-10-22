@@ -157,12 +157,19 @@ export const AgentRunStateSchema = z.object({
     approvalIds: z.array(z.string()),
     /** The write approvals whose outcome the model has been told in a continuation. */
     told: z.array(z.string()).optional(),
+    /** The branch the worker chose when the step reported while its write approvals were still open: kept for the end of the step (Task 22 review, M3). */
+    pendingBranch: z.string().max(200).optional(),
   }).strict()),
   reports: z.array(z.object({ stepId: StepIdSchema, name: z.string(), text: z.string() }).strict()),
   finalReport: z.string().optional(),
   resultContract: ResultContractSchema.optional(),
   branch: z.string().optional(),
   checkout: z.array(RunCheckoutSchema).max(RUN_INPUT_CONTEXT_MAX).optional(),
+  /**
+   * When a cancel was asked for while a step ran (written in the cancel's own transaction, which also raises `revision`, so no write the engine read before
+   * it can land). The engine ends the run CANCELLED at its next look instead of going on (Task 22 review, C1).
+   */
+  cancelRequestedAt: z.string().optional(),
   /** Why the run ended FAILED or CANCELLED, in words the person reads, and when it ended (any ended state). */
   endReason: z.string().max(1000).optional(),
   endedAt: z.string().optional(),

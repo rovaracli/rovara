@@ -5591,6 +5591,14 @@ function agentRunHostOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTas
         if (item.entityType === "OPERATION" && item.kind === "task") await blockEndedOperationKeys(dependencies, item as unknown as OperationRecord);
       }
     },
+    // A run that ends while its step runs asks the worker to stop it; a step that already ended, or is being stopped, is left alone (Task 22 review, I3).
+    stopOperation: async (task, operationId) => {
+      const operation = await getItem<OperationRecord>(dependencies, operationKey(task.workspaceId, operationId));
+      if (operation === undefined || operation.kind !== "task" || TERMINAL.has(operation.status) || operation.status === "CANCEL_REQUESTED") return;
+      const workspace = await requireWorkspace(dependencies, task.workspaceId);
+      if (workspace.activeOperationId !== operationId) return;
+      await requestCancellation(dependencies, workspace, operationId, {});
+    },
     spentUsd: async (task) => {
       const keys = task.modelKeyIds ?? [];
       return dependencies.modelAccess === undefined || keys.length === 0 ? 0 : dependencies.modelAccess.access.keySpend(keys);
@@ -10875,6 +10883,12 @@ async function recordWorkflowDispatchFailure(dependencies: AwsBrokerDependencies
       }));
       return;
     }
+    // The keys' expiry and the next end are the backstop for an operation whose end could not be told: the row goes (Plan 3, Task 22).
+    if (item.kind === "operation_end") {
+      await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: key }));
+      console.log(JSON.stringify({ component: "broker", event: "operation_end.dispatch_gave_up", taskId: item.taskId, attempts }));
+      return;
+    }
     // The agent-step engine could not take a run forward: the run ends FAILED with a clear reason, and the row goes (Plan 3, Task 22).
     if (item.kind === "agent_run") {
       const agents = agentRouteDependencies(dependencies, developerTaskActions(dependencies));
@@ -11192,8 +11206,35 @@ async function runAgentRunDispatch(dependencies: AwsBrokerDependencies, item: Wo
   }
 }
 
+/**
+ * Plan 3, Task 22 (review I2): a task's operation ended in a Lambda that has no model proxy (the reaper, the dispatcher, the stuck-cancel sweep), which left this
+ * row. The operation's model keys are blocked here, and the task's end is told as a result the broker heard itself would tell it (the first end a task has is the
+ * one told). The row goes when both are done; both never throw, so a lost proxy is the key expiry's backstop, as for a result the broker heard.
+ */
+async function runOperationEndDispatch(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord): Promise<"DISPATCHED" | "STALE" | "RETRY"> {
+  const row = item as WorkflowDispatchRecord & { orgId?: unknown; workspaceId?: unknown; operationId?: unknown };
+  const key = { pk: item.pk, sk: item.sk };
+  try {
+    const operation = typeof row.workspaceId === "string" && typeof row.operationId === "string"
+      ? await getItem<OperationRecord>(dependencies, operationKey(row.workspaceId, row.operationId)) : undefined;
+    if (operation === undefined || !TERMINAL.has(operation.status) || operation.orgId === undefined || operation.orgId !== row.orgId) {
+      await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: key }));
+      return "STALE";
+    }
+    await blockEndedOperationKeys(dependencies, operation);
+    await tellTaskEnd(dependencies, operation, item.taskId, operation.status);
+    await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: key }));
+    return "DISPATCHED";
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "operation_end.dispatch_failed", taskId: item.taskId, error: error instanceof Error ? error.name : "unknown" }));
+    await recordWorkflowDispatchFailure(dependencies, item);
+    return "RETRY";
+  }
+}
+
 async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: AccessPausedWorkflowDispatch): Promise<"DISPATCHED" | "STALE" | "RETRY"> {
   if (item.kind === "agent_run") return runAgentRunDispatch(dependencies, item);
+  if (item.kind === "operation_end") return runOperationEndDispatch(dependencies, item);
   const key = { pk: item.pk, sk: item.sk };
   const remove = async () => {
     try {
@@ -12926,7 +12967,9 @@ async function finishDeveloperClose(dependencies: AwsBrokerDependencies, pointer
       console.log(JSON.stringify({ component: "broker", event: "developer.task_record_missing", taskId: pointer.taskId, operationId }));
       return;
     }
-    await finishTaskClose({ tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient }, task, operationId, [], requestedAt, discardedUnpublished);
+    const tasks = developerTaskActions(dependencies);
+    const agentEngine = agentRouteDependencies(dependencies, tasks);
+    await finishTaskClose({ tableName: dependencies.tableName, actions: tasks, documentClient: dependencies.documentClient, ...(agentEngine === undefined ? {} : { agentEngine }) }, task, operationId, [], requestedAt, discardedUnpublished);
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "developer.task_close_failed", taskId: pointer.taskId, operationId, error: error instanceof Error ? error.name : "unknown" }));
   }

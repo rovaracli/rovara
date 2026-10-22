@@ -103,6 +103,8 @@ export interface AgentWriteGateInput {
   classify(): Promise<WriteClassification>;
   /** A conditional ledger put that claims the call's request id for `approvalId`, for the transaction that makes the approval. Absent where the install has no such ledger. */
   claimRequest?(approvalId: string): TransactItem;
+  /** A condition that the step's operation has not ended, for the transaction that makes the approval (see `DecideWriteInput.operationGuard`). */
+  operationGuard?: TransactItem;
 }
 export type AgentWriteGate = (input: AgentWriteGateInput) => Promise<AgentWriteDecision>;
 
@@ -137,6 +139,7 @@ export function approvalsWriteGate(deps: ApprovalDependencies): AgentWriteGate {
       orgId: input.orgId, taskId: input.taskId, operationId: input.operationId, stepId: input.stepId, agentId: input.agent.id, agentName: input.agent.name,
       tool: input.tool, call: { scope: input.scope, schemaHash: input.schemaHash, arguments: input.args }, classify: context, classification,
       run: { project: input.project, owner: input.owner }, ...(input.claimRequest === undefined ? {} : { claimRequest: (approvalId: string) => input.claimRequest!(approvalId) }),
+      ...(input.operationGuard === undefined ? {} : { operationGuard: input.operationGuard }),
     });
     if (decided.outcome === "run") return { decision: "run" };
     if (decided.outcome === "replay") return { decision: "replay" };
@@ -548,6 +551,14 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
     classifyInput,
     classify: () => (classification ??= classifyAgentWrite(classifyDeps, classifyInput)),
     ...(holdItem === undefined ? {} : { claimRequest: (approvalId: string) => holdItem({ workspaceId: run.workspace.id, connector, record: holdRecord(), approvalId }) }),
+    // The approval is made only while the step's operation is still running (Task 22 review, M2).
+    operationGuard: {
+      ConditionCheck: {
+        TableName: deps.tableName, Key: { pk: `WORKSPACE#${run.workspace.id}`, sk: `OPERATION#${run.operation.id}` },
+        ConditionExpression: "#status = :accepted OR #status = :dispatching OR #status = :running",
+        ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":accepted": "ACCEPTED", ":dispatching": "DISPATCHING", ":running": "RUNNING" },
+      },
+    },
   }));
   if (!decision.success) throw new Error("the write gate answered something unexpected");
   if (decision.data.decision === "refuse") throw agentXError(decision.data.code, decision.data.message);

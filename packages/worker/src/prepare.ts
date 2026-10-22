@@ -417,8 +417,9 @@ async function checkoutResolvedCommit(directory: string, commit: string): Promis
 }
 
 /**
- * Fetches each pull request head named for the repository and checks the first out, detached, at exactly the commit the run recorded. A head that is not that
- * commit (the author pushed meanwhile) fails: the run reviews what it was asked to review or nothing.
+ * Fetches each pull request head named for the repository and checks the first out, detached, at exactly the commit the run recorded. The commit is fetched by
+ * its sha, so a head the author moved since the run started is still the commit the run was asked to look at; a commit the repository no longer holds falls back to
+ * the pull request's own ref, and a head that is not the recorded commit fails: the run reviews what it was asked to review or nothing.
  */
 async function checkoutPullRequestHeads(
   directory: string,
@@ -429,21 +430,52 @@ async function checkoutPullRequestHeads(
   for (const head of heads) {
     const ref = `refs/remotes/origin/pull/${String(head.pullRequest)}/head`;
     assertCredentialFreeRemote(remoteUrl);
+    const environment = await gitHardenedEnvironment(directory);
+    const hasCommit = async (): Promise<boolean> => (await execFileAsync("git", ["-C", directory, "cat-file", "-e", `${head.headSha}^{commit}`], { timeout: 30_000, maxBuffer: 4_096, env: environment }).then(() => true, () => false));
     // The repository's own URL, as every other network call of the worker names it (a hardened Git ignores the clone's `origin`).
-    await runGitWithCredential({
-      directory,
-      args: ["-C", directory, "fetch", "--no-tags", remoteUrl, `+refs/pull/${String(head.pullRequest)}/head:${ref}`],
-      credential,
-      timeout: 300_000,
-      maxBuffer: MAX_COMMAND_OUTPUT_BYTES,
-    });
-    const fetched = (await execFileAsync("git", ["-C", directory, "rev-parse", "--verify", `${ref}^{commit}`], { timeout: 30_000, maxBuffer: 4_096, env: await gitHardenedEnvironment(directory) })).stdout.trim();
-    if (fetched !== head.headSha) throw new Error(`pull request ${String(head.pullRequest)} has a new commit since the run started; start the run again`);
+    try {
+      await runGitWithCredential({ directory, args: ["-C", directory, "fetch", "--no-tags", remoteUrl, head.headSha], credential, timeout: 300_000, maxBuffer: MAX_COMMAND_OUTPUT_BYTES });
+    } catch {
+      // A server that does not serve a commit by its sha: the pull request's ref is read instead, and must name that commit.
+    }
+    if (!await hasCommit()) {
+      await runGitWithCredential({
+        directory,
+        args: ["-C", directory, "fetch", "--no-tags", remoteUrl, `+refs/pull/${String(head.pullRequest)}/head:${ref}`],
+        credential,
+        timeout: 300_000,
+        maxBuffer: MAX_COMMAND_OUTPUT_BYTES,
+      });
+      const fetched = (await execFileAsync("git", ["-C", directory, "rev-parse", "--verify", `${ref}^{commit}`], { timeout: 30_000, maxBuffer: 4_096, env: environment })).stdout.trim();
+      if (fetched !== head.headSha) throw new Error(`pull request ${String(head.pullRequest)} has a new commit since the run started; start the run again`);
+    }
   }
   const first = heads[0];
   if (first === undefined) return undefined;
   await checkoutResolvedCommit(directory, first.headSha);
   return { pullRequest: first.pullRequest, headSha: first.headSha };
+}
+
+/**
+ * Before an agent step runs: each repository the step's payload names a pull request head for must be checked out at exactly that commit (the first head of the
+ * repository, which is the one preparation checks out). A workspace moved off the commit, or one that never held it, does not run the step: a review never looks
+ * at the wrong code.
+ */
+export async function verifyCheckedOutHeads(
+  rootPath: string,
+  manifest: Pick<PreparationManifest, "repositories">,
+  checkout: ReadonlyArray<{ repository: string; pullRequest: number; headSha: string }>,
+): Promise<void> {
+  const seen = new Set<string>();
+  for (const head of checkout) {
+    if (seen.has(head.repository)) continue;
+    seen.add(head.repository);
+    const repository = manifest.repositories.find((entry) => entry.name === head.repository);
+    const mismatch = new Error(`the workspace is not at the recorded commit of pull request ${String(head.pullRequest)}; start the run again`);
+    if (repository === undefined) throw mismatch;
+    const directory = containedPath(rootPath, repository.path);
+    if (await gitHead(directory).catch(() => undefined) !== head.headSha) throw mismatch;
+  }
 }
 
 async function gitHead(directory: string): Promise<string> {

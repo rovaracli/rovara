@@ -75,12 +75,12 @@ describe("preparing a workspace for a run that looks at a pull request", () => {
     })).rejects.toThrow("pull request 12 has a new commit since the run started");
   });
 
-  it("fails when the pull request does not exist, and never falls back to the default branch", async () => {
+  it("fails when neither the pull request nor the recorded commit exists, and never falls back to the default branch", async () => {
     const source = await repositoryWithPullRequest();
     const root = await mkdtemp(join(tmpdir(), "agentx-pr-workspace-"));
     await expect(prepareWorkspace({
       rootPath: root, project: project(), materializer: materializer(source.directory), pullRequestRemote: () => pathToFileURL(source.directory).href,
-      checkout: [{ repository: "demo", pullRequest: 99, headSha: source.head }],
+      checkout: [{ repository: "demo", pullRequest: 99, headSha: "b".repeat(40) }],
     })).rejects.toThrow();
   });
 

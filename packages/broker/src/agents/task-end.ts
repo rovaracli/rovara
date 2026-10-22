@@ -94,7 +94,7 @@ async function get<T>(deps: TaskEndDependencies, key: { pk: string; sk: string }
 }
 
 /** How long a call that is telling the handlers keeps the others out; a process that dies holds it no longer than this. */
-const END_LEASE_MS = 60_000;
+export const END_LEASE_MS = 60_000;
 
 /** Takes the right to tell the handlers: one call does at a time, so two that meet do not tell twice. */
 async function claimEnd(deps: TaskEndDependencies, key: { pk: string; sk: string }): Promise<boolean> {
@@ -142,8 +142,9 @@ async function eventOf(deps: TaskEndDependencies, task: DeveloperTaskRecord, out
 
 /**
  * The task has ended. Records the end, blocks the task's model keys, gives its workspace back and tells every end handler, once. `"called"`: this call told
- * the handlers (or the rest of them); `"already_ended"`: an earlier call told all of them; `"not_listening"`: nothing is registered and the caller does not
- * keep the end (`record`), so nothing was written. An agent-step run's own end is always kept (`record: true`): its workspace and keys depend on it. Throws when a
+ * the handlers (or the rest of them); `"already_ended"`: an earlier call told all of them; `"in_progress"`: another call holds the lease and is telling them
+ * now (the caller must look again once the lease could have run out: the end is not finished until a call answers `called` or `already_ended`);
+ * `"not_listening"`: nothing is registered and the caller does not keep the end (`record`), so nothing was written. An agent-step run's own end is always kept (`record: true`): its workspace and keys depend on it. Throws when a
  * handler fails (the end stays recorded, with how many were told, so the next call goes on from there); callers that must not fail wrap it.
  */
 export async function onTaskEnded(
@@ -152,7 +153,7 @@ export async function onTaskEnded(
   outcome: TaskEndOutcome,
   detail: { finalReport?: string; branch?: string } = {},
   options: { record?: boolean } = {},
-): Promise<"called" | "already_ended" | "not_listening"> {
+): Promise<"called" | "already_ended" | "in_progress" | "not_listening"> {
   if (!hasTaskEndHandlers() && options.record !== true) return "not_listening";
   // A task from before orgs has no one to tell (its handlers are the org's).
   if (task.orgId === undefined) return "not_listening";
@@ -173,7 +174,7 @@ export async function onTaskEnded(
     }
   }
   if (record === undefined || record.orgId !== orgId) return "already_ended";
-  if (record.done !== true && !await claimEnd(deps, key)) return "already_ended";
+  if (record.done !== true && !await claimEnd(deps, key)) return "in_progress";
   // What ending a task does besides telling: keys first (a request already admitted still settles), then the workspace. Done on every call that has the
   // means, also after the handlers were told: an earlier call without them (a creator check, a release) recorded the end and told, and this one finishes it.
   if (deps.agentRuns?.blockKeys !== undefined) await deps.agentRuns.blockKeys(task);

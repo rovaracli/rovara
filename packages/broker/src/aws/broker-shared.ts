@@ -289,8 +289,12 @@ export interface WorkflowDispatchRecord {
   entityType: "WORKFLOW_DISPATCH";
   taskId: string;
   workflowRevision: number;
-  /** UPDATE: an approved fix's checks and reviews passed, and it is pushed to the pull requests already open. `agent_run` (Plan 3, Task 22): the agent-step engine has something to do for the task. */
-  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT" | "agent_run";
+  /**
+   * UPDATE: an approved fix's checks and reviews passed, and it is pushed to the pull requests already open. `agent_run` (Plan 3, Task 22): the agent-step engine
+   * has something to do for the task. `operation_end`: a task's operation ended in a Lambda that has no model proxy (the reaper, the dispatcher, the stuck-cancel
+   * sweep), so the broker's recovery sweep blocks its keys and tells the task's end handlers.
+   */
+  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT" | "agent_run" | "operation_end";
   /** IMPLEMENT (a custom sequence's next coding step) may be due before any candidate exists: then it is WORKFLOW_NO_CANDIDATE_DIGEST. */
   candidateDigest: string;
   /** A single internal resume operation warms EC2 before a required E2E round is immutably admitted. */
@@ -333,6 +337,18 @@ export function agentRunDispatchItem(tableName: string, input: { taskId: string;
     createdAt: input.now, attempts: 0, nextAttemptAt: input.dueAt, dispatchDuePk: WORKFLOW_DISPATCH_PK, dispatchDueSk: `${input.dueAt}#${key.sk}`,
     [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(input.dueAt) / 1000) + WORKFLOW_DISPATCH_RETENTION_SECONDS,
     ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
+  };
+  return { Put: { TableName: tableName, Item: item } };
+}
+/** A task has one `operation_end` row at a time: the latest operation that ended where only a row could tell the broker (Task 22 review, I2). */
+export const operationEndDispatchKey = (taskId: string) => ({ pk: WORKFLOW_DISPATCH_PK, sk: `${taskId}#end` } as const);
+
+export function operationEndDispatchItem(tableName: string, input: { taskId: string; orgId: string; workspaceId: string; operationId: string; now: string }): TransactItems[number] {
+  const key = operationEndDispatchKey(input.taskId);
+  const item: WorkflowDispatchRecord & { orgId: string; workspaceId: string; operationId: string } = {
+    ...key, entityType: "WORKFLOW_DISPATCH", taskId: input.taskId, orgId: input.orgId, workspaceId: input.workspaceId, operationId: input.operationId, workflowRevision: 0,
+    kind: "operation_end", candidateDigest: WORKFLOW_NO_CANDIDATE_DIGEST, createdAt: input.now, attempts: 0, nextAttemptAt: input.now, dispatchDuePk: WORKFLOW_DISPATCH_PK,
+    dispatchDueSk: `${input.now}#${key.sk}`, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(input.now) / 1000) + WORKFLOW_DISPATCH_RETENTION_SECONDS,
   };
   return { Put: { TableName: tableName, Item: item } };
 }

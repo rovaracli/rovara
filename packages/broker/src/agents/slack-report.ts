@@ -5,7 +5,7 @@
 //   - and if what is left reads as a command to a bot or a chat-ops tool (a slash command, `!deploy`, `deploy api to production`, `rollback`,
 //     `restart`, an org's own command word), nothing of the report is posted: only a link to the task, where the whole report stays.
 // A pure function of its input.
-import { commentLines, commentSignal, stripMentions, type OrgId } from "@agentx/contracts";
+import { cleanText, commentLines, commentSignal, stripMentions, type OrgId } from "@agentx/contracts";
 
 /**
  * Chat-ops commands that a channel's bots and automations act on, matched case-insensitively against each LINE of the normalized report
@@ -53,10 +53,30 @@ function plainSlackForms(text: string): string {
     .replace(/(?<![\p{L}\p{N}_])@(?:channel|here|everyone)(?![\p{L}\p{N}_])[ ]?/giu, "");
 }
 
-const LINK = /<(https?:\/\/[^|>\s]+)(?:\|([^>]*))?>|(https?:\/\/[^\s<>|]+)/giu;
+/**
+ * What a report holds that Slack turns into something live, in the order the scan meets it: `<url|label>`, a bare `https://` or `mailto:` address, and a bare
+ * domain (`evil.example/login`, `www.evil.example`, `evil.com`). A bare domain is only taken for one when it has a path, starts with `www.` or ends in a
+ * top-level domain Slack is known to link: file names (`README.md`, `index.ts`) and versions (`1.2.3`) stay as they are.
+ */
+const LINK = new RegExp([
+  String.raw`<((?:https?:\/\/|mailto:)[^|>\s<]+)(?:\|([^>]*))?>`,
+  String.raw`((?:https?:\/\/|mailto:)[^\s<>|]+)`,
+  String.raw`(?<![\p{L}\p{N}_@./:-])((?:www\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?::\d{1,5})?(?:\/[^\s<>|]*)?)`,
+].join("|"), "giu");
 const TRAILING_PUNCTUATION = /[.,;:!?)\]}'"]+$/u;
+/** The top-level domains that Slack links when they stand alone; others are only taken for a domain when a path or `www.` shows it is one. */
+const LINKED_TOP_LEVEL_DOMAINS: ReadonlySet<string> = new Set([
+  "com", "net", "org", "io", "dev", "app", "co", "ai", "info", "biz", "xyz", "online", "site", "tech", "cloud", "link", "click", "top", "us", "uk", "de", "fr", "ru", "cn", "in",
+  "ly", "gl", "gd", "me", "to", "cc", "tv", "ws", "edu", "gov",
+]);
 
+/** The host of an address; for a `mailto:` address the domain of the mailbox. */
 function hostOf(url: string): string | undefined {
+  if (/^mailto:/iu.test(url)) {
+    const address = url.slice("mailto:".length).split("?")[0]!;
+    const domain = address.slice(address.lastIndexOf("@") + 1).toLowerCase();
+    return address.includes("@") && domain !== "" ? domain : undefined;
+  }
   try {
     return new URL(url).host.toLowerCase();
   } catch {
@@ -66,18 +86,43 @@ function hostOf(url: string): string | undefined {
 
 /** Every link to a host that is neither the task's own nor one the org allows becomes plain text with its host after it. */
 function flattenLinks(text: string, allowed: (host: string) => boolean): string {
-  return text.replace(LINK, (whole: string, slackUrl: string | undefined, label: string | undefined, bare: string | undefined) => {
+  return text.replace(LINK, (whole: string, slackUrl: string | undefined, label: string | undefined, bare: string | undefined, domain: string | undefined) => {
     if (slackUrl !== undefined) {
       const host = hostOf(slackUrl);
-      if (host !== undefined && allowed(host)) return whole;
-      const shown = label === undefined || label.trim() === "" ? "link" : flattenLinks(label, allowed);
-      return `${shown} (${host ?? "unknown site"})`;
+      const shown = label === undefined || label.trim() === "" ? undefined : flattenLinks(label, allowed);
+      if (host !== undefined && allowed(host)) return shown === undefined ? whole : `<${slackUrl}|${shown}>`;
+      return `${shown ?? "link"} (${host ?? "unknown site"})`;
     }
-    const trailing = TRAILING_PUNCTUATION.exec(bare!)?.[0] ?? "";
-    const address = trailing === "" ? bare! : bare!.slice(0, -trailing.length);
-    const host = hostOf(address);
-    return host !== undefined && allowed(host) ? whole : `link (${host ?? "unknown site"})${trailing}`;
+    if (bare !== undefined) {
+      const trailing = TRAILING_PUNCTUATION.exec(bare)?.[0] ?? "";
+      const address = trailing === "" ? bare : bare.slice(0, -trailing.length);
+      const host = hostOf(address);
+      return host !== undefined && allowed(host) ? whole : `link (${host ?? "unknown site"})${trailing}`;
+    }
+    const trailing = TRAILING_PUNCTUATION.exec(domain!)?.[0] ?? "";
+    const address = trailing === "" ? domain! : domain!.slice(0, -trailing.length);
+    const authority = address.split("/")[0]!.toLowerCase();
+    const host = authority.split(":")[0]!;
+    if (!(address.includes("/") || host.startsWith("www.") || LINKED_TOP_LEVEL_DOMAINS.has(host.split(".").at(-1)!))) return whole;
+    return allowed(authority) ? whole : `link (${host.replace(/^www\./u, "")})${trailing}`;
   });
+}
+
+const escapeText = (text: string): string => text.replace(/&/gu, "&amp;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;");
+
+/**
+ * What is left of the report after the scan is plain text Slack must show as it is: `&`, `<` and `>` are Slack's own control characters, so each is written as its
+ * entity, except in the `<url|label>` links the scan kept on purpose. Nothing the report says can then be read by Slack as a mention, a group or a command.
+ */
+function escapeForSlack(text: string): string {
+  let out = "";
+  let last = 0;
+  for (const match of text.matchAll(/<((?:https?:\/\/|mailto:)[^|>\s<]+)(?:\|([^>]*))?>/giu)) {
+    out += escapeText(text.slice(last, match.index));
+    out += `<${match[1]!.replace(/&/gu, "&amp;")}${match[2] === undefined ? "" : `|${escapeText(match[2])}`}>`;
+    last = match.index + match[0].length;
+  }
+  return out + escapeText(text.slice(last));
 }
 
 export function prepareSlackReport(report: string, options: SlackReportOptions): PreparedSlackReport {
@@ -85,9 +130,11 @@ export function prepareSlackReport(report: string, options: SlackReportOptions):
   const domains = options.reportLinkDomains.map((domain) => domain.toLowerCase());
   const allowed = (host: string): boolean => host === taskHost
     || domains.some((domain) => host.split(":")[0] === domain || host.split(":")[0]!.endsWith(`.${domain}`));
-  const unmentioned = stripMentions(plainSlackForms(report)).args as string;
+  // Folded first (NFKC, invisible characters out), so a form written with fullwidth brackets is the form it will be read as before it is looked for; once more
+  // after the mention strip, which folds again; and every `<`, `>` and `&` that is left is escaped, so nothing the folding makes live can reach Slack.
+  const unmentioned = plainSlackForms(stripMentions(plainSlackForms(cleanText(report))).args as string);
   const text = flattenLinks(unmentioned, allowed);
   const command = commentSignal(text, { allowMentions: false, labelPaths: [], extraCommandWords: options.extraCommandWords }).consequential
     || commentLines(text).some((line) => CHATOPS_PATTERNS.some((pattern) => pattern.test(line)));
-  return command ? { kind: "link_only", text: `Report available in Rovara: ${options.taskUrl}` } : { kind: "text", text };
+  return command ? { kind: "link_only", text: `Report available in Rovara: ${options.taskUrl}` } : { kind: "text", text: escapeForSlack(text) };
 }

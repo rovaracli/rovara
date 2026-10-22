@@ -33,7 +33,7 @@ import {
   type PiSessionHandle,
   type WorkspaceModelConfiguration,
 } from "./pi-session.js";
-import type { PreparationManifest } from "./prepare.js";
+import { verifyCheckedOutHeads, type PreparationManifest } from "./prepare.js";
 import { WorkerOperationCancelledError, type WorkerCancellationController } from "./cancel.js";
 import type { FeedbackApprovalAuthorizer, FeedbackBundleReader } from "./callback-client.js";
 import { readCheckHistory, restoreCheckHistory } from "./verification/check-history.js";
@@ -243,6 +243,8 @@ async function runTask(
   const candidateSweep = fileTools === undefined ? undefined : async (directory: string): Promise<void> => { await sweepFileOps(fileTools, canonicalRoot, directory); };
 
   if (step?.kind === "agent") {
+    // A run that looks at a pull request: the workspace must hold the head commit the step was told about, or the step does not run (Task 22 review, M5).
+    if (step.checkout !== undefined && step.checkout.length > 0) await verifyCheckedOutHeads(dependencies.rootPath, manifest, step.checkout);
     const { brokerUrl, ...hooks } = dependencies.agentRun!;
     const agentStepResult = await runAgentStep({
       payload: step, operationId: invocation.operationId, workspaceId: invocation.workspaceId, conversationId: invocation.payload.conversationId,

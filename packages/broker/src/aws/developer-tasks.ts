@@ -5308,7 +5308,7 @@ const CLOSE_ATTEMPTS = 4;
  * the thread's record is closed too.
  */
 export async function finishTaskClose(
-  deps: { tableName: string; actions: DeveloperTaskActions; documentClient: { send(command: unknown): Promise<unknown> } },
+  deps: { tableName: string; actions: DeveloperTaskActions; documentClient: { send(command: unknown): Promise<unknown> }; agentEngine?: AgentRunEngineDependencies },
   task: DeveloperTaskRecord,
   closeOperationId: string | undefined,
   extra: TransactItems = [],
@@ -5379,13 +5379,17 @@ export async function finishTaskClose(
     try {
       // First, at positions 0 and 1: releaseConflict reads the cancellation reasons by position.
       await deps.actions.transact([...(release ? releaseItems(deps.tableName, task.charge, task.taskId) : []), ...closing(current)]);
+      await endAgentRunOfClosedTask(deps, task);
       return;
     } catch (error) {
       if (!isConditional(error)) throw error;
       lastError = error;
       const fresh = await get<DeveloperTaskRecord>(deps, taskKey(task.taskId));
       // Another call finished the close first; its transaction released the counters once.
-      if (fresh?.closedAt !== undefined) return;
+      if (fresh?.closedAt !== undefined) {
+        await endAgentRunOfClosedTask(deps, task);
+        return;
+      }
       // Ruling F4: the notifier changed the share (it recorded the thread) meanwhile: close that one.
       if (fresh !== undefined && fresh.shareVersion !== current.shareVersion) {
         current = fresh;
@@ -5399,6 +5403,20 @@ export async function finishTaskClose(
     }
   }
   throw lastError;
+}
+
+/**
+ * Plan 3, Task 22 (review I1): the task was closed, so an agent-step run that is waiting (for a person, between steps) ends CANCELLED with its approvals expired
+ * and its end told, instead of waiting for a decision nobody can use. A run that is over is left as it is. Never throws: the close is done, and the engine's
+ * sweep finds a run whose task is closed.
+ */
+async function endAgentRunOfClosedTask(deps: { agentEngine?: AgentRunEngineDependencies }, task: DeveloperTaskRecord): Promise<void> {
+  if (deps.agentEngine === undefined || task.agent === undefined || task.workflow !== undefined) return;
+  try {
+    await cancelAgentRun(deps.agentEngine, task.taskId, "The task was closed.");
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "agent_run.close_failed", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" }));
+  }
 }
 
 /**

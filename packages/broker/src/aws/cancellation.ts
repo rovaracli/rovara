@@ -21,6 +21,7 @@ import { hashJson, isConditional } from "./broker-shared.js";
 import type { WorkflowE2EReadinessMarker } from "./broker-shared.js";
 import type { ExtraItems } from "./developer-task-actions.js";
 import type { DurableOutboxRecord, RuntimeBinding } from "./lambda.js";
+import { taskAgentRunKey, taskPointerKey } from "../developer/task-records.js";
 
 /** The State table, as the broker and the reconciler reach it. */
 export interface StateTable {
@@ -275,6 +276,28 @@ export function issueCapability(
 }
 
 /**
+ * Plan 3, Task 22 (review C1): a cancel of a step of an agent-step run is recorded on the run itself, in the cancel's own transaction. The step may still
+ * finish successfully before the stop lands; the run has to know it was cancelled so it ends instead of going on to the next step or a continuation. The
+ * write also raises the run's `revision`, so no write the engine read before it can land. Empty for any other operation, and for a run that is over.
+ */
+async function agentRunCancelIntent(
+  dependencies: StateTable, workspace: WorkspaceInstance, target: Operation, now: string,
+): Promise<NonNullable<ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]>> {
+  const step = target as { kind: string; workflowMode?: unknown; programStepId?: unknown };
+  if (step.kind !== "task" || step.workflowMode !== undefined || typeof step.programStepId !== "string") return [];
+  const pointer = await getItem<{ taskId?: unknown }>(dependencies, taskPointerKey(workspace.id));
+  if (typeof pointer?.taskId !== "string") return [];
+  const run = await getItem<{ orgId?: unknown; state?: unknown }>(dependencies, taskAgentRunKey(pointer.taskId));
+  if (run === undefined || typeof run.orgId !== "string" || ["COMPLETE", "FAILED", "CANCELLED"].includes(String(run.state))) return [];
+  return [{ Update: {
+    TableName: dependencies.tableName, Key: taskAgentRunKey(pointer.taskId),
+    UpdateExpression: "SET cancelRequestedAt = if_not_exists(cancelRequestedAt, :at), #revision = #revision + :one",
+    ConditionExpression: "attribute_exists(pk) AND #org = :org", ExpressionAttributeNames: { "#revision": "revision", "#org": "orgId" },
+    ExpressionAttributeValues: { ":at": now, ":one": 1, ":org": run.orgId },
+  } }];
+}
+
+/**
  * Asks the worker to cancel an operation: the target moves to CANCEL_REQUESTED and a cancel
  * operation is queued for the worker. Callers authorize first (the workspace's owner, an
  * administrator, or a member of the workspace's Slack thread).
@@ -293,6 +316,7 @@ export async function requestCancellation(
   if (workspace.activeOperationId !== targetOperationId) throw agentXError("STALE_FENCE", "operation no longer owns the workspace");
   const now = new Date().toISOString();
   const operationId = randomUUID();
+  const intent = await agentRunCancelIntent(dependencies, workspace, target, now);
   const operation = operationRecord({
     ...operationOrg(workspace),
     id: operationId,
@@ -343,6 +367,8 @@ export async function requestCancellation(
       { Put: { TableName: dependencies.tableName, Item: operation } },
       { Put: { TableName: dependencies.tableName, Item: outbox } },
       ...extra(publicOperation(operation)),
+      // After the caller's items, so their positions in the transaction (which some callers read the cancellation reasons by) do not move.
+      ...intent,
     ] }));
   } catch (error) {
     if (!isConditional(error)) throw error;

@@ -1082,6 +1082,8 @@ describe("the engine under repeats, races and lost work", () => {
     expect(t.stepOps(run.workspaceId)).toHaveLength(1);
     // The decision was recorded and the handler never heard it (and the sweep's tries are used up or lost).
     await t.db.send(new UpdateCommand({ TableName: "state", Key: approvalKey(TEST_ORG, write.approvalId), UpdateExpression: "SET #status = :done, handlerDone = :yes", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":done": "APPROVED_DONE", ":yes": true } }));
+    // A decision also took the approval off the step's counter, in the same transaction (the fixture above wrote the record by hand).
+    t.db.set({ pk: orgScoped(TEST_ORG, `STEP_APPROVALS#${run.taskId}`), sk: "investigate", pending: 0 });
     const row = t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)[0]!;
     // A run that waits is looked at again after hours, not at the next sweep.
     expect(Date.parse(String(row.nextAttemptAt)) - Date.now()).toBeGreaterThan(5 * 3_600_000);
@@ -2140,7 +2142,7 @@ describe("Task 22 review: a late handler_gave_up never fails a run that moved on
     await approve(deps, write.approvalId);
     expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING" });
     const continuation = t.stepOps(run.workspaceId)[1]!;
-    await onApprovalGaveUp(deps, (await getAnyApproval(deps, TEST_ORG, write.approvalId as never))!);
+    await onApprovalGaveUp(deps, (await getAnyApproval(deps, TEST_ORG, write.approvalId))!);
     expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING" });
     expect(t.stepOps(run.workspaceId)[1]).toMatchObject({ id: continuation.id, status: expect.not.stringMatching(/^CANCEL/u) as string });
     expect(t.operations(run.workspaceId).filter((operation) => operation.kind === "cancel")).toEqual([]);
@@ -2148,7 +2150,7 @@ describe("Task 22 review: a late handler_gave_up never fails a run that moved on
 
   it("still fails a run that really waits on the approval, with the reason the owner reads", async () => {
     const { t, run, deps, write } = await waitingOnWrite();
-    await onApprovalGaveUp(deps, (await getAnyApproval(deps, TEST_ORG, write.approvalId as never))!);
+    await onApprovalGaveUp(deps, (await getAnyApproval(deps, TEST_ORG, write.approvalId))!);
     expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
     expect(t.runItem(run.taskId)!.endReason).toContain("couldn't continue this run");
   });

@@ -52,6 +52,7 @@ const STEP = /^[a-z][a-z0-9_]{0,23}$/;
 
 // ---- the exact words
 
+export const STEP_ENDED_TEXT = "This step has already finished, so this action was not started.";
 export const TOO_MANY_PENDING_TEXT = "Too many actions are waiting for approval in this step. Finish with a report instead.";
 const REFUSED_BY_RULE_TEXT = "A rule on this project doesn't allow this action.";
 const ALREADY_DECIDED_TEXT = "A person already decided this action. Carry on with the rest of your work.";
@@ -167,6 +168,11 @@ export interface DecideWriteInput {
    * nothing is made and the answer is `replay`: the caller answers from what the claim holds. Absent: the request id is not claimed.
    */
   claimRequest?: (approvalId: string) => TransactItem;
+  /**
+   * A condition on the operation that is asking (a `ConditionCheck` that it has not ended), in the approval's own transaction: a step that ended between the
+   * caller's check and this write makes no approval, so a step is never done with a PENDING approval its result did not see (Task 22 review, M2). Absent: no check.
+   */
+  operationGuard?: TransactItem;
   /** Defaults to the `write_approver` rule with `writeApproversFor` as its candidates; Plan 4 passes `chain_autonomous_writer`. */
   approvers?: ApproverSpec;
 }
@@ -341,8 +347,10 @@ export async function decideWrite(deps: ApprovalDependencies, input: DecideWrite
   const text = capText(`${shownText(input.agentName, 80)} wants to ${lowerFirst(summary)}. This needs approval from ${ownerName} or a project maintainer.`, DEVELOPER_EVENT_TEXT_MAX).text;
   const event = { Put: { TableName: deps.tableName, Item: { ...approvalTaskEventKey(input.taskId, createdAt, approvalId), entityType: "TASK_EVENT", orgId: input.orgId, kind: "status", text, at: createdAt } } };
   const claim = input.claimRequest?.(approvalId);
-  const made = await createWriteApprovalRecord(deps, record, claim === undefined ? [event] : [event, claim], MAX_PENDING_APPROVALS_PER_STEP, claim === undefined ? undefined : 1);
+  const extraItems = [event, ...(claim === undefined ? [] : [claim]), ...(input.operationGuard === undefined ? [] : [input.operationGuard])];
+  const made = await createWriteApprovalRecord(deps, record, extraItems, MAX_PENDING_APPROVALS_PER_STEP, claim === undefined ? undefined : 1, input.operationGuard === undefined ? undefined : extraItems.length - 1);
   if (made === "full") return { outcome: "refuse", reason: TOO_MANY_PENDING_TEXT };
+  if (made === "ended") return { outcome: "refuse", reason: STEP_ENDED_TEXT };
   if (made === "claimed") return { outcome: "replay" };
   if (made === "exists") {
     // Two copies of one call racing: the one that lost answers what the winner made.
