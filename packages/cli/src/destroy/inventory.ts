@@ -24,6 +24,42 @@ const InventorySchema = z.object({
 }).strict();
 export type Inventory = z.infer<typeof InventorySchema>;
 
+// Schema 2 is how the inventory is stored, so Plan 3's retained resources still fit SSM's standard
+// tier (final review M6): each stack part and resource type is written once, and a name
+// CloudFormation generated from the stack name is stored without "<stack name>-" ("s"), or without
+// "<stack name>-<logical ID>" ("sl"); reading derives the stack name from the environment again.
+// Schema 1, the shape above, is still read, from inventories an earlier agentx wrote.
+const LogicalIdSchema = z.string().min(1).max(255);
+const StoredResourceSchema = z.union([z.tuple([LogicalIdSchema, z.string().min(1).max(2048)]), z.tuple([LogicalIdSchema, z.string().max(2048), z.enum(["s", "sl"])])]);
+type StoredResource = z.infer<typeof StoredResourceSchema>;
+const StoredInventorySchema = InventorySchema.omit({ schemaVersion: true, resources: true }).extend({
+  schemaVersion: z.literal(2),
+  resources: z.partialRecord(z.enum(STACK_PARTS), z.record(z.string().min(1).max(100), z.array(StoredResourceSchema))),
+}).strict();
+
+function encodeInventory(inventory: Inventory): string {
+  const { resources, ...rest } = inventory;
+  const grouped: Partial<Record<StackPart, Record<string, StoredResource[]>>> = {};
+  for (const resource of resources) {
+    const stack = `${environmentStackName(inventory.env, resource.part)}-`;
+    const stored: StoredResource = resource.physicalId.startsWith(stack + resource.logicalId) ? [resource.logicalId, resource.physicalId.slice(stack.length + resource.logicalId.length), "sl"]
+      : resource.physicalId.startsWith(stack) ? [resource.logicalId, resource.physicalId.slice(stack.length), "s"]
+        : [resource.logicalId, resource.physicalId];
+    ((grouped[resource.part] ??= {})[resource.type] ??= []).push(stored);
+  }
+  return JSON.stringify({ ...rest, schemaVersion: 2, resources: grouped });
+}
+
+function decodeInventory(stored: z.infer<typeof StoredInventorySchema>): unknown {
+  const { resources, ...rest } = stored;
+  const decoded = Object.entries(resources).flatMap(([part, types]) => Object.entries(types ?? {}).flatMap(([type, entries]) => entries.map(([logicalId, id, form]) => {
+    const stack = `${environmentStackName(stored.env, part as StackPart)}-`;
+    const physicalId = form === "sl" ? stack + logicalId + id : form === "s" ? stack + id : id;
+    return { part, logicalId, type, physicalId };
+  })));
+  return { ...rest, schemaVersion: 1, resources: decoded };
+}
+
 export function retainedResources(part: StackPart, templateBody: string, resources: Array<{ logicalId: string; type: string; physicalId: string | undefined }>): RetainedResource[] {
   let retained: (resource: { logicalId: string; type: string }) => boolean;
   try {
@@ -47,13 +83,14 @@ export async function readInventory(store: ParameterStore, env: string): Promise
   if (stored === undefined) return undefined;
   let json: unknown;
   try { json = JSON.parse(stored.value); } catch { json = undefined; }
-  const parsed = InventorySchema.safeParse(json);
+  const compact = StoredInventorySchema.safeParse(json);
+  const parsed = InventorySchema.safeParse(compact.success ? decodeInventory(compact.data) : json);
   if (!parsed.success || parsed.data.env !== env) throw agentXError("CONFIG_INVALID", `${inventoryParameterName(env)} is not an agentx destroy inventory for ${env}; delete it only if you are sure nothing of ${env} is left, then run agentx destroy again`);
   return parsed.data;
 }
 
 export async function writeInventory(store: ParameterStore, inventory: Inventory): Promise<void> {
-  const json = JSON.stringify(InventorySchema.parse(inventory));
+  const json = encodeInventory(InventorySchema.parse(inventory));
   if (Buffer.byteLength(json) > SSM_STANDARD_VALUE_LIMIT) {
     throw agentXError("CONFIG_INVALID", `the list of resources environment ${inventory.env}'s stacks keep is larger than SSM's ${SSM_STANDARD_VALUE_LIMIT}-byte limit; report this as an AgentX bug, and tear the environment down with docs/teardown.md meanwhile`);
   }
