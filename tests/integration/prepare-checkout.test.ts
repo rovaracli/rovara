@@ -96,17 +96,17 @@ describe("preparing a workspace for a run that looks at a pull request", () => {
   });
   it("M5: fetches the recorded commit by its sha when the pull request's ref has moved on since, and reviews exactly that commit", async () => {
     const source = await repositoryWithPullRequest();
-    // The author pushed again: the pull request's ref names a newer commit, and the recorded one is still in the repository.
+    // The author force-pushed: the pull request's ref names a commit that is not a descendant of the recorded one, and the recorded one is on no branch any more
+    // (only its sha can still name it).
     await git(source.directory, "config", "uploadpack.allowAnySHA1InWant", "true");
-    await git(source.directory, "checkout", "--quiet", "feature");
+    await git(source.directory, "checkout", "--quiet", "-b", "rewritten", "main");
     await writeFile(join(source.directory, "later.txt"), "pushed later\n");
     await git(source.directory, "add", ".");
     await git(source.directory, "commit", "--quiet", "-m", "later");
     const later = await git(source.directory, "rev-parse", "HEAD");
     await git(source.directory, "update-ref", "refs/pull/12/head", later);
     await git(source.directory, "checkout", "--quiet", "main");
-    // The recorded commit is on no branch any more (a fork's pull request, force-pushed): only its sha can still name it.
-    await git(source.directory, "branch", "--quiet", "-D", "feature");
+    await git(source.directory, "branch", "--quiet", "-D", "feature", "rewritten");
     const root = await mkdtemp(join(tmpdir(), "agentx-pr-workspace-"));
     const manifest = await prepareWorkspace({
       rootPath: root, project: project(), materializer: materializer(source.directory), pullRequestRemote: () => pathToFileURL(source.directory).href,
