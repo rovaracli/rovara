@@ -122,29 +122,15 @@ function reachabilityProblems(def: ChainDefinition, indexOf: Map<ChainStepId, nu
 }
 
 /**
- * The index of a step on a loop that no `maxTraversals` limits, or undefined. Edges with a bound are removed; what is left has a cycle exactly when
- * Kahn's algorithm cannot remove every step. Steps it leaves can also be merely downstream of a cycle, so the one reported is the first that can
- * reach itself.
+ * The index of the first step on a loop that no `maxTraversals` limits, or undefined. Edges with a bound are left out; a step is on a loop of what is
+ * left when it can reach itself. (Kahn's algorithm would also list steps that are only downstream of a loop, so the walk below is what names one.)
  */
 function stepOnUnboundedLoop(def: ChainDefinition, indexOf: Map<ChainStepId, number>, edges: Edge[][]): number | undefined {
   const out: number[][] = def.steps.map((_step, index) =>
     edges[index]!.flatMap((edge) => (edge.bounded || edge.to === "$end" || !indexOf.has(edge.to) ? [] : [indexOf.get(edge.to)!])),
   );
-  const inDegree = def.steps.map(() => 0);
-  for (const targets of out) for (const target of targets) inDegree[target] = (inDegree[target] ?? 0) + 1;
-  const ready = inDegree.flatMap((degree, index) => (degree === 0 ? [index] : []));
-  const removed = new Set<number>();
-  while (ready.length > 0) {
-    const index = ready.pop()!;
-    removed.add(index);
-    for (const target of out[index]!) {
-      inDegree[target] = inDegree[target]! - 1;
-      if (inDegree[target] === 0) ready.push(target);
-    }
-  }
-  if (removed.size === def.steps.length) return undefined;
   for (let index = 0; index < def.steps.length; index += 1) {
-    if (!removed.has(index) && reaches(out, index, index)) return index;
+    if (reaches(out, index, index)) return index;
   }
   return undefined;
 }

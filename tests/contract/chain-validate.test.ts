@@ -195,6 +195,17 @@ describe("chainGraphProblems", () => {
       expect(chainGraphProblems(withBound(1))).toEqual([]);
     });
 
+    it("refuses a loop back through a gate's approval, and passes it when that edge is bounded", () => {
+      const withBound = (bound: number | undefined) =>
+        design(
+          "g",
+          { kind: "gate", id: "g", name: "g", prompt: "ok?", approvers: [{ kind: "chain_owner" }], onApprove: { to: "a", ...(bound === undefined ? {} : { maxTraversals: bound }) }, onReject: { to: "$end" } },
+          agent("a", "g"),
+        );
+      expect(text(chainGraphProblems(withBound(undefined)))).toHaveLength(1);
+      expect(chainGraphProblems(withBound(2))).toEqual([]);
+    });
+
     it("treats a loop as bounded only when every cycle has a bounded edge", () => {
       // a <-> b is bounded; c <-> d is not; the problem must name c or d.
       const def = design(
