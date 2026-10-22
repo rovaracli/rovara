@@ -19,7 +19,7 @@ import { supersedeKeys, finalizeKey } from "../../packages/broker/src/spend/ledg
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor } from "../../packages/broker/src/developer/decide-session.js";
 import {
   BUDGET_EXHAUSTED_FAILURE_MESSAGE, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, OWNER_ANSWER_HOURS, SPEND_RESUME_INSTRUCTIONS, WORKFLOW_BLOCK_REASONS, TRIAL_LIMITS_R49,
-  modelKeyKey, openSpendRequestsKey, orgMemberKey, ownerBudgetKey, spendCounterKey, spendRequestKey, suggestedTopUpUsd,
+  modelKeyKey, openSpendRequestsKey, orgMemberKey, orgRemovedKey, ownerBudgetKey, spendCounterKey, spendRequestKey, suggestedTopUpUsd,
   type AgentId, type OrgId, type PauseScope, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
@@ -950,6 +950,26 @@ describe("the guards of a decision", () => {
     const { t, request } = await asked();
     t.db.set({ ...(t.db.get(spendRequestKey(TEST_ORG, request.spendRequestId).pk, "META")!), ...spendRequestKey(ORG_B, request.spendRequestId) });
     expect(await getSpendRequest(t.deps(), ORG_B, request.spendRequestId)).toBeUndefined();
+  });
+
+  it("an approval does not resume a task its creator was removed from (R60)", async () => {
+    const { t, task, request } = await asked();
+    const ops = t.taskOps(task.workspaceId).length;
+    t.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
+    t.db.set({ ...orgRemovedKey(TEST_ORG, MAYA.developerId), entityType: "ORG_REMOVED", removedAt: new Date().toISOString() });
+    await t.decide(BEN, request.spendRequestId);
+    expect(t.requestOf(task.taskId)[0]).toMatchObject({ status: "APPROVED" });
+    expect(t.taskOps(task.workspaceId)).toHaveLength(ops);
+  });
+
+  it("an approval does not resume a task that is still paused on another limit", async () => {
+    const { t, task, request } = await asked();
+    const ops = t.taskOps(task.workspaceId).length;
+    // The month's budget ran out too, after the run limit was asked for.
+    await t.set(task.taskId, "SET budgetPause = :pause", { ":pause": { scope: { kind: "member", developerId: MAYA.developerId }, at: new Date().toISOString() } });
+    await t.decide(BEN, request.spendRequestId);
+    expect(t.meta(task.taskId)).toMatchObject({ budgetUsd: 21, budgetPause: { scope: { kind: "member" } } });
+    expect(t.taskOps(task.workspaceId)).toHaveLength(ops);
   });
 
   it("escalates only an owner's max-per-run request, never a run limit's", async () => {
