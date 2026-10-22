@@ -86,6 +86,7 @@ import {
   WORKFLOW_HISTORY_REWRITTEN_MESSAGE,
   WORKFLOW_NO_CODE_CHANGE_MESSAGE,
   WORKFLOW_BLOCK_REASONS,
+  BUDGET_EXHAUSTED_FAILURE_MESSAGE,
   WORKFLOW_MISSING_COMMITTED_SOURCE_EXPORT_REASON,
   WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE,
   WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE,
@@ -365,7 +366,7 @@ import { OrgConnectionStore, type OrgConnectionDeps, type OrgConnectionStoreInpu
 import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
-import { changeBudgets, keyIdOf, mintKeyHealing, type OrgBudgetSettings } from "../org/budget.js";
+import { changeBudgets, keyIdOf, mintKeyHealing, taskSpendBaseline, type OrgBudgetSettings } from "../org/budget.js";
 import { admitWork, mintOperationKey, type MintOperationKeyInput } from "../spend/admission.js";
 import { blockOperationKeys, forgetKey, registerKey, type LedgerDependencies } from "../spend/ledger.js";
 import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTask, resolvePayer } from "../spend/payer.js";
@@ -376,7 +377,8 @@ import { memberRemovalHook, onProjectArchived, runMemberMergeDrain } from "../ag
 import { readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
 import { SkillStore, servedSkills } from "../agents/skills.js";
-import { followMerges, type ProjectMembers } from "../agents/access.js";
+import { followMerges, orgRoleOf, type ProjectMembers } from "../agents/access.js";
+import { escalateOwnerRequests, requestForPausedTask, spendDecideKind, type SpendRequestHost } from "../spend/requests.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
 import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
@@ -393,7 +395,7 @@ import { approvalDecideKind } from "../agents/approval-decide-kind.js";
 import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
 import { agentRunStarterOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
-import { ADMISSION_REFUSALS, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
+import { ADMISSION_REFUSALS, continueAsTask, resumeTaskAfterSpendApproval, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
@@ -889,7 +891,7 @@ function decideRequestContext(dependencies: AwsBrokerDependencies, agents: Agent
     // The page is served by the cell, at the origin its access tokens are issued from.
     cellOrigin: new URL(developer.issuer).origin,
     // `apr_`: write, step and change approvals, over the same dependencies as the agent routes; without them nothing is registered, so every approval is not found.
-    kinds: { ...(agents === undefined ? {} : { apr: approvalDecideKind(agents) }), ...decide.kinds },
+    kinds: { ...(agents === undefined ? {} : { apr: approvalDecideKind(agents), spr: spendDecideKind(agents) }), ...decide.kinds },
     authenticateBearer: (authorization) => authenticateBearer({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, orgs: orgStoreOf(dependencies) }, authorization),
   };
 }
@@ -994,6 +996,8 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
   };
   // Plan 3, Task 22: what the agent-step engine needs of the broker, on the same dependencies (it reads the approvals through them).
   routeDependencies.agentRuns = agentRunHostOf(dependencies, tasks, routeDependencies);
+  // Plan 3, Task 32: what an approved spend request does with its task (the owner's resume, continue-as-task) and what a task's keys have spent.
+  routeDependencies.spendRequests = spendRequestHostOf(dependencies, tasks, routeDependencies);
   // Plan 3, Task 21a-wiring: decisions need a person present. The decide routes call this guard first (a token is sent to the page with a ticketed
   // confirmUrl), and `GET /v1/app/approvals/{id}` mints the same ticket for the person who may decide it. Both use the page's own context.
   if (dependencies.decide !== undefined) {
@@ -1326,6 +1330,7 @@ function developerTaskActions(dependencies: AwsBrokerDependencies): DeveloperTas
       throw error;
     }),
     preparation: (identity, project, requestId, options) => newWorkspacePreparation(dependencies, identity, project, identity.ownerKey, requestId, options),
+    preparationDispatch: (project, workspaceId, operationId, ownerKey, options) => heldPreparationDispatch(dependencies, project, workspaceId, operationId, ownerKey, options),
     workspace: (id) => requireWorkspace(dependencies, id),
     operations: async (workspaceId) => (await query(`WORKSPACE#${workspaceId}`, "OPERATION#"))
       .filter((item) => item.entityType === "OPERATION")
@@ -1502,6 +1507,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         // Task 21: approvals that expired, writes stuck after a claim, and handlers that never heard the outcome. A stuck write is driven again only while the
         // function has more than the connector's timeout and a margin left.
         ...(agents === undefined ? [] : [timed("expire-approvals", "approvals", (budgetMs) => runApprovalSweep(agents, { budgetMs, redriveUntil: redriveUntil(startedAt) }))]),
+        // Task 32 (PF13): owners' spend requests nobody answered get the org's admins, and requests whose time ran out end; a small cap, before the sweeps.
+        ...(agents === undefined ? [] : [timed("escalate-owner-requests", "escalate", (budgetMs) => escalateOwnerRequests(agents, { budgetMs }))]),
         // Task 24b: with a small budget of its own, before the spend sweep.
         ...(sources === undefined ? [] : [timed("sweep-model-sources", "sources", (budgetMs) => sweepModelSources(sources, { budgetMs }))]),
         ...(ledger === undefined ? [] : [timed("sweep-spend", "spend", (budgetMs) => runSpendSweep(ledger, { budgetMs }))]),
@@ -3390,6 +3397,71 @@ async function newWorkspacePreparation(
       { Put: { TableName: dependencies.tableName, Item: membership } },
     ],
   };
+}
+
+/**
+ * Plan 3, Task 32: the spend requests' host. The resume and continue-as-task act as the task's owner (a retry or a Continue is theirs), with the owner's
+ * live sign-in record and org role; a revoked or departed owner gets nothing resumed. What a task's keys spent is the proxy's figure.
+ */
+function spendRequestHostOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies): SpendRequestHost {
+  const asOwner = async (orgId: OrgId, developerId: string, orgRole?: OrgRole) => {
+    const developer = dependencies.developer;
+    if (developer === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "developer sign-in is not set up in this deployment");
+    const record = await agents.signInStore.getDeveloper(developerId);
+    const role = orgRole ?? await orgRoleOf(agents, orgId, developerId);
+    if (record === undefined || record.revoked || role === undefined) throw agentXError("FORBIDDEN", "the task's owner can't act in this organization now");
+    const caller: DeveloperCaller = {
+      developerId, sessionId: "spend-request", amr: record.provider, name: record.displayName, orgId, orgRole: role,
+      ...(record.slackUserId === undefined ? {} : { slackUserId: record.slackUserId }),
+    };
+    const deps = developerTaskRouteDependencies({
+      documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies), agents,
+      ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
+      ...(dependencies.cloud === true ? { cloud: true } : {}),
+    }, caller);
+    return { deps, caller };
+  };
+  return {
+    resumeTask: async (input) => {
+      const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(input.taskId));
+      if (task === undefined || task.orgId !== input.orgId) return;
+      const { deps, caller } = await asOwner(input.orgId, task.developerId);
+      await resumeTaskAfterSpendApproval(deps, caller, input);
+    },
+    continueAsTask: async (caller, taskId, body) => {
+      const { deps, caller: owner } = await asOwner(caller.orgId, caller.developerId, caller.orgRole);
+      return continueAsTask(deps, owner, taskId, body);
+    },
+    ...(dependencies.modelAccess === undefined ? {} : {
+      taskSpentUsd: (keyIds: readonly string[]) => taskSpendBaseline({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: dependencies.modelAccess!.access }, keyIds),
+    }),
+  };
+}
+
+/**
+ * Plan 3, Task 32: the outbox item that sends the preparation a run held at its start was given (Task 15's paused start wrote the workspace and the
+ * operation but no outbox item). The invocation is built now, as `newWorkspacePreparation` builds one, with a new capability and repository grant for the
+ * same operation and fence; the put is conditional on there being none yet. The workspace must still be PREPARING with that preparation active.
+ */
+async function heldPreparationDispatch(
+  dependencies: AwsBrokerDependencies, project: RegisteredProjectRecord, workspaceId: string, operationId: string, ownerKey: string,
+  options: { checkout?: readonly RunCheckout[] } = {},
+): Promise<{ workspace: WorkspaceInstance; items: TransactItems }> {
+  const workspace = await requireWorkspace(dependencies, workspaceId);
+  const operation = await requireOperation(dependencies, workspaceId, operationId);
+  if (workspace.status !== "PREPARING" || workspace.activeOperationId !== operationId || operation.kind !== "prepare" || operation.status !== "ACCEPTED" || operation.fence !== workspace.fence) {
+    throw agentXError("STALE_FENCE", "the held preparation is no longer this workspace's");
+  }
+  const invocation: WorkerInvocation = {
+    protocolVersion: 1, kind: "prepare", operationId, workspaceId, fence: workspace.fence, projectRevision: project.definition.revision,
+    callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence),
+    payload: {
+      project: workerProjectDefinition(project.definition),
+      repositoryGrant: issueRepositoryGrant(dependencies, project, ownerKey, workspaceId, operationId),
+      ...(options.checkout === undefined || options.checkout.length === 0 ? {} : { checkout: [...options.checkout] }),
+    },
+  };
+  return { workspace, items: [{ Put: { TableName: dependencies.tableName, Item: outboxRecord(workspace, invocation, project.runtimeBinding), ConditionExpression: "attribute_not_exists(pk)" } }] };
 }
 
 /**
@@ -11803,6 +11875,8 @@ async function completedWorkflowItems(
     if (terminalStatus !== "SUCCEEDED") {
       next = blockWorkflow(task.workflow, terminalError?.includes(WORKFLOW_HISTORY_REWRITTEN_MESSAGE) === true ? WORKFLOW_HISTORY_REWRITTEN_MESSAGE
         : terminalError?.includes(WORKFLOW_NO_CODE_CHANGE_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.noCodeChanged
+        // Plan 3, Task 32: the step's budget ran out; a spend request is asked for at the end of this result, and its approval retries the step.
+        : terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? WORKFLOW_BLOCK_REASONS.budgetPaused
         : workflowRunEndedReason(operation.workflowMode, terminalStatus), now);
       const progress = task.workflow.workflowDependenciesProgress ?? [];
       const unfinished = progress.at(-1);
@@ -12132,7 +12206,8 @@ async function completedWorkflowItems(
       }
     }
   } else {
-    next = blockWorkflow(task.workflow, workflowRunEndedReason("PLAN", terminalStatus), now);
+    // Plan 3, Task 32: a planning run whose budget ran out waits for its spend request; the approval retries planning.
+    next = blockWorkflow(task.workflow, terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? WORKFLOW_BLOCK_REASONS.budgetPaused : workflowRunEndedReason("PLAN", terminalStatus), now);
   }
   // Gap 6: checks that passed make the reviews due. The intent commits with the result; the broker runs it
   // right after this commit, and the recovery sweep runs it if that is lost.
@@ -12750,6 +12825,10 @@ async function recordTerminalResult(
   if (taskPointer !== undefined && !closeCanFinish) await releaseIfFinished(dependencies, taskPointer.taskId);
   // Plan 3, Task 22 (G7): a workflow task that passed its sequence, and a plain task whose operation ended, tell the end handlers (an agent-step run's engine tells its own).
   if (taskPointer !== undefined && !closeCanFinish && hasTaskEndHandlers()) await tellTaskEnd(dependencies, operation, taskPointer.taskId, terminalStatus);
+  // Plan 3, Task 32: a task operation that ran out of budget asks for the limit its pause names (an agent-step run's engine paused it above).
+  if (taskPointer !== undefined && operation.kind === "task" && recordedStatus === "FAILED" && error === BUDGET_EXHAUSTED_FAILURE_MESSAGE) {
+    await askForPausedTask(dependencies, taskPointer.taskId, operation);
+  }
   // Spec 061: read the code a new plan cites, in the background; a lost start is the sweep's.
   if (recordedStatus === terminalStatus) {
     await startPlanEvidenceJobs(dependencies, evidenceJobs);
@@ -12778,6 +12857,20 @@ async function recordTerminalResult(
   }
   if (recordedStatus !== terminalStatus) return { ...operation, status: recordedStatus, updatedAt: now, error: startRefusal.text ?? FIRST_TASK_QUEUE_FAILED };
   return { ...operation, status: terminalStatus, updatedAt: now, ...(result === undefined ? {} : { result }), ...(error === undefined ? {} : { error }) };
+}
+
+/**
+ * Plan 3, Task 32: the spend request of a task whose operation ended out of budget. Never fails the worker's result: a request that can't be made now is logged,
+ * and the task stays paused (the owner's Continue, or the next refusal, asks again).
+ */
+async function askForPausedTask(dependencies: AwsBrokerDependencies, taskId: string, operation: OperationRecord): Promise<void> {
+  const agents = agentRouteDependencies(dependencies, developerTaskActions(dependencies));
+  if (agents === undefined) return;
+  try {
+    await requestForPausedTask(agents, taskId, operation.workflowMode === undefined ? {} : { workflowMode: operation.workflowMode });
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "spend_request.not_asked", taskId, errorName: error instanceof Error ? error.name : "unknown" }));
+  }
 }
 
 /**

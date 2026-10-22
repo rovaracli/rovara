@@ -93,6 +93,19 @@ export function auditSpendRequestExpired(input: AuditBuilderBase & SpendRequestF
   return build("spend_request.expired", input, { kind: "spend_request", id: input.spendRequestId }, spendFacts(input));
 }
 
+/** `occurrence`: the spend request id. Nobody answered an owner's request in time, so the org's owners and admins were added. */
+export function auditSpendRequestEscalated(input: AuditBuilderBase & SpendRequestFacts): AuditEventInput {
+  return build("spend_request.escalated", input, { kind: "spend_request", id: input.spendRequestId }, spendFacts(input));
+}
+
+/**
+ * `occurrence`: the spend request id and the move's number. Rovara moved who a pending spend request is asked of because a member was merged into another
+ * (`mode` `merged`) or removed (`removed`); `from` and `to` are the member ids, kept in `related`.
+ */
+export function auditSpendRequestRerouted(input: AuditBuilderBase & { spendRequestId: string; kind: string; mode: "merged" | "removed"; from: string; to: string }): AuditEventInput {
+  return build("spend_request.rerouted", { ...input, related: [input.from, input.to, ...(input.related ?? [])] }, { kind: "spend_request", id: input.spendRequestId }, { kind: input.kind, mode: input.mode });
+}
+
 // Budgets and policy -----------------------------------------------------------------------------------------------------
 
 /**

@@ -44,7 +44,7 @@ export interface Level {
   leftUsd: number | undefined;
   /** The proxy's own figures, for the member's message. */
   proxy?: { spentUsd: number; limitUsd: number };
-  /** For an org or a member: true when what open keys hold, not what the proxy says is spent, is what limits the room; `heldUsd` is what the ledger counts. */
+  /** For an org or a member: true when what open keys hold, not what the proxy says is spent, is what limits the room; `heldUsd` is what the ledger counts (settled spend and holds together). */
   held?: { heldUsd: number };
 }
 
@@ -57,7 +57,7 @@ function refusalFor(level: Level, names: { agentName: string }): AgentXError {
     case "org": return level.held === undefined ? orgBudgetExceeded()
       : agentXError("ORG_BUDGET_EXCEEDED", "Your company's monthly AI budget is committed to work that is running. Try again when it finishes, or ask an admin to raise it.");
     case "member": return level.held === undefined ? budgetExceeded(level.proxy?.spentUsd ?? level.usedUsd, level.proxy?.limitUsd ?? level.limitUsd ?? 0)
-      : agentXError("BUDGET_EXCEEDED", `Your monthly AI budget is committed to work that is running ($${dollars(level.held.heldUsd)} of $${dollars(level.limitUsd ?? 0)}). Try again when it finishes, or ask an admin to raise it.`);
+      : agentXError("BUDGET_EXCEEDED", `Your monthly AI budget is used or held for work that is running ($${dollars(level.held.heldUsd)} of $${dollars(level.limitUsd ?? 0)}). Try again when it finishes, or ask an admin to raise it.`);
     case "project": return agentXError(SCOPE_ERRORS.project.exceeded, `The ${scope.project} project's monthly AI budget is used up (${figures}). Ask for more from the project's page.`);
     case "agent": return agentXError(SCOPE_ERRORS.agent.exceeded, `${names.agentName}'s monthly AI budget is used up (${figures}). Ask its owner for more.`);
     case "testing": return agentXError(SCOPE_ERRORS.testing.exceeded, `Your testing allowance for this month is used up (${figures}). Run the agent as a normal task instead.`);
@@ -339,9 +339,11 @@ export async function mintOperationKey(deps: MintOperationDependencies, input: M
   const ledger = input.scopes !== undefined && input.tags !== undefined ? deps.ledger : undefined;
   const tags = input.tags === undefined ? undefined : input.route?.sourceId === undefined ? input.tags : { ...input.tags, source: input.route.sourceId };
   // The task's earlier keys hold their caps until they are finalized, which can be minutes after their operation ended (or an hour when nobody blocked them): the
-  // next key would compete with its own task's holds for room. They are blocked, counted and released first, so two keys of one task are never live at once with
-  // both caps counted. A proxy that cannot block one refuses the mint (retryable); nothing is lost, the steps repeat.
-  if (ledger !== undefined && input.keepEarlierKeys !== true) await supersedeKeys(ledger, input.orgId, input.taskKeyIds);
+  // next key would compete with its own task's holds for room. They are blocked and counted first, and those of ended operations are released at once, so an
+  // ended operation's cap is not counted beside the new key's. A blocked key can still answer for a few seconds on other proxy replicas and a stream it
+  // admitted keeps going; that spend lands as late spend. A key of the operation minting now keeps its in-flight window. A proxy that cannot block one refuses
+  // the mint (retryable); nothing is lost, the steps repeat.
+  if (ledger !== undefined && input.keepEarlierKeys !== true) await supersedeKeys(ledger, input.orgId, input.taskKeyIds, { currentOperationId: input.tags?.operationId });
   for (let attempt = 0; ; attempt += 1) {
     const month = monthOf(now(deps));
     const { capUsd, levels } = await planCap(deps, input, scopes, names, month);

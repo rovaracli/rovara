@@ -397,22 +397,39 @@ export async function abandonKey(deps: LedgerDependencies, orgId: OrgId, keyId: 
 }
 
 /**
- * Gives back what a task's earlier keys still hold, so its next key does not compete with them for room (Task 31 fix round). Each of the given keys that is
- * open and reserved is, in this order: blocked at the proxy (so no spend can follow and no two keys of the task are live with their caps both counted),
- * settled (the spend up to the block is counted), then finalized (the unspent part of its cap goes back to every scope). A key that is finalized, held nothing
- * (a Slack turn's) or belongs to another org is left alone. The proxy failing at any step throws and leaves the rest for the next try: every step can be
- * repeated. Answers how many keys it finalized.
+ * Takes a task's earlier keys out of the way of its next one (Task 31's I1): each open, reserved key is blocked at the proxy and settled, then finalized at once,
+ * which releases its unspent hold, unless its operation is `currentOperationId` (the one minting now). A key of the operation that is still running may have
+ * requests in flight, so it keeps the 120-second window every ended key gets (`finalizeAfter`) and the sweep finalizes it (Task 31 re-check M-1). A finalize
+ * that loses both of its tries (a settle kept moving the figure) also gets the window, instead of holding until the key expires (M-2). Answers how many were
+ * finalized at once.
  */
-export async function supersedeKeys(deps: LedgerDependencies, orgId: OrgId, keyIds: readonly string[]): Promise<number> {
+export async function supersedeKeys(deps: LedgerDependencies, orgId: OrgId, keyIds: readonly string[], options: { currentOperationId?: string | undefined } = {}): Promise<number> {
   let finalized = 0;
   for (const keyId of new Set(keyIds)) {
     const record = await readRecord(deps, orgId, keyId);
     if (record === undefined || record.finalized || !record.reserved) continue;
     await deps.access.blockKey(keyId);
     await settleKey(deps, orgId, keyId);
+    if (options.currentOperationId !== undefined && record.tags.operationId === options.currentOperationId) {
+      await startFinalizeClock(deps, orgId, keyId);
+      continue;
+    }
     if (await finalizeKey(deps, orgId, keyId)) finalized += 1;
+    else await startFinalizeClock(deps, orgId, keyId);
   }
   return finalized;
+}
+
+/** Gives an open key the in-flight window (`finalizeAfter`), unless it has one or was finalized; the sweep finalizes it once the window has passed. */
+async function startFinalizeClock(deps: LedgerDependencies, orgId: OrgId, keyId: string): Promise<void> {
+  try {
+    await send(deps, [upsert(deps, modelKeyKey(orgId, keyId), "MODEL_KEY", {
+      set: { finalizeAfter: deps.now() + FINALIZE_DELAY_MS },
+      condition: (aliases) => `${aliases.name("finalized")} = ${aliases.value(false)} AND attribute_not_exists(${aliases.name("finalizeAfter")})`,
+    })]);
+  } catch (error) {
+    if (failedIndexes(error) === undefined) throw error;
+  }
 }
 
 /**

@@ -351,6 +351,14 @@ export function openSpendRequestsKey(orgId: OrgId, createdAt: string, requestId:
 }
 
 /**
+ * Every org's open spend requests, oldest first, for the settlement run's escalation and expiry (the ids and the org only; the reader re-checks `orgId` on the
+ * record it points at, as with `openApprovalKey`). `createdAt` is an instant.
+ */
+export function openSpendRequestDueKey(createdAt: string, orgId: OrgId, requestId: string): OrgKey {
+  return { pk: "OPEN_SPEND_REQUESTS", sk: `${canonicalInstant(createdAt)}#${orgId}#${requestId}` };
+}
+
+/**
  * The one PENDING request of a kind for a subject (a task, or for `owner_cap` an agent or a person): put in the transaction that makes the request and
  * deleted in the one that ends it, so a second pause on the same subject finds the first request instead of making another.
  */

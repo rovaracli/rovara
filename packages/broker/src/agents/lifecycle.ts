@@ -171,17 +171,32 @@ async function untilSettled(attempt: () => Promise<void>): Promise<void> {
   }
 }
 
+/** What asks an org admin to confirm a move that left someone over the cap (Task 32 registers it: spend/requests.ts, `confirmOwnerMove`). */
+type OwnerCapConfirmation = (deps: LifecycleDeps, orgId: OrgId, owner: string, reason: MoveCause["kind"], totals: { totalUsd: number; capUsd: number }) => Promise<unknown>;
+let confirmOwnerCap: OwnerCapConfirmation | undefined;
+
+/** Registers what asks an org admin to confirm a move over the cap (the spend requests do, PF27). The returned function unregisters it. */
+export function registerOwnerCapConfirmation(confirm: OwnerCapConfirmation): () => void {
+  confirmOwnerCap = confirm;
+  return () => {
+    if (confirmOwnerCap === confirm) confirmOwnerCap = undefined;
+  };
+}
+
 /**
  * After a move, the new owner's agent budgets may total more than one person may have. Rovara's own move applies at once and counts; what is
- * left is asking an org admin to confirm it.
- *
- * TASK 32 SEAM: Task 32 replaces the log line with an `owner_cap` spend request for an org admin (`ownerBudgetRefusal` in spend/settings.ts is
- * the other half of this seam). Until it exists, the line below is the only trace of it.
+ * left is asking an org admin to confirm it: an `owner_cap` spend request (Task 32, `confirmOwnerMove`), once per person while one is open. Exactly at
+ * the cap asks nothing. A request that can't be made is logged, and the next run of the moves (or a later move) asks again.
  */
 async function noteOwnerCap(deps: LifecycleDeps, orgId: OrgId, owner: string, reason: MoveCause["kind"]): Promise<void> {
   try {
     const check = await checkOwnerBudget(deps, { orgId, owner, deltaUsd: 0 });
-    if (check.totalUsd > check.capUsd) log(deps, "owner_cap.exceeded_by_move", { orgId, owner, totalUsd: check.totalUsd, capUsd: check.capUsd, reason });
+    if (check.totalUsd <= check.capUsd) return;
+    if (confirmOwnerCap === undefined) {
+      log(deps, "owner_cap.exceeded_by_move", { orgId, owner, totalUsd: check.totalUsd, capUsd: check.capUsd, reason });
+      return;
+    }
+    await confirmOwnerCap(deps, orgId, owner, reason, { totalUsd: check.totalUsd, capUsd: check.capUsd });
   } catch (error) {
     log(deps, "owner_cap.check_failed", { orgId, owner, reason, error: errorName(error) });
   }

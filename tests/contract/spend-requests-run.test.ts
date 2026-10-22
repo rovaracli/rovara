@@ -18,7 +18,7 @@ import { settlementBudgets, SETTLEMENT_BUDGETS_MS } from "../../packages/broker/
 import { supersedeKeys, finalizeKey } from "../../packages/broker/src/spend/ledger.js";
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor } from "../../packages/broker/src/developer/decide-session.js";
 import {
-  BUDGET_EXHAUSTED_FAILURE_MESSAGE, FINALIZE_DELAY_MS, OWNER_ANSWER_HOURS, SPEND_RESUME_INSTRUCTIONS, WORKFLOW_BLOCK_REASONS, TRIAL_LIMITS_R49,
+  BUDGET_EXHAUSTED_FAILURE_MESSAGE, DEFAULT_AGENT_GUARDRAILS, FINALIZE_DELAY_MS, agentGuardrailsKey, OWNER_ANSWER_HOURS, SPEND_RESUME_INSTRUCTIONS, WORKFLOW_BLOCK_REASONS, TRIAL_LIMITS_R49,
   modelKeyKey, openSpendRequestsKey, orgMemberKey, ownerBudgetKey, spendCounterKey, spendRequestKey, suggestedTopUpUsd,
   type AgentId, type OrgId, type PauseScope, type SpendRequestRecord,
 } from "@agentx/contracts";
@@ -243,7 +243,7 @@ describe("a run-limit pause asks for more", () => {
     await t.pauseAndEnd(task);
     const id = t.requestOf(task.taskId)[0]!.spendRequestId;
     expect(await refusal(t.decide(CARL, id))).toMatchObject({ code: "FORBIDDEN" });
-    // The person who started the task does not pay here, so they can't approve their own raise either.
+    // The task's owner pays, but a raise to $21 is above what the payer may approve alone.
     expect(await refusal(t.decide(MAYA, id))).toMatchObject({ code: "FORBIDDEN" });
     expect(t.requestOf(task.taskId)[0]).toMatchObject({ status: "PENDING" });
     expect(t.meta(task.taskId)).toMatchObject({ budgetUsd: 14 });
@@ -360,8 +360,8 @@ describe("a run-limit pause asks for more", () => {
     await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
     await t.pauseAndEnd(task);
     const record = t.requestOf(task.taskId)[0]!;
-    t.db.set({ ...record, ...spendRequestKey(ORG_B, record.spendRequestId), orgId: ORG_B });
-    expect(await getSpendRequest(t.deps(), ORG_B, record.spendRequestId)).toBeDefined();
+    // Read from another org, the id is not found; a record of that org with the same id would be that org's own.
+    expect(await getSpendRequest(t.deps(), ORG_B, record.spendRequestId)).toBeUndefined();
     const stranger = t.caller(BEN, "member", ORG_B);
     expect(await refusal(decideSpendRequest(t.deps(), stranger, record.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" }))).toMatchObject({ code: "NOT_FOUND" });
     expect(await refusal(t.decide(BEN, "spr_zzzzzzzzzzzzzzzzzzzz"))).toMatchObject({ code: "NOT_FOUND" });
@@ -380,15 +380,16 @@ describe("a run-limit pause asks for more", () => {
     const { workspaceId } = t.meta(started.taskId);
     const prepare = t.operations(workspaceId).find((operation) => operation.kind === "prepare")!;
     expect(t.outboxOf(prepare.id)).toBeUndefined();
-    const charges = () => t.db.find((item) => item.entityType === "DEVELOPER_LIMIT");
-    const before = charges().length;
+    // The member's workspace counter lists the tasks holding a slot.
+    const charged = () => t.db.find((item) => item.tasks instanceof Set && (item.tasks as Set<string>).has(started.taskId)).length;
+    expect(charged()).toBe(0);
     // The payer is the person who asked for the run: they may raise their own run's limit.
     await t.decide(MAYA, request!.spendRequestId);
     expect(t.meta(started.taskId)).toMatchObject({ budgetUsd: 5 });
     expect(t.meta(started.taskId).budgetPause).toBeUndefined();
     expect(t.outboxOf(prepare.id)).toBeDefined();
     expect(t.db.find((item) => item.entityType === "SETUP_WATCH" && item.operationId === prepare.id)).toHaveLength(1);
-    expect(charges().length).toBeGreaterThan(before);
+    expect(charged()).toBe(1);
   });
 
   it("the human Continue clears a stale mid-run pause", async () => {
@@ -711,6 +712,8 @@ describe("an owner's cap on agent budgets", () => {
   describe("unarchive and accountable (R2-4)", () => {
     it("an archived $30 agent raised to $60 while archived, whose owner has $50 elsewhere, answers 202 on unarchive and stays archived until an admin approves", async () => {
       const t = await setup();
+      // The company lets one agent have up to $100 a month, so $60 is a budget the agent may be given.
+      t.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxAgentMonthlyUsd: 100 } });
       await t.budgeted(50);
       const agentId = await t.budgeted(30);
       expect((await t.api(MAYA, "POST", `/v1/app/agents/${agentId}/archive`, {})).status).toBe(200);
