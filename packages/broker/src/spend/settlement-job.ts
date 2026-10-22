@@ -38,28 +38,33 @@ export interface SweepRun {
 }
 
 /**
- * Sweeps pages of open keys until the end or until `budgetMs` has passed (the broker's function has 30 seconds). Where a run stops, the cursor is
- * saved, and the next run starts there, so keys late in the index are not starved by a long front; reaching the end clears it.
+ * Sweeps pages of open keys until the end or until `budgetMs` has passed (the broker's function has 30 seconds). The deadline is also handed to each
+ * page, which stops before a batch it has no time for, so a slow proxy costs at most one batch of calls past the budget. Where a run stops, the cursor
+ * (the last key it took) is saved and the next run starts after it, so no key is starved or skipped; reaching the end clears it.
  */
 export async function runSpendSweep(deps: LedgerDependencies, options: { budgetMs: number }): Promise<SweepRun> {
-  const started = deps.now();
+  const deadline = deps.now() + options.budgetMs;
   const saved = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: CURSOR_KEY, ConsistentRead: true }))) as { Item?: { cursor?: unknown } }).Item?.cursor;
   let cursor = typeof saved === "string" ? saved : undefined;
   const run: SweepRun = { pages: 0, settled: 0, finalized: 0, failed: 0, complete: false };
+  const save = async (): Promise<void> => {
+    if (cursor === undefined) return;
+    await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...CURSOR_KEY, entityType: "SPEND_SWEEP_CURSOR", cursor, at: new Date(deps.now()).toISOString() } }));
+  };
   for (;;) {
-    const page = await sweepSpend(deps, deps.now(), cursor);
+    const page = await sweepSpend(deps, deps.now(), cursor, { deadline });
     run.pages += 1;
     run.settled += page.settled;
     run.finalized += page.finalized;
     run.failed += page.failed;
-    cursor = page.next;
+    cursor = page.next ?? (page.stopped === true ? cursor : undefined);
     if (cursor === undefined) {
       run.complete = true;
       if (saved !== undefined) await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: CURSOR_KEY }));
       return run;
     }
-    if (deps.now() - started >= options.budgetMs) {
-      await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...CURSOR_KEY, entityType: "SPEND_SWEEP_CURSOR", cursor, at: new Date(deps.now()).toISOString() } }));
+    if (page.stopped === true || deps.now() >= deadline) {
+      await save();
       return run;
     }
   }

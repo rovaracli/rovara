@@ -96,7 +96,11 @@ export const sourceCounter = (sourceId: string): string => `SOURCE#${sourceId}`;
 export const modelCounter = (model: string): string => `MODEL#${model}`;
 export const personalCounter = (developerId: string): string => `PERSONAL#${developerId}`;
 
-/** Whom a run's cost is shown as: a person's, an agent's own (events, schedules, chains) or a test run's. */
+/**
+ * How an agent's spend view splits its runs. The split is by where the run came from, not by who pays: a test run is `test`; an event, a schedule or a
+ * chain is `autonomous` (a member-paid chain still reads as autonomous, since no person started that run); every other origin is `person` (so a Linear
+ * run a bot assigned and the project pays for is `person`: someone's request started it). Who pays is the ledger line's `payerKind`.
+ */
 export type SpendOriginKind = "person" | "autonomous" | "test";
 export const SPEND_ORIGIN_KINDS: readonly SpendOriginKind[] = ["person", "autonomous", "test"];
 export const originCounter = (agentId: string, kind: SpendOriginKind): string => `AGENT_ORIGIN#${agentId}#${kind}`;

@@ -5296,7 +5296,9 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
         try {
           await registerKey(ledger, { orgId: scope.orgId, month: monthOf(Date.now()), keyId: keyIdOf(minted.key), capUsd: maxBudgetUsd, scopes: scope.scopes!.map((key) => ({ key })), tags: scope.tags!, expiresAt: minted.expiresAt });
         } catch (error) {
+          // The write may have committed with its answer lost: a revoked key must not stay on the sweep's list.
           await modelAccess.access.revokeKey(minted.key).catch(() => undefined);
+          await forgetKey(ledger, scope.orgId, keyIdOf(minted.key)).catch(() => undefined);
           throw error;
         }
       }
@@ -5362,6 +5364,7 @@ async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, reque
         });
       } catch (error) {
         await modelAccess.access.revokeKey(minted.key).catch(() => undefined);
+        await forgetKey(ledger, teamOrg, keyIdOf(minted.key)).catch(() => undefined);
         throw error;
       }
     }

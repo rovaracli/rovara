@@ -187,7 +187,8 @@ async function getAgentSpend(deps: Deps, caller: AgentCaller, agentId: AgentId, 
   for (const run of ordered) {
     const project = text(run["project"]);
     if (project === undefined || !await mayShow(project)) continue;
-    recentRuns.push({ runId: run["sk"], ...(text(run["taskId"]) === undefined ? {} : { taskId: run["taskId"] }), project, origin: run["origin"], usd: num(run["usd"]), lastAt: run["lastAt"] });
+    // The run item is keyed by the task, the operation or, for a Slack turn that has neither, the key's token id, so its key is never shown.
+    recentRuns.push({ ...(text(run["taskId"]) === undefined ? {} : { taskId: run["taskId"] }), project, origin: run["origin"], usd: num(run["usd"]), lastAt: run["lastAt"] });
     if (recentRuns.length === RECENT_RUNS) break;
   }
   return {

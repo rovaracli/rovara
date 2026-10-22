@@ -74,7 +74,10 @@ function parentRemainderDigest(template: TemplateJson): string {
   const resources = remainder.Resources ?? {};
   for (const id of Object.keys(resources)) if (id.startsWith("TaskPersonProof")) delete resources[id];
   // Plan 3 Task 30's spend settlement schedule is no part of the proof-only addition either.
-  for (const id of Object.keys(resources)) if (id.startsWith("SpendSettlementSchedule")) delete resources[id];
+  const spendSchedules = Object.keys(resources).filter((id) => id.startsWith("SpendSettlementSchedule"));
+  // Named environments have the one schedule (spend-ledger.test.ts asserts it) and the legacy template has none; nothing else may hide under the prefix.
+  expect(spendSchedules.length, "at most the one spend settlement schedule is taken out").toBeLessThanOrEqual(1);
+  for (const id of spendSchedules) delete resources[id];
   const dispatchers = Object.entries(resources).filter(([id, resource]) => id.startsWith("Dispatcher") && resource.Type === "AWS::Lambda::Function");
   expect(dispatchers, "the actual Dispatcher remains in the parent template remainder").toHaveLength(1);
   const variables = dispatchers[0]![1].Properties!.Environment as { Variables: Record<string, unknown> };

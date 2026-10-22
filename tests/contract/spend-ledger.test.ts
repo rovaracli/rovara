@@ -523,11 +523,32 @@ describe("blockOperationKeys and sweepSpend", () => {
     near(t.counter("ORG")?.committedUsd, 0.4);
     const index = openModelKeysKey(new Date(T0).toISOString(), t.orgId, key.keyId);
     expect(t.db.get(index)).toBeDefined();
+    // Past the day the sweep settles the key one last time (spend since the last sweep is not lost) and drops it; later spend is no longer followed.
     t.clock.now = finalizedAt + FINALIZED_SETTLE_WINDOW_MS + 1;
     t.spend(key, 0.9);
     await sweepSpend(t.deps(), t.clock.now);
     expect(t.db.get(index)).toBeUndefined();
-    near(t.counter("ORG")?.spentUsd, 0.4);
+    near(t.counter("ORG")?.spentUsd, 0.9);
+    t.spend(key, 1.5);
+    await sweepSpend(t.deps(), t.clock.now + 1000);
+    near(t.counter("ORG")?.spentUsd, 0.9);
+  });
+
+  it("keeps a key past its day whose last settle failed, and drops it after a second day", async () => {
+    const t = setup();
+    const key = t.input({ scopes: [{ key: ORG }], expiresAt: T0 + 1000 });
+    await reserve(t.deps(), key);
+    t.clock.now = T0 + 1000 + KEY_EXPIRY_GRACE_MS;
+    await sweepSpend(t.deps(), t.clock.now);
+    const finalizedAt = t.clock.now;
+    const index = openModelKeysKey(new Date(T0).toISOString(), t.orgId, key.keyId);
+    t.access.goDown();
+    t.clock.now = finalizedAt + FINALIZED_SETTLE_WINDOW_MS + 1;
+    expect(await sweepSpend(t.deps(), t.clock.now)).toMatchObject({ failed: 1 });
+    expect(t.db.get(index)).toBeDefined();
+    t.clock.now = finalizedAt + 2 * FINALIZED_SETTLE_WINDOW_MS + 1;
+    await sweepSpend(t.deps(), t.clock.now);
+    expect(t.db.get(index)).toBeUndefined();
   });
 
   it("settles nothing for a finalized key once its day is over, even when asked directly", async () => {
@@ -542,7 +563,95 @@ describe("blockOperationKeys and sweepSpend", () => {
     expect(t.counter("ORG")?.spentUsd).toBeUndefined();
   });
 
-  it("pages the open keys by cursor, 500 at a time by default", async () => {
+  it("stops a page at the deadline, before the next batch, and resumes after the last key it did", async () => {
+    const t = setup();
+    const keys: KeyInput[] = [];
+    for (let index = 0; index < 20; index += 1) {
+      t.clock.now = T0 + index * 1000;
+      const key = t.input({ scopes: [{ key: ORG }] });
+      keys.push(key);
+      await registerKey(t.deps(), key);
+      t.spend(key, 1);
+    }
+    const start = T0 + 100_000;
+    t.clock.now = start;
+    // Every call to the proxy takes a second of the clock.
+    t.access.keySpend.mockImplementation(async (ids) => { t.clock.now += 1000; return ids.length > 0 ? 1 : 0; });
+    const first = await sweepSpend(t.deps(), start, undefined, { deadline: start + 5000 });
+    expect(first).toMatchObject({ examined: 8, settled: 8, stopped: true });
+    // The cursor is the last key the page did, so the next call starts exactly after it.
+    expect(first.next).toBe(openModelKeysKey(new Date(T0 + 7000).toISOString(), t.orgId, keys[7]!.keyId).sk);
+    near(t.counter("ORG")?.spentUsd, 8);
+    const second = await sweepSpend(t.deps(), t.clock.now, first.next, { deadline: t.clock.now + 5000 });
+    expect(second).toMatchObject({ examined: 8, stopped: true });
+    const third = await sweepSpend(t.deps(), t.clock.now, second.next, { deadline: t.clock.now + 5000 });
+    expect(third).toMatchObject({ examined: 4, settled: 4 });
+    expect(third.stopped).toBeUndefined();
+    expect(third.next).toBeUndefined();
+    near(t.counter("ORG")?.spentUsd, 20);
+    expect(t.ledger()).toHaveLength(20);
+  });
+
+  it("keeps a sweep within its budget when one page is slow: it saves where it stopped and the next run settles the rest, skipping none", async () => {
+    const t = setup();
+    for (let index = 0; index < 20; index += 1) {
+      t.clock.now = T0 + index * 1000;
+      const key = t.input({ scopes: [{ key: ORG }] });
+      await registerKey(t.deps(), key);
+      t.spend(key, 1);
+    }
+    t.clock.now = T0 + 100_000;
+    t.access.keySpend.mockImplementation(async () => { t.clock.now += 1000; return 1; });
+    const runs: Array<{ settled: number; complete: boolean; spent: number }> = [];
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const before = t.clock.now;
+      const run = await runSpendSweep(t.deps(), { budgetMs: 5000 });
+      // The run never goes on past its budget by more than the one batch it was in.
+      expect(t.clock.now - before).toBeLessThanOrEqual(5000 + 8 * 1000);
+      runs.push({ settled: run.settled, complete: run.complete, spent: t.counter("ORG")?.spentUsd ?? 0 });
+      if (run.complete) break;
+    }
+    expect(runs.map((run) => run.settled)).toEqual([8, 8, 4]);
+    expect(runs.map((run) => run.complete)).toEqual([false, false, true]);
+    near(t.counter("ORG")?.spentUsd, 20);
+    expect(t.db.get({ pk: "SPEND_SWEEP", sk: "CURSOR" })).toBeUndefined();
+  });
+
+  it("writes an alert whose write was lost on a later sweep, though the key spends nothing more", async () => {
+    const t = setup();
+    limitOrg(t.db, t.orgId, 10);
+    const key = t.input({ scopes: [{ key: ORG }] });
+    await registerKey(t.deps(), key);
+    t.spend(key, 9);
+    t.db.injectFault({ command: "PutCommand", error: { name: "InternalServerError" }, times: 1 });
+    await settleKey(t.deps(), t.orgId, key.keyId);
+    expect(t.db.get(budgetAlertKey(t.orgId, MONTH, "ORG", "80"))).toBeUndefined();
+    expect(t.record(key.keyId)?.alertsDue).toBe(true);
+    await sweepSpend(t.deps(), T0);
+    expect(t.db.get(budgetAlertKey(t.orgId, MONTH, "ORG", "80"))).toBeDefined();
+    expect(t.record(key.keyId)?.alertsDue).toBeUndefined();
+    // Nothing is left to do on the sweep after.
+    const writes = await t.writesDuring(async () => { await sweepSpend(t.deps(), T0); });
+    expect(writes).toEqual([]);
+  });
+
+  it("leaves no alert owed after a settle whose alerts were written", async () => {
+    const t = setup();
+    limitOrg(t.db, t.orgId, 10);
+    const key = t.input({ scopes: [{ key: ORG }] });
+    await registerKey(t.deps(), key);
+    t.spend(key, 9);
+    await settleKey(t.deps(), t.orgId, key.keyId);
+    expect(t.db.get(budgetAlertKey(t.orgId, MONTH, "ORG", "80"))).toBeDefined();
+    expect(t.record(key.keyId)?.alertsDue).toBeUndefined();
+    // A newer settle's flag is not cleared by an older settle's alert check.
+    t.spend(key, 9.5);
+    t.db.injectFault({ command: "PutCommand", error: { name: "InternalServerError" }, times: 1 });
+    await settleKey(t.deps(), t.orgId, key.keyId);
+    expect(t.db.get(budgetAlertKey(t.orgId, MONTH, "ORG", "100"))).toBeUndefined();
+  });
+
+  it("pages the open keys by cursor, 50 at a time by default", async () => {
     const t = setup({ pageSize: 2 });
     const keys = [t.input({ scopes: [{ key: ORG }] }), t.input({ scopes: [{ key: ORG }] }), t.input({ scopes: [{ key: ORG }] }), t.input({ scopes: [{ key: ORG }] }), t.input({ scopes: [{ key: ORG }] })];
     for (const [index, key] of keys.entries()) {
@@ -729,6 +838,16 @@ describe("a ChatGPT-plan task's tokens", () => {
     expect(fell.puts).toHaveLength(1);
   });
 
+  it("are not counted for a usage record that carries no timestamp, whose row key could change on a replay", async () => {
+    const s = store([workspace, operation({ chatgptDeveloperId: MAYA })]);
+    const bare: StreamRecord = { eventID: "e2", eventName: "INSERT", dynamodb: { NewImage: marshall({
+      pk: `OPERATION#${OPERATION}`, sk: "EVENT#000000000002", entityType: "EVENT", workspaceId: WORKSPACE, operationId: OPERATION, type: "usage", payload: usage,
+    }) } };
+    expect(await indexActivity([bare], s.index, vi.fn(), undefined, TEST_ORG)).toEqual({ failures: 0, usage: 1, failed: 0 });
+    expect(s.counted).toEqual([]);
+    expect(s.puts).toHaveLength(1);
+  });
+
   it("leave the usage row written as before for a store that cannot count", async () => {
     const s = store([workspace, operation({ chatgptDeveloperId: MAYA })], false);
     expect(await indexActivity([event], s.index, vi.fn(), undefined, TEST_ORG)).toEqual({ failures: 0, usage: 1, failed: 0 });
@@ -820,6 +939,29 @@ describe("a key the broker mints", () => {
     expect(reply).toMatchObject({ status: 503, body: { error: { code: "MODEL_PROXY_UNAVAILABLE" } } });
     expect(t.access.revokeKey).toHaveBeenCalledWith(t.access.mintedKeys()[0]);
     expect((t.db.get(`DEVTASK#${taskId}`, "META") as { modelKeyIds?: string[] }).modelKeyIds).toBeUndefined();
+  });
+
+  it("leaves no record for the sweep to retry when it is recorded but the answer is lost, and the key is given back", async () => {
+    const t = await brokerSetup();
+    await t.startTask().then(async ({ workspaceId }) => {
+      await t.finish(workspaceId, t.active(workspaceId), "SUCCEEDED", PREPARED);
+      const operationId = t.active(workspaceId);
+      const capability = ((t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation) as { callbackCapability: string }).callbackCapability;
+      // The write commits, then the answer is lost.
+      const send = t.db.send;
+      let lost = false;
+      t.db.send = async (command) => {
+        const answer = await send(command);
+        if (!lost && command.constructor.name === "TransactWriteCommand" && JSON.stringify((command as { input: unknown }).input).includes("MODEL_KEY")) { lost = true; throw Object.assign(new Error("timeout"), { name: "TimeoutError" }); }
+        return answer;
+      };
+      const reply = await call(t.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": capability } });
+      expect(reply.status).toBe(503);
+      expect(lost).toBe(true);
+    });
+    expect(t.access.revokeKey).toHaveBeenCalledWith(t.access.mintedKeys()[0]);
+    expect(t.keyRecords()).toEqual([]);
+    expect(t.db.find((item) => item.pk === "OPEN_MODEL_KEYS")).toEqual([]);
   });
 
   it("is blocked at the proxy once, and starts its finalize clock, when its operation ends", async () => {
@@ -925,6 +1067,23 @@ describe("a Slack turn's key", () => {
     const counter = (sk: string) => h.db.get(spendCounterKey(TEST_ORG, NOW_MONTH, sk)) as { spentUsd: number; committedUsd: number };
     near(counter(`MEMBER#${linked}`).spentUsd, 0.4);
     near(counter("PROJECT#payments").committedUsd, 0.4);
+  });
+
+  it("leaves no record for the sweep to retry when it is recorded but the answer is lost", async () => {
+    const h = await install();
+    const send = h.db.send;
+    let lost = false;
+    h.db.send = async (command) => {
+      const answer = await send(command);
+      if (!lost && command.constructor.name === "TransactWriteCommand" && JSON.stringify((command as { input: unknown }).input).includes("MODEL_KEY")) { lost = true; throw Object.assign(new Error("timeout"), { name: "TimeoutError" }); }
+      return answer;
+    };
+    const reply = await serviceCall(h.handler, THREAD, SLACK_USER, "POST", "/v1/service/model-access", { turnId: "Ev3" });
+    expect(reply.status).toBe(503);
+    expect(lost).toBe(true);
+    expect(h.access.revokeKey).toHaveBeenCalledWith(h.access.mintedKeys()[0]);
+    expect(h.db.find((item) => item.entityType === "MODEL_KEY")).toEqual([]);
+    expect(h.db.find((item) => item.pk === "OPEN_MODEL_KEYS")).toEqual([]);
   });
 
   it("is given back when it cannot be recorded", async () => {
@@ -1101,6 +1260,20 @@ describe("the spend routes", () => {
     expect(reply.body).toMatchObject({ month: "2026-10", totalUsd: 2.7, byOrigin: { person: 1.9, autonomous: 0.5, test: 0.3 }, budget: { limitUsd: 20, spentUsd: 0.5 }, maxPerRunUsd: 3 });
     const runs = reply.body.recentRuns as Array<{ project: string; usd: number; origin: string }>;
     expect(runs.map((run) => [run.project, run.usd, run.origin]).sort()).toEqual([["payments", 0.3, "test_run"], ["payments", 0.5, "schedule"], ["payments", 1.2, "app"], ["secret", 0.7, "app"]].sort());
+  });
+
+  it("shows no key id: a Slack turn's run, which has no task or operation, is listed without an identifier", async () => {
+    const t = await seeded();
+    const turnKey = keyIdOf("sk-a-slack-turn");
+    const clock = { now: Date.parse("2026-10-21T13:00:00.000Z") };
+    const access = fakeModelAccess();
+    const deps: LedgerDependencies = { documentClient: t.db, tableName: "state", access, now: () => clock.now, cloud: true };
+    await registerKey(deps, { orgId: TEST_ORG, month: "2026-10", keyId: turnKey, capUsd: 2, scopes: [{ key: { kind: "org" } }], tags: mintTagsFor({ payer: { kind: "project", project: "payments" }, place: { project: "payments" }, agentId: "rovara-code", origin: "slack" }), expiresAt: clock.now + 900_000 });
+    access.setKeySpent("sk-a-slack-turn", 0.2);
+    await settleKey(deps, TEST_ORG, turnKey);
+    const reply = await get(t, DEV_OMAR, "/v1/app/agents/rovara-code/spend?month=2026-10");
+    expect(JSON.stringify(reply.body)).not.toContain(turnKey);
+    expect((reply.body.recentRuns as Array<{ origin: string; usd: number }>).some((run) => run.origin === "slack" && run.usd === 0.2)).toBe(true);
   });
 
   it("leaves out the runs of a project the caller has no role in", async () => {

@@ -192,8 +192,9 @@ async function usageItem(store: IndexStore, fallbackOrg: OrgId, event: Record<st
   const item = { ...orgUsageIndexKey(orgId, at, operationId), entityType: "USAGE_INDEX", [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(at), ...indexed };
   // Plan 3 Task 30: what a task ran on a person's ChatGPT plan is counted on that person (it costs the company nothing, so it is tokens, not dollars). A task
   // that fell back to the company's models is not: its usage is not all the plan's, and the proxy's spend already counts what it cost.
+  // Not for a record that carries no timestamp: its row key is then made from the clock, a replay would get another key, and its tokens would be counted twice.
   const planOwner = text(operation?.chatgptDeveloperId);
-  if (planOwner === undefined || operation?.chatgptFallback !== undefined) return { item };
+  if (planOwner === undefined || operation?.chatgptFallback !== undefined || text(event.timestamp) === undefined) return { item };
   return { item, personal: { key: spendCounterKey(orgId, at.slice(0, 7), personalCounter(planOwner)), tokens: indexed.inputTokens + indexed.outputTokens } };
 }
 
