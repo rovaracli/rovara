@@ -145,7 +145,7 @@ async function deliverAgentReport(deps: NotifierDependencies, notice: Notice): P
   const row = await getItem<Record<string, unknown>>(deps, key);
   if (row === undefined || row.entityType !== "AGENT_REPORT_POST" || row.taskId !== notice.taskId || typeof row.channelId !== "string" || typeof row.text !== "string"
     || typeof row.attempts !== "number" || typeof row.status !== "string") return "invalid";
-  if (row.status === "SENT" || row.status === "UNKNOWN" || row.status === "FAILED") return row.status.toLowerCase();
+  if (row.status === "SENT" || row.status === "UNKNOWN") return row.status.toLowerCase();
   if (row.status === "SENDING") {
     if (typeof row.claimUntil === "number" && row.claimUntil >= deps.now()) return "claimed";
     await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :unknown", ConditionExpression: "#status = :sending", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":unknown": "UNKNOWN", ":sending": "SENDING" } })).catch(() => undefined);
