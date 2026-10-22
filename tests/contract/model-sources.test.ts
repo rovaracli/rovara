@@ -1658,6 +1658,27 @@ describe("the sweeper's remaining cares (round 2)", () => {
     expect(await approvedUnion(s.egressDeps())).toEqual(["other.example.org"]);
   });
 
+  it("reads the record again before it decides which host a live endpoint keeps", async () => {
+    const s = await setup({ cloud: false });
+    const id = (await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint() })).body.sourceId as string;
+    // The item lists a stale host beside the live one, so the sweeper acts.
+    await putEgressDomains(s.egressDeps(), TEST_ORG, { kind: "model-source", sourceId: id }, [HOST, "stale.example.org"], { developerId: DANA.developerId });
+    const store = s.store();
+    const read = store.readIfAny.bind(store);
+    let reads = 0;
+    store.readIfAny = async (org) => {
+      reads += 1;
+      if (reads === 2) {
+        // A change commits another host and asks for it, between the sweeper's first read of the record and its second.
+        await s.store().save({ orgId: TEST_ORG, source: { ...(await s.store().read(TEST_ORG)).sources[0]!, baseUrl: "https://other.example.org/v1" } as never, mode: "update", by: DANA.developerId });
+        await putEgressDomains(s.egressDeps(), TEST_ORG, { kind: "model-source", sourceId: id }, ["other.example.org"], { developerId: DANA.developerId });
+      }
+      return read(org);
+    };
+    await sweepModelSources({ documentClient: s.db, tableName: "state", now: () => T0, store, access: s.access, egress: s.egressDeps() }, { budgetMs: 5_000 });
+    expect((await s.egressOf(id))!.domains.map((entry) => [entry.domain, entry.status])).toEqual([["other.example.org", "approved"]]);
+  });
+
   it("deletes an org's record only at the revision it released, and releases what was added meanwhile", async () => {
     const s = await setup();
     const first = await s.add(DANA, anthropic());

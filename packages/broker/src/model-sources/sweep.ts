@@ -12,7 +12,7 @@
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { ModelSource, OrgId } from "@agentx/contracts";
 import type { ModelAccess } from "../model-proxy/access.js";
-import { listEgressItems, putEgressDomains, readEgressDomains } from "../org/egress-domains.js";
+import { listEgressItems, putEgressDomains } from "../org/egress-domains.js";
 import { releaseSource, viaProxy, type ModelSourceCleanupDependencies } from "./release.js";
 import type { StoredModelSources } from "./store.js";
 
@@ -121,13 +121,10 @@ export async function sweepModelSources(deps: ModelSourceSweepDependencies, opti
       if (outOfTime()) { report.complete = false; return; }
       await attempt("release-egress", async () => {
         const owner = { kind: "model-source", sourceId } as const;
-        // The listing is stale by now: a change may have committed its host and asked for it since. Both the item and the record are read again.
-        const fresh = await readEgressDomains(deps.egress, item.orgId, owner);
-        if (fresh === undefined || fresh.domains.length === 0) return;
+        // The record read above is stale by now: a change may have committed its host since. It is read again, and a live endpoint's host is the one
+        // thing that is never wiped: the item is made to be that host alone, which keeps the entry it has and asks for it only if it is missing.
         const source = (await deps.store.readIfAny(item.orgId))?.sources.find((candidate) => candidate.sourceId === sourceId);
         const host = source === undefined ? undefined : hostOf(source);
-        // A live endpoint's host is the one thing that is never wiped: the item is made to be that host alone (and asks for it if it is missing).
-        if (host !== undefined && fresh.domains.length === 1 && fresh.domains[0]!.domain === host) return;
         await putEgressDomains(deps.egress, item.orgId, owner, host === undefined ? [] : [host]);
         report.released += 1;
       });
