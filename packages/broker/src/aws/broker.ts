@@ -1463,10 +1463,12 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           return json(await putProjectModel(dependencies, identity, parseBody(request.body)), request.requestId);
         }
         if (request.method === "POST" && serviceUrl.pathname === "/v1/evals/swebench") {
+          await requireSlackRequesterMayWork(dependencies, identity, identity.slack?.binding.projectName ?? "");
           return json(await startSwebenchRun(swebenchDependencies(dependencies), swebenchSlackContext(dependencies, identity), parseBody(request.body)), request.requestId);
         }
         // Spec 052 FR-002 and Task 6: the Slack batch form, and the watcher's thread and posts for one batch.
         if (request.method === "POST" && serviceUrl.pathname === "/v1/evals/batches") {
+          await requireSlackRequesterMayWork(dependencies, identity, identity.slack?.binding.projectName ?? "");
           return json(await startSlackBatch(swebenchDependencies(dependencies), swebenchSlackContext(dependencies, identity), parseBody(request.body)), request.requestId);
         }
         const watchedBatch = /^\/v1\/evals\/batches\/([0-9a-f-]{36})\/(thread|watch|drop)$/.exec(serviceUrl.pathname);
@@ -2052,6 +2054,8 @@ async function routeWorkspaceRequest(
 async function authorizeWorkspaceConnectors(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, workspaceId: string) {
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
   if (identity.slack && identity.slack.binding.projectName !== workspace.projectName) throw agentXError("FORBIDDEN", "Slack channel is no longer bound to this project");
+  // Connector tools can write to the outside world: a project viewer in the thread does not use them.
+  await requireSlackRequesterMayWork(dependencies, identity, workspace.projectName);
   await requireProjectAuthority(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName, { taskCreator: () => workspaceTaskOwner(dependencies, workspace.id) });
   // The policy and the scopes it may address come from the project's latest registered revision,
   // so enabling, narrowing or revoking a tool reaches an existing thread at once.
@@ -2980,6 +2984,15 @@ async function slackRequesterRole(dependencies: AwsBrokerDependencies, identity:
   ) ?? "contributor";
 }
 
+/**
+ * Viewers only view (Plan 2, Task 21): a Slack person in their own thread (not a teammate in a shared task's thread, who was checked when the
+ * identity was made) who holds the viewer role cannot change the project or start work. Called by every Slack service route that does either.
+ */
+async function requireSlackRequesterMayWork(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, projectName: string): Promise<void> {
+  if (identity.slack === undefined || identity.sharedTask !== undefined) return;
+  if (await slackRequesterRole(dependencies, identity) === "viewer") throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(projectName));
+}
+
 /** The service routes' caller must be the Slack orchestrator's role. */
 function requireSlackServiceRole(dependencies: AwsBrokerDependencies, request: AdaptedHttpRequest): void {
   const configuration = dependencies.slack;
@@ -3823,6 +3836,7 @@ async function prepareThreadWorkspace(
 ): Promise<SlackThreadPrepareResult> {
   const slack = identity.slack;
   if (!slack || !dependencies.slack) throw agentXError("FORBIDDEN", "a Slack thread identity is required");
+  await requireSlackRequesterMayWork(dependencies, identity, slack.binding.projectName);
   const input = object(value, "thread workspace preparation");
   const requestId = uuid(input.requestId, "requestId");
   // C11: a shared task's workspace is the developer's; the thread never prepares it.
@@ -5043,10 +5057,7 @@ async function acceptTask(
   assertNoUntrustedRoutingFields(value);
   const request = OperationRequestSchema.parse(value);
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
-  // A Slack person in their own thread (not a teammate in a shared task's thread) who holds the viewer role cannot drive the agent.
-  if (identity.slack !== undefined && identity.sharedTask === undefined && await slackRequesterRole(dependencies, identity) === "viewer") {
-    throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(workspace.projectName));
-  }
+  await requireSlackRequesterMayWork(dependencies, identity, workspace.projectName);
   await requireProjectAuthority(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName, { taskCreator: () => workspaceTaskOwner(dependencies, workspace.id) });
   const requestHash = hashJson({ conversationId: request.conversationId, prompt: request.prompt,
     ...(options.workflowReviewNote === undefined ? {} : { workflowReviewNote: options.workflowReviewNote }),
@@ -5155,6 +5166,7 @@ async function acceptPullRequest(
   // Ruling R60: before any access check, so a removed creator's task says why instead of "project not found".
   await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspaceId);
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
+  await requireSlackRequesterMayWork(dependencies, identity, workspace.projectName);
   await requireProjectAuthority(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName, { taskCreator: () => workspaceTaskOwner(dependencies, workspace.id) });
   const candidate = options.workflowCandidate;
   if (candidate !== undefined && (candidate.repositoryId !== request.repository || !/^[a-f0-9]{40}$/.test(candidate.treeSha)
@@ -5347,6 +5359,7 @@ async function acceptPullRequestLifecycle(
   // Ruling R60: before any access check, as for acceptPullRequest.
   await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspaceId);
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
+  await requireSlackRequesterMayWork(dependencies, identity, workspace.projectName);
   await requireProjectAuthority(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName, { taskCreator: () => workspaceTaskOwner(dependencies, workspace.id) });
   const candidate = options.workflowCandidate;
   if (candidate !== undefined && (request.action !== "append" || !/^[a-f0-9]{64}$/.test(candidate.candidateDigest)
@@ -11990,6 +12003,7 @@ async function putProjectModel(
   const projectName = identity.slack?.binding.projectName;
   const requester = identity.slack?.requester;
   if (!projectName || !requester) throw agentXError("FORBIDDEN", "Slack project binding and requester are required");
+  await requireSlackRequesterMayWork(dependencies, identity, projectName);
   const requested = ProjectModelSelectionRequestSchema.parse(value);
   const orgId = requireOrgId(identity.orgId);
   const project = await requireLatestProject(dependencies, orgId, projectName);

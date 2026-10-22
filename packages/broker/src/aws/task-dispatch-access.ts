@@ -2,6 +2,7 @@ import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteComma
 import { OrgIdSchema, agentXError, orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId } from "@agentx/contracts";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { taskOpen } from "../developer/task-access.js";
+import { grantRoleOf } from "../developer/project-roles.js";
 import { resolveTaskDispatchPeople, type CheckTaskPerson } from "../developer/task-people.js";
 import { taskKey, taskOwnerKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { ProjectAuthorityWitness } from "../developer/task-project-access.js";
@@ -41,7 +42,7 @@ export function isTaskDispatchGuardRetryError(error: unknown): boolean {
   return error instanceof TaskDispatchGuardRetryError;
 }
 
-type PauseReason = "OWNERLESS" | "PROOF_UNAVAILABLE";
+type PauseReason = "OWNERLESS" | "PROOF_UNAVAILABLE" | "PROJECT_VIEWER";
 
 const outboxKey = (outboxId: string) => ({ pk: `OUTBOX#${outboxId}`, sk: "OUTBOX" });
 const pauseKey = (outboxId: string) => ({ pk: `OUTBOX#${outboxId}`, sk: "TASK_ACCESS_PAUSE" });
@@ -61,13 +62,14 @@ async function park(
   record: DurableOutboxRecord,
   pointer: DeveloperTaskPointerRecord,
   task: DeveloperTaskRecord,
-  peopleRevision: number,
+  /** The People sidecar's revision, or undefined for a task that has none (stored as 0; the sidecar must still be absent at the pause and at the resume). */
+  peopleRevision: number | undefined,
   reason: PauseReason,
 ): Promise<void> {
   const createdAt = new Date().toISOString();
   const pause = {
     entityType: "TASK_ACCESS_PAUSE", schemaVersion: 1, taskId: task.taskId, outboxId: record.id,
-    operationId: record.operationId, workspaceId: record.workspaceId, peopleRevision, reason, createdAt,
+    operationId: record.operationId, workspaceId: record.workspaceId, peopleRevision: peopleRevision ?? 0, reason, createdAt,
     workflowRevision: task.workflow?.revision, workflowStage: task.workflow?.stage, workflowState: task.workflow?.state,
   } as const;
   const items: TransactItem[] = [
@@ -87,7 +89,8 @@ async function park(
     } },
     { ConditionCheck: {
       TableName: deps.tableName, Key: { pk: `DEVTASK#${task.taskId}`, sk: "PEOPLE" },
-      ConditionExpression: "#revision = :revision", ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":revision": peopleRevision },
+      ...(peopleRevision === undefined ? { ConditionExpression: "attribute_not_exists(pk)" }
+        : { ConditionExpression: "#revision = :revision", ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":revision": peopleRevision } }),
     } },
     { ConditionCheck: {
       TableName: deps.tableName, Key: { pk: `WORKSPACE#${record.workspaceId}`, sk: `OPERATION#${record.operationId}` },
@@ -246,6 +249,15 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
       throw agentXError("RUNTIME_UNAVAILABLE", "task dispatch is no longer open");
     }
     const access = await resolveTaskDispatchPeople(guardDeps, task);
+    // Plan 2, Task 21: a task with no People sidecar is the creator's alone, and a creator who holds the viewer role in its project starts no work
+    // on it. (A task with a sidecar is judged by its owners above: an owner who is a project viewer is no authority.)
+    if (access === undefined && await creatorIsProjectViewer(guardDeps, task)) {
+      if (deps.remainingTimeMs !== undefined && deps.remainingTimeMs() <= TASK_PAUSE_RESERVE_MS) {
+        throw agentXError("RUNTIME_UNAVAILABLE", "task access pause reserve is unavailable");
+      }
+      await park(guardDeps, record, pointer, task, undefined, "PROJECT_VIEWER");
+      return "PARKED";
+    }
     if (access === undefined || access.status === "ALLOWED") {
       let witness: (ProjectAuthorityWitness & { taskId: string; developerId: string; project: string }) | undefined;
       if (access?.status === "ALLOWED" && deps.stateAuthorityWitnessForOwnerActor !== undefined) {
@@ -276,6 +288,15 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
     return "PARKED";
   }
   throw agentXError("RUNTIME_UNAVAILABLE", "task dispatch access changed while it was being verified");
+}
+
+/** Whether the task's creator holds a project grant that cannot start tasks (a viewer's), read live in the task's own org. */
+async function creatorIsProjectViewer(deps: TaskDispatchAccessDependencies, task: DeveloperTaskRecord): Promise<boolean> {
+  const named = OrgIdSchema.safeParse((task as unknown as Record<string, unknown>).orgId);
+  const orgId = named.success ? named.data : deps.orgId;
+  if (orgId === undefined) return false;
+  const grant = await get<{ role?: unknown; projectRole?: unknown }>(deps, projectMemberKey(orgId, task.developerId, task.project));
+  return grantRoleOf(grant) === "viewer";
 }
 
 /** Marks only an incomplete core authority decision so the dispatcher retries the same durable operation. */
@@ -351,7 +372,9 @@ export async function resumeTaskDispatch(
     } },
     { ConditionCheck: {
       TableName: deps.tableName, Key: { pk: `DEVTASK#${input.task.taskId}`, sk: "PEOPLE" },
-      ConditionExpression: "#revision = :revision", ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":revision": input.peopleRevision },
+      // Revision 0 is a task with no People sidecar: it must still have none.
+      ...(input.peopleRevision === 0 ? { ConditionExpression: "attribute_not_exists(pk)" }
+        : { ConditionExpression: "#revision = :revision", ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":revision": input.peopleRevision } }),
     } },
     { ConditionCheck: {
       TableName: deps.tableName, Key: { pk: `WORKSPACE#${pause.workspaceId}`, sk: `OPERATION#${pause.operationId}` },

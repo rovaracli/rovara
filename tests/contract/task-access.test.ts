@@ -97,7 +97,7 @@ describe("resolveTaskAccess", () => {
     expect(TASK_ACTION_ROLES).toEqual({
       read: ["owner", "commenter", "viewer"], peopleRead: ["owner", "commenter", "viewer"],
       comment: ["owner", "commenter"], ask: ["owner", "commenter"], suggest: ["commenter"],
-      decide: ["owner"], retry: ["owner"], publish: ["owner"], feedback: ["owner"], close: ["owner"], control: ["owner"], peopleManage: ["owner"],
+      decide: ["owner"], retry: ["owner"], publish: ["owner"], feedback: ["owner"], close: ["owner"], control: ["owner"], work: ["owner"], peopleManage: ["owner"],
       takeOwnership: ["owner", "commenter", "viewer"],
     });
     expect(["read", "comment", "suggest", "ask"].every((action) => can("commenter", action as never))).toBe(true);

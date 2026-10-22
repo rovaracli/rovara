@@ -2,13 +2,14 @@
 // table below, so roles (slice 3) change only these two places; callers never decide roles themselves.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { agentXError, projectAllows, type ProjectRole } from "@agentx/contracts";
+import { viewerCannotStartTasksMessage } from "./project-roles.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { resolveTaskPeopleAccess, type TaskRole } from "./task-people.js";
 import { taskKey, taskOwnerKey, type DeveloperTaskRecord } from "./task-records.js";
 
 export type { TaskRole } from "./task-people.js";
-export type TaskAction = "read" | "peopleRead" | "comment" | "suggest" | "decide" | "ask" | "peopleManage" | "takeOwnership" | "retry" | "publish" | "feedback" | "close" | "control";
+export type TaskAction = "read" | "peopleRead" | "comment" | "suggest" | "decide" | "ask" | "peopleManage" | "takeOwnership" | "retry" | "publish" | "feedback" | "close" | "control" | "work";
 
 export const TASK_ACTION_ROLES: Record<TaskAction, readonly TaskRole[]> = {
   read: ["owner", "commenter", "viewer"],
@@ -24,7 +25,33 @@ export const TASK_ACTION_ROLES: Record<TaskAction, readonly TaskRole[]> = {
   feedback: ["owner"],
   close: ["owner"],
   control: ["owner"],
+  // Continue, send back, share: the owner's actions that start agent work or put the task in front of others. Stopping stays `control`.
+  work: ["owner"],
 };
+
+/**
+ * Every action that changes a task or starts agent work (Plan 2, Task 21, round 3). Each goes through `requireProjectWorkRole` inside
+ * `resolveTaskAccess`, the one place every surface (dev routes, the task page, Slack, MCP) resolves an action. `close` and `control` (stop)
+ * are left out on purpose: a viewer who owns a task may still cancel it.
+ */
+export const WORK_ACTIONS: readonly TaskAction[] = ["decide", "retry", "publish", "feedback", "ask", "work"];
+
+/**
+ * The one gate for "viewers only view". An actor who holds a project grant that cannot start tasks (a viewer) is refused with the viewer
+ * message; an actor with no grant (the share design), a maintainer, a contributor and an org owner or admin pass. `deps.checkAccess` is the
+ * actor's own, read live. A project check that cannot be made leaves things as they were (it never widens access: it only adds a refusal).
+ */
+export async function requireProjectWorkRole(deps: Pick<AccessDependencies, "checkAccess">, task: { project: string }): Promise<void> {
+  let result: Awaited<ReturnType<AccessDependencies["checkAccess"]>>;
+  try {
+    result = await deps.checkAccess(task.project);
+  } catch {
+    return;
+  }
+  if (result.access === "granted" && result.role !== undefined && !projectAllows(result.role, "start_tasks")) {
+    throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(task.project));
+  }
+}
 
 export function can(role: TaskRole, action: TaskAction): boolean {
   return TASK_ACTION_ROLES[action].includes(role);
@@ -54,6 +81,12 @@ const log = (deps: Pick<DeveloperTaskRouteDependencies, "log">, entry: Record<st
  * not take it is refused as not found before any project or channel lookup.
  */
 export async function resolveTaskAccess(deps: AccessDependencies, caller: DeveloperCaller, taskId: string, action?: TaskAction): Promise<TaskAccess> {
+  const access = await resolveTaskRole(deps, caller, taskId, action);
+  if (action !== undefined && WORK_ACTIONS.includes(action)) await requireProjectWorkRole(deps, access.task);
+  return access;
+}
+
+async function resolveTaskRole(deps: AccessDependencies, caller: DeveloperCaller, taskId: string, action?: TaskAction): Promise<TaskAccess> {
   const notFound = () => agentXError("TASK_NOT_FOUND", "no task here that you can see");
   if (!TASK_ID.test(taskId)) throw notFound();
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(taskId), ConsistentRead: true })) as { Item?: DeveloperTaskRecord };
