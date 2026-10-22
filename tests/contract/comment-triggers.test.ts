@@ -7,6 +7,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  COMMENT_TRIGGER_COVERAGE_NOTE,
   COMMENT_TRIGGER_STALE_TEXT,
   agentGuardrailsKey,
   commentSignal,
@@ -150,10 +151,12 @@ describe("GET /v1/app/projects/{p}/connectors/github/comment-triggers", () => {
     const shown = await w.review();
     expect(shown.status, JSON.stringify(shown.body)).toBe(200);
     expect(shown.body).toEqual({
+      coverage: COMMENT_TRIGGER_COVERAGE_NOTE,
       project: "payments",
       repositories: [{ repository: REPOSITORY, triggers: true, failedClosed: false, digest: expect.stringMatching(/^[a-f0-9]{64}$/) as string, files: [SCRIPT, WORKFLOW].sort() }],
     });
     expect(w.reads).toEqual([`https://github.com/${REPOSITORY}.git ${TEST_ORG}`]);
+    expect(typeof shown.body.coverage).toBe("string");
     expect((await w.review(OWEN)).status).toBe(200);
   });
 
