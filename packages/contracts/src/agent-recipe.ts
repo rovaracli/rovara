@@ -118,8 +118,8 @@ export type StepSpec = z.infer<typeof StepSpecSchema>;
 export const ResolvedStepSchema = stepVariants(ResolvedStepSettingsSchema, ResolvedCheckStepSettingsSchema);
 export type ResolvedStep = z.infer<typeof ResolvedStepSchema>;
 
-/** Connector types an agent can be granted tools on. Plan 4 adds its types here and to the connection types. */
-export const AgentConnectorTypeSchema = z.enum(["github", "linear", "jira", "asana", "mcp"]);
+/** Connector types an agent can be granted tools on: the five of Plan 3 and the seven read-only ones of Plan 4 (Task 12). */
+export const AgentConnectorTypeSchema = z.enum(["github", "linear", "jira", "asana", "mcp", "sentry", "datadog", "cloudwatch", "github-actions", "grafana", "vercel", "pagerduty"]);
 export type AgentConnectorType = z.infer<typeof AgentConnectorTypeSchema>;
 
 /** A connector by its type (every connection of that type on the project) or by the project's name for it. */

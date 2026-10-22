@@ -354,18 +354,19 @@ describe("attaching a connection", () => {
     await s.fakeLinear.close();
   });
 
-  it("holds a project to eight connectors and to one GitHub connector", async () => {
+  // Plan 4 Task 12 raised the most connectors a project holds from eight to twelve, to make room for the seven new types.
+  it("holds a project to twelve connectors", async () => {
     const s = await install();
     const id = await s.connection({ type: "linear", label: "Team Linear", access: "read" });
     let revision = 1;
-    for (const name of ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"]) {
+    for (const name of ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11", "a12"]) {
       const saved = await s.put(MIA, name, linear(id, READ_TOOLS, { name }), { expectedRevision: revision });
       expect(saved.status, name).toBe(200);
       revision += 1;
     }
-    const ninth = await s.put(MIA, "a9", linear(id, READ_TOOLS, { name: "a9" }), { expectedRevision: revision });
-    expect(ninth.status).toBe(400);
-    expect(ninth.body.error?.code).toBe("CONFIG_INVALID");
+    const thirteenth = await s.put(MIA, "a13", linear(id, READ_TOOLS, { name: "a13" }), { expectedRevision: revision });
+    expect(thirteenth.status).toBe(400);
+    expect(thirteenth.body.error?.code).toBe("CONFIG_INVALID");
     expect(s.revisions()).toHaveLength(revision);
     await s.fakeLinear.close();
   });
@@ -1753,17 +1754,16 @@ describe("Plan 4 Task 12: PUT accepts the seven new types", () => {
     sentry: ["list_things", "get_thing"], datadog: ["list_things"], cloudwatch: ["list_things"], "github-actions": ["list_things"], grafana: ["list_things"], vercel: ["list_things"], pagerduty: ["list_things"],
   };
   // Each test starts with every new type's list empty and puts back what Tasks 13 to 17 filled in; a test stands in the lists it needs.
-  const filled = Object.fromEntries(NEW_TYPES.map((type) => [type, PROJECT_CONNECTOR_TOOLS[type]]));
+  const filled = { ...PROJECT_CONNECTOR_TOOLS };
   const stub = (types: readonly NewType[] = NEW_TYPES) => { for (const type of types) PROJECT_CONNECTOR_TOOLS[type] = STUB_TOOLS[type]; };
-  const restore = () => { for (const type of NEW_TYPES) { const list = filled[type]; if (list === undefined) delete PROJECT_CONNECTOR_TOOLS[type]; else PROJECT_CONNECTOR_TOOLS[type] = list; } };
-  beforeEach(() => { for (const type of NEW_TYPES) delete PROJECT_CONNECTOR_TOOLS[type]; });
-  afterEach(restore);
+  beforeEach(() => { for (const type of NEW_TYPES) PROJECT_CONNECTOR_TOOLS[type] = []; });
+  afterEach(() => { Object.assign(PROJECT_CONNECTOR_TOOLS, filled); });
 
   const connectionOf = async (s: Install, type: Exclude<NewType, "github-actions">, who: Developer = DANA) => {
     const [body, secret] = CONNECTIONS[type];
     return s.connection(body, secret, who);
   };
-  const connectorOf = (type: NewType, id?: string) => (type === "github-actions" ? sample(type) : { ...sample(type), credentialRef: id });
+  const connectorOf = (type: NewType, id?: string): Record<string, unknown> => (type === "github-actions" ? sample(type) : { ...sample(type), credentialRef: id });
 
   it("accepts no tool of a type whose list is empty, so a type is usable only once its task lists its tools", async () => {
     QUIET();
@@ -1818,7 +1818,7 @@ describe("Plan 4 Task 12: PUT accepts the seven new types", () => {
     stub();
     const s = await install();
     const id = type === "github-actions" ? undefined : await connectionOf(s, type);
-    const body = { ...connectorOf(type, id), tools: [...THINGS, { name: "list_things_again", access: "write" }] };
+    const body: Record<string, unknown> = { ...connectorOf(type, id), tools: [...THINGS, { name: "list_things_again", access: "write" }] };
     PROJECT_CONNECTOR_TOOLS[type] = ["list_things", "list_things_again"];
     const refused = await s.put(MIA, body["name"] as string, body);
     expect(refused.status).toBe(400);
