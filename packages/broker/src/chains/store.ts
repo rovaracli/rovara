@@ -38,6 +38,7 @@ import { Aliases, NOT_EXISTS, coded, strip, withoutUndefined, type Item, type Re
 import type { OwnerBudgets} from "../spend/owner-budgets.js";
 import { budgetGuard, ownerOverCap, totalsMoved, type OwnerCap } from "../spend/owner-budgets.js";
 import { ownerShare, withBudgetFields, type BudgetSubject } from "../spend/owner-total.js";
+import { chainGraphProblems, formatChainProblem } from "./validate.js";
 import { cleanUsd } from "../spend/top-ups.js";
 
 export type { BudgetWriteOptions, OwnerCap };
