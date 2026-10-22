@@ -331,7 +331,8 @@ export async function createSpendRequest(deps: SpendRequestDependencies, input: 
     })]);
     const extra = input.extraItems === undefined ? [] : await input.extraItems(record, approvers);
     const items: TransactItem[] = [
-      { Put: { TableName: deps.tableName, Item: { ...spendRequestKey(record.orgId, record.spendRequestId), entityType: "SPEND_REQUEST", ...record }, ConditionExpression: "attribute_not_exists(pk)" } },
+      // The slot's subject is kept on the record, so the request's end frees exactly the slot it took.
+      { Put: { TableName: deps.tableName, Item: { ...spendRequestKey(record.orgId, record.spendRequestId), entityType: "SPEND_REQUEST", ...record, slotSubject: subject }, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: deps.tableName, Item: { ...spendRequestSlotKey(record.orgId, subject, record.kind), entityType: REQUEST_SLOT, orgId: record.orgId, spendRequestId: record.spendRequestId, createdAt }, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: deps.tableName, Item: { ...openSpendRequestsKey(record.orgId, createdAt, record.spendRequestId), entityType: "SPEND_REQUEST_OPEN", orgId: record.orgId, spendRequestId: record.spendRequestId, approverIds: record.approverIds } } },
       { Put: { TableName: deps.tableName, Item: { ...openSpendRequestDueKey(createdAt, record.orgId, record.spendRequestId), entityType: "SPEND_REQUEST_DUE", orgId: record.orgId, spendRequestId: record.spendRequestId } } },
@@ -510,7 +511,7 @@ const fingerprintOf = (spendRequestId: string, body: DecideSpendBody) =>
 
 /** A request as an answer shows it: no org, no keys; the page where it is decided. */
 export function spendRequestView(deps: Pick<SpendRequestDependencies, "confirmOrigin">, record: SpendRequestRecord): Record<string, unknown> {
-  const { orgId: _orgId, change: _change, ...shown } = record; // eslint-disable-line @typescript-eslint/no-unused-vars -- the org is the caller's; the stored change is the store's
+  const { orgId: _orgId, change: _change, slotSubject: _slot, ...shown } = record as SpendRequestRecord & { slotSubject?: string }; // eslint-disable-line @typescript-eslint/no-unused-vars -- the org is the caller's; the stored change and slot are the store's
   return { ...shown, confirmUrl: `${deps.confirmOrigin}/v1/app/approve/${record.spendRequestId}` };
 }
 
@@ -531,7 +532,11 @@ function endItems(deps: SpendRequestDependencies, record: SpendRequestRecord, se
   ];
 }
 
-const subjectOfRecord = (record: SpendRequestRecord): string =>
+const subjectOfRecord = (record: SpendRequestRecord): string => {
+  const stored = (record as { slotSubject?: unknown }).slotSubject;
+  return typeof stored === "string" ? stored : legacySubjectOf(record);
+};
+const legacySubjectOf = (record: SpendRequestRecord): string =>
   record.change?.op === "confirm_move" ? `OWNER#${record.change.owner}` : subjectOf({ ...(record.taskId === undefined ? {} : { taskId: record.taskId }), ...(record.agentId === undefined ? {} : { agentId: record.agentId }) });
 
 /** What an approval of a task's request changes on the task, conditional on the figures read; and how the task goes on. */

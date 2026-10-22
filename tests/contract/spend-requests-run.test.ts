@@ -884,6 +884,82 @@ describe("the confirmation page and the routes", () => {
   });
 });
 
+describe("the guards of a decision", () => {
+  /** A $14 run-limit pause of Maya's task, asking Ben (a maintainer) for $7. */
+  async function asked() {
+    const t = await setup();
+    const task = await t.plainTask();
+    await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+    await t.pauseAndEnd(task);
+    return { t, task, request: t.requestOf(task.taskId)[0]! };
+  }
+
+  it("refuses an approver who has left the org, even while their id is still on the list", async () => {
+    const { t, request } = await asked();
+    t.db.delete(orgMemberKey(TEST_ORG, BEN.developerId));
+    expect(await refusal(t.decide(BEN, request.spendRequestId))).toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("asks the org's owners and admins when the payer has left the org", async () => {
+    const { t, task } = await asked();
+    const small = await t.plainTask();
+    await t.set(small.taskId, "SET budgetUsd = :limit", { ":limit": 4 });
+    t.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
+    await t.pauseAndEnd(small);
+    const request = t.requestOf(small.taskId)[0]!;
+    expect(request.approverRole).toBe("org_admin");
+    expect((await spendApprovers(t.deps(), request)).ids.sort()).toEqual([ADA.developerId, DEB.developerId].sort());
+    void task;
+  });
+
+  it("is APPROVAL_CLOSED once its time ran out, before the sweep ends it", async () => {
+    const { t, request } = await asked();
+    const after = Date.parse(request.expiresAt) + 1;
+    expect(await refusal(decideSpendRequest(t.deps(() => after), t.caller(BEN), request.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" }))).toMatchObject({ code: "APPROVAL_CLOSED" });
+    expect(t.requestOf(request.taskId!)[0]).toMatchObject({ status: "PENDING" });
+  });
+
+  it("refuses an approval when the run limit changed after it was read, and leaves the request open", async () => {
+    const { t, task, request } = await asked();
+    const deps = t.deps();
+    let moved = false;
+    const racing = { ...deps, documentClient: { send: async (command: { constructor: { name: string } }) => {
+      if (!moved && command.constructor.name === "TransactWriteCommand") {
+        moved = true;
+        await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 30 });
+      }
+      return t.db.send(command as never);
+    } } };
+    expect(await refusal(decideSpendRequest(racing as never, t.caller(BEN), request.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" }))).toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+    expect(t.requestOf(task.taskId)[0]).toMatchObject({ status: "PENDING" });
+    expect(t.meta(task.taskId).budgetUsd).toBe(30);
+  });
+
+  it("a member who asked for a raise can't approve it unless they pay for the task", async () => {
+    const { t, task } = await asked();
+    t.grantRole(CARL, "maintainer");
+    const made = await createSpendRequest(t.deps(), {
+      orgId: TEST_ORG, kind: "run_limit", scope: { kind: "task", taskId: task.taskId }, taskId: task.taskId, subject: `ASKED#${task.taskId}`, amountUsd: 7, newLimitUsd: 21,
+      reason: "More, please.", requestedBy: { kind: "member", developerId: CARL.developerId }, resume: "continue",
+    });
+    expect(await refusal(t.decide(CARL, made.record.spendRequestId))).toMatchObject({ code: "FORBIDDEN" });
+    await t.decide(BEN, made.record.spendRequestId);
+  });
+
+  it("never reads an item that names another org, whatever key it was found at", async () => {
+    const { t, request } = await asked();
+    t.db.set({ ...(t.db.get(spendRequestKey(TEST_ORG, request.spendRequestId).pk, "META")!), ...spendRequestKey(ORG_B, request.spendRequestId) });
+    expect(await getSpendRequest(t.deps(), ORG_B, request.spendRequestId)).toBeUndefined();
+  });
+
+  it("escalates only an owner's max-per-run request, never a run limit's", async () => {
+    const { t } = await asked();
+    const later = Date.now() + OWNER_ANSWER_HOURS * 3_600_000 + 60_000;
+    expect(await escalateOwnerRequests(t.deps(() => later), { budgetMs: 5_000 })).toMatchObject({ escalated: 0 });
+    expect(t.requests()[0]!.escalatedAt).toBeUndefined();
+  });
+});
+
 describe("the settlement run", () => {
   it("escalates owner requests before the spend sweep, with a small budget of its own", () => {
     expect(SETTLEMENT_BUDGETS_MS).toMatchObject({ escalate: 2_000 });
