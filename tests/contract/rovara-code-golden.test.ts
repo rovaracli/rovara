@@ -70,7 +70,17 @@ describe("Rovara Code before agents", () => {
 });
 
 // Plan 3 Task 15: with the agents switched on, a start that names no agent runs Rovara Code at the org's pinned version and records it. The only
-// differences from the fixtures are change 5's paths: the task's `agent` and `origin`, and the RECIPE item beside the task.
+// differences from the fixtures are change 5's paths: the task's `agent`, `origin`, `payer` and `place`, the `tags` of each model key minted, and the RECIPE item beside the task.
+/** The paths of the `tags` on every model proxy key the record shows minting (a mint call has a `purpose` and a `refId`), with the tags. */
+function mintTagPaths(record: unknown, path = ""): Array<{ path: string; value: unknown }> {
+  if (record === null || typeof record !== "object") return [];
+  const here = record as Record<string, unknown>;
+  const found: Array<{ path: string; value: unknown }> = [];
+  if (!Array.isArray(record) && "purpose" in here && "refId" in here && "tags" in here) found.push({ path: `${path}.tags`, value: here.tags });
+  for (const [key, child] of Object.entries(here)) found.push(...mintTagPaths(child, Array.isArray(record) ? `${path}[${key}]` : path === "" ? key : `${path}.${key}`));
+  return found;
+}
+
 describe("Rovara Code with agents switched on", () => {
   const STARTS: GoldenScenario[] = [
     "plan-quick", "plan-full-requirements", "plan-review-decision", "implement", "checks", "review", "task-no-workflow", "task-no-workflow-no-proxy", "shared-task", "plan-ready-quick",
@@ -78,7 +88,7 @@ describe("Rovara Code with agents switched on", () => {
   const latest = BUILTIN_AGENTS["rovara-code"].versions.at(-1)!;
 
   for (const scenario of STARTS) {
-    it(`${scenario} differs from its golden fixture only by the task's agent, origin and RECIPE item`, async () => {
+    it(`${scenario} differs from its golden fixture only by the task's agent, origin, payer, place, the keys' tags and the RECIPE item`, async () => {
       if (updatingGolden()) return;
       const record = await recordGolden(scenario, { brokerExtra: { agents: {} } });
       const items = record.taskItems as Array<Record<string, unknown>>;
@@ -87,9 +97,18 @@ describe("Rovara Code with agents switched on", () => {
       expect(recipe[0]).toMatchObject({ digest: recipeDigest(latest.recipe), recipe: latest.recipe });
       const kept = items.filter((item) => item.sk !== "RECIPE");
       const meta = kept.findIndex((item) => item.sk === "META");
+      // Plan 3 Task 29: the task records its payer and place, and every key minted for it carries the tags that say so (change 5: records gain fields).
+      const payer = { kind: "member", developerId: (kept[meta] as { developerId: string }).developerId };
+      const tagged = mintTagPaths(record);
+      for (const { value } of tagged) {
+        expect(value).toMatchObject({ agentId: "rovara-code", project: "payments", payerKind: "member", payerId: payer.developerId, source: "rovara", origin: "cli" });
+      }
       expectGolden(scenario, { ...record, taskItems: kept }, [
         { path: `taskItems[${String(meta)}].agent`, expected: { agentId: "rovara-code", name: "Rovara Code", version: latest.version, builtin: true, digest: recipeDigest(latest.recipe) }, change: 5 },
         { path: `taskItems[${String(meta)}].origin`, expected: "cli", change: 5 },
+        { path: `taskItems[${String(meta)}].payer`, expected: payer, change: 5 },
+        { path: `taskItems[${String(meta)}].place`, expected: { project: "payments" }, change: 5 },
+        ...tagged.map(({ path, value }) => ({ path, expected: value, change: 5 as const })),
       ]);
     }, 120_000);
   }

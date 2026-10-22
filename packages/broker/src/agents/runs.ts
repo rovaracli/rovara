@@ -24,6 +24,7 @@ import {
   WorkflowProgramSchema,
   agentTasksKey,
   agentXError,
+  projectAiKey,
   canonicalJson,
   codingProgram,
   recipeRunner,
@@ -33,6 +34,7 @@ import {
   type ModelIdentifier,
   type OrgId,
   type Payer,
+  type Place,
   type ProjectRole,
   type ResolvedRecipe,
   type ResultContract,
@@ -42,11 +44,13 @@ import {
   type WorkflowProgram,
 } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
-import { effectiveMaxPerRun } from "../spend/settings.js";
+import { resolvePayer, type PayerFacts } from "../spend/payer.js";
+import { effectiveMaxPerRun, readProjectAiWithRevision } from "../spend/settings.js";
 import type { AgentCaller } from "./access.js";
+import { requireNewWorkAllowed } from "../developer/project-roles.js";
 import { requireStepModelsApproved } from "./dispatch.js";
 import { readGuardrails } from "./guardrails.js";
-import { resolveAgentForAutonomousRun, resolveAgentForTask, type RosterDependencies, type TaskAgentRef } from "./roster.js";
+import { resolveAgentForAutonomousRun, resolveAgentForTask, roleOnProject, type RosterDependencies, type TaskAgentRef } from "./roster.js";
 import { putNew, type TableInput, type TransactItem } from "./table-writes.js";
 import { taskAgentRunKey, taskRecipeKey } from "../developer/task-records.js";
 
@@ -80,8 +84,13 @@ export interface AgentRunRequest {
   owner: { developerId: string };
   /** Absent for work no person started. */
   startedBy?: { developerId: string };
-  /** Must equal `resolvePayer` for the origin; until the payer rules arrive (Task 29) only the person who started the run. */
-  payer: Payer;
+  /**
+   * Who pays. Left out, it is `resolvePayer`'s answer for the origin (the usual call); given, it must equal that answer, so a caller that has its own
+   * idea of who pays (Plan 4's chain payer, a person's own start) is checked and never trusted. For a `chain` run it is the chain's payer.
+   */
+  payer?: Payer;
+  /** The facts a Linear or offered run's payer is named from. */
+  payerFacts?: PayerFacts;
   chain?: { chainRunId: string; stepId: string };
   /** A cap on this run: the smaller of it and the run limit applies, and 0 starts the run paused. */
   runLimitUsd?: number;
@@ -99,7 +108,9 @@ export interface RunStartOptions {
   /** No person started it: the agent is resolved without a caller (H3). */
   autonomous: boolean;
   startedBy?: { developerId: string };
-  payer: Payer;
+  /** Worked out by `startAgentRun` with `resolvePayer`; `prepareRun` works it out again from the settings at the start and refuses a different answer. */
+  payer?: Payer;
+  payerFacts?: PayerFacts;
   chain?: { chainRunId: string; stepId: string };
   runLimitUsd?: number;
   resultContract?: ResultContract;
@@ -124,22 +135,53 @@ const AgentRunRequestShape = z.object({
   origin: z.enum(WORK_ORIGINS),
   owner: z.object({ developerId: Hex64 }).strict(),
   startedBy: z.object({ developerId: Hex64 }).strict().optional(),
-  payer: PayerSchema,
+  payer: PayerSchema.optional(),
+  payerFacts: z.object({
+    assignedBy: z.object({ developerId: Hex64.optional(), bot: z.boolean() }).strict().optional(),
+    approvedBy: z.object({ developerId: Hex64 }).strict().optional(),
+    acceptedBy: z.object({ developerId: Hex64 }).strict().optional(),
+  }).strict().optional(),
   chain: z.object({ chainRunId: z.string().min(1).max(200), stepId: z.string().min(1).max(200) }).strict().optional(),
   runLimitUsd: z.number().finite().min(0).optional(),
 }).passthrough();
 
 const sha256 = (value: unknown) => createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
 
-// ---- the payer (Task 29 replaces this)
+// ---- the payer
+
+/** A draft's run is a test run whatever it was started from; the origin the payer rules see is that one. */
+const originOf = (origin: WorkOrigin, agent: { version?: number | "draft" } | undefined): WorkOrigin => (agent?.version === "draft" ? "test_run" : origin);
 
 /**
- * Until the payer rules arrive (Task 29's `resolvePayer`), the only payer a run can have is the person who started it. A run no person
- * started has none yet, so it is refused after its agent was resolved.
+ * Who pays for a run, worked out from the settings as they stand now (`resolvePayer`), with the revision of the project's AI settings it read so
+ * the start can hold to it. A payer the caller named must be the same one; a different one is refused, never charged.
  */
-export function requireAcceptablePayer(input: { startedBy?: { developerId: string } | undefined; payer: Payer }): void {
-  const accepted = input.startedBy !== undefined && input.payer.kind === "member" && input.payer.developerId === input.startedBy.developerId;
-  if (!accepted) throw agentXError("CONFIG_INVALID", "payer: only the person who started the run can pay for it");
+export async function resolveRunPayer(deps: AgentRunDependencies, input: {
+  orgId: OrgId; project: string; agentId: AgentId; origin: WorkOrigin; startedBy?: { developerId: string } | undefined; payer?: Payer | undefined; payerFacts?: PayerFacts | undefined;
+}): Promise<{ payer: Payer; place: Place; projectAiRevision: number }> {
+  const { settings, revision } = await readProjectAiWithRevision(deps, input.orgId, input.project);
+  const payer = resolvePayer({
+    origin: input.origin, project: input.project, projectPays: settings.projectPays, agentId: input.agentId,
+    ...(input.payer === undefined ? {} : { chainPayer: input.payer }),
+    ...(input.startedBy === undefined ? {} : { startedBy: input.startedBy }),
+    ...(input.payerFacts ?? {}),
+  });
+  if (input.payer !== undefined && canonicalJson(input.payer) !== canonicalJson(payer)) {
+    throw agentXError("CONFIG_INVALID", "payer: this run's payer is not the one its origin names");
+  }
+  return { payer, place: { project: input.project }, projectAiRevision: revision };
+}
+
+/**
+ * A person a run names, other than the owner it acts as (who started it, or who pays for it: an assigner, an approver, someone who accepted an
+ * offer), must still be allowed to start work on the project. A person the project only lets view it cannot cause spend by being named. They must
+ * be a member of the org now, with a role on the project that starts tasks, and the project must take new work.
+ */
+async function requireMayStart(deps: AgentRunStarter, input: { orgId: OrgId; project: string; developerId: string }): Promise<void> {
+  const caller = await deps.callerFor(input.orgId, input.developerId);
+  if (caller === undefined) throw agentXError("FORBIDDEN", "A person named for this run isn't a member of the organization.");
+  const role = await roleOnProject(deps, caller, input.project);
+  await requireNewWorkAllowed(deps, input.orgId, input.project, role, "task");
 }
 
 // ---- preparing a run: nothing is charged or written
@@ -160,6 +202,10 @@ export interface PreparedRun {
   resultContract?: ResultContract;
   chain?: { chainRunId: string; stepId: string };
   checkout: RunCheckout[];
+  /** Who pays and where it is counted (Task 29); the start stores both and holds to the project settings revision they were worked out from. */
+  payer: Payer;
+  place: Place;
+  projectAiRevision: number;
 }
 
 export interface PrepareRunInput {
@@ -173,7 +219,9 @@ export interface PrepareRunInput {
   caller?: AgentCaller;
   role?: ProjectRole;
   startedBy?: { developerId: string };
-  payer: Payer;
+  /** The payer the caller worked out or was given; checked against the rules, never trusted. Absent: the rules decide. */
+  payer?: Payer;
+  payerFacts?: PayerFacts;
   chain?: { chainRunId: string; stepId: string };
   runLimitUsd?: number;
   resultContract?: ResultContract;
@@ -224,7 +272,8 @@ export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunIn
     const contract = ResultContractSchema.safeParse(input.resultContract);
     if (!contract.success) throw agentXError("CONFIG_INVALID", `resultContract: ${contract.error.issues[0]?.message ?? "is not valid"}`);
   }
-  requireAcceptablePayer({ startedBy: input.startedBy, payer: input.payer });
+  const origin: WorkOrigin = resolved.testRun ? "test_run" : input.origin;
+  const { payer, place, projectAiRevision } = await resolveRunPayer(deps, { orgId: input.orgId, project: input.project, agentId: ref.agentId, origin, startedBy: input.startedBy, payer: input.payer, payerFacts: input.payerFacts });
   if (autonomous && input.startedBy !== undefined) throw agentXError("CONFIG_INVALID", "startedBy: a run no person started has no one who started it");
   const program = runner === "coding" ? codingProgram(recipe) : undefined;
   if (program !== undefined) {
@@ -236,14 +285,14 @@ export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunIn
   const checkout = runner === "agent_steps" ? await pullRequestHeads(deps, input.orgId, input.input, input.repositories) : [];
   return {
     recipe, digest, ref,
-    origin: resolved.testRun ? "test_run" : input.origin,
+    origin,
     runner,
     ...(program === undefined ? {} : { program }),
     input: input.input,
     ...limits,
     ...(input.resultContract === undefined ? {} : { resultContract: input.resultContract }),
     ...(input.chain === undefined ? {} : { chain: input.chain }),
-    checkout,
+    checkout, payer, place, projectAiRevision,
   };
 }
 
@@ -341,6 +390,16 @@ export function runStartItems(table: TableInput, input: {
     };
     items.push(putNew(table, taskAgentRunKey(input.taskId), "AGENT_RUN", { ...state }));
   }
+  // The payer was worked out from the project's AI settings (whether the project pays) as they stood at this revision; the start holds to it.
+  items.push({
+    ConditionCheck: {
+      TableName: table.tableName,
+      Key: projectAiKey(input.orgId, input.project),
+      ...(prepared.projectAiRevision === 0
+        ? { ConditionExpression: "attribute_not_exists(pk)" }
+        : { ConditionExpression: "#revision = :revision", ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":revision": prepared.projectAiRevision } }),
+    },
+  });
   if (input.request !== undefined) {
     items.push({
       Put: {
@@ -389,7 +448,7 @@ export async function readRunRequest(deps: Pick<TableInput, "documentClient" | "
 export function runRequestFingerprint(request: Omit<AgentRunRequest, "caller">): string {
   return sha256({
     project: request.project, agent: request.agent, input: request.input, origin: request.origin, owner: request.owner, startedBy: request.startedBy ?? null,
-    payer: request.payer, chain: request.chain ?? null, runLimitUsd: request.runLimitUsd ?? null, resultContract: request.resultContract ?? null,
+    payer: request.payer ?? null, payerFacts: request.payerFacts ?? null, chain: request.chain ?? null, runLimitUsd: request.runLimitUsd ?? null, resultContract: request.resultContract ?? null,
   });
 }
 
@@ -397,19 +456,15 @@ export function runRequestFingerprint(request: Omit<AgentRunRequest, "caller">):
 
 /**
  * Starts a run. Idempotent on `requestId`: the repeat of a request returns the first run's result and starts nothing, and the same ID with
- * other contents is `IDEMPOTENCY_CONFLICT`. A run no person started (no `startedBy`) resolves its agent through the roster first (G12) and is
- * refused until a payer other than the person who started it can be named (Task 29).
+ * other contents is `IDEMPOTENCY_CONFLICT`. A run no person started (no `startedBy`) resolves its agent through the roster first (G12). The payer is
+ * `resolvePayer`'s answer for the origin (a payer the request names must equal it), and the owner may be anyone who is a member: whoever else the
+ * run names must be allowed to start work on the project.
  */
 export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequest): Promise<AgentRunResult> {
   const shape = AgentRunRequestShape.safeParse(request);
   if (!shape.success) {
     const issue = shape.error.issues[0];
     throw agentXError("CONFIG_INVALID", `${issue === undefined || issue.path.length === 0 ? "request" : issue.path.join(".")}: ${issue?.message ?? "is not valid"}`);
-  }
-  // TASK 29 REPLACES THIS with `resolvePayer`. Until then the person who started the run pays, and the owner is who the spend is charged to,
-  // so another person's request for an owner would bill one person and record the other as the payer.
-  if (request.startedBy !== undefined && request.startedBy.developerId !== request.owner.developerId) {
-    throw agentXError("CONFIG_INVALID", "owner: a run is owned by the person who started it");
   }
   const { caller, ...rest } = request;
   const fingerprint = runRequestFingerprint(rest);
@@ -421,16 +476,24 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
   const autonomous = request.startedBy === undefined;
   if (autonomous) {
     await resolveAgentForAutonomousRun(deps, { orgId: request.orgId, project: request.project, agentId: request.agent.agentId, ...(typeof request.agent.version === "number" ? { version: request.agent.version } : {}) });
-    requireAcceptablePayer({ startedBy: request.startedBy, payer: request.payer });
   }
   if (caller !== undefined && (caller.developerId !== request.owner.developerId || caller.orgId !== request.orgId)) {
     throw agentXError("CONFIG_INVALID", "caller: a run is started as its owner");
   }
   const actingAs = caller ?? await deps.callerFor(request.orgId, request.owner.developerId);
   if (actingAs === undefined) throw agentXError("FORBIDDEN", "The person this run is for isn't a member of the organization.");
+  // Who pays, from the origin and the project's settings now; a payer the request named must be that one. The owner is who the run acts as, and
+  // may differ from who started it and who pays, so everyone else the run names must be allowed to start work here.
+  const { payer } = await resolveRunPayer(deps, {
+    orgId: request.orgId, project: request.project, agentId: request.agent.agentId, origin: originOf(request.origin, request.agent),
+    startedBy: request.startedBy, payer: request.payer, payerFacts: request.payerFacts,
+  });
+  const named = new Set([request.startedBy?.developerId, payer.kind === "member" ? payer.developerId : undefined].filter((id): id is string => id !== undefined && id !== request.owner.developerId));
+  for (const developerId of named) await requireMayStart(deps, { orgId: request.orgId, project: request.project, developerId });
   const body = { requestId: request.requestId, project: request.project, instructions: request.input.text, input: request.input, agent: request.agent, client: request.origin };
   const started = await deps.startTask(actingAs, body, {
-    origin: request.origin, autonomous, payer: request.payer, requestFingerprint: fingerprint,
+    origin: request.origin, autonomous, payer, requestFingerprint: fingerprint,
+    ...(request.payerFacts === undefined ? {} : { payerFacts: request.payerFacts }),
     ...(request.startedBy === undefined ? {} : { startedBy: request.startedBy }),
     ...(request.chain === undefined ? {} : { chain: request.chain }),
     ...(request.runLimitUsd === undefined ? {} : { runLimitUsd: request.runLimitUsd }),

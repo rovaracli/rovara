@@ -1535,7 +1535,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
         origin: run?.origin ?? (client === SLACK_CLIENT_NAME ? "slack" : "cli"),
         ...(run?.autonomous === true ? {} : { caller, role: access.role }),
         ...(run === undefined ? { startedBy: { developerId: caller.developerId } } : run.startedBy === undefined ? {} : { startedBy: run.startedBy }),
-        payer: run?.payer ?? { kind: "member", developerId: caller.developerId },
+        ...(run?.payer === undefined ? {} : { payer: run.payer }),
+        ...(run?.payerFacts === undefined ? {} : { payerFacts: run.payerFacts }),
         ...(run?.chain === undefined ? {} : { chain: run.chain }),
         ...(run?.runLimitUsd === undefined ? {} : { runLimitUsd: run.runLimitUsd }),
         ...(run?.resultContract === undefined ? {} : { resultContract: run.resultContract }),
@@ -1562,10 +1563,13 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   // and before any write. A proxy that cannot answer fails the start with nothing recorded; a refusal is audited like any other.
   // Task 31 replaces this with `admitWork` at this point, after the agent is resolved and before the workspace charge.
   let admitted: { maxBudgetUsd: number } | undefined;
+  // Task 29: a member's own limit applies only when that member pays; a project or an agent that pays answers to the org alone until Task 31's levels.
+  const payingMember = prepared === undefined ? caller.developerId : prepared.payer.kind === "member" ? prepared.payer.developerId : undefined;
   if (deps.modelAccess !== undefined) {
     try {
       admitted = await admitSpend({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, now: () => deps.now(), cloud: deps.cloud === true }, {
-        orgId: deps.orgId, developerId: caller.developerId, path: asWorkflow && workflowPath === "FULL" ? "FULL" : "QUICK",
+        orgId: deps.orgId, ...(payingMember === undefined ? {} : { developerId: payingMember }),
+        path: asWorkflow && workflowPath === "FULL" ? "FULL" : "QUICK",
       });
     } catch (error) {
       if (error instanceof AgentXError && ADMISSION_REFUSALS.has(error.code)) return refused(error);
@@ -1603,7 +1607,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       ...(prepared?.program === undefined ? {} : { program: prepared.program }),
     }) } : {}),
     ...(prepared === undefined ? {} : {
-      agent: prepared.ref, origin: prepared.origin,
+      agent: prepared.ref, origin: prepared.origin, payer: prepared.payer, place: prepared.place,
       ...(prepared.chain === undefined ? {} : { chain: prepared.chain }),
       ...(prepared.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: prepared.maxPerRunUsd }),
       ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, firstDispatch: { operationId: preparation.operationId } } } : {}),

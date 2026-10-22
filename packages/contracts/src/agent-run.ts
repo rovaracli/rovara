@@ -42,13 +42,17 @@ export const WORK_ORIGINS = ["app", "cli", "mcp", "slack", "linear", "offer", "t
 export const WorkOriginSchema = z.enum(WORK_ORIGINS);
 export type WorkOrigin = z.infer<typeof WorkOriginSchema>;
 
-/** Whose budget a run is charged to (Plan 3, Task 29 resolves it from the origin). */
+/** Whose budget a run is charged to (`resolvePayer`, Plan 3 Task 29, names it from the origin). */
 export const PayerSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("member"), developerId: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ kind: z.literal("project"), project: z.string().regex(AGENTX_NAME_PATTERN) }).strict(),
   z.object({ kind: z.literal("agent"), agentId: AgentIdSchema }).strict(),
 ]);
 export type Payer = z.infer<typeof PayerSchema>;
+
+/** Where a run's cost is counted: the project it works on (a Slack thread's is the project its channel is bound to). */
+export const PlaceSchema = z.object({ project: z.string().regex(AGENTX_NAME_PATTERN) }).strict();
+export type Place = z.infer<typeof PlaceSchema>;
 
 export const RESULT_CONTRACT_MIN_BRANCHES = 2;
 export const RESULT_CONTRACT_MAX_BRANCHES = 8;

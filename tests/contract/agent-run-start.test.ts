@@ -459,16 +459,16 @@ describe("startAgentRun", () => {
     expect(t.taskOf(view).status).toBe("STARTING");
   });
 
-  it("accepts only the person who started the run as its payer until the payer rules arrive", async () => {
+  it("accepts only the payer the origin names (Task 29's rules are tested in payer-place.test.ts)", async () => {
     const t = await setup();
     const wrong = await refusal(startAgentRun(t.starter(), t.request({ payer: { kind: "project", project: "payments" } })));
-    expect(wrong).toEqual({ code: "CONFIG_INVALID", message: "payer: only the person who started the run can pay for it" });
+    expect(wrong).toEqual({ code: "CONFIG_INVALID", message: "payer: this run's payer is not the one its origin names" });
     const someoneElse = await refusal(startAgentRun(t.starter(), t.request({ payer: { kind: "member", developerId: OMAR.developerId } })));
     expect(someoneElse?.code).toBe("CONFIG_INVALID");
     expect(t.taskCount()).toBe(0);
   });
 
-  it("resolves an autonomous start through the roster first, then refuses it until an agent can pay", async () => {
+  it("resolves an autonomous start through the roster first, then starts it with the agent as its payer", async () => {
     const t = await setup();
     const agentId = await t.agentOf(TRIAGE, { name: "Watcher", roster: false });
     const autonomous = (extra: Partial<AgentRunRequest> = {}): AgentRunRequest => {
@@ -477,9 +477,11 @@ describe("startAgentRun", () => {
     };
     expect(await refusal(startAgentRun(t.starter(), autonomous()))).toEqual({ code: "AGENT_NOT_ON_PROJECT", message: "Watcher isn't working on payments yet. Ask a project maintainer to add it." });
     t.putOnRoster(agentId);
-    expect(await refusal(startAgentRun(t.starter(), autonomous()))).toEqual({ code: "CONFIG_INVALID", message: "payer: only the person who started the run can pay for it" });
     expect(t.taskCount()).toBe(0);
-    expect(t.charges()).toEqual([]);
+    const started = await startAgentRun(t.starter(), autonomous());
+    expect(started.paused).toBe(false);
+    expect(t.taskCount()).toBe(1);
+    expect(t.meta(started.taskId)).toMatchObject({ origin: "schedule", developerId: MAYA.developerId, payer: { kind: "agent", agentId }, place: { project: "payments" } });
   });
 
   it("refuses a result contract on a coding recipe with the exact text and stores it on the run state of an agent-step recipe", async () => {
@@ -587,11 +589,11 @@ describe("what a start reads, whom it is for and what it refuses until the step 
     expect(pullRequestHead).toHaveBeenCalledTimes(1);
   });
 
-  it("refuses a run started for an owner other than the person who started it, until the payer rules arrive", async () => {
+  it("refuses a run for an owner who is not a member of this org, writing nothing", async () => {
     const t = await setup();
+    // OMAR belongs to another org here (the resolver above), so the run cannot act as him.
     const refused = await refusal(startAgentRun(t.starter(), t.request({ owner: { developerId: OMAR.developerId } })));
-    expect(refused?.code).toBe("CONFIG_INVALID");
-    expect(refused?.message).toMatch(/^owner: /);
+    expect(refused).toEqual({ code: "FORBIDDEN", message: "The person this run is for isn't a member of the organization." });
     expect(t.taskCount()).toBe(0);
     expect(t.charges()).toEqual([]);
     expect(t.db.find((item) => item.entityType === "RUN_REQUEST")).toEqual([]);

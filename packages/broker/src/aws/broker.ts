@@ -252,7 +252,11 @@ import {
   workflowPublicationContext,
   workflowPublicationContextDigest,
   PER_TASK_BUDGET_USD,
+  ROVARA_CODE_AGENT_ID,
   ResolvedRecipeSchema,
+  type AgentId,
+  type Payer,
+  type Place,
 } from "@agentx/contracts";
 import { compileE2EScenarios, collectE2EActualCliRun, qualifyE2ECollection, e2eSnapshotSourceDigest, parseE2EFirstPartyCapture, e2ePrivateTransferMaxBytes } from "@agentx/verifier";
 import { renderE2EMcpProjection, renderE2EPageHtml, renderE2ESlackBlocks, renderE2ENotifierSlackBlocks } from "../e2e-presentation.js";
@@ -334,6 +338,8 @@ import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { admitSpend, changeBudgets, keyIdOf, mintCap, mintKeyHealing, recordMintedKey, type OrgBudgetSettings } from "../org/budget.js";
+import { keyMember, mintTagsFor, paymentOfTask, resolvePayer } from "../spend/payer.js";
+import { readProjectAi } from "../spend/settings.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
 import { SkillStore, servedSkills } from "../agents/skills.js";
 import { followMerges, type ProjectMembers } from "../agents/access.js";
@@ -3733,9 +3739,12 @@ async function admitSlackWork(dependencies: AwsBrokerDependencies, identity: Aut
   const modelAccess = dependencies.modelAccess;
   if (modelAccess === undefined || identity.slack === undefined) return;
   const orgId = requireOrgId(identity.orgId);
+  // Task 29: with agents set up, the member's own limit applies only when that member pays (not when the project does).
+  const paying = dependencies.agents === undefined ? undefined : await slackWorkPayment(dependencies, orgId, identity.slack.binding.projectName, identity.slack.requester);
+  const developerId = paying === undefined ? await linkedRequester(dependencies, orgId, identity.slack.requester) : keyMember(paying.payer);
   await admitSpend(
     { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
-    { orgId, developerId: await linkedRequester(dependencies, orgId, identity.slack.requester), path: "CHAT" },
+    { orgId, developerId, path: "CHAT" },
   );
 }
 
@@ -5164,15 +5173,24 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     const current = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
     const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(current.workspaceId));
     const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+    // Task 29: with agents set up a key says who pays and what ran, and carries a member's name only when a member pays. Without them
+    // (an install that never had agents) the key is minted exactly as it always was.
+    const withAgents = dependencies.agents !== undefined;
     if (task !== undefined) {
-      return task.orgId === undefined ? undefined : {
-        orgId: task.orgId, developerId: task.developerId as string | undefined, refId: task.taskId, budgetUsd: task.budgetUsd ?? PER_TASK_BUDGET_USD,
+      if (task.orgId === undefined) return undefined;
+      const payment = withAgents ? paymentOfTask(task) : undefined;
+      return {
+        orgId: task.orgId, developerId: payment === undefined ? task.developerId as string | undefined : keyMember(payment.payer), refId: task.taskId, budgetUsd: task.budgetUsd ?? PER_TASK_BUDGET_USD,
         previousKeyIds: task.modelKeyIds ?? [], owner: taskKey(task.taskId), budgetBaselineUsd: task.budgetBaselineUsd ?? 0,
+        tags: payment === undefined ? undefined : mintTagsFor({ ...payment, origin: payment.origin ?? "cli", taskId: task.taskId, operationId: current.id, stepId: current.programStepId }),
       };
     }
-    return current.orgId === undefined ? undefined : {
-      orgId: current.orgId, developerId: await linkedRequester(dependencies, current.orgId, current.requestedBy), refId: current.id,
+    if (current.orgId === undefined) return undefined;
+    const slack = withAgents ? await slackWorkPayment(dependencies, current.orgId, (await requireWorkspace(dependencies, current.workspaceId)).projectName, current.requestedBy) : undefined;
+    return {
+      orgId: current.orgId, developerId: slack === undefined ? await linkedRequester(dependencies, current.orgId, current.requestedBy) : keyMember(slack.payer), refId: current.id,
       budgetUsd: PER_TASK_BUDGET_USD, previousKeyIds: current.modelKeyIds ?? [], owner: operationKey(current.workspaceId, current.id), budgetBaselineUsd: 0,
+      tags: slack === undefined ? undefined : mintTagsFor({ ...slack, origin: "slack", operationId: current.id, stepId: current.programStepId }),
     };
   };
   const budgets = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true };
@@ -5188,7 +5206,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       const { maxBudgetUsd } = await mintCap(budgets, { orgId: scope.orgId, developerId: scope.developerId, budgetUsd: scope.budgetUsd, previousKeyIds: scope.previousKeyIds, budgetBaselineUsd: scope.budgetBaselineUsd });
       const minted = await mintKeyHealing(budgets, {
         orgId: scope.orgId, ...(scope.developerId === undefined ? {} : { developerId: scope.developerId }), purpose: "task", refId: scope.refId,
-        maxBudgetUsd, ttlSeconds: MODEL_KEY_TTL_SECONDS,
+        maxBudgetUsd, ttlSeconds: MODEL_KEY_TTL_SECONDS, ...(scope.tags === undefined ? {} : { tags: scope.tags }),
       });
       if (await recordMintedKey(budgets, scope.owner, keyIdOf(minted.key), scope.previousKeyIds.length)) {
         return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
@@ -5219,10 +5237,14 @@ async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, reque
   const { thread, requester } = parseSlackHeaders(request.headers);
   const teamOrg = await slackTeamOrg(dependencies, thread.teamId);
   if (body.data.orgId !== undefined && body.data.orgId !== teamOrg) throw agentXError("FORBIDDEN", "this Slack workspace is not connected to that organization");
-  if (!await getSlackBinding(dependencies, teamOrg, thread.teamId, thread.channelId)) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
+  const binding = await getSlackBinding(dependencies, teamOrg, thread.teamId, thread.channelId);
+  if (!binding) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
   const modelAccess = dependencies.modelAccess;
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
-  const developerId = await linkedRequester(dependencies, teamOrg, requester);
+  // Task 29: with agents set up the turn is the bound project's expense, paid by the linked member (or the project when it pays, or when no member is
+  // known) and tagged so; without them it is minted as it always was.
+  const slack = dependencies.agents === undefined ? undefined : await slackWorkPayment(dependencies, teamOrg, binding.projectName, requester);
+  const developerId = slack === undefined ? await linkedRequester(dependencies, teamOrg, requester) : keyMember(slack.payer);
   try {
     // Ruling R50: a turn is admitted like any chat work (which also syncs the proxy, the lazy half of syncBudgets), and its key is
     // capped at what the member and the org have left, never above one turn's allowance. Nothing left is a 402, before any key.
@@ -5233,7 +5255,8 @@ async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, reque
     const minted = await mintKeyHealing(
       { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
       { orgId: teamOrg, ...(developerId === undefined ? {} : { developerId }), purpose: "turn", refId: body.data.turnId,
-        maxBudgetUsd: Math.min(PER_TURN_BUDGET_USD, admitted.maxBudgetUsd), ttlSeconds: TURN_KEY_TTL_SECONDS },
+        maxBudgetUsd: Math.min(PER_TURN_BUDGET_USD, admitted.maxBudgetUsd), ttlSeconds: TURN_KEY_TTL_SECONDS,
+        ...(slack === undefined ? {} : { tags: mintTagsFor({ ...slack, origin: "slack" }) }) },
     );
     return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
   } catch (error) {
@@ -5247,6 +5270,20 @@ async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, reque
 /** What one Slack turn's key may spend, and how long it lasts (a turn holds a queue message for at most 15 minutes). */
 const PER_TURN_BUDGET_USD = 2;
 const TURN_KEY_TTL_SECONDS = 900;
+
+/**
+ * Task 29: who pays for Slack-thread work, which has no task record: the project its channel is bound to is the place, the member the Slack user
+ * signs in as pays (a person starting from Slack), and the project pays instead when its settings say so or when no member is known. The agent is
+ * Rovara Code, which a thread's workers run.
+ */
+async function slackWorkPayment(dependencies: AwsBrokerDependencies, orgId: OrgId, project: string, requester: OperationRequester | undefined): Promise<{ payer: Payer; place: Place; agentId: AgentId }> {
+  const linked = await linkedRequester(dependencies, orgId, requester);
+  const projectPays = (await readProjectAi(dependencies, orgId, project)).projectPays;
+  const payer: Payer = linked === undefined
+    ? { kind: "project", project }
+    : resolvePayer({ origin: "slack", project, projectPays, agentId: ROVARA_CODE_AGENT_ID, startedBy: { developerId: linked } });
+  return { payer, place: { project }, agentId: ROVARA_CODE_AGENT_ID };
+}
 
 /**
  * The member who asked for an operation, when the org knows them: a developer requester, or the developer a Slack user

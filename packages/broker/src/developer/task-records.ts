@@ -31,6 +31,8 @@ import {
   type WorkflowReviewBase,
   type DeveloperSignInMethod,
   type OrgId,
+  type Payer,
+  type Place,
   type WorkOrigin,
 } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
@@ -115,6 +117,12 @@ export interface DeveloperTaskRecord {
   agent?: TaskAgentRef;
   /** Plan 3, Task 15: where the start came from. A draft test run is `test_run`. */
   origin?: WorkOrigin;
+  /**
+   * Plan 3, Task 29: whose budget the task is charged to (`resolvePayer`) and the project it is counted against. Written with the start when agents are
+   * set up; a task without them was paid for by its owner, in the project it names (`paymentOfTask`).
+   */
+  payer?: Payer;
+  place?: Place;
   /** Plan 3, Task 15: the chain step that started the run, for work Plan 4's chains start. */
   chain?: { chainRunId: string; stepId: string };
   /** Plan 3, Task 15: the agent's cap on one run as it was when the run started; absent when the agent set none. */

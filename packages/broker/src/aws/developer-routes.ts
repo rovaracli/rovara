@@ -1277,8 +1277,7 @@ async function startAppRun(
   if (starter === undefined) throw agentXError("NOT_FOUND", "agents are not set up in this deployment");
   const started = await startAgentRun(starter, {
     requestId: input.requestId, orgId: caller.orgId, project: input.project, agent: input.agent, input: input.input, origin: "app",
-    owner: { developerId: caller.developerId }, startedBy: { developerId: caller.developerId },
-    payer: { kind: "member", developerId: caller.developerId }, caller,
+    owner: { developerId: caller.developerId }, startedBy: { developerId: caller.developerId }, caller,
   });
   const taskDeps = developerTaskRouteDependencies(deps, caller);
   return { task: await taskView(taskDeps, await loadOwnedTask(taskDeps, caller, started.taskId), { events: 0, details: false }) };
