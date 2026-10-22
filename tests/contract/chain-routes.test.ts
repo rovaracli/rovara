@@ -1,0 +1,705 @@
+// Plan 4 Task 4: the app's chain routes (`/v1/app/chains*`), through the broker's handler with two orgs. A publish or rollback that makes anything less
+// safe than what runs answers 202 with a confirmation link and changes nothing; deciding it is Plan 3's page (R66).
+import { randomUUID } from "node:crypto";
+import { beforeAll, describe, expect, it } from "vitest";
+import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
+import { getApprovalSubjectHandler, getApproverRule, type ApprovalDependencies, type ApprovalRecord, type ApproverSpec } from "../../packages/broker/src/agents/approvals.js";
+import { AgentStore, type BuiltinSource } from "../../packages/broker/src/agents/store.js";
+import { isChainRoute, STARTER_CHAIN_DEFINITION, type ChainRouteDependencies, type ChainTriggerHooks } from "../../packages/broker/src/chains/routes.js";
+import { ChainStore, chainDigest } from "../../packages/broker/src/chains/store.js";
+import { validateChainForPublish } from "../../packages/broker/src/chains/validate.js";
+import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
+import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
+import type { AgentId } from "../../packages/contracts/src/agent.js";
+import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
+import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
+import { ChainDefinitionSchema, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
+import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
+import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey, ownerBudgetKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
+import { FakeProjectMembers } from "../support/fake-project-members.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { loadSlackBroker } from "../support/slack-broker.js";
+
+const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
+const person = (digit: string, name: string): Developer => ({ developerId: digit.repeat(64), name, provider: "oidc", sessionId: `s-${name.toLowerCase()}` });
+const DANA = person("1", "Dana"); // org admin
+const MAX = person("2", "Max"); // maintainer of web
+const CARL = person("3", "Carl"); // contributor on web
+const EVE = person("4", "Eve"); // a member with no role anywhere
+const VIV = person("5", "Viv"); // viewer on web
+const ARJUN = person("6", "Arjun"); // a member
+const orgResolver: OrgResolver = async (subject) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG);
+const SAFE_OVERLAY: RecipeOverlay = { instructions: "x", sequence: [{ id: "work", name: "Work", kind: "agent", workspace: "none" }] };
+
+beforeAll(async () => { await loadSlackBroker(); });
+
+type Reply = { status: number; body: Record<string, unknown> };
+type Step = ChainDefinitionInput["steps"][number];
+
+const clone = <T,>(value: T): T => structuredClone(value);
+/** The example with changes to some steps by id (merged over the step) and extra steps appended. */
+function variant(changes: Record<string, Partial<Step>> = {}, extra: Step[] = [], tweak: Partial<ChainDefinitionInput> = {}): ChainDefinitionInput {
+  const steps = INVESTIGATE_THEN_FIX.steps.map((step) => (changes[step.id] === undefined ? step : ({ ...step, ...changes[step.id] } as Step)));
+  return { ...clone(INVESTIGATE_THEN_FIX), ...tweak, steps: [...clone(steps), ...extra] };
+}
+/** The example with a review that can go back to fix, at most `bound` times. */
+const looped = (bound: number): ChainDefinitionInput => variant({
+  review: { next: { kind: "branch", choices: [{ id: "again", description: "The change needs work", to: "fix", maxTraversals: bound }, { id: "done", description: "Good to go", to: "$end" }] } } as Partial<Step>,
+});
+
+/** The shipped built-ins, with release 2 of Root-cause analyst: `widen` adds read_write grants, otherwise only its instructions differ. */
+function builtinsWithRelease(release: { rootCause: number; widen: boolean }): BuiltinSource {
+  return {
+    currentVersion: (id) => (id === "root-cause-analyst" ? release.rootCause : currentBuiltinVersion(id as "rovara-code")),
+    recipe: (id, version) => {
+      if (id !== "root-cause-analyst" || version <= currentBuiltinVersion("root-cause-analyst") || version > release.rootCause) return builtinRecipe(id as "rovara-code", version);
+      const v1 = builtinRecipe("root-cause-analyst", 1);
+      return release.widen
+        ? { ...v1, chain: [{ ...v1.chain[0]!, version }], tools: v1.tools.map((grant) => ({ ...grant, access: "read_write" as const })) }
+        : { ...v1, chain: [{ ...v1.chain[0]!, version }], instructions: [{ agentName: "Root-cause analyst", text: `release ${String(version)}` }] };
+    },
+    name: (id) => BUILTIN_AGENTS[id as "rovara-code"].name,
+  };
+}
+
+async function setup(options: { widen?: boolean } = {}) {
+  const release = { rootCause: currentBuiltinVersion("root-cause-analyst"), widen: options.widen === true };
+  const builtins = builtinsWithRelease(release);
+  const triggers = {
+    enabled: new Set<string>(),
+    rechecked: [] as Array<{ orgId: string; chainId: string }>,
+    disabledByCheck: [] as Array<{ triggerId: string; problems: Array<{ path: string; message: string }> }>,
+    archived: [] as string[],
+  };
+  const chainTriggers: ChainTriggerHooks = {
+    hasEnabledTriggers: async (_orgId, chainId) => triggers.enabled.has(chainId),
+    recheckTriggersForTarget: async (orgId, target) => { triggers.rechecked.push({ orgId, chainId: target.chainId }); return triggers.disabledByCheck; },
+    disableTriggersForTarget: async (_orgId, target) => { triggers.archived.push(target.chainId); },
+  };
+  const members = new FakeProjectMembers();
+  const h = await createDeveloperTaskBroker({ orgResolver, register: false, brokerExtra: { agents: { projectMembers: members, builtins, chainTriggers } } });
+  const enroll = async (who: Developer, role: OrgRole) => {
+    h.db.set({ pk: `SESSION#${who.sessionId}`, sk: "META", sessionId: who.sessionId, developerId: who.developerId, amr: who.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
+    h.db.set({ pk: `DEVELOPER#${who.developerId}`, sk: "META", developerId: who.developerId, provider: who.provider, displayName: who.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    await h.orgOf(who);
+    seedMembership(h.db, who.developerId, { orgId: TEST_ORG, role });
+    members.setOrgRole(TEST_ORG, who.developerId, role);
+  };
+  await enroll(DANA, "admin");
+  for (const who of [MAX, CARL, EVE, VIV, ARJUN]) await enroll(who, "member");
+  h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "web"), entityType: "PROJECT_CATALOG", name: "web" });
+  h.db.set({
+    ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, updatedBy: DANA.developerId, updatedAt: "2026-10-21T00:00:00.000Z",
+    guardrails: { ...(await import("../../packages/contracts/src/agent-guardrails.js")).DEFAULT_AGENT_GUARDRAILS, maxAutonomy: "run" },
+  });
+  members.grant(TEST_ORG, "web", MAX.developerId, "maintainer");
+  members.grant(TEST_ORG, "web", CARL.developerId, "contributor");
+  members.grant(TEST_ORG, "web", VIV.developerId, "viewer");
+  // Beside the broker's own stores: the same table, so a test can seed a published version without going through the routes.
+  const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now, builtins });
+  const chains = new ChainStore({ documentClient: h.db, tableName: "state", now: Date.now, agents: store });
+  const deps: ApprovalDependencies & { chains: ChainStore } = {
+    store, chains, projectMembers: members, documentClient: h.db, tableName: "state", now: Date.now, confirmOrigin: "https://cell.example.com",
+    signInStore: new DeveloperSignInStore({ documentClient: h.db, tableName: "signin", now: Date.now }),
+  };
+  const unwrapped = async (reply: Promise<Reply>): Promise<Reply> => {
+    const { requestId: _requestId, ...body } = (await reply).body; // eslint-disable-line @typescript-eslint/no-unused-vars
+    return { status: (await reply).status, body };
+  };
+  const call = (who: Developer, method: string, path: string, body?: Record<string, unknown>): Promise<Reply> =>
+    unwrapped(h.dev(who, method, path, body === undefined ? undefined : { requestId: randomUUID(), ...body }));
+  const create = async (who: Developer, definition: ChainDefinitionInput | undefined = INVESTIGATE_THEN_FIX, extra: Record<string, unknown> = {}) => {
+    const created = await call(who, "POST", "/v1/app/chains", { name: `Chain ${randomUUID().slice(0, 8)}`, ...(definition === undefined ? {} : { definition }), ...extra });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    return (created.body.chain as { chainId: string }).chainId;
+  };
+  const revisionOf = async (who: Developer, chainId: string) => {
+    const draft = await call(who, "GET", `/v1/app/chains/${chainId}/draft`);
+    expect(draft.status, JSON.stringify(draft.body)).toBe(200);
+    return (draft.body.draft as { revision: number }).revision;
+  };
+  const putDraft = async (who: Developer, chainId: string, definition: ChainDefinitionInput): Promise<Reply> =>
+    call(who, "PUT", `/v1/app/chains/${chainId}/draft`, { expectedRevision: await revisionOf(who, chainId), definition });
+  const publish = async (who: Developer, chainId: string): Promise<Reply> =>
+    call(who, "POST", `/v1/app/chains/${chainId}/publish`, { expectedDraftRevision: await revisionOf(who, chainId) });
+  const asCaller = (who: Developer) => ({ orgId: TEST_ORG, developerId: who.developerId, orgRole: (who === DANA ? "admin" : "member") as OrgRole });
+  /** Publishes `definition` as the chain's next version directly in the store, as an earlier confirmed or safe publish would have. */
+  const seed = async (chainId: string, definition: ChainDefinitionInput) => {
+    const draft = (await chains.getDraft(TEST_ORG, chainId))!;
+    await chains.saveDraft({ orgId: TEST_ORG, chainId, definition, expectedRevision: draft.revision, by: MAYA.developerId });
+    const chain = (await chains.get(TEST_ORG, chainId))!;
+    const checked = await validateChainForPublish(deps, asCaller(MAYA), TEST_ORG, ChainDefinitionSchema.parse(definition));
+    expect(checked.problems).toEqual([]);
+    await chains.publish({ orgId: TEST_ORG, chainId, expectedDraftRevision: chain.draftRevision, pinned: checked.pinned, digest: chainDigest(checked.pinned), guardrailsRevision: checked.guardrailsRevision, by: MAYA.developerId });
+  };
+  const state = async (chainId: string) => (await chains.get(TEST_ORG, chainId))!;
+  const approvals = () => h.db.find((item) => item.entityType === "APPROVAL") as unknown as ApprovalRecord[];
+  /** A custom agent of Maya's with one published version. */
+  const customAgent = async (name: string): Promise<AgentId> => {
+    const agent = await store.create({ orgId: TEST_ORG, name, owner: { kind: "member", developerId: MAYA.developerId }, overlay: SAFE_OVERLAY, createdBy: MAYA.developerId });
+    await store.publish({ orgId: TEST_ORG, agentId: agent.agentId, expectedDraftRevision: agent.draftRevision, digest: "d".repeat(64), by: MAYA.developerId });
+    return agent.agentId;
+  };
+  return { ...h, members, store, chains, deps, call, create, revisionOf, putDraft, publish, seed, state, approvals, release, triggers, customAgent, asCaller };
+}
+
+const errorOf = (reply: Reply) => reply.body.error as { code: string; message: string };
+const candidatesOf = (record: ApprovalRecord): string[] => [...(record.approvers as Extract<ApproverSpec, { kind: "rule" }>).candidates];
+const chainOf = (reply: Reply) => reply.body.chain as Record<string, unknown>;
+
+describe("create, draft, publish, show and rollback", () => {
+  it("builds a chain, saves its draft, publishes it, shows it and rolls back", async () => {
+    const { call, putDraft, publish, state } = await setup();
+    const created = await call(MAYA, "POST", "/v1/app/chains", { name: "Investigate then fix", description: "Finds causes", definition: INVESTIGATE_THEN_FIX });
+    expect(created.status).toBe(201);
+    const chain = chainOf(created) as { chainId: string; access: string; draftRevision: number; latestVersion: number; owner: unknown };
+    expect(chain).toMatchObject({ name: "Investigate then fix", access: "manage", draftRevision: 1, latestVersion: 0, status: "active", owner: { kind: "member", developerId: MAYA.developerId } });
+    for (const hidden of ["orgId", "sharesRevision"]) expect(Object.keys(chain)).not.toContain(hidden);
+
+    const draft = await call(MAYA, "GET", `/v1/app/chains/${chain.chainId}/draft`);
+    expect(draft.status).toBe(200);
+    expect(draft.body).toMatchObject({ draft: { revision: 1, definition: { start: "investigate" } }, problems: [] });
+
+    const edited = await putDraft(MAYA, chain.chainId, variant({ investigate: { name: "Find out why" } }));
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+    expect((edited.body.draft as { revision: number }).revision).toBe(2);
+
+    const first = await publish(MAYA, chain.chainId);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body).toMatchObject({ version: { version: 1, publishedBy: MAYA.developerId }, disabledTriggers: [], chain: { currentVersion: 1, latestVersion: 1 } });
+    const pinned = (first.body.version as { definition: { steps: Array<{ kind: string; agent?: { version: unknown } }> } }).definition;
+    expect(pinned.steps.flatMap((step) => (step.kind === "agent" ? [typeof step.agent!.version] : []))).toEqual(["number", "number", "number"]);
+
+    await putDraft(MAYA, chain.chainId, variant({ investigate: { name: "Find out why, quickly" } }));
+    expect((await publish(MAYA, chain.chainId)).status).toBe(200);
+    expect((await state(chain.chainId)).currentVersion).toBe(2);
+
+    const shown = await call(MAYA, "GET", `/v1/app/chains/${chain.chainId}`);
+    expect(shown.status).toBe(200);
+    expect(shown.body).toMatchObject({ chain: { currentVersion: 2, access: "manage" }, current: { version: 2, definition: { start: "investigate" } } });
+
+    const versions = await call(MAYA, "GET", `/v1/app/chains/${chain.chainId}/versions`);
+    expect((versions.body.versions as Array<{ version: number; current: boolean }>).map((entry) => [entry.version, entry.current])).toEqual([[1, false], [2, true]]);
+    const one = await call(MAYA, "GET", `/v1/app/chains/${chain.chainId}/versions/1`);
+    expect(one.body).toMatchObject({ version: { version: 1, current: false, digest: expect.stringMatching(/^[a-f0-9]{64}$/) as string }, definition: { start: "investigate" } });
+    expect((await call(MAYA, "GET", `/v1/app/chains/${chain.chainId}/versions/9`)).status).toBe(404);
+
+    const rolled = await call(MAYA, "POST", `/v1/app/chains/${chain.chainId}/rollback`, { version: 1 });
+    expect(rolled.status, JSON.stringify(rolled.body)).toBe(200);
+    expect(rolled.body).toMatchObject({ chain: { currentVersion: 1, latestVersion: 2 }, disabledTriggers: [] });
+    expect((await state(chain.chainId)).currentVersion).toBe(1);
+  });
+
+  it("makes a starter design when the body has none, and takes an owner and accountable like an agent's", async () => {
+    const { call, create, chains } = await setup();
+    const chainId = await create(MAYA, undefined);
+    expect((await chains.getDraft(TEST_ORG, chainId))!.definition).toEqual(ChainDefinitionSchema.parse(STARTER_CHAIN_DEFINITION));
+    expect((await call(MAYA, "GET", `/v1/app/chains/${chainId}/draft`)).body).toMatchObject({ problems: [] });
+    // A project's chain: the caller must maintain the project, and its accountable maintainer must too.
+    const noAccountable = await call(MAX, "POST", "/v1/app/chains", { name: "Web chain", owner: { kind: "project", project: "web" } });
+    expect(errorOf(noAccountable).message).toMatch(/accountable/);
+    const web = await call(MAX, "POST", "/v1/app/chains", { name: "Web chain", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX.developerId } });
+    expect(web.status, JSON.stringify(web.body)).toBe(201);
+    expect(chainOf(web)).toMatchObject({ owner: { kind: "project", project: "web" }, accountable: { developerId: MAX.developerId }, access: "manage" });
+    const notMaintainer = await call(MAX, "POST", "/v1/app/chains", { name: "Another", owner: { kind: "project", project: "web" }, accountable: { developerId: CARL.developerId } });
+    expect(errorOf(notMaintainer)).toMatchObject({ code: "CONFIG_INVALID", message: "accountable: that person needs to be a maintainer of web" });
+    expect(errorOf(await call(CARL, "POST", "/v1/app/chains", { name: "Carls", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX.developerId } })).code).toBe("FORBIDDEN");
+    expect(errorOf(await call(EVE, "POST", "/v1/app/chains", { name: "For Maya", owner: { kind: "member", developerId: MAYA.developerId } })).message).toBe("Only an org owner or admin can make someone else a chain's owner.");
+  });
+
+  it("refuses bodies with unknown fields, a missing or malformed request id, and a definition that does not parse", async () => {
+    const s = await setup();
+    const { call } = s;
+    const refuse = async (body: Record<string, unknown>) => errorOf(await call(MAYA, "POST", "/v1/app/chains", body));
+    expect((await refuse({ name: "X", sneaky: true })).code).toBe("CONFIG_INVALID");
+    expect(await refuse({ name: "X", definition: { start: "a", steps: [] } })).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringMatching(/^definition\.steps/) as string });
+    expect(await refuse({ name: "X", definition: { ...INVESTIGATE_THEN_FIX, systemPrompt: "x" } })).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringMatching(/^definition/) as string });
+    expect(await refuse({ name: "" })).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await refuse({ name: "bad​name" })).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringMatching(/^name: /) as string });
+    expect((await s.dev(MAYA, "POST", "/v1/app/chains", { name: "X" })).status).toBe(400);
+    expect((await s.dev(MAYA, "POST", "/v1/app/chains", { requestId: "nope", name: "X" })).status).toBe(400);
+  });
+
+  it("answers a repeat of the same request with the same chain, once", async () => {
+    const s = await setup();
+    const body = { requestId: randomUUID(), name: "Once", definition: INVESTIGATE_THEN_FIX };
+    const first = await s.dev(MAYA, "POST", "/v1/app/chains", body);
+    const again = await s.dev(MAYA, "POST", "/v1/app/chains", body);
+    expect(first.status).toBe(201);
+    expect(again.status).toBe(201);
+    expect((again.body.chain as { chainId: string }).chainId).toBe((first.body.chain as { chainId: string }).chainId);
+    expect(await s.chains.list(TEST_ORG)).toHaveLength(1);
+    const other = await s.dev(MAYA, "POST", "/v1/app/chains", { ...body, name: "Different" });
+    expect(other.status).toBe(400);
+    expect((other.body.error as { message: string }).message).toBe("requestId: this request ID was already used for a different request");
+  });
+
+  it("answers a repeated publish and rollback with what the first one did", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    const publishBody = { requestId: randomUUID(), expectedDraftRevision: 1 };
+    const first = await s.dev(MAYA, "POST", `/v1/app/chains/${chainId}/publish`, publishBody);
+    const again = await s.dev(MAYA, "POST", `/v1/app/chains/${chainId}/publish`, publishBody);
+    expect(first.status).toBe(200);
+    expect(again.status).toBe(200);
+    expect((again.body.version as { version: number }).version).toBe(1);
+    expect(await s.chains.listVersions(TEST_ORG, chainId)).toHaveLength(1);
+    await s.putDraft(MAYA, chainId, variant({ investigate: { name: "second" } }));
+    await s.publish(MAYA, chainId);
+    const rollbackBody = { requestId: randomUUID(), version: 1 };
+    const rolled = await s.dev(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, rollbackBody);
+    const rolledAgain = await s.dev(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, rollbackBody);
+    expect(rolled.status).toBe(200);
+    expect(rolledAgain.status).toBe(200);
+    expect((rolledAgain.body.chain as { currentVersion: number }).currentVersion).toBe(1);
+  });
+});
+
+describe("who can see and change a chain", () => {
+  it("answers 404 for a member without access, for another org and for an id that is not one, and 403 for a sharee who can only view", async () => {
+    const { call, create, chains } = await setup();
+    const chainId = await create(MAYA);
+    const name = (await chains.get(TEST_ORG, chainId))!.name;
+    expect(errorOf(await call(EVE, "GET", `/v1/app/chains/${chainId}`))).toMatchObject({ code: "NOT_FOUND", message: "no chain has that ID" });
+    expect((await call(OMAR, "GET", `/v1/app/chains/${chainId}`)).status).toBe(404);
+    expect((await call(OMAR, "GET", `/v1/app/chains/${chainId}/draft`)).status).toBe(404);
+    expect((await call(MAYA, "GET", "/v1/app/chains/not-a-chain")).status).toBe(404);
+    expect((await call(MAYA, "GET", "/v1/app/chains/chn_zzzzzzzzzzzzzzzzzzzz")).status).toBe(404);
+    expect((await call(MAYA, "GET", "/v1/app/chain-runs")).status).toBe(404);
+
+    const shared = await call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "view" }] });
+    expect(shared.status, JSON.stringify(shared.body)).toBe(200);
+    expect((await call(EVE, "GET", `/v1/app/chains/${chainId}`)).body).toMatchObject({ chain: { access: "view" } });
+    const put = await call(EVE, "PUT", `/v1/app/chains/${chainId}/draft`, { expectedRevision: 1, definition: INVESTIGATE_THEN_FIX });
+    expect(put.status).toBe(403);
+    expect(errorOf(put).message).toBe(`You can view ${name}; edit needs its owner or an org admin to give you edit access.`);
+    expect((await call(EVE, "GET", `/v1/app/chains/${chainId}/draft`)).status).toBe(403);
+    expect((await call(EVE, "POST", `/v1/app/chains/${chainId}/publish`, { expectedDraftRevision: 1 })).status).toBe(403);
+    expect((await call(EVE, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 })).status).toBe(403);
+    // A viewer can read versions.
+    expect((await call(EVE, "GET", `/v1/app/chains/${chainId}/versions`)).status).toBe(200);
+  });
+
+  it("lists the chains a caller can see by scope", async () => {
+    const { call, create } = await setup();
+    const mine = await create(MAYA);
+    const theirs = await create(EVE);
+    await call(EVE, "PUT", `/v1/app/chains/${theirs}/shares`, { shares: [{ principal: { kind: "member", developerId: MAYA.developerId }, level: "use" }] });
+    const web = await call(MAX, "POST", "/v1/app/chains", { name: "Web chain", definition: INVESTIGATE_THEN_FIX, owner: { kind: "project", project: "web" }, accountable: { developerId: MAX.developerId } });
+    const ids = async (who: Developer, query: string) => ((await call(who, "GET", `/v1/app/chains${query}`)).body.chains as Array<{ chainId: string }>).map((entry) => entry.chainId).sort();
+    expect(await ids(MAYA, "")).toEqual([mine, theirs].sort());
+    expect(await ids(MAYA, "?scope=mine")).toEqual([mine]);
+    expect(await ids(MAYA, "?scope=shared")).toEqual([theirs]);
+    expect(await ids(CARL, "?project=web")).toEqual([(chainOf(web).chainId as string)]);
+    expect(await ids(OMAR, "")).toEqual([]);
+    expect(errorOf(await call(MAYA, "GET", "/v1/app/chains?scope=nope")).code).toBe("CONFIG_INVALID");
+    const summary = ((await call(MAYA, "GET", "/v1/app/chains?scope=mine")).body.chains as Array<Record<string, unknown>>)[0]!;
+    expect(Object.keys(summary).sort()).toEqual(["access", "chainId", "description", "name", "owner", "status"]);
+  });
+
+  it("draft edits need edit access, and a stale revision is the chain conflict", async () => {
+    const { call, create, putDraft } = await setup();
+    const chainId = await create(MAYA);
+    await call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "edit" }] });
+    expect((await putDraft(EVE, chainId, variant({ investigate: { name: "By Eve" } }))).status).toBe(200);
+    const stale = await call(MAYA, "PUT", `/v1/app/chains/${chainId}/draft`, { expectedRevision: 1, definition: INVESTIGATE_THEN_FIX });
+    expect(stale.status).toBe(409);
+    expect(errorOf(stale)).toEqual({ code: "CHAIN_REVISION_CONFLICT", message: "Someone else changed this chain's draft. Reload it and make your change again." });
+  });
+
+  it("shows the problems of a draft whose design has an unbounded loop, and refuses to publish it with the loop text", async () => {
+    const { call, create, publish, putDraft, state } = await setup();
+    const chainId = await create(MAYA);
+    const loop = variant({ review: { next: { kind: "branch", choices: [{ id: "again", description: "The change needs work", to: "fix" }, { id: "done", description: "Good", to: "$end" }] } } as Partial<Step> });
+    expect((await putDraft(MAYA, chainId, loop)).status).toBe(200);
+    const draft = await call(MAYA, "GET", `/v1/app/chains/${chainId}/draft`);
+    expect(draft.body.problems).toEqual([{ path: expect.stringMatching(/^steps\.\d$/) as string, message: expect.stringMatching(/ is in a loop with no limit; set maxTraversals on the edge that goes back$/) as string }]);
+    const refused = await publish(MAYA, chainId);
+    expect(refused.status).toBe(400);
+    expect(errorOf(refused)).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringMatching(/^steps\.\d: \w+ is in a loop with no limit; set maxTraversals on the edge that goes back$/) as string });
+    expect((await state(chainId)).latestVersion).toBe(0);
+  });
+
+  it("refuses to publish a design whose agent the caller cannot use, as an unknown agent", async () => {
+    const { call, create, customAgent, state } = await setup();
+    const helper = await customAgent("Helper");
+    const chainId = await create(EVE, { start: "a", steps: [{ kind: "agent", id: "a", name: "Do", agent: { agentId: helper, version: "current" }, next: { kind: "end" } }] });
+    const refused = await call(EVE, "POST", `/v1/app/chains/${chainId}/publish`, { expectedDraftRevision: 1 });
+    expect(refused.status).toBe(400);
+    expect(errorOf(refused).message).toBe("steps.0.agent: unknown agent");
+    expect((await state(chainId)).latestVersion).toBe(0);
+  });
+
+  it("publishes and rolls back a chain with an enabled trigger only for someone who manages it", async () => {
+    const { call, create, putDraft, publish, triggers, state } = await setup();
+    const chainId = await create(MAYA);
+    expect((await publish(MAYA, chainId)).status).toBe(200);
+    await call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "edit" }] });
+    await putDraft(MAYA, chainId, variant({ investigate: { name: "second" } }));
+    triggers.enabled.add(chainId);
+    const refused = await publish(EVE, chainId);
+    expect(refused.status).toBe(403);
+    expect(errorOf(refused)).toMatchObject({ code: "FORBIDDEN", message: expect.stringMatching(/triggers/) as string });
+    expect((await call(EVE, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 })).status).toBe(403);
+    expect((await state(chainId)).latestVersion).toBe(1);
+    // The owner still can.
+    expect((await publish(MAYA, chainId)).status).toBe(200);
+    triggers.enabled.delete(chainId);
+    await putDraft(MAYA, chainId, variant({ investigate: { name: "third" } }));
+    expect((await publish(EVE, chainId)).status).toBe(200);
+    triggers.enabled.add(chainId);
+    expect((await call(EVE, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 })).status).toBe(403);
+    triggers.enabled.delete(chainId);
+    expect((await call(EVE, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 })).status).toBe(200);
+  });
+
+  it("answers a publish and a rollback with the triggers the check turned off", async () => {
+    const { call, create, putDraft, publish, triggers } = await setup();
+    const chainId = await create(MAYA);
+    triggers.disabledByCheck = [{ triggerId: "ctr_cccccccccccccccccccc", problems: [{ path: "limits.maxRunUsd", message: "set a run limit and a monthly budget before adding an event or schedule trigger" }] }];
+    const published = await publish(MAYA, chainId);
+    expect(published.body.disabledTriggers).toEqual(triggers.disabledByCheck);
+    await putDraft(MAYA, chainId, variant({ investigate: { name: "second" } }));
+    await publish(MAYA, chainId);
+    const rolled = await call(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 });
+    expect(rolled.body.disabledTriggers).toEqual(triggers.disabledByCheck);
+    expect(triggers.rechecked).toEqual([chainId, chainId, chainId].map((id) => ({ orgId: TEST_ORG, chainId: id })));
+  });
+});
+
+describe("archive, owner and shares", () => {
+  it("archives and unarchives for a manager only, and archiving turns the triggers off", async () => {
+    const { call, create, triggers, state } = await setup();
+    const chainId = await create(MAYA);
+    await call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "edit" }] });
+    expect((await call(EVE, "POST", `/v1/app/chains/${chainId}/archive`, {})).status).toBe(403);
+    expect((await call(CARL, "POST", `/v1/app/chains/${chainId}/archive`, {})).status).toBe(404);
+    const archived = await call(MAYA, "POST", `/v1/app/chains/${chainId}/archive`, {});
+    expect(archived.status).toBe(200);
+    expect(chainOf(archived)).toMatchObject({ status: "archived" });
+    expect(triggers.archived).toEqual([chainId]);
+    expect((await state(chainId)).status).toBe("archived");
+    // An archived chain is read-only for an editor.
+    expect((await call(EVE, "PUT", `/v1/app/chains/${chainId}/draft`, { expectedRevision: 1, definition: INVESTIGATE_THEN_FIX })).status).toBe(403);
+    expect((await call(MAYA, "POST", `/v1/app/chains/${chainId}/unarchive`, {})).status).toBe(200);
+    expect((await state(chainId)).status).toBe("active");
+    expect(triggers.archived).toEqual([chainId]);
+  });
+
+  it("refuses a share save from anyone who does not manage the chain, and saves one from a manager", async () => {
+    const { call, create, chains } = await setup();
+    const chainId = await create(MAYA);
+    const share = (developerId: string, level = "view") => ({ shares: [{ principal: { kind: "member", developerId }, level }] });
+    // A person who cannot see it at all, and an editor and a viewer who can: only the first is told it is not found.
+    expect((await call(EVE, "PUT", `/v1/app/chains/${chainId}/shares`, share(EVE.developerId))).status).toBe(404);
+    expect((await call(EVE, "GET", `/v1/app/chains/${chainId}/shares`)).status).toBe(404);
+    await call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, share(CARL.developerId, "edit"));
+    const refused = await call(CARL, "PUT", `/v1/app/chains/${chainId}/shares`, share(CARL.developerId, "edit"));
+    expect(refused.status).toBe(403);
+    expect(errorOf(refused).message).toBe(`You can edit ${(await chains.get(TEST_ORG, chainId))!.name}; manage needs its owner or an org admin.`);
+    expect((await call(CARL, "GET", `/v1/app/chains/${chainId}/shares`)).status).toBe(403);
+    expect(await chains.listShares(TEST_ORG, chainId)).toHaveLength(1);
+    const listed = await call(MAYA, "GET", `/v1/app/chains/${chainId}/shares`);
+    expect(listed.body.shares).toMatchObject([{ principal: { kind: "member", developerId: CARL.developerId }, level: "edit", grantedBy: MAYA.developerId }]);
+    // An org admin manages every chain.
+    expect((await call(DANA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [] })).body.shares).toEqual([]);
+    expect(await chains.listShares(TEST_ORG, chainId)).toEqual([]);
+  });
+
+  it("refuses shares for an unknown person or project, and too many, as the share rules do", async () => {
+    const { call, create } = await setup();
+    const chainId = await create(MAYA);
+    expect(errorOf(await call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [{ principal: { kind: "project", project: "nope" }, level: "view" }] })).message).toBe("shares.0: no project called nope in your company");
+    expect(errorOf(await call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: "all" })).code).toBe("CONFIG_INVALID");
+  });
+
+  it("moves a chain to another owner for a manager the owner rules allow", async () => {
+    const { call, create, state } = await setup();
+    const chainId = await create(MAYA);
+    const refused = await call(MAYA, "PUT", `/v1/app/chains/${chainId}/owner`, { owner: { kind: "member", developerId: EVE.developerId } });
+    expect(errorOf(refused).message).toBe("Only an org owner or admin can hand a chain to another member.");
+    expect((await call(CARL, "PUT", `/v1/app/chains/${chainId}/owner`, { owner: { kind: "member", developerId: CARL.developerId } })).status).toBe(404);
+    const moved = await call(DANA, "PUT", `/v1/app/chains/${chainId}/owner`, { owner: { kind: "member", developerId: EVE.developerId } });
+    expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+    expect(chainOf(moved)).toMatchObject({ owner: { kind: "member", developerId: EVE.developerId } });
+    expect((await state(chainId)).owner).toEqual({ kind: "member", developerId: EVE.developerId });
+    const toProject = await call(DANA, "PUT", `/v1/app/chains/${chainId}/owner`, { owner: { kind: "project", project: "web" }, accountable: { developerId: MAX.developerId } });
+    expect(chainOf(toProject)).toMatchObject({ owner: { kind: "project", project: "web" }, accountable: { developerId: MAX.developerId } });
+    expect(errorOf(await call(DANA, "PUT", `/v1/app/chains/${chainId}/owner`, { owner: { kind: "project", project: "web" }, accountable: { developerId: CARL.developerId } })).message).toBe("accountable: that person needs to be a maintainer of web");
+  });
+});
+
+describe("a publish or rollback that makes something less safe", () => {
+  const publishedBaseline = async (definition: ChainDefinitionInput = INVESTIGATE_THEN_FIX, options: { widen?: boolean } = {}) => {
+    const s = await setup(options);
+    const chainId = await s.create(MAYA);
+    await s.seed(chainId, definition);
+    return { ...s, chainId };
+  };
+
+  const approval = (s: Awaited<ReturnType<typeof publishedBaseline>>) => {
+    const [record] = s.approvals();
+    expect(s.approvals()).toHaveLength(1);
+    return record!;
+  };
+
+  const lessSafe: Array<[string, ChainDefinitionInput, ChainDefinitionInput, string]> = [
+    ["removes a gate", INVESTIGATE_THEN_FIX, {
+      ...clone(INVESTIGATE_THEN_FIX),
+      steps: INVESTIGATE_THEN_FIX.steps.filter((step) => step.id !== "approve_fix").map((step) => (step.id === "investigate"
+        ? { ...step, next: { kind: "branch", default: "no_fix", choices: [{ id: "fix", description: "The cause is in our code and a code change fixes it", to: "fix" }, { id: "no_fix", description: "Not a code problem, or not enough evidence", to: "$end" }] } } as Step
+        : step)),
+    }, 'removes the gate "approve_fix"'],
+    ["adds Arjun to a gate's approvers", INVESTIGATE_THEN_FIX, variant({ approve_fix: { approvers: [{ kind: "starter" }, { kind: "project_maintainers" }, { kind: "members", developerIds: [ARJUN.developerId] }] } as Partial<Step> }), "approve_fix can now be decided by named people"],
+    ["raises maxRunUsd from 30 to 60", INVESTIGATE_THEN_FIX, variant({}, [], { limits: { maxRunUsd: 60 } }), "raises the most one run may cost, from $30 to $60"],
+    ["raises a maxTraversals from 2 to 4", looped(2), looped(4), "review may now go back to fix up to 4 times, up from 2"],
+    ["adds a branch choice from investigate straight to fix", INVESTIGATE_THEN_FIX, variant({
+      investigate: { next: { kind: "branch", default: "no_fix", choices: [{ id: "fix", description: "The cause is in our code and a code change fixes it", to: "approve_fix" }, { id: "no_fix", description: "Not a code problem, or not enough evidence", to: "$end" }, { id: "quick", description: "An obvious fix", to: "fix" }] } } as Partial<Step>,
+    }), 'fix can now be reached without passing "approve_fix"'],
+    ["appends a deploy step after review", INVESTIGATE_THEN_FIX, variant({ review: { next: { kind: "go", to: "deploy" } } as Partial<Step> }, [{ kind: "agent", id: "deploy", name: "Deploy", agent: { agentId: "code-reviewer", version: "current" }, next: { kind: "end" } }]), "adds step deploy (Code reviewer version 1)"],
+    ["raises retries from 0 to 2", INVESTIGATE_THEN_FIX, variant({ fix: { retries: 2 } as Partial<Step> }), "fix may now retry 2 times"],
+    ["raises timeoutMinutes from 120 to 600", INVESTIGATE_THEN_FIX, variant({ fix: { timeoutMinutes: 600 } as Partial<Step> }), "fix may now run 600 minutes"],
+    ["widens fix's handoff to all", INVESTIGATE_THEN_FIX, variant({ fix: { handoff: "all" } as Partial<Step> }), "fix now receives every earlier report"],
+  ];
+
+  it.each(lessSafe)("a publish that %s answers 202 with a link and the change in words, and publishes nothing", async (_name, before, after, change) => {
+    const s = await publishedBaseline(before);
+    expect((await s.putDraft(MAYA, s.chainId, after)).status).toBe(200);
+    const asked = await s.publish(MAYA, s.chainId);
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    expect(asked.body).toMatchObject({ status: "NEEDS_CONFIRMATION" });
+    expect(asked.body.changes).toContain(change);
+    const record = approval(s);
+    expect(asked.body.confirmUrl).toBe(`https://abc123.execute-api.us-east-1.amazonaws.com/v1/app/approve/${record.approvalId}`);
+    expect(record).toMatchObject({ kind: "change", status: "PENDING", requestedBy: MAYA.developerId, subject: { kind: "chain_publish", chainId: s.chainId, draftRevision: 3, expectedCurrentVersion: 1 }, approvers: { kind: "rule", rule: "chain_publish" } });
+    expect((await s.state(s.chainId)).currentVersion).toBe(1);
+    expect(await s.chains.listVersions(TEST_ORG, s.chainId)).toHaveLength(1);
+  });
+
+  it("swapping an agent for a custom one answers 202 naming both, and publishes nothing", async () => {
+    const s = await publishedBaseline();
+    const helper = await s.customAgent("Helper");
+    await s.putDraft(MAYA, s.chainId, variant({ review: { agent: { agentId: helper, version: "current" } } as Partial<Step> }));
+    const asked = await s.publish(MAYA, s.chainId);
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    expect(asked.body.changes).toContain("review now uses Helper version 1 instead of Code reviewer version 1");
+    expect((await s.state(s.chainId)).currentVersion).toBe(1);
+  });
+
+  it("re-pinning to a release that adds a read_write grant answers 202, and one that only edits instructions publishes at once", async () => {
+    for (const widen of [true, false]) {
+      const s = await publishedBaseline(INVESTIGATE_THEN_FIX, { widen });
+      // Release 2 comes out and the org adopts it: the draft's "current" pins it now.
+      s.release.rootCause = 2;
+      await s.store.adoptBuiltinVersion({ orgId: TEST_ORG, agentId: "root-cause-analyst", version: 2, expectedPinnedVersion: 1, by: DANA.developerId });
+      await s.putDraft(MAYA, s.chainId, variant({ investigate: { name: "Find the cause, again" } }));
+      const reply = await s.publish(MAYA, s.chainId);
+      if (widen) {
+        expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+        const changes = reply.body.changes as string[];
+        expect(changes[0]).toBe("investigate now uses Root-cause analyst version 2 instead of Root-cause analyst version 1");
+        expect(changes.some((change) => change.startsWith("investigate: "))).toBe(true);
+        expect((await s.state(s.chainId)).currentVersion).toBe(1);
+      } else {
+        expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+        expect((await s.state(s.chainId)).currentVersion).toBe(2);
+        expect((reply.body.version as { definition: { steps: Array<{ id: string; agent?: { version: number } }> } }).definition.steps[0]!.agent!.version).toBe(2);
+      }
+    }
+  });
+
+  it("publishes at once an edit of instructions, a lower run limit and narrower approvers, and a first publish", async () => {
+    const s = await publishedBaseline();
+    for (const [definition, version] of [
+      [variant({ fix: { instructions: "Fix it, and say what you changed." } as Partial<Step> }), 2],
+      [variant({ fix: { instructions: "Fix it, and say what you changed." } as Partial<Step> }, [], { limits: { maxRunUsd: 10 } }), 3],
+      [variant({ fix: { instructions: "Fix it, and say what you changed." }, approve_fix: { approvers: [{ kind: "project_maintainers" }] } as Partial<Step> }, [], { limits: { maxRunUsd: 10 } }), 4],
+    ] as Array<[ChainDefinitionInput, number]>) {
+      expect((await s.putDraft(MAYA, s.chainId, definition)).status).toBe(200);
+      const reply = await s.publish(MAYA, s.chainId);
+      expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+      expect((reply.body.version as { version: number }).version).toBe(version);
+    }
+    expect(s.approvals()).toEqual([]);
+    const first = await s.create(MAYA);
+    expect((await s.publish(MAYA, first)).status).toBe(200);
+  });
+
+  it("answers a retried publish after the page confirmed it with that version, not a new request", async () => {
+    const s = await publishedBaseline();
+    await s.putDraft(MAYA, s.chainId, variant({}, [], { limits: { maxRunUsd: 60 } }));
+    const body = { requestId: randomUUID(), expectedDraftRevision: 3 };
+    const asked = await s.dev(MAYA, "POST", `/v1/app/chains/${s.chainId}/publish`, body);
+    const again = await s.dev(MAYA, "POST", `/v1/app/chains/${s.chainId}/publish`, body);
+    expect(again.status).toBe(202);
+    expect(again.body.confirmUrl).toBe(asked.body.confirmUrl);
+    expect(s.approvals()).toHaveLength(1);
+  });
+
+  it("lists the owner and the org's admins as the people asked, and stores the digest and revision that were shown", async () => {
+    const s = await publishedBaseline();
+    await s.putDraft(MAYA, s.chainId, variant({}, [], { limits: { maxRunUsd: 60 } }));
+    await s.publish(MAYA, s.chainId);
+    const record = approval(s);
+    expect(candidatesOf(record).sort()).toEqual([DANA.developerId, MAYA.developerId].sort());
+    const draft = (await s.chains.getDraft(TEST_ORG, s.chainId))!;
+    const checked = await validateChainForPublish(s.deps, s.asCaller(MAYA), TEST_ORG, draft.definition);
+    expect((record.subject as { digest: string }).digest).toBe(chainDigest(checked.pinned));
+  });
+
+  it("a chain manager confirming on the page with a fresh session publishes exactly that digest; a token or an unfresh proof decides nothing", async () => {
+    const s = await publishedBaseline();
+    await s.putDraft(MAYA, s.chainId, variant({}, [], { limits: { maxRunUsd: 60 } }));
+    const asked = await s.publish(MAYA, s.chainId);
+    expect(asked.status).toBe(202);
+    const record = approval(s);
+    const target = { orgId: TEST_ORG, approvalId: record.approvalId };
+    const kind = approvalDecideKind(s.deps);
+    // A CLI or MCP token (any proof but a fresh sign-in) is refused, and nothing is published.
+    const none = await kind.decide({ ...target, developerId: DANA.developerId }, "approve", { kind: "none" }).then(() => undefined, (thrown: Error) => thrown);
+    expect(none?.message).toMatch(/^FORBIDDEN: Decisions are made on the confirmation page/);
+    const viaRoute = await s.call(DANA, "POST", `/v1/app/approvals/${record.approvalId}/decide`, { decision: "APPROVE" });
+    expect([401, 403, 404]).toContain(viaRoute.status);
+    expect((await s.state(s.chainId)).currentVersion).toBe(1);
+    // A person who does not manage the chain cannot decide it, even with a fresh session; the page says who can.
+    const proof = { kind: "fresh_sign_in" as const, method: "email_code" as const, authTime: new Date().toISOString(), sessionRef: "a".repeat(64) };
+    expect(await kind.inspect({ ...target, developerId: EVE.developerId })).toMatchObject({ status: "forbidden", who: "the chain's owner, a maintainer of its project, or an organization owner or admin" });
+    const shown = await kind.inspect({ ...target, developerId: DANA.developerId });
+    expect(shown).toMatchObject({ status: "open", view: { title: "Publish a chain", paragraphs: ["raises the most one run may cost, from $30 to $60"] } });
+    const outcome = await kind.decide({ ...target, developerId: DANA.developerId }, "approve", proof);
+    expect(outcome.message).toMatch(/Approved/);
+    expect((await s.state(s.chainId)).currentVersion).toBe(2);
+    const version = (await s.chains.getVersion(TEST_ORG, s.chainId, 2))!;
+    expect(version.publishedBy).toBe(DANA.developerId);
+    expect(version.digest).toBe((record.subject as { digest: string }).digest);
+    expect(version.definition.limits).toEqual({ maxRunUsd: 60 });
+    expect(s.triggers.rechecked.at(-1)).toEqual({ orgId: TEST_ORG, chainId: s.chainId });
+    expect(s.db.get(approvalKey(TEST_ORG, record.approvalId))?.["status"]).toBe("APPROVED_DONE");
+  });
+
+  it("the rule lets the chain's owner, a maintainer of its project and an org admin decide, and nobody else", async () => {
+    const s = await publishedBaseline();
+    await s.putDraft(MAYA, s.chainId, variant({}, [], { limits: { maxRunUsd: 60 } }));
+    await s.publish(MAYA, s.chainId);
+    const record = approval(s);
+    const rule = getApproverRule("chain_publish")!;
+    expect(await rule(s.deps, record, s.asCaller(MAYA))).toBe(true);
+    expect(await rule(s.deps, record, s.asCaller(DANA))).toBe(true);
+    expect(await rule(s.deps, record, s.asCaller(EVE))).toBe(false);
+    expect(await rule(s.deps, record, s.asCaller(CARL))).toBe(false);
+    expect(await rule(s.deps, record, { orgId: ORG_B, developerId: DANA.developerId, orgRole: "admin" })).toBe(false);
+    // Read live: an owner who was handed the chain over to someone else no longer decides.
+    await s.chains.setOwner(TEST_ORG, s.chainId, { kind: "member", developerId: EVE.developerId }, DANA.developerId);
+    expect(await rule(s.deps, record, s.asCaller(MAYA))).toBe(false);
+    expect(await rule(s.deps, record, s.asCaller(EVE))).toBe(true);
+  });
+
+  it("refuses to publish a draft that was edited after the request, with the exact words, and one whose baseline moved", async () => {
+    const s = await publishedBaseline();
+    await s.putDraft(MAYA, s.chainId, variant({}, [], { limits: { maxRunUsd: 60 } }));
+    await s.publish(MAYA, s.chainId);
+    const record = approval(s);
+    const handler = getApprovalSubjectHandler("chain_publish")!;
+    const failure = (thrown: Error | undefined) => thrown?.message;
+    await s.putDraft(MAYA, s.chainId, variant({}, [], { limits: { maxRunUsd: 90 } }));
+    expect(failure(await handler(s.deps, { ...record, decidedBy: DANA.developerId }).then(() => undefined, (thrown: Error) => thrown))).toBe("CHAIN_REVISION_CONFLICT: The draft changed after this was asked. Publish again.");
+    // Back to the draft that was asked about, with a published version that landed since.
+    await s.putDraft(MAYA, s.chainId, variant({}, [], { limits: { maxRunUsd: 60 } }));
+    expect(await s.chains.listVersions(TEST_ORG, s.chainId)).toHaveLength(1);
+    const again = await s.publish(MAYA, s.chainId);
+    expect(again.status).toBe(202);
+    await s.seed(s.chainId, variant({ investigate: { name: "landed meanwhile" } }));
+    const [, second] = s.approvals();
+    expect(failure(await handler(s.deps, { ...second!, decidedBy: DANA.developerId }).then(() => undefined, (thrown: Error) => thrown))).toBe("CHAIN_REVISION_CONFLICT: The published version changed after this was asked. Publish again.");
+    expect((await s.state(s.chainId)).currentVersion).toBe(2);
+  });
+
+  it("refuses to apply a change nobody has decided, and one on a chain archived since", async () => {
+    const s = await publishedBaseline();
+    await s.putDraft(MAYA, s.chainId, variant({}, [], { limits: { maxRunUsd: 60 } }));
+    await s.publish(MAYA, s.chainId);
+    const record = approval(s);
+    for (const kind of ["chain_publish", "chain_rollback"] as const) {
+      const error = await getApprovalSubjectHandler(kind)!(s.deps, record).then(() => undefined, (thrown: Error) => thrown);
+      expect(error?.message, kind).toMatch(/not been decided/);
+    }
+    await s.call(MAYA, "POST", `/v1/app/chains/${s.chainId}/archive`, {});
+    const archived = await getApprovalSubjectHandler("chain_publish")!(s.deps, { ...record, decidedBy: DANA.developerId }).then(() => undefined, (thrown: Error) => thrown);
+    expect(archived?.message).toMatch(/^CHAIN_UNAVAILABLE: .* is archived/);
+    // And a change that needs a person is not asked for on an archived chain.
+    const refused = await s.publish(MAYA, s.chainId);
+    expect(refused.status).toBe(409);
+    expect(errorOf(refused)).toMatchObject({ code: "CHAIN_UNAVAILABLE", message: expect.stringMatching(/Unarchive it first/) as string });
+    expect(s.approvals()).toHaveLength(1);
+  });
+
+  it("a less-safe rollback answers 202, changes nothing until a person confirms, and then makes the old version current", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    const withoutGate = {
+      ...clone(INVESTIGATE_THEN_FIX),
+      steps: INVESTIGATE_THEN_FIX.steps.filter((step) => step.id !== "approve_fix").map((step) => (step.id === "investigate"
+        ? { ...step, next: { kind: "branch", default: "no_fix", choices: [{ id: "fix", description: "The cause is in our code and a code change fixes it", to: "fix" }, { id: "no_fix", description: "Not a code problem", to: "$end" }] } } as Step
+        : step)),
+    } as ChainDefinitionInput;
+    await s.seed(chainId, withoutGate);
+    await s.seed(chainId, INVESTIGATE_THEN_FIX);
+    const asked = await s.call(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    expect(asked.body).toMatchObject({ status: "NEEDS_CONFIRMATION", changes: ['removes the gate "approve_fix"'] });
+    expect((await s.state(chainId)).currentVersion).toBe(2);
+    const record = s.approvals()[0]!;
+    expect(record).toMatchObject({ subject: { kind: "chain_rollback", chainId, version: 1, expectedCurrentVersion: 2 }, approvers: { kind: "rule", rule: "chain_publish" } });
+    await getApprovalSubjectHandler("chain_rollback")!(s.deps, { ...record, decidedBy: DANA.developerId });
+    expect((await s.state(chainId)).currentVersion).toBe(1);
+    expect(s.triggers.rechecked.at(-1)).toEqual({ orgId: TEST_ORG, chainId });
+    // Rolling forward again adds a gate, which is safe.
+    expect((await s.call(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 2 })).status).toBe(200);
+  });
+
+  it("refuses a confirmed rollback when the published version moved since, and rolling back to the current version", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    await s.seed(chainId, variant({ approve_fix: { approvers: [{ kind: "project_maintainers" }] } as Partial<Step> }));
+    await s.seed(chainId, variant({}, [], { limits: { maxRunUsd: 60 } }));
+    expect(errorOf(await s.call(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 2 })).message).toBe("version: 2 is already the current version");
+    expect(errorOf(await s.call(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 7 })).message).toMatch(/has no version 7$/);
+    const empty = await s.create(MAYA);
+    expect(errorOf(await s.call(MAYA, "POST", `/v1/app/chains/${empty}/rollback`, { version: 1 })).code).toBe("CONFIG_INVALID");
+  });
+
+  it("rollback checks the target's agents again: one archived since is refused", async () => {
+    const s = await setup();
+    const helper = await s.customAgent("Helper");
+    const chainId = await s.create(MAYA, { start: "a", steps: [{ kind: "agent", id: "a", name: "Do", agent: { agentId: helper, version: "current" }, next: { kind: "end" } }] });
+    await s.seed(chainId, { start: "a", steps: [{ kind: "agent", id: "a", name: "Do", agent: { agentId: helper, version: "current" }, next: { kind: "end" } }] });
+    await s.seed(chainId, variant());
+    await s.store.archive(TEST_ORG, helper, MAYA.developerId);
+    const refused = await s.call(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 });
+    expect(refused.status).toBe(409);
+    expect(errorOf(refused)).toMatchObject({ code: "CHAIN_REVISION_CONFLICT", message: "An agent this chain uses changed while it was being rolled back. Roll back again." });
+    expect((await s.state(chainId)).currentVersion).toBe(2);
+  });
+});
+
+describe("how the broker wires chains", () => {
+  it("recognises the chain paths", () => {
+    for (const path of ["/v1/app/chains", "/v1/app/chains/chn_aaaaaaaaaaaaaaaaaaaa/draft", "/v1/app/chain-runs", "/v1/app/chain-runs/crn_aaaaaaaaaaaaaaaaaaaa"]) expect(isChainRoute(path), path).toBe(true);
+    for (const path of ["/v1/app/chain", "/v1/app/agents", "/v1/app/chainsaw"]) expect(isChainRoute(path), path).toBe(false);
+  });
+
+  it("builds the chain store from the agent store, so a rebuilt owner total holds chain budgets", async () => {
+    const h = await createDeveloperTaskBroker({ orgResolver, register: false, brokerExtra: { agents: { projectMembers: new FakeProjectMembers() } } });
+    const broker = await loadSlackBroker() as unknown as { createAgentRouteDependencies(input: never): ChainRouteDependencies | undefined };
+    const deps = broker.createAgentRouteDependencies(h.brokerInput as never)!;
+    expect(deps.chains).toBeInstanceOf(ChainStore);
+    const chain = await deps.chains.create({ orgId: TEST_ORG, name: "Budgeted", owner: { kind: "member", developerId: MAYA.developerId }, definition: STARTER_CHAIN_DEFINITION, createdBy: MAYA.developerId });
+    await deps.chains.setBudget(TEST_ORG, chain.chainId, 12, MAYA.developerId);
+    expect(h.db.get(ownerBudgetKey(TEST_ORG, MAYA.developerId))?.["totalUsd"]).toBe(12);
+    h.db.delete(ownerBudgetKey(TEST_ORG, MAYA.developerId));
+    expect(await deps.store.rebuildOwnerTotal(TEST_ORG, MAYA.developerId)).toBe(12);
+  });
+});
+
