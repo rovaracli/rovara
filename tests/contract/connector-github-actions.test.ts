@@ -475,7 +475,7 @@ describe("get_job_log", () => {
   it("says so when the storage answers with an error, and when the log is empty", async () => {
     const empty = await world({ fake: { logText: "" } });
     expect((await callLog(empty)).text).toBe("The log of job 7001 in demo is empty.");
-    const quiet = logDownloader((async () => new Response("denied", { status: 403 })) as typeof fetch);
+    const quiet = logDownloader((async () => new Response("denied", { status: 403 })));
     await expect(quiet(`https://${FAKE_GITHUB_STORAGE_HOST}/log`)).rejects.toMatchObject({ name: "NativeToolRefusal", message: "GitHub's log storage answered HTTP 403", reason: "vendor_error" });
   });
 
@@ -599,7 +599,7 @@ describe("what the server binds", () => {
 
   it("reads the owner and name from the repository's address, and offers only a name that is safe in a path", async () => {
     // Built without the schema, which would refuse some of these before the connector sees them: a stored project is not trusted to have passed it.
-    const offered = async (url: string) => (await world({ definition: { ...project([connectorConfig()]), repositories: [REPOSITORY("demo", { githubRepositoryId: 1, url })] } as never })).connector.scopes.length;
+    const offered = async (url: string) => (await world({ definition: { ...project([connectorConfig()]), repositories: [REPOSITORY("demo", { githubRepositoryId: 1, url })] } })).connector.scopes.length;
     expect(await offered("https://github.com/example/demo.git")).toBe(1);
     expect(await offered("https://github.com/example/demo")).toBe(1);
     expect(await offered("https://GitHub.com/example/demo.git")).toBe(1);
