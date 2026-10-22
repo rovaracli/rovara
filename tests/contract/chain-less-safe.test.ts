@@ -134,6 +134,19 @@ describe("chainLessSafeChanges", () => {
       expect(await changes(skipping)).toEqual(['fix can now be reached without passing "approve_fix"', 'review can now be reached without passing "approve_fix"']);
     });
 
+    it("counts a gate's rejection edge as a way around the next gate", async () => {
+      const two = (rejectTo: string): PinnedChainDefinition => pinned({
+        start: "a",
+        steps: [
+          { kind: "agent", id: "a", name: "a", agent: { agentId: "ticket-triage", version: "current" }, next: { kind: "go", to: "g1" } },
+          { kind: "gate", id: "g1", name: "g1", prompt: "First?", approvers: [{ kind: "chain_owner" }], onApprove: { to: "g2" }, onReject: { to: rejectTo } },
+          { kind: "gate", id: "g2", name: "g2", prompt: "Second?", approvers: [{ kind: "chain_owner" }], onApprove: { to: "b" }, onReject: { to: "$end" } },
+          { kind: "agent", id: "b", name: "b", agent: { agentId: "ticket-triage", version: "current" }, next: { kind: "end" } },
+        ],
+      });
+      expect(await chainLessSafeChanges(two("$end"), two("b"), lookups())).toEqual(["a rejection at g1 now carries on to b", 'b can now be reached without passing "g2"']);
+    });
+
     it("says nothing about a gate that is gone (the removal says it), or a step that was never behind it", async () => {
       expect(await chainLessSafeChanges(pinned(), withoutGate(), lookups())).toEqual(['removes the gate "approve_fix"']);
       expect(await chainLessSafeChanges(skipping, pinned(), lookups())).toEqual([]);
