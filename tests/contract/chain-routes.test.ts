@@ -17,6 +17,7 @@ import { ChainDefinitionSchema, type ChainDefinitionInput } from "../../packages
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey, ownerBudgetKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -50,10 +51,11 @@ const looped = (bound: number): ChainDefinitionInput => variant({
 });
 
 /** The shipped built-ins, with release 2 of Root-cause analyst: `widen` adds read_write grants, otherwise only its instructions differ. */
-function builtinsWithRelease(release: { rootCause: number; widen: boolean }): BuiltinSource {
+function builtinsWithRelease(release: { rootCause: number; widen: boolean; breakV1?: Error }): BuiltinSource {
   return {
     currentVersion: (id) => (id === "root-cause-analyst" ? release.rootCause : currentBuiltinVersion(id as "rovara-code")),
     recipe: (id, version) => {
+      if (id === "root-cause-analyst" && version === 1 && release.breakV1 !== undefined) throw release.breakV1;
       if (id !== "root-cause-analyst" || version <= currentBuiltinVersion("root-cause-analyst") || version > release.rootCause) return builtinRecipe(id as "rovara-code", version);
       const v1 = builtinRecipe("root-cause-analyst", 1);
       return release.widen
@@ -64,22 +66,30 @@ function builtinsWithRelease(release: { rootCause: number; widen: boolean }): Bu
   };
 }
 
-async function setup(options: { widen?: boolean } = {}) {
-  const release = { rootCause: currentBuiltinVersion("root-cause-analyst"), widen: options.widen === true };
+async function setup(options: { widen?: boolean; audit?: boolean } = {}) {
+  const release: { rootCause: number; widen: boolean; breakV1?: Error } = { rootCause: currentBuiltinVersion("root-cause-analyst"), widen: options.widen === true };
+  const audit = options.audit === true ? capturingAuditDeps() : undefined;
   const builtins = builtinsWithRelease(release);
   const triggers = {
     enabled: new Set<string>(),
     rechecked: [] as Array<{ orgId: string; chainId: string }>,
     disabledByCheck: [] as Array<{ triggerId: string; problems: Array<{ path: string; message: string }> }>,
     archived: [] as string[],
+    /** Runs once, inside the next check of whether the chain has a trigger: where a test lets something land between a route's read and its write. */
+    betweenReadAndWrite: undefined as (() => Promise<void>) | undefined,
   };
   const chainTriggers: ChainTriggerHooks = {
-    hasEnabledTriggers: async (_orgId, chainId) => triggers.enabled.has(chainId),
+    hasEnabledTriggers: async (_orgId, chainId) => {
+      const hook = triggers.betweenReadAndWrite;
+      triggers.betweenReadAndWrite = undefined;
+      await hook?.();
+      return triggers.enabled.has(chainId);
+    },
     recheckTriggersForTarget: async (orgId, target) => { triggers.rechecked.push({ orgId, chainId: target.chainId }); return triggers.disabledByCheck; },
     disableTriggersForTarget: async (_orgId, target) => { triggers.archived.push(target.chainId); },
   };
   const members = new FakeProjectMembers();
-  const h = await createDeveloperTaskBroker({ orgResolver, register: false, brokerExtra: { agents: { projectMembers: members, builtins, chainTriggers } } });
+  const h = await createDeveloperTaskBroker({ orgResolver, register: false, brokerExtra: { agents: { projectMembers: members, builtins, chainTriggers } }, ...(audit === undefined ? {} : { audit }) });
   const enroll = async (who: Developer, role: OrgRole) => {
     h.db.set({ pk: `SESSION#${who.sessionId}`, sk: "META", sessionId: who.sessionId, developerId: who.developerId, amr: who.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
     h.db.set({ pk: `DEVELOPER#${who.developerId}`, sk: "META", developerId: who.developerId, provider: who.provider, displayName: who.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
@@ -98,8 +108,8 @@ async function setup(options: { widen?: boolean } = {}) {
   members.grant(TEST_ORG, "web", CARL.developerId, "contributor");
   members.grant(TEST_ORG, "web", VIV.developerId, "viewer");
   // Beside the broker's own stores: the same table, so a test can seed a published version without going through the routes.
-  const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now, builtins });
-  const chains = new ChainStore({ documentClient: h.db, tableName: "state", now: Date.now, agents: store });
+  const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now, builtins, ...(audit === undefined ? {} : { audit: audit.audit }) });
+  const chains = new ChainStore({ documentClient: h.db, tableName: "state", now: Date.now, agents: store, ...(audit === undefined ? {} : { audit: audit.audit }) });
   const deps: ApprovalDependencies & { chains: ChainStore; chainTriggers: ChainTriggerHooks } = {
     store, chains, chainTriggers, projectMembers: members, documentClient: h.db, tableName: "state", now: Date.now, confirmOrigin: "https://cell.example.com",
     signInStore: new DeveloperSignInStore({ documentClient: h.db, tableName: "signin", now: Date.now }),
@@ -142,7 +152,7 @@ async function setup(options: { widen?: boolean } = {}) {
     await store.publish({ orgId: TEST_ORG, agentId: agent.agentId, expectedDraftRevision: agent.draftRevision, digest: "d".repeat(64), by: MAYA.developerId });
     return agent.agentId;
   };
-  return { ...h, members, store, chains, deps, call, create, revisionOf, putDraft, publish, seed, state, approvals, release, triggers, customAgent, asCaller };
+  return { ...h, members, store, chains, deps, call, create, revisionOf, putDraft, publish, seed, state, approvals, release, triggers, customAgent, asCaller, audit };
 }
 
 const errorOf = (reply: Reply) => reply.body.error as { code: string; message: string };
@@ -683,6 +693,199 @@ describe("a publish or rollback that makes something less safe", () => {
     expect(refused.status).toBe(409);
     expect(errorOf(refused)).toMatchObject({ code: "CHAIN_REVISION_CONFLICT", message: "An agent this chain uses changed while it was being rolled back. Roll back again." });
     expect((await s.state(chainId)).currentVersion).toBe(2);
+  });
+});
+
+describe("what the routes and the confirmation handlers hold to", () => {
+  const publishedBaseline = async (options: { widen?: boolean; audit?: boolean } = {}) => {
+    const s = await setup(options);
+    const chainId = await s.create(MAYA);
+    await s.seed(chainId, INVESTIGATE_THEN_FIX);
+    return { ...s, chainId };
+  };
+  type Baseline = Awaited<ReturnType<typeof publishedBaseline>>;
+  const raised = (usd: number) => variant({}, [], { limits: { maxRunUsd: usd } });
+  const thrown = (attempt: Promise<unknown>) => attempt.then(() => undefined, (error: Error) => error.message);
+  const proof = () => ({ kind: "fresh_sign_in" as const, method: "email_code" as const, authTime: new Date().toISOString(), sessionRef: "a".repeat(64) });
+  /** Asks for the less-safe publish of a $60 limit and returns the pending record. */
+  const askToRaise = async (s: Baseline) => {
+    await s.putDraft(MAYA, s.chainId, raised(60));
+    expect((await s.publish(MAYA, s.chainId)).status).toBe(202);
+    return s.approvals()[0]!;
+  };
+  const decided = (record: ApprovalRecord): ApprovalRecord => ({ ...record, decidedBy: DANA.developerId });
+
+  it("answers a publish of a draft revision that is not the current one as a conflict, even for a design that would need a person, and asks nobody", async () => {
+    const s = await publishedBaseline();
+    await s.putDraft(MAYA, s.chainId, raised(60));
+    const stale = await s.call(MAYA, "POST", `/v1/app/chains/${s.chainId}/publish`, { expectedDraftRevision: 2 });
+    expect(stale.status).toBe(409);
+    expect(errorOf(stale).code).toBe("CHAIN_REVISION_CONFLICT");
+    expect(s.approvals()).toEqual([]);
+    expect((await s.state(s.chainId)).currentVersion).toBe(1);
+  });
+
+  it("refuses a publish when the draft was saved again after the chain was read, and asks nobody about the newer design", async () => {
+    const s = await publishedBaseline();
+    await s.call(MAYA, "PUT", `/v1/app/chains/${s.chainId}/shares`, { shares: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "edit" }] });
+    const revision = await s.revisionOf(EVE, s.chainId);
+    s.triggers.betweenReadAndWrite = async () => {
+      await s.chains.saveDraft({ orgId: TEST_ORG, chainId: s.chainId, definition: raised(60), expectedRevision: revision, by: MAYA.developerId });
+    };
+    const refused = await s.call(EVE, "POST", `/v1/app/chains/${s.chainId}/publish`, { expectedDraftRevision: revision });
+    expect(refused.status).toBe(409);
+    expect(errorOf(refused).code).toBe("CHAIN_REVISION_CONFLICT");
+    expect(s.approvals()).toEqual([]);
+  });
+
+  it("answers a retry of a publish the page already confirmed with that version, and publishes nothing more", async () => {
+    const s = await publishedBaseline();
+    await s.putDraft(MAYA, s.chainId, raised(60));
+    const body = { requestId: randomUUID(), expectedDraftRevision: 3 };
+    expect((await s.dev(MAYA, "POST", `/v1/app/chains/${s.chainId}/publish`, body)).status).toBe(202);
+    await getApprovalSubjectHandler("chain_publish")!(s.deps, decided(s.approvals()[0]!));
+    expect((await s.state(s.chainId)).currentVersion).toBe(2);
+    const retried = await s.dev(MAYA, "POST", `/v1/app/chains/${s.chainId}/publish`, body);
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    expect(retried.body).toMatchObject({ version: { version: 2 }, disabledTriggers: [] });
+    expect(await s.chains.listVersions(TEST_ORG, s.chainId)).toHaveLength(2);
+  });
+
+  it("refuses a publish when another version became current after the chain was read", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    await s.seed(chainId, INVESTIGATE_THEN_FIX);
+    await s.seed(chainId, variant({ investigate: { name: "second" } }));
+    await s.call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "edit" }] });
+    await s.putDraft(MAYA, chainId, variant({ investigate: { name: "third" } }));
+    const revision = await s.revisionOf(EVE, chainId);
+    // The route has read the chain (version 2 runs) when a rollback to version 1 lands; the edit is safe against version 2, but version 2 no longer runs.
+    s.triggers.betweenReadAndWrite = async () => { await s.chains.rollback({ orgId: TEST_ORG, chainId, version: 1, expectedCurrentVersion: 2, by: DANA.developerId }); };
+    const refused = await s.call(EVE, "POST", `/v1/app/chains/${chainId}/publish`, { expectedDraftRevision: revision });
+    expect(refused.status).toBe(409);
+    expect(errorOf(refused).code).toBe("CHAIN_REVISION_CONFLICT");
+    expect(s.triggers.betweenReadAndWrite).toBeUndefined();
+    expect(await s.state(chainId)).toMatchObject({ currentVersion: 1, latestVersion: 2 });
+  });
+
+  it("answers a repeat of a create from someone who has lost the chain with 404, not the chain", async () => {
+    const s = await setup();
+    const body = { requestId: randomUUID(), name: "Handed over", definition: INVESTIGATE_THEN_FIX };
+    const first = await s.dev(MAYA, "POST", "/v1/app/chains", body);
+    expect(first.status).toBe(201);
+    const chainId = (first.body.chain as { chainId: string }).chainId;
+    await s.chains.setOwner(TEST_ORG, chainId, { kind: "member", developerId: EVE.developerId }, DANA.developerId);
+    const again = await s.dev(MAYA, "POST", "/v1/app/chains", body);
+    expect(again.status).toBe(404);
+    expect((again.body.error as { code: string }).code).toBe("NOT_FOUND");
+  });
+
+  it("holds an owner change to manage: an editor is refused", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    await s.call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "edit" }] });
+    const refused = await s.call(EVE, "PUT", `/v1/app/chains/${chainId}/owner`, { owner: { kind: "member", developerId: EVE.developerId } });
+    expect(refused.status).toBe(403);
+    expect((await s.state(chainId)).owner).toEqual({ kind: "member", developerId: MAYA.developerId });
+  });
+
+  it("lets only someone who manages the chain decide, not an editor the chain is shared with at edit", async () => {
+    const s = await publishedBaseline();
+    const record = await askToRaise(s);
+    await s.call(MAYA, "PUT", `/v1/app/chains/${s.chainId}/shares`, { shares: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "edit" }] });
+    expect((await s.call(EVE, "GET", `/v1/app/chains/${s.chainId}`)).body).toMatchObject({ chain: { access: "edit" } });
+    expect(await getApproverRule("chain_publish")!(s.deps, record, s.asCaller(EVE))).toBe(false);
+  });
+
+  it("refuses to publish a draft that was saved again after the request, even when its design is the same", async () => {
+    const s = await publishedBaseline();
+    const record = await askToRaise(s);
+    expect((await s.putDraft(MAYA, s.chainId, raised(60))).status).toBe(200);
+    expect(await thrown(getApprovalSubjectHandler("chain_publish")!(s.deps, decided(record)))).toBe("CHAIN_REVISION_CONFLICT: The draft changed after this was asked. Publish again.");
+    expect((await s.state(s.chainId)).currentVersion).toBe(1);
+  });
+
+  it("refuses to publish when an agent moved since the request, though the draft did not", async () => {
+    const s = await publishedBaseline();
+    const record = await askToRaise(s);
+    // Release 2 of Root-cause analyst (instructions only) is adopted: the draft's "current" now pins version 2, so the design the person was shown is not what would publish.
+    await s.store.ensureBuiltinSettings(TEST_ORG, "root-cause-analyst");
+    s.release.rootCause = 2;
+    await s.store.adoptBuiltinVersion({ orgId: TEST_ORG, agentId: "root-cause-analyst", version: 2, expectedPinnedVersion: 1, by: DANA.developerId });
+    expect(await thrown(getApprovalSubjectHandler("chain_publish")!(s.deps, decided(record)))).toBe("CHAIN_REVISION_CONFLICT: The draft changed after this was asked. Publish again.");
+    expect((await s.state(s.chainId)).currentVersion).toBe(1);
+  });
+
+  it("records a confirmed publish as less safe and one that went through on its own as safe", async () => {
+    const s = await publishedBaseline({ audit: true });
+    const record = await askToRaise(s);
+    await getApprovalSubjectHandler("chain_publish")!(s.deps, decided(record));
+    await s.putDraft(MAYA, s.chainId, variant({ investigate: { name: "renamed" } }, [], { limits: { maxRunUsd: 60 } }));
+    expect((await s.publish(MAYA, s.chainId)).status).toBe(200);
+    const published = s.audit!.recordedBy("chain.published");
+    expect(published.map((event) => event.facts)).toMatchObject([{ version: 1, safety: "safe" }, { version: 2, safety: "less_safe" }, { version: 3, safety: "safe" }]);
+  });
+
+  describe("a rollback that waits for a person", () => {
+    const askToRollBack = async () => {
+      const s = await setup();
+      const chainId = await s.create(MAYA);
+      const withoutGate: ChainDefinitionInput = {
+        ...clone(INVESTIGATE_THEN_FIX),
+        steps: INVESTIGATE_THEN_FIX.steps.filter((step) => step.id !== "approve_fix").map((step) => (step.id === "investigate"
+          ? { ...step, next: { kind: "branch", default: "no_fix", choices: [{ id: "fix", description: "The cause is in our code and a code change fixes it", to: "fix" }, { id: "no_fix", description: "Not a code problem", to: "$end" }] } } as Step
+          : step)),
+      };
+      await s.seed(chainId, withoutGate);
+      await s.seed(chainId, INVESTIGATE_THEN_FIX);
+      expect((await s.call(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 })).status).toBe(202);
+      return { ...s, chainId, record: s.approvals()[0]! };
+    };
+
+    it("refuses to apply it when the version it rolls back to is not the one that was shown", async () => {
+      const s = await askToRollBack();
+      const tampered = { ...decided(s.record), subject: { ...s.record.subject, digest: "0".repeat(64) } } as ApprovalRecord;
+      expect(await thrown(getApprovalSubjectHandler("chain_rollback")!(s.deps, tampered))).toBe("CHAIN_REVISION_CONFLICT: That version changed after this was asked. Roll back again.");
+      expect((await s.state(s.chainId)).currentVersion).toBe(2);
+    });
+
+    it("refuses to apply it when the published version moved since it was asked", async () => {
+      const s = await askToRollBack();
+      await s.seed(s.chainId, variant({}, [], { limits: { maxRunUsd: 60 } }));
+      expect(await thrown(getApprovalSubjectHandler("chain_rollback")!(s.deps, decided(s.record)))).toBe("CHAIN_REVISION_CONFLICT: The published version changed after this was asked. Roll back again.");
+      expect((await s.state(s.chainId)).currentVersion).toBe(3);
+    });
+  });
+
+  it("answers a repeat of a request that was declined meanwhile as closed, not as waiting", async () => {
+    const s = await publishedBaseline();
+    await s.putDraft(MAYA, s.chainId, raised(60));
+    const body = { requestId: randomUUID(), expectedDraftRevision: 3 };
+    const asked = await s.dev(MAYA, "POST", `/v1/app/chains/${s.chainId}/publish`, body);
+    expect(asked.status).toBe(202);
+    const record = s.approvals()[0]!;
+    await approvalDecideKind(s.deps).decide({ orgId: TEST_ORG, approvalId: record.approvalId, developerId: DANA.developerId }, "decline", proof());
+    const again = await s.dev(MAYA, "POST", `/v1/app/chains/${s.chainId}/publish`, body);
+    expect(again.status).toBe(409);
+    expect((again.body.error as { code: string; message: string })).toEqual({ code: "APPROVAL_CLOSED", message: "this request was already decided" });
+  });
+
+  describe("a re-pin whose earlier version can no longer be read", () => {
+    it.each([
+      ["without a reason", new Error("gone"), "investigate: its recipe can't be compared with the one before"],
+      ["with a reason", Object.assign(new Error("gone"), { problems: [{ path: "instructions", message: "can't be read" }] }), "investigate: instructions: can't be read"],
+    ])("waits for a person %s", async (_name, error, finding) => {
+      const s = await publishedBaseline();
+      await s.store.ensureBuiltinSettings(TEST_ORG, "root-cause-analyst");
+      s.release.rootCause = 2;
+      await s.store.adoptBuiltinVersion({ orgId: TEST_ORG, agentId: "root-cause-analyst", version: 2, expectedPinnedVersion: 1, by: DANA.developerId });
+      s.release.breakV1 = error;
+      await s.putDraft(MAYA, s.chainId, variant({ investigate: { name: "Find the cause, again" } }));
+      const reply = await s.publish(MAYA, s.chainId);
+      expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+      expect(reply.body.changes).toEqual(["investigate now uses Root-cause analyst version 2 instead of Root-cause analyst version 1", finding]);
+      expect((await s.state(s.chainId)).currentVersion).toBe(1);
+    });
   });
 });
 
