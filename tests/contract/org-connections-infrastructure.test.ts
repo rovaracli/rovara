@@ -172,12 +172,16 @@ describe("ConnectorSecretsRole (named environments)", () => {
     expect(role.Properties.RoleName).toBe("agentx-staging-connector-secrets");
     const boundary = defaultBoundaryStatements({ env: "staging", partition: "aws", region: "us-west-2", account: "111122223333", cloudFormationRoleName: "x" });
     const sts = boundary.filter((statement) => [statement.Action].flat().some((action) => action.startsWith("sts:") && action !== "sts:GetCallerIdentity"));
-    expect(sts).toEqual([{
+    // Plan 4 Task 16 adds one more, for other accounts' roles only (a customer's CloudWatch role, a company's Bedrock role): it names this account in a NotEquals
+    // condition, so the one role of this account a bounded role may assume is still this one.
+    expect(sts.map((statement) => statement.Sid)).toEqual(["ConnectorSecretsRole", "AssumeOrgRoles"]);
+    expect(sts[0]).toEqual({
       Sid: "ConnectorSecretsRole",
       Effect: "Allow",
       Action: ["sts:AssumeRole", "sts:TagSession"],
       Resource: "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-connector-secrets",
-    }]);
+    });
+    expect(sts[1]!.Condition).toEqual({ StringNotEquals: { "aws:ResourceAccount": "111122223333" }, StringLike: { "sts:ExternalId": "rovara-org_*" } });
   });
 
   it("uses no em dash in a name or description", () => {

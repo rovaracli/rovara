@@ -302,6 +302,16 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
       Action: ["sts:AssumeRole", "sts:TagSession"],
       Resource: `arn:${partition}:iam::${account}:role${environmentRolePath(scope.env)}${connectorSecretsRoleName(scope.env)}`,
     },
+    // A bounded role may be granted `sts:AssumeRole` into a customer's role in ANOTHER account, with an external id that names a Rovara org (the broker's CloudWatch
+    // connector, Plan 4 Task 16, and the model proxy's Bedrock sources, Plan 3): a boundary only caps, so without this the grants could never take effect. The same two
+    // conditions as the grants: a role of this account is never allowed, so the ceiling does not reach the environment's own roles.
+    {
+      Sid: "AssumeOrgRoles",
+      Effect: "Allow",
+      Action: ["sts:AssumeRole"],
+      Resource: `arn:${partition}:iam::*:role/*`,
+      Condition: { StringNotEquals: { "aws:ResourceAccount": account }, StringLike: { "sts:ExternalId": "rovara-org_*" } },
+    },
     // The operator's EC2 quota reads (prerequisites on a resume); named like CallerIdentity above,
     // not scoped further, since scoped ARNs in the identity policy already limit it to two quotas.
     { Sid: "Quotas", Effect: "Allow", Action: ["servicequotas:GetServiceQuota"], Resource: "*" },
