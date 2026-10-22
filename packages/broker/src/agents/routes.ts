@@ -90,6 +90,8 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
   pullRequestHead?: PullRequestHeadReader;
   /** Task 12b: the org's connections (`/v1/app/connections*`). Without it (no connection secrets role) those routes answer NOT_FOUND. */
   connections?: ConnectionRouteDependencies["store"];
+  /** Plan 4 Task 16: the broker function's role ARN, for the trust policy a CloudWatch connection shows. */
+  brokerRoleArn?: string;
   /** Starts a person's run (Task 15). The developer API supplies it, since it holds the task start; without it the route answers NOT_FOUND. */
   startRun?: (caller: AgentCaller, input: { requestId: string; project: string; agent: { agentId: AgentId; version?: number | "draft" }; input: RunInput }) => Promise<{ task: unknown }>;
 }
@@ -841,7 +843,7 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
   if (isApprovalRoute(url.pathname)) return routeApprovalRequest(deps, caller, request, url);
   if (isConnectionRoute(url.pathname)) {
     if (deps.connections === undefined) throw agentXError("NOT_FOUND", "connections are not set up in this deployment");
-    return routeConnectionRequest({ store: deps.connections, documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller, request, url);
+    return routeConnectionRequest({ store: deps.connections, documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.brokerRoleArn === undefined ? {} : { brokerRoleArn: deps.brokerRoleArn }) }, caller, request, url);
   }
   // Task 14b's `…/connectors/github/comment-triggers` is matched before Task 13's project connectors, which would otherwise take every `…/connectors/…` path (PF24).
   const commentTriggers = COMMENT_TRIGGERS_PATH.exec(url.pathname);

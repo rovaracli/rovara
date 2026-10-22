@@ -3,7 +3,7 @@
 // org; another org's id, an unknown id or a connection with no saved secret reads as not registered. On a cloud
 // install this replaces the install-wide registry for the org's workspaces and tasks.
 import { staticSecretProvider, CredentialUnavailable, type Access, type CredentialProvider, type SecretSource } from "@agentx/gateway";
-import { OrgIdSchema, type CredentialRecord, type CredentialType, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, connectionTakesSecret, type CredentialRecord, type CredentialType, type OrgId } from "@agentx/contracts";
 import { hostPinProblem, type ConnectorCredentials, type HostPin } from "../aws/credentials.js";
 import { orgConnectorSecretName } from "./org-secrets.js";
 import { vendorHostOf } from "./vendor-hosts.js";
@@ -53,8 +53,9 @@ export function orgCredentialRegistry(deps: OrgConnectionDeps, orgIdValue: strin
       return connection === undefined ? undefined : recordOf(deps, orgId, connection);
     },
     async connection(ref) {
-      const connection = await usable(deps, orgId, ref);
-      return connection === undefined ? undefined : connectionOf(connection);
+      // The settings of a connection a connector can serve: one with a saved secret, or one that takes none (CloudWatch's role). Still this org's own.
+      const connection = await readConnection(deps, orgId, ref);
+      return connection === undefined || (connectionTakesSecret(connection.type) && !connection.hasSecret) ? undefined : connectionOf(connection);
     },
     async connectionSecret(ref) {
       const connection = await usable(deps, orgId, ref);

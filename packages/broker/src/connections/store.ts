@@ -12,6 +12,7 @@ import {
   OrgIdSchema,
   agentXError,
   cloudwatchExternalId,
+  cloudwatchRoleAccount,
   connectionKey,
   connectionSecretToken,
   connectionTakesSecret,
@@ -44,6 +45,8 @@ export interface OrgConnectionDeps {
   env: string;
   secrets: Pick<OrgSecrets, "read" | "put" | "scheduleDelete">;
   now: () => number;
+  /** The AWS account this deployment runs in. A CloudWatch connection may not name a role in it (Plan 4 Task 16); absent, that check is not made. */
+  ownAccountId?: string | undefined;
 }
 
 /** The id of the secret version a connection's own save wrote (kept on the record, never shown); a connection reads exactly that version. */
@@ -278,6 +281,10 @@ export class OrgConnectionStore {
       throw coded("CONFIG_INVALID", `connection${first && first.path.length > 0 ? `.${first.path.join(".")}` : ""}: ${first === undefined ? "is not valid" : first.code === "unrecognized_keys" ? "has a field this kind of connection does not take" : first.message}`);
     }
     const connection = parsed.data;
+    // Rovara assumes the customer's role from its own account: a role in that account is never the customer's, and would let the session reach Rovara's own.
+    if (connection.type === "cloudwatch" && this.input.ownAccountId !== undefined && cloudwatchRoleAccount(connection.roleArn) === this.input.ownAccountId) {
+      throw coded("CONFIG_INVALID", "roleArn: use a role in your own AWS account");
+    }
     let secretJson: string | undefined;
     if (input.secret !== undefined) {
       if (!connectionTakesSecret(connection.type)) throw coded("CONFIG_INVALID", `secret: a ${connection.type} connection takes no secret`);

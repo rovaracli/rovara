@@ -66,7 +66,6 @@ const project = (connectors: unknown[]) => ProjectDefinitionSchema.parse({
   setup: [], readiness: [], orchestratorInstructions: "x", integrations: { connectors },
 });
 
-interface Opened { definition: ConnectorDefinition<unknown>; connector: ResolvedConnector<unknown> }
 type Scope = { alias: string };
 
 async function open(options: { aws?: FakeCloudWatchOptions; orgId?: OrgId | undefined; connection?: Record<string, unknown>; tamper?: string; access?: CloudWatchAws | undefined; config?: Record<string, unknown> } = {}) {
@@ -97,7 +96,7 @@ const context = (connector: ResolvedConnector<unknown>, alias = "prod") => ({
   policy: { tools: TOOLS.map((name) => ({ name, access: "read" as const })) },
 });
 const ledger: Ledger = { claim: async () => true, get: async () => undefined, finish: async () => undefined };
-const textOf = (result: { content?: Array<{ text?: string | undefined }> | undefined }) => result.content?.map((entry) => entry.text ?? "").join("") ?? "";
+const textOf = (result: { text: string }) => result.text;
 
 async function run(tool: string, args: Record<string, unknown>, options: Parameters<typeof open>[0] = {}, alias = "prod") {
   const r = await ready(options);
@@ -151,7 +150,7 @@ describe("the CloudWatch connector type", () => {
     expect(await other.definition()).toEqual({ notConnected: `connection ${CON} is not a CloudWatch connection` });
     expect(await other.configured()).toBe(false);
     // A connection of another type is not CloudWatch's.
-    const mismatch = await connected({ connection: undefined });
+    const mismatch = await connected();
     await mismatch.store.put({ orgId: ORG_A, connection: { connectionId: "con_bbbbbbbbbbbbbbbbbbbb", type: "vercel", label: "Vercel", access: "read" }, secret: { token: "vercel-token-0123456789" }, by: ALICE });
     const wrong = resolveConnectors(project([connectorConfig({ credentialRef: "con_bbbbbbbbbbbbbbbbbbbb" })]), { credentialRegistry: orgCredentialRegistry(mismatch.deps, ORG_A), orgId: ORG_A, cloudwatchAws: fakeCloudWatchAws().aws }, { cloudwatch: cloudwatchConnectorType })[0]!;
     expect(await wrong.definition()).toEqual({ notConnected: "connection con_bbbbbbbbbbbbbbbbbbbb is not a CloudWatch connection" });
@@ -312,7 +311,11 @@ describe("list_alarms", () => {
     const bad = await run("list_alarms", { state: "BROKEN" }, { aws: { alarms: ALARMS } });
     expect(bad.result.status).toBe("FAILED");
     expect(bad.fake.calls).toEqual([]);
-    const extra = await run("list_alarms", { region: "eu-west-1" }, { aws: { alarms: ALARMS } });
+    // A routing value (the region, the alias, a prefix) is the server's: a model that names one is refused by the engine, and AWS is not called.
+    for (const name of ["region", "scopeAlias", "logGroupPrefixes", "alarmNamePrefix"]) {
+      await expect(run("list_alarms", { [name]: "eu-west-1" }, { aws: { alarms: ALARMS } }), name).rejects.toThrow("routing arguments are server controlled");
+    }
+    const extra = await run("list_alarms", { account: "999999999999" }, { aws: { alarms: ALARMS } });
     expect(extra.result.status).toBe("FAILED");
     expect(extra.fake.calls).toEqual([]);
   });
@@ -540,7 +543,8 @@ describe("the connection check", () => {
 
   it("throws a retryable RUNTIME_UNAVAILABLE for anything else, so nothing is recorded", async () => {
     const down = await failureOf(check({ fail: { GetCallerIdentityCommand: awsError("TimeoutError", "connect ETIMEDOUT 52.1.2.3") } }));
-    expect(down).toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.not.stringContaining("52.1.2.3") });
+    expect(down?.code).toBe("RUNTIME_UNAVAILABLE");
+    expect(down?.message).not.toContain("52.1.2.3");
   });
 
   it("refuses a role in the deployment's own account without calling AWS", async () => {
@@ -607,8 +611,9 @@ describe("saving a CloudWatch connection", () => {
 
   it("holds a scope's region to the same list", () => {
     const parsed = (region: string) => ProjectDefinitionSchema.safeParse({
-      name: "payments", revision: 1, repositories: [], setup: [], readiness: [], orchestratorInstructions: "x",
-      integrations: { connectors: [connectorConfig({ scopes: [{ alias: "prod", region }] })] },
+      name: "payments", revision: 1,
+      repositories: [{ name: "demo", url: "https://github.com/example/demo.git", path: "repo/demo", defaultBranch: "main", credentialRef: "github-app" }],
+      setup: [], readiness: [], orchestratorInstructions: "x", integrations: { connectors: [connectorConfig({ scopes: [{ alias: "prod", region }] })] },
     }).success;
     expect(parsed("us-east-1")).toBe(true);
     expect(parsed("us-east-9")).toBe(false);
@@ -632,7 +637,7 @@ describe("the setup a customer pastes", () => {
     const s = await connected();
     await s.store.put({ orgId: ORG_A, connection: { connectionId: "con_dddddddddddddddddddd", type: "vercel", label: "Vercel", access: "read" }, secret: { token: "vercel-token-0123456789" }, by: ALICE });
     if (options.tamper !== undefined) for (const item of s.db.items.values()) if (item["entityType"] === "ORG_CONNECTION") item["externalId"] = options.tamper;
-    return routeConnectionRequest({ store: s.store, documentClient: s.db, tableName: "T", now: () => START_MS, ...("brokerRoleArn" in options ? (options.brokerRoleArn === undefined ? {} : { brokerRoleArn: options.brokerRoleArn }) : { brokerRoleArn: BROKER_ROLE }) } as never,
+    return routeConnectionRequest({ store: s.store, documentClient: s.db, tableName: "T", now: () => START_MS, ...("brokerRoleArn" in options ? (options.brokerRoleArn === undefined ? {} : { brokerRoleArn: options.brokerRoleArn }) : { brokerRoleArn: BROKER_ROLE }) },
       options.caller ?? admin, request(method, path), new URL(`https://broker.example${path}`)) as Promise<Record<string, unknown>>;
   }
 

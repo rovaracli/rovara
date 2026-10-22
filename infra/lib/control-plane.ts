@@ -264,6 +264,25 @@ export class ControlPlaneStack extends Stack {
         resources: [projectAllowListArn],
       }));
     }
+    // Plan 4, Task 16 (cloud installs): the CloudWatch connector assumes a role a customer made in their own AWS account. The grant is one action on roles in
+    // OTHER accounts (never a role of this one, so the broker cannot reach its own or any other role here this way), and only with an external id that names a
+    // Rovara org; the connector sends the caller org's own, and the customer's trust policy requires it. AWS documents sts:ExternalId as a request-context key
+    // present whenever the caller supplies an external id (docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_iam-condition-keys.html); it does not say
+    // in so many words that an identity policy is checked against it, so the external id the connector sets itself stays the control and this condition is a second one.
+    // The statement falls in the broker's orchestration managed policy (an sts action), see brokerPolicyGroup. The role's own ARN is the principal the customer
+    // names in the trust policy, so the function gets it.
+    if (props?.cloud === true && naming.env !== undefined) {
+      broker.addToRolePolicy(new iam.PolicyStatement({
+        sid: "AssumeCustomerCloudWatchRoles",
+        actions: ["sts:AssumeRole"],
+        resources: [`arn:${Aws.PARTITION}:iam::*:role/*`],
+        conditions: {
+          StringNotEquals: { "aws:ResourceAccount": Aws.ACCOUNT_ID },
+          StringLike: { "sts:ExternalId": "rovara-org_*" },
+        },
+      }));
+      broker.addEnvironment("BROKER_ROLE_ARN", broker.role!.roleArn);
+    }
     // Spec 043: SWE-bench runs. The broker reads the optional eval stack's settings, the runner image
     // and the worker model per request, and starts the eval state machine by its fixed name; both
     // exist only once the eval stack is deployed, and until then a run is refused as not installed.

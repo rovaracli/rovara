@@ -12,12 +12,14 @@ import {
   agentRequestKey,
   agentXError,
   canonicalJson,
+  cloudwatchExternalId,
   newPrefixedId,
 } from "@agentx/contracts";
 import type { AgentCaller } from "../agents/access.js";
 import type { RequestMark } from "../agents/table-writes.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
+import { cloudwatchTrustPolicy } from "../connectors/native/cloudwatch.js";
 import type { OrgConnectionRecord, OrgConnectionStore } from "./store.js";
 
 /** What the connection routes need: the store, and the State table the request items are read from. */
@@ -26,6 +28,8 @@ export interface ConnectionRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   now: () => number;
+  /** The ARN of the broker function's role, which a CloudWatch connection's trust policy names as the principal (Plan 4 Task 16). Absent, no setup is shown. */
+  brokerRoleArn?: string | undefined;
 }
 
 export const isConnectionRoute = (pathname: string): boolean => /^\/v1\/app\/connections(\/|$)/.test(pathname);
@@ -64,6 +68,16 @@ function view(record: OrgConnectionRecord) {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the keys
   const { hasSecret, orgId: _org, ...rest } = record;
   return { ...rest, hasCredential: hasSecret };
+}
+
+/**
+ * What a customer needs to make the role Rovara assumes: the external id and the trust policy to paste. Both are built from the CALLER's org, never from the
+ * stored record, and only for a CloudWatch connection on a deployment that knows its broker role.
+ */
+function setupOf(deps: ConnectionRouteDependencies, caller: AgentCaller, record: OrgConnectionRecord): { setup?: { externalId: string; trustPolicy: ReturnType<typeof cloudwatchTrustPolicy> } } {
+  if (record.type !== "cloudwatch" || deps.brokerRoleArn === undefined) return {};
+  const externalId = cloudwatchExternalId(caller.orgId);
+  return { setup: { externalId, trustPolicy: cloudwatchTrustPolicy({ brokerRoleArn: deps.brokerRoleArn, externalId }) } };
 }
 
 const notFound = () => agentXError("NOT_FOUND", "no connection has that ID");
@@ -185,7 +199,7 @@ export async function routeConnectionRequest(deps: ConnectionRouteDependencies, 
   if (method === "GET") {
     const found = await deps.store.get(caller.orgId, connectionIdOf(rawId));
     if (found === undefined) throw notFound();
-    return { connection: view(found) };
+    return { connection: { ...view(found), ...setupOf(deps, caller, found) } };
   }
   if (method === "PUT") return saveConnection(deps, caller, connectionIdOf(rawId), jsonBody(request));
   if (method === "DELETE") return removeConnection(deps, caller, connectionIdOf(rawId), jsonBody(request));
