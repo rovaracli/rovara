@@ -336,6 +336,17 @@ describe("list_workflow_runs", () => {
     expect(all.text).not.toContain("Other repository secret work");
   });
 
+  it("holds the answer to the status, branch and limit asked for, even when GitHub ignores them", async () => {
+    const w = await world({ fake: { ignoreFilters: true } });
+    const ids = (text: string) => text.split("\n").filter((line) => /^\d+ \[/u.test(line)).map((line) => line.split(" ")[0]);
+    expect(ids((await run(w, "list_workflow_runs", { status: "failure" })).text)).toEqual(["9001"]);
+    expect(ids((await run(w, "list_workflow_runs", { status: "in_progress" })).text)).toEqual(["9002"]);
+    expect(ids((await run(w, "list_workflow_runs", { status: "completed" })).text)).toEqual(["9001", "9003"]);
+    expect(ids((await run(w, "list_workflow_runs", { branch: "feature" })).text)).toEqual(["9002"]);
+    expect(ids((await run(w, "list_workflow_runs", { limit: 1 })).text)).toEqual(["9001"]);
+    expect(ids((await run(w, "list_workflow_runs", {})).text)).toEqual(["9001", "9002", "9003"]);
+  });
+
   it("defaults to ten runs, and says when there are none", async () => {
     const w = await world();
     await run(w, "list_workflow_runs", {});
@@ -444,11 +455,35 @@ describe("get_job_log", () => {
     expect(w.net.calls.filter((call) => !call.includes("api.github.com"))).toEqual([]);
   });
 
+  it.each([301, 303, 307, 308])("reads a %i redirect the same way", async (status) => {
+    const w = await world({ fake: { logRedirectStatus: status } });
+    expect((await callLog(w)).status).toBe("SUCCEEDED");
+  });
+
+  it("refuses an answer that is neither a redirect nor an error, such as a 204, in fixed words", async () => {
+    const w = await world({ fake: { logRedirectStatus: 204 } });
+    expect(await callLog(w)).toMatchObject({ status: "FAILED", reason: "vendor_error", text: "GitHub answered HTTP 204" });
+  });
+
+  it("refuses a log bigger than eight mebibytes through the tool, and reads one just under it", async () => {
+    const big = await world({ fake: { logText: "x".repeat(8 * 1_048_576 + 1) } });
+    expect(await callLog(big)).toMatchObject({ status: "FAILED", reason: "vendor_error", text: "the vendor answered with more than a connector reads" });
+    const fits = await world({ fake: { logText: `${"x".repeat(100)}\n${"y".repeat(8 * 1_048_576 - 200)}` } });
+    expect((await callLog(fits)).status).toBe("SUCCEEDED");
+  });
+
+  it("says so when the storage answers with an error, and when the log is empty", async () => {
+    const empty = await world({ fake: { logText: "" } });
+    expect((await callLog(empty)).text).toBe("The log of job 7001 in demo is empty.");
+    const quiet = logDownloader((async () => new Response("denied", { status: 403 })) as typeof fetch);
+    await expect(quiet(`https://${FAKE_GITHUB_STORAGE_HOST}/log`)).rejects.toMatchObject({ name: "NativeToolRefusal", message: "GitHub's log storage answered HTTP 403", reason: "vendor_error" });
+  });
+
   it("accepts GitHub's two storage hosts and nothing else", () => {
     for (const ok of [`https://${FAKE_GITHUB_STORAGE_HOST}/a`, "https://pipelinesghubeus6.actions.githubusercontent.com/a?sig=1", "https://productionresultssa7.blob.core.windows.net/actions-results/x?sig=2", "https://A.B.actions.githubusercontent.com/a"]) {
       expect(isLogStorageUrl(new URL(ok)), ok).toBe(true);
     }
-    for (const bad of ["https://example.com/a", "https://githubusercontent.com/a", "https://actions.githubusercontent.com/a", "https://-.actions.githubusercontent.com/a", "http://x.blob.core.windows.net/a", "https://x.blob.core.windows.net:444/a", "https://u@x.blob.core.windows.net/a", "https://xblob.core.windows.net/a"]) {
+    for (const bad of ["https://example.com/a", "https://githubusercontent.com/a", "https://actions.githubusercontent.com/a", "https://-.actions.githubusercontent.com/a", "http://x.blob.core.windows.net/a", "https://x.blob.core.windows.net:444/a", "https://u@x.blob.core.windows.net/a", "https://:p@x.blob.core.windows.net/a", "https://xblob.core.windows.net/a", "https://x.actions.githubusercontent.com.attacker.io/a"]) {
       expect(isLogStorageUrl(new URL(bad)), bad).toBe(false);
     }
   });
@@ -535,6 +570,72 @@ describe("get_job_log", () => {
   });
 });
 
+describe("what the server binds", () => {
+  const direct = async (values: Record<string, string>, args: Record<string, unknown> = {}) => {
+    const w = await world();
+    const connection = await w.connector.connect!({ endpoint: new URL("https://api.github.com/"), token: "x", tools: ["list_workflow_runs"] } as never);
+    return { w, result: await connection.call("list_workflow_runs", { scopeAlias: "demo", owner: "example", repo: "demo", repositoryId: "4242", installationId: "", ...values, ...args }) };
+  };
+
+  it.each([
+    ["an owner with a slash", { owner: "a/b" }, "owner"], ["an empty owner", { owner: "" }, "owner"], ["an owner with a dot", { owner: "a.b" }, "owner"],
+    ["a repository that is two dots", { repo: ".." }, "repo"], ["a repository that is one dot", { repo: "." }, "repo"], ["a repository with a slash", { repo: "demo/x" }, "repo"],
+    ["a repository id of zero", { repositoryId: "0" }, "repositoryId"], ["a repository id that is not digits", { repositoryId: "42x" }, "repositoryId"],
+    ["an installation id that is not digits", { installationId: "abc" }, "installationId"], ["an installation id of zero", { installationId: "0" }, "installationId"],
+    ["an empty alias", { scopeAlias: "" }, "scopeAlias"],
+  ])("refuses %s before anything is minted", async (_name, values, key) => {
+    const { w, result } = await direct(values);
+    expect(result).toMatchObject({ isError: true, content: [{ text: `list_workflow_runs: ${key} is not allowed` }] });
+    expect(w.fake.requests).toEqual([]);
+  });
+
+  it("accepts the bound values it is given and nothing else, with an installation id when there is one", async () => {
+    const { w, result } = await direct({ installationId: "55" });
+    expect(result.isError).not.toBe(true);
+    expect(w.fake.minted()).toHaveLength(1);
+    // An installation the repository is not under: the connector is not connected for it (the engine reports that), and nothing is minted.
+    await expect(direct({ installationId: "56" })).rejects.toThrow("Rovara can't reach example/demo");
+  });
+
+  it("reads the owner and name from the repository's address, and offers only a name that is safe in a path", async () => {
+    // Built without the schema, which would refuse some of these before the connector sees them: a stored project is not trusted to have passed it.
+    const offered = async (url: string) => (await world({ definition: { ...project([connectorConfig()]), repositories: [REPOSITORY("demo", { githubRepositoryId: 1, url })] } as never })).connector.scopes.length;
+    expect(await offered("https://github.com/example/demo.git")).toBe(1);
+    expect(await offered("https://github.com/example/demo")).toBe(1);
+    expect(await offered("https://GitHub.com/example/demo.git")).toBe(1);
+    expect(await offered("https://github.com/example/de.mo_1-x.git")).toBe(1);
+    for (const bad of ["https://github.com/example/..git", "https://github.com/example/...git", "https://github.com/example", "https://github.com/a/b/c", "http://github.com/example/demo", "https://github.com.evil.example/example/demo", "https://github.com/-bad/demo", "https://github.com/example/de%2Fmo"]) {
+      expect(await offered(bad), bad).toBe(0);
+    }
+  });
+
+  it("is not connected for a repository the App is not installed on, with GitHub's own words about it", async () => {
+    const w = await world({ definition: project([connectorConfig()], [REPOSITORY("demo", { githubRepositoryId: 1, url: "https://github.com/stranger/demo.git" })]) });
+    const result = await run(w, "list_workflow_runs");
+    expect(result).toMatchObject({ status: "FAILED", reason: "not_connected" });
+    expect(result.text).toContain("the GitHub App cannot access stranger/demo");
+    expect(w.fake.minted()).toEqual([]);
+  });
+
+  it("refuses to serve a scope whose repository has no pinned id, even if it is handed one", async () => {
+    const w = await world();
+    const definition = await definitionOf(w);
+    const legacy = { alias: "legacy", repository: REPOSITORY("legacy") } as never;
+    await expect(definition.credentials.issue(legacy, "read")).rejects.toThrow("legacy has no pinned GitHub repository id");
+    await expect(definition.credentials.issue(scopeOf(w, "demo"), "write")).rejects.toThrow("read-only");
+    expect(() => definition.binder.bind(legacy, { token: "x", bindings: {} })).toThrow("legacy has no pinned GitHub repository id");
+    expect(definition.binder.bind(scopeOf(w, "demo"), { token: "x", bindings: {} })).toEqual({ scopeAlias: "demo", owner: "example", repo: "demo", repositoryId: "4242", installationId: "55" });
+    expect(definition.binder.bind(scopeOf(await world({ definition: project([connectorConfig()], [REPOSITORY("demo", { githubRepositoryId: 9 })]) }), "demo"), { token: "x", bindings: {} }))
+      .toMatchObject({ repositoryId: "9", installationId: "" });
+  });
+
+  it("serves api.github.com only", async () => {
+    const w = await world();
+    await expect(w.connector.connect!({ endpoint: new URL("https://evil.example/"), token: "x", tools: ["list_workflow_runs"] } as never)).rejects.toThrow("api.github.com only");
+    await expect(w.connector.connect!({ endpoint: new URL("http://api.github.com/"), token: "x", tools: ["list_workflow_runs"] } as never)).rejects.toThrow("api.github.com only");
+  });
+});
+
 describe("deployments", () => {
   it("lists the repository's deployments, filtered by environment, and leaves another repository's out", async () => {
     const w = await world({ fake: { leak: true } });
@@ -554,6 +655,21 @@ describe("deployments", () => {
     expect(filtered.searchParams.get("per_page")).toBe("3");
     expect(staging.text).toContain("5002");
     expect(staging.text).not.toContain("5001");
+  });
+
+  it("holds the answer to the environment and limit asked for, even when GitHub ignores them", async () => {
+    const w = await world({ fake: { ignoreFilters: true } });
+    const ids = (text: string) => text.split("\n").filter((line) => /^\d{4} /u.test(line)).map((line) => line.split(" ")[0]);
+    expect(ids((await run(w, "list_deployments", { environment: "staging" })).text)).toEqual(["5002"]);
+    expect(ids((await run(w, "list_deployments", { limit: 1 })).text)).toEqual(["5001"]);
+    expect(ids((await run(w, "list_deployments", {})).text)).toEqual(["5001", "5002"]);
+  });
+
+  it("says when there are no deployments or no statuses", async () => {
+    const w = await world();
+    expect((await run(w, "list_deployments", { environment: "qa" })).text).toBe("No deployments in demo.");
+    const empty = await world({ definition: project([connectorConfig()]), fake: { leak: false } });
+    expect((await run(empty, "list_execution_jobs", { workflowRunId: 9003 })).text).toContain("2 jobs of workflow run 9003 in demo");
   });
 
   it("lists a deployment's statuses, and only those of this repository's deployment", async () => {

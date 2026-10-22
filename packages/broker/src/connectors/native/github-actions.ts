@@ -210,7 +210,11 @@ const listWorkflowRuns: NativeTool<GitHubActionsRunScope> = {
     if (typeof args["status"] === "string") query.push(["status", args["status"]]);
     if (typeof args["branch"] === "string") query.push(["branch", args["branch"]]);
     const runs = listOf(recordOf(await githubGet(ctx, "actions/runs", query, `GitHub has no such repository ${ctx.scope.alias}`))["workflow_runs"]).filter(isRecord)
-      .filter((run) => runInScope(run, ctx.scope)).slice(0, limitOf(args));
+      .filter((run) => runInScope(run, ctx.scope))
+      // The filters are the server's, but the answer is not trusted to have kept to them.
+      .filter((run) => typeof args["status"] !== "string" || run["status"] === args["status"] || run["conclusion"] === args["status"])
+      .filter((run) => typeof args["branch"] !== "string" || run["head_branch"] === args["branch"])
+      .slice(0, limitOf(args));
     if (runs.length === 0) return { text: `No workflow runs in ${ctx.scope.alias}.` };
     return { text: `${plural(runs.length, "workflow run")} in ${ctx.scope.alias}:\n${runs.map(runLine).join("\n")}` };
   },

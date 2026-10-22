@@ -364,6 +364,10 @@ export interface FakeGitHubActionsOptions {
   storageRedirects?: boolean;
   /** The lists answer with other repositories' items too, as a misbehaving vendor could. */
   leak?: boolean;
+  /** The lists ignore the status, branch, environment and per_page the request names, as a misbehaving vendor could. */
+  ignoreFilters?: boolean;
+  /** The status the log request is redirected with (default 302). */
+  logRedirectStatus?: number;
 }
 
 export interface RecordedGitHubRequest { method: string; url: string; authorization: string | undefined; body: unknown }
@@ -439,14 +443,14 @@ export function fakeGitHubActions(options: FakeGitHubActionsOptions = {}): { han
     const needed = rest.startsWith("actions/") ? "actions" : rest.startsWith("deployments") ? "deployments" : "contents";
     if (grant.permissions[needed] !== "read") return json({ message: "Resource not accessible by integration" }, 403);
     if (options.status !== undefined) return json({ message: "fake outage with secret-detail-xyz" }, options.status);
-    const limit = Number(url.searchParams.get("per_page") ?? "30");
+    const limit = options.ignoreFilters === true ? 100 : Number(url.searchParams.get("per_page") ?? "30");
     const known = (id: number) => name === "demo" && id > 0;
     if (rest === "actions/runs") {
       const wanted = url.searchParams.get("status");
       const branch = url.searchParams.get("branch");
       const found = runs.filter((entry) => (options.leak === true || entry.repository.full_name === `example/${name}`)
-        && (branch === null || entry.head_branch === branch)
-        && (wanted === null || entry.status === wanted || entry.conclusion === wanted));
+        && (options.ignoreFilters === true || branch === null || entry.head_branch === branch)
+        && (options.ignoreFilters === true || wanted === null || entry.status === wanted || entry.conclusion === wanted));
       return json({ total_count: found.length, workflow_runs: found.slice(0, limit) });
     }
     const oneRun = /^actions\/runs\/(\d+)$/.exec(rest);
@@ -467,11 +471,11 @@ export function fakeGitHubActions(options: FakeGitHubActionsOptions = {}): { han
       if (!known(Number(log[1])) || Number(log[1]) !== 7001) return json({ message: "Not Found" }, 404);
       if (options.logInline === true) return new Response("inline log", { status: 200 });
       const location = options.logRedirect === undefined ? `https://${FAKE_GITHUB_STORAGE_HOST}/abc/log.txt?sig=1` : options.logRedirect;
-      return new Response(null, { status: 302, headers: location === null ? {} : { location } });
+      return new Response(null, { status: options.logRedirectStatus ?? 302, headers: location === null ? {} : { location } });
     }
     if (rest === "deployments") {
       const environment = url.searchParams.get("environment");
-      const found = deployments.filter((entry) => (options.leak === true || entry.repository_url === api(name)) && (environment === null || entry.environment === environment));
+      const found = deployments.filter((entry) => (options.leak === true || entry.repository_url === api(name)) && (options.ignoreFilters === true || environment === null || entry.environment === environment));
       return json(found.slice(0, limit));
     }
     const statuses = /^deployments\/(\d+)\/statuses$/.exec(rest);
