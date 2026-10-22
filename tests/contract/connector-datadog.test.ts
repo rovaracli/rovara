@@ -119,7 +119,7 @@ describe("the Datadog connector type", () => {
   });
 
   it("serves the site's own API base and pins the keys to that site's host: a token for api.datadoghq.com is refused for api.datadoghq.eu", async () => {
-    for (const site of ["datadoghq.com", "datadoghq.eu", "us3.datadoghq.com", "ap2.datadoghq.com"] as const) {
+    for (const site of ["datadoghq.com", "datadoghq.eu", "us3.datadoghq.com", "ap2.datadoghq.com", "us2.ddog-gov.com", "uk1.datadoghq.com"] as const) {
       const { definition, registry } = await resolved({ site });
       expect(definition.endpoint.href).toBe(`https://api.${site}/`);
       expect((await registry.registration(CON))?.host).toBe(`api.${site}`);

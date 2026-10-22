@@ -108,7 +108,7 @@ describe("the six connection types' contracts", () => {
     expect(OrgConnectionSchema.safeParse({ ...SENTRY, region: "de" }).success).toBe(true);
     for (const slug of ["Acme", "-acme", "acme_x", "", "a".repeat(51), "acme.io"]) expect(OrgConnectionSchema.safeParse({ ...SENTRY, orgSlug: slug }).success, slug).toBe(false);
     for (const slug of ["a", "0acme", "a".repeat(50), "my-org-2"]) expect(OrgConnectionSchema.safeParse({ ...SENTRY, orgSlug: slug }).success, slug).toBe(true);
-    expect(DATADOG_SITES).toEqual(["datadoghq.com", "us3.datadoghq.com", "us5.datadoghq.com", "datadoghq.eu", "ap1.datadoghq.com", "ap2.datadoghq.com", "ddog-gov.com"]);
+    expect(DATADOG_SITES).toEqual(["datadoghq.com", "us3.datadoghq.com", "us5.datadoghq.com", "datadoghq.eu", "ap1.datadoghq.com", "ap2.datadoghq.com", "ddog-gov.com", "us2.ddog-gov.com", "uk1.datadoghq.com"]);
     for (const site of DATADOG_SITES) expect(OrgConnectionSchema.safeParse({ ...DATADOG, site }).success, site).toBe(true);
     for (const site of ["datadoghq.com.evil.example", "evil.example", "https://datadoghq.com", "eu.datadoghq.com"]) expect(OrgConnectionSchema.safeParse({ ...DATADOG, site }).success, site).toBe(false);
     expect(OrgConnectionSchema.safeParse({ ...PAGERDUTY, region: "us" }).success).toBe(true);
@@ -793,6 +793,8 @@ describe("a token goes only to its vendor's host (review M1)", () => {
     ["Sentry de", { ...SENTRY, region: "de" }, "de.sentry.io"],
     ["Datadog", DATADOG, "api.datadoghq.eu"],
     ["Datadog us3", { ...DATADOG, site: "us3.datadoghq.com" }, "api.us3.datadoghq.com"],
+    ["Datadog us2 gov", { ...DATADOG, site: "us2.ddog-gov.com" }, "api.us2.ddog-gov.com"],
+    ["Datadog uk1", { ...DATADOG, site: "uk1.datadoghq.com" }, "api.uk1.datadoghq.com"],
     ["PagerDuty us", { ...PAGERDUTY, region: "us" }, "api.pagerduty.com"],
     ["PagerDuty eu", PAGERDUTY, "api.eu.pagerduty.com"],
     ["Vercel", VERCEL, "api.vercel.com"],
