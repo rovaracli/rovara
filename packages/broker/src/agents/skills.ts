@@ -3,7 +3,7 @@
 // text it was published with (`SkillRef.digest`) and a later edit of the skill changes nothing that is already published. Every key is
 // under the org, so one org's skill id means nothing to another. Who may create or change a skill is decided by the routes (routes.ts).
 import { createHash } from "node:crypto";
-import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   newPrefixedId,
   orgScoped,
@@ -19,7 +19,7 @@ import {
   type SkillId,
   type SkillRef,
 } from "@agentx/contracts";
-import { coded, commit, putNew, strip, updateItem, type Item, type RequestMark, type TableInput, type TransactItem } from "./table-writes.js";
+import { coded, commit, errorName, putNew, strip, updateItem, type Item, type RequestMark, type TableInput, type TransactItem } from "./table-writes.js";
 
 /**
  * The longest SKILL.md, in UTF-8 bytes. It is below the 64 KiB an agent step's instructions may hold (`AGENT_STEP_INSTRUCTIONS_MAX_BYTES`), so
@@ -258,6 +258,27 @@ export class SkillStore {
       putNew(this.input, skillNameKey(input.orgId, name), "SKILL_NAME", { skillId, createdAt: now }),
     ], (failed) => (failed.has(3) ? coded("CONFIG_INVALID", `name: another skill in your company is called ${name}`) : undefined), input.request, record);
     return record;
+  }
+
+  /**
+   * Hands the skill from one owner to another (Rovara's own move after a member is removed or merged, Task 11). It applies only while the skill
+   * still has the owner it was read with, so a repeat, or a skill someone else already moved, changes nothing. Answers whether it moved.
+   */
+  async moveOwner(orgId: OrgId, skillId: SkillId, from: AgentOwner, to: AgentOwner): Promise<boolean> {
+    try {
+      await this.input.documentClient.send(new UpdateCommand({
+        TableName: this.input.tableName,
+        Key: skillKey(orgId, skillId, "META"),
+        UpdateExpression: "SET #owner = :to",
+        ConditionExpression: "attribute_exists(pk) AND #owner = :from",
+        ExpressionAttributeNames: { "#owner": "owner" },
+        ExpressionAttributeValues: { ":from": from, ":to": to },
+      }));
+      return true;
+    } catch (error) {
+      if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+      return false;
+    }
   }
 
   /**

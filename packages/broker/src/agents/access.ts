@@ -115,7 +115,7 @@ export async function followMerges(signInStore: Pick<DeveloperSignInStore, "getD
 }
 
 /** The developer a record names, read as whoever they were merged into (by default through the sign-in table, as `evaluate` does). */
-export function resolveSurvivor(deps: AgentAccessDeps, orgId: OrgId, developerId: string): Promise<string> {
+export function resolveSurvivor(deps: Pick<AgentAccessDeps, "signInStore" | "resolveDeveloper">, orgId: OrgId, developerId: string): Promise<string> {
   return deps.resolveDeveloper === undefined ? followMerges(deps.signInStore, developerId) : deps.resolveDeveloper(orgId, developerId);
 }
 

@@ -11,6 +11,7 @@ import {
   developerOrgKey,
   githubInstallationKey,
   memberGrantsPk,
+  memberMergeQueueKey,
   newOrgId as generateOrgId,
   normalizeEmail,
   orgBanKey,
@@ -54,11 +55,23 @@ export interface InviteDescription {
   orgId: OrgId; orgName: string; role: "admin" | "member"; createdBy: string; email?: string; state: "open" | "expired" | "used";
 }
 
+/**
+ * What follows a member's removal outside the org records (Plan 3 Task 11: the agents, skills and shares they owned move to the org's first
+ * owner). With one set, `removeMember` leaves a marker in the same transaction that removes the member, calls `onRemoved` once it committed
+ * and deletes the marker when that returned; if it threw, the marker stays and the broker's next settlement run calls it again. `by` is the
+ * developer who removed them (themselves when they left), or `system`.
+ */
+export interface MemberRemovalHook {
+  onRemoved(event: { orgId: OrgId; developerId: string; by: string }): Promise<void>;
+}
+
 export interface OrgStoreInput {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   now: () => number;
   newOrgId?: () => OrgId;
+  /** Where a removed member's agents go (Task 11). Absent on an install with no agents: no marker is written and nothing is called. */
+  memberRemoval?: MemberRemovalHook;
   /** The Audit Ledger's outbox (Task 18). Absent on a legacy install: nothing is recorded and no pending item is written. */
   audit?: AuditRuntime;
 }
@@ -414,9 +427,24 @@ export class OrgStore {
       const facts = { orgId, actor, occurredAt: this.iso(), occurrence: auditOccurrence(developerId, String(member.joinedAt)), memberId: developerId, role };
       return left ? auditMemberLeft(facts) : auditMemberRemoved(facts);
     });
-    const items = this.removalItems(input, role, pointers, guard, this.pendingFor(event));
+    // The removal's marker (Task 11) goes in the same transaction, so a removal that happened always has one until its moves are done.
+    const hook = this.input.memberRemoval;
+    const by = actor.kind === "member" ? actor.id : "system";
+    const marker = memberMergeQueueKey(this.iso(), orgId, developerId, "removed");
+    const items = this.removalItems(input, role, pointers, guard, [
+      ...this.pendingFor(event),
+      ...(hook === undefined ? [] : [{ Put: { TableName: this.input.tableName, Item: { ...marker, entityType: "MEMBER_REMOVAL", orgId, developerId, by } } }]),
+    ]);
     await this.transact(items, (failed) => (guard.length > 0 && failed.has(items.length - 1) ? coded("LAST_OWNER", LAST_OWNER_MESSAGE) : failed.has(0) ? coded("CHANGE_STALE", "the organization's members changed; try again") : undefined));
     await this.flush(event);
+    if (hook === undefined) return;
+    // The person is removed whatever happens here: a hook that fails leaves its marker, and the sweep calls it again.
+    try {
+      await hook.onRemoved({ orgId, developerId, by });
+      await this.input.documentClient.send(new DeleteCommand({ TableName: this.input.tableName, Key: marker }));
+    } catch (error) {
+      console.log(JSON.stringify({ component: "broker", level: "error", event: "member_removal.hook_failed", orgId, error: errorName(error) ?? "unknown" }));
+    }
   }
 
   /**

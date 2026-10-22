@@ -183,6 +183,11 @@ export interface DeveloperRouteDependencies {
    * (Task 18). They default to `archiveOrgProjects` and `clearOrgEgress`; `POST /v1/app/org/leave` calls them when the last owner leaves.
    */
   closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void> };
+  /**
+   * Plan 3 Task 11: what follows a project's archive on the agents platform (`onProjectArchived`). Called once the archive has applied, never on a
+   * replay; a failure is logged and never undoes or fails the archive. Absent where agents are not set up.
+   */
+  projectArchived?: (orgId: OrgId, project: string) => Promise<void>;
   /** The model proxy, for budgets (ruling R28). Absent without one: budgets are not set up, and task starts are not checked against them. */
   modelAccess?: ModelAccess;
   /** A cloud install (ruling R42): trial lock and machine-time allowance apply to its orgs. */
@@ -961,6 +966,12 @@ async function changeProjectArchive(deps: DeveloperRouteDependencies, caller: De
   if (await latestProjectRecord(deps, caller.orgId, name) === undefined) throw notFound();
   const { warnings, replayed } = await applyArchiveRequest(archiveDepsOf(deps), caller.orgId, name, change, parsed.data.requestId, { developerId: caller.developerId });
   if (!replayed) logDeveloperEvent({ event: change === "archive" ? "developer.project_archived" : "developer.project_restored", orgId: caller.orgId, project: name });
+  if (!replayed && change === "archive" && deps.projectArchived !== undefined) {
+    // Plan 3: the agents platform reacts to the archive. The project is archived whatever this does.
+    try { await deps.projectArchived(caller.orgId, name); } catch (error) {
+      logDeveloperEvent({ event: "developer.project_archived_hook_failed", orgId: caller.orgId, project: name, error: error instanceof Error ? error.name : "unknown" });
+    }
+  }
   return { project: await getAppProject(deps, caller, name), warnings };
 }
 

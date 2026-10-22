@@ -201,8 +201,16 @@ export interface OwnerCap {
   policyRevision: number;
 }
 
+/** Why Rovara moved something of a member's to someone else: the person was removed from the org, or merged into another member. */
+export interface MoveCause {
+  kind: "member_removed" | "member_merged";
+  developerId: string;
+}
+
 /** What a write that changes whose total a budget is in can ask of the store (Task 28). */
 export interface BudgetWriteOptions {
+  /** Why Rovara itself moved this (Task 11): a member removed or merged. The agent's `owner_changed` event names it. */
+  cause?: MoveCause;
   /**
    * The most one person's agent budgets may total in a month. When given, a write that raises someone's total applies only while the total
    * with it is at most this, tested inside the transaction, so two raises that together pass the cap can't both apply, and only while the
@@ -898,7 +906,7 @@ export class AgentStore {
     // The agent's budget leaves the old owner's total and joins the new one's, which the cap holds when one is given.
     const totals = await this.totalsFor(orgId, agent, moved, options.ownerCap);
     const guard = budgetGuard(agent);
-    const event = this.newEvent(orgId, agentId, "owner_changed", by, { from: agent.owner, to: owner, ...(accountable === undefined ? {} : { accountable }) });
+    const event = this.newEvent(orgId, agentId, "owner_changed", by, { from: agent.owner, to: owner, ...(accountable === undefined ? {} : { accountable }), ...(options.cause === undefined ? {} : { cause: options.cause }) });
     const audit = await this.audited(() => [ownerMovedEvent({
       orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId, from: agent.owner, to: owner,
       ...(accountable === undefined ? {} : { accountable: accountable.developerId }),
@@ -926,7 +934,7 @@ export class AgentStore {
     if (isBuiltinAgentId(agentId)) {
       const before = await this.ensureBuiltinSettings(orgId, agentId, by);
       const totals = await this.totalsFor(orgId, before, withBudgetFields(before, { accountable }), options.ownerCap);
-      const event = this.newEvent(orgId, agentId, "owner_changed", by, { accountable, ...(before.accountable === undefined ? {} : { from: before.accountable }) });
+      const event = this.newEvent(orgId, agentId, "owner_changed", by, { accountable, ...(before.accountable === undefined ? {} : { from: before.accountable }), ...(options.cause === undefined ? {} : { cause: options.cause }) });
       const audit = await this.audited(() => [accountableChangedEvent({
         orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId, accountable: accountable.developerId,
         ...(before.accountable === undefined ? {} : { previous: before.accountable.developerId }),
@@ -944,7 +952,7 @@ export class AgentStore {
     if (agent.owner.kind !== "project") throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
     const totals = await this.totalsFor(orgId, agent, withBudgetFields(agent, { accountable }), options.ownerCap);
     const guard = budgetGuard(agent);
-    const event = this.newEvent(orgId, agentId, "owner_changed", by, { accountable, ...(agent.accountable === undefined ? {} : { from: agent.accountable }) });
+    const event = this.newEvent(orgId, agentId, "owner_changed", by, { accountable, ...(agent.accountable === undefined ? {} : { from: agent.accountable }), ...(options.cause === undefined ? {} : { cause: options.cause }) });
     const audit = await this.audited(() => [accountableChangedEvent({
       orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId, accountable: accountable.developerId,
       ...(agent.accountable === undefined ? {} : { previous: agent.accountable.developerId }),
@@ -1029,6 +1037,60 @@ export class AgentStore {
       unshared: input.remove.map((principal) => principalKey(principal)),
     }));
     await this.commit(items, () => sharesConflict(), input.request, input.upsert);
+  }
+
+  /** The agents shared with one principal, in the order of their ids (from the share index). */
+  async listSharedWith(orgId: OrgId, principal: AgentPrincipal): Promise<AgentId[]> {
+    return (await this.queryAll(principalSharesKey(orgId, principal, "").pk)).map((item) => item["sk"] as AgentId);
+  }
+
+  /**
+   * Takes `from`'s share of one agent away and, when `to` is given, gives `to` the share instead (the higher level when `to` already has
+   * one; `to` keeps its own item then). Rovara's own move after a member merge or removal (Task 11): one transaction holds the agent's
+   * share revision, the share and index items and one `shared` event naming the cause, so a save that raced it conflicts and is read again.
+   * Nothing is written when `from` holds no share, so the move can be repeated.
+   */
+  async reassignShare(input: { orgId: OrgId; agentId: AgentId; from: AgentPrincipal; to?: AgentPrincipal; by: string; cause: MoveCause }): Promise<void> {
+    const { orgId, agentId, from, to } = input;
+    if (to !== undefined && principalKey(to) === principalKey(from)) return;
+    const rank = (level: unknown) => ["view", "use", "edit"].indexOf(String(level));
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const [meta, own, index] = await Promise.all([
+        this.read(agentKey(orgId, agentId, "META")), this.read(agentKey(orgId, agentId, `SHARE#${principalKey(from)}`)), this.read(principalSharesKey(orgId, from, agentId)),
+      ]);
+      if (own === undefined && index === undefined) return;
+      const drop = (key: OrgKey): TransactItem => ({ Delete: { TableName: this.input.tableName, Key: key } });
+      const dropped = [...(own === undefined ? [] : [drop(agentKey(orgId, agentId, `SHARE#${principalKey(from)}`))]), ...(index === undefined ? [] : [drop(principalSharesKey(orgId, from, agentId))])];
+      if (meta === undefined || own === undefined) {
+        // Nothing to guard or to give: an agent that is gone, or an index item left without its share.
+        await this.transact(dropped, () => undefined);
+        return;
+      }
+      const revision = typeof meta["sharesRevision"] === "number" ? meta["sharesRevision"] : 0;
+      const theirs = to === undefined ? undefined : await this.read(agentKey(orgId, agentId, `SHARE#${principalKey(to)}`));
+      const giveTo = to !== undefined && (theirs === undefined || rank(own["level"]) > rank(theirs["level"])) ? to : undefined;
+      const level = own["level"];
+      const items: TransactItem[] = [
+        this.update(agentKey(orgId, agentId, "META"), {
+          set: { sharesRevision: revision + 1 },
+          when: (a) => (revision === 0 ? `${EXISTS} AND attribute_not_exists(${a.name("sharesRevision")})` : `${a.name("sharesRevision")} = ${a.value(revision)}`),
+        }),
+        ...(giveTo === undefined ? [] : [
+          { Put: { TableName: this.input.tableName, Item: { ...agentKey(orgId, agentId, `SHARE#${principalKey(giveTo)}`), entityType: "AGENT_SHARE", orgId, agentId, principal: giveTo, level, grantedBy: own["grantedBy"], grantedAt: own["grantedAt"] } } },
+          { Put: { TableName: this.input.tableName, Item: { ...principalSharesKey(orgId, giveTo, agentId), entityType: "AGENT_SHARE_INDEX", agentId, principal: giveTo, level, grantedAt: own["grantedAt"] } } },
+        ] satisfies TransactItem[]),
+        ...dropped,
+        this.event(orgId, agentId, "shared", input.by, {
+          shared: giveTo === undefined ? [] : [{ principal: principalKey(giveTo), level }], unshared: [principalKey(from)], cause: input.cause,
+        }),
+      ];
+      try {
+        await this.transact(items, (failed) => (failed.has(0) ? sharesConflict() : undefined));
+        return;
+      } catch (error) {
+        if ((error as { code?: string }).code !== "AGENT_REVISION_CONFLICT" || attempt === 2) throw error;
+      }
+    }
   }
 
   /**

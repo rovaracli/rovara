@@ -316,7 +316,7 @@ import { WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../d
 import { approvedFeedbackFixes, withFeedbackFixes, withStatusLines } from "../developer/pull-request-feedback-section.js";
 import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, type CloudProjectDefaults, type CreateProjectInput } from "../org/cloud-projects.js";
 import { installEnvironmentName, orgResolverFromEnvironment, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
-import { OrgStore } from "../org/store.js";
+import { OrgStore, type MemberRemovalHook } from "../org/store.js";
 import { decideEgressDomain, listPendingEgress, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import { runEgressDomainsSync, syncCellAllowList } from "./egress-domains-sync.js";
 import { requireProject } from "./project-records.js";
@@ -354,7 +354,8 @@ import { changeBudgets, keyIdOf, mintKeyHealing, type OrgBudgetSettings } from "
 import { admitWork, mintOperationKey, type MintOperationKeyInput } from "../spend/admission.js";
 import { blockOperationKeys, forgetKey, registerKey, type LedgerDependencies } from "../spend/ledger.js";
 import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTask, resolvePayer } from "../spend/payer.js";
-import { runSettlementJobs, runSpendSweep } from "../spend/settlement-job.js";
+import { runSettlementJobs, runSpendSweep, type SettlementJob } from "../spend/settlement-job.js";
+import { memberRemovalHook, onProjectArchived, runMemberMergeDrain } from "../agents/lifecycle.js";
 import { readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
 import { SkillStore, servedSkills } from "../agents/skills.js";
@@ -939,8 +940,13 @@ async function developerDisplayName(dependencies: Pick<AwsBrokerDependencies, "d
   return typeof out.Item?.displayName === "string" ? out.Item.displayName : undefined;
 }
 
-function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName" | "audit">): OrgStore {
-  return new OrgStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) });
+function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName" | "audit">, memberRemoval?: MemberRemovalHook): OrgStore {
+  return new OrgStore({
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+    ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
+    // Plan 3, Task 11: a removed member's agents, skills and shares move on (the routes that remove people pass it).
+    ...(memberRemoval === undefined ? {} : { memberRemoval }),
+  });
 }
 
 /**
@@ -1311,12 +1317,15 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     // Plan 3, Task 30: every 5 minutes, the spend settlement jobs (the sweep of open model keys today; PF13 adds the others to this list).
     if (isSpendSettlementEvent(event)) {
       const ledger = ledgerOf(dependencies);
-      if (ledger === undefined) return json({ skipped: true }, "spend-settlement");
-      const jobs = await runSettlementJobs(
-        [{ name: "sweep-spend", run: () => runSpendSweep(ledger, { budgetMs: SPEND_SWEEP_BUDGET_MS }) }],
-        (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
-      );
-      return json({ jobs }, "spend-settlement");
+      // PF13: one list of independent jobs inside one budget of SPEND_SWEEP_BUDGET_MS. The short ones go first with a share of it each, and
+      // the spend sweep, which takes whatever is left, goes last, so a long sweep can't starve them.
+      const startedAt = Date.now();
+      const jobs: SettlementJob[] = [
+        ...(agents === undefined ? [] : [{ name: "drain-member-merges", run: () => runMemberMergeDrain(agents, { budgetMs: MEMBER_DRAIN_BUDGET_MS }) }]),
+        ...(ledger === undefined ? [] : [{ name: "sweep-spend", run: () => runSpendSweep(ledger, { budgetMs: Math.max(0, SPEND_SWEEP_BUDGET_MS - (Date.now() - startedAt)) }) }]),
+      ];
+      if (jobs.length === 0) return json({ skipped: true }, "spend-settlement");
+      return json({ jobs: await runSettlementJobs(jobs, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))) }, "spend-settlement");
     }
     // Plan 2, Task 19: every 5 minutes, the legacy backfill (once) and then the cell's DNS allowlist follows the approved egress domains.
     if (isEgressDomainsSyncEvent(event)) {
@@ -1685,7 +1694,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // verifies the developer token, then checks the method and session (FR-009).
       if (url.pathname.startsWith("/v1/dev/") || url.pathname.startsWith("/v1/app/")) {
         if (!dependencies.developer) throw agentXError("NOT_FOUND", "developer sign-in is not set up in this deployment");
-        const answer = await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
+        const answer = await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
+          orgs: orgStoreOf(dependencies, agents === undefined ? undefined : memberRemovalHook(agents)),
+          // Plan 3, Task 11: an archived project's agents (its roster and its own agents) stay as they are; this says what was left standing.
+          ...(agents === undefined ? {} : { projectArchived: async (orgId: OrgId, project: string) => { await onProjectArchived(agents, { orgId, project }); } }),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),
           ...(dependencies.egressDomainsSync === undefined ? {} : { egressSync: dependencies.egressDomainsSync }),
@@ -10287,6 +10299,8 @@ function isSpendSettlementEvent(event: unknown): event is { source: "agentx.spen
 
 /** The broker's function has 30 seconds; a sweep that has not finished by then stops and the next run resumes from where it was. */
 const SPEND_SWEEP_BUDGET_MS = 20_000;
+/** The member-merge drain's share of that budget (Task 11): the queue is short and each marker is a few reads, so the rest is the spend sweep's. */
+const MEMBER_DRAIN_BUDGET_MS = 5_000;
 
 /** Task 30: what the spend ledger needs, or undefined where the install has no agents or no model proxy (it then keeps no ledger). */
 function ledgerOf(dependencies: AwsBrokerDependencies): LedgerDependencies | undefined {
