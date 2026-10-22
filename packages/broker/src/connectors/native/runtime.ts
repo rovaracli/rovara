@@ -159,7 +159,7 @@ export function nativeConnection<Scope>(
       if (found !== undefined) return failure(`${tool.name}: ${found.path} is ${found.kind === "required" ? "required" : "not allowed"}`);
       try {
         const answer = await tool.run(own, { scope: ctx.routing.scopeOf(values), credential: ctx.credential, fetch: ctx.fetch });
-        return { content: [{ type: "text", text: redact(truncated(answer.text)) }], ...(answer.structured === undefined ? {} : { structuredContent: answer.structured }) };
+        return { content: [{ type: "text", text: truncated(redact(answer.text)) }], ...(answer.structured === undefined ? {} : { structuredContent: answer.structured }) };
       } catch (error) {
         // The words we wrote (a refusal, a fixed vendor-failure text) reach the model through the engine; anything else is named only by the tool.
         if (error instanceof NativeToolRefusal) throw new ToolRefusal(redact(error.message), error.reason);
