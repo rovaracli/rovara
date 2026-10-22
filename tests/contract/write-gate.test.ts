@@ -166,7 +166,7 @@ function world(options: { audit?: boolean } = {}) {
 
   const caller = (developerId: string, orgRole: OrgRole = "member", orgId: OrgId = ORG_A): AgentCaller => ({ orgId, developerId, orgRole });
   const input = (over: Partial<DecideWriteInput> = {}): DecideWriteInput => ({
-    orgId: ORG_A, taskId: TASK, operationId: OPERATION, stepId: "work", agentName: "Triage bot", tool: SAVE_ISSUE,
+    orgId: ORG_A, taskId: TASK, operationId: OPERATION, stepId: "work", agentId: "agt_00000000000000000007", agentName: "Triage bot", tool: SAVE_ISSUE,
     call: { scope: "eng", schemaHash: SCHEMA, arguments: { id: "ENG-12", stateId: "s1" } },
     classify: CLASSIFY, run: { project: "web", owner: { developerId: ALICE, name: "Alice" } }, ...over,
   });
@@ -1740,9 +1740,12 @@ describe("the routes", () => {
     expect(await code(route(w, w.caller(BOB), "POST", `/v1/app/approvals/${id}/decide`, { requestId: REQ(1), decision: "APPROVE" }))).toMatchObject({ code: "NOT_FOUND" });
     expect((await w.record(id)).status).toBe("PENDING");
     let finished = 0;
-    w.runtime.requireDecide = async (_request, approvalId) => {
+    // A guard on the write gate's runtime is not one: only `ApprovalDependencies.requireDecide` is read (fix round 1, m2).
+    (w.runtime as unknown as { requireDecide: unknown }).requireDecide = async () => ({ orgId: ORG_A, developerId: CARA, proof: { kind: "none" }, finish: async () => undefined, release: async () => undefined });
+    expect(await code(route(w, w.caller(BOB), "POST", `/v1/app/approvals/${id}/decide`, { requestId: REQ(1), decision: "APPROVE" }))).toMatchObject({ code: "NOT_FOUND" });
+    w.deps.requireDecide = async (_request, approvalId) => {
       if (approvalId !== id) throw agentXError("NOT_FOUND", "approval not found");
-      return { orgId: ORG_A, developerId: BOB, proof: { kind: "none" } as never, finish: async () => { finished += 1; } };
+      return { orgId: ORG_A, developerId: BOB, proof: { kind: "none" } as never, finish: async () => { finished += 1; }, release: async () => { finished += 100; } };
     };
     const decided = await route(w, w.caller(CARA), "POST", `/v1/app/approvals/${id}/decide`, { requestId: REQ(2), decision: "APPROVE" });
     // The decider is the guard's session member (Bob), not the token's caller (Cara).

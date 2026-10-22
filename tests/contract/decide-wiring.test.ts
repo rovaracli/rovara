@@ -6,14 +6,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
-  agentXError, approvalKey, orgMemberKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey,
+  AgentXError, agentXError, approvalKey, orgMemberKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey,
   type ConnectorResult, type GrantedTool, type OrgId, type OrgRole, type ToolFacts,
 } from "@agentx/contracts";
 import type { AgentCaller } from "../../packages/broker/src/agents/access.js";
-import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
+import { approvalDecideKind, requestIdFor } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { routeApprovalRequest } from "../../packages/broker/src/agents/approval-routes.js";
 import {
-  createPendingChange, createStepApproval, getAnyApproval, registerApprovalSubjectHandler,
+  createPendingChange, createStepApproval, expireApprovals, getAnyApproval, registerApprovalSubjectHandler,
   type AnyApprovalRecord, type ApprovalDependencies, type StepApprovalRecord, type WriteApprovalRecord,
 } from "../../packages/broker/src/agents/approvals.js";
 import { registerAgentApprovals } from "../../packages/broker/src/agents/changes.js";
@@ -25,7 +25,7 @@ import { routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";
 import type { DecideKind, DecideKinds } from "../../packages/broker/src/developer/decide-kinds.js";
 import { brokerDecideKinds, lambdaInspectInvoker, type DecideInspectRequest } from "../../packages/broker/src/developer/decide-inspect.js";
 import {
-  DECIDE_COOKIE, DecideStore, csrfTokenFor, requireDecideSession, type DecideRequestContext,
+  DECIDE_COOKIE, DecideStore, csrfTokenFor, mintConfirmUrl, requireDecideSession, type DecideRequestContext,
 } from "../../packages/broker/src/developer/decide-session.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
@@ -160,7 +160,7 @@ function world() {
     page(approvalId, { method: "POST", cookie, fields: { decision, csrf: csrfTokenFor(cookie) }, ...(kinds === undefined ? {} : { kinds }) });
 
   const input = (args: Record<string, unknown> = { id: "ENG-12", stateId: "s1" }): DecideWriteInput => ({
-    orgId: ORG_A, taskId: TASK, operationId: OPERATION, stepId: "work", agentName: "Triage bot", tool: SAVE_ISSUE,
+    orgId: ORG_A, taskId: TASK, operationId: OPERATION, stepId: "work", agentId: "agt_00000000000000000007", agentName: "Triage bot", tool: SAVE_ISSUE,
     call: { scope: "eng", schemaHash: SCHEMA, arguments: args }, classify: CLASSIFY, run: { project: "web", owner: { developerId: ALICE, name: "Alice" } },
   });
   const waitingWrite = async (args?: Record<string, unknown>): Promise<string> => {
@@ -540,6 +540,150 @@ describe("the decide route and the guard behind it", () => {
   });
 });
 
+describe("reads and the confirm-link route (fix round 1: I1, I2)", () => {
+  const request = (method: string, path: string, body?: unknown) => ({ method, path, requestId: "r", headers: {}, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const withMint = (w: World, mint?: ApprovalDependencies["mintConfirmUrl"]): ApprovalDependencies => ({
+    ...w.deps, mintConfirmUrl: mint ?? ((who, approvalId) => mintConfirmUrl(w.context(), { developerId: who.developerId, orgId: who.orgId }, approvalId)),
+  });
+  const route = (w: World, who: AgentCaller, method: string, path: string, deps: ApprovalDependencies = withMint(w), body?: unknown) =>
+    routeApprovalRequest(deps, who, request(method, path, body), new URL(`${CELL}${path}`)) as Promise<{ approval?: { confirmUrl: string; status: string }; confirmUrl?: string; ticketed?: boolean }>;
+  const tickets = (w: World) => w.db.find((item) => String(item.pk).startsWith("DECIDE_TICKET#"));
+
+  it("mints nothing on a read, so any number of reads leaves the member able to mint", async () => {
+    const w = world();
+    const id = await w.waitingWrite();
+    for (let index = 0; index < 25; index += 1) expect((await route(w, caller(BOB), "GET", `/v1/app/approvals/${id}`)).approval?.confirmUrl).toBe(`${CELL}/v1/app/approve/${id}`);
+    expect(tickets(w)).toEqual([]);
+    const asked = await route(w, caller(BOB), "POST", `/v1/app/approvals/${id}/confirm-link`, withMint(w), {});
+    expect(asked.ticketed).toBe(true);
+    expect(asked.confirmUrl).toMatch(new RegExp(`^${CELL}/v1/app/approve/${id}\\?ticket=[A-Za-z0-9_-]{43}$`));
+    expect(tickets(w)).toHaveLength(1);
+  });
+
+  it("answers the bare link for an approval past its time that the sweep has not ended, and for a decided one, without minting", async () => {
+    const w = world();
+    const expired = await w.waitingWrite();
+    const decided = await w.waitingWrite({ id: "ENG-13", stateId: "s2" });
+    expect((await w.decide(decided, await w.session(BOB, decided))).statusCode).toBe(200);
+    w.clock.now += 8 * 86_400_000;
+    for (const id of [expired, decided]) {
+      const shown = await route(w, caller(BOB), "GET", `/v1/app/approvals/${id}`);
+      expect(shown.approval?.confirmUrl, id).toBe(`${CELL}/v1/app/approve/${id}`);
+      const asked = await route(w, caller(BOB), "POST", `/v1/app/approvals/${id}/confirm-link`, withMint(w), {});
+      expect(asked, id).toEqual({ confirmUrl: `${CELL}/v1/app/approve/${id}`, ticketed: false });
+    }
+    expect(tickets(w)).toEqual([]);
+  });
+
+  it("answers the bare link to a run owner who lost the right to decide, and not found to a maintainer who lost every right", async () => {
+    const w = world();
+    const id = await w.waitingWrite();
+    w.members.grant(ORG_A, "web", ALICE, "viewer");
+    expect(await route(w, caller(ALICE), "POST", `/v1/app/approvals/${id}/confirm-link`, withMint(w), {})).toEqual({ confirmUrl: `${CELL}/v1/app/approve/${id}`, ticketed: false });
+    w.members.grant(ORG_A, "web", BOB, "viewer");
+    await expect(route(w, caller(BOB), "POST", `/v1/app/approvals/${id}/confirm-link`, withMint(w), {})).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(tickets(w)).toEqual([]);
+  });
+
+  it("falls back to the bare link on any error of ours from the mint (the limit included), and rethrows what is not ours", async () => {
+    const w = world();
+    const id = await w.waitingWrite();
+    const limited = withMint(w, async () => { throw agentXError("TOO_MANY_REQUESTS", "Too many confirmation attempts. Try again later."); });
+    expect(await route(w, caller(BOB), "POST", `/v1/app/approvals/${id}/confirm-link`, limited, {})).toEqual({ confirmUrl: `${CELL}/v1/app/approve/${id}`, ticketed: false });
+    const closed = withMint(w, async () => { throw agentXError("APPROVAL_CLOSED", "closed meanwhile"); });
+    expect((await route(w, caller(BOB), "POST", `/v1/app/approvals/${id}/confirm-link`, closed, {})).ticketed).toBe(false);
+    const broken = withMint(w, async () => { throw new Error("socket hang up"); });
+    await expect(route(w, caller(BOB), "POST", `/v1/app/approvals/${id}/confirm-link`, broken, {})).rejects.toThrow("socket hang up");
+  });
+
+  it("is a POST on an approval's own path only, and absent without a mint", async () => {
+    const w = world();
+    const id = await w.waitingWrite();
+    await expect(route(w, caller(BOB), "GET", `/v1/app/approvals/${id}/confirm-link`)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(await route(w, caller(BOB), "POST", `/v1/app/approvals/${id}/confirm-link`, w.deps, {})).toEqual({ confirmUrl: `${CELL}/v1/app/approve/${id}`, ticketed: false });
+  });
+});
+
+describe("the API decide route settles the session by what came of the decision (fix round 1: m3, m4)", () => {
+  /** A guard that records what is done with the session; the documentClient fails the decision's claim with `failure`. */
+  async function attempt(failure: Error | undefined, options: { requestId?: string } = {}) {
+    const w = world();
+    const id = await w.waitingChange();
+    const calls: string[] = [];
+    const proof = { kind: "fresh_sign_in" as const, method: "email_code" as const, authTime: "2026-10-22T08:59:00.000Z", sessionRef: "d".repeat(64) };
+    const documentClient = { send: (command: unknown) => {
+      if (failure !== undefined && (command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand") return Promise.reject(failure);
+      return w.db.send(command as never);
+    } };
+    const deps = { ...w.deps, documentClient, requireDecide: async () => ({
+      orgId: ORG_A, developerId: DANA, proof, finish: async () => { calls.push("finish"); }, release: async () => { calls.push("release"); },
+    }) } as unknown as ApprovalDependencies;
+    const body = { decision: "APPROVE", ...(options.requestId === undefined ? {} : { requestId: options.requestId }) };
+    const outcome = await routeApprovalRequest(deps, caller(DANA, "admin"), { method: "POST", path: `/v1/app/approvals/${id}/decide`, requestId: "r", headers: {}, body: JSON.stringify(body) }, new URL(`${CELL}/v1/app/approvals/${id}/decide`))
+      .then((value) => ({ value }), (error: unknown) => ({ error }));
+    return { w, id, calls, outcome, proof };
+  }
+
+  it("spends the session on a failure of ours at 500 and above, exactly 500 included, and gives it back below 500", async () => {
+    for (const [status, expected] of [[503, "finish"], [500, "finish"], [499, "release"], [409, "release"]] as const) {
+      const { calls, outcome } = await attempt(new AgentXError("RUNTIME_UNAVAILABLE", "trouble", status));
+      expect("error" in outcome, String(status)).toBe(true);
+      expect(calls, String(status)).toEqual([expected]);
+    }
+    // An error that is not one of ours may have partly happened: spent.
+    expect((await attempt(new Error("socket hang up"))).calls).toEqual(["finish"]);
+  });
+
+  it("spends the session when the decision was made", async () => {
+    const { calls, outcome, w, id } = await attempt(undefined);
+    expect(outcome).toMatchObject({ value: { status: "APPROVED_DONE" } });
+    expect(calls).toEqual(["finish"]);
+    expect(await w.record(id)).toMatchObject({ status: "APPROVED_DONE" });
+  });
+
+  it("derives the request id from the session on this route too: the client's is not used", async () => {
+    const { w, id, proof } = await attempt(undefined, { requestId: randomUUID() });
+    expect((await w.record(id)).decisionRequestId).toBe(requestIdFor(proof, id));
+    // Without a requestId in the body the decision still has one.
+    const none = await attempt(undefined);
+    expect((await none.w.record(none.id)).decisionRequestId).toBe(requestIdFor(none.proof, none.id));
+  });
+});
+
+describe("what the page says of a write and of an expired approval (fix round 1: concern 3, m6)", () => {
+  it("stores the agent's id and name on the write record when it is created, and the page shows the name from the record", async () => {
+    const w = world();
+    const id = await w.waitingWrite();
+    expect((await w.record(id) as WriteApprovalRecord).agent).toEqual({ agentId: "agt_00000000000000000007", name: "Triage bot" });
+    const shown = await w.page(id, { cookie: await w.session(BOB, id) });
+    expect(shown.body).toContain("Triage bot");
+    // The name is the record's, not a lookup: it survives a rename (nothing here reads the agent).
+    const stored = w.db.get(approvalKey(ORG_A, id).pk, approvalKey(ORG_A, id).sk)!;
+    w.db.set({ ...stored, agent: { agentId: "agt_00000000000000000007", name: "<b>Renamed</b>" } });
+    const again = await w.page(id, { cookie: await w.session(BOB, id) });
+    expect(again.body).toContain("&lt;b&gt;Renamed&lt;/b&gt;");
+    expect(again.body).not.toContain("<b>Renamed");
+  });
+
+  it("says an approval expired, with the time, rather than that someone decided it: unswept and swept", async () => {
+    const w = world();
+    const id = await w.waitingWrite();
+    const expiresAt = (await w.record(id)).expiresAt;
+    w.clock.now = Date.parse(expiresAt) + 1;
+    const unswept = await w.page(id, { cookie: await w.session(BOB, id) });
+    expect(unswept.statusCode).toBe(409);
+    expect(unswept.body).toContain(`This request expired at ${expiresAt}.`);
+    expect(unswept.body).not.toContain("already decided");
+    await expireApprovals(w.deps, w.clock.now);
+    expect(await w.record(id)).toMatchObject({ status: "EXPIRED" });
+    const swept = await w.page(id, { cookie: await w.session(BOB, id) });
+    expect(swept.body).toContain(`This request expired at ${expiresAt}.`);
+    expect(swept.body).not.toContain("a teammate");
+    // The bridge carries the same fact.
+    expect(await w.kind.inspect({ orgId: ORG_A, developerId: BOB, approvalId: id })).toEqual({ status: "expired", at: expiresAt });
+  });
+});
+
 describe("the session store gives a claim back (M-d)", () => {
   it("releases only a claimed, unexpired session, and leaves an unknown one alone", async () => {
     const w = world();
@@ -568,13 +712,14 @@ describe("the sign-in function's kinds ask the broker (hand-off 1)", () => {
 
   it("sends a decide-inspect request with the member and the approval, and maps each answer", async () => {
     const sent: DecideInspectRequest[] = [];
-    const answers: unknown[] = [{ status: "open" }, { status: "forbidden", who: "Alice or a project maintainer" }, { status: "decided", by: "Bob", at: "2026-10-22T10:00:00.000Z" }, { status: "not_found" }];
+    const answers: unknown[] = [{ status: "open" }, { status: "forbidden", who: "Alice or a project maintainer" }, { status: "decided", by: "Bob", at: "2026-10-22T10:00:00.000Z" }, { status: "not_found" }, { status: "expired", at: "2026-10-22T10:00:00.000Z" }];
     const kinds = brokerDecideKinds({ invoke: async (request) => { sent.push(request); return answers.shift(); } });
     expect(Object.keys(kinds).sort()).toEqual(["apr", "spr"]);
     expect((await kinds.apr!.inspect(target)).status).toBe("open");
     expect(await kinds.apr!.inspect(target)).toEqual({ status: "forbidden", who: "Alice or a project maintainer" });
     expect(await kinds.spr!.inspect({ ...target, approvalId: "spr_aaaaaaaaaaaaaaaaaaaa" })).toEqual({ status: "decided", by: "Bob", at: "2026-10-22T10:00:00.000Z" });
     expect(await kinds.apr!.inspect(target)).toEqual({ status: "not_found" });
+    expect(await kinds.apr!.inspect(target)).toEqual({ status: "expired", at: "2026-10-22T10:00:00.000Z" });
     expect(sent[0]).toEqual({ kind: "decide-inspect", orgId: ORG_A, developerId: BOB, approvalId: "apr_aaaaaaaaaaaaaaaaaaaa" });
     expect(sent[2]).toMatchObject({ approvalId: "spr_aaaaaaaaaaaaaaaaaaaa" });
   });
@@ -706,26 +851,34 @@ describe("through the broker: a token is sent to the page, and the page decides"
     expect(b.status(id)).toBe("PENDING");
   });
 
-  it("shows the ticketed confirmUrl on one approval for the person who may decide it, the bare one in a list, and a bare one when the limit is reached", async () => {
+  it("shows the bare link on every read, however many, and mints a ticket only when asked: POST confirm-link", async () => {
     const b = await brokerWorld();
     const id = await b.waiting();
-    const shown = await b.dev(B_DANA, "GET", `/v1/app/approvals/${id}`);
-    expect(shown.status).toBe(200);
-    const url = (shown.body.approval as { confirmUrl: string }).confirmUrl;
-    expect(url).toMatch(new RegExp(`^${BROKER_CELL}/v1/app/approve/${id}\\?ticket=[A-Za-z0-9_-]{43}$`));
-    expect(await b.store.redeemTicket(new URL(url).searchParams.get("ticket")!)).toMatchObject({ developerId: B_DANA.developerId, approvalId: id, mintedBy: "token" });
-    const tickets = b.db.find((item) => String(item.pk).startsWith("DECIDE_TICKET#")).length;
+    const bare = `${BROKER_CELL}/v1/app/approve/${id}`;
+    for (let index = 0; index < 12; index += 1) {
+      const shown = await b.dev(B_DANA, "GET", `/v1/app/approvals/${id}`);
+      expect(shown.status).toBe(200);
+      expect((shown.body.approval as { confirmUrl: string }).confirmUrl).toBe(bare);
+    }
     const listed = await b.dev(B_DANA, "GET", "/v1/app/approvals");
-    expect((listed.body.approvals as Array<{ confirmUrl: string }>).map((entry) => entry.confirmUrl)).toEqual([`${BROKER_CELL}/v1/app/approve/${id}`]);
-    expect(b.db.find((item) => String(item.pk).startsWith("DECIDE_TICKET#"))).toHaveLength(tickets);
-    // Someone who can see it but not decide it (here the person who asked for it) gets the bare link and no ticket.
-    const other = await b.dev(B_MAX, "GET", `/v1/app/approvals/${id}`);
-    expect(other.status).toBe(200);
-    expect((other.body.approval as { confirmUrl: string }).confirmUrl).toBe(`${BROKER_CELL}/v1/app/approve/${id}`);
-    for (let index = 0; index < 5; index += 1) await b.dev(B_DANA, "GET", `/v1/app/approvals/${id}`);
-    const limited = await b.dev(B_DANA, "GET", `/v1/app/approvals/${id}`);
-    expect(limited.status).toBe(200);
-    expect((limited.body.approval as { confirmUrl: string }).confirmUrl).toBe(`${BROKER_CELL}/v1/app/approve/${id}`);
+    expect((listed.body.approvals as Array<{ confirmUrl: string }>).map((entry) => entry.confirmUrl)).toEqual([bare]);
+    expect(b.db.find((item) => String(item.pk).startsWith("DECIDE_TICKET#"))).toEqual([]);
+    // After all those reads the member can still mint, and the ticket is the first.
+    const asked = await b.dev(B_DANA, "POST", `/v1/app/approvals/${id}/confirm-link`, {});
+    expect(asked.status, JSON.stringify(asked.body)).toBe(200);
+    expect(asked.body).toMatchObject({ ticketed: true, confirmUrl: expect.stringMatching(new RegExp(`^${bare}\\?ticket=[A-Za-z0-9_-]{43}$`)) as string });
+    const ticket = new URL((asked.body as { confirmUrl: string }).confirmUrl).searchParams.get("ticket")!;
+    expect(await b.store.redeemTicket(ticket)).toMatchObject({ developerId: B_DANA.developerId, approvalId: id, mintedBy: "token" });
+  });
+
+  it("gives the bare link and no ticket to someone who can see the approval but not decide it, and 404 to someone who can't see it", async () => {
+    const b = await brokerWorld();
+    const id = await b.waiting();
+    const asked = await b.dev(B_MAX, "POST", `/v1/app/approvals/${id}/confirm-link`, {});
+    expect(asked.status).toBe(200);
+    expect(asked.body).toMatchObject({ ticketed: false, confirmUrl: `${BROKER_CELL}/v1/app/approve/${id}` });
+    expect((await b.dev(B_CARL, "POST", `/v1/app/approvals/${id}/confirm-link`, {})).status).toBe(404);
+    expect(b.db.find((item) => String(item.pk).startsWith("DECIDE_TICKET#"))).toEqual([]);
   });
 
   it("decides on the page with a fresh session, the cell's Origin and the CSRF field: the change is applied once, with the session's proof", async () => {
