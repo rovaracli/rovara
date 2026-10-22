@@ -511,8 +511,8 @@ describe("a tool newly approved to write waits for a person on the page (R9-3, R
     const first = s.revision(1)!;
     s.h.db.set({ ...projectRevisionKey(TEST_ORG, "web", 2), entityType: "PROJECT", registeredBy: "seed", registeredAt: "2026-10-03T00:00:00.000Z", runtimeBinding: BINDING, definition: { ...first.definition, revision: 2, integrations: { connectors: [wide] } } });
     s.h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "web"), entityType: "PROJECT_CATALOG", name: "web", latestRevision: 2, firstRegisteredAt: "2026-10-01T00:00:00.000Z" });
-    // The same write tool stays write: nothing is newly approved, so it applies at once (and changes only the attribution).
-    const same = await s.put(MIA, "linear", linear(id, WRITE_TOOLS, { attribution: false }), { expectedRevision: 2 });
+    // The same write tool stays write: nothing is newly approved, so it applies at once (and changes only a description).
+    const same = await s.put(MIA, "linear", linear(id, [{ name: "list_issues", access: "read", description: "Lists issues" }, ...WRITE_TOOLS.slice(1)]), { expectedRevision: 2 });
     expect(same.status).toBe(200);
     expect(s.approvals()).toHaveLength(0);
     const removed = await s.put(MIA, "linear", linear(id, READ_TOOLS, { attribution: false }), { expectedRevision: 3 });
@@ -1304,6 +1304,30 @@ describe("a loosened limit on a confirmed write tool waits for the page (GAP-1)"
     await s.fakeLinear.close();
   });
 
+  it("answers 202 for dropping the ownership rule's entry of a write tool named like a wording field", async () => {
+    const s = await install();
+    const id = await s.connection({ type: "mcp", label: "Sentry", access: "read_write", endpoint: "https://mcp.acme.dev/mcp", vendor: "Sentry" }, { token: "sentry-token-0123456789" });
+    const rule = (references: Record<string, string[]>) => ({ mode: "ownership", itemNoun: "issue", references, lookup: { tool: "get_issue", argument: "id" }, field: "project", equals: "project" });
+    const owned = (references: Record<string, string[]>) => sentry(id, { scoping: rule(references), tools: [{ name: "message", access: "write" }] });
+    const revision = seedConnectors(s, [owned({ message: ["issueId"], save_issue: ["id"] })]);
+    const asked = await s.put(MIA, "sentry", owned({ save_issue: ["id"] }), { expectedRevision: revision });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    expect(asked.body["changes"]).toEqual(["On web, lets the sentry connector's write tools act under different scope rules"]);
+    expect(s.revisions()).toHaveLength(revision);
+    await s.fakeLinear.close();
+  });
+
+  it("answers 202 for turning the requester footer off on a connector with a write tool", async () => {
+    const s = await install();
+    const id = await s.connection({ type: "linear", label: "Team Linear", access: "read_write" });
+    const revision = seedConnectors(s, [linear(id, WRITE_TOOLS)]);
+    const asked = await s.put(MIA, "linear", linear(id, WRITE_TOOLS, { attribution: false }), { expectedRevision: revision });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    expect(asked.body["changes"]).toEqual(["On web, lets the linear connector's write tools write without the requester footer"]);
+    expect(s.revisions()).toHaveLength(revision);
+    await s.fakeLinear.close();
+  });
+
   it("answers 202 for loosening an MCP ownership rule on a stored write connector", async () => {
     const s = await install();
     const id = await s.connection({ type: "mcp", label: "Sentry", access: "read_write", endpoint: "https://mcp.acme.dev/mcp", vendor: "Sentry" }, { token: "sentry-token-0123456789" });
@@ -1370,13 +1394,14 @@ describe("widenings", () => {
   describe("limits on a confirmed write tool (GAP-1)", () => {
     const tool = (extra: Record<string, unknown>) => [{ name: "save_issue", access: "write", ...extra }];
     const withTool = (extra: Record<string, unknown>) => link({ tools: tool(extra) });
-    const loosened = ["On web, lets the linear connector's save_issue tool make changes (fewer argument limits)"];
+    const fewer = ["On web, lets the linear connector's save_issue tool make changes (fewer argument limits)"];
+    const looser = ["On web, lets the linear connector's save_issue tool make changes (looser argument limits)"];
 
     it("counts removing or growing allowedArguments as a widening, and keeping or shrinking it as none", () => {
       const stored = withTool({ allowedArguments: ["title", "stateId"] });
-      expect(widenings(stored, withTool({}), "web")).toEqual(loosened);
-      expect(widenings(stored, withTool({ allowedArguments: ["title", "stateId", "assigneeId"] }), "web")).toEqual(loosened);
-      expect(widenings(stored, withTool({ allowedArguments: ["title", "teamId"] }), "web")).toEqual(loosened);
+      expect(widenings(stored, withTool({}), "web")).toEqual(fewer);
+      expect(widenings(stored, withTool({ allowedArguments: ["title", "stateId", "assigneeId"] }), "web")).toEqual(looser);
+      expect(widenings(stored, withTool({ allowedArguments: ["title", "teamId"] }), "web")).toEqual(looser);
       expect(widenings(stored, withTool({ allowedArguments: ["stateId", "title"] }), "web")).toEqual([]);
       expect(widenings(stored, withTool({ allowedArguments: ["title"] }), "web")).toEqual([]);
       // A tool with no list had no limit: adding one only narrows.
@@ -1385,10 +1410,10 @@ describe("widenings", () => {
 
     it("counts a dropped argument limit or a longer list of allowed values as a widening, and a shorter one as none", () => {
       const stored = withTool({ argumentValues: { stateId: ["s-todo", "s-doing"], priority: [1] } });
-      expect(widenings(stored, withTool({}), "web")).toEqual(loosened);
-      expect(widenings(stored, withTool({ argumentValues: { stateId: ["s-todo", "s-doing"] } }), "web")).toEqual(loosened);
-      expect(widenings(stored, withTool({ argumentValues: { stateId: ["s-todo", "s-doing", "s-done"], priority: [1] } }), "web")).toEqual(loosened);
-      expect(widenings(stored, withTool({ argumentValues: { stateId: ["s-todo", "s-other"], priority: [1] } }), "web")).toEqual(loosened);
+      expect(widenings(stored, withTool({}), "web")).toEqual(fewer);
+      expect(widenings(stored, withTool({ argumentValues: { stateId: ["s-todo", "s-doing"] } }), "web")).toEqual(fewer);
+      expect(widenings(stored, withTool({ argumentValues: { stateId: ["s-todo", "s-doing", "s-done"], priority: [1] } }), "web")).toEqual(looser);
+      expect(widenings(stored, withTool({ argumentValues: { stateId: ["s-todo", "s-other"], priority: [1] } }), "web")).toEqual(looser);
       expect(widenings(stored, withTool({ argumentValues: { stateId: ["s-doing"], priority: [1] } }), "web")).toEqual([]);
       expect(widenings(stored, withTool({ argumentValues: { stateId: ["s-doing", "s-todo"], priority: [1], extra: ["x"] } }), "web")).toEqual([]);
       expect(widenings(withTool({}), stored, "web")).toEqual([]);
@@ -1434,6 +1459,28 @@ describe("widenings", () => {
       expect(widenings(stored, mcp({ itemArguments: ["issueId", "other"], attributionKeys: ["requestedBy"] }), "web")).toEqual(["On web, lets the s connector's write tools use other item arguments"]);
       expect(widenings(stored, mcp({ attributionKeys: ["requestedBy"] }), "web")).toEqual(["On web, lets the s connector's write tools use other item arguments"]);
       expect(widenings(stored, mcp({ itemArguments: ["issueId"] }), "web")).toEqual(["On web, lets the s connector's write tools use other attribution keys"]);
+    });
+
+    it("compares tool and argument names in an ownership rule even when they are spelled like a wording field", () => {
+      const rule = (extra: Record<string, unknown>) => ownership({ references: { message: ["issueId"], save_issue: ["id"] }, lookup: { tool: "get_issue", argument: "id", arguments: { message: "x" } }, ...extra });
+      const writes = (scoping: unknown) => mcp({ scoping, tools: [{ name: "message", access: "write" }] });
+      const stored = writes(rule({}));
+      const rules = "On web, lets the s connector's write tools act under different scope rules";
+      expect(widenings(stored, writes(rule({})), "web")).toEqual([]);
+      expect(widenings(stored, writes(rule({ references: { save_issue: ["id"] } })), "web")).toEqual([rules]);
+      expect(widenings(stored, writes(rule({ lookup: { tool: "get_issue", argument: "id", arguments: { message: "y" } } })), "web")).toEqual([rules]);
+      expect(widenings(stored, writes(rule({ lookup: { tool: "get_issue", argument: "id" } })), "web")).toEqual([rules]);
+      expect(widenings(stored, writes(rule({ itemNoun: "ticket", itemNounPlural: "tickets" })), "web")).toEqual([]);
+    });
+
+    it("counts turning the requester footer off on a connector that writes as a widening, and nothing else about it", () => {
+      const footer = "On web, lets the linear connector's write tools write without the requester footer";
+      expect(widenings(link({ attribution: true }), link({ attribution: false }), "web")).toEqual([footer]);
+      expect(widenings(link(), link({ attribution: false }), "web")).toEqual([footer]);
+      expect(widenings(link({ attribution: false }), link({ attribution: false }), "web")).toEqual([]);
+      expect(widenings(link({ attribution: false }), link({ attribution: true }), "web")).toEqual([]);
+      expect(widenings(link({ attribution: false }), link(), "web")).toEqual([]);
+      expect(widenings(link(), link({ attribution: false, tools: [{ name: "a", access: "read" }] }), "web")).toEqual([]);
     });
   });
 });

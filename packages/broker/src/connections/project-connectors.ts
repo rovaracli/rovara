@@ -206,26 +206,45 @@ function lostScopeCheck(previous: StoredEntry, next: ConnectorConfig): boolean {
   return next.scoping.mode === "credential" && (before["mode"] !== "credential" || (before["acknowledgeUnscopedWrites"] !== true && next.scoping.acknowledgeUnscopedWrites === true));
 }
 
-/** The words of a scoping rule, which say the same thing to the person however they are phrased: they are not compared. */
-const WORDING_KEYS = new Set(["itemNoun", "itemNounPlural", "message"]);
-const withoutWording = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(withoutWording);
-  if (typeof value !== "object" || value === null) return value;
-  return Object.fromEntries(Object.entries(value).filter(([key]) => !WORDING_KEYS.has(key)).map(([key, inner]) => [key, withoutWording(inner)]));
-};
+/**
+ * A scoping rule without the words it shows people: the item's noun, and the message of each `refuse` and `require` entry. Only these paths are wording;
+ * a name elsewhere (a tool called `message` in `references`, an argument called `message` in `lookup.arguments`) is part of what the rule enforces.
+ */
+function scopingWithoutWording(scoping: unknown): unknown {
+  if (typeof scoping !== "object" || scoping === null || Array.isArray(scoping)) return scoping;
+  const { itemNoun: _noun, itemNounPlural: _plural, ...rule } = scoping as Fields; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped: wording
+  const entries = (list: unknown): unknown => (Array.isArray(list) ? (list as unknown[]).map((entry): unknown => {
+    if (typeof entry !== "object" || entry === null) return entry;
+    const { message: _message, ...kept } = entry as Fields; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped: wording
+    return kept;
+  }) : list);
+  return { ...rule, ...(rule["refuse"] === undefined ? {} : { refuse: entries(rule["refuse"]) }), ...(rule["require"] === undefined ? {} : { require: entries(rule["require"]) }) };
+}
 
 /** The values of a list as a set of what they are, so order does not matter. */
 const asSet = (values: unknown): Set<string> => new Set(Array.isArray(values) ? values.map((value) => canonicalJson(value)) : []);
 const isSubset = (inner: Set<string>, outer: Set<string>): boolean => [...inner].every((value) => outer.has(value));
 
-/** Whether a write tool's limits (the arguments it may take, the values they may have) are looser than the confirmed tool's. A limit added or tightened is not. */
-function limitsLoosened(old: Fields, now: Fields): boolean {
+/**
+ * How a write tool's limits (the arguments it may take, the values they may have) are looser than the confirmed tool's: `fewer` when a limit was dropped,
+ * `looser` when one grew. A limit that is added or tightened is neither.
+ */
+function limitsLoosened(old: Fields, now: Fields): "fewer" | "looser" | undefined {
+  let looser = false;
   const allowed = old["allowedArguments"];
-  if (Array.isArray(allowed) && !(Array.isArray(now["allowedArguments"]) && isSubset(asSet(now["allowedArguments"]), asSet(allowed)))) return true;
+  if (Array.isArray(allowed)) {
+    if (!Array.isArray(now["allowedArguments"])) return "fewer";
+    if (!isSubset(asSet(now["allowedArguments"]), asSet(allowed))) looser = true;
+  }
   const values = old["argumentValues"];
-  if (typeof values !== "object" || values === null) return false;
-  const nowValues = (typeof now["argumentValues"] === "object" && now["argumentValues"] !== null ? now["argumentValues"] : {}) as Fields;
-  return Object.entries(values).some(([argument, list]) => !Object.hasOwn(nowValues, argument) || !isSubset(asSet(nowValues[argument]), asSet(list)));
+  if (typeof values === "object" && values !== null) {
+    const nowValues = (typeof now["argumentValues"] === "object" && now["argumentValues"] !== null ? now["argumentValues"] : {}) as Fields;
+    for (const [argument, list] of Object.entries(values)) {
+      if (!Object.hasOwn(nowValues, argument)) return "fewer";
+      if (!isSubset(asSet(nowValues[argument]), asSet(list))) looser = true;
+    }
+  }
+  return looser ? "looser" : undefined;
 }
 
 /** What changed in an MCP connector's guards that a person confirmed with its write tools: its scoping, other than wording, and the arguments that name an item or the requester. */
@@ -235,7 +254,7 @@ function mcpGuardsChanged(previous: StoredEntry, next: ConnectorConfig): string[
   const after = next as Fields;
   const words: string[] = [];
   if (lostScopeCheck(previous, next)) words.push("act without a scope check");
-  else if (canonicalJson(withoutWording(before["scoping"] ?? null)) !== canonicalJson(withoutWording(after["scoping"] ?? null))) words.push("act under different scope rules");
+  else if (canonicalJson(scopingWithoutWording(before["scoping"] ?? null)) !== canonicalJson(scopingWithoutWording(after["scoping"] ?? null))) words.push("act under different scope rules");
   if (canonicalJson(before["itemArguments"] ?? null) !== canonicalJson(after["itemArguments"] ?? null)) words.push("use other item arguments");
   if (canonicalJson(before["attributionKeys"] ?? null) !== canonicalJson(after["attributionKeys"] ?? null)) words.push("use other attribution keys");
   return words;
@@ -244,7 +263,8 @@ function mcpGuardsChanged(previous: StoredEntry, next: ConnectorConfig): string[
 /**
  * What `next` makes newly able to write (R9-3, R69), in the words the page shows; nothing when it has no write tool. A write tool counts as already
  * confirmed only for the same target (type, connection, and for MCP endpoint and bind), where it was `write`, and with limits no looser than it had; and
- * on the same target a scope added, or an MCP connector's scoping, item arguments or attribution keys changed, widens what the confirmed tools reach.
+ * on the same target a scope added, or an MCP connector's scoping, item arguments or attribution keys changed, widens what the confirmed tools reach, and turning
+ * the requester footer off weakens who is recorded as asking.
  */
 export function widenings(previous: StoredEntry | undefined, next: ConnectorConfig, project: string): string[] {
   const writes = next.tools.filter((tool) => tool.access === "write");
@@ -256,7 +276,10 @@ export function widenings(previous: StoredEntry | undefined, next: ConnectorConf
   if (Array.isArray(stored)) for (const tool of stored as Fields[]) before.set(String(tool["name"]), tool);
   const words = writes.flatMap((tool) => {
     const old = before.get(tool.name);
-    if (old?.["access"] === "write") return limitsLoosened(old, tool) ? [`${where} ${tool.name} tool make changes (fewer argument limits)`] : [];
+    if (old?.["access"] === "write") {
+      const loosened = limitsLoosened(old, tool);
+      return loosened === undefined ? [] : [`${where} ${tool.name} tool make changes (${loosened} argument limits)`];
+    }
     const note = moved !== undefined ? ` (${moved})` : old?.["access"] === "read" ? " (it could only read before)" : "";
     return [`${where} ${tool.name} tool make changes${note}`];
   });
@@ -265,6 +288,8 @@ export function widenings(previous: StoredEntry | undefined, next: ConnectorConf
     ...words,
     ...addedScopes(previous, next).map((scope) => `${where} write tools reach ${scope}`),
     ...mcpGuardsChanged(previous, next).map((change) => `${where} write tools ${change}`),
+    // Writes from now on carry no "requested by" footer: reach does not grow, but the trail of who asked is weaker.
+    ...((previous as Fields)["attribution"] !== false && (next as Fields)["attribution"] === false ? [`${where} write tools write without the requester footer`] : []),
   ];
 }
 
