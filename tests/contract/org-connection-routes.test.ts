@@ -228,6 +228,17 @@ describe("repeating a request (R18)", () => {
     expect((await call(DANA, "GET", "/v1/app/connections")).body.connections).toHaveLength(1);
   });
 
+  it("does not overwrite a connection when a request id is used again after its memory expired", async () => {
+    const { create, call, h } = await setup();
+    const requestId = randomUUID();
+    const first = await create(DANA, LINEAR, { apiKey: "k1" }, requestId);
+    h.db.delete(agentRequestKey(TEST_ORG, DANA.developerId, requestId)); // the State table's TTL removed it
+    const again = await create(DANA, { ...LINEAR, label: "Replaced" }, { apiKey: "k2" }, requestId);
+    expect(again.status).toBe(400);
+    expect(errorOf(again).code).toBe("CONFIG_INVALID");
+    expect((await call(DANA, "GET", `/v1/app/connections/${first.body.connection.connectionId}`)).body.connection.label).toBe("Team Linear");
+  });
+
   it("refuses the same request id for a different body, including a different secret", async () => {
     const { create } = await setup();
     const requestId = randomUUID();
