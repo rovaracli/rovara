@@ -384,6 +384,16 @@ describe("developer sign-in infrastructure (named environments)", () => {
     }
     // Nothing is queried under the developer pointers.
     expect(grantsOf.filter(([action, keys]) => action === "dynamodb:Query" && JSON.stringify(keys).includes("DEVELOPER_ORG#"))).toEqual([]);
+    // Plan 3, Task 11: the sign-in function writes one merge marker per merge and nothing else in that partition. The grants above are unchanged
+    // (the list is compared whole); this is the one statement added. PutItem only: it never reads, lists, updates or deletes a marker.
+    const markerStatements = statementsOfRole(named, "DeveloperSignInFunctionServiceRole").filter((statement) => JSON.stringify(statement.Condition ?? {}).includes("MEMBER_MERGE_QUEUE"));
+    expect(markerStatements).toHaveLength(1);
+    expect(markerStatements[0]).toMatchObject({ Effect: "Allow", Action: "dynamodb:PutItem", Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["MEMBER_MERGE_QUEUE"] } } });
+    for (const action of ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:DeleteItem", "dynamodb:UpdateItem", "dynamodb:BatchWriteItem"]) {
+      expect(allows(markerStatements[0]!, action), action).toBe(false);
+    }
+    // No other role is granted the marker partition by name: the broker reads and deletes markers through its own table grant.
+    expect(grants(named).filter(({ role, statement }) => withoutHash(role) !== "DeveloperSignInFunctionServiceRole" && JSON.stringify(statement.Condition ?? {}).includes("MEMBER_MERGE_QUEUE"))).toEqual([]);
     // FR-045: both functions get each method's enabled-since cutoff straight from its parameter.
     const variables = (prefix: string) => (named.Resources[functionId(named, prefix)]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
     expect(variables("Broker")).toMatchObject({

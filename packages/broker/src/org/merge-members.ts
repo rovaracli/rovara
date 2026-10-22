@@ -14,7 +14,7 @@
 // customers yet, and only staging holds such records.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  MEMBER_GRANT_SK_PREFIX, agentXError, developerOrgKey, memberGrantsPk, orgMemberKey, orgMetaKey, orgPk, orgProjectCatalogPk, orgSettingsKey,
+  MEMBER_GRANT_SK_PREFIX, agentXError, developerOrgKey, memberGrantsPk, memberMergeQueueKey, orgMemberKey, orgMetaKey, orgPk, orgProjectCatalogPk, orgSettingsKey,
   projectMemberKey, trialGithubKey, type OrgId, type OrgRole,
 } from "@agentx/contracts";
 import { ownerKeyForSubject } from "../aws/lambda.js";
@@ -311,6 +311,9 @@ async function retire(
           } },
         ]),
       ]),
+      // Plan 3, Task 11: the broker finishes what the duplicate owned (agents, skills, shares) from this marker; this function only leaves it,
+      // in the transaction that retires the duplicate, so a merge that happened always has one and one that did not never does.
+      { Put: { TableName, Item: { ...memberMergeQueueKey(state.at, orgId, duplicateId), entityType: "MEMBER_MERGE", orgId, survivorId, duplicateId } } },
       ...deps.signInStore.mergeItems({
         duplicate: state.record, duplicateIdentityKey: input.duplicateIdentityKey, survivorId, at: state.at,
         ...(state.link === undefined ? {} : { link: state.link }),

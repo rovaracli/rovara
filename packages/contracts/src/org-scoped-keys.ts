@@ -270,6 +270,19 @@ export function openApprovalKey(expiresAt: string, orgId: OrgId, approvalId: App
   return { pk: "OPEN_APPROVALS", sk: `${canonicalInstant(expiresAt)}#${orgId}#${approvalId}` };
 }
 
+/** The one partition that lists every member merge (and member removal) whose moves have not been finished yet. A named exception to org scoping: ids and the org only. */
+export const MEMBER_MERGE_QUEUE_PK = "MEMBER_MERGE_QUEUE";
+
+/**
+ * The marker of one member lifecycle change the broker has yet to finish, in the sparse `MEMBER_MERGE_QUEUE` partition, so one query lists
+ * them all oldest first. A merge (the default) is keyed `<instant>#<orgId>#<duplicateId>`, written by the sign-in function in the merge's own
+ * transaction; a removal (`removed`) adds `#removed` and is written by the broker in the removal's own transaction. The item holds ids and
+ * `orgId` only; whoever reads it checks `orgId` against the key. `at` is an instant.
+ */
+export function memberMergeQueueKey(at: string, orgId: OrgId, memberId: string, kind: "merged" | "removed" = "merged"): OrgKey {
+  return { pk: MEMBER_MERGE_QUEUE_PK, sk: `${canonicalInstant(at)}#${orgId}#${memberId}${kind === "removed" ? "#removed" : ""}` };
+}
+
 /** The item that lists one approval for one person who may be asked to decide it (an id it names, or a candidate of its rule). */
 export function approverIndexKey(orgId: OrgId, developerId: string, approvalId: ApprovalId): OrgKey {
   return { pk: orgScoped(orgId, `APPROVER#${developerId}`), sk: approvalId };

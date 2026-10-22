@@ -191,6 +191,13 @@ export class DeveloperSignIn extends Construct {
       actions: ["dynamodb:GetItem", "dynamodb:PutItem"], resources: [props.state.tableArn],
       conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#SETTINGS`] } },
     }));
+    // Plan 3, Task 11: a merge also leaves one marker in the sparse `MEMBER_MERGE_QUEUE` partition (ids and the org only), in the same transaction.
+    // The broker lists the partition, moves what the duplicate owned and deletes the marker. This function only writes it: PutItem, never a read,
+    // a list, an update or a delete (a transaction's Put is authorized as PutItem).
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:PutItem"], resources: [props.state.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["MEMBER_MERGE_QUEUE"] } },
+    }));
     // Accepting an invite checks, in the same transaction, that the org is not closed or closing (a ConditionCheck on the org record, which
     // IAM authorizes as ConditionCheckItem). That action on that one key; the function never reads or writes anything else through it.
     fn.addToRolePolicy(new iam.PolicyStatement({
