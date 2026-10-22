@@ -154,7 +154,7 @@ function setup(options: { audit?: boolean } = {}) {
     return { agent, publishAgain: async () => { const draft = (await agents.getDraft(ORG_A, agent.agentId))!; await agents.saveDraft({ orgId: ORG_A, agentId: agent.agentId, overlay: { ...SCRATCH, instructions: `v${String(Date.now())}${String(Math.random())}` }, expectedRevision: draft.revision, by: owner }); await published(); } };
   };
   const total = (developerId: string, orgId: OrgId = ORG_A) => db.get(ownerBudgetKey(orgId, developerId))?.["totalUsd"];
-  return { db, clock, release, hooks, agents, chains, deps, agentDeps, projectMembers, create, pinnedOf, publishInput, publish, edit, events, customAgent, total, audit };
+  return { db, client, clock, release, hooks, agents, chains, deps, agentDeps, projectMembers, create, pinnedOf, publishInput, publish, edit, events, customAgent, total, audit };
 }
 
 const definitionWith = (agentId: string, version: number | "current"): ChainDefinitionInput => ({
@@ -824,6 +824,39 @@ describe("the owner's monthly total", () => {
     expect(await code(ctx.chains.archive(ORG_A, chain.chainId, ALICE))).toMatchObject({ code: "CHAIN_REVISION_CONFLICT" });
     expect(ctx.total(ALICE)).toBe(4);
     expect((await ctx.chains.get(ORG_A, chain.chainId))!.status).toBe("active");
+  });
+});
+
+describe("one monthly total for agent and chain budgets", () => {
+  it("counts a chain's budget once however many chain stores share an agent store (a replaced source, not an added one)", async () => {
+    const ctx = setup();
+    const chain = await ctx.create("Investigate");
+    await ctx.chains.setBudget(ORG_A, chain.chainId, 3, ALICE);
+    expect(ctx.total(ALICE)).toBe(3);
+    const second = new ChainStore({ documentClient: ctx.client, tableName: "T", now: () => ctx.clock.now, agents: ctx.agents });
+    const third = new ChainStore({ documentClient: ctx.client, tableName: "T", now: () => ctx.clock.now, agents: ctx.agents });
+    expect(await ctx.agents.rebuildOwnerTotal(ORG_A, ALICE)).toBe(3);
+    expect(ctx.total(ALICE)).toBe(3);
+    // A budget written through the newest store builds its total from the same single source.
+    ctx.db.delete(ownerBudgetKey(ORG_A, ALICE));
+    await third.setBudget(ORG_A, chain.chainId, 5, ALICE);
+    expect(ctx.total(ALICE)).toBe(5);
+    expect(await second.list(ORG_A)).toHaveLength(1);
+    // And an agent store rebuilt on the same ledger does not double the agents' side either.
+    const agent = await ctx.agents.create({ orgId: ORG_A, name: "Budgeted", owner: ALICE_OWNS, overlay: SCRATCH, createdBy: ALICE });
+    await ctx.agents.setBudget(ORG_A, agent.agentId, { monthlyUsd: 4 }, ALICE);
+    expect(ctx.total(ALICE)).toBe(9);
+    new AgentStore({ documentClient: ctx.client, tableName: "T", now: () => ctx.clock.now, ownerBudgets: ctx.agents.ownerBudgets });
+    expect(await ctx.agents.rebuildOwnerTotal(ORG_A, ALICE)).toBe(9);
+  });
+
+  it("refuses a store on another table registering on a ledger", () => {
+    const ctx = setup();
+    const other = new FakeDynamoDb();
+    expect(() => new ChainStore({ documentClient: other, tableName: "T", now: () => ctx.clock.now, agents: ctx.agents })).toThrow(/another table/);
+    expect(() => new AgentStore({ documentClient: other, tableName: "T", now: () => ctx.clock.now, ownerBudgets: ctx.agents.ownerBudgets })).toThrow(/another table/);
+    // The same client on a differently named table is another table too.
+    expect(() => new ChainStore({ documentClient: ctx.client, tableName: "U", now: () => ctx.clock.now, agents: ctx.agents })).toThrow(/another table/);
   });
 });
 
