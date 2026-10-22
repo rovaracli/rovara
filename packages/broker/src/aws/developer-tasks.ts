@@ -1285,7 +1285,7 @@ export async function taskView(
       : { ...derivedBase, status: "STARTING" as const, current: readinessOperation, failure: undefined }
     : derivedBase;
   // Plan 3, Task 22: an agent-step run's status is the run's, not the last operation's (a step that finished is not a run that finished).
-  const run = task.agent === undefined ? undefined : await agentRunView({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, task, deps.issuer === undefined ? undefined : new URL(deps.issuer).origin);
+  const run = task.agent === undefined || task.workflow !== undefined ? undefined : await agentRunView({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, task, deps.issuer === undefined ? undefined : new URL(deps.issuer).origin);
   const derived = run === undefined ? derivedWithE2E : statusOfRun(derivedWithE2E, run, task);
   // #225: a task whose setup failed shows its prepare's events (the failure the broker recorded).
   const eventsOf = derived.current ?? derived.failedPrepare;
@@ -5218,7 +5218,7 @@ async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: Develope
     }
     // An agent-step run that waits (for a person, or between two steps) has nothing running for the cancel to stop: the run itself ends (Plan 3, Task 22).
     // One whose step is running ends when that step's cancel result comes. Ended runs are left as they are.
-    if (outcome === "NOTHING_RUNNING" && task.agent !== undefined && deps.agentEngine !== undefined) {
+    if (outcome === "NOTHING_RUNNING" && task.agent !== undefined && task.workflow === undefined && deps.agentEngine !== undefined) {
       try {
         await cancelAgentRun(deps.agentEngine, task.taskId, "Cancelled by the person who started it.");
       } catch (error) {

@@ -140,8 +140,9 @@ export class DeveloperTaskNotifier extends Construct {
         // Spec 025 E13: admin changes whose Slack step started, and changes with a message that ended.
         lambda.FilterCriteria.filter({ dynamodb: { NewImage: { entityType: { S: equals("ADMIN_CHANGE") } } } }),
         // Task 19: a Slack press the broker refused, told privately to whoever pressed. Spec 061 FR-044: a commenter's
-        // nudge window, on the same filter (a mapping takes five filters by default).
-        lambda.FilterCriteria.filter({ dynamodb: { NewImage: { entityType: { S: oneOf(["WORKFLOW_ACTION_REFUSAL", "TASK_COMMENT_NUDGE", "TASK_PEOPLE_NOTIFICATION"]) } } } }),
+        // nudge window, on the same filter (a mapping takes five filters by default). Plan 3, Task 22: an agent-step run's
+        // final report, ready to post to its project's channel.
+        lambda.FilterCriteria.filter({ dynamodb: { NewImage: { entityType: { S: oneOf(["WORKFLOW_ACTION_REFUSAL", "TASK_COMMENT_NUDGE", "TASK_PEOPLE_NOTIFICATION", "AGENT_REPORT_POST"]) } } } }),
       ],
     });
     new lambda.EventSourceMapping(this, "NoticeQueueMapping", {

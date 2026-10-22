@@ -501,7 +501,8 @@ describe("the developer task notifier (spec 025 phase 25c, named environments)",
       { dynamodb: { NewImage: { entityType: { S: ["ADMIN_CHANGE"] } } } },
       // Task 19: a fifth, for refused Slack presses, on this same mapping. Spec 061: comment nudges share it, since a
       // mapping takes five filters by default.
-      { dynamodb: { NewImage: { entityType: { S: ["WORKFLOW_ACTION_REFUSAL", "TASK_COMMENT_NUDGE", "TASK_PEOPLE_NOTIFICATION"] } } } },
+      // Plan 3, Task 22: the same filter also takes an agent-step run's final report.
+      { dynamodb: { NewImage: { entityType: { S: ["WORKFLOW_ACTION_REFUSAL", "TASK_COMMENT_NUDGE", "TASK_PEOPLE_NOTIFICATION", "AGENT_REPORT_POST"] } } } },
     ]);
     expect(JSON.stringify(patterns.at(-1))).toContain("TASK_PEOPLE_NOTIFICATION");
     expect(notifierMapping.Properties).toMatchObject({ StartingPosition: "LATEST", MaximumRecordAgeInSeconds: 3600, MaximumRetryAttempts: 10, BisectBatchOnFunctionError: true });

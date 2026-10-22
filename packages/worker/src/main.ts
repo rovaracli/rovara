@@ -73,6 +73,8 @@ const state = createWorkerServerState(
             controlPlaneUrl,
             invocation,
           }),
+          // An agent-step run that looks at a pull request: its head is checked out after the clone (Plan 3, Task 22).
+          ...(invocation.payload.checkout === undefined ? {} : { checkout: invocation.payload.checkout }),
         });
         return {
           manifestPath: ".agentx/preparation-manifest.json",

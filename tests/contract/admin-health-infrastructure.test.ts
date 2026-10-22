@@ -162,6 +162,8 @@ describe("the health route's grants (A13)", () => {
     expect(shared.split("\n").filter((line) => /indexExpiresAt|INDEX_EXPIRY_ATTRIBUTE/.test(line)).map((line) => line.trim())).toEqual([
       'import { INDEX_EXPIRY_ATTRIBUTE, OPERATION_PROMPT_MAX_BYTES, PLAN_DOCUMENT_INFO_STRING, type PlanDocumentKind } from "@agentx/contracts";',
       "indexExpiresAt: number;",
+      // Plan 3, Task 22: the agent-step engine's dispatch row, written over the task's one row at each change; it expires a week after it was due.
+      "[INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(input.dueAt) / 1000) + WORKFLOW_DISPATCH_RETENTION_SECONDS,",
       "[INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(now) / 1000) + WORKFLOW_DISPATCH_RETENTION_SECONDS,",
     ]);
     const notifier = readFileSync("packages/broker/src/aws/developer-task-notifier.ts", "utf8");

@@ -243,7 +243,9 @@ export function applyAgentStep(input: ApplyAgentStepInput): AppliedAgentStep {
     ...(model === undefined ? {} : { model }),
     ...(promptSection === undefined ? {} : { promptSection }),
     ...(agentStep === undefined ? {} : { agentStep }),
-    ...(recipe.tools.length > 0 ? { toolGrants: true as const } : {}),
+    // An agent step of a run always gets the `agent-tools` scope, with or without grants: the worker asks for its catalogs before it starts a step and treats a
+    // refusal as a failed step, so a step with no grants is answered an empty list (Task 23's review, Task 22).
+    ...(recipe.tools.length > 0 || input.agentRun !== undefined ? { toolGrants: true as const } : {}),
     dropChatgpt,
     ...(ranModel === undefined ? {} : { ranModel }),
   };

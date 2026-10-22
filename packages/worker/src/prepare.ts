@@ -63,6 +63,8 @@ export interface PreparationManifest {
     resolvedCommit: string;
     resolvedAt: string;
     completedAt: string;
+    /** A pull request's head the workspace has checked out (detached, read-only) for an agent-step run that looks at it. */
+    checkedOut?: { pullRequest: number; headSha: string };
   }>;
   completedSetupSteps: number[];
   /** The project's devcontainer (#121), recorded once it has started. */
@@ -124,6 +126,14 @@ export interface PrepareWorkspaceOptions {
   onDiagnostic?: (message: string) => void;
   /** Internal worker-only trust anchor for the fixed top-level verifier backing directory. */
   trustedRuntimeBackingOwner?: Readonly<{ uid: number; gid: number }>;
+  /**
+   * Pull request heads an agent-step run looks at (Plan 3, Task 22): after a repository is cloned, each of its heads is fetched with the repository's read
+   * credential and the first is checked out detached at exactly `headSha` (a head that has moved since the run started fails the preparation: a review
+   * never looks at the wrong commit). The run's steps only ever read.
+   */
+  checkout?: ReadonlyArray<{ repository: string; pullRequest: number; headSha: string }>;
+  /** Tests only: where a pull request head is fetched from (the repository's own URL by default; a fixture is not an HTTPS URL a project may name). */
+  pullRequestRemote?: (repository: StoredProjectDefinition["repositories"][number]) => string;
 }
 
 export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promise<PreparationManifest> {
@@ -164,9 +174,10 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
       const destination = containedPath(canonicalRoot, repository.path);
       assertRepositoryPathDoesNotOverlapRuntimeBacking(destination, runtimeBackingPath);
       const existing = await pathKind(destination);
+      let credential: RepositoryCloneCredential = {};
       if (existing === "missing") {
         await mkdir(resolve(destination, ".."), { recursive: true });
-        const credential = await options.credentialProvider?.(repository) ?? {};
+        credential = await options.credentialProvider?.(repository) ?? {};
         await materializer(repository, destination, credential);
       } else {
         if (existing !== "directory" || (await pathKind(resolve(destination, ".git"))) === "missing") {
@@ -175,8 +186,10 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
       }
       const resolvedCommit = await resolveDefaultBranch(destination, repository.defaultBranch);
       const head = await gitHead(destination);
+      let checkedOut: { pullRequest: number; headSha: string } | undefined;
       if (existing === "missing") {
         await checkoutResolvedCommit(destination, resolvedCommit);
+        checkedOut = await checkoutPullRequestHeads(destination, options.pullRequestRemote?.(repository) ?? repository.url, (options.checkout ?? []).filter((entry) => entry.repository === repository.name), credential);
       } else if (head !== resolvedCommit) {
         throw new Error(
           `unrecorded checkout at ${repository.path} has HEAD ${head}; refusing to reset it`,
@@ -191,6 +204,7 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
         resolvedCommit,
         resolvedAt: now,
         completedAt: now,
+        ...(checkedOut === undefined ? {} : { checkedOut }),
       });
       manifest = await writeManifest(canonicalRoot, withoutFailure(manifest));
     }
@@ -400,6 +414,36 @@ async function checkoutResolvedCommit(directory: string, commit: string): Promis
   });
   const resolved = await gitHead(directory);
   if (resolved !== commit) throw new Error("repository did not check out the resolved branch commit");
+}
+
+/**
+ * Fetches each pull request head named for the repository and checks the first out, detached, at exactly the commit the run recorded. A head that is not that
+ * commit (the author pushed meanwhile) fails: the run reviews what it was asked to review or nothing.
+ */
+async function checkoutPullRequestHeads(
+  directory: string,
+  remoteUrl: string,
+  heads: ReadonlyArray<{ pullRequest: number; headSha: string }>,
+  credential: RepositoryCloneCredential,
+): Promise<{ pullRequest: number; headSha: string } | undefined> {
+  for (const head of heads) {
+    const ref = `refs/remotes/origin/pull/${String(head.pullRequest)}/head`;
+    assertCredentialFreeRemote(remoteUrl);
+    // The repository's own URL, as every other network call of the worker names it (a hardened Git ignores the clone's `origin`).
+    await runGitWithCredential({
+      directory,
+      args: ["-C", directory, "fetch", "--no-tags", remoteUrl, `+refs/pull/${String(head.pullRequest)}/head:${ref}`],
+      credential,
+      timeout: 300_000,
+      maxBuffer: MAX_COMMAND_OUTPUT_BYTES,
+    });
+    const fetched = (await execFileAsync("git", ["-C", directory, "rev-parse", "--verify", `${ref}^{commit}`], { timeout: 30_000, maxBuffer: 4_096, env: await gitHardenedEnvironment(directory) })).stdout.trim();
+    if (fetched !== head.headSha) throw new Error(`pull request ${String(head.pullRequest)} has a new commit since the run started; start the run again`);
+  }
+  const first = heads[0];
+  if (first === undefined) return undefined;
+  await checkoutResolvedCommit(directory, first.headSha);
+  return { pullRequest: first.pullRequest, headSha: first.headSha };
 }
 
 async function gitHead(directory: string): Promise<string> {
