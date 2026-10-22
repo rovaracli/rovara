@@ -12,7 +12,7 @@ import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import type { AgentRouteDependencies } from "../../packages/broker/src/agents/routes.js";
 import {
-  createSpendRequest, decideSpendRequest, escalateOwnerRequests, getSpendRequest, spendApprovers, spendDecideKind,
+  createSpendRequest, decideSpendRequest, escalateOwnerRequests, getSpendRequest, routeSpendRequests, spendApprovers, spendDecideKind,
 } from "../../packages/broker/src/spend/requests.js";
 import { runSpendSweep, settlementBudgets, SETTLEMENT_BUDGETS_MS } from "../../packages/broker/src/spend/settlement-job.js";
 import { supersedeKeys, finalizeKey } from "../../packages/broker/src/spend/ledger.js";
@@ -25,6 +25,7 @@ import {
 import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import { projectAgentKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { call, loadSlackBroker } from "../support/slack-broker.js";
@@ -119,6 +120,11 @@ async function setup(options: { decide?: boolean; secondAdmin?: boolean; plan?: 
     return agentId;
   };
   const setBudget = (who: Developer, agentId: string, body: Record<string, unknown>) => api(who, "PUT", `/v1/app/agents/${agentId}/budget`, body);
+  /** Lets `who` run an agent of Maya's. */
+  const shareWith = async (agentId: string, who: Developer) => {
+    const shared = await api(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [{ principal: { kind: "member", developerId: who.developerId }, level: "use" }] });
+    expect(shared.status, JSON.stringify(shared.body)).toBe(200);
+  };
   /** An agent of `by` with a monthly budget of `usd`, set through the route (it fits the cap). */
   const budgeted = async (usd: number, by: Developer = MAYA, overlay: RecipeOverlay = TRIAGE): Promise<AgentId> => {
     const agentId = await agentOf(overlay, { by });
@@ -183,7 +189,7 @@ async function setup(options: { decide?: boolean; secondAdmin?: boolean; plan?: 
     return found;
   };
   return {
-    ...h, access, store, deps, api, caller, decide, agentOf, publishNext, setBudget, budgeted, ownerTotal, agentItem, agentEvents, grantRole,
+    ...h, access, store, deps, api, caller, decide, agentOf, publishNext, setBudget, shareWith, budgeted, ownerTotal, agentItem, agentEvents, grantRole,
     meta, operations, taskOps, activeOf, outboxOf, set, plainTask, runOf, pauseAndEnd, requests, requestOf, openItems, view, taskEvents, starter,
   };
 }
@@ -423,11 +429,15 @@ describe("an agent-step run's pause", () => {
 });
 
 describe("a max-per-run pause", () => {
-  /** A run of an agent of Maya's whose max per run is `max`, with the run's limit `limit`, paused at its max per run. */
+  /**
+   * A run of an agent of Maya's whose max per run is `max`, with the run's limit `limit`, paused at its max per run. Ben starts the run: the run's own
+   * starter may not raise its stop (fix round 1, I-4), so the owner deciding is someone else's run.
+   */
   async function maxPaused(t: World, max: number, limit: number) {
     const agentId = await t.agentOf(TRIAGE, { name: "Ticket looker" });
     expect((await t.setBudget(MAYA, agentId, { maxPerRunUsd: max })).status).toBe(200);
-    const run = await t.runOf(agentId);
+    await t.shareWith(agentId, BEN);
+    const run = await t.runOf(agentId, { who: BEN });
     await t.set(run.taskId, "SET budgetUsd = :limit", { ":limit": limit });
     expect(t.meta(run.taskId).maxPerRunUsd).toBe(max);
     await t.pauseAndEnd(run, { kind: "max_per_run", taskId: run.taskId });
@@ -1050,5 +1060,369 @@ describe("contracts", () => {
     expect(spendRequestKey(TEST_ORG, "spr_aaaaaaaaaaaaaaaaaaaa").pk).toContain(TEST_ORG);
     expect(openSpendRequestsKey(TEST_ORG, "2026-10-22T00:00:00.000Z", "spr_aaaaaaaaaaaaaaaaaaaa").pk).toContain(TEST_ORG);
     void orgMemberKey;
+  });
+});
+
+describe("fix round 1 (the Task 32 review)", () => {
+  const dueOf = (t: World, spendRequestId: string) => t.db.find((item) => item.entityType === "SPEND_REQUEST_DUE" && item.spendRequestId === spendRequestId)
+    .map((item) => Date.parse(String(item.sk).split("#")[0]!));
+  const recordOf = (t: World, spendRequestId: string) => t.requests().find((record) => record.spendRequestId === spendRequestId)!;
+
+  describe("I-1: an owner_cap change is checked again when it is decided", () => {
+    /** Ada moves Maya's $30 agent to Omar, who already has $90: the move waits for an admin. */
+    async function heldTransfer() {
+      const t = await setup();
+      await t.budgeted(50, OMAR);
+      await t.budgeted(40, OMAR);
+      const agentId = await t.budgeted(30);
+      const moved = await t.api(ADA, "PUT", `/v1/app/agents/${agentId}/owner`, { owner: { kind: "member", developerId: OMAR.developerId } });
+      expect(moved.status, JSON.stringify(moved.body)).toBe(202);
+      return { t, agentId, id: moved.body.spendRequestId as string };
+    }
+
+    it("P4: the new owner's removal expires the request, and an approval after it is APPROVAL_CLOSED and moves nothing", async () => {
+      const { t, agentId, id } = await heldTransfer();
+      await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: OMAR.developerId, by: ADA.developerId });
+      t.db.delete(orgMemberKey(TEST_ORG, OMAR.developerId));
+      t.db.set({ ...orgRemovedKey(TEST_ORG, OMAR.developerId), entityType: "ORG_REMOVED", removedAt: new Date().toISOString() });
+      expect(recordOf(t, id)).toMatchObject({ status: "EXPIRED" });
+      expect(await refusal(t.decide(DEB, id))).toMatchObject({ code: "APPROVAL_CLOSED" });
+      expect(t.agentItem(agentId)!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
+      expect(t.ownerTotal(OMAR)).toBe(0);
+    });
+
+    it("refuses the approval when the target left before any mover ran, and ends the request", async () => {
+      const { t, agentId, id } = await heldTransfer();
+      t.db.delete(orgMemberKey(TEST_ORG, OMAR.developerId));
+      t.db.set({ ...orgRemovedKey(TEST_ORG, OMAR.developerId), entityType: "ORG_REMOVED", removedAt: new Date().toISOString() });
+      expect(await refusal(t.decide(DEB, id))).toMatchObject({ code: "APPROVAL_CLOSED" });
+      expect(recordOf(t, id)).toMatchObject({ status: "EXPIRED" });
+      expect(t.openItems()).toEqual([]);
+      expect(t.agentItem(agentId)!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
+      expect(t.ownerTotal(OMAR)).toBe(90);
+    });
+
+    it("a merge rewrites the ids inside the stored change, and the approval gives the agent to the survivor", async () => {
+      const { t, agentId, id } = await heldTransfer();
+      await onMembersMerged(t.deps(), { orgId: TEST_ORG, survivorId: CARL.developerId, duplicateId: OMAR.developerId });
+      expect(recordOf(t, id)).toMatchObject({ status: "PENDING", newOwner: { developerId: CARL.developerId }, change: { op: "set_owner", owner: { kind: "member", developerId: CARL.developerId } } });
+      await t.decide(DEB, id);
+      expect(t.agentItem(agentId)!.owner).toEqual({ kind: "member", developerId: CARL.developerId });
+    });
+  });
+
+  describe("I-2: a second over-cap change on the same agent", () => {
+    it("P3: a different change gets 409 naming the waiting request; the same change answers 202 and keeps its own R18 mark", async () => {
+      const t = await setup();
+      await t.budgeted(50);
+      await t.budgeted(50);
+      const third = await t.agentOf();
+      const first = await t.setBudget(MAYA, third, { monthlyUsd: 1 });
+      expect(first.status).toBe(202);
+      const id = first.body.spendRequestId as string;
+      const other = await t.setBudget(ADA, third, { monthlyUsd: 25 });
+      expect(other.status, JSON.stringify(other.body)).toBe(409);
+      expect(other.body).toMatchObject({ error: { code: "AGENT_REVISION_CONFLICT", message: expect.stringContaining(`A change to this agent's budget is already waiting for an admin (${id}). Wait for it, or ask an admin to decline it.`) as string } });
+      const requestId = randomUUID();
+      const same = await t.dev(ADA, "PUT", `/v1/app/agents/${third}/budget`, { requestId, monthlyUsd: 1 });
+      expect(same.status).toBe(202);
+      expect(same.body).toMatchObject({ spendRequestId: id });
+      // Ada's request id was remembered: the same id with another body is refused (R18).
+      expect((await t.dev(ADA, "PUT", `/v1/app/agents/${third}/budget`, { requestId, monthlyUsd: 2 })).body).toMatchObject({ error: { code: "CONFIG_INVALID" } });
+      expect(t.requests()).toHaveLength(1);
+      await t.decide(DEB, id);
+      expect(t.agentItem(third)!.monthlyBudgetUsd).toBe(1);
+    });
+  });
+
+  describe("I-3: an approval after the task went on", () => {
+    it("P2: the owner's Continue withdraws the open request, so a late approval is APPROVAL_CLOSED and starts no turn", async () => {
+      const t = await setup();
+      const task = await t.plainTask();
+      await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+      await t.pauseAndEnd(task);
+      const id = t.requestOf(task.taskId)[0]!.spendRequestId;
+      const continued = await t.api(MAYA, "POST", `/v1/dev/tasks/${task.taskId}/continue`, { instructions: "Go on" });
+      expect(continued.status, JSON.stringify(continued.body)).toBe(200);
+      expect(recordOf(t, id)).toMatchObject({ status: "EXPIRED" });
+      expect(t.openItems()).toEqual([]);
+      expect((await t.view(MAYA, task.taskId)).paused).toBeUndefined();
+      await t.finish(task.workspaceId, t.taskOps(task.workspaceId).at(-1)!.id, "SUCCEEDED", { result: {} });
+      const before = t.taskOps(task.workspaceId).length;
+      expect(await refusal(t.decide(BEN, id))).toMatchObject({ code: "APPROVAL_CLOSED" });
+      expect(t.taskOps(task.workspaceId)).toHaveLength(before);
+      expect(t.meta(task.taskId).budgetUsd).toBe(14);
+    });
+
+    it("an approval of a task whose pause went away some other way raises the limit and starts nothing", async () => {
+      const t = await setup();
+      const task = await t.plainTask();
+      await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+      await t.pauseAndEnd(task);
+      const id = t.requestOf(task.taskId)[0]!.spendRequestId;
+      await t.set(task.taskId, "REMOVE budgetPause");
+      const before = t.taskOps(task.workspaceId).length;
+      await t.decide(BEN, id);
+      expect(recordOf(t, id)).toMatchObject({ status: "APPROVED" });
+      expect(t.meta(task.taskId).budgetUsd).toBe(21);
+      expect(t.taskOps(task.workspaceId)).toHaveLength(before);
+    });
+
+    it("the pause the approval was for is a condition of its write: a pause removed meanwhile raises the limit and starts nothing", async () => {
+      const t = await setup();
+      const task = await t.plainTask();
+      await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+      await t.pauseAndEnd(task);
+      const id = t.requestOf(task.taskId)[0]!.spendRequestId;
+      const before = t.taskOps(task.workspaceId).length;
+      const deps = t.deps();
+      let moved = false;
+      const racing = { ...deps, documentClient: { send: async (command: { constructor: { name: string } }) => {
+        if (!moved && command.constructor.name === "TransactWriteCommand") {
+          moved = true;
+          await t.set(task.taskId, "REMOVE budgetPause");
+        }
+        return t.db.send(command as never);
+      } } };
+      await decideSpendRequest(racing as never, t.caller(BEN), id, { requestId: randomUUID(), decision: "APPROVE" });
+      expect(recordOf(t, id)).toMatchObject({ status: "APPROVED" });
+      expect(t.meta(task.taskId).budgetUsd).toBe(21);
+      expect(t.taskOps(task.workspaceId)).toHaveLength(before);
+    });
+  });
+
+  describe("I-4: the run's starter", () => {
+    it("P8: a project-paid run's starter, a maintainer but not the payer, can't approve their own run's raise", async () => {
+      const t = await setup();
+      t.grantRole(MAYA, "maintainer");
+      const task = await t.plainTask();
+      await t.set(task.taskId, "SET budgetUsd = :limit, payer = :payer", { ":limit": 4, ":payer": { kind: "project", project: "payments" } });
+      await t.pauseAndEnd(task);
+      const request = t.requestOf(task.taskId)[0]!;
+      expect(request).toMatchObject({ requestedFor: { developerId: MAYA.developerId }, approverRole: "payer", approverIds: [BEN.developerId] });
+      expect(await refusal(t.decide(MAYA, request.spendRequestId))).toMatchObject({ code: "FORBIDDEN" });
+      expect(t.meta(task.taskId).budgetUsd).toBe(4);
+      await t.decide(BEN, request.spendRequestId);
+      expect(t.meta(task.taskId).budgetUsd).toBe(9);
+    });
+
+    it("P6: the agent's owner who started the run can't raise its stop; it goes to the org's admins", async () => {
+      const t = await setup();
+      const agentId = await t.agentOf(TRIAGE, { name: "Ticket looker" });
+      await t.setBudget(MAYA, agentId, { maxPerRunUsd: 4 });
+      const run = await t.runOf(agentId);
+      await t.set(run.taskId, "SET budgetUsd = :limit", { ":limit": 25 });
+      await t.pauseAndEnd(run, { kind: "max_per_run", taskId: run.taskId });
+      const request = t.requestOf(run.taskId, "max_per_run")[0]!;
+      expect(request).toMatchObject({ requestedFor: { developerId: MAYA.developerId }, approverRole: "org_admin" });
+      expect([...request.approverIds].sort()).toEqual([ADA.developerId, DEB.developerId].sort());
+      expect(await refusal(t.decide(MAYA, request.spendRequestId, "APPROVE", { amountUsd: 90 }))).toMatchObject({ code: "FORBIDDEN" });
+      expect(t.meta(run.taskId).maxPerRunUsd).toBe(4);
+      await t.decide(DEB, request.spendRequestId);
+      expect(t.meta(run.taskId).maxPerRunUsd).toBe(9);
+    });
+
+    it("the org's only owner or admin may raise their own run's stop", async () => {
+      const t = await setup({ secondAdmin: false });
+      const agentId = await t.agentOf(TRIAGE, { by: ADA, name: "Ada's looker" });
+      await t.setBudget(ADA, agentId, { maxPerRunUsd: 4 });
+      const run = await t.runOf(agentId, { who: ADA });
+      await t.set(run.taskId, "SET budgetUsd = :limit", { ":limit": 25 });
+      await t.pauseAndEnd(run, { kind: "max_per_run", taskId: run.taskId });
+      const request = t.requestOf(run.taskId, "max_per_run")[0]!;
+      await t.decide(ADA, request.spendRequestId);
+      expect(t.meta(run.taskId).maxPerRunUsd).toBe(9);
+    });
+  });
+
+  describe("minors", () => {
+    it("M-1: a held start whose dispatch failed after the approval is retried by the settlement run", async () => {
+      const t = await setup();
+      const started = await startAgentRun(t.starter(), {
+        requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId: "rovara-code" }, input: { text: "Fix the retry bug" }, origin: "app",
+        owner: { developerId: MAYA.developerId }, startedBy: { developerId: MAYA.developerId }, payer: { kind: "member", developerId: MAYA.developerId }, runLimitUsd: 0,
+      });
+      const request = t.requestOf(started.taskId)[0]!;
+      const prepare = t.operations(t.meta(started.taskId).workspaceId).find((operation) => operation.kind === "prepare")!;
+      const deps = t.deps();
+      const failing = { ...deps, spendRequests: { ...deps.spendRequests!, resumeTask: () => Promise.reject(new Error("no free workspace")) } };
+      await decideSpendRequest(failing, t.caller(MAYA), request.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" });
+      expect(t.meta(started.taskId)).toMatchObject({ budgetUsd: 5, budgetPause: { firstDispatch: { operationId: prepare.id } } });
+      expect(t.outboxOf(prepare.id)).toBeUndefined();
+      expect(t.taskEvents(started.taskId)).toContain("The budget was approved, but this run couldn't start yet. Rovara will keep trying.");
+      expect(await escalateOwnerRequests(t.deps(), { budgetMs: 5_000 })).toMatchObject({ heldStarts: 1 });
+      expect(t.outboxOf(prepare.id)).toBeDefined();
+      expect(t.meta(started.taskId).budgetPause).toBeUndefined();
+      expect(await escalateOwnerRequests(t.deps(), { budgetMs: 5_000 })).toMatchObject({ heldStarts: 0 });
+    });
+
+    it("M-2 (P5): approving a closed task's request is APPROVAL_CLOSED and ends it; declining one is a clean decline", async () => {
+      const t = await setup();
+      const task = await t.plainTask();
+      await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+      await t.pauseAndEnd(task);
+      const id = t.requestOf(task.taskId)[0]!.spendRequestId;
+      await t.set(task.taskId, "SET closedAt = :closed", { ":closed": new Date().toISOString() });
+      expect(await refusal(t.decide(BEN, id))).toEqual({ code: "APPROVAL_CLOSED", message: "This task was closed, so nobody can decide this now." });
+      expect(recordOf(t, id)).toMatchObject({ status: "EXPIRED" });
+      expect(t.openItems()).toEqual([]);
+      const other = await t.plainTask();
+      await t.set(other.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+      await t.pauseAndEnd(other);
+      const declined = t.requestOf(other.taskId)[0]!.spendRequestId;
+      await t.set(other.taskId, "SET closedAt = :closed", { ":closed": new Date().toISOString() });
+      await t.decide(BEN, declined, "DENY");
+      expect(recordOf(t, declined)).toMatchObject({ status: "DENIED" });
+    });
+
+    it("M-2 / M-6 (M6): a task closed between the read and the write is not raised, and the request ends as closed", async () => {
+      const t = await setup();
+      const task = await t.plainTask();
+      await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+      await t.pauseAndEnd(task);
+      const id = t.requestOf(task.taskId)[0]!.spendRequestId;
+      const deps = t.deps();
+      let closed = false;
+      const racing = { ...deps, documentClient: { send: async (command: { constructor: { name: string } }) => {
+        if (!closed && command.constructor.name === "TransactWriteCommand") {
+          closed = true;
+          await t.set(task.taskId, "SET closedAt = :closed", { ":closed": new Date().toISOString() });
+        }
+        return t.db.send(command as never);
+      } } };
+      expect(await refusal(decideSpendRequest(racing as never, t.caller(BEN), id, { requestId: randomUUID(), decision: "APPROVE" }))).toMatchObject({ code: "APPROVAL_CLOSED" });
+      expect(t.meta(task.taskId).budgetUsd).toBe(14);
+      expect(recordOf(t, id)).toMatchObject({ status: "EXPIRED" });
+    });
+
+    it("M-4: an owner_cap approval checks the guardrails and the trial limits again", async () => {
+      const t = await setup();
+      await t.budgeted(50);
+      await t.budgeted(50);
+      const third = await t.agentOf();
+      const id = (await t.setBudget(MAYA, third, { monthlyUsd: 30 })).body.spendRequestId as string;
+      t.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxAgentMonthlyUsd: 20 } });
+      expect(await refusal(t.decide(DEB, id))).toMatchObject({ code: "CONFIG_INVALID" });
+      expect(t.agentItem(third)!.monthlyBudgetUsd).toBeUndefined();
+      t.db.delete(agentGuardrailsKey(TEST_ORG));
+      t.db.set({ ...t.db.get(`ORG#${TEST_ORG}`, "META")!, plan: "trial" });
+      expect(await refusal(t.decide(DEB, id))).toMatchObject({ code: "CONFIG_INVALID" });
+      expect(t.agentItem(third)!.monthlyBudgetUsd).toBeUndefined();
+      expect(recordOf(t, id)).toMatchObject({ status: "PENDING" });
+    });
+
+    it("M-5: a request that never escalates is due at its expiry, and an escalated one moves there, so neither is read again before it expires", async () => {
+      const t = await setup();
+      const asked = await t.plainTask();
+      await t.set(asked.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+      await t.pauseAndEnd(asked);
+      const runLimit = t.requestOf(asked.taskId)[0]!;
+      expect(dueOf(t, runLimit.spendRequestId)).toEqual([Date.parse(runLimit.expiresAt)]);
+      const agentId = await t.agentOf(TRIAGE, { name: "Ticket looker" });
+      await t.setBudget(MAYA, agentId, { maxPerRunUsd: 4 });
+      await t.shareWith(agentId, BEN);
+      const run = await t.runOf(agentId, { who: BEN });
+      await t.set(run.taskId, "SET budgetUsd = :limit", { ":limit": 25 });
+      await t.pauseAndEnd(run, { kind: "max_per_run", taskId: run.taskId });
+      const max = t.requestOf(run.taskId, "max_per_run")[0]!;
+      expect(dueOf(t, max.spendRequestId)).toEqual([Date.parse(max.createdAt) + OWNER_ANSWER_HOURS * 3_600_000]);
+      const later = Date.now() + OWNER_ANSWER_HOURS * 3_600_000 + 60_000;
+      expect(await escalateOwnerRequests(t.deps(() => later), { budgetMs: 5_000 })).toMatchObject({ escalated: 1, complete: true });
+      expect(dueOf(t, max.spendRequestId)).toEqual([Date.parse(max.expiresAt)]);
+      const deps = t.deps(() => later + 60_000);
+      const read: string[] = [];
+      const counting = { ...deps, documentClient: { send: (command: { constructor: { name: string }; input: { Key?: { pk?: string } } }) => {
+        if (command.constructor.name === "GetCommand" && String(command.input.Key?.pk).includes("SPEND_REQUEST#")) read.push(String(command.input.Key?.pk));
+        return t.db.send(command as never);
+      } } };
+      expect(await escalateOwnerRequests(counting as never, { budgetMs: 5_000 })).toMatchObject({ escalated: 0, complete: true });
+      expect(read).toEqual([]);
+      await t.decide(DEB, max.spendRequestId);
+      expect(dueOf(t, max.spendRequestId)).toEqual([]);
+    });
+
+    it("M-6 (M8): the page's decide refuses a proof that is not a fresh sign-in", async () => {
+      const t = await setup();
+      const task = await t.plainTask();
+      await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+      await t.pauseAndEnd(task);
+      const id = t.requestOf(task.taskId)[0]!.spendRequestId;
+      const kind = spendDecideKind(t.deps());
+      expect(await refusal(kind.decide({ orgId: TEST_ORG, developerId: BEN.developerId, approvalId: id }, "approve", { kind: "button", via: "slack" }))).toMatchObject({ code: "FORBIDDEN" });
+      expect(recordOf(t, id)).toMatchObject({ status: "PENDING" });
+    });
+
+    it("M-6 (M20): someone who may not decide learns nothing of how a request ended", async () => {
+      const t = await setup();
+      const task = await t.plainTask();
+      await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+      await t.pauseAndEnd(task);
+      const id = t.requestOf(task.taskId)[0]!.spendRequestId;
+      const kind = spendDecideKind(t.deps());
+      await t.decide(BEN, id);
+      expect(await kind.inspect({ orgId: TEST_ORG, developerId: CARL.developerId, approvalId: id })).toMatchObject({ status: "forbidden" });
+      const other = await t.plainTask();
+      await t.set(other.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+      await t.pauseAndEnd(other);
+      const expiring = t.requestOf(other.taskId)[0]!;
+      const late = spendDecideKind(t.deps(() => Date.parse(expiring.expiresAt) + 1));
+      expect(await late.inspect({ orgId: TEST_ORG, developerId: CARL.developerId, approvalId: expiring.spendRequestId })).toMatchObject({ status: "forbidden" });
+    });
+
+    it("M-6 (M21): a refused decision on the decide route gives the session back", async () => {
+      const t = await setup();
+      const task = await t.plainTask();
+      await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+      await t.pauseAndEnd(task);
+      const id = t.requestOf(task.taskId)[0]!.spendRequestId;
+      const ended: string[] = [];
+      const proof = { kind: "fresh_sign_in" as const, method: "email_code" as const, authTime: new Date().toISOString(), sessionRef: "a".repeat(64) };
+      const deps = { ...t.deps(), requireDecide: () => Promise.resolve({ orgId: TEST_ORG, developerId: CARL.developerId, proof, finish: async () => { ended.push("finish"); }, release: async () => { ended.push("release"); } }) };
+      const request = { method: "POST", body: JSON.stringify({ decision: "APPROVE" }), headers: {} };
+      expect(await refusal(routeSpendRequests(deps as never, t.caller(CARL), request as never, new URL(`${CELL}/v1/app/spend-requests/${id}/decide`)))).toMatchObject({ code: "FORBIDDEN" });
+      expect(ended).toEqual(["release"]);
+    });
+
+    it("M-6 (M10, M17): the mover stops at its deadline between two requests, and audits each move as the system's", async () => {
+      const t = await setup();
+      t.grantRole(OMAR, "contributor");
+      const ids: string[] = [];
+      for (let index = 0; index < 2; index += 1) {
+        const task = await t.plainTask(OMAR);
+        await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 4 });
+        await t.pauseAndEnd(task);
+        ids.push(t.requestOf(task.taskId)[0]!.spendRequestId);
+      }
+      const capture = capturingAuditDeps({ db: t.db });
+      const deps = t.deps();
+      let moved = 0;
+      const deadline = Date.now() + 60_000;
+      const timed = {
+        ...deps, audit: capture.audit, deadline, now: () => (moved > 0 ? deadline + 1 : Date.now()),
+        documentClient: { send: async (command: { constructor: { name: string }; input: unknown }) => {
+          const answer = await t.db.send(command as never);
+          if (command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes("moveRevision")) moved += 1;
+          return answer;
+        } },
+      };
+      await expect(onMembersMerged(timed as never, { orgId: TEST_ORG, survivorId: CARL.developerId, duplicateId: OMAR.developerId })).rejects.toThrow();
+      expect(moved).toBe(1);
+      expect(ids.map((id) => recordOf(t, id).approverIds)).toContainEqual([OMAR.developerId]);
+      expect(capture.recordedBy("spend_request.rerouted")).toHaveLength(1);
+      expect(capture.recordedBy("spend_request.rerouted")[0]).toMatchObject({ actor: { kind: "system" } });
+    });
+
+    it("M-7: an owner_cap decision takes no amount and stores none", async () => {
+      const t = await setup();
+      await t.budgeted(50);
+      await t.budgeted(50);
+      const third = await t.agentOf();
+      const id = (await t.setBudget(MAYA, third, { monthlyUsd: 1 })).body.spendRequestId as string;
+      expect(await refusal(t.decide(DEB, id, "APPROVE", { amountUsd: 500 }))).toMatchObject({ code: "CONFIG_INVALID" });
+      const decided = await t.decide(DEB, id);
+      expect(decided.spendRequest).not.toHaveProperty("approvedAmountUsd");
+      expect(recordOf(t, id)).not.toHaveProperty("approvedAmountUsd");
+      expect(t.agentItem(third)!.monthlyBudgetUsd).toBe(1);
+    });
   });
 });
