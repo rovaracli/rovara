@@ -65,10 +65,12 @@ describe("chainLessSafeChanges", () => {
     });
 
     it("lets a rejection carry on where it used to stop the run", async () => {
-      expect(await changes(variant({ approve_fix: { onReject: { to: "fix" } } }))).toEqual(["a rejection at approve_fix now carries on to fix"]);
-      // Moving a rejection between steps, or to the end, is not new.
+      expect(await changes(variant({ approve_fix: { onReject: { to: "fix" } } }))).toEqual([
+        "a rejection at approve_fix now carries on to fix", 'fix can now be reached without passing "approve_fix"', 'review can now be reached without passing "approve_fix"',
+      ]);
+      // Moving a rejection to a step that was behind no gate, or to the end, is not new; moving it behind the gate is.
       const before = variant({ approve_fix: { onReject: { to: "review" } } });
-      expect(await chainLessSafeChanges(before, variant({ approve_fix: { onReject: { to: "fix" } } }), lookups())).toEqual([]);
+      expect(await chainLessSafeChanges(before, variant({ approve_fix: { onReject: { to: "fix" } } }), lookups())).toEqual(['fix can now be reached without passing "approve_fix"']);
       expect(await chainLessSafeChanges(before, pinned(), lookups())).toEqual([]);
     });
 

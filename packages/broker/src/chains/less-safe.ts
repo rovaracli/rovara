@@ -38,30 +38,34 @@ function edgesOf(def: Graph): Edge[] {
   });
 }
 
-/** The ids reachable from `from` along the edges, never entering `blocked`; `from` itself counts unless it is blocked. */
-function reachableFrom(edges: readonly Edge[], from: string, blocked?: string): Set<string> {
+/** The ids reachable from `from` along the edges, never using the edge `blocked` (a gate's approval, say); `from` itself always counts. */
+function reachableFrom(edges: readonly Edge[], from: string, blocked?: { step: string; slot: string }): Set<string> {
   const seen = new Set<string>();
-  if (from === blocked) return seen;
   const queue = [from];
   while (queue.length > 0) {
     const id = queue.pop()!;
     if (seen.has(id)) continue;
     seen.add(id);
-    for (const edge of edges) if (edge.step === id && edge.to !== "$end" && edge.to !== blocked) queue.push(edge.to);
+    for (const edge of edges) {
+      if (edge.step !== id || edge.to === "$end") continue;
+      if (blocked !== undefined && edge.step === blocked.step && edge.slot === blocked.slot) continue;
+      queue.push(edge.to);
+    }
   }
   return seen;
 }
 
 /**
- * The gates every path from the start to `stepId` passes, in the order of the design. A gate is not behind itself; a start that is a gate is passed
- * by every step; a step nothing reaches has none. (A gate is passed by all paths exactly when the step cannot be reached once that gate is removed.)
+ * The gates that guard `stepId`: a gate guards a step when the step cannot be reached from the start once the gate's approval edge (`onApprove`) is
+ * taken away. Its rejection edge stays, because a rejection is not an approval: a step a rejection leads to is not behind the gate. In the order of
+ * the design; a gate is not behind itself, and a step nothing reaches has none.
  */
 export function gatesOnEveryPath(def: Graph, stepId: string): string[] {
   const edges = edgesOf(def);
   if (!reachableFrom(edges, def.start).has(stepId)) return [];
   return def.steps
     .filter((step): step is Gate => step.kind === "gate" && step.id !== stepId)
-    .filter((gate) => !reachableFrom(edges, def.start, gate.id).has(stepId))
+    .filter((gate) => !reachableFrom(edges, def.start, { step: gate.id, slot: "onApprove" }).has(stepId))
     .map((gate) => gate.id);
 }
 
