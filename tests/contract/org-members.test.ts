@@ -226,14 +226,19 @@ describe("POST /v1/app/org/leave", () => {
     expect(harness.endDeveloperSessions).toHaveBeenCalledTimes(2);
   });
 
-  it("takes no request id (final review M2): a body with one is refused, and the person stays", async () => {
+  it("accepts an optional request id and ignores it (plan text, N1), and still refuses any other key", async () => {
     const harness = await org();
     const bea = person(harness, "Bea", "member");
-    const refused = await harness.dev(bea, "POST", "/v1/app/org/leave", { requestId: randomUUID() });
-    expect(refused.status).toBe(400);
-    expect(errorOf(refused)).toMatchObject({ code: "CONFIG_INVALID" });
+    const unknown = await harness.dev(bea, "POST", "/v1/app/org/leave", { requestId: randomUUID(), extra: true });
+    expect(unknown.status).toBe(400);
+    expect(errorOf(unknown)).toMatchObject({ code: "CONFIG_INVALID" });
+    const malformed = await harness.dev(bea, "POST", "/v1/app/org/leave", { requestId: "not-a-uuid" });
+    expect(malformed.status).toBe(400);
     expect(roleOf(harness, bea)).toBe("member");
-    expect((await leave(harness, bea)).status).toBe(200);
+    const left = await harness.dev(bea, "POST", "/v1/app/org/leave", { requestId: randomUUID() });
+    expect(left.status).toBe(200);
+    expect(left.body).toMatchObject({ left: true, orgClosed: false });
+    expect(roleOf(harness, bea)).toBeUndefined();
   });
 
   it("refuses the only owner leaving while others remain with 409 LAST_OWNER, and lets an owner leave when another owner exists", async () => {
