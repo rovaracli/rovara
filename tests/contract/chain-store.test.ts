@@ -462,6 +462,32 @@ describe("publish, versions and rollback", () => {
     expect(await code(ctx.chains.publish({ ...input, pinned: other, digest: chainDigest(other) }))).toEqual({ code: "CONFIG_INVALID", message: "pinned.steps.0.agent.version: the draft names version 1" });
   });
 
+  it("refuses a design whose graph has problems, whoever pinned it, before anything is written", async () => {
+    const ctx = setup();
+    const loop: ChainDefinitionInput = {
+      start: "a",
+      steps: [
+        { kind: "agent", id: "a", name: "A", agent: { agentId: "ticket-triage", version: "current" }, next: { kind: "go", to: "b" } },
+        { kind: "agent", id: "b", name: "B", agent: { agentId: "ticket-triage", version: "current" }, next: { kind: "go", to: "a" } },
+      ],
+    };
+    const chain = await ctx.create("Loopy", { definition: loop });
+    const draft = (await ctx.chains.getDraft(ORG_A, chain.chainId))!;
+    // Hand-built, as a caller that skipped (or ignored) the validation would: every agent pinned to a number.
+    const checked = await validateChainForPublish(ctx.agentDeps, caller(ALICE), ORG_A, draft.definition);
+    expect(checked.problems.length).toBeGreaterThan(0);
+    const input = { orgId: ORG_A, chainId: chain.chainId, expectedDraftRevision: 1, pinned: checked.pinned, digest: chainDigest(checked.pinned), by: ALICE };
+    expect(await code(ctx.chains.publish(input))).toEqual({ code: "CONFIG_INVALID", message: `${checked.problems[0]!.path}: ${checked.problems[0]!.message}` });
+    expect(await ctx.chains.listVersions(ORG_A, chain.chainId)).toEqual([]);
+    expect(ctx.events(ORG_A, chain.chainId)).toHaveLength(1);
+    // Other graph problems are refused the same way: an edge to nowhere, a step nothing reaches.
+    const dangling = await ctx.create("Dangling", { definition: { start: "a", steps: [{ kind: "agent", id: "a", name: "A", agent: { agentId: "ticket-triage", version: "current" }, next: { kind: "go", to: "nowhere" } }] } });
+    const danglingChecked = await validateChainForPublish(ctx.agentDeps, caller(ALICE), ORG_A, (await ctx.chains.getDraft(ORG_A, dangling.chainId))!.definition);
+    expect(await code(ctx.chains.publish({ orgId: ORG_A, chainId: dangling.chainId, expectedDraftRevision: 1, pinned: danglingChecked.pinned, digest: chainDigest(danglingChecked.pinned), by: ALICE }))).toEqual({
+      code: "CONFIG_INVALID", message: "steps.0.next.to: no step is called nowhere",
+    });
+  });
+
   it("refuses a pinned definition that still holds \"current\"", async () => {
     const { create, chains, publishInput } = setup();
     const chain = await create("Investigate");
