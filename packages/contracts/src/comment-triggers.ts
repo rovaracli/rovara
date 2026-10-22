@@ -66,7 +66,7 @@ export function commentTriggerLapseNotice(repository: string, files: readonly st
 }
 
 /** What the page shows beside a repository's scan: what the scan reads, and what it can't see. Fixed text; nothing from a repository goes in it. */
-export const COMMENT_TRIGGER_COVERAGE_NOTE = "Rovara reads every workflow of the repository, the scripts and manifests they name, local actions and the shell scripts those run in turn. It can't see code fetched or built at run time, a command run by bare name or found on the PATH, files a Python or JavaScript script imports, a Docker build context, or tool configuration such as tox.ini; where it can't tell which file runs, it asks a person.";
+export const COMMENT_TRIGGER_COVERAGE_NOTE = "Rovara reads every workflow of the repository, the scripts and manifests they name, local actions and the shell scripts those run in turn. For npm, make and well-known Python tools it reads their configuration files, not the tests or code they run. It can't see code fetched or built at run time, a command run by bare name or found on the PATH, files a Python or JavaScript script imports, or a Docker build context; where it can't tell which file runs, it asks a person.";
 
 /**
  * Why a scan failed closed, in a few fixed words an admin can act on. Only the scan's own reasons are here: nothing from the repository is ever put in a hint.

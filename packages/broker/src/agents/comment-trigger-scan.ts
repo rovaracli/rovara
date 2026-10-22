@@ -20,8 +20,8 @@
 // and their environment forms) where a path goes (a command word, the word after an interpreter or a wrapper, `working-directory`, `shell:`, an environment
 // variable that loads a file, `uses:`), `..` in a path, a glob or brace expansion, `cd`, `pushd` or `popd` in anything it reads, a command written with a
 // backslash or an empty quote pair, `env -C/--chdir`, `git -C`, a `make`, `npm`, `pnpm` or `yarn` folder or file flag it can't resolve, `find -exec/-execdir/-ok`,
-// `run-parts`, an `xargs` whose command is an interpreter or missing, `python -m` of a module outside a short standard list (pip, venv, json.tool, http.server
-// and the like) in `run:` or `shell:`, a custom `shell:` that is not a plain path, a script that uses `$1`/`$@`/`$*` where a path goes when the caller's
+// `run-parts`, an `xargs` whose command is an interpreter or missing, `python -m` of a module outside a short list (pip, venv, json.tool, http.server
+// and the like, and pytest, mypy, ruff, black, flake8, isort, coverage, tox, nox, whose configuration files are hashed) in `run:` or `shell:`, a custom `shell:` that is not a plain path, a script that uses `$1`/`$@`/`$*` where a path goes when the caller's
 // arguments can't be read, a root action (`uses: ./`) that is not composite, a local action with no action.yml/action.yaml, a named file (written as a path or
 // with a script extension) that is not in the repository (except under node_modules, .venv or venv, which a run creates), any path under a git submodule, and
 // a symlink or submodule where it lists.
@@ -30,7 +30,8 @@
 //  - a command run by bare name or resolved from the PATH, including one a step adds with `$GITHUB_PATH`, unless npm, npx, yarn, pnpm or make runs it;
 //  - code fetched or built at run time (a download, a package install, a remote action or its ref's content) and a Docker build's context and Dockerfile;
 //  - files a script in another language imports or requires (only shell scripts are read for further paths; a Python or JavaScript script is hashed);
-//  - tool configuration the tools read on their own (tox.ini, pytest.ini, setup.cfg, .npmrc, a Makefile's or package.json's own contents beyond hashing those two);
+//  - the code npm, make and `python -m pytest|mypy|ruff|black|flake8|isort|coverage|tox|nox` run (only package.json, Makefile and pyproject.toml, setup.cfg, pytest.ini,
+//    tox.ini, noxfile.py are hashed), and other tool configuration the tools read on their own (.npmrc and the like);
 //  - code a shell script builds from pieces or passes through here-documents, `eval` of a variable, `python -c`/`node -e` strings and computed paths;
 //  - a workflow on a branch other than the default (it matters once it is merged, and the next run's scan sees it);
 //  - symlinked directories on the path to a script, which the API may report as absent (a script written as a path then fails closed as missing).
@@ -158,6 +159,9 @@ const INTERPRETERS = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish", "node"
 const PYTHONS = new Set(["python", "python2", "python3"]);
 /** Standard-library and installer modules `python -m` may run without naming a file of the repository. Any other module is code the scan can't see. */
 const PYTHON_MODULES = new Set(["pip", "venv", "ensurepip", "json.tool", "http.server", "zipfile", "tarfile", "base64", "compileall", "py_compile", "timeit", "sysconfig", "site", "platform", "uuid", "calendar"]);
+/** Well-known tools `python -m` may run: like npm and make, their configuration files are hashed and the code they run is not followed. */
+const PYTHON_TOOL_MODULES = new Set(["pytest", "mypy", "ruff", "black", "flake8", "isort", "coverage", "tox", "nox"]);
+const PYTHON_CONFIG_FILES = ["pyproject.toml", "setup.cfg", "pytest.ini", "tox.ini", "noxfile.py"];
 const SCRIPT_EXTENSION = /\.(?:sh|bash|zsh|py|rb|js|mjs|cjs|ts|pl|ps1|php)$/u;
 /** Stands for one `${{ ... }}` expression while a run block is read: what an expression names is not known to the scan. */
 const EXPRESSION_MARK = "\u0001";
@@ -366,7 +370,8 @@ export function analyseRun(run: string): RunAnalysis {
               const option = rest[look]!;
               if (option === "-m" || (option.startsWith("-m") && !option.startsWith("--"))) {
                 const module = option === "-m" ? rest[look + 1] : option.slice(2);
-                if (module === undefined || !PYTHON_MODULES.has(module)) flag(HINTS.pythonModule);
+                if (module === undefined || !(PYTHON_MODULES.has(module) || PYTHON_TOOL_MODULES.has(module))) flag(HINTS.pythonModule);
+                else if (PYTHON_TOOL_MODULES.has(module)) for (const name of PYTHON_CONFIG_FILES) take(name, false);
                 break;
               }
             }
@@ -411,7 +416,8 @@ function shellFiles(value: string, actionDirectory: string): RunAnalysis {
       const option = words[index + 1];
       if (option !== undefined && (option === "-m" || (option.startsWith("-m") && !option.startsWith("--")))) {
         const module = option === "-m" ? words[index + 2] : option.slice(2);
-        if (module === undefined || !PYTHON_MODULES.has(module)) flag(HINTS.pythonModule);
+        if (module === undefined || !(PYTHON_MODULES.has(module) || PYTHON_TOOL_MODULES.has(module))) flag(HINTS.pythonModule);
+        else if (PYTHON_TOOL_MODULES.has(module)) for (const name of PYTHON_CONFIG_FILES) candidates.add(name);
       }
     }
     if (word.startsWith("-")) { afterFlag = true; continue; }
