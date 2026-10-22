@@ -346,7 +346,8 @@ import { answerSlackChatGpt, isSlackChatGptCommandEvent, isSlackChatGptFinishEve
 import { chatGptConnections, kmsChatGptSealer, type ChatGptConnections } from "../chatgpt/connections.js";
 import { OrgSecrets, type SecretsClient } from "../connections/org-secrets.js";
 import { orgCredentialRegistry } from "../connections/registry.js";
-import type { OrgConnectionDeps } from "../connections/store.js";
+import { dnsResolveHost, checkEndpointUrl } from "../connections/endpoint-check.js";
+import { OrgConnectionStore, type OrgConnectionDeps, type OrgConnectionStoreInput } from "../connections/store.js";
 import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
@@ -591,6 +592,11 @@ interface AwsBrokerDependencies {
    * no connections at all: the install-wide registry is never used for one.
    */
   orgConnections?: OrgConnectionDeps;
+  /**
+   * Plan 3 Task 12b: how the connection routes reach a vendor. By default a connection is checked with `fetch`, the MCP server's tools are
+   * listed over the network, and an MCP endpoint is checked with `checkEndpointUrl` and the system resolver; a test replaces any of them.
+   */
+  connectionChecks?: Pick<OrgConnectionStoreInput, "fetch" | "listMcpTools" | "checkEndpoint">;
   /** The administrator turn record export; absent when the deployment has no TurnRecords table. */
   turnRecords?: TurnRecordExport;
   /** The TurnRecords table developer task audit records go to (spec 025); absent when there is none. */
@@ -858,6 +864,17 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     orgs: orgStoreOf(dependencies),
     // The spend routes show the placeholder limits a cloud org starts with (R47).
     ...(dependencies.cloud === true ? { cloud: true } : {}),
+    // Task 12b: the org's connections, on the broker's own table and audit outbox. An MCP endpoint is checked at save and before every call.
+    ...(dependencies.orgConnections === undefined ? {} : {
+      connections: new OrgConnectionStore({
+        ...dependencies.orgConnections,
+        documentClient: dependencies.documentClient,
+        tableName: dependencies.tableName,
+        ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
+        checkEndpoint: async (url) => { await checkEndpointUrl(url, dnsResolveHost); },
+        ...dependencies.connectionChecks,
+      }),
+    }),
   };
 }
 

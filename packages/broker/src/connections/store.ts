@@ -184,7 +184,8 @@ export class OrgConnectionStore {
     const parsed = OrgConnectionSchema.safeParse(input.connection);
     if (!parsed.success) {
       const first = parsed.error.issues[0];
-      throw coded("CONFIG_INVALID", `connection${first && first.path.length > 0 ? `.${first.path.join(".")}` : ""}: ${first?.message ?? "is not valid"}`);
+      // An unknown field's name is not echoed: a client can put anything, a secret included, where a field name goes.
+      throw coded("CONFIG_INVALID", `connection${first && first.path.length > 0 ? `.${first.path.join(".")}` : ""}: ${first === undefined ? "is not valid" : first.code === "unrecognized_keys" ? "has a field this kind of connection does not take" : first.message}`);
     }
     const connection = parsed.data;
     let secretJson: string | undefined;

@@ -2,6 +2,7 @@
 // broker runs outside the project VPC, so its calls never meet the DNS firewall and need no staff approval: this is the only thing
 // between a company's MCP endpoint and the broker's own network. A refusal names no part of the URL and no address, so it can be shown to
 // the person who typed the URL and written to a log.
+import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { isPublicAddress } from "@agentx/gateway";
 import { agentXError, isAllowedDomain } from "@agentx/contracts";
@@ -17,6 +18,9 @@ export interface CheckedEndpoint {
   /** The addresses the host resolved to when it was checked, all public. */
   addresses: string[];
 }
+
+/** The addresses the system resolver gives a host, IPv4 and IPv6. */
+export const dnsResolveHost: ResolveHost = async (host) => (await lookup(host, { all: true, verbatim: true })).map((entry) => entry.address);
 
 const refuse = (message: string) => agentXError("CONFIG_INVALID", message);
 

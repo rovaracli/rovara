@@ -81,7 +81,7 @@ describe("a connection write is conditional on what it read", () => {
         raced = true;
         await other.put({ orgId: ORG_A, connection: { ...LINEAR, label: "Theirs" }, by: "b".repeat(64) });
       }
-      return db.send(command);
+      return db.send(command as never);
     } } });
     let raced = false;
     const other = new OrgConnectionStore(deps);
@@ -102,7 +102,7 @@ describe("a connection write is conditional on what it read", () => {
         raced = true;
         await other.put({ orgId: ORG_A, connection: LINEAR, by: "b".repeat(64) });
       }
-      return db.send(command);
+      return db.send(command as never);
     } } });
     expect((await code(store.put({ orgId: ORG_A, connection: { ...LINEAR, label: "Mine" }, by: ALICE })))?.code).toBe("CHANGE_STALE");
   });
@@ -117,13 +117,11 @@ describe("a connection write is conditional on what it read", () => {
 
   it("drops what a check learned about the old secret when the secret is replaced while the check is running", async () => {
     const { deps } = setup();
-    let store!: OrgConnectionStore;
     // The vendor answers slowly; meanwhile an admin saves a new key, which belongs to another account.
-    const fetchSlow = vi.fn(async () => {
+    const store: OrgConnectionStore = new OrgConnectionStore({ ...deps, fetch: async () => {
       await store.put({ orgId: ORG_A, connection: LINEAR, secret: { apiKey: "k2" }, by: ALICE });
       return new Response(JSON.stringify({ data: { viewer: { id: "old-account" } } }), { status: 200 });
-    });
-    store = new OrgConnectionStore({ ...deps, fetch: fetchSlow as never });
+    } });
     await store.put({ orgId: ORG_A, connection: LINEAR, secret: { apiKey: "k1" }, by: ALICE });
     await store.check(ORG_A, CON_A);
     expect(await connectionActorIds(deps, ORG_A, "linear")).toEqual(new Set());
@@ -132,7 +130,7 @@ describe("a connection write is conditional on what it read", () => {
 
   it("writes a check's result and its request item together", async () => {
     const { deps, db } = setup();
-    const store = new OrgConnectionStore({ ...deps, fetch: (async () => new Response(JSON.stringify({ data: { viewer: { id: "u1" } } }), { status: 200 })) as never });
+    const store = new OrgConnectionStore({ ...deps, fetch: async () => new Response(JSON.stringify({ data: { viewer: { id: "u1" } } }), { status: 200 }) });
     await store.put({ orgId: ORG_A, connection: LINEAR, secret: { apiKey: "k1" }, by: ALICE });
     expect(await store.check(ORG_A, CON_A, request(R1))).toEqual({ ok: true });
     expect(db.get(agentRequestKey(ORG_A, ALICE, R1))).toMatchObject({ result: { ok: true } });
@@ -158,7 +156,7 @@ describe("an MCP endpoint is checked when a connection is saved", () => {
     const resolver = async () => [address];
     const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
     const tools = vi.fn(async () => [{ name: "a" }]);
-    const store = new OrgConnectionStore({ ...deps, fetch: fetchSpy as never, listMcpTools: tools as never, checkEndpoint: async (url) => { await checkEndpointUrl(url, resolver); } });
+    const store = new OrgConnectionStore({ ...deps, fetch: fetchSpy, listMcpTools: tools as never, checkEndpoint: async (url) => { await checkEndpointUrl(url, resolver); } });
     await store.put({ orgId: ORG_A, connection: MCP, secret: { token: "t" }, by: ALICE });
     expect(await store.check(ORG_A, CON_A)).toEqual({ ok: true, message: "1 tool" });
     address = "10.1.2.3";

@@ -1,10 +1,10 @@
 // Plan 3 Task 12b: checkEndpointUrl, the one check an endpoint URL passes before the broker saves it or calls it (Task 24
 // shares it). The refusals are the point: each one is a way to make the broker call something inside a network.
 import { describe, expect, it, vi } from "vitest";
-import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
+import { checkEndpointUrl, type ResolveHost } from "../../packages/broker/src/connections/endpoint-check.js";
 
 const PUBLIC = ["52.1.2.3"];
-const resolvesTo = (...addresses: string[]) => vi.fn(async (_host: string) => addresses);
+const resolvesTo = (...addresses: string[]) => vi.fn<ResolveHost>(async () => addresses);
 
 async function refusal(url: string, addresses: string[] = PUBLIC) {
   const resolve = resolvesTo(...addresses);
@@ -68,7 +68,7 @@ describe("checkEndpointUrl", () => {
   });
 
   it("fails closed when the host resolves to nothing, or the lookup fails", async () => {
-    expect((await refusal("https://mcp.acme.dev", [])).error).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("did not resolve") });
+    expect((await refusal("https://mcp.acme.dev", [])).error).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("did not resolve") as string });
     const failing = await checkEndpointUrl("https://mcp.acme.dev", async () => { throw new Error("ENOTFOUND mcp.acme.dev with a token in it"); }).then(() => undefined, (caught: { code?: string; message: string }) => caught);
     expect(failing).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     expect(failing?.message).not.toContain("token");
