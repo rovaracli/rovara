@@ -60,7 +60,9 @@ async function ask(deps: ApprovalDependencies, caller: AgentCaller, project: str
   const parsed = CommentTriggerOptOutRequestSchema.safeParse(body);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
-    throw agentXError("CONFIG_INVALID", `${issue === undefined || issue.path.length === 0 ? "body" : issue.path.join(".")}: ${issue?.message ?? "is not valid"}`);
+    // A field the caller made up is not repeated back.
+    const words = issue?.code === "unrecognized_keys" ? "has a field this request does not take" : issue?.message ?? "is not valid";
+    throw agentXError("CONFIG_INVALID", `${issue === undefined || issue.path.length === 0 ? "body" : issue.path.join(".")}: ${words}`);
   }
   if ((await readProjectMeta(deps, caller.orgId, project))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", projectArchivedMessage(project));
   const asked = await requestOptOut(deps, caller, { ...parsed.data, project });

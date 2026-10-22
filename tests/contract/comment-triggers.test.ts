@@ -308,6 +308,15 @@ describe("PUT /v1/app/projects/{p}/connectors/github/comment-triggers", () => {
     expect(w.approvals()).toEqual([]);
   });
 
+  it("does not repeat a field the caller made up", async () => {
+    const w = await world();
+    const current = (await w.digest())[0]!;
+    const reply = await w.put(DANA, current.digest, { "secret-field-name": true });
+    expect(reply.status).toBe(400);
+    expect(JSON.stringify(reply.body)).not.toContain("secret-field-name");
+    expect(errorOf(reply).message).toBe("body: has a field this request does not take");
+  });
+
   it("takes a reason of exactly 300 characters, trimmed", async () => {
     const w = await world();
     expect((await w.ask(DANA, { reason: `  ${"x".repeat(300)}  ` })).status).toBe(202);
@@ -628,6 +637,15 @@ describe("the opt-out lapses when the digest changes (the run's scan)", () => {
     expect(new Set(lapsed.map((event: AuditEventInput) => event.eventId)).size).toBe(2);
   });
 
+  it("lapses nothing on a scan that failed closed, whoever asks", async () => {
+    const w = await world();
+    await w.optOutThrough();
+    const closed = await repoCommandTriggers({ repositoryReader: async () => { throw new Error("down"); } }, { orgId: TEST_ORG, repository: REPOSITORY });
+    expect(closed.failedClosed).toBe(true);
+    expect(await lapseStaleOptOuts(w.deps, { orgId: TEST_ORG, repository: REPOSITORY, scan: closed })).toBe(0);
+    expect(await readOptOut(w.deps, TEST_ORG, REPOSITORY, "payments")).toBeDefined();
+  });
+
   it("lapses nothing for a different repository or another org's opt-outs", async () => {
     const w = await world();
     await w.optOutThrough();
@@ -738,6 +756,10 @@ describe("requestOptOut at the function boundary", () => {
     const caller = { orgId: TEST_ORG, developerId: DANA.developerId, orgRole: "admin" as const };
     const base = { requestId: randomUUID(), project: "payments", repository: REPOSITORY, expectedDigest: current.digest, reason: "ok" };
     await expect(requestOptOut(w.deps, caller, { ...base, repository: "someone/else" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(requestOptOut(w.deps, caller, { ...base, reason: "two\nlines" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(requestOptOut(w.deps, caller, { ...base, reason: "" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(requestOptOut(w.deps, caller, { ...base, project: "not a project!" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(requestOptOut(w.deps, caller, { ...base, requestId: "nope" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     await expect(requestOptOut(w.deps, caller, { ...base, expectedDigest: "b".repeat(64) })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     await expect(requestOptOut(w.deps, { ...caller, orgId: ORG_B }, base)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     const { projectRepositories: _projects, ...withoutProjects } = w.deps; // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose

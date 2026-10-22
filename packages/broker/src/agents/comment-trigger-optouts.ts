@@ -8,7 +8,10 @@
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  AgentXNameSchema,
   COMMENT_TRIGGER_STALE_TEXT,
+  CommentTriggerOptOutRequestSchema,
+  CommentTriggerRepositorySchema,
   COMMENT_TRIGGER_UNREADABLE_TEXT,
   INDEX_EXPIRY_ATTRIBUTE,
   StoredCommentTriggerOptOutSchema,
@@ -61,6 +64,8 @@ function parseStored(deps: OptOutDependencies, orgId: OrgId, item: Item): Stored
 
 /** The project's opt-out for the repository, or undefined. A stored item that can't be read is no opt-out (the rule then applies). */
 export async function readOptOut(deps: OptOutDependencies, orgId: OrgId, repository: string, project: string): Promise<StoredCommentTriggerOptOut | undefined> {
+  // Names that are not a repository or a project are no opt-out (and never reach a key).
+  if (!CommentTriggerRepositorySchema.safeParse(repository).success || !AgentXNameSchema.safeParse(project).success) return undefined;
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: commentTriggerOptOutKey(orgId, repository, project), ConsistentRead: true })) as { Item?: Item };
   return response.Item === undefined ? undefined : parseStored(deps, orgId, response.Item);
 }
@@ -132,7 +137,7 @@ async function lapse(deps: OptOutDependencies, stored: StoredCommentTriggerOptOu
         Item: {
           ...commentTriggerEventKey(orgId, "lapsed", at, eventId), entityType: "COMMENT_TRIGGER_EVENT", orgId, kind: "lapsed", project: stored.project, repository: stored.repository,
           oldDigest: stored.digest, newDigest: scan.digest, changedFiles: changed.slice(0, MAX_CHANGED_FILES), notice: commentTriggerLapseNotice(stored.repository, changed), at, by: "system",
-          ...(taskId === undefined ? {} : { taskId }), [INDEX_EXPIRY_ATTRIBUTE]: expiry(deps, EVENT_MEMORY_DAYS),
+          ...(taskId === undefined || !/^[A-Za-z0-9_-]{1,100}$/u.test(taskId) ? {} : { taskId }), [INDEX_EXPIRY_ATTRIBUTE]: expiry(deps, EVENT_MEMORY_DAYS),
         },
       },
     },
@@ -283,6 +288,12 @@ export async function requestOptOut(
   caller: AgentCaller,
   input: { requestId: string; project: string; repository: string; expectedDigest: string; reason: string },
 ): Promise<OptOutRequestResult> {
+  // The route validates the body; the function does too, whoever calls it.
+  const checked = CommentTriggerOptOutRequestSchema.safeParse({ requestId: input.requestId, repository: input.repository, expectedDigest: input.expectedDigest, reason: input.reason });
+  if (!checked.success || !AgentXNameSchema.safeParse(input.project).success) {
+    const issue = checked.success ? undefined : checked.error.issues[0];
+    throw agentXError("CONFIG_INVALID", `${issue === undefined ? "project" : issue.path.join(".") || "body"}: ${issue === undefined ? "is not a project name" : "is not valid"}`);
+  }
   const repository = await projectRepository(deps, caller.orgId, input.project, input.repository);
   if (repository === undefined) throw agentXError("CONFIG_INVALID", "repository: that is not one of this project's repositories");
   const view = await reviewRepository(deps, { orgId: caller.orgId, project: input.project, repository });
