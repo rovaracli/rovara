@@ -2,6 +2,7 @@
 // owns them exists, so they live here from the start; the budget tasks add keys, types and functions beside them.
 import { z } from "zod";
 import { ModelSourceIdSchema, type AgentId } from "./agent.js";
+import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD } from "./org-budget.js";
 
 /** A run's limit is its estimate's high end times this. */
 export const RUN_LIMIT_MULTIPLIER = 2;
@@ -126,3 +127,14 @@ export const defaultSpendPolicy = (): SpendPolicy => ({
   perTestCapUsd: PER_TEST_CAP_USD,
   ownerAgentBudgetCapUsd: DEFAULT_OWNER_AGENT_BUDGET_CAP_USD,
 });
+
+/**
+ * R49: a trial org stays within the placeholder limits until billing exists. The proxy already holds the org and member figures; these are
+ * the most the settings of this task may name on a trial org, in US dollars a month. A project may use up to the whole org's limit, and an
+ * agent, and one person's total of agent budgets, up to a member's.
+ */
+export const TRIAL_LIMITS_R49 = {
+  projectMonthlyUsd: DEFAULT_ORG_MONTHLY_BUDGET_USD,
+  agentMonthlyUsd: DEFAULT_MEMBER_MONTHLY_BUDGET_USD,
+  ownerAgentBudgetCapUsd: DEFAULT_MEMBER_MONTHLY_BUDGET_USD,
+} as const;

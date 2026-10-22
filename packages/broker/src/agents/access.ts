@@ -93,7 +93,7 @@ const report = (deps: AgentAccessDeps, event: string, fields: Record<string, unk
   (deps.log ?? ((name, detail) => console.error(JSON.stringify({ component: "broker", level: "error", event: name, ...detail }))))(event, fields);
 
 /** The developer a record names, read as whoever they were merged into (following a chain of merges, stopping at a loop). */
-async function followMerges(signInStore: Pick<DeveloperSignInStore, "getDeveloper">, developerId: string): Promise<string> {
+export async function followMerges(signInStore: Pick<DeveloperSignInStore, "getDeveloper">, developerId: string): Promise<string> {
   const seen = new Set<string>();
   let current = developerId;
   for (let hop = 0; hop < MAX_MERGE_HOPS && !seen.has(current); hop += 1) {

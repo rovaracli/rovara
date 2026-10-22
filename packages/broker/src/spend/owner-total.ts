@@ -47,18 +47,20 @@ export function ownerShare(subject: BudgetSubject): OwnerShare | undefined {
 }
 
 /**
- * The counter changes that take an agent's share from `before` to `after`: one item when the owner stays (nothing when the share does
+ * The counter changes that take an agent's share (owners already resolved to their survivors, and their counters already there, see the store's `totalsFor`) from `before` to `after`: one item when the owner stays (nothing when the share does
  * too), two when it moves. A change that raises someone's total is held to `capUsd` when one is given. `capped` lists the indexes, among
  * the returned items, that carry the cap, so the caller can tell which refusal is which.
  */
-export function ownerTotalItems(table: TableInput, orgId: OrgId, before: OwnerShare | undefined, after: OwnerShare | undefined, capUsd?: number): { items: TransactItem[]; capped: number[] } {
+export function ownerTotalItems(table: TableInput, orgId: OrgId, before: OwnerShare | undefined, after: OwnerShare | undefined, capUsd?: number): { items: TransactItem[]; owners: string[]; capped: number[] } {
   const items: TransactItem[] = [];
+  const owners: string[] = [];
   const capped: number[] = [];
   const add = (owner: string, delta: number) => {
     if (delta === 0) return;
     const holdsCap = delta > 0 && capUsd !== undefined;
     if (holdsCap) capped.push(items.length);
-    items.push(addToCounter(table, ownerBudgetKey(orgId, owner), "OWNER_AGENT_BUDGET", "totalUsd", delta, holdsCap ? capUsd : undefined));
+    owners.push(owner);
+    items.push(addToCounter(table, ownerBudgetKey(orgId, owner), "totalUsd", delta, holdsCap ? capUsd : undefined));
   };
   if (before !== undefined && after !== undefined && before.owner === after.owner) {
     add(after.owner, cleanUsd(after.usd - before.usd));
@@ -66,5 +68,5 @@ export function ownerTotalItems(table: TableInput, orgId: OrgId, before: OwnerSh
     if (before !== undefined) add(before.owner, cleanUsd(-before.usd));
     if (after !== undefined) add(after.owner, cleanUsd(after.usd));
   }
-  return { items, capped };
+  return { items, owners, capped };
 }

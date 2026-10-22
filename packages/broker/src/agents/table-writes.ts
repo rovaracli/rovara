@@ -103,25 +103,24 @@ export function updateItem(table: TableInput, key: { pk: string; sk: string }, c
 }
 
 /**
- * An Update that ADDs `delta` to a number attribute (creating the item when it is not there). With `unlessOver` it applies only while the
- * attribute, once `delta` is added, is at most that, so two writers that together pass a limit can't both apply.
+ * An Update that ADDs `delta` to a number attribute that is already there; it never creates the item (the caller makes sure it exists,
+ * with the right figure). It applies only while the attribute stays at or above zero after a decrease, and, with `unlessOver`, at or
+ * below that limit after an increase, so two writers that together pass a limit can't both apply. Every condition is on the attribute and
+ * a value; the comparison with the limit is worked out here (a millionth of slack keeps float dust from refusing an exact fit).
  */
-export function addToCounter(table: TableInput, key: { pk: string; sk: string }, entityType: string, attribute: string, delta: number, unlessOver?: number): TransactItem {
+export function addToCounter(table: TableInput, key: { pk: string; sk: string }, attribute: string, delta: number, unlessOver?: number): TransactItem {
   const aliases = new Aliases();
   const name = aliases.name(attribute);
-  const type = aliases.name("entityType");
   const amount = aliases.value(delta);
-  const kind = aliases.value(entityType);
-  const condition = unlessOver === undefined
-    ? undefined
-    // A counter that is not there yet starts at zero. The extra millionth keeps float dust from refusing a total that lands exactly on the limit.
-    : `(attribute_not_exists(${name}) AND ${amount} <= ${aliases.value(unlessOver + 0.000001)}) OR ${name} <= ${aliases.value(Number((unlessOver - delta + 0.000001).toFixed(6)))}`;
+  const conditions = [`attribute_exists(${name})`];
+  if (delta < 0) conditions.push(`${name} >= ${aliases.value(Number((-delta - 0.000001).toFixed(6)))}`);
+  else if (unlessOver !== undefined) conditions.push(`${name} <= ${aliases.value(Number((unlessOver - delta + 0.000001).toFixed(6)))}`);
   return {
     Update: {
       TableName: table.tableName,
       Key: key,
-      UpdateExpression: `SET ${type} = if_not_exists(${type}, ${kind}) ADD ${name} ${amount}`,
-      ...(condition === undefined ? {} : { ConditionExpression: condition }),
+      UpdateExpression: `ADD ${name} ${amount}`,
+      ConditionExpression: conditions.join(" AND "),
       ExpressionAttributeNames: aliases.names,
       ExpressionAttributeValues: aliases.values,
     },

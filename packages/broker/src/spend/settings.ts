@@ -25,7 +25,7 @@ import {
 } from "@agentx/contracts";
 import { readGuardrails } from "../agents/guardrails.js";
 import type { OwnerShare } from "./owner-total.js";
-import type { AgentRecord, BuiltinSettings } from "../agents/store.js";
+import type { AgentRecord, BuiltinSettings, OwnerCap } from "../agents/store.js";
 import { commit, coded, type Item, type RequestMark, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { memberLimitOf, readBudgets, type OrgBudgetSettings } from "../org/budget.js";
 import { cleanUsd, readTopUp, withTopUp } from "./top-ups.js";
@@ -262,26 +262,31 @@ export interface OwnerBudgetCheck {
   totalUsd: number;
   wouldBeUsd: number;
   capUsd: number;
+  /** The revision of the spend policy the cap was read from; the write checks the policy is still at it. */
+  policyRevision: number;
   ok: boolean;
 }
 
 /**
  * Whether one person's agent budgets may change by `deltaUsd`. A change that lowers or keeps the total always passes; a raise passes when
  * the total with it is at most the org's `ownerAgentBudgetCapUsd`, so landing exactly on the cap passes. Lowering the cap changes no
- * existing budget; it only gates later raises. The store makes the same test again inside the write (`ownerCapUsd`), so two raises that
- * together pass the cap can't both apply.
+ * existing budget; it only gates later raises. The store makes the same test again inside the write (`ownerCap`), so two raises that
+ * together pass the cap can't both apply. The write also checks the spend policy is still at the revision read here, so a cap an admin
+ * lowers in between is not raced past.
  */
 export async function checkOwnerBudget(deps: SpendSettingsDependencies, input: { orgId: OrgId; owner: string; deltaUsd: number }): Promise<OwnerBudgetCheck> {
-  const [totalUsd, { ownerAgentBudgetCapUsd: capUsd }] = await Promise.all([readOwnerTotal(deps, input.orgId, input.owner), readSpendPolicy(deps, input.orgId)]);
+  const [totalUsd, { policy, revision }] = await Promise.all([readOwnerTotal(deps, input.orgId, input.owner), readSpendPolicyWithRevision(deps, input.orgId)]);
+  const capUsd = policy.ownerAgentBudgetCapUsd;
   const wouldBeUsd = cleanUsd(totalUsd + input.deltaUsd);
-  return { totalUsd, wouldBeUsd, capUsd, ok: input.deltaUsd <= 0 || wouldBeUsd <= capUsd };
+  return { totalUsd, wouldBeUsd, capUsd, policyRevision: revision, ok: input.deltaUsd <= 0 || wouldBeUsd <= capUsd };
 }
 
 const dollars = (amount: number): string => `$${String(Number(amount.toFixed(2)))}`;
 
 /**
- * Why a change that moves an agent's budget from `before` to `after` can't be made, in words for the person asking, or undefined when
- * it can. Only the owner `after` counts for is tested: a change that lowers or keeps that owner's total always passes.
+ * Why a change that moves an agent's budget from `before` to `after` can't be made, in words for the person asking, or the cap to hold the
+ * write to when it can. The shares name owners already read as their survivors. Only the owner `after` counts for is tested: a change that
+ * lowers or keeps that owner's total always passes.
  *
  * TASK 32 SEAM: an over-the-cap change is refused here (CONFIG_INVALID) because spend requests don't exist yet. Task 32 replaces the
  * refusal with an `owner_cap` request for an org admin and the answer `202 { status: "NEEDS_ADMIN_APPROVAL", spendRequestId, message }`
@@ -293,12 +298,15 @@ export async function ownerBudgetRefusal(
   before: OwnerShare | undefined,
   after: OwnerShare | undefined,
   ownerName: (developerId: string) => Promise<string>,
-): Promise<{ message: string } | { capUsd: number }> {
+): Promise<{ message: string } | { ownerCap: OwnerCap }> {
   const deltaUsd = after === undefined ? 0 : before?.owner === after.owner ? cleanUsd(after.usd - before.usd) : after.usd;
   const owner = after?.owner;
-  if (owner === undefined) return { capUsd: (await readSpendPolicy(deps, orgId)).ownerAgentBudgetCapUsd };
+  if (owner === undefined) {
+    const { policy, revision } = await readSpendPolicyWithRevision(deps, orgId);
+    return { ownerCap: { usd: policy.ownerAgentBudgetCapUsd, policyRevision: revision } };
+  }
   const check = await checkOwnerBudget(deps, { orgId, owner, deltaUsd });
-  if (check.ok) return { capUsd: check.capUsd };
+  if (check.ok) return { ownerCap: { usd: check.capUsd, policyRevision: check.policyRevision } };
   return {
     message: `${await ownerName(owner)}'s agent budgets would total ${dollars(check.wouldBeUsd)} a month, over the ${dollars(check.capUsd)} limit for one person. `
       + "An org admin will be able to approve this once approval requests exist; for now an org admin can raise the limit in the spend policy.",

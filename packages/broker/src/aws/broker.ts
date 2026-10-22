@@ -322,7 +322,7 @@ import type { ModelAccess } from "../model-proxy/access.js";
 import { admitSpend, changeBudgets, keyIdOf, mintCap, mintKeyHealing, recordMintedKey, type OrgBudgetSettings } from "../org/budget.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
 import { SkillStore, servedSkills } from "../agents/skills.js";
-import type { ProjectMembers } from "../agents/access.js";
+import { followMerges, type ProjectMembers } from "../agents/access.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
@@ -725,16 +725,19 @@ async function decideEgress(dependencies: AwsBrokerDependencies, identity: Authe
 function agentRouteDependencies(dependencies: AwsBrokerDependencies): AgentRouteDependencies | undefined {
   const { agents, developer } = dependencies;
   if (agents === undefined || developer === undefined) return undefined;
+  const signInStore = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, now: Date.now });
   return {
     store: new AgentStore({
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+      // A merged duplicate's agents count in the survivor's total of agent budgets (Task 28).
+      resolveOwner: (_orgId, developerId) => followMerges(signInStore, developerId),
       ...(agents.newId === undefined ? {} : { newId: agents.newId }),
       ...(agents.builtins === undefined ? {} : { builtins: agents.builtins }),
     }),
     projectMembers: agents.projectMembers,
     documentClient: dependencies.documentClient,
     tableName: dependencies.tableName,
-    signInStore: new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, now: Date.now }),
+    signInStore,
     now: Date.now,
     // The confirmation page is served by the cell, at the origin its access tokens are issued from.
     confirmOrigin: new URL(developer.issuer).origin,

@@ -5,7 +5,7 @@
 // on changes nothing until the agent's owner takes the update. `resolveAgent` follows those pins down to a
 // built-in version or the empty recipe and applies each layer's overlay on the way back up.
 import { randomBytes } from "node:crypto";
-import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AGENT_DESCRIPTION_MAX,
   AGENT_NAME_MAX,
@@ -19,6 +19,8 @@ import {
   agentNameKey,
   agentRequestKey,
   agentVersionSk,
+  ownerBudgetKey,
+  orgSettingsKey,
   applyOverlay,
   builtinRecipe,
   builtinSettingsKey,
@@ -50,7 +52,8 @@ import {
   type Item, type RequestMark, type TransactItem,
 } from "./table-writes.js";
 import { SkillStore } from "./skills.js";
-import { ownerShare, ownerTotalItems, withBudgetFields, type BudgetSubject } from "../spend/owner-total.js";
+import { budgetOwnerOf, ownerShare, ownerTotalItems, withBudgetFields, type BudgetSubject, type OwnerShare } from "../spend/owner-total.js";
+import { cleanUsd } from "../spend/top-ups.js";
 
 /** PF28: the most custom layers a recipe can be built from; a built-in base underneath is not counted. */
 export const MAX_CUSTOM_LAYERS = 3;
@@ -149,6 +152,11 @@ export interface AgentStoreInput {
   builtins?: BuiltinSource;
   /** The org's skills; by default a `SkillStore` on the same table. */
   skills?: SkillStore;
+  /**
+   * Reads a developer id as the person it was merged into (Plan 2 Task 3), so a merged duplicate's agents count in the survivor's total
+   * of agent budgets (Task 28). Without it an id is its own person.
+   */
+  resolveOwner?: (orgId: OrgId, developerId: string) => Promise<string>;
 }
 
 const SHIPPED_BUILTINS: BuiltinSource = {
@@ -177,17 +185,40 @@ function checkProfile(name: string, description: string): void {
   if (description.length > AGENT_DESCRIPTION_MAX) throw coded("CONFIG_INVALID", `description: must be at most ${String(AGENT_DESCRIPTION_MAX)} characters`);
 }
 
+/** The cap a write is held to, with the revision of the spend policy it was read from (the write checks the policy is still at it). */
+export interface OwnerCap {
+  usd: number;
+  policyRevision: number;
+}
+
 /** What a write that changes whose total a budget is in can ask of the store (Task 28). */
 export interface BudgetWriteOptions {
   /**
    * The most one person's agent budgets may total in a month. When given, a write that raises someone's total applies only while the total
-   * with it is at most this, tested inside the transaction, so two raises that together pass the cap can't both apply. Left out for a
-   * change that is not held to the cap (Rovara's own moves, Task 11).
+   * with it is at most this, tested inside the transaction, so two raises that together pass the cap can't both apply, and only while the
+   * spend policy it was read from is unchanged. An admin who lowers the cap after the read but before the write is therefore not raced past.
+   * Left out for a change that is not held to the cap (Rovara's own moves, Task 11).
    */
-  ownerCapUsd?: number;
+  ownerCap?: OwnerCap;
 }
 
+/** What a refusal by the cap carries, so the route can answer in words with the figures as they are now (`isOwnerCapRefusal`). */
+export const isOwnerCapRefusal = (error: unknown): string | undefined => (error instanceof Error ? (error as { overOwnerCap?: string }).overOwnerCap : undefined);
+
+const ownerOverCap = (owner: string) => Object.assign(
+  coded("CONFIG_INVALID", "That would take this person's agent budgets past the limit for one person. An org admin can raise the limit in the spend policy."),
+  { overOwnerCap: owner },
+);
 const totalsMoved = () => coded("AGENT_REVISION_CONFLICT", "Someone else changed this person's agent budgets just now. Reload and make your change again.");
+const policyMoved = () => coded("AGENT_REVISION_CONFLICT", "Your company's spend policy changed just now. Reload and make your change again.");
+const budgetConflict = () => coded("AGENT_REVISION_CONFLICT", "Someone else changed this agent's owner, status or budget just now. Reload it and make your change again.");
+
+/** The counter items of one agent write, and what each refusal of them means. */
+interface OwnerTotals {
+  items: TransactItem[];
+  /** Maps the indexes that failed (counting the agent's own item as 0) to the refusal they mean. */
+  refuse: (failed: Set<number>) => Error;
+}
 
 /**
  * Pins the fields that decide whose total an agent's budget is in (its status, owner, accountable maintainer and monthly budget) to what
@@ -609,6 +640,129 @@ export class AgentStore {
     return rolled;
   }
 
+  // ---- the owner totals (Task 28)
+
+  private async survivorOf(orgId: OrgId, developerId: string): Promise<string> {
+    return this.input.resolveOwner === undefined ? developerId : this.input.resolveOwner(orgId, developerId);
+  }
+
+  /** The sum of the monthly budgets of the active agents (custom ones, and built-ins with an accountable person) that count for `owner`. */
+  private async sumOwnerBudgets(orgId: OrgId, owner: string): Promise<number> {
+    const survivors = new Map<string, Promise<string>>();
+    const counts = async (subject: BudgetSubject): Promise<boolean> => {
+      const raw = budgetOwnerOf(subject);
+      if (raw === undefined) return false;
+      let found = survivors.get(raw);
+      if (found === undefined) { found = this.survivorOf(orgId, raw); survivors.set(raw, found); }
+      return (await found) === owner;
+    };
+    let total = 0;
+    for (const agent of await this.list(orgId)) {
+      if (ownerShare(agent) !== undefined && await counts(agent)) total += agent.monthlyBudgetUsd ?? 0;
+    }
+    for (const id of Object.keys(BUILTIN_AGENTS)) {
+      const settings = await this.getBuiltinSettings(orgId, id);
+      if (settings !== undefined && ownerShare(settings) !== undefined && await counts(settings)) total += settings.monthlyBudgetUsd ?? 0;
+    }
+    return cleanUsd(total);
+  }
+
+  /**
+   * Makes sure `owner` has a total to add to, built from the agents when there is none yet. A write that changes a total never creates
+   * one (`addToCounter` needs it there), and a total is only created while no write has touched it, so the figure it starts at is exact.
+   */
+  async ensureOwnerTotal(orgId: OrgId, owner: string): Promise<void> {
+    if (await this.read(ownerBudgetKey(orgId, owner)) !== undefined) return;
+    const totalUsd = await this.sumOwnerBudgets(orgId, owner);
+    try {
+      await this.input.documentClient.send(new PutCommand({
+        TableName: this.input.tableName,
+        Item: { ...ownerBudgetKey(orgId, owner), entityType: "OWNER_AGENT_BUDGET", totalUsd, builtAt: this.iso() },
+        ConditionExpression: NOT_EXISTS,
+      }));
+    } catch (error) {
+      if (errorName(error) !== "ConditionalCheckFailedException") throw error; // another writer built it first, from the same agents
+    }
+  }
+
+  /**
+   * Replaces `owner`'s total with the sum of their agents' budgets and answers it. The total is replaced only while it is still the figure
+   * that was read, and every write to an agent's budget changes the total in the same transaction, so the figure written is exact; a
+   * write that raced it makes it read again. A merge calls this for the survivor, because a duplicate's agents were counted under the
+   * duplicate until now.
+   */
+  async rebuildOwnerTotal(orgId: OrgId, owner: string): Promise<number> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const seen = (await this.read(ownerBudgetKey(orgId, owner)))?.["totalUsd"];
+      const total = await this.sumOwnerBudgets(orgId, owner);
+      if (typeof seen === "number" && Math.abs(seen - total) < 0.000001) return total;
+      try {
+        await this.input.documentClient.send(new UpdateCommand({
+          TableName: this.input.tableName,
+          Key: ownerBudgetKey(orgId, owner),
+          UpdateExpression: "SET #total = :total, #type = :type, #built = :built",
+          ConditionExpression: typeof seen === "number" ? "#total = :seen" : "attribute_not_exists(#total)",
+          ExpressionAttributeNames: { "#total": "totalUsd", "#type": "entityType", "#built": "builtAt" },
+          ExpressionAttributeValues: { ":total": total, ":type": "OWNER_AGENT_BUDGET", ":built": this.iso(), ...(typeof seen === "number" ? { ":seen": seen } : {}) },
+        }));
+        return total;
+      } catch (error) {
+        if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+      }
+    }
+    throw totalsMoved();
+  }
+
+  /**
+   * The counter items that take an agent from `before` to `after`, in each owner's survivor's total, and what their refusals mean. An
+   * owner with no total yet has one built from the agents first; a record that names a merged duplicate has the survivor's total rebuilt,
+   * because the duplicate's agents may be counted under the duplicate. A raise held to `cap` also checks the spend policy is still at the
+   * revision the cap was read from.
+   */
+  private async totalsFor(orgId: OrgId, before: BudgetSubject, after: BudgetSubject, cap?: OwnerCap): Promise<OwnerTotals> {
+    const resolve = async (subject: BudgetSubject): Promise<{ share?: OwnerShare; stale: boolean }> => {
+      const share = ownerShare(subject);
+      if (share === undefined) return { stale: false };
+      const owner = await this.survivorOf(orgId, share.owner);
+      return { share: { owner, usd: share.usd }, stale: owner !== share.owner };
+    };
+    const [was, now] = await Promise.all([resolve(before), resolve(after)]);
+    const owners = new Map<string, boolean>();
+    for (const side of [was, now]) if (side.share !== undefined) owners.set(side.share.owner, (owners.get(side.share.owner) ?? false) || side.stale);
+    for (const [owner, stale] of owners) {
+      if (stale) await this.rebuildOwnerTotal(orgId, owner);
+      else await this.ensureOwnerTotal(orgId, owner);
+    }
+    const counters = ownerTotalItems(this.input, orgId, was.share, now.share, cap?.usd);
+    const items = [...counters.items];
+    let policyAt: number | undefined;
+    if (cap !== undefined && counters.capped.length > 0) {
+      policyAt = items.length;
+      items.push({
+        ConditionCheck: {
+          TableName: this.input.tableName,
+          Key: orgSettingsKey(orgId, "SPEND_POLICY"),
+          ...(cap.policyRevision === 0
+            ? { ConditionExpression: NOT_EXISTS }
+            : { ConditionExpression: "#revision = :revision", ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":revision": cap.policyRevision } }),
+        },
+      });
+    }
+    return {
+      items,
+      // The agent's own item is first in the transaction, so the counters start at 1.
+      refuse: (failed) => {
+        // The agent changed since it was read: that is the answer, whatever the counters make of the old figures.
+        if (failed.has(0)) return budgetConflict();
+        if (policyAt !== undefined && failed.has(policyAt + 1)) return policyMoved();
+        const capped = counters.capped.find((index) => failed.has(index + 1));
+        if (capped !== undefined) return ownerOverCap(counters.owners[capped]!);
+        if (counters.items.some((_item, index) => failed.has(index + 1))) return totalsMoved();
+        return budgetConflict();
+      },
+    };
+  }
+
   private async setStatus(orgId: OrgId, agentId: AgentId, status: "active" | "archived", by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<AgentRecord> {
     if (isBuiltinAgentId(agentId)) throw coded("CONFIG_INVALID", `${this.builtins.name(agentId)} is built in and can't be archived`);
     const agent = await this.require(orgId, agentId);
@@ -616,12 +770,12 @@ export class AgentStore {
     const updatedAt = this.iso();
     const changed: AgentRecord = { ...agent, status, updatedAt };
     // An archived agent counts for no one; unarchiving puts its budget back in its owner's total, held to the cap when one is given.
-    const totals = ownerTotalItems(this.input, orgId, ownerShare(agent), ownerShare(changed), options.ownerCapUsd);
+    const totals = await this.totalsFor(orgId, agent, changed, options.ownerCap);
     await this.commit([
       this.update(agentKey(orgId, agentId, "META"), { set: { status, updatedAt }, when: budgetGuard(agent) }),
       ...totals.items,
       this.event(orgId, agentId, status === "archived" ? "archived" : "unarchived", by),
-    ], (failed) => (totals.capped.some((index) => failed.has(index + 1)) ? totalsMoved() : conflict()), request, changed);
+    ], totals.refuse, request, changed);
     return changed;
   }
 
@@ -662,13 +816,13 @@ export class AgentStore {
     const monthlyBudgetUsd = typeof budget.monthlyUsd === "number" ? budget.monthlyUsd : budget.monthlyUsd === null ? undefined : current.monthlyBudgetUsd;
     const maxPerRunUsd = typeof budget.maxPerRunUsd === "number" ? budget.maxPerRunUsd : budget.maxPerRunUsd === null ? undefined : current.maxPerRunUsd;
     const { monthlyBudgetUsd: _monthly, maxPerRunUsd: _perRun, ...others } = current; // eslint-disable-line @typescript-eslint/no-unused-vars -- replaced below
-    const written = { ...others, ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }), ...(maxPerRunUsd === undefined ? {} : { maxPerRunUsd }), updatedAt };
-    const totals = ownerTotalItems(this.input, orgId, ownerShare(current), ownerShare(written), options.ownerCapUsd);
+    const written = { ...others, ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }), ...(maxPerRunUsd === undefined ? {} : { maxPerRunUsd }), updatedAt, ...(isBuiltinAgentId(agentId) ? { updatedBy: by } : {}) };
+    const totals = await this.totalsFor(orgId, current, written, options.ownerCap);
     await this.commit([
       this.update(key, { set, ...(remove.length > 0 ? { remove } : {}), when: budgetGuard(current) }),
       ...totals.items,
       this.event(orgId, agentId, "budget_changed", by, withoutUndefined(detail)),
-    ], (failed) => (totals.capped.some((index) => failed.has(index + 1)) ? totalsMoved() : conflict()), request, written);
+    ], totals.refuse, request, written);
     return written;
   }
 
@@ -685,7 +839,7 @@ export class AgentStore {
     const { accountable: _before, ...rest } = agent; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped when the new owner has none
     const moved: AgentRecord = { ...rest, owner, ...(accountable === undefined ? {} : { accountable }), updatedAt };
     // The agent's budget leaves the old owner's total and joins the new one's, which the cap holds when one is given.
-    const totals = ownerTotalItems(this.input, orgId, ownerShare(agent), ownerShare(moved), options.ownerCapUsd);
+    const totals = await this.totalsFor(orgId, agent, moved, options.ownerCap);
     const guard = budgetGuard(agent);
     await this.commit([
       this.update(agentKey(orgId, agentId, "META"), {
@@ -695,7 +849,7 @@ export class AgentStore {
       }),
       ...totals.items,
       this.event(orgId, agentId, "owner_changed", by, { from: agent.owner, to: owner, ...(accountable === undefined ? {} : { accountable }) }),
-    ], (failed) => (totals.capped.some((index) => failed.has(index + 1)) ? totalsMoved() : conflict()), request, moved);
+    ], totals.refuse, request, moved);
     return moved;
   }
 
@@ -707,23 +861,23 @@ export class AgentStore {
     const updatedAt = this.iso();
     if (isBuiltinAgentId(agentId)) {
       const before = await this.ensureBuiltinSettings(orgId, agentId, by);
-      const totals = ownerTotalItems(this.input, orgId, ownerShare(before), ownerShare(withBudgetFields(before, { accountable })), options.ownerCapUsd);
+      const totals = await this.totalsFor(orgId, before, withBudgetFields(before, { accountable }), options.ownerCap);
       await this.commit([
         this.update(builtinSettingsKey(orgId, agentId), { set: { accountable, updatedBy: by, updatedAt }, when: budgetGuard(before) }),
         ...totals.items,
         this.event(orgId, agentId, "owner_changed", by, { accountable, ...(before.accountable === undefined ? {} : { from: before.accountable }) }),
-      ], (failed) => (totals.capped.some((index) => failed.has(index + 1)) ? totalsMoved() : conflict()), request, { accountable });
+      ], totals.refuse, request, { accountable });
       return;
     }
     const agent = await this.require(orgId, agentId);
     if (agent.owner.kind !== "project") throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
-    const totals = ownerTotalItems(this.input, orgId, ownerShare(agent), ownerShare(withBudgetFields(agent, { accountable })), options.ownerCapUsd);
+    const totals = await this.totalsFor(orgId, agent, withBudgetFields(agent, { accountable }), options.ownerCap);
     const guard = budgetGuard(agent);
     await this.commit([
       this.update(agentKey(orgId, agentId, "META"), { set: { accountable, updatedAt }, when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${guard(a)}` }),
       ...totals.items,
       this.event(orgId, agentId, "owner_changed", by, { accountable, ...(agent.accountable === undefined ? {} : { from: agent.accountable }) }),
-    ], (failed) => (totals.capped.some((index) => failed.has(index + 1)) ? totalsMoved() : conflict()), request, { accountable });
+    ], totals.refuse, request, { accountable });
   }
 
   /**
