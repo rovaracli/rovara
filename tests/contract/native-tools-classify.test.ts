@@ -15,13 +15,13 @@ import { SENTRY_TOOLS } from "../../packages/broker/src/connectors/native/sentry
 import { VERCEL_TOOLS } from "../../packages/broker/src/connectors/native/vercel.js";
 
 const NATIVE: Record<string, { type: AgentConnectorType; tools: readonly NativeTool<never>[] }> = {
-  sentry: { type: "sentry", tools: SENTRY_TOOLS as readonly NativeTool<never>[] },
-  datadog: { type: "datadog", tools: DATADOG_TOOLS as readonly NativeTool<never>[] },
-  grafana: { type: "grafana", tools: GRAFANA_TOOLS as readonly NativeTool<never>[] },
-  pagerduty: { type: "pagerduty", tools: PAGERDUTY_TOOLS as readonly NativeTool<never>[] },
-  vercel: { type: "vercel", tools: VERCEL_TOOLS as readonly NativeTool<never>[] },
-  cloudwatch: { type: "cloudwatch", tools: CLOUDWATCH_TOOLS as readonly NativeTool<never>[] },
-  "github-actions": { type: "github-actions", tools: GITHUB_ACTIONS_TOOLS as readonly NativeTool<never>[] },
+  sentry: { type: "sentry", tools: SENTRY_TOOLS },
+  datadog: { type: "datadog", tools: DATADOG_TOOLS },
+  grafana: { type: "grafana", tools: GRAFANA_TOOLS },
+  pagerduty: { type: "pagerduty", tools: PAGERDUTY_TOOLS },
+  vercel: { type: "vercel", tools: VERCEL_TOOLS },
+  cloudwatch: { type: "cloudwatch", tools: CLOUDWATCH_TOOLS },
+  "github-actions": { type: "github-actions", tools: GITHUB_ACTIONS_TOOLS },
 };
 
 type Schema = Record<string, unknown>;
@@ -62,7 +62,7 @@ describe("every native connector's tools, approved by a project as reads", () =>
   });
 
   it("would notice a tool whose name says it writes (the check is not vacuous)", () => {
-    for (const name of ["cancel_workflow_run", "rerun_failed_jobs", "delete_alert", "resolve_issue", "run_query"]) {
+    for (const name of ["cancel_workflow_run", "delete_alert", "resolve_issue", "run_query", "trigger_deployment"]) {
       const granted: GrantedTool = { connector: "native", type: "github-actions", upstreamName: name, presentedName: `native__${name}`, access: "read", facts: { connector: "native", upstreamName: name, access: "read" } };
       expect(classifyWrite({ tool: granted, args: {}, rules: { alwaysAsk: [] }, autonomy: "run", allowMentions: false, ownItems: new Set<string>() }).class, name).not.toBe("read");
     }

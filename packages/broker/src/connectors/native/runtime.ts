@@ -131,7 +131,19 @@ function truncated(text: string): string {
 export function nativeConnection<Scope>(
   tools: readonly NativeTool<Scope>[],
   approved: readonly string[],
-  ctx: { credential: IssuedCredential; fetch: VendorFetch; routing: NativeRouting<Scope>; /** Further secret values to scrub from anything answered (a credential made of several). */ scrub?: readonly string[] },
+  ctx: {
+    credential: IssuedCredential;
+    fetch: VendorFetch;
+    routing: NativeRouting<Scope>;
+    /** Further secret values to scrub from anything answered (a credential made of several). */
+    scrub?: readonly string[];
+    /**
+     * A credential for each call, made after its arguments are checked and before the tool runs (GitHub Actions mints a token with exactly the tool's permissions,
+     * for the one repository the scope names). The tool runs with it, and its token is scrubbed from the answer like the connection's own. A `CredentialUnavailable`
+     * it throws reaches the engine as "not connected"; a `NativeToolRefusal` is the call's refusal.
+     */
+    credentialFor?(tool: string, scope: Scope): Promise<IssuedCredential>;
+  },
 ): McpConnection {
   const offered = tools.filter((tool) => approved.includes(tool.name));
   const routingNames = Object.keys(ctx.routing.properties);
@@ -145,7 +157,7 @@ export function nativeConnection<Scope>(
       annotations: { readOnlyHint: true, destructiveHint: false },
     };
   });
-  const redact = (text: string) => [ctx.credential.token, ...(ctx.scrub ?? [])].filter((value) => value !== "").reduce((current, value) => current.split(value).join("[REDACTED]"), text);
+  const redact = (text: string, ...secrets: readonly string[]) => [ctx.credential.token, ...secrets, ...(ctx.scrub ?? [])].filter((value) => value !== "").reduce((current, value) => current.split(value).join("[REDACTED]"), text);
   return {
     tools: listed,
     async call(name, args) {
@@ -161,13 +173,19 @@ export function nativeConnection<Scope>(
       const own = Object.fromEntries(Object.entries(args).filter(([key]) => !routingNames.includes(key)));
       const found = violation(tool.inputSchema, own, []);
       if (found !== undefined) return failure(`${tool.name}: ${found.path} is ${found.kind === "required" ? "required" : "not allowed"}`);
+      // The call's own credential, once there is one: what it holds is scrubbed from everything answered, including a refusal's words.
+      let credential = ctx.credential;
       try {
-        const answer = await tool.run(own, { scope: ctx.routing.scopeOf(values), credential: ctx.credential, fetch: ctx.fetch });
-        return { content: [{ type: "text", text: truncated(redact(answer.text)) }] };
+        const scope = ctx.routing.scopeOf(values);
+        if (ctx.credentialFor !== undefined) credential = await ctx.credentialFor(tool.name, scope);
+        const answer = await tool.run(own, { scope, credential, fetch: ctx.fetch });
+        return { content: [{ type: "text", text: truncated(redact(answer.text, credential.token)) }] };
       } catch (error) {
         // The words we wrote (a refusal, a fixed vendor-failure text) reach the model through the engine; anything else is named only by the tool.
-        if (error instanceof NativeToolRefusal) throw new ToolRefusal(redact(error.message), error.reason);
-        if (error instanceof VendorFetchError) throw new ToolRefusal(redact(error.message), "vendor_error");
+        if (error instanceof NativeToolRefusal) throw new ToolRefusal(redact(error.message, credential.token), error.reason);
+        if (error instanceof VendorFetchError) throw new ToolRefusal(redact(error.message, credential.token), "vendor_error");
+        // A credential that cannot be had is the connector not being connected, which the engine reports as such.
+        if (error instanceof CredentialUnavailable) throw error;
         return failure(`${tool.name} failed`);
       }
     },

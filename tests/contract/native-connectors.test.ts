@@ -188,7 +188,7 @@ describe("nativeConnection with a credential per call (Plan 4 Task 17)", () => {
   });
 
   it("answers a refusal in the credential step as a refusal, and any other failure without naming it", async () => {
-    const refused = await build(async () => { throw new NativeToolRefusal(`no token for ${CALL_TOKEN}`, "vendor_error"); }).call("shows_token", SCOPE_ARGS).catch((error: unknown) => error);
+    const refused = await build(async () => { throw new NativeToolRefusal(`no token for ${TOKEN}`, "vendor_error"); }).call("shows_token", SCOPE_ARGS).catch((error: unknown) => error);
     expect(refused).toBeInstanceOf(ToolRefusal);
     expect(refused).toMatchObject({ message: "no token for [REDACTED]", reason: "vendor_error" });
     const crashed = await build(async () => { throw new Error(`boom ${TOKEN}`); }).call("shows_token", SCOPE_ARGS);

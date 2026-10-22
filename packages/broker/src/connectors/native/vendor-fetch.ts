@@ -22,10 +22,18 @@ export interface VendorResponse {
   json?: unknown;
   /** The body as text. */
   text?: string;
+  /** For a redirect that was asked to be captured (`redirect: "capture"`): where it points. It was not followed. */
+  location?: string;
 }
 
 /** A request to the vendor: a path under the connector's base URL, or a full URL on the same host. */
-export type VendorFetch = (target: string | URL, options?: { method?: "GET" | "POST"; headers?: Record<string, string>; body?: string }) => Promise<VendorResponse>;
+export type VendorFetch = (target: string | URL, options?: {
+  method?: "GET" | "POST";
+  headers?: Record<string, string>;
+  body?: string;
+  /** `capture`: a redirect is answered as `{ status, location }` instead of refused. It is never followed; the caller decides whether to ask anywhere else. */
+  redirect?: "capture";
+}) => Promise<VendorResponse>;
 
 type LookupCallback = (error: Error | null, address?: string | Array<{ address: string; family: number }>, family?: number) => void;
 
@@ -48,11 +56,19 @@ export function safeLookup(resolveHost: ResolveHost = dnsResolveHost): Connectio
 }
 
 let defaultFetch: typeof fetch | undefined;
+let defaultRedirectFetch: typeof fetch | undefined;
 
-/** The fetch under every native connector in production: connects through `safeLookup`, one connection per request, no redirects. */
-export function safeVendorFetch(options: { resolveHost?: ResolveHost; request?: RequestFunction } = {}): typeof fetch {
-  if (options.resolveHost === undefined && options.request === undefined) return (defaultFetch ??= lookupFetch(safeLookup()));
-  return lookupFetch(safeLookup(options.resolveHost), options.request === undefined ? {} : { request: options.request });
+/**
+ * The fetch under every native connector in production: connects through `safeLookup`, one connection per request, no redirects. With `returnRedirects` a redirect
+ * is handed back (status and Location, no body) instead of refused, for the one connector that reads where GitHub sends a log (Plan 4 Task 17); `vendorFetch`
+ * still refuses it unless the request asks to capture it, and nothing follows it.
+ */
+export function safeVendorFetch(options: { resolveHost?: ResolveHost; request?: RequestFunction; returnRedirects?: boolean } = {}): typeof fetch {
+  const returnRedirects = options.returnRedirects === true;
+  if (options.resolveHost === undefined && options.request === undefined) {
+    return returnRedirects ? (defaultRedirectFetch ??= lookupFetch(safeLookup(), { returnRedirects: true })) : (defaultFetch ??= lookupFetch(safeLookup()));
+  }
+  return lookupFetch(safeLookup(options.resolveHost), { ...(options.request === undefined ? {} : { request: options.request }), ...(returnRedirects ? { returnRedirects: true } : {}) });
 }
 
 function messageOf(error: unknown): string {
@@ -107,6 +123,8 @@ export async function vendorFetch(input: {
   body?: string;
   timeoutMs?: number;
   maxBytes?: number;
+  /** A redirect answers `{ status, location }` instead of a refusal (the request itself still never follows it). */
+  captureRedirect?: boolean;
   /** The fetch under the origin hold; defaults to `safeVendorFetch()`. */
   fetch?: typeof fetch;
 }): Promise<VendorResponse> {
@@ -130,6 +148,10 @@ export async function vendorFetch(input: {
   }
   if (response.status >= 300 && response.status < 400) {
     await response.body?.cancel().catch(() => undefined);
+    if (input.captureRedirect === true) {
+      const location = response.headers.get("location");
+      return { status: response.status, ...(location === null ? {} : { location }) };
+    }
     throw new VendorFetchError("the vendor answered with a redirect, which is refused");
   }
   let text: string | undefined;
@@ -155,6 +177,7 @@ export function vendorFetcher(options: { base: URL; fetch?: typeof fetch; timeou
       ...(request.method === undefined ? {} : { method: request.method }),
       headers: { ...options.headers, ...request.headers },
       ...(request.body === undefined ? {} : { body: request.body }),
+      ...(request.redirect === "capture" ? { captureRedirect: true } : {}),
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options.maxBytes === undefined ? {} : { maxBytes: options.maxBytes }),
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),

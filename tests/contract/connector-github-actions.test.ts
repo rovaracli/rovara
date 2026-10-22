@@ -4,7 +4,7 @@
 // redirect to its log storage, to GitHub's own storage hosts only, with no Authorization header on the second request. GitHub is faked; no test reaches a network.
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { discoverTools, executeTool, type ConnectorDefinition, type Ledger } from "@agentx/gateway";
+import { discoverTools, executeTool, type Ledger } from "@agentx/gateway";
 import { ProjectDefinitionSchema, agentXError, githubNotConnectedMessage, type GrantedTool, type OrgId } from "../../packages/contracts/src/index.js";
 import { GITHUB_ACTIONS_AGENT_TOOL_PERMISSIONS, githubActionsToolPermissions } from "../../packages/broker/src/agents/github-agent-tools.js";
 import { classifyWrite } from "../../packages/broker/src/agents/write-class.js";
@@ -65,7 +65,7 @@ const ledger: Ledger = { claim: async () => true, get: async () => undefined, fi
 async function definitionOf(w: World) {
   const definition = await w.connector.definition();
   if ("notConnected" in definition) throw new Error(`not connected: ${definition.notConnected}`);
-  return definition as ConnectorDefinition<GitHubActionsEngineScope>;
+  return definition;
 }
 
 async function run(w: World, tool: string, args: Record<string, unknown> = {}, alias = "demo") {
@@ -103,9 +103,11 @@ describe("the GitHub Actions connector type", () => {
 
   it("treats a malformed stored entry as unusable and never throws", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    const stored = { ...project([connectorConfig()]), integrations: { connectors: [connectorConfig({ credentialRef: "con_aaaaaaaaaaaaaaaaaaaa" })] } } as never;
-    expect(resolveConnectors(stored, {}, { "github-actions": githubActionsConnectorType })).toEqual([]);
-    expect(log.mock.calls.map(([line]) => JSON.parse(String(line)) as { reason?: string }).find((line) => line.reason !== undefined)?.reason).toBe("invalid github-actions connector configuration: credentialRef");
+    const reasons = () => log.mock.calls.map(([line]) => JSON.parse(String(line)) as { reason?: string }).flatMap((line) => (line.reason === undefined ? [] : [line.reason]));
+    const stored = (entry: unknown) => ({ ...project([connectorConfig()]), integrations: { connectors: [entry] } }) as never;
+    expect(resolveConnectors(stored(connectorConfig({ credentialRef: "con_aaaaaaaaaaaaaaaaaaaa" })), {}, { "github-actions": githubActionsConnectorType })).toEqual([]);
+    expect(resolveConnectors(stored(connectorConfig({ scopes: [] })), {}, { "github-actions": githubActionsConnectorType })).toEqual([]);
+    expect(reasons()).toEqual(["invalid github-actions connector configuration: entry", "invalid github-actions connector configuration: scopes"]);
   });
 
   it("lists exactly the six tools a project may approve, no item argument, no label argument, served from api.github.com", async () => {
@@ -511,9 +513,9 @@ describe("get_job_log", () => {
   });
 
   it("refuses a log bigger than the connector reads, and one that is too slow, in fixed words", async () => {
-    const big = logDownloader(vi.fn(async () => new Response("x".repeat(2_000), { status: 200 })) as never, { maxBytes: 1_000 });
+    const big = logDownloader(vi.fn(async () => new Response("x".repeat(2_000), { status: 200 })), { maxBytes: 1_000 });
     await expect(big(`https://${FAKE_GITHUB_STORAGE_HOST}/log`)).rejects.toThrow("the vendor answered with more than a connector reads");
-    const slow = logDownloader(((_url: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => { init?.signal?.addEventListener("abort", () => reject(init.signal!.reason as Error)); })) as never, { timeoutMs: 30 });
+    const slow = logDownloader(((_url: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => { init?.signal?.addEventListener("abort", () => reject(init.signal!.reason as Error)); })), { timeoutMs: 30 });
     await expect(slow(`https://${FAKE_GITHUB_STORAGE_HOST}/log`)).rejects.toThrow("the vendor did not answer in time");
   });
 
@@ -599,7 +601,7 @@ describe("the connector context", () => {
       connectorTypeContext: (dependencies: Record<string, unknown>, orgId: OrgId | undefined, scope: () => Promise<unknown>) => { orgId?: OrgId; githubAgentTokens?: { createAgentInstallationToken(...args: unknown[]): Promise<string> } };
     };
     const noToken = () => Promise.reject(new Error("no token"));
-    const mint = vi.fn(async (..._args: unknown[]) => "ghs_fake");
+    const mint = vi.fn<(...args: unknown[]) => Promise<string>>(async () => "ghs_fake");
     const context = broker.connectorTypeContext({ githubPullRequests: { createAgentInstallationToken: mint } }, ORG_A, noToken);
     expect(context.orgId).toBe(ORG_A);
     expect(await context.githubAgentTokens!.createAgentInstallationToken({ owner: "example", name: "demo" }, { actions: "read" }, { orgId: ORG_A }, { installationId: 55 })).toBe("ghs_fake");

@@ -2511,7 +2511,8 @@ async function authorizeGitHubConnector(dependencies: AwsBrokerDependencies, ide
  * Plan 2, Task 15: `scope` says whose work a GitHub token the connectors mint is for; it is asked only when one is minted. It is required, so
  * every caller names the scope its token is for and none inherits one by default.
  */
-export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "githubMcp" | "credentialRegistry" | "orgConnections" | "cloud" | "mcpEndpointGuard" | "nativeFetch" | "cloudwatchConnector">, orgId: OrgId | undefined, scope: () => Promise<GitHubTokenScope>): ConnectorTypeContext {
+export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "githubMcp" | "credentialRegistry" | "orgConnections" | "cloud" | "mcpEndpointGuard" | "nativeFetch" | "cloudwatchConnector"> & { githubPullRequests?: Partial<Pick<AwsBrokerDependencies["githubPullRequests"], "createAgentInstallationToken">> }, orgId: OrgId | undefined, scope: () => Promise<GitHubTokenScope>): ConnectorTypeContext {
+  const github = dependencies.githubPullRequests;
   let credentialRegistry: ConnectorCredentials | undefined = dependencies.credentialRegistry;
   if (dependencies.cloud === true) {
     credentialRegistry = dependencies.orgConnections !== undefined && orgId !== undefined ? orgCredentialRegistry(dependencies.orgConnections, orgId) : undefined;
@@ -2523,6 +2524,10 @@ export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "
     ...(dependencies.nativeFetch ? { nativeFetch: dependencies.nativeFetch } : {}),
     ...(orgId === undefined ? {} : { orgId }),
     ...(dependencies.cloudwatchConnector ? { cloudwatchAws: dependencies.cloudwatchConnector } : {}),
+    // Plan 4 Task 17: the GitHub Actions connector mints Plan 3's agent token (read-only by type, for the org's own installation) for every call.
+    ...(github?.createAgentInstallationToken === undefined ? {} : {
+      githubAgentTokens: { createAgentInstallationToken: (repository, permissions, tokenScope, options) => github.createAgentInstallationToken!(repository, permissions, tokenScope, options) },
+    }),
   };
 }
 
