@@ -409,3 +409,13 @@ export function commentTriggerEventKey(orgId: OrgId, kind: "applied" | "lapsed",
 export function runCacheKey(orgId: OrgId, taskId: string, kind: string, name: string): OrgKey {
   return { pk: orgScoped(orgId, `RUN_CACHE#${taskId}`), sk: `${kind}#${name}` };
 }
+
+/** The partition holding the items a task's agent created during its run (Task 20b): a later change to one of them is the run's own. */
+export function agentItemsPk(orgId: OrgId, taskId: string): string {
+  return orgScoped(orgId, `AGENT_ITEMS#${taskId}`);
+}
+
+/** One item the run created: `<connector>#<value>`, the value as the connector's item path names it. */
+export function agentItemKey(orgId: OrgId, taskId: string, connector: string, value: string): OrgKey {
+  return { pk: agentItemsPk(orgId, taskId), sk: `${connector}#${value}` };
+}
