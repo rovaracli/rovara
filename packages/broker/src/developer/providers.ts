@@ -17,6 +17,11 @@ export interface ProviderIdentity {
    * Plan 2, Task 8b: the sign-in's recorded time is never newer than this.
    */
   authTime?: number;
+  /**
+   * Plan 3, Task 21a-presence: the ID token's `amr` claim (RFC 8176 values: how the person authenticated), when the token carries one as a
+   * list of strings. The decide flow reads it to see that the email code was used; GitHub and Slack's tokens never carry one.
+   */
+  amr?: string[];
 }
 /** `wrongAccount`: the person signed in fine but is not one AgentX accepts (another Slack workspace,
  * or without the required claim), so signing in as someone else may help. */
@@ -33,7 +38,15 @@ export interface SignInProvider {
    * `chooseAccount` asks it to show its account picker, each only in the way its documentation lists (see the providers below); a
    * provider with no such option ignores it. Neither is proof: a fresh sign-in is judged by the ID token's `auth_time`, not by the request.
    */
-  authorizeUrl(input: { state: string; nonce: string; redirectUri: string; freshSignIn?: boolean; chooseAccount?: boolean }): Promise<string>;
+  authorizeUrl(input: {
+    state: string; nonce: string; redirectUri: string; freshSignIn?: boolean; chooseAccount?: boolean;
+    /**
+     * Plan 3, Task 21a-presence (R67): confirming a decision. Cognito managed login with its own email-code method only
+     * (`identity_provider=COGNITO`, so no social provider is offered), a sign-in that cannot reuse a browser session (`prompt=login`,
+     * `max_age=0`), and the member's verified email as `login_hint`. Only the hosted Rovara ("cloud") provider honours it.
+     */
+    decide?: { loginHint: string };
+  }): Promise<string>;
   complete(input: { code: string; nonce: string; redirectUri: string }): Promise<ProviderResult>;
 }
 
@@ -90,6 +103,10 @@ const emailVerifiedClaim = (payload: JWTPayload): boolean => payload.email_verif
 /** OIDC Core 2: `auth_time` is a JSON number of seconds; anything else is not a time the sign-in can use. */
 const authTimeOf = (payload: JWTPayload): { authTime: number } | Record<string, never> =>
   typeof payload.auth_time === "number" && Number.isFinite(payload.auth_time) && payload.auth_time >= 0 ? { authTime: payload.auth_time } : {};
+
+/** RFC 8176: `amr` is a list of strings; anything else is not a list the decide flow can use. */
+const amrOf = (payload: JWTPayload): { amr: string[] } | Record<string, never> =>
+  Array.isArray(payload.amr) && payload.amr.every((value) => typeof value === "string") ? { amr: payload.amr as string[] } : {};
 
 const verifiedEmail = (payload: JWTPayload): string | undefined =>
   typeof payload.email === "string" && emailVerifiedClaim(payload) ? payload.email : undefined;
@@ -175,7 +192,7 @@ export function oidcSignInProvider(input: {
   };
   return {
     method,
-    async authorizeUrl({ state, nonce, redirectUri, freshSignIn, chooseAccount }) {
+    async authorizeUrl({ state, nonce, redirectUri, freshSignIn, chooseAccount, decide }) {
       const doc = await discover();
       const url = new URL(doc.authorization_endpoint);
       // Only parameters the documentation lists, and never `prompt=login`: Cognito forwards every prompt value but `none` to the social
@@ -188,6 +205,9 @@ export function oidcSignInProvider(input: {
         response_type: "code", scope: SCOPES, client_id: input.clientId, state, nonce, redirect_uri: redirectUri,
         ...(freshSignIn === true ? { max_age: "0" } : {}),
         ...(freshSignIn === true || chooseAccount === true ? { prompt: "select_account" } : {}),
+        // A decision is confirmed with the pool's own email code, never a social provider, and never from a browser session (R67). `prompt=login`
+        // is safe here because `identity_provider=COGNITO` keeps Cognito from forwarding it to a social provider.
+        ...(decide === undefined || method !== "cloud" ? {} : { identity_provider: "COGNITO", prompt: "login", max_age: "0", login_hint: decide.loginHint }),
       })) url.searchParams.set(key, value);
       return url.toString();
     },
@@ -223,6 +243,7 @@ export function oidcSignInProvider(input: {
           displayName: (name === undefined ? undefined : cleanDisplayName(name)) ?? payload.sub,
           ...(email === undefined ? {} : { email, emailVerified: emailVerifiedClaim(payload) }),
           ...authTimeOf(payload),
+          ...amrOf(payload),
         },
       };
     },

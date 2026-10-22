@@ -20,7 +20,9 @@ export interface AuthRequestRecord { id: string; clientRedirectUri: string; clie
   /** SHA-256 of the invite token in base64url. The raw token is never stored. */
   inviteTokenHash?: string;
   /** "join": the browser join page's sign-in (Plan 2, Task 5); its completion stores a JOIN_RESULT instead of issuing a session or code. */
-  purpose?: "join";
+  purpose?: "join" | "decide_identify";
+  /** "decide_identify" (Plan 3, Task 21a-presence): the approval whose confirmation link started this sign-in, which only names the member; it is never fresh. */
+  decideApprovalId?: string;
   /**
    * Plan 2, Task 8b: set on the request that adds a removed sign-in method back. `linkDeveloperId` is the only developer it may link to,
    * `linkSessionId` the fresh session of theirs that started it (checked again when the person finishes) and `linkMethod` the one method
@@ -467,6 +469,23 @@ export class DeveloperSignInStore {
     return (await this.identityItems(developerId))
       .filter((link) => link.developerId === developerId && isActiveLink(link, link.sk.slice("IDENTITY#".length)))
       .sort((left, right) => left.linkedAt.localeCompare(right.linkedAt) || left.sk.localeCompare(right.sk));
+  }
+
+  /**
+   * Plan 3, Task 21a-presence (R7-2): the addresses a decision's email code may go to, most recently used first. Only a linked identity's
+   * own address counts, and a provider hands the sign-in an address only when it vouches for it (ProviderIdentity.email is the verified
+   * email), so every stored `email` is a verified one; an address that is not plain ASCII (normalizeEmail's `ascii`) never qualifies.
+   * `hasCloudIdentity`: whether one of the identities is the hosted Rovara (Cognito) sign-in, which already has an email-code user.
+   */
+  async decideEmailsOf(developerId: string): Promise<{ emails: string[]; hasCloudIdentity: boolean }> {
+    const identities = await this.activeIdentityItems(developerId);
+    const seen = new Set<string>();
+    const emails = identities
+      .filter((link) => link.email !== undefined && normalizeEmail(link.email).ascii)
+      .sort((left, right) => right.lastSignInAt.localeCompare(left.lastSignInAt) || right.linkedAt.localeCompare(left.linkedAt))
+      .map((link) => normalizeEmail(link.email!).email)
+      .filter((email) => !seen.has(email) && seen.add(email));
+    return { emails, hasCloudIdentity: identities.some((link) => link.provider === "cloud") };
   }
 
   /** The identities linked to a developer, oldest link first. Issuer and subject never leave the store. */

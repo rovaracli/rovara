@@ -59,7 +59,8 @@ import {
 import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderResult, type SignInProvider } from "./providers.js";
 import type { SlackDirectory } from "./slack-directory.js";
 import { endedByAdmin, endedByUnlink, isFreshSignIn, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
-import { sendIdentityLinkedNotice, type IdentityNoticeDependencies } from "./identity-notice.js";
+import { sendDecideSignInAddedNotice, sendIdentityLinkedNotice, type IdentityNoticeDependencies } from "./identity-notice.js";
+import { createDecideSignIn, type DecideSignInDependencies } from "./decide-signin.js";
 import { issueAccessToken, pkceChallengeMatches, type TokenSigner } from "./tokens.js";
 
 /** `since` (epoch seconds, FR-045): when the method was last turned on. A session started before it
@@ -93,6 +94,11 @@ export interface DeveloperIdentityDependencies {
    * sent) and `cellUrl` the page where the person removes a method. Absent in tests that do not send.
    */
   notice?: { ses: IdentityNoticeDependencies["ses"]; from: string | undefined; cellUrl: string };
+  /**
+   * Plan 3, Task 21a-presence (R66, R67): what the decide flow (`/v1/auth/decide/*`) needs: the ticket, state and session store, the kinds of
+   * approval (who may decide now), and Cognito's admin API on the cloud pool. Absent, the decide routes answer not found.
+   */
+  decide?: DecideSignInDependencies;
   now: () => number;
   log: (entry: Record<string, unknown>) => void;
 }
@@ -219,6 +225,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       const request = await store.chooseMethod(requestId, method);
       if (request === undefined) return expired();
       if (request.purpose === "join") return joinToProvider(request.id, request.nonce, method);
+      if (request.purpose === "decide_identify" && decideFlow !== undefined) return decideFlow.identifyToProvider(request.id, request.nonce, method);
       if (request.linkDeveloperId !== undefined) return linkToProvider(request.id, request.nonce, method);
       try {
         return await toProvider(request.id, request.nonce, method, request.clientRedirectUri, request.clientState, request.fresh === true);
@@ -294,6 +301,20 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   }
 
   const cellUrl = () => config.issuer.replace(/\/v1\/auth\/?$/, "");
+  /** Plan 3, Task 21a-presence: the decide flow, over this server's own pages, providers and sign-in resolution. */
+  const decideFlow = deps.decide === undefined ? undefined : createDecideSignIn({
+    deps: deps.decide, signIn: store, orgs: deps.orgs, endpoint, methods: () => enabledMethods(deps), methodLabel, provider,
+    resolveDeveloper: (method, identity) => resolveSignInDeveloper({ store, orgs: deps.orgs, log: deps.log,
+      ...(deps.mergeDuplicate === undefined ? {} : { mergeDuplicate: deps.mergeDuplicate }), ...(deps.raceOrgBlocker === undefined ? {} : { raceOrgBlocker: deps.raceOrgBlocker }) }, { method, identity }),
+    noticeDecideSignIn: async (to) => {
+      try {
+        await sendDecideSignInAddedNotice({ ses: deps.notice?.ses, from: deps.notice?.from, log: deps.log }, { to, cellUrl: deps.notice?.cellUrl ?? new URL(config.issuer).origin });
+      } catch (error) {
+        deps.log({ event: "signin.decide_notice_failed", error: errorName(error) });
+      }
+    },
+    page, redirect, now: deps.now, log: deps.log,
+  });
   const inviterNameOf = async (developerId: string): Promise<string> => {
     const name = (await store.getDeveloper(developerId))?.displayName;
     return name === undefined || name === "" ? "Someone" : name;
@@ -462,11 +483,32 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   async function callback(method: DeveloperSignInMethod, query: URLSearchParams, headers: Record<string, string | undefined>): Promise<HttpResult> {
     const state = query.get("state") ?? "";
     const pending = state === "" ? undefined : await store.getAuthRequest(state);
+    if (pending === undefined && method === "cloud" && decideFlow !== undefined && state !== "") {
+      // Plan 3, Task 21a-presence: the fresh sign-in of a decision keeps its state in its own record. Only the cloud (Cognito) callback
+      // can finish it; a GitHub callback bearing the state finds no request and leaves it alone.
+      const decide = await deps.decide!.store.consumeState(state);
+      if (decide !== undefined) {
+        try {
+          return await decideFlow.callback(decide, query.get("code"), headers);
+        } catch (error) {
+          deps.log({ event: "signin.decide_error", error: errorName(error) });
+          return page(500, "Confirmation failed", ["Something went wrong on the Rovara server. Open the approval again from Rovara."]);
+        }
+      }
+    }
     if (pending === undefined || pending.method !== method) return expired();
     // Single use: the state (and with it the nonce) is consumed before anything else happens.
     const request = await store.consumeAuthRequest(state, method);
     if (request === undefined) return page(400, "This sign-in link was already used", ["Run agentx login again."]);
     if (request.purpose === "join") return joinCallback(method, request, query.get("code"), headers);
+    if (request.purpose === "decide_identify" && decideFlow !== undefined) {
+      try {
+        return await decideFlow.identifyCallback(method, request, query.get("code"), headers);
+      } catch (error) {
+        deps.log({ event: "signin.decide_error", method, error: errorName(error) });
+        return page(500, "Confirmation failed", ["Something went wrong on the Rovara server. Open the approval again from Rovara."]);
+      }
+    }
     if (request.linkDeveloperId !== undefined) return linkCallback(method, request, query.get("code"));
     if (request.browserReturnTo !== undefined) {
       const verifier = (headers.cookie ?? "").split(";").map(part => part.trim()).find(part => part.startsWith(`${REVIEW_PKCE_COOKIE}=`))?.slice(REVIEW_PKCE_COOKIE.length + 1);
@@ -857,6 +899,10 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
           return joinStart(url.searchParams);
         case "/v1/auth/join/done":
           return joinDone(url.searchParams, headers);
+        case "/v1/auth/decide/identify":
+          return decideFlow === undefined ? jsonResult(404, { error: "not_found" }) : decideFlow.identify(url.searchParams);
+        case "/v1/auth/decide/start":
+          return decideFlow === undefined ? jsonResult(404, { error: "not_found" }) : decideFlow.start(url.searchParams);
         case "/v1/auth/callback/slack":
           return callback("slack", url.searchParams, headers);
         case "/v1/auth/callback/oidc":
@@ -924,7 +970,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     return { ok: true, authorizeUrl: `${endpoint("/authorize")}?request=${encodeURIComponent(request.id)}&method=${method}` };
   }
 
-  const isPage = (pathname: string) => pathname === "/v1/auth/authorize" || pathname === "/v1/auth/browser/authorize" || pathname.startsWith("/v1/auth/callback/") || pathname.startsWith("/v1/auth/join");
+  const isPage = (pathname: string) => pathname === "/v1/auth/authorize" || pathname === "/v1/auth/browser/authorize" || pathname.startsWith("/v1/auth/callback/") || pathname.startsWith("/v1/auth/join") || pathname.startsWith("/v1/auth/decide/");
 
   return async (
     event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | TaskPeopleDisplayReadRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest,

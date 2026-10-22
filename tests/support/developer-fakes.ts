@@ -1,11 +1,14 @@
 // Shared fakes for the developer sign-in (spec 025 phase 25a). Nothing here reaches AWS, Slack or
 // any identity provider.
 import { createHash, generateKeyPairSync, sign as cryptoSign, type KeyObject } from "node:crypto";
+import { AdminCreateUserCommand, AdminGetUserCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { GetPublicKeyCommand, SignCommand } from "@aws-sdk/client-kms";
 import { SignJWT, UnsecuredJWT, createLocalJWKSet, type JWTHeaderParameters, type JWTVerifyGetKey } from "jose";
 import type { OrgId } from "@agentx/contracts";
 import type { HttpApiV2Event } from "../../packages/broker/src/aws/lambda.js";
 import { githubSignInProvider, oidcSignInProvider, slackSignInProvider } from "../../packages/broker/src/developer/providers.js";
+import { DecideStore } from "../../packages/broker/src/developer/decide-session.js";
+import type { DecideKinds } from "../../packages/broker/src/developer/decide-kinds.js";
 import type { DeveloperIdentityDependencies, HttpResult } from "../../packages/broker/src/developer/server.js";
 import { createDeveloperIdentityHandler } from "../../packages/broker/src/developer/server.js";
 import { slackDirectory } from "../../packages/broker/src/developer/slack-directory.js";
@@ -210,7 +213,8 @@ export function fakeSlack(options: { users: FakeSlackUser[]; channels?: Record<s
   };
 }
 
-export interface FakeOidcUser { sub: string; name?: string; email?: string; email_verified?: boolean; groups?: string[]; /** The ID token's `auth_time` claim (epoch seconds): when the provider last authenticated the person. Absent: the token carries none. */ auth_time?: number }
+export interface FakeOidcUser { sub: string; name?: string; email?: string; email_verified?: boolean; groups?: string[]; /** The ID token's `auth_time` claim (epoch seconds): when the provider last authenticated the person. Absent: the token carries none. */ auth_time?: number;
+  /** The ID token's `amr` claim (how the person authenticated). Absent: the token carries none. */ amr?: string[] }
 
 /** A company OIDC provider with discovery, a token endpoint (client_secret_basic) and keys. */
 export function fakeOidc(options: { users: FakeOidcUser[]; clientSecret?: string; now?: () => number }) {
@@ -247,15 +251,51 @@ export function fakeOidc(options: { users: FakeOidcUser[]; clientSecret?: string
     jwks: signer.jwks as JWTVerifyGetKey,
     publicKey: signer.keys.publicKey,
     issue: mint(signer, { iss: OIDC_ISSUER, aud: OIDC_CLIENT_ID }),
-    approve(authorizeUrl: string, sub: string, overrides: { idToken?: string } = {}): string {
+    /** `claims` replace the user's own claims in this one ID token (for example a later `auth_time`); `nonce` replaces the token's nonce. */
+    approve(authorizeUrl: string, sub: string, overrides: { idToken?: string; nonce?: string; claims?: Partial<FakeOidcUser> } = {}): string {
       const url = new URL(authorizeUrl);
       if (url.origin + url.pathname !== `${OIDC_ISSUER}/authorize`) throw new Error(`test setup: not the OIDC authorize URL: ${authorizeUrl}`);
       const found = options.users.find((candidate) => candidate.sub === sub);
       if (found === undefined) throw new Error(`test setup: no OIDC user ${sub}`);
       const code = `oidc-code-${Math.random().toString(36).slice(2)}`;
       const redirectUri = url.searchParams.get("redirect_uri") ?? "";
-      codes.set(code, { user: found, nonce: url.searchParams.get("nonce") ?? "", redirectUri, ...(overrides.idToken === undefined ? {} : { idToken: overrides.idToken }) });
+      codes.set(code, { user: { ...found, ...(overrides.claims ?? {}) }, nonce: overrides.nonce ?? url.searchParams.get("nonce") ?? "", redirectUri, ...(overrides.idToken === undefined ? {} : { idToken: overrides.idToken }) });
       return `${redirectUri}?code=${code}&state=${url.searchParams.get("state") ?? ""}`;
+    },
+  };
+}
+
+/**
+ * Amazon Cognito's admin API as far as the decide flow uses it. `users` are the pool's existing users (the same people `fakeOidc` signs
+ * in, by `sub`); every command is recorded with its input. A created user is added with the sub `sub-of-<email>`.
+ */
+export interface FakeCognitoUser { email: string; sub: string; emailVerified?: boolean }
+export function fakeCognito(options: { users?: FakeCognitoUser[]; createError?: string } = {}) {
+  const users = new Map<string, FakeCognitoUser>((options.users ?? []).map((user) => [user.email, user]));
+  const calls: Array<{ name: string; input: Record<string, unknown> }> = [];
+  const attributes = (user: FakeCognitoUser) => [
+    { Name: "sub", Value: user.sub }, { Name: "email", Value: user.email }, { Name: "email_verified", Value: String(user.emailVerified ?? true) },
+  ];
+  return {
+    calls, users,
+    async send(command: unknown): Promise<unknown> {
+      const name = (command as { constructor: { name: string } }).constructor.name;
+      const input = (command as { input: Record<string, unknown> }).input;
+      calls.push({ name, input });
+      if (command instanceof AdminCreateUserCommand) {
+        if (options.createError !== undefined) throw Object.assign(new Error(options.createError), { name: options.createError });
+        const email = String(input.Username);
+        if (users.has(email)) throw Object.assign(new Error("exists"), { name: "UsernameExistsException" });
+        const created = { email, sub: `sub-of-${email}` };
+        users.set(email, created);
+        return { User: { Username: created.sub, Attributes: attributes(created) } };
+      }
+      if (command instanceof AdminGetUserCommand) {
+        const found = users.get(String(input.Username));
+        if (found === undefined) throw Object.assign(new Error("none"), { name: "UserNotFoundException" });
+        return { Username: found.sub, UserAttributes: attributes(found) };
+      }
+      throw new Error(`fakeCognito does not support ${name}`);
     },
   };
 }
@@ -359,6 +399,8 @@ export function identityHarness(options: {
   sharedTable?: boolean;
   /** Plan 2, Task 8: the notice of a newly linked sign-in method. Absent: the sign-in has no notice dependencies, as an install with no SES sender. */
   notice?: DeveloperIdentityDependencies["notice"];
+  /** Plan 3, Task 21a-presence: the decide flow's dependencies (tickets, the approval kinds, Cognito's admin API). Absent: the decide routes do not exist. */
+  decide?: { kinds?: DecideKinds; cognito?: ReturnType<typeof fakeCognito> };
 } = {}) {
   let clock = T0;
   const now = () => clock;
@@ -409,10 +451,15 @@ export function identityHarness(options: {
     now,
     log: (entry) => logs.push(entry),
   };
+  const decideStore = new DecideStore({ documentClient: db, tableName: "signin", now });
+  const cognito = options.decide?.cognito ?? fakeCognito();
+  if (options.decide !== undefined) {
+    deps.decide = { store: decideStore, kinds: options.decide.kinds ?? {}, cloudIssuer: OIDC_ISSUER, cognito: { client: cognito, userPoolId: "us-east-1_TESTPOOL" } };
+  }
   const handler = createDeveloperIdentityHandler(deps);
   const http = async (event: HttpApiV2Event) => handler(event) as Promise<HttpResult>;
   return {
-    db, state, orgs, slack, oidc, github, fetch, signer, logs, deps, handler, http,
+    db, state, orgs, slack, oidc, github, fetch, signer, logs, deps, handler, http, decide: decideStore, cognito,
     tick: (ms: number) => { clock += ms; },
     now,
     /** GET authorize, follow to the provider, approve as `who`, follow the callback: the CLI's loopback URL. */

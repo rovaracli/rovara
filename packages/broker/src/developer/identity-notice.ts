@@ -58,3 +58,27 @@ export async function sendIdentityLinkedNotice(
   deps.log({ event: "signin.identity_linked", provider: input.provider });
   return "sent";
 }
+
+/**
+ * Plan 3, Task 21a-presence (PF8): the notice that an email-code sign-in was added to an account only so a person present could confirm
+ * decisions (a member who had only ever signed in with GitHub). The sentence is pinned; what follows tells the account how to undo it.
+ */
+export const DECIDE_NOTICE_SENTENCE = "Rovara added an email-code sign-in to your account, used to confirm decisions.";
+export async function sendDecideSignInAddedNotice(deps: IdentityNoticeDependencies, input: { to: string; cellUrl: string }): Promise<"sent" | "skipped"> {
+  if (deps.ses === undefined || deps.from === undefined || deps.from === "") {
+    deps.log({ event: "signin.decide_notice_skipped", reason: "no_sender" });
+    return "skipped";
+  }
+  const text = `${DECIDE_NOTICE_SENTENCE} If this was you, there is nothing to do. `
+    + `If it wasn't, remove it now: run agentx signin unlink cloud, or sign in at ${input.cellUrl} and remove it from your account.`;
+  await deps.ses.send(new SendEmailCommand({
+    FromEmailAddress: deps.from,
+    Destination: { ToAddresses: [input.to] },
+    Content: { Simple: {
+      Subject: { Data: IDENTITY_NOTICE_SUBJECT, Charset: "UTF-8" },
+      Body: { Text: { Data: text, Charset: "UTF-8" }, Html: { Data: `<p>${escapeHtml(text)}</p>`, Charset: "UTF-8" } },
+    } },
+  }), { abortSignal: AbortSignal.timeout(NOTICE_SEND_TIMEOUT_MS) });
+  deps.log({ event: "signin.decide_sign_in_added" });
+  return "sent";
+}
