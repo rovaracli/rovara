@@ -53,6 +53,7 @@ async function perform(access: ModelAccess, request: ModelAccessRequest): Promis
     case "removeSource": return access.removeSource(request.args.orgId, request.args.sourceId).then(() => null);
     case "checkSource": return access.checkSource(request.args.orgId, request.args.sourceId);
     case "revokeKey": return access.revokeKey(request.args.key).then(() => null);
+    case "blockKey": return access.blockKey(request.args.keyId).then(() => null);
   }
 }
 

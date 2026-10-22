@@ -609,7 +609,7 @@ describe("the handler and the invoker carry the new operations", () => {
     const never = async () => { throw new Error("not used"); };
     const upsertSource = vi.fn(async () => undefined);
     const access: ModelAccess = {
-      upsertOrg: never, upsertMember: never, spend: never, orgSpend: never, keySpend: never, mintKey: never, revokeKey: never,
+      upsertOrg: never, upsertMember: never, spend: never, orgSpend: never, keySpend: never, mintKey: never, revokeKey: never, blockKey: never,
       upsertSource, removeSource: vi.fn(async () => undefined), checkSource: vi.fn(async () => ({ ok: true as const, health: "healthy" as const })),
     };
     return { access, upsertSource };

@@ -189,6 +189,18 @@ describe("ModelProxyClient", () => {
     await expect(gone.client.revokeKey("sk-virtual-1")).resolves.toBeUndefined();
   });
 
+  it("blockKey blocks the key by its id, treats a missing key as blocked and fails closed on any other refusal", async () => {
+    const id = "e".repeat(64);
+    const ok = proxy(({ path }) => (path === "/key/block" ? json({ blocked: true }) : undefined));
+    await ok.client.blockKey(id);
+    expect(ok.seen).toHaveLength(1);
+    expect(ok.seen[0]!.body).toEqual({ key: id });
+    const gone = proxy(() => json({ error: { message: "key not found" } }, 404));
+    await expect(gone.client.blockKey(id)).resolves.toBeUndefined();
+    const busy = proxy(() => json({ error: { message: "upstream unhealthy" } }, 503));
+    expect((await failure(busy.client.blockKey(id))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+  });
+
   it("a fetch rejection and a 5xx answer throw MODEL_PROXY_UNAVAILABLE", async () => {
     const down = new ModelProxyClient({ baseUrl: BASE, masterKey: async () => MASTER, fetch: async () => { throw new TypeError("fetch failed"); }, now: () => NOW, catalog: CATALOG });
     const refused = await failure(down.upsertOrg(ORG, 1));

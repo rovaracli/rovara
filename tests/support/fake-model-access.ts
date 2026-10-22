@@ -18,6 +18,7 @@ export interface FakeModelAccess extends ModelAccess {
   checkSource: Mock<(orgId: OrgId, sourceId: string) => Promise<SourceCheck>>;
   mintKey: Mock<(input: MintKeyInput) => Promise<MintedKey>>;
   revokeKey: Mock<(key: string) => Promise<void>>;
+  blockKey: Mock<(keyId: string) => Promise<void>>;
   /** What the org has spent so far this month (its limit is what was last upserted). */
   setOrgSpent(orgId: OrgId, usd: number): void;
   setMemberSpent(orgId: OrgId, developerId: string, usd: number): void;
@@ -85,6 +86,7 @@ export function fakeModelAccess(options: { key?: string; mintFailure?: Error } =
       return { key, expiresAt: Date.parse("2026-10-19T13:00:00.000Z") };
     }),
     revokeKey: vi.fn(async () => { guard(); }),
+    blockKey: vi.fn(async () => { guard(); }),
     setOrgSpent: (orgId, usd) => { orgs.set(orgId, { limit: orgs.get(orgId)?.limit ?? 0, spent: usd }); },
     setMemberSpent: (orgId, developerId, usd) => { members.set(memberKey(orgId, developerId), { limit: members.get(memberKey(orgId, developerId))?.limit ?? 0, spent: usd }); },
     setKeySpent: (key, usd) => { keySpends.set(keyIdOf(key), usd); },

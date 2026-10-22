@@ -77,6 +77,34 @@ export function scopeKey(scope: BudgetScope): string {
   }
 }
 
+// ---- the ledger and settlement (Task 30)
+
+/** How long after an operation ends its model keys are blocked before they are finalized, so a request the proxy admitted before the block still counts (spike Q11). */
+export const FINALIZE_DELAY_MS = 120_000;
+/** A key nobody blocked is finalized this long after it expires. */
+export const KEY_EXPIRY_GRACE_MS = 600_000;
+/** A finalized key keeps settling this long, for a request that outlived the block. */
+export const FINALIZED_SETTLE_WINDOW_MS = 24 * 60 * 60 * 1000;
+/** The share of a budget at which each alert is written (`budgetAlertKey` level). */
+export const BUDGET_ALERT_LEVELS = [
+  { level: "80", ratio: BUDGET_WARNING_RATIO },
+  { level: "100", ratio: 1 },
+] as const;
+
+/** The counters beside the scopes' own: what a model source, a model and a ChatGPT plan used, and an agent's spend by where the run came from. None has a limit. */
+export const sourceCounter = (sourceId: string): string => `SOURCE#${sourceId}`;
+export const modelCounter = (model: string): string => `MODEL#${model}`;
+export const personalCounter = (developerId: string): string => `PERSONAL#${developerId}`;
+
+/** Whom a run's cost is shown as: a person's, an agent's own (events, schedules, chains) or a test run's. */
+export type SpendOriginKind = "person" | "autonomous" | "test";
+export const SPEND_ORIGIN_KINDS: readonly SpendOriginKind[] = ["person", "autonomous", "test"];
+export const originCounter = (agentId: string, kind: SpendOriginKind): string => `AGENT_ORIGIN#${agentId}#${kind}`;
+export function spendOriginKind(origin: string): SpendOriginKind {
+  if (origin === "test_run") return "test";
+  return origin === "event" || origin === "schedule" || origin === "chain" ? "autonomous" : "person";
+}
+
 // ---- project AI settings and the org's spend policy (Task 28)
 
 export const PLANNING_LIMIT_MIN_USD = 0.5;

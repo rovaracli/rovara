@@ -25,6 +25,7 @@ function fakeAccess(overrides: Partial<ModelAccess> = {}): ModelAccess & { calls
     checkSource: record("checkSource", { ok: true, health: "healthy" }),
     mintKey: record("mintKey", { key: VIRTUAL, expiresAt: 1234 }),
     revokeKey: record("revokeKey", undefined),
+    blockKey: record("blockKey", undefined),
     ...overrides,
   };
 }
@@ -50,6 +51,15 @@ describe("ModelAccessFunction handler", () => {
       ["mintKey", [mint]],
       ["revokeKey", [VIRTUAL]],
     ]);
+  });
+
+  it("blocks a key by its id, and refuses an id that is not a token hash", async () => {
+    const access = fakeAccess();
+    const run = createModelAccessHandler({ access, log: quiet });
+    expect(await run({ op: "blockKey", args: { keyId: "c".repeat(64) } })).toEqual({ ok: true, result: null });
+    expect(access.calls).toEqual([["blockKey", ["c".repeat(64)]]]);
+    expect((await run({ op: "blockKey", args: { keyId: "sk-the-key-itself" } })).ok).toBe(false);
+    expect(access.calls).toHaveLength(1);
   });
 
   it("runs the org-only spend and the keys' spend", async () => {

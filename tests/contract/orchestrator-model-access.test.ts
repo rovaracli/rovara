@@ -46,7 +46,7 @@ function fakeModelAccess(failure?: Error, spent: Spent = {}) {
   const orgFigures = () => ({ spentUsd: spent.org ?? 0, limitUsd: 500 });
   const spend = vi.fn(async (): Promise<MemberSpend> => ({ member: { spentUsd: spent.member ?? 0, limitUsd: 29 }, org: orgFigures() }));
   const orgSpend = vi.fn(async () => orgFigures());
-  const access: ModelAccess = { upsertOrg: vi.fn(), upsertMember: vi.fn(), spend, orgSpend, keySpend: vi.fn(), mintKey, revokeKey: vi.fn(), upsertSource: vi.fn(), removeSource: vi.fn(), checkSource: vi.fn() };
+  const access: ModelAccess = { upsertOrg: vi.fn(), upsertMember: vi.fn(), spend, orgSpend, keySpend: vi.fn(), mintKey, revokeKey: vi.fn(), blockKey: vi.fn(), upsertSource: vi.fn(), removeSource: vi.fn(), checkSource: vi.fn() };
   return { access, mintKey, spend, orgSpend };
 }
 

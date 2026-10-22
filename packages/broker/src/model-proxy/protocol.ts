@@ -54,6 +54,7 @@ export const ModelAccessRequestSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("removeSource"), args: z.object({ orgId: OrgIdSchema, sourceId: SourceIdSchema }).strict() }).strict(),
   z.object({ op: z.literal("checkSource"), args: z.object({ orgId: OrgIdSchema, sourceId: SourceIdSchema }).strict() }).strict(),
   z.object({ op: z.literal("revokeKey"), args: z.object({ key: z.string().min(1).max(512) }).strict() }).strict(),
+  z.object({ op: z.literal("blockKey"), args: z.object({ keyId: KeyIdSchema }).strict() }).strict(),
 ]);
 export type ModelAccessRequest = z.infer<typeof ModelAccessRequestSchema>;
 

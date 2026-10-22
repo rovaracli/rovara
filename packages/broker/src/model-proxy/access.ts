@@ -78,4 +78,9 @@ export interface ModelAccess {
   checkSource(orgId: OrgId, sourceId: string): Promise<SourceCheck>;
   mintKey(input: MintKeyInput): Promise<MintedKey>;
   revokeKey(key: string): Promise<void>;
+  /**
+   * Blocks a key by its id (the SHA-256 of the key): the proxy refuses it from then on, and its spend stays readable (`keySpend`), which a
+   * deleted key's does too. A key the proxy no longer knows is already blocked. Task 30's two-phase finalize starts here.
+   */
+  blockKey(keyId: string): Promise<void>;
 }

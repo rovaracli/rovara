@@ -46,6 +46,12 @@ describe("ModelAccessInvoker", () => {
     ]);
   });
 
+  it("blocks a key by its id through the function", async () => {
+    const { invoker, sent } = invokerWith(async () => answer({ ok: true, result: null }));
+    await invoker.blockKey("d".repeat(64));
+    expect(sent.map(payloadOf)).toEqual([{ op: "blockKey", args: { keyId: "d".repeat(64) } }]);
+  });
+
   it("returns the spend and the minted key from the function's answer", async () => {
     const spend = { member: { spentUsd: 1, limitUsd: 2 }, org: { spentUsd: 3, limitUsd: 4 } };
     const { invoker, sent } = invokerWith(async (command) => answer({ ok: true, result: (payloadOf(command) as { op: string }).op === "spend" ? spend : { key: "sk-v", expiresAt: 99 } }));

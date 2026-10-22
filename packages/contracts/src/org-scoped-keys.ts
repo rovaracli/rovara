@@ -339,3 +339,21 @@ export function runCostKey(orgId: OrgId, project: string, agentId: AgentId, path
 export function ownerBudgetKey(orgId: OrgId, developerId: string): OrgKey {
   return { pk: orgScoped(orgId, `OWNER_AGENT_BUDGET#${developerId}`), sk: "TOTAL" };
 }
+
+/**
+ * The global index of model keys the broker still settles (ids and `orgId` only; the item names the org and the key, and a reader re-checks
+ * `orgId` on the record it points at). `createdAt` is an instant. An item stays until its key was finalized a day ago.
+ */
+export function openModelKeysKey(createdAt: string, orgId: OrgId, keyId: string): OrgKey {
+  return { pk: "OPEN_MODEL_KEYS", sk: `${canonicalInstant(createdAt)}#${orgId}#${keyId}` };
+}
+
+/** One settled amount of one key, in the month's ledger (`at` is an instant, `seq` counts the key's settlements). */
+export function ledgerKey(orgId: OrgId, month: string, at: string, keyId: string, seq: number): OrgKey {
+  return { pk: orgScoped(orgId, `LEDGER#${month}`), sk: `${canonicalInstant(at)}#${keyId}#${String(seq).padStart(6, "0")}` };
+}
+
+/** What one run (a task, or the operation of Slack work) cost an agent in a month, for the agent's recent runs. */
+export function agentRunsKey(orgId: OrgId, month: string, agentId: AgentId, runId: string): OrgKey {
+  return { pk: orgScoped(orgId, `AGENT_RUNS#${month}#${agentId}`), sk: runId };
+}

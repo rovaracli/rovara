@@ -1,0 +1,439 @@
+// Plan 3 Task 30: the spend ledger. Every model key the broker mints has a record here (`ModelKeyRecord`, with the scopes it counts against, the tags that
+// say who pays and what ran, and how much of its spend has been counted). The proxy's own figure for a key is the truth (R22); settlement reads it and
+// adds the new part to every counter the key belongs to, in one transaction that is conditional on the amount already counted, so a spend is counted
+// once however often it is settled, and however many settlers race. Member and org counters are advisory: LiteLLM's caps stay authoritative (R23).
+//
+// Two kinds of key: a key that RESERVED its cap (every task operation key, Task 31) holds `capUsd` on each of its scopes' `committedUsd` until it is
+// finalized, then keeps only what it spent; a key that reserved nothing (a Slack turn's, R50) adds its spend to `committedUsd` as it settles. A finalized
+// key still settles: a request the proxy admitted before the block can bill later (spike Q11), and that late spend adds to `spentUsd` and `committedUsd`.
+//
+// Finalizing is two-phase. When an operation ends its keys are blocked at the proxy (`blockOperationKeys`) and given a `finalizeAfter`; the sweep settles
+// open keys and finalizes those past `finalizeAfter`, or ten minutes after they expired when nobody blocked them. Finalized keys keep settling for a day.
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  BUDGET_ALERT_LEVELS, FINALIZE_DELAY_MS, FINALIZED_SETTLE_WINDOW_MS, KEY_EXPIRY_GRACE_MS, OrgIdSchema,
+  agentRunsKey, agentXError, budgetAlertKey, ledgerKey, modelCounter, modelKeyKey, openModelKeysKey, originCounter, scopeKey, sourceCounter,
+  spendCounterKey, spendOriginKind, type BudgetScope, type OrgId,
+} from "@agentx/contracts";
+import type { MintTags, ModelAccess } from "../model-proxy/access.js";
+import { Aliases, NOT_EXISTS, errorName, failedIndexes, withoutUndefined, type Item, type TransactItem } from "../agents/table-writes.js";
+import { effectiveLimits, type SpendSettingsDependencies } from "./settings.js";
+import { agentUsageCounter } from "./payer.js";
+import { cleanUsd } from "./top-ups.js";
+
+export interface LedgerDependencies extends SpendSettingsDependencies {
+  access: Pick<ModelAccess, "keySpend" | "blockKey">;
+  /** Epoch milliseconds. */
+  now: () => number;
+  /** How many open keys a sweep takes at once (default 500). */
+  pageSize?: number;
+  /** Where a failure that must not stop the work is reported; by default one JSON line. */
+  log?: (entry: Record<string, unknown>) => void;
+}
+
+/** A scope a key counts against, with the limit its reservation is held to (a scope without one is counted but never refuses a key). */
+export interface KeyScope {
+  key: BudgetScope;
+  limitUsd?: number | undefined;
+}
+
+export interface KeyInput {
+  orgId: OrgId;
+  /** The UTC month the key's spend is counted in (the month it was minted). */
+  month: string;
+  /** LiteLLM's token id for the key: the SHA-256 of it. */
+  keyId: string;
+  capUsd: number;
+  scopes: readonly KeyScope[];
+  tags: MintTags;
+  /** The model the key may call, for the model counter; absent while a key is not tied to one model. */
+  model?: string | undefined;
+  /** Epoch milliseconds. */
+  expiresAt: number;
+}
+
+export interface ModelKeyRecord {
+  orgId: OrgId;
+  keyId: string;
+  month: string;
+  capUsd: number;
+  /** How much of the key's spend has been counted. */
+  settledUsd: number;
+  scopes: BudgetScope[];
+  tags: MintTags;
+  model?: string;
+  /** True when the key holds its cap on each scope's `committedUsd` until it is finalized. */
+  reserved: boolean;
+  createdAt: number;
+  expiresAt: number;
+  finalizeAfter?: number;
+  finalized: boolean;
+  finalizedAt?: number;
+  settleCount: number;
+}
+
+/** A reservation that would take a limited scope past its limit. `scope` is the scope's `scopeKey`. */
+export class ScopeFullError extends Error {
+  constructor(readonly scope: string) {
+    super(`${scope} has no room for this key`);
+    this.name = "ScopeFullError";
+  }
+}
+
+/** One transaction holds at most 100 items; a key's own are the record, the index item, a ledger line, a run total and the extra counters. */
+const MAX_SCOPES = 20;
+const SWEEP_PAGE = 500;
+const SWEEP_AT_ONCE = 8;
+const OPEN_KEYS_PK = "OPEN_MODEL_KEYS";
+
+const iso = (epochMs: number): string => new Date(epochMs).toISOString();
+const log = (deps: LedgerDependencies, entry: Record<string, unknown>): void => (deps.log ?? ((line) => console.log(JSON.stringify({ component: "broker", ...line }))))(entry);
+
+async function getItem(deps: LedgerDependencies, key: { pk: string; sk: string }): Promise<Item | undefined> {
+  return ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
+}
+
+async function readRecord(deps: LedgerDependencies, orgId: OrgId, keyId: string): Promise<ModelKeyRecord | undefined> {
+  const item = await getItem(deps, modelKeyKey(orgId, keyId));
+  // The item is under this org's partition; the field is checked again so a record written wrongly is never trusted.
+  if (item === undefined || item["orgId"] !== orgId || item["keyId"] !== keyId) return undefined;
+  return item as unknown as ModelKeyRecord;
+}
+
+async function send(deps: LedgerDependencies, items: TransactItem[]): Promise<void> {
+  await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+}
+
+/** `SET` fields (each only when the item is new, for `once`) and `ADD` amounts on one item, which an ADD creates when it is not there. */
+function upsert(deps: LedgerDependencies, key: { pk: string; sk: string }, entityType: string, change: { set?: Item; add?: Record<string, number>; condition?: (aliases: Aliases) => string }): TransactItem {
+  const aliases = new Aliases();
+  const type = aliases.name("entityType");
+  const sets = [`${type} = if_not_exists(${type}, ${aliases.value(entityType)})`];
+  for (const [name, value] of Object.entries(change.set ?? {})) if (value !== undefined) sets.push(`${aliases.name(name)} = ${aliases.value(value)}`);
+  const adds = Object.entries(change.add ?? {}).map(([name, amount]) => `${aliases.name(name)} ${aliases.value(amount)}`);
+  const condition = change.condition?.(aliases);
+  return {
+    Update: {
+      TableName: deps.tableName, Key: key,
+      UpdateExpression: `SET ${sets.join(", ")}${adds.length === 0 ? "" : ` ADD ${adds.join(", ")}`}`,
+      ...(condition === undefined ? {} : { ConditionExpression: condition }),
+      ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
+    },
+  };
+}
+
+function recordItems(deps: LedgerDependencies, input: KeyInput, reserved: boolean, createdAt: number): { record: Item; index: Item } {
+  const record: Item = withoutUndefined({
+    ...modelKeyKey(input.orgId, input.keyId), entityType: "MODEL_KEY", orgId: input.orgId, keyId: input.keyId, month: input.month, capUsd: cleanUsd(input.capUsd),
+    settledUsd: 0, scopes: input.scopes.map((scope) => scope.key), tags: withoutUndefined({ ...input.tags }), model: input.model, reserved,
+    createdAt, expiresAt: input.expiresAt, finalized: false, settleCount: 0,
+  });
+  const index: Item = { ...openModelKeysKey(iso(createdAt), input.orgId, input.keyId), entityType: "OPEN_MODEL_KEY", orgId: input.orgId, keyId: input.keyId };
+  return { record, index };
+}
+
+function checkInput(input: KeyInput): void {
+  if (input.scopes.length > MAX_SCOPES) throw agentXError("CONFIG_INVALID", "a model key counts against too many budgets");
+  if (!/^[0-9a-f]{64}$/u.test(input.keyId)) throw agentXError("CONFIG_INVALID", "a model key is known by its token id");
+  if (!Number.isFinite(input.capUsd) || input.capUsd < 0) throw agentXError("CONFIG_INVALID", "a model key's cap is an amount of dollars");
+}
+
+const uniqueScopes = (scopes: readonly KeyScope[]): KeyScope[] => {
+  const seen = new Set<string>();
+  return scopes.filter((scope) => !seen.has(scopeKey(scope.key)) && seen.add(scopeKey(scope.key)));
+};
+
+/**
+ * Records a key that reserved nothing (a Slack turn's key, an orchestrator's, or a task key until Task 31 reserves): it settles into the counters,
+ * and its spend adds to `committedUsd` as it comes. A key already recorded answers its record and writes nothing.
+ */
+export async function registerKey(deps: LedgerDependencies, input: KeyInput): Promise<ModelKeyRecord> {
+  checkInput(input);
+  const { record, index } = recordItems(deps, { ...input, scopes: uniqueScopes(input.scopes) }, false, deps.now());
+  try {
+    await send(deps, [
+      { Put: { TableName: deps.tableName, Item: record, ConditionExpression: NOT_EXISTS } },
+      { Put: { TableName: deps.tableName, Item: index, ConditionExpression: NOT_EXISTS } },
+    ]);
+    return record as unknown as ModelKeyRecord;
+  } catch (error) {
+    const existing = failedIndexes(error) === undefined ? undefined : await readRecord(deps, input.orgId, input.keyId);
+    if (existing === undefined) throw error;
+    return existing;
+  }
+}
+
+/**
+ * Holds `capUsd` on every scope's `committedUsd` and records the key, in one transaction: each limited scope must still have room
+ * (`committedUsd <= limit - cap`), or the whole reservation is refused with the first scope that is full and nothing is written. Task 31 calls this
+ * before it mints, so the caller names the key's id up front. A repeat of the same key answers its record and holds nothing more.
+ */
+export async function reserve(deps: LedgerDependencies, input: KeyInput): Promise<ModelKeyRecord> {
+  checkInput(input);
+  const scopes = uniqueScopes(input.scopes);
+  const cap = cleanUsd(input.capUsd);
+  // A cap above a scope's whole limit fits nowhere, whatever is committed.
+  for (const scope of scopes) if (scope.limitUsd !== undefined && cleanUsd(scope.limitUsd - cap) < 0) throw new ScopeFullError(scopeKey(scope.key));
+  const { record, index } = recordItems(deps, { ...input, scopes }, true, deps.now());
+  const items: TransactItem[] = [
+    ...scopes.map((scope) => upsert(deps, spendCounterKey(input.orgId, input.month, scopeKey(scope.key)), "SPEND_COUNTER", {
+      add: { committedUsd: cap },
+      ...(scope.limitUsd === undefined ? {} : {
+        // A millionth of slack keeps float dust from refusing a key that fits exactly.
+        condition: (aliases) => `attribute_not_exists(${aliases.name("committedUsd")}) OR ${aliases.name("committedUsd")} <= ${aliases.value(cleanUsd(scope.limitUsd! - cap + 0.000001))}`,
+      }),
+    })),
+    { Put: { TableName: deps.tableName, Item: record, ConditionExpression: NOT_EXISTS } },
+    { Put: { TableName: deps.tableName, Item: index, ConditionExpression: NOT_EXISTS } },
+  ];
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await send(deps, items);
+      return record as unknown as ModelKeyRecord;
+    } catch (error) {
+      if (errorName(error) !== "TransactionCanceledException") throw error;
+      const reasons = ((error as { CancellationReasons?: Array<{ Code?: string } | undefined> }).CancellationReasons ?? []).map((reason) => reason?.Code);
+      const failed = failedIndexes(error) ?? new Set<number>();
+      // The record already exists: a repeat. (Its scope conditions may fail too, having been counted once already.)
+      if (failed.has(scopes.length)) {
+        const existing = await readRecord(deps, input.orgId, input.keyId);
+        if (existing !== undefined) return existing;
+        throw error;
+      }
+      const full = scopes.findIndex((_scope, position) => failed.has(position));
+      if (full !== -1) throw new ScopeFullError(scopeKey(scopes[full]!.key));
+      // Two reservations on one counter at once: DynamoDB cancels one without a failed condition. It is decided again from the fresh counters.
+      if (reasons.includes("TransactionConflict") && attempt < 3) continue;
+      throw error;
+    }
+  }
+}
+
+export interface SettleOutcome {
+  /** What this call added; 0 when there was nothing new, the key is unknown or another settler counted it. */
+  deltaUsd: number;
+  /** How much of the key's spend is counted now. */
+  settledUsd: number;
+}
+
+const overshoot = (spent: number, capUsd: number): number => Math.max(0, cleanUsd(spent - capUsd));
+
+/** The counters a key's spend is added to besides its scopes: the agent's usage, the model source, the model, and the agent's spend by where the run came from. */
+function extraCounters(record: ModelKeyRecord): string[] {
+  return [
+    agentUsageCounter(record.tags.agentId as never),
+    sourceCounter(record.tags.source),
+    ...(record.model === undefined ? [] : [modelCounter(record.model)]),
+    originCounter(record.tags.agentId, spendOriginKind(record.tags.origin)),
+  ];
+}
+
+async function settleOnce(deps: LedgerDependencies, record: ModelKeyRecord): Promise<SettleOutcome | "raced"> {
+  const spent = cleanUsd(await deps.access.keySpend([record.keyId]));
+  const deltaUsd = cleanUsd(spent - record.settledUsd);
+  if (!(deltaUsd > 0)) return { deltaUsd: 0, settledUsd: record.settledUsd };
+  const at = deps.now();
+  const seq = record.settleCount + 1;
+  // An open reserving key already holds its cap, so only what passes the cap adds to committed; any other key adds all of it.
+  const committed = record.reserved && !record.finalized ? cleanUsd(overshoot(spent, record.capUsd) - overshoot(record.settledUsd, record.capUsd)) : deltaUsd;
+  const orgId = record.orgId;
+  const items: TransactItem[] = [
+    upsert(deps, modelKeyKey(orgId, record.keyId), "MODEL_KEY", {
+      set: { settledUsd: spent, settleCount: seq, lastSettledAt: iso(at) },
+      condition: (aliases) => `${aliases.name("settledUsd")} = ${aliases.value(record.settledUsd)} AND ${aliases.name("finalized")} = ${aliases.value(record.finalized)}`,
+    }),
+    ...record.scopes.map((scope) => upsert(deps, spendCounterKey(orgId, record.month, scopeKey(scope)), "SPEND_COUNTER", { add: { spentUsd: deltaUsd, ...(committed === 0 ? {} : { committedUsd: committed }) } })),
+    ...extraCounters(record).map((sk) => upsert(deps, spendCounterKey(orgId, record.month, sk), "SPEND_COUNTER", { add: { spentUsd: deltaUsd } })),
+    { Put: { TableName: deps.tableName, Item: withoutUndefined({
+      ...ledgerKey(orgId, record.month, iso(at), record.keyId, seq), entityType: "LEDGER", orgId, month: record.month, at: iso(at), keyId: record.keyId,
+      usd: deltaUsd, settledUsd: spent, finalized: record.finalized, model: record.model, ...record.tags,
+    }), ConditionExpression: NOT_EXISTS } },
+    upsert(deps, agentRunsKey(orgId, record.month, record.tags.agentId as never, record.tags.taskId ?? record.tags.operationId ?? record.keyId), "AGENT_RUN", {
+      set: withoutUndefined({ orgId, agentId: record.tags.agentId, project: record.tags.project, origin: record.tags.origin, payerKind: record.tags.payerKind, taskId: record.tags.taskId, lastAt: iso(at) }),
+      add: { usd: deltaUsd },
+    }),
+  ];
+  try {
+    await send(deps, items);
+  } catch (error) {
+    // The first item is the record: it fails when someone else counted first, and that is not an error.
+    if (failedIndexes(error)?.has(0) === true) return "raced";
+    throw error;
+  }
+  await checkAlerts(deps, orgId, record.month, record.scopes).catch((alertError: unknown) => log(deps, { event: "spend.alert_failed", keyId: record.keyId, error: errorName(alertError) ?? "unknown" }));
+  return { deltaUsd, settledUsd: spent };
+}
+
+/**
+ * Counts what the key has spent since it was last counted: the new part of the proxy's figure goes to every counter of the key, with a ledger line, in one
+ * transaction that holds only while the amount already counted is the one read. A lost race reads the key again once, so two settles of one key add once.
+ * A key of another org, one the ledger does not know, or a finalized one past its day, counts nothing.
+ */
+export async function settleKey(deps: LedgerDependencies, orgId: OrgId, keyId: string): Promise<SettleOutcome> {
+  let last: ModelKeyRecord | undefined;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const record = await readRecord(deps, orgId, keyId);
+    if (record === undefined) return { deltaUsd: 0, settledUsd: 0 };
+    last = record;
+    if (record.finalized && deps.now() > (record.finalizedAt ?? 0) + FINALIZED_SETTLE_WINDOW_MS) return { deltaUsd: 0, settledUsd: record.settledUsd };
+    const outcome = await settleOnce(deps, record);
+    if (outcome !== "raced") return outcome;
+  }
+  return { deltaUsd: 0, settledUsd: last?.settledUsd ?? 0 };
+}
+
+/**
+ * Writes each alert level a counter has reached, once a month: `budgetAlertKey` is created only if absent. A scope without a limit has none. An alert
+ * that cannot be written is the next settle's to write; it never holds up a settle.
+ */
+export async function checkAlerts(deps: LedgerDependencies, orgId: OrgId, month: string, scopes: readonly BudgetScope[]): Promise<void> {
+  if (scopes.length === 0) return;
+  const limits = await effectiveLimits(deps, { orgId, month, scopes });
+  for (const scope of scopes) {
+    const limit = limits.get(scopeKey(scope));
+    if (limit === undefined || !(limit > 0)) continue;
+    const spent = (await getItem(deps, spendCounterKey(orgId, month, scopeKey(scope))))?.["spentUsd"];
+    if (typeof spent !== "number") continue;
+    for (const { level, ratio } of BUDGET_ALERT_LEVELS) {
+      if (spent < limit * ratio) continue;
+      try {
+        await deps.documentClient.send(new PutCommand({
+          TableName: deps.tableName, ConditionExpression: NOT_EXISTS,
+          Item: { ...budgetAlertKey(orgId, month, scopeKey(scope), level), entityType: "BUDGET_ALERT", orgId, month, scope: scopeKey(scope), level, spentUsd: cleanUsd(spent), limitUsd: limit, at: iso(deps.now()) },
+        }));
+      } catch (error) {
+        if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+      }
+    }
+  }
+}
+
+/**
+ * Ends a key's reservation: the cap it did not spend (`max(0, cap - counted)`) goes back to each scope's `committedUsd`, and the key is marked finalized, in
+ * one transaction that holds only while the amount counted and the open state are as read (a lost race reads again once). Answers false when the key is
+ * unknown or already finalized. Spend that comes later is still settled, as late spend.
+ */
+export async function finalizeKey(deps: LedgerDependencies, orgId: OrgId, keyId: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const record = await readRecord(deps, orgId, keyId);
+    if (record === undefined || record.finalized) return false;
+    const release = record.reserved ? Math.max(0, cleanUsd(record.capUsd - record.settledUsd)) : 0;
+    const items: TransactItem[] = [
+      upsert(deps, modelKeyKey(orgId, keyId), "MODEL_KEY", {
+        set: { finalized: true, finalizedAt: deps.now() },
+        condition: (aliases) => `${aliases.name("finalized")} = ${aliases.value(false)} AND ${aliases.name("settledUsd")} = ${aliases.value(record.settledUsd)}`,
+      }),
+      ...(release === 0 ? [] : record.scopes.map((scope) => upsert(deps, spendCounterKey(orgId, record.month, scopeKey(scope)), "SPEND_COUNTER", { add: { committedUsd: -release } }))),
+    ];
+    try {
+      await send(deps, items);
+      return true;
+    } catch (error) {
+      if (failedIndexes(error)?.has(0) !== true) throw error;
+    }
+  }
+  return false;
+}
+
+/**
+ * The first phase of finalizing: an operation has ended, so each of its still-open keys is blocked at the proxy and given a `finalizeAfter` (after
+ * `FINALIZE_DELAY_MS`, so a request the proxy had admitted before the block still counts). Keys that name another operation, are finalized or
+ * were blocked already are left alone, so reporting the same end twice blocks nothing. Answers how many keys it blocked; a proxy that cannot block
+ * a key throws after the other keys were tried, and that key's clock stays unstarted, so a later end (or the sweep's expiry backstop) deals with it.
+ */
+export async function blockOperationKeys(deps: LedgerDependencies, input: { orgId: OrgId; operationId: string; keyIds: readonly string[] }): Promise<number> {
+  let blocked = 0;
+  let failure: unknown;
+  for (const keyId of new Set(input.keyIds)) {
+    const record = await readRecord(deps, input.orgId, keyId);
+    if (record === undefined || record.finalized || record.finalizeAfter !== undefined || record.tags.operationId !== input.operationId) continue;
+    try {
+      await deps.access.blockKey(keyId);
+      await send(deps, [upsert(deps, modelKeyKey(input.orgId, keyId), "MODEL_KEY", {
+        set: { finalizeAfter: deps.now() + FINALIZE_DELAY_MS },
+        condition: (aliases) => `${aliases.name("finalized")} = ${aliases.value(false)} AND attribute_not_exists(${aliases.name("finalizeAfter")})`,
+      })]);
+      blocked += 1;
+    } catch (error) {
+      if (failedIndexes(error) !== undefined) continue;
+      failure ??= error;
+    }
+  }
+  if (failure !== undefined) throw failure;
+  return blocked;
+}
+
+/**
+ * Takes back a key that never took part: the record of a key that reserved nothing and was never settled is deleted with its index item (a mint whose
+ * recording on the task lost a race gives its key back). A key that reserved, or that was settled, stays for the sweep to finalize.
+ */
+export async function forgetKey(deps: LedgerDependencies, orgId: OrgId, keyId: string): Promise<boolean> {
+  const record = await readRecord(deps, orgId, keyId);
+  if (record === undefined || record.reserved || record.settleCount > 0 || record.settledUsd > 0) return false;
+  try {
+    await send(deps, [
+      { Delete: { TableName: deps.tableName, Key: modelKeyKey(orgId, keyId), ConditionExpression: "settleCount = :none", ExpressionAttributeValues: { ":none": 0 } } },
+      { Delete: { TableName: deps.tableName, Key: openModelKeysKey(iso(record.createdAt), orgId, keyId) } },
+    ]);
+    return true;
+  } catch (error) {
+    if (failedIndexes(error) !== undefined) return false;
+    throw error;
+  }
+}
+
+export interface SweepPage {
+  /** How many index items the page held. */
+  examined: number;
+  settled: number;
+  finalized: number;
+  failed: number;
+  /** Pass this to the next call for the next page; absent on the last page. */
+  next?: string;
+}
+
+async function dropIndexItem(deps: LedgerDependencies, item: Item): Promise<void> {
+  await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: item["pk"], sk: item["sk"] } }));
+}
+
+/**
+ * One page of the open keys, by cursor: each is settled, and an open one is finalized once it is due (`finalizeAfter` has passed, or it expired ten
+ * minutes ago). A finalized key keeps settling for a day and is then dropped from the index, as is one whose record is gone or belongs to another org
+ * than its index item names. A key whose spend cannot be read counts as failed and the page goes on; only a key that has failed for more than a day past its
+ * expiry is finalized anyway, so a lost key cannot hold a reservation forever.
+ */
+export async function sweepSpend(deps: LedgerDependencies, now: number, cursor?: string): Promise<SweepPage> {
+  const response = await deps.documentClient.send(new QueryCommand({
+    TableName: deps.tableName, ConsistentRead: true, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": OPEN_KEYS_PK },
+    Limit: deps.pageSize ?? SWEEP_PAGE, ...(cursor === undefined ? {} : { ExclusiveStartKey: { pk: OPEN_KEYS_PK, sk: cursor } }),
+  })) as { Items?: Item[]; LastEvaluatedKey?: { sk?: string } };
+  const items = response.Items ?? [];
+  const page: SweepPage = { examined: items.length, settled: 0, finalized: 0, failed: 0 };
+  const sweepOne = async (item: Item): Promise<void> => {
+    const org = OrgIdSchema.safeParse(item["orgId"]);
+    const keyId = item["keyId"];
+    if (!org.success || typeof keyId !== "string") { await dropIndexItem(deps, item); return; }
+    const orgId = org.data;
+    const record = await readRecord(deps, orgId, keyId);
+    if (record === undefined) { await dropIndexItem(deps, item); return; }
+    if (record.finalized && now > (record.finalizedAt ?? 0) + FINALIZED_SETTLE_WINDOW_MS) { await dropIndexItem(deps, item); return; }
+    const due = !record.finalized && ((record.finalizeAfter !== undefined && now >= record.finalizeAfter) || now >= record.expiresAt + KEY_EXPIRY_GRACE_MS);
+    try {
+      if ((await settleKey(deps, orgId, keyId)).deltaUsd > 0) page.settled += 1;
+    } catch (error) {
+      page.failed += 1;
+      log(deps, { event: "spend.settle_failed", keyId, error: errorName(error) ?? "unknown" });
+      // A key the proxy has lost for good would otherwise hold its reservation forever.
+      if (!(due && now >= record.expiresAt + KEY_EXPIRY_GRACE_MS + FINALIZED_SETTLE_WINDOW_MS)) return;
+    }
+    if (due && await finalizeKey(deps, orgId, keyId)) page.finalized += 1;
+  };
+  for (let start = 0; start < items.length; start += SWEEP_AT_ONCE) {
+    await Promise.all(items.slice(start, start + SWEEP_AT_ONCE).map((item) => sweepOne(item).catch((error: unknown) => {
+      page.failed += 1;
+      log(deps, { event: "spend.sweep_item_failed", error: errorName(error) ?? "unknown" });
+    })));
+  }
+  const next = response.LastEvaluatedKey?.sk;
+  return next === undefined ? page : { ...page, next };
+}

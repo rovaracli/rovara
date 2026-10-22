@@ -72,6 +72,10 @@ export class ModelAccessInvoker implements ModelAccess {
     await this.invoke({ op: "revokeKey", args: { key } });
   }
 
+  async blockKey(keyId: string): Promise<void> {
+    await this.invoke({ op: "blockKey", args: { keyId } });
+  }
+
   private parseResult<T>(result: unknown, schema: z.ZodType<T>): T {
     const parsed = schema.safeParse(result);
     if (!parsed.success) throw unavailable("model access answered with an unexpected result");

@@ -198,6 +198,13 @@ export class ModelProxyClient implements ModelAccess {
     if (reply.status !== 200) throw refusal(reply);
   }
 
+  async blockKey(keyId: string): Promise<void> {
+    const reply = await this.request("POST", "/key/block", await this.master(), { key: keyId });
+    // A key the proxy no longer knows is already blocked.
+    if (reply.status === 404) return;
+    if (reply.status !== 200) throw refusal(reply);
+  }
+
   async upsertSource(input: UpsertSourceInput): Promise<void> {
     try {
       await this.registerSource(input);
