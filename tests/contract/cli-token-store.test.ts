@@ -263,6 +263,42 @@ describe.skipIf(realPlatform !== "darwin")("SystemCredentialTokenStore binary pi
     expect(calls()).toEqual([]);
   });
 
+  it("honours ROVARA_TEST_SECURITY_PATH only when ROVARA_TEST_MODE=1 and the path is absolute", async () => {
+    setPlatform("darwin");
+    installFake("security");
+    process.env.FAKE_EXIT = "44";
+    const fake = join(fakeDir, "security");
+    try {
+      process.env.ROVARA_TEST_MODE = "1";
+      process.env.ROVARA_TEST_SECURITY_PATH = fake;
+      await new SystemCredentialTokenStore("dev.rovara.kc-test.env").get("acct");
+      expect(calls().map((call) => call.argv[0])).toEqual(["find-generic-password"]);
+    } finally {
+      delete process.env.ROVARA_TEST_MODE;
+      delete process.env.ROVARA_TEST_SECURITY_PATH;
+    }
+  });
+
+  it.each([
+    ["no test-mode flag", undefined, "ABS"],
+    ["test mode not exactly 1", "true", "ABS"],
+    ["a relative path", "1", "./security"],
+  ])("ignores ROVARA_TEST_SECURITY_PATH with %s", async (_label, mode, path) => {
+    setPlatform("darwin");
+    installFake("security");
+    try {
+      if (mode !== undefined) process.env.ROVARA_TEST_MODE = mode;
+      process.env.ROVARA_TEST_SECURITY_PATH = path === "ABS" ? join(fakeDir, "security") : path;
+      // Reads a service name that does not exist, through the real /usr/bin/security.
+      const store = new SystemCredentialTokenStore(`dev.rovara.kc-test.env${Math.random().toString(36).slice(2, 12)}`);
+      await expect(store.get("no-such-account")).resolves.toBeUndefined();
+      expect(calls()).toEqual([]);
+    } finally {
+      delete process.env.ROVARA_TEST_MODE;
+      delete process.env.ROVARA_TEST_SECURITY_PATH;
+    }
+  });
+
   it("uses the injected path for set, get and delete", async () => {
     setPlatform("darwin");
     installFake("security");
