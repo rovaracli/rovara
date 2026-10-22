@@ -2,7 +2,7 @@
 // the model by its canonical name; a source that cannot be proved usable is skipped, a record that cannot be read refuses (never falls back to Rovara's AI).
 // The broker side (the operation's route, the key's `models`, the live re-check, Slack turns) is tests/contract/model-routing-broker.test.ts.
 import { describe, expect, it } from "vitest";
-import { ModelSourceSchema, defaultModelSourceOrder, egressDomainsKey, sourceAlias, type ModelIdentifier, type ModelSource, type OrgId } from "@agentx/contracts";
+import { ModelSourceSchema, defaultModelSourceOrder, egressDomainsKey, modelSourcesKey, sourceAlias, type ModelIdentifier, type ModelSource, type OrgId } from "@agentx/contracts";
 import { singleOrgIdForEnv } from "../../packages/contracts/src/org.js";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import { chatGptServing, modelNotAllowedText, routeModel, routeOnWire, servableModels, servingRoutes, type RoutingDependencies } from "../../packages/broker/src/model-sources/routing.js";
@@ -176,6 +176,12 @@ describe("routeModel: sources that cannot be proved usable are skipped", () => {
     await t.store.remove({ orgId: TEST_ORG, sourceId: SRC_ANTHROPIC, by: "dev-owner" });
     expect((await t.store.read(TEST_ORG)).removing.map((entry) => entry.sourceId)).toEqual([SRC_ANTHROPIC]);
     expect((await t.route()).sourceId).toBe("rovara");
+    // A record that still lists the source beside a removal tombstone for it (a removal mid-cleanup) does not serve it either.
+    const mid = install();
+    await mid.add(anthropic());
+    await mid.order([SRC_ANTHROPIC, "rovara"]);
+    mid.db.set({ ...mid.db.get(modelSourcesKey(TEST_ORG))!, removing: [{ sourceId: SRC_ANTHROPIC, kind: "anthropic" }] });
+    expect((await mid.route()).sourceId).toBe("rovara");
     // Only the project asked for the dead source: with nothing else in its order the model is unserved, not served by something it did not list.
     const only = install({ projectOrder: async () => [SRC_ANTHROPIC] });
     await only.order(["rovara"]);

@@ -5346,6 +5346,11 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     console.log(JSON.stringify({ component: "broker", event: `model_access.${what}_unreadable`, operationId: claims.operationId, errorName: error instanceof Error ? error.name : "unknown" }));
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   });
+  // Task 26: the route chosen when the operation was built, checked against the live sources now (once: a retry after a lost race keeps it). An operation built
+  // before routing has none, and is keyed as it was.
+  const routing = routingOf(dependencies);
+  const route = routing === undefined || operation.orgId === undefined || operation.modelRoute === undefined ? undefined
+    : await liveRouteOf(routing, operation, operation.orgId, (await requireWorkspace(dependencies, operation.workspaceId)).projectName);
   const loadScope = async (): Promise<ModelKeyScope | undefined> => {
     const current = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
     const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(current.workspaceId));
@@ -5353,9 +5358,6 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     // Task 29: with agents set up a key says who pays and what ran, and carries a member's name only when a member pays. Without them
     // (an install that never had agents) the key is minted exactly as it always was.
     const withAgents = dependencies.agents !== undefined;
-    // Task 26: the route chosen when the operation was built, checked against the live sources now. An operation built before routing has none, and is keyed as it was.
-    const routing = routingOf(dependencies);
-    const route = routing === undefined || current.orgId === undefined || current.modelRoute === undefined ? undefined : await liveRouteOf(routing, current, current.orgId, (await requireWorkspace(dependencies, current.workspaceId)).projectName);
     if (task !== undefined) {
       if (task.orgId === undefined) return undefined;
       const payment = withAgents ? paymentOfTask(task) : undefined;
@@ -5423,7 +5425,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   } catch (error) {
     // A spent budget is the member's to know about (402); every other failure is the proxy's, and says nothing of it.
-    if (error instanceof AgentXError && (ADMISSION_REFUSALS.has(error.code) || error.code === "MODEL_NOT_ALLOWED")) throw error;
+    if (error instanceof AgentXError && ADMISSION_REFUSALS.has(error.code)) throw error;
     console.log(JSON.stringify({ component: "broker", event: "model_access.mint_failed", operationId: operation.id, errorName: error instanceof Error ? error.name : "unknown" }));
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   }

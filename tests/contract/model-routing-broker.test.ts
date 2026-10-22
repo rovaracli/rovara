@@ -3,7 +3,7 @@
 // from the org's assistant model or the orchestrator's own. Everything here goes through the real broker over a fake table and a fake proxy.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { ModelSourceSchema, modelCounter, modelKeyKey, scopeKey, sourceAlias, spendCounterKey, type ModelSource } from "@agentx/contracts";
+import { ModelSourceSchema, modelCounter, modelKeyKey, modelSourcesKey, scopeKey, sourceAlias, spendCounterKey, type ModelSource } from "@agentx/contracts";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 import { settleKey, type LedgerDependencies, type ModelKeyRecord } from "../../packages/broker/src/spend/ledger.js";
@@ -36,7 +36,8 @@ async function seedSources(db: unknown, setup: { sources?: ModelSource[]; order:
   await store.setOrder({ orgId: TEST_ORG, order: setup.order, by: "dev-owner" });
   if (setup.assistantModel !== undefined) {
     // The assistant model has no route yet (read-only by ruling); the record carries it the way a later route will write it.
-    const stored = (db as Db).get(`ORG#${TEST_ORG}#MODEL_SOURCES`, "META")!;
+    const stored = (db as Db).get(modelSourcesKey(TEST_ORG));
+    if (stored === undefined) throw new Error("test setup: an assistant model needs a record, so name a source or an order that changes the default");
     (db as Db).set({ ...stored, assistantModel: setup.assistantModel });
   }
   return store;
@@ -221,6 +222,29 @@ describe("a task on the owner's ChatGPT plan follows the order too", () => {
   });
 });
 
+describe("the project's own order", () => {
+  const projectOrder = (db: { set(item: Record<string, unknown>): void }, order: string[]) =>
+    db.set({ pk: `ORG#${TEST_ORG}#PROJECT_AI#payments`, sk: "SETTINGS", entityType: "PROJECT_AI", projectPays: false, sourceOrder: order, revision: 1 });
+
+  it("decides over the org's order for work on that project", async () => {
+    const t = await taskSetup();
+    await t.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC, "rovara"] });
+    projectOrder(t.db, ["rovara", SRC_ANTHROPIC]);
+    const r = await t.running();
+    expect(r.payload()).not.toHaveProperty("modelRoute");
+    expect(r.operation().modelRoute).toMatchObject({ sourceId: "rovara" });
+  });
+
+  it("is checked again when a key is asked for: a route its project has since left out gets none", async () => {
+    const t = await taskSetup();
+    await t.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC, "rovara"] });
+    const r = await t.running();
+    expect((await r.ask()).status).toBe(200);
+    projectOrder(t.db, ["rovara"]);
+    expect((await r.ask()).status).toBe(403);
+  });
+});
+
 describe("the key is checked against the live sources each time it is asked for", () => {
   it("refuses a key for a route whose source has left the order since the operation was built", async () => {
     const t = await taskSetup();
@@ -326,15 +350,30 @@ describe("a Slack turn is routed from the assistant model or the orchestrator's 
     expect(h.access.mintKey).not.toHaveBeenCalled();
   });
 
-  it("refuses an assistant model that no source in the order serves, and a classifier that is not Rovara's is simply left off the key", async () => {
+  it("routes the assistant model rather than the model the service names, and says which was meant when it is unserved", async () => {
     const h = await install();
-    await h.seed({ sources: [openai()], order: [SRC_OPENAI, "rovara"], assistantModel: SONNET });
-    const refused = await h.turn();
-    expect(refused.status).toBe(200);
-    expect(h.access.mintKey.mock.calls[0]![0].models).toEqual([DEFAULT_ID, CLASSIFIER_ID]);
+    const haiku = { provider: "anthropic", modelId: "claude-haiku-4-5" };
+    await h.seed({ sources: [ModelSourceSchema.parse({ kind: "anthropic", sourceId: SRC_ANTHROPIC, label: "Anthropic", models: [{ catalog: SONNET }, { catalog: haiku }] })], order: [SRC_ANTHROPIC, "rovara"], assistantModel: haiku });
+    const reply = await h.turn({ model: { provider: "amazon-bedrock", modelId: DEFAULT_ID } });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    const alias = sourceAlias(TEST_ORG, SRC_ANTHROPIC, haiku);
+    expect(reply.body.route).toEqual({ alias, api: "anthropic-messages", catalog: "claude-haiku-4-5" });
+    expect(h.access.mintKey.mock.calls[0]![0].models).toEqual([alias, CLASSIFIER_ID]);
+    // An assistant model that nothing in the order serves is refused with the model named, and nothing is minted for it.
+    const unserved = await install();
+    await unserved.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC, "rovara"], assistantModel: { provider: "openai", modelId: "gpt-5.4" } });
+    const refused = await unserved.turn();
+    expect(refused.status).toBe(403);
+    expect(refused.body).toMatchObject({ error: { code: "MODEL_NOT_ALLOWED", message: "Slack's model openai/gpt-5.4 isn't served by any AI source your company can use. Ask an admin to set another assistant model." } });
+    expect(unserved.access.mintKey).not.toHaveBeenCalled();
+  });
+
+  it("keeps the classifier off the key when it is not one of Rovara's catalog models", async () => {
+    const h = await install();
+    await h.seed({ order: ["rovara"] });
     const stranger = await h.turn({ classifierModel: { provider: "openai", modelId: "gpt-5.4" } });
     expect(stranger.status).toBe(200);
-    expect(h.access.mintKey.mock.calls[1]![0].models).toEqual([DEFAULT_ID]);
+    expect(h.access.mintKey.mock.calls[0]![0].models).toEqual([DEFAULT_ID]);
   });
 
   it("refuses a turn when the org's sources cannot be read, with a retryable 503 and no key", async () => {
@@ -363,5 +402,37 @@ describe("a Slack turn is routed from the assistant model or the orchestrator's 
     const reply = await call(h.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": invocation.callbackCapability } });
     expect(reply.status, JSON.stringify(reply.body)).toBe(200);
     expect(h.access.mintKey.mock.calls[0]![0].models).toEqual([alias]);
+  });
+});
+
+describe("the models a recipe may name are the ones the org's sources serve", () => {
+  const publishWith = async (t: Awaited<ReturnType<typeof taskSetup>>, model: { provider: string; modelId: string }) => {
+    const overlay = { instructions: "Summarise.", sequence: [{ id: "work", name: "work", kind: "agent", workspace: "none", settings: { model } }] };
+    const created = await t.dev(MAYA, "POST", "/v1/app/agents", { requestId: randomUUID(), name: `Agent ${randomUUID().slice(0, 8)}`, overlay });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const agentId = (created.body.agent as { agentId: string }).agentId;
+    const draft = await t.dev(MAYA, "GET", `/v1/app/agents/${agentId}/draft`);
+    return t.dev(MAYA, "POST", `/v1/app/agents/${agentId}/publish`, { requestId: randomUUID(), expectedRevision: (draft.body.draft as { revision: number }).revision });
+  };
+
+  it("refuses a model no source in the order serves, and accepts it once a source does", async () => {
+    const t = await taskSetup();
+    await t.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC] });
+    const refused = await publishWith(t, GPT);
+    expect(refused.status).toBe(400);
+    expect(refused.body).toMatchObject({ error: { message: "steps.0.settings.model: openai/gpt-5.4 isn't served by any AI source your company can use; pick a model one of them serves" } });
+    const served = await taskSetup();
+    await served.seed({ sources: [anthropic(), openai()], order: [SRC_ANTHROPIC, SRC_OPENAI] });
+    expect((await publishWith(served, GPT)).status).toBe(200);
+  });
+
+  it("serves Rovara's catalog only while Rovara is in the order", async () => {
+    const opus = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-opus-4-7" };
+    const without = await taskSetup();
+    await without.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC] });
+    expect((await publishWith(without, opus)).status).toBe(400);
+    const withRovara = await taskSetup();
+    await withRovara.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC, "rovara"] });
+    expect((await publishWith(withRovara, opus)).status).toBe(200);
   });
 });
