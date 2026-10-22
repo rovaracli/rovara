@@ -1403,6 +1403,10 @@ describe("what a step's result may and may not change", () => {
     await approve(deps, write.approvalId);
     const inputs = t.invocationOf(t.stepOps(run.workspaceId)[1]!.id).payload.agentStep!.inputs;
     expect(inputs).toContain("Your report for this step before the outcomes were known:\nMy first findings.");
+    // The continuation is dispatched outside the sweep, so its watchdog row is the step's own: hours away. Nothing is pending any more.
+    const row = t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)[0]!;
+    expect(Date.parse(String(row.nextAttemptAt)) - Date.now()).toBeGreaterThan(60 * 60_000);
+    expect((await t.view(MAYA, run.taskId)).run.pendingApprovals).toEqual([]);
     expect((await t.view(MAYA, run.taskId)).events.map((event) => event.text)).toContain("Carrying on with Investigate now that the outcomes of the actions that needed approval are known.");
   });
 
@@ -1810,5 +1814,37 @@ describe("an approval the sweep gave up on, when the run can't be ended yet", ()
     await expireApprovals(failing, clock.now);
     expect((await getAnyApproval(failing, TEST_ORG, write.approvalId))!.handlerDone).toBe(true);
     void down;
+  });
+});
+
+describe("the run's budgets and the end of a step the broker never heard from", () => {
+  it("keeps the reports a run stores inside the budget of its state item however many steps there are", async () => {
+    const t = await setup();
+    const ids = ["a", "b", "c", "d", "e", "f"];
+    const agentId = await t.agentOf({ instructions: "Six.", sequence: ids.map((id) => agentStep(id, id.toUpperCase())) });
+    const run = await t.start(agentId);
+    await run.finishPrepare();
+    for (const [index, id] of ids.entries()) await t.finishStep(run, t.stepOps(run.workspaceId)[index]!.id, id.repeat(40_000));
+    const reports = t.runItem(run.taskId)!.reports;
+    expect(reports).toHaveLength(6);
+    expect(reports.reduce((total, report) => total + Buffer.byteLength(report.text, "utf8"), 0)).toBeLessThanOrEqual(150 * 1024 + 1024);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "COMPLETE" });
+  });
+
+  it("blocks the task's keys when a run ends over a step whose compute was lost, a path that blocks nothing itself", async () => {
+    const t = await setup({ proxy: true });
+    const events = endHandler();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    await call(t.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": t.invocationOf(first.id).callbackCapability } });
+    const key = t.access!.mintedKeys()[0]!;
+    const { failActiveOperation } = await import("../../packages/broker/src/aws/outbox-failure.js");
+    await failActiveOperation(t.db, "state", run.workspaceId, "RUNTIME_UNAVAILABLE: workspace compute was lost");
+    expect(t.access!.blockKey).not.toHaveBeenCalled();
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" } as never);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
+    expect(t.access!.blockKey).toHaveBeenCalledWith(keyIdOf(key));
+    expect(events).toHaveLength(1);
   });
 });
