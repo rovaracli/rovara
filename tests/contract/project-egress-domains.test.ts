@@ -7,8 +7,9 @@ import {
   EGRESS_SYNC_KEY, egressDomainsKey, isAllowedDomain, projectMetaKey, projectRevisionKey, type EgressAuditItem, type EgressDomainsItem, type EgressOwner, type OrgId,
 } from "../../packages/contracts/src/index.js";
 import {
-  EGRESS_BACKFILL_KEY, EMPTY_UNION_SENTINEL, FIREWALL_DOMAINS_PER_CALL, backfillLegacyEgress, reconcileEgressWithRevisions, runEgressDomainsSync, syncCellAllowList,
+  EGRESS_BACKFILL_KEY, EGRESS_RECONCILE_CONCURRENCY, EMPTY_UNION_SENTINEL, FIREWALL_DOMAINS_PER_CALL, backfillLegacyEgress, reconcileEgressWithRevisions, runEgressDomainsSync, syncCellAllowList,
 } from "../../packages/broker/src/aws/egress-domains-sync.js";
+import { reconcileProjectEgress } from "../../packages/broker/src/org/project-archive.js";
 import { decideEgressDomain, putEgressDomains, setEgressOwnerActive, type EgressDomainsDependencies } from "../../packages/broker/src/org/egress-domains.js";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -462,6 +463,103 @@ describe("the reconcile of egress items with the current revision (final review 
     const outcome = await runEgressDomainsSync({ ...later(t), sync: async () => ({ ok: true, domains: 0 }) });
     expect(outcome.ok).toBe(true);
     expect(items(t).domains.map((entry) => entry.domain)).toEqual(["new.acme.dev"]);
+  });
+});
+
+describe("the reconciles are bounded and isolated (follow-up N3)", () => {
+  const items = (t: ReturnType<typeof setup>, project: string) => (t.db.get(egressDomainsKey(TEST_ORG, { kind: "project", project })) as unknown as EgressDomainsItem);
+  const later = (t: ReturnType<typeof setup>, at = "2026-10-21T10:30:00.000Z") => ({ ...t.deps(true), now: () => new Date(at) });
+  /** `count` projects whose items still hold a domain their newest revision dropped. */
+  async function stale(t: ReturnType<typeof setup>, count: number): Promise<string[]> {
+    const names = Array.from({ length: count }, (_, index) => `p${String(index).padStart(2, "0")}`);
+    for (const name of names) {
+      await putEgressDomains(t.quiet(true), TEST_ORG, { kind: "project", project: name }, ["old.acme.dev"], { developerId: "dev-1" });
+      legacyProject(t.db, name, undefined, { revisions: [["old.acme.dev"], ["new.acme.dev"]] });
+    }
+    return names;
+  }
+  /** Wraps the fake so each command waits a tick and the most commands of a kind in flight at once are recorded. */
+  function watchConcurrency(t: ReturnType<typeof setup>) {
+    const inFlight = { query: 0, write: 0 };
+    const most = { query: 0, write: 0 };
+    const send = t.db.send.bind(t.db);
+    t.db.send = (async (command: { constructor: { name: string } }) => {
+      const kind = command.constructor.name === "QueryCommand" ? "query" : command.constructor.name === "TransactWriteCommand" ? "write" : undefined;
+      if (kind === undefined) return send(command as never);
+      inFlight[kind] += 1;
+      most[kind] = Math.max(most[kind], inFlight[kind]);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        return await send(command as never);
+      } finally { inFlight[kind] -= 1; }
+    }) as typeof t.db.send;
+    return most;
+  }
+
+  it("reads the revisions several at a time, within its bound, and writes one item at a time", async () => {
+    const t = setup();
+    const names = await stale(t, 30);
+    const most = watchConcurrency(t);
+    expect(await reconcileEgressWithRevisions(later(t))).toEqual({ repaired: 30 });
+    expect(most.query).toBeGreaterThan(1);
+    expect(most.query).toBeLessThanOrEqual(EGRESS_RECONCILE_CONCURRENCY);
+    expect(most.write).toBe(1);
+    for (const name of names) expect(items(t, name).domains.map((entry) => entry.domain)).toEqual(["new.acme.dev"]);
+  });
+
+  it("repairs the others when one project's revision cannot be read, and then reports the failure", async () => {
+    const t = setup();
+    const names = await stale(t, 6);
+    t.db.injectFault({ command: "QueryCommand", match: (input) => JSON.stringify(input).includes("PROJECT#p03"), error: { name: "ProvisionedThroughputExceededException" } });
+    await expect(reconcileEgressWithRevisions(later(t))).rejects.toThrow("1 egress item(s)");
+    for (const name of names.filter((candidate) => candidate !== "p03")) expect(items(t, name).domains.map((entry) => entry.domain), name).toEqual(["new.acme.dev"]);
+    expect(items(t, "p03").domains.map((entry) => entry.domain)).toEqual(["old.acme.dev"]);
+    // The next run finishes it.
+    expect(await reconcileEgressWithRevisions(later(t))).toEqual({ repaired: 1 });
+  });
+
+  it("looks at no more than its per-run limit, moving along so every item is reached within a few runs", async () => {
+    const t = setup();
+    const names = await stale(t, 5);
+    const slice = (index: number) => new Date(Date.parse("2026-10-21T10:30:00.000Z") + index * 300_000).toISOString();
+    const repaired: number[] = [];
+    for (let run = 0; run < 3; run += 1) repaired.push((await reconcileEgressWithRevisions(later(t, slice(run)), { limit: 2 })).repaired);
+    expect(repaired).toEqual([2, 2, 1]);
+    for (const name of names) expect(items(t, name).domains.map((entry) => entry.domain), name).toEqual(["new.acme.dev"]);
+  });
+
+  it("flips the others when one project's META cannot be read, and then reports the failure", async () => {
+    const t = setup();
+    for (const name of ["a", "b", "c"]) {
+      await putEgressDomains(t.quiet(true), TEST_ORG, { kind: "project", project: name }, ["x.acme.dev"], { developerId: "dev-1" });
+      legacyProject(t.db, name, ["x.acme.dev"], { status: "archived" });
+    }
+    t.db.injectFault({ command: "GetCommand", match: (input) => JSON.stringify(input).includes("PROJECT#b"), error: { name: "ProvisionedThroughputExceededException" } });
+    await expect(reconcileProjectEgress({ documentClient: t.db, tableName: "state", egress: t.deps(true) })).rejects.toThrow("1 egress item(s)");
+    expect([items(t, "a").active, items(t, "b").active, items(t, "c").active]).toEqual([false, true, false]);
+  });
+
+  it("runs the revision reconcile although the META reconcile failed, and the META reconcile although the revision one failed, and still syncs", async () => {
+    const t = setup();
+    await putEgressDomains(t.quiet(true), TEST_ORG, WEB, ["old.acme.dev"], { developerId: "dev-1" });
+    legacyProject(t.db, "web", undefined, { revisions: [["old.acme.dev"], ["new.acme.dev"]] });
+    t.db.injectFault({ command: "GetCommand", match: (input) => JSON.stringify(input).includes("PROJECT#web"), error: { name: "ProvisionedThroughputExceededException" } });
+    const sync = vi.fn(async () => ({ ok: true, domains: 0 }));
+    const metaFailed = await runEgressDomainsSync({ ...later(t), sync });
+    expect(metaFailed.ok).toBe(false);
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(items(t, "web").domains.map((entry) => entry.domain)).toEqual(["new.acme.dev"]);
+
+    const u = setup();
+    await putEgressDomains(u.quiet(true), TEST_ORG, API, ["a.acme.dev"], { developerId: "dev-1" });
+    legacyProject(u.db, "api", ["a.acme.dev"], { status: "archived" });
+    await putEgressDomains(u.quiet(true), TEST_ORG, WEB, ["old.acme.dev"], { developerId: "dev-1" });
+    legacyProject(u.db, "web", undefined, { revisions: [["old.acme.dev"], ["new.acme.dev"]] });
+    u.db.injectFault({ command: "QueryCommand", match: (input) => JSON.stringify(input).includes("PROJECT#web"), error: { name: "ProvisionedThroughputExceededException" } });
+    const revisionFailed = await runEgressDomainsSync({ ...later(u), sync });
+    expect(revisionFailed.ok).toBe(false);
+    expect(sync).toHaveBeenCalledTimes(2);
+    expect(items(u, "api").active).toBe(false);
   });
 });
 

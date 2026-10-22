@@ -11,6 +11,7 @@
 import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { agentXError, orgProjectCatalogPk, projectMetaKey, type OrgId, type OrgKey } from "@agentx/contracts";
 import { listEgressItems, setEgressOwnerActive, type EgressDomainsDependencies } from "./egress-domains.js";
+import { RECONCILE_READ_CONCURRENCY, settleBounded } from "./settle-bounded.js";
 import { readRequestRecord, requestRecordPut, requireSameRequest, type RequestTransactItem } from "./request-records.js";
 
 export interface ProjectArchiveDependencies {
@@ -138,18 +139,31 @@ export async function applyArchiveRequest(
 /**
  * The scheduled run's repair for an archive or restore that stopped after META (the process died, or the flip failed for good): every project-owned
  * egress item is made to agree with its project's META, an archived project's inactive and any other's active. A project with no META reads as
- * active. One consistent META read per project item. A restore that lands between a read and its flip is put right by the next run.
+ * active. The consistent META reads go several at a time (follow-up N3); the flips go one at a time, since each one writes the sync marker. One
+ * project failing does not stop the others; the run then throws. A restore that lands between a read and its flip is put right by the next run.
  */
 export async function reconcileProjectEgress(deps: Pick<ProjectArchiveDependencies, "documentClient" | "tableName" | "egress">): Promise<{ flipped: number }> {
+  const projects = (await listEgressItems(deps.egress)).filter((item) => item.owner.kind === "project");
+  const read = await settleBounded(projects, RECONCILE_READ_CONCURRENCY, async (item) => {
+    const owner = item.owner as Extract<typeof item.owner, { kind: "project" }>;
+    const meta = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: projectMetaKey(item.orgId, owner.project), ConsistentRead: true })) as { Item?: { status?: unknown } };
+    return meta.Item?.status !== "archived";
+  });
   let flipped = 0;
-  for (const item of await listEgressItems(deps.egress)) {
-    if (item.owner.kind !== "project") continue;
-    const meta = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: projectMetaKey(item.orgId, item.owner.project), ConsistentRead: true })) as { Item?: { status?: unknown } };
-    const shouldBeActive = meta.Item?.status !== "archived";
-    if (item.active === shouldBeActive) continue;
-    await setEgressOwnerActive(deps.egress, item.orgId, item.owner, shouldBeActive);
-    flipped += 1;
+  let failed = 0;
+  for (const [index, outcome] of read.entries()) {
+    const item = projects[index]!;
+    try {
+      if (outcome.status === "rejected") throw outcome.reason;
+      if (item.active === outcome.value) continue;
+      await setEgressOwnerActive(deps.egress, item.orgId, item.owner, outcome.value);
+      flipped += 1;
+    } catch (error) {
+      failed += 1;
+      console.log(JSON.stringify({ component: "broker", event: "egress.reconcile_project_egress_failed", orgId: item.orgId, error: error instanceof Error ? error.name : "UnknownError" }));
+    }
   }
+  if (failed > 0) throw new Error(`${String(failed)} egress item(s) could not be reconciled with their project`);
   return { flipped };
 }
 

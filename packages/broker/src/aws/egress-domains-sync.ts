@@ -20,6 +20,7 @@ import {
   type OrgKey,
 } from "@agentx/contracts";
 import { reconcileProjectEgress } from "../org/project-archive.js";
+import { RECONCILE_READ_CONCURRENCY, settleBounded } from "../org/settle-bounded.js";
 import { approvedUnion, listEgressItems, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
 
 /** Route 53 Resolver's UpdateFirewallDomains: "There is a limit of 1000 domains per request" (API reference, UpdateFirewallDomains, Domains). */
@@ -277,6 +278,14 @@ export async function backfillLegacyEgress(deps: EgressDomainsDependencies, opti
  * C29), and a reconcile that read the revision between the two would undo the item.
  */
 export const EGRESS_RECONCILE_GRACE_MS = 120_000;
+/** Revision reads in flight at once. The repairs themselves go one at a time: each writes the sync marker, and two at once would meet in a conflict. */
+export const EGRESS_RECONCILE_CONCURRENCY = RECONCILE_READ_CONCURRENCY;
+/**
+ * Items looked at in one run (follow-up N3), so a run's time stays bounded as projects grow. The window moves by the run's 5-minute slot, so
+ * every item is reached within ceil(items / limit) runs.
+ */
+export const EGRESS_RECONCILE_PER_RUN = 1000;
+const RUN_SLOT_MS = 300_000;
 
 /** The allowed domains of a project's CURRENT (newest) revision, or undefined when it has none registered. Domains every project has are left out. */
 async function currentRevisionDomains(deps: Pick<EgressDomainsDependencies, "documentClient" | "tableName">, orgId: OrgId, project: string): Promise<string[] | undefined> {
@@ -302,22 +311,34 @@ async function currentRevisionDomains(deps: Pick<EgressDomainsDependencies, "doc
  * revision then failed to land, leaves an item that disagrees with the project's CURRENT revision. This compares every project item's domains with
  * its newest revision's and puts the item right through `putEgressDomains` as the system: a domain only the item holds is removed (audited), one only
  * the revision lists is asked for (pending on Rovara Cloud), and a status both agree on is kept. A project with no revision, an owner that is not a
- * project, and an item written within `EGRESS_RECONCILE_GRACE_MS` are left alone. One item failing does not stop the others; the run then throws.
+ * project, and an item written within `EGRESS_RECONCILE_GRACE_MS` are left alone.
+ *
+ * Follow-up N3: the revision reads go `EGRESS_RECONCILE_CONCURRENCY` at a time and the repairs one at a time, and a run looks at no more than
+ * `limit` items (a window that moves with the run's slot). One item failing does not stop the others; the run then throws.
  */
-export async function reconcileEgressWithRevisions(deps: EgressDomainsDependencies): Promise<{ repaired: number }> {
+export async function reconcileEgressWithRevisions(deps: EgressDomainsDependencies, options: { limit?: number } = {}): Promise<{ repaired: number }> {
+  const limit = Math.max(1, options.limit ?? EGRESS_RECONCILE_PER_RUN);
+  const nowMs = deps.now().getTime();
+  const due = (await listEgressItems(deps)).filter((item) => item.owner.kind === "project" && nowMs - Date.parse(item.updatedAt) >= EGRESS_RECONCILE_GRACE_MS);
+  const start = due.length <= limit ? 0 : (Math.floor(nowMs / RUN_SLOT_MS) * limit) % due.length;
+  const window = due.length <= limit ? due : [...due, ...due].slice(start, start + limit);
+  const read = await settleBounded(window, EGRESS_RECONCILE_CONCURRENCY, (item) => {
+    const owner = item.owner as Extract<typeof item.owner, { kind: "project" }>;
+    return currentRevisionDomains(deps, item.orgId, owner.project);
+  });
   let repaired = 0;
   let failed = 0;
-  for (const item of await listEgressItems(deps)) {
-    if (item.owner.kind !== "project") continue;
-    if (deps.now().getTime() - Date.parse(item.updatedAt) < EGRESS_RECONCILE_GRACE_MS) continue;
+  for (const [index, outcome] of read.entries()) {
+    const item = window[index]!;
     try {
-      const wanted = await currentRevisionDomains(deps, item.orgId, item.owner.project);
+      if (outcome.status === "rejected") throw outcome.reason;
+      const wanted = outcome.value;
       if (wanted === undefined) continue;
       const held = new Set(item.domains.map((entry) => entry.domain));
       if (held.size === wanted.length && wanted.every((domain) => held.has(domain))) continue;
       await putEgressDomains(deps, item.orgId, item.owner, wanted);
       repaired += 1;
-      log("reconciled_with_revision", { orgId: item.orgId, project: item.owner.project });
+      log("reconciled_with_revision", { orgId: item.orgId, project: (item.owner as { project: string }).project });
     } catch (error) {
       failed += 1;
       log("reconcile_with_revision_failed", { orgId: item.orgId, error: error instanceof Error ? error.name : "UnknownError" });
@@ -338,13 +359,19 @@ export async function runEgressDomainsSync(deps: EgressDomainsDependencies, opti
   const started = clock();
   // An archive or restore that stopped after its META write, or a save that stopped between its egress item and its revision: the items are
   // made to agree with their projects before the union is sent.
+  // Follow-up N3: each in its own try, so a failure of one never skips the other.
   let reconciled = true;
   try {
     await reconcileProjectEgress({ documentClient: deps.documentClient, tableName: deps.tableName, egress: deps });
-    await reconcileEgressWithRevisions(deps);
   } catch (error) {
     reconciled = false;
     log("reconcile_failed", { error: error instanceof Error ? error.name : "UnknownError" });
+  }
+  try {
+    await reconcileEgressWithRevisions(deps);
+  } catch (error) {
+    reconciled = false;
+    log("reconcile_with_revision_run_failed", { error: error instanceof Error ? error.name : "UnknownError" });
   }
   const synced = await deps.sync();
   let backfilled = 0;
