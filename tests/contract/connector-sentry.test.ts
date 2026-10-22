@@ -117,6 +117,19 @@ describe("the Sentry connector type", () => {
     }
   });
 
+  it("refuses a token for the other Sentry region's host: the connector pins it to its own, and checks again when the token is issued (review A-M2)", async () => {
+    const r = await resolved({ region: "us" });
+    // Moving the connection to Germany needs a new token, and the record then names the German host; the definition already built still pins the US one.
+    await r.store.put({ orgId: ORG_A, connection: { connectionId: CON, type: "sentry", label: "Sentry", access: "read", region: "de", orgSlug: "acme" }, secret: { authToken: TOKEN }, by: ALICE });
+    await expect(r.definition.credentials.issue(WEB, "read")).rejects.toThrow(`credential ${CON} is pinned to de.sentry.io, not us.sentry.io, so AgentX does not send it there`);
+    // A connector resolved afresh follows the connection to its new region instead.
+    const [fresh] = resolveConnectors(project([connectorConfig()]), { credentialRegistry: r.registry }, { sentry: sentryConnectorType });
+    const definition = await fresh!.definition();
+    if ("notConnected" in definition) throw new Error("expected a definition");
+    expect(definition.endpoint.hostname).toBe("de.sentry.io");
+    expect((await definition.credentials.issue(WEB, "read")).token).toBe(TOKEN);
+  });
+
   it("treats a malformed stored entry as unusable and never throws", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const stored = { ...project([connectorConfig()]), integrations: { connectors: [connectorConfig({ scopes: [{ alias: "web" }] })] } } as never;
