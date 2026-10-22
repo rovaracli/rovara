@@ -362,7 +362,8 @@ import { changeBudgets, keyIdOf, mintKeyHealing, type OrgBudgetSettings } from "
 import { admitWork, mintOperationKey, type MintOperationKeyInput } from "../spend/admission.js";
 import { blockOperationKeys, forgetKey, registerKey, type LedgerDependencies } from "../spend/ledger.js";
 import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTask, resolvePayer } from "../spend/payer.js";
-import { redriveUntil, runSettlementJobs, runSpendSweep, settlementBudgets, type SettlementJob } from "../spend/settlement-job.js";
+import type { settlementBudgets} from "../spend/settlement-job.js";
+import { redriveUntil, runSettlementJobs, runSpendSweep, timedSettlementJob, type SettlementJob } from "../spend/settlement-job.js";
 import { runApprovalSweep } from "../agents/approvals.js";
 import { memberRemovalHook, onProjectArchived, runMemberMergeDrain } from "../agents/lifecycle.js";
 import { readProjectAi, readSpendPolicy } from "../spend/settings.js";
@@ -372,7 +373,7 @@ import { followMerges, type ProjectMembers } from "../agents/access.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
 import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
-import type { WriteGateRuntime } from "../agents/write-gate.js";
+import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.js";
 import { taskRunCache } from "../agents/run-cache.js";
 import { applyAgentStep, givesAgentTools, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
@@ -1484,13 +1485,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // or what remains of the deadline if that is less; the spend sweep, a resumable cursor, takes what is left after the audit's share, so a long sweep can't
       // starve the others and a late job can't push the later ones past the deadline. A job with no time left is skipped and reported so.
       const startedAt = Date.now();
-      const timed = (name: string, pick: keyof ReturnType<typeof settlementBudgets>, run: (budgetMs: number) => Promise<unknown>): SettlementJob => ({
-        name,
-        run: async () => {
-          const budgetMs = settlementBudgets(Date.now() - startedAt)[pick];
-          return budgetMs <= 0 ? { skipped: "no time left in this run" } : run(budgetMs);
-        },
-      });
+      const timed = (name: string, pick: keyof ReturnType<typeof settlementBudgets>, run: (budgetMs: number) => Promise<unknown>): SettlementJob =>
+        timedSettlementJob({ name, pick, startedAt, now: Date.now, run });
       const sources = modelSourceSweepOf(dependencies);
       // Task 26: a backstop for the checks at the mint, where the install routes models at all.
       const keyAudit = routingOf(dependencies) === undefined ? undefined : dependencies.modelAccess?.access;
@@ -5505,12 +5501,12 @@ async function handleAgentTools(dependencies: AwsBrokerDependencies, agents: Age
  * refuses everything else.
  */
 function agentToolsDependencies(dependencies: AwsBrokerDependencies, agents: AgentRouteDependencies | undefined): AgentToolsDependencies {
-  const base = agentToolsBase(dependencies, agents === undefined ? approvalsNotWiredGate : approvalsWriteGate(agents));
+  const base = agentToolsBase(dependencies, agents === undefined ? approvalsNotWiredGate : approvalsWriteGate(agents), agents);
   return dependencies.agentTools?.configure?.(base) ?? base;
 }
 
 /** The agent tool routes' dependencies before `agentTools.configure`, with `gate` as the write gate. */
-function agentToolsBase(dependencies: AwsBrokerDependencies, gate: AgentToolsDependencies["gate"]): AgentToolsDependencies {
+function agentToolsBase(dependencies: AwsBrokerDependencies, gate: AgentToolsDependencies["gate"], approvals?: AgentRouteDependencies): AgentToolsDependencies {
   const github = dependencies.githubPullRequests;
   const table = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now };
   const base: AgentToolsDependencies = {
@@ -5529,6 +5525,11 @@ function agentToolsBase(dependencies: AwsBrokerDependencies, gate: AgentToolsDep
     connectors: ({ orgId, definition }) => resolveConnectors(definition, connectorTypeContext(dependencies, orgId, async () => githubScope(dependencies, orgId)), dependencies.connectorTypes),
     catalogs: dependencies.catalogs,
     ledger: (workspaceId, connector) => new DynamoConnectorLedger(dependencies.documentClient, dependencies.tableName, workspaceId, connector.ledger, connector.name),
+    // A held call claims its request id with the approval, in the same transaction (see `AgentWriteGateInput.claimRequest`), and a repeat of the id reads the approval.
+    ...(approvals === undefined ? {} : {
+      holdItem: ({ workspaceId, connector, record, approvalId }: Parameters<NonNullable<AgentToolsDependencies["holdItem"]>>[0]) => new DynamoConnectorLedger(dependencies.documentClient, dependencies.tableName, workspaceId, connector.ledger, connector.name).holdItem(record, approvalId),
+      heldCall: (orgId: OrgId, approvalId: string) => answerForHeldCall(approvals, orgId, approvalId),
+    }),
     guardrails: async (orgId) => {
       const guardrails = await readGuardrails(dependencies, orgId);
       return { extraCommandWords: guardrails.extraCommandWords, extraTriggerLabels: guardrails.extraTriggerLabels };

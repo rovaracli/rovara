@@ -31,6 +31,26 @@ export const REDRIVE_MIN_REMAINING_MS = 22_000;
 /** The latest time (epoch ms) at which a run that started at `startedAt` may start driving a stuck write again. */
 export const redriveUntil = (startedAt: number): number => startedAt + SETTLEMENT_TOTAL_LIMIT_MS - REDRIVE_MIN_REMAINING_MS;
 
+/**
+ * One job of the run with its budget read when it STARTS (`settlementBudgets` at the time it begins): a job with nothing left is not run and says so, so a late
+ * job never takes time past the deadline and the report shows what was skipped.
+ */
+export function timedSettlementJob(input: {
+  name: string;
+  pick: keyof ReturnType<typeof settlementBudgets>;
+  startedAt: number;
+  now: () => number;
+  run: (budgetMs: number) => Promise<unknown>;
+}): SettlementJob {
+  return {
+    name: input.name,
+    run: async () => {
+      const budgetMs = settlementBudgets(input.now() - input.startedAt)[input.pick];
+      return budgetMs <= 0 ? { skipped: "no time left in this run" } : input.run(budgetMs);
+    },
+  };
+}
+
 export interface SettlementJob {
   name: string;
   run(): Promise<unknown>;

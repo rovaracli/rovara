@@ -40,6 +40,7 @@ import {
   type ApprovalDependencies, type ApproverSpec, type Execution, type WriteApprovalRecord,
 } from "./approvals.js";
 import { WRITE_APPROVAL_TTL_MS } from "./approval-ttl.js";
+import type { TransactItem } from "./approvals-store.js";
 import { resolveMember, sameMember } from "./lifecycle.js";
 import { classifyAgentWrite, recordOwnItems, type ClassifyAgentWriteDependencies, type WriteClassification } from "./write-class.js";
 
@@ -161,6 +162,11 @@ export interface DecideWriteInput {
    */
   classification?: WriteClassification;
   run: { project: string; owner: { developerId: string; name: string } };
+  /**
+   * Claims the call's request id for the approval, in the transaction that makes it (a conditional put, so it fails if the id is taken). When the id is taken
+   * nothing is made and the answer is `replay`: the caller answers from what the claim holds. Absent: the request id is not claimed.
+   */
+  claimRequest?: (approvalId: string) => TransactItem;
   /** Defaults to the `write_approver` rule with `writeApproversFor` as its candidates; Plan 4 passes `chain_autonomous_writer`. */
   approvers?: ApproverSpec;
 }
@@ -168,7 +174,9 @@ export interface DecideWriteInput {
 export type WriteDecision =
   | { outcome: "run" }
   | { outcome: "wait"; approvalId: string; answer: { status: "WAITING_FOR_APPROVAL"; text: string } }
-  | { outcome: "refuse"; reason: string };
+  | { outcome: "refuse"; reason: string }
+  /** The call's request id was already claimed (by a run or another hold): nothing was made, and the caller replays what the claim holds. */
+  | { outcome: "replay" };
 
 // ---- ids, people
 
@@ -253,6 +261,18 @@ function gateOf(deps: ApprovalDependencies): WriteGateRuntime {
   return deps.writeGate;
 }
 
+/**
+ * What a write approval says now, for a call that was held under it: a pending or executing one waits, a done one has its result, any other is decided. Undefined
+ * when there is no such write approval.
+ */
+export async function answerForHeldCall(deps: ApprovalDependencies, orgId: OrgId, approvalId: string): Promise<{ kind: "wait"; text: string } | { kind: "result"; result: NonNullable<WriteApprovalRecord["result"]> } | { kind: "decided"; text: string } | undefined> {
+  const record = OrgIdSchema.safeParse(orgId).success && ApprovalIdSchema.safeParse(approvalId).success ? await getAnyApproval(deps, orgId, approvalId) : undefined;
+  if (record?.kind !== "write") return undefined;
+  if (record.status === "PENDING" || record.status === "EXECUTING") return { kind: "wait", text: waitingForApprovalAnswer(shownText(record.owner.name, 80)).text };
+  if (record.status === "APPROVED_DONE" && record.result !== undefined) return { kind: "result", result: record.result };
+  return { kind: "decided", text: ALREADY_DECIDED_TEXT };
+}
+
 function answerForExisting(record: WriteApprovalRecord): WriteDecision {
   return record.status === "PENDING" || record.status === "EXECUTING"
     ? { outcome: "wait", approvalId: record.approvalId, answer: waitingForApprovalAnswer(shownText(record.owner.name, 80)) }
@@ -320,8 +340,10 @@ export async function decideWrite(deps: ApprovalDependencies, input: DecideWrite
   };
   const text = capText(`${shownText(input.agentName, 80)} wants to ${lowerFirst(summary)}. This needs approval from ${ownerName} or a project maintainer.`, DEVELOPER_EVENT_TEXT_MAX).text;
   const event = { Put: { TableName: deps.tableName, Item: { ...approvalTaskEventKey(input.taskId, createdAt, approvalId), entityType: "TASK_EVENT", orgId: input.orgId, kind: "status", text, at: createdAt } } };
-  const made = await createWriteApprovalRecord(deps, record, [event], MAX_PENDING_APPROVALS_PER_STEP);
+  const claim = input.claimRequest?.(approvalId);
+  const made = await createWriteApprovalRecord(deps, record, claim === undefined ? [event] : [event, claim], MAX_PENDING_APPROVALS_PER_STEP, claim === undefined ? undefined : 1);
   if (made === "full") return { outcome: "refuse", reason: TOO_MANY_PENDING_TEXT };
+  if (made === "claimed") return { outcome: "replay" };
   if (made === "exists") {
     // Two copies of one call racing: the one that lost answers what the winner made.
     const winner = await getAnyApproval(deps, input.orgId, approvalId);
