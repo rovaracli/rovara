@@ -57,6 +57,19 @@ export function auditApprovalExpired(input: AuditBuilderBase & { approvalId: str
   return build("approval.expired", input, { kind: "approval", id: input.approvalId }, { kind: input.kind, subjectKind: input.subjectKind });
 }
 
+/** `occurrence`: the approval id. A write approval also says what it would run: the connector type, the tool and the digest of the arguments (never the arguments). */
+export function auditApprovalRequested(input: AuditBuilderBase & { approvalId: string; kind: string; subjectKind: string; class?: string; connectorType?: string; tool?: string; argumentsHash?: string }): AuditEventInput {
+  return build("approval.requested", input, { kind: "approval", id: input.approvalId }, { kind: input.kind, subjectKind: input.subjectKind, class: input.class, connectorType: input.connectorType, tool: input.tool, argumentsHash: input.argumentsHash });
+}
+
+/**
+ * `occurrence`: the approval id and the move's number. Rovara moved who may decide a pending approval because a member was merged into another (`mode`
+ * `merged`) or removed (`removed`); `from` and `to` are the member ids, kept in `related`.
+ */
+export function auditApprovalRerouted(input: AuditBuilderBase & { approvalId: string; kind: string; mode: "merged" | "removed"; from: string; to: string }): AuditEventInput {
+  return build("approval.rerouted", { ...input, related: [input.from, input.to, ...(input.related ?? [])] }, { kind: "approval", id: input.approvalId }, { kind: input.kind, mode: input.mode });
+}
+
 /** `occurrence`: the approval id. Also part of the id: the terminal status. */
 export function auditWriteExecuted(input: AuditBuilderBase & { approvalId: string; connectorType: string; tool: string; status: string; argumentsHash: string }): AuditEventInput {
   return build("write.executed", input, { kind: "approval", id: input.approvalId }, { connectorType: input.connectorType, tool: input.tool, status: input.status, argumentsHash: input.argumentsHash }, [input.status]);

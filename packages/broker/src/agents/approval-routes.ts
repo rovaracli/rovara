@@ -15,7 +15,8 @@ import { sameMember } from "./lifecycle.js";
 import { decideWriteApproval } from "./write-gate.js";
 
 const APPROVALS_PATH = /^\/v1\/app\/approvals(?:\/([^/]+)(?:\/(decide))?)?$/;
-const STATUSES = ["PENDING", "EXECUTING", "APPROVED", "APPROVED_DONE", "APPROVED_FAILED", "DECLINED", "EXPIRED"] as const satisfies readonly ApprovalStatus[];
+// Only PENDING approvals are in a person's list: a record that ended PENDING is taken out of it.
+const STATUSES = ["PENDING"] as const satisfies readonly ApprovalStatus[];
 const StatusQuerySchema = z.enum(STATUSES);
 
 const notFound = () => agentXError("NOT_FOUND", "approval not found");
@@ -48,17 +49,9 @@ export function approvalView(deps: Pick<ApprovalDependencies, "confirmOrigin">, 
   return { ...common, changes: record.changes, subjectKind: record.subject.kind };
 }
 
-/** Whether `caller` is named by the record's approvers (an id or a candidate, each read as the member it stands for) or may decide it now. */
-async function isApprover(deps: ApprovalDependencies, caller: AgentCaller, record: AnyApprovalRecord): Promise<boolean> {
-  const named = record.approvers.kind === "ids" ? record.approvers.ids : record.approvers.candidates;
-  if (named.includes(caller.developerId)) return true;
-  for (const id of named) if (await sameMember(deps, record.orgId, id, caller.developerId)) return true;
-  return mayDecideApproval(deps, caller, record);
-}
-
-/** Whether `caller` may look at the record: an approver, the person it was asked for, or anyone who can view its task. */
+/** Whether `caller` may look at the record: they may decide it now (read live, not from the people it was first listed for), it was asked for them, or they can view its task. */
 async function maySee(deps: ApprovalDependencies, caller: AgentCaller, record: AnyApprovalRecord): Promise<boolean> {
-  if (await isApprover(deps, caller, record)) return true;
+  if (await mayDecideApproval(deps, caller, record)) return true;
   if (record.kind === "change") return await sameMember(deps, record.orgId, record.requestedBy, caller.developerId);
   const run = await runOfApproval(deps, record);
   if (run === undefined) return false;

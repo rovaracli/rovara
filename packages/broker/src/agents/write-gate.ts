@@ -116,7 +116,7 @@ export interface WriteGateRuntime {
    * What the connector ledger recorded for a request id (`DynamoConnectorLedger.get`), without calling the vendor. A retry asks it first: a call that
    * already ran is reported as done even if the task was cancelled since, because nothing is left to stop. Without it a retry re-checks as a first attempt does.
    */
-  recordedResult?(input: { orgId: OrgId; workspaceId: string; connector: string; requestId: string }): Promise<ConnectorResult | undefined>;
+  recordedResult(input: { orgId: OrgId; workspaceId: string; connector: string; requestId: string }): Promise<ConnectorResult | undefined>;
   /** Whether `caller` can view the task (Task 22 wires the task page's own access check). Without it only an approver or the task's owner sees an approval. */
   canViewTask?(caller: AgentCaller, task: { taskId: string; project: string; developerId: string }): Promise<boolean>;
   /** Task 21a-wiring: the presence guard (`requireDecideSession`) in front of every decide route. Without it the decide routes answer 404. */
@@ -262,7 +262,7 @@ export async function decideWrite(deps: ApprovalDependencies, input: DecideWrite
   requireRegisteredApprovers(approvers);
 
   const argumentsHash = createHash("sha256").update(canonicalJson(call.arguments), "utf8").digest("hex");
-  const approvalId = approvalIdFromSeed(input.orgId, `write|${input.operationId}|${tool.connector}|${tool.upstreamName}|${argumentsHash}`);
+  const approvalId = approvalIdFromSeed(input.orgId, `write|${input.operationId}|${tool.connector}|${call.scope}|${tool.upstreamName}|${argumentsHash}`);
   const earlier = await getAnyApproval(deps, input.orgId, approvalId);
   if (earlier?.kind === "write") return answerForExisting(earlier);
 
@@ -332,7 +332,7 @@ export async function executeWrite(deps: ApprovalDependencies, record: WriteAppr
   if (task === undefined) return failed(TASK_ENDED_TEXT);
   // A retry after a crash may find that the call already ran: then there is nothing left to check or to stop, only to report.
   const requestId = deriveWriteRequestId(record.approvalId);
-  if ((record.attempts ?? 0) > 1 && gate.recordedResult !== undefined) {
+  if ((record.attempts ?? 0) > 1) {
     const recorded = await gate.recordedResult({ orgId: record.orgId, workspaceId: task.workspaceId, connector: record.connector, requestId });
     if (recorded?.status === "SUCCEEDED") return { outcome: "done", result: { status: recorded.status, text: capText(recorded.text, 16_000).text, truncated: recorded.truncated, replayed: true } };
   }

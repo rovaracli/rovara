@@ -1341,7 +1341,7 @@ describe("fix round 1: what a finished approval leaves behind", () => {
     await w.decline(BOB, b);
     expect(approverItems(w, b)).toEqual([]);
     // Only the first three expire.
-    const stored = w.db.get(approvalKey(ORG_A, keep as never))!;
+    const stored = w.db.get(approvalKey(ORG_A, keep))!;
     w.db.set({ ...stored, expiresAt: "2026-10-30T09:00:00.000Z" });
     w.clock.now = Date.parse("2026-10-29T09:30:00.000Z");
     await w.sweep();
@@ -1417,14 +1417,15 @@ describe("fix round 1: what a finished approval leaves behind", () => {
     registerApprovalSubjectHandler("agent_run", async () => { throw new Error("down"); });
     for (let n = 1; n <= 12; n += 1) await w.approve(BOB, await w.waiting(n, { operationId: `5555555${String(n % 10)}-5555-4555-8555-555555555555` }), REQ(200 + n));
     const late = await w.waiting(50, { operationId: "66666666-6666-4666-8666-666666666666" });
-    const stored = w.db.get(approvalKey(ORG_A, late as never))!;
+    const stored = w.db.get(approvalKey(ORG_A, late))!;
     w.db.set({ ...stored, expiresAt: "2026-10-22T09:30:00.000Z" });
     w.db.set({ pk: "OPEN_APPROVALS", sk: `2026-10-22T09:30:00.000Z#${ORG_A}#${late}`, orgId: ORG_A, approvalId: late });
     w.clock.now += 6 * MINUTE;
     await w.sweep();
-    // Every failing one moved out past the late one's time.
+    // Every failing one moved forward with backoff: none of them is due again, so none holds the head of the index.
     const times = w.open().map((item) => String(item.sk).slice(0, 24)).sort();
-    expect(times[0]).toBe("2026-10-22T09:30:00.000Z");
+    expect(times).toHaveLength(14);
+    expect(times.filter((at) => Date.parse(at) <= w.clock.now)).toEqual([]);
     w.clock.now = Date.parse("2026-10-22T09:31:00.000Z");
     await w.sweep();
     expect((await w.record(late)).status).toBe("EXPIRED");
@@ -1500,7 +1501,7 @@ describe("fix round 1: what a finished approval leaves behind", () => {
     const w = world();
     const many = Array.from({ length: 120 }, (_, index) => index.toString(16).padStart(64, "0"));
     await w.waiting(1, { approvers: { kind: "rule", rule: WRITE_APPROVER_RULE, candidates: many } });
-    expect(w.logs.filter((entry) => entry.event === "approval.candidates_capped")).toMatchObject([{ fields: { orgId: ORG_A, listed: 88, named: 121 } }]);
+    expect(w.logs.filter((entry) => entry.event === "approval.candidates_capped")).toMatchObject([{ fields: { orgId: ORG_A, listed: 88, named: 120 } }]);
   });
 });
 
@@ -1540,7 +1541,7 @@ describe("fix round 1: the movers' audit trail", () => {
   it("I4: audits nothing when only a stale index item moves", async () => {
     const w = world({ audit: true });
     const id = await w.waiting(1);
-    w.db.set({ ...approverIndexKey(ORG_A, OLD_ALICE, id as never), entityType: "APPROVER_INDEX", approvalId: id, expiresAt: (await w.write(id)).expiresAt });
+    w.db.set({ ...approverIndexKey(ORG_A, OLD_ALICE, id), entityType: "APPROVER_INDEX", approvalId: id, expiresAt: (await w.write(id)).expiresAt });
     w.db.set({ pk: `DEVELOPER#${OLD_ALICE}`, sk: "META", developerId: OLD_ALICE, mergedInto: ALICE });
     w.audit!.queueDown();
     await onMembersMerged({ ...w.deps, log: w.deps.log! }, { orgId: ORG_A, survivorId: ALICE, duplicateId: OLD_ALICE });
@@ -1569,7 +1570,9 @@ describe("fix round 1: fail closed and who sees what", () => {
     // A stored step approval that names ids and has no project or owner, on a task of another org.
     const step = await createStepApproval(w.deps, { orgId: ORG_A, subject: { kind: "agent_run", taskId: TASK, stepId: "gate" }, prompt: "Go?", approvers: { kind: "rule", rule: "t_x", candidates: [ERIN] }, project: "web", owner: { developerId: ALICE, name: "Alice" } });
     const stored = w.db.get(approvalKey(ORG_A, step.approvalId))!;
-    const { project: _project, owner: _owner, ...bare } = stored;
+    const bare: Record<string, unknown> = { ...stored };
+    delete bare["project"];
+    delete bare["owner"];
     w.db.set({ ...bare, approvers: { kind: "ids", ids: [ERIN] } });
     expect(await code(decideApproval(w.deps, w.caller(ERIN), step.approvalId, { requestId: REQ(1), decision: "APPROVE" }))).toMatchObject({ code: "FORBIDDEN" });
     expect((await w.record(step.approvalId)).status).toBe("PENDING");
@@ -1609,13 +1612,13 @@ describe("fix round 1: fail closed and who sees what", () => {
   it("M-e: keeps the open item of a record that is there but can't be read, and drops one whose record is gone", async () => {
     const w = world();
     const id = await w.waiting(1);
-    w.db.set({ ...w.db.get(approvalKey(ORG_A, id as never))!, status: "WEIRD" });
+    w.db.set({ ...w.db.get(approvalKey(ORG_A, id))!, status: "WEIRD" });
     w.clock.now += 8 * DAY;
     const report = await w.sweep();
     expect(report.failed).toBe(1);
     expect(w.open()).toHaveLength(1);
     expect(w.logs.map((entry) => entry.event)).toContain("approval.record_unreadable");
-    w.db.delete(approvalKey(ORG_A, id as never));
+    w.db.delete(approvalKey(ORG_A, id));
     await w.sweep();
     expect(w.open()).toEqual([]);
   });

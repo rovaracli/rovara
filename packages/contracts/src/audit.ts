@@ -99,6 +99,8 @@ export const AUDIT_ERROR_MESSAGES = {
 export const AUDIT_ACTIONS = [
   "approval.decided",
   "approval.expired",
+  "approval.requested",
+  "approval.rerouted",
   "write.executed",
   "spend_request.created",
   "spend_request.decided",
@@ -180,6 +182,8 @@ const SPEND_REQUEST_FACTS = ["kind", "scopeKind", "amountCents", "newLimitCents"
 export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "approval.decided": ["kind", "decision", "subjectKind", "class"],
   "approval.expired": ["kind", "subjectKind"],
+  "approval.requested": ["kind", "subjectKind", "class", "connectorType", "tool", "argumentsHash"],
+  "approval.rerouted": ["kind", "mode"],
   "write.executed": ["connectorType", "tool", "status", "argumentsHash"],
   "spend_request.created": SPEND_REQUEST_FACTS,
   "spend_request.decided": SPEND_REQUEST_FACTS,

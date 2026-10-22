@@ -5,7 +5,7 @@
 // the registered rule against the caller now (R68), then call the registered handler for the subject, which applies exactly what the
 // record stores or throws the reason it can no longer be applied (the record then ends `APPROVED_FAILED` with that reason).
 import { createHash } from "node:crypto";
-import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
   AgentGuardrailsSchema,
@@ -16,6 +16,7 @@ import {
   APPROVAL_EXECUTING_RETRY_MINUTES,
   AgentXError,
   CHANGE_APPROVAL_TTL_DAYS,
+  INDEX_EXPIRY_ATTRIBUTE,
   OrgIdSchema,
   agentXError,
   approvalKey,
@@ -31,13 +32,14 @@ import {
   type AgentGuardrails,
   type AgentId,
   type ApprovalId,
+  type AuditEventInput,
   type AuditProof,
   type ConnectorConfig,
   type OrgId,
 } from "@agentx/contracts";
 import type { ProjectConnectorDependencies } from "../connections/project-connectors.js";
 import { WRITE_APPROVAL_TTL_MS } from "./approval-ttl.js";
-import { auditApprovalDecided, auditApprovalExpired, auditWriteExecuted } from "../audit/events.js";
+import { auditApprovalDecided, auditApprovalExpired, auditApprovalRequested, auditApprovalRerouted, auditOccurrence, auditWriteExecuted } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf, decisionProofOf } from "../audit/plan3-hooks.js";
@@ -155,6 +157,11 @@ interface DecidedFields {
   handlerDone?: boolean;
   handlerClaimedAt?: string;
   handlerDueAt?: string;
+  /** How many times the handler failed; at `MAX_HANDLER_TRIES` the sweep gives up on it (`handlerDone` is then set). */
+  handlerTries?: number;
+  /** Set when the member movers changed who may decide this (a merge or a removal), with when: the audit event `approval.rerouted` names the people. */
+  movedBy?: "system";
+  movedAt?: string;
 }
 
 /** A step of a run that waits for a person (an `approval` step, or a chain gate). */
@@ -275,6 +282,9 @@ const DecidedShape = {
   handlerDone: z.boolean().optional(),
   handlerClaimedAt: z.string().optional(),
   handlerDueAt: z.string().optional(),
+  handlerTries: z.number().int().min(0).optional(),
+  movedBy: z.literal("system").optional(),
+  movedAt: z.string().optional(),
 };
 const RunOwnerSchema = z.object({ developerId: z.string(), name: z.string() }).strict();
 /** What a stored change record must look like to be read; `passthrough`, so a field a later task adds is kept. */
@@ -357,7 +367,24 @@ export async function getApproval(deps: Pick<ApprovalStoreDependencies, "documen
   return record?.kind === "change" ? record : undefined;
 }
 
-const listedPeople = (approvers: ApproverSpec): string[] => [...new Set(approvers.kind === "ids" ? approvers.ids : approvers.candidates)].sort().slice(0, MAX_LISTED_APPROVERS);
+const namedPeople = (approvers: ApproverSpec): string[] => (approvers.kind === "ids" ? [...approvers.ids] : [...approvers.candidates]);
+const listedPeople = (approvers: ApproverSpec): string[] => [...new Set(namedPeople(approvers))].sort().slice(0, MAX_LISTED_APPROVERS);
+/** A step or write approval's transaction also holds its counter, its open item, its event and its audit item, so it lists fewer people. */
+const MAX_LISTED_RUN_APPROVERS = 88;
+
+/**
+ * The people whose `APPROVER#` items a record has: for a step or a write the run's owner first (so the member movers find it), then the people named,
+ * cut to what a transaction can hold. Creating the record writes them; ending PENDING deletes the same ones.
+ */
+function listedFor(record: { kind: AnyApprovalRecord["kind"]; approvers: ApproverSpec; owner?: { developerId: string } | undefined }): string[] {
+  if (record.kind === "change") return listedPeople(record.approvers);
+  const owner = record.owner?.developerId;
+  const rest = [...new Set(namedPeople(record.approvers))].filter((id) => id !== owner).sort();
+  return (owner === undefined ? rest : [owner, ...rest]).slice(0, MAX_LISTED_RUN_APPROVERS);
+}
+
+/** When an approver item (or a step counter) may be deleted by the table's TTL if nothing else removed it: a day after the approval would have expired. */
+const indexExpiryOf = (expiresAt: string): number => Math.floor(Date.parse(expiresAt) / 1000) + 86_400;
 
 /** The change a person's request made (a pending record), or undefined when that request made none: how a route tells a repeat from a new request. */
 export function pendingChangeFor(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, orgId: OrgId, requestedBy: string, requestId: string): Promise<ApprovalRecord | undefined> {
@@ -408,7 +435,7 @@ export async function createPendingChange(
       TransactItems: [
         put(approvalKey(input.orgId, approvalId), "APPROVAL", record as unknown as Item),
         put(openApprovalKey(expiresAt, input.orgId, approvalId), "OPEN_APPROVAL", { orgId: input.orgId, approvalId }),
-        ...listedPeople(input.approvers).map((developerId) => put(approverIndexKey(input.orgId, developerId, approvalId), "APPROVER_INDEX", { approvalId, expiresAt })),
+        ...listedPeople(input.approvers).map((developerId) => put(approverIndexKey(input.orgId, developerId, approvalId), "APPROVER_INDEX", { approvalId, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiryOf(expiresAt) })),
       ],
     }));
   } catch (error) {
@@ -508,8 +535,10 @@ export async function mayDecideApproval(deps: ApprovalDependencies, caller: Appr
     if (await sameMember(deps, record.orgId, id, caller.developerId)) { listed = true; break; }
   }
   if (!listed) return false;
+  // A change record names no project: being listed is all its id list asks. A step or write whose run can't be told is refused (fail closed).
+  if (record.kind === "change") return true;
   const run = await runOfApproval(deps, record);
-  if (run === undefined) return true;
+  if (run === undefined) return false;
   const orgRole = await orgRoleOf(deps, record.orgId, caller.developerId);
   if (orgRole === undefined) return false;
   const role = await deps.projectMembers.roleOf(record.orgId, run.project, { developerId: await resolveMember(deps, record.orgId, caller.developerId), orgRole });
@@ -524,6 +553,7 @@ export function approvalIdFromSeed(orgId: OrgId, seed: string): ApprovalId {
 }
 
 type NewRecord = StepApprovalRecord | WriteApprovalRecord;
+type CreateDependencies = ApprovalStoreDependencies & Pick<ApprovalDependencies, "audit" | "log">;
 
 /** Refuses (`CONFIG_INVALID`) approvers that name a rule nobody registered: no record is made that no one could decide. */
 export function requireRegisteredApprovers(approvers: ApproverSpec): void {
@@ -537,17 +567,25 @@ export function requireRegisteredApprovers(approvers: ApproverSpec): void {
  * and `extraItems`, in ONE transaction. Answers `exists` when the id is taken (the caller reads it) and `full` when the step has no room.
  */
 async function createRecord(
-  deps: ApprovalStoreDependencies,
+  deps: CreateDependencies,
   input: { record: NewRecord; counter?: { taskId: string; stepId: string; max: number }; extraItems?: TransactItem[] },
 ): Promise<"created" | "exists" | "full"> {
   const { record } = input;
+  const listed = listedFor(record);
+  const named = new Set(namedPeople(record.approvers));
+  if (named.size > listed.length) log(deps, "approval.candidates_capped", { orgId: record.orgId, approvalId: record.approvalId, listed: listed.length, named: named.size });
+  const events = await tryAuditEvents(deps, () => [auditApprovalRequested({
+    orgId: record.orgId, actor: auditActorOf("system"), occurredAt: record.createdAt, occurrence: record.approvalId, approvalId: record.approvalId, kind: record.kind, subjectKind: record.subject.kind,
+    ...(record.kind === "write" ? { class: record.class, connectorType: record.connectorType, tool: record.tool, argumentsHash: record.argumentsHash } : {}),
+    ...(record.owner === undefined ? {} : { related: [record.owner.developerId] }),
+  })]);
   const items: TransactItem[] = [];
   if (input.counter !== undefined) {
     items.push({
       Update: {
         TableName: deps.tableName, Key: stepCounterKey(record.orgId, input.counter.taskId, input.counter.stepId),
-        UpdateExpression: "ADD #pending :one", ConditionExpression: "attribute_not_exists(#pending) OR #pending < :max",
-        ExpressionAttributeNames: { "#pending": "pending" }, ExpressionAttributeValues: { ":one": 1, ":max": input.counter.max },
+        UpdateExpression: "ADD #pending :one SET #ttl = :ttl", ConditionExpression: "attribute_not_exists(#pending) OR #pending < :max",
+        ExpressionAttributeNames: { "#pending": "pending", "#ttl": INDEX_EXPIRY_ATTRIBUTE }, ExpressionAttributeValues: { ":one": 1, ":max": input.counter.max, ":ttl": indexExpiryOf(record.expiresAt) },
       },
     });
   }
@@ -555,14 +593,14 @@ async function createRecord(
   items.push(
     { Put: { TableName: deps.tableName, Item: { ...approvalKey(record.orgId, record.approvalId), entityType: "APPROVAL", ...record }, ConditionExpression: "attribute_not_exists(pk)" } },
     { Put: { TableName: deps.tableName, Item: { ...openApprovalKey(record.expiresAt, record.orgId, record.approvalId), entityType: "OPEN_APPROVAL", orgId: record.orgId, approvalId: record.approvalId } } },
-    ...listedPeople(record.approvers).map((developerId): TransactItem => ({
-      Put: { TableName: deps.tableName, Item: { ...approverIndexKey(record.orgId, developerId, record.approvalId), entityType: "APPROVER_INDEX", approvalId: record.approvalId, expiresAt: record.expiresAt } },
+    ...listed.map((developerId): TransactItem => ({
+      Put: { TableName: deps.tableName, Item: { ...approverIndexKey(record.orgId, developerId, record.approvalId), entityType: "APPROVER_INDEX", approvalId: record.approvalId, expiresAt: record.expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiryOf(record.expiresAt) } },
     })),
     ...(input.extraItems ?? []),
+    ...events.flatMap((event) => auditPending(deps, event)),
   );
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
-    return "created";
   } catch (error) {
     if (errorNameOf(error) !== "TransactionCanceledException") throw error;
     const reasons = (error as { CancellationReasons?: Array<{ Code?: string } | undefined> }).CancellationReasons;
@@ -570,11 +608,13 @@ async function createRecord(
     if (offset === 1 && reasons?.[0]?.Code === "ConditionalCheckFailed") return "full";
     throw error;
   }
+  await flushAuditEvents(deps, events);
+  return "created";
 }
 
 /** Creates a write approval's record (Task 21's `decideWrite` calls this); see `createRecord`. */
 export async function createWriteApprovalRecord(
-  deps: ApprovalStoreDependencies,
+  deps: CreateDependencies,
   record: WriteApprovalRecord,
   extraItems: TransactItem[],
   max: number,
@@ -588,11 +628,13 @@ export async function createWriteApprovalRecord(
  * (`CONFIG_INVALID`), so no record is made that no one could decide. `expiresAt` defaults to the write approval TTL from now.
  */
 export async function createStepApproval(
-  deps: ApprovalStoreDependencies,
+  deps: CreateDependencies,
   input: { orgId: OrgId; subject: ApprovalSubject; prompt: string; approvers: ApproverSpec; expiresAt?: string; project?: string; owner?: { developerId: string; name: string } },
 ): Promise<StepApprovalRecord> {
   if (input.prompt.length < 1 || input.prompt.length > 300 || /[\p{Cc}\p{Cf}]/u.test(input.prompt)) throw agentXError("CONFIG_INVALID", "prompt: must be 1 to 300 characters of plain text");
   requireRegisteredApprovers(input.approvers);
+  // Who may decide an id list is judged by their role on the run's project now, so the step has to say which project and whose run it is.
+  if (input.approvers.kind === "ids" && (input.project === undefined || input.owner === undefined)) throw agentXError("CONFIG_INVALID", "project and owner: an approval that names people also names the project and the run's owner");
   if (getApprovalSubjectHandler(input.subject.kind) === undefined) throw agentXError("CONFIG_INVALID", `no one can decide this: nothing is registered to continue a "${input.subject.kind}" step`);
   let expiresAt: string;
   try {
@@ -615,7 +657,7 @@ export async function createStepApproval(
 
 // ---- listing
 
-/** Every record of `status` (default PENDING) that lists `caller` as an approver or a candidate, newest first. */
+/** Every record of `status` (default PENDING) that lists `caller` as an approver, a candidate or the run's owner, newest first. A record that ended PENDING no longer has an item in anyone's list, so only PENDING is listed. */
 export async function listApprovalsFor(deps: ApprovalDependencies, caller: ApprovalCaller, status: ApprovalStatus = "PENDING"): Promise<AnyApprovalRecord[]> {
   const found: AnyApprovalRecord[] = [];
   let start: Record<string, unknown> | undefined;
@@ -704,6 +746,11 @@ const counterDrop = (deps: Pick<ApprovalStoreDependencies, "tableName">, record:
   }]
   : []);
 
+/** Deletes the record's `APPROVER#` items: once it is no longer PENDING nobody's list holds it (done in the transaction that ends PENDING). */
+const approverDrops = (deps: Pick<ApprovalStoreDependencies, "tableName">, record: AnyApprovalRecord): TransactItem[] => listedFor(record).map((developerId): TransactItem => ({
+  Delete: { TableName: deps.tableName, Key: approverIndexKey(record.orgId, developerId, record.approvalId) },
+}));
+
 /** An update of the record's fields, conditional on `when` (an expression over the aliases); undefined values are left out. */
 function updateRecord(deps: Pick<ApprovalStoreDependencies, "tableName">, record: AnyApprovalRecord, set: Record<string, unknown>, when: Array<[attribute: string, value: unknown]> | "pending"): TransactItem {
   const names: Record<string, string> = { "#status": "status" };
@@ -754,12 +801,15 @@ async function tellHandler(deps: ApprovalDependencies, record: AnyApprovalRecord
   const handler = getApprovalSubjectHandler(record.subject.kind);
   if (handler === undefined) {
     log(deps, "approval.handler_missing", { orgId: record.orgId, approvalId: record.approvalId, kind: record.subject.kind });
+    // Nothing is registered yet (Task 22 registers it): wait, without counting it against the handler.
+    await deferHandler(deps, record, false);
     return false;
   }
   try {
     await handler(deps, record, record.decisionProof === undefined ? undefined : { proof: record.decisionProof });
   } catch (error) {
     log(deps, "approval.handler_failed", { orgId: record.orgId, approvalId: record.approvalId, kind: record.subject.kind, error: errorNameOf(error) });
+    await deferHandler(deps, record, true);
     return false;
   }
   const items: TransactItem[] = [updateRecord(deps, record, { handlerDone: true }, [["status", record.status], ["handlerDone", false]])];
@@ -768,6 +818,33 @@ async function tellHandler(deps: ApprovalDependencies, record: AnyApprovalRecord
   }
   await commitOrLost(deps, items);
   return true;
+}
+
+/** The handler is tried this many times; then the sweep stops (`approval.handler_gave_up`) and the record is left as it ended. */
+export const MAX_HANDLER_TRIES = 8;
+const MAX_HANDLER_DELAY_MS = 6 * 3_600_000;
+
+/**
+ * A handler that did not finish: the record's due item moves forward, doubling the wait each time (5 minutes, 10, 20, ... up to 6 hours), so a handler that
+ * always fails does not sit at the head of the index and use the sweep's time. After `MAX_HANDLER_TRIES` it is given up: the record is marked handled
+ * and logged. Best effort: if this write is lost or fails, the item stays where it was and the next run tries again.
+ */
+async function deferHandler(deps: ApprovalDependencies, record: AnyApprovalRecord, counts: boolean): Promise<void> {
+  try {
+    const now = deps.now();
+    const tries = (record.handlerTries ?? 0) + (counts ? 1 : 0);
+    const claimDue = record.executingAt === undefined ? undefined : iso(Date.parse(record.executingAt) + RETRY_MS);
+    const when: Array<[string, unknown]> = [["status", record.status], ["handlerDone", false]];
+    if (counts && tries >= MAX_HANDLER_TRIES) {
+      log(deps, "approval.handler_gave_up", { orgId: record.orgId, approvalId: record.approvalId, kind: record.subject.kind, tries });
+      await commitOrLost(deps, [updateRecord(deps, record, { handlerDone: true, handlerTries: tries }, when), ...dueItems(deps, record, [record.handlerDueAt, claimDue].filter((at): at is string => at !== undefined), undefined)]);
+      return;
+    }
+    const dueAt = iso(now + Math.min(MAX_HANDLER_DELAY_MS, RETRY_MS * 2 ** Math.max(0, tries - 1)));
+    await commitOrLost(deps, [updateRecord(deps, record, { handlerTries: tries, handlerDueAt: dueAt }, when), ...dueItems(deps, record, [record.handlerDueAt, claimDue].filter((at): at is string => at !== undefined), dueAt)]);
+  } catch (error) {
+    log(deps, "approval.handler_defer_failed", { orgId: record.orgId, approvalId: record.approvalId, error: errorNameOf(error) });
+  }
 }
 
 /** Takes the lease on telling the handler (the sweep's path): refused while another run holds it, taken again once it is older than the retry time. */
@@ -861,6 +938,7 @@ export async function runApprovalDecision(deps: ApprovalDependencies, caller: Ap
     updateRecord(deps, record, fields, "pending"),
     ...dueItems(deps, record, [record.expiresAt], status === "EXECUTING" || handler ? iso(now + RETRY_MS) : undefined),
     ...counterDrop(deps, record),
+    ...approverDrops(deps, record),
     ...events.flatMap((event) => auditPending(deps, event)),
   ];
   if (!await commitOrLost(deps, items)) throw agentXError("APPROVAL_CLOSED", "this request was already decided");
@@ -905,6 +983,7 @@ async function expireOne(deps: ApprovalDependencies, record: AnyApprovalRecord):
     updateRecord(deps, record, fields, "pending"),
     ...dueItems(deps, record, [record.expiresAt], handler ? dueAt : undefined),
     ...counterDrop(deps, record),
+    ...approverDrops(deps, record),
     ...events.flatMap((event) => auditPending(deps, event)),
   ];
   if (!await commitOrLost(deps, items)) return undefined;
@@ -964,7 +1043,14 @@ export async function expireApprovals(deps: ApprovalDependencies, now: number, c
     }
     try {
       const record = await getAnyApproval(deps, parts[2] as OrgId, parts[3] as ApprovalId);
-      if (record === undefined) { await remove(item); continue; }
+      if (record === undefined) {
+        // Gone, or there but not readable: only a record that is truly absent loses its item (an unreadable one may still be PENDING and holding its place).
+        const raw = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: approvalKey(parts[2] as OrgId, parts[3] as ApprovalId), ConsistentRead: true })) as { Item?: unknown };
+        if (raw.Item === undefined) { await remove(item); continue; }
+        report.failed += 1;
+        log(deps, "approval.record_unreadable", { orgId: parts[2], approvalId: parts[3] });
+        continue;
+      }
       if (record.status === "PENDING") {
         // Not yet its time (this item is then the record's own expiry item, early by a clock's difference, or a stale one that the check below drops).
         if (Date.parse(record.expiresAt) <= now) {
@@ -978,7 +1064,7 @@ export async function expireApprovals(deps: ApprovalDependencies, now: number, c
         if (record.executingAt !== undefined && Date.parse(record.executingAt) + RETRY_MS <= now) {
           if (await redrive(deps, record)) report.redriven += 1;
         }
-      } else if (record.handlerDone !== true && hasHandlerPhase(record)) {
+      } else if (record.handlerDone !== true && hasHandlerPhase(record) && (record.handlerDueAt === undefined || Date.parse(record.handlerDueAt) <= now)) {
         const leased = await leaseHandler(deps, record);
         if (leased !== undefined && await tellHandler(deps, leased)) report.handled += 1;
       }
@@ -986,7 +1072,7 @@ export async function expireApprovals(deps: ApprovalDependencies, now: number, c
       const after = await getAnyApproval(deps, parts[2] as OrgId, parts[3] as ApprovalId);
       const owed = after !== undefined && ((after.status === "PENDING" && iso(Date.parse(after.expiresAt)) === sk.slice(0, 24))
         || (after.status === "EXECUTING" && after.executingAt !== undefined && iso(Date.parse(after.executingAt) + RETRY_MS) === sk.slice(0, 24))
-        || (hasHandlerPhase(after) && after.handlerDone !== true && after.status !== "EXECUTING" && after.status !== "PENDING"));
+        || (hasHandlerPhase(after) && after.handlerDone !== true && after.status !== "EXECUTING" && after.status !== "PENDING" && (after.handlerDueAt === undefined || after.handlerDueAt === sk.slice(0, 24))));
       if (!owed) await remove(item);
     } catch (error) {
       report.failed += 1;
@@ -997,22 +1083,45 @@ export async function expireApprovals(deps: ApprovalDependencies, now: number, c
   return typeof next === "string" ? { ...report, next } : report;
 }
 
-/** The settlement job: pages of `expireApprovals` until the open index is drained to now or `budgetMs` has passed. A page that stopped at its deadline resumes from its cursor on the next run's first page. */
-export async function runApprovalSweep(deps: ApprovalDependencies, options: { budgetMs: number }): Promise<ApprovalSweepReport & { pages: number; complete: boolean }> {
+const SWEEP_CURSOR_KEY = { pk: "SWEEP_CURSOR#approvals", sk: "META" } as const;
+
+async function saveSweepCursor(deps: ApprovalDependencies, cursor: string | undefined): Promise<void> {
+  try {
+    await deps.documentClient.send(cursor === undefined
+      ? new DeleteCommand({ TableName: deps.tableName, Key: SWEEP_CURSOR_KEY })
+      : new PutCommand({ TableName: deps.tableName, Item: { ...SWEEP_CURSOR_KEY, entityType: "SWEEP_CURSOR", cursor, at: iso(deps.now()) } }));
+  } catch (error) {
+    // Only where the next run starts: losing it starts from the head of the index, which is correct, only less fair.
+    log(deps, "approval.sweep_cursor_not_kept", { error: errorNameOf(error) });
+  }
+}
+
+/**
+ * The settlement job: pages of `expireApprovals` until the open index is read to now or `budgetMs` has passed. Where a run stopped is kept in a small item
+ * (`SWEEP_CURSOR#approvals`), so the next run starts there instead of at the head of the index, and a run that reaches the end of the index goes round once
+ * from the head to catch what sorted before the cursor. `options.pageSize` is the page's size (100 by default).
+ */
+export async function runApprovalSweep(deps: ApprovalDependencies, options: { budgetMs: number; pageSize?: number }): Promise<ApprovalSweepReport & { pages: number; complete: boolean }> {
   const deadline = deps.now() + options.budgetMs;
   const total = { expired: 0, redriven: 0, handled: 0, failed: 0, pages: 0, complete: false };
-  let cursor: string | undefined;
+  const stored = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: SWEEP_CURSOR_KEY, ConsistentRead: true })) as { Item?: { cursor?: unknown } };
+  let cursor = typeof stored.Item?.cursor === "string" && DUE_SK.test(stored.Item.cursor) ? stored.Item.cursor : undefined;
+  let wrapped = cursor === undefined;
   for (;;) {
-    if (deps.now() >= deadline) return total;
-    const page = await expireApprovals(deps, deps.now(), cursor, { deadline });
+    if (deps.now() >= deadline) { await saveSweepCursor(deps, cursor); return total; }
+    const page = await expireApprovals(deps, deps.now(), cursor, { deadline, ...(options.pageSize === undefined ? {} : { limit: options.pageSize }) });
     total.pages += 1;
     total.expired += page.expired;
     total.redriven += page.redriven;
     total.handled += page.handled;
     total.failed += page.failed;
-    if (page.stopped === true) return total;
+    if (page.stopped === true) { await saveSweepCursor(deps, page.next ?? cursor); return total; }
     cursor = page.next;
-    if (cursor === undefined) return { ...total, complete: true };
+    if (cursor === undefined) {
+      if (!wrapped) { wrapped = true; continue; }
+      await saveSweepCursor(deps, undefined);
+      return { ...total, complete: true };
+    }
   }
 }
 
@@ -1051,10 +1160,15 @@ async function moveOne(context: MoveContext, approvalId: ApprovalId): Promise<vo
     const values: Record<string, unknown> = { ":pending": "PENDING", ":zero": 0 };
     const sets = ["#rev = if_not_exists(#rev, :zero) + :one"];
     values[":one"] = changed ? 1 : 0;
+    const movedAt = iso(deps.now());
     if (changed) {
       names["#approvers"] = "approvers";
       values[":approvers"] = approvers;
-      sets.push("#approvers = :approvers");
+      sets.push("#approvers = :approvers", "#movedBy = :movedBy", "#movedAt = :movedAt");
+      names["#movedBy"] = "movedBy";
+      names["#movedAt"] = "movedAt";
+      values[":movedBy"] = "system";
+      values[":movedAt"] = movedAt;
       if (owner !== undefined) {
         names["#owner"] = "owner";
         values[":owner"] = owner;
@@ -1062,6 +1176,13 @@ async function moveOne(context: MoveContext, approvalId: ApprovalId): Promise<vo
       }
     }
     if (typeof moveRevision === "number") values[":seen"] = moveRevision;
+    // Rovara changed who may decide this: the audit item is in the transaction that does it (nothing is audited when only an index item moves).
+    const events: AuditEventInput[] = changed
+      ? await tryAuditEvents(deps, () => [auditApprovalRerouted({
+        orgId, actor: auditActorOf("system"), occurredAt: movedAt, occurrence: auditOccurrence(approvalId, String((typeof moveRevision === "number" ? moveRevision : 0) + 1)),
+        approvalId, kind: record.kind, mode, from, to,
+      })])
+      : [];
     const items: TransactItem[] = [
       {
         Update: {
@@ -1073,10 +1194,14 @@ async function moveOne(context: MoveContext, approvalId: ApprovalId): Promise<vo
       indexDrop,
     ];
     // Only a person who is still listed after the move keeps a place in someone's list.
-    if (listedPeople(approvers).includes(to)) {
-      items.push({ Put: { TableName: deps.tableName, Item: { ...approverIndexKey(orgId, to, approvalId), entityType: "APPROVER_INDEX", approvalId, expiresAt: record.expiresAt } } });
+    if (listedFor({ kind: record.kind, approvers, owner: owner ?? currentOwner }).includes(to)) {
+      items.push({ Put: { TableName: deps.tableName, Item: { ...approverIndexKey(orgId, to, approvalId), entityType: "APPROVER_INDEX", approvalId, expiresAt: record.expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiryOf(record.expiresAt) } } });
     }
-    if (await commitOrLost(deps, items)) return;
+    items.push(...events.flatMap((event) => auditPending(deps, event)));
+    if (await commitOrLost(deps, items)) {
+      await flushAuditEvents(deps, events);
+      return;
+    }
   }
   throw new Error("approval_move_conflict");
 }
