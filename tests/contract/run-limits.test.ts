@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
-import { getTaskDocumentView, releaseFinishedTask } from "../../packages/broker/src/aws/developer-tasks.js";
+import { getTaskDocumentView, releaseFinishedTask, resumeAfterRunLimitApproval } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
@@ -467,6 +467,15 @@ describe("a plan that reaches review", () => {
     expect(t.meta(taskId).runEstimate).toEqual({ lowUsd: 2, highUsd: 4, runLimitUsd: 8, stopAtUsd: 5, basis: "history", samples: 6 });
   });
 
+  it("drops the estimate of an earlier plan when the new plan has none", async () => {
+    const t = await world({ proxy: false });
+    const { taskId, workspaceId } = await t.startTask({ workflow: true, workflowPath: "QUICK" });
+    t.h.db.set({ ...t.meta(taskId), runEstimate: { lowUsd: 1, highUsd: 3, runLimitUsd: 6, stopAtUsd: 6, basis: "default", samples: 0 } });
+    await t.finishPrepare(workspaceId);
+    await t.finishPlanning(taskId, workspaceId);
+    expect(t.meta(taskId).runEstimate).toBeUndefined();
+  });
+
   it("makes no estimate on an install without a model proxy", async () => {
     const t = await world({ proxy: false });
     expect(t.meta((await t.planned("QUICK")).taskId).runEstimate).toBeUndefined();
@@ -522,6 +531,92 @@ describe("approving the plan", () => {
     expect(t.meta(taskId).workflow.revision).toBe(after.workflow.revision);
   });
 
+  describe("a plan blocked on its run limit", () => {
+    async function blocked() {
+      const t = await world();
+      seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
+      const planned = await t.planned("QUICK");
+      expect((await t.decide(planned.taskId, planned.plan)).status).toBe(200);
+      expect(t.meta(planned.taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+      const deps = { documentClient: t.h.db, tableName: "state", actions: t.h.actions, orgId: TEST_ORG, log: () => undefined, now: () => Date.now(), modelAccess: t.access!,
+        checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [] };
+      return { t, ...planned, deps };
+    }
+    const implementations = (t: Awaited<ReturnType<typeof world>>, workspaceId: string) => t.operations(workspaceId).filter((item) => item.workflowMode === "IMPLEMENT");
+
+    it("is not restarted by the owner's retry, and nothing starts", async () => {
+      const { t, taskId, workspaceId } = await blocked();
+      const before = t.meta(taskId);
+      const retried = await t.api(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { expectedRevision: before.workflow.revision, instructions: "Try again." });
+      expect(retried).toMatchObject({ status: 400, body: { error: { code: "CONFIG_INVALID", message: expect.stringContaining("Coding starts once the run limit is approved.") as unknown } } });
+      expect(implementations(t, workspaceId)).toEqual([]);
+      expect(t.meta(taskId)).toEqual(before);
+    });
+
+    it("is not restarted by a send-back to coding either", async () => {
+      const { t, taskId, workspaceId } = await blocked();
+      const before = t.meta(taskId);
+      const sent = await t.api(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/send-back`, { expectedRevision: before.workflow.revision, instructions: "Fix it." });
+      expect(sent).toMatchObject({ status: 400, body: { error: { code: "CONFIG_INVALID", message: expect.stringContaining("Coding starts once the run limit is approved.") as unknown } } });
+      expect(implementations(t, workspaceId)).toEqual([]);
+      expect(t.meta(taskId)).toEqual(before);
+    });
+
+    it("starts coding when its run limit is approved: the limit, the new window and the transition in one transaction", async () => {
+      const { t, taskId, workspaceId, deps } = await blocked();
+      const planningKey = "sk-planning-key";
+      t.h.db.set({ ...t.meta(taskId), modelKeyIds: [(await import("../../packages/broker/src/org/budget.js")).keyIdOf(planningKey)] });
+      t.access!.setKeySpent(planningKey, 1.5);
+      const requestId = randomUUID();
+      const writes: string[] = [];
+      t.h.db.onWrite(({ after }) => { if (after?.sk === "META" && after.pk === `DEVTASK#${taskId}`) writes.push(`${String(after.workflow && (after.workflow as { state: string }).state)}:${String(after.budgetUsd)}:${String(after.budgetBaselineUsd)}`); });
+      expect(await resumeAfterRunLimitApproval(deps as never, taskId, { requestId, runLimitUsd: 20 })).toBe("STARTED");
+      expect(writes).toEqual(["RUNNING:20:1.5"]);
+      expect(t.meta(taskId)).toMatchObject({ budgetUsd: 20, budgetBaselineUsd: 1.5, workflow: { stage: "IMPLEMENT", state: "RUNNING" } });
+      expect(t.meta(taskId).workflow.blockReason).toBeUndefined();
+      expect(implementations(t, workspaceId)).toHaveLength(1);
+      // The same approval again is the run it started.
+      expect(await resumeAfterRunLimitApproval(deps as never, taskId, { requestId, runLimitUsd: 20 })).toBe("STALE");
+      expect(implementations(t, workspaceId)).toHaveLength(1);
+    });
+
+    it("starts nothing for a task that is not blocked on a run limit", async () => {
+      const t = await world();
+      const { taskId, workspaceId } = await t.planned("QUICK");
+      const deps = { documentClient: t.h.db, tableName: "state", actions: t.h.actions, orgId: TEST_ORG, log: () => undefined, now: () => Date.now(), modelAccess: t.access! };
+      expect(await resumeAfterRunLimitApproval(deps as never, taskId, { requestId: randomUUID(), runLimitUsd: 20 })).toBe("STALE");
+      const other = t.meta(taskId);
+      t.h.db.set({ ...other, workflow: { ...other.workflow, stage: "IMPLEMENT", state: "BLOCKED", blockReason: "implementation operation ended failed" } });
+      expect(await resumeAfterRunLimitApproval(deps as never, taskId, { requestId: randomUUID(), runLimitUsd: 20 })).toBe("STALE");
+      expect(implementations(t, workspaceId)).toEqual([]);
+    });
+
+    it("refuses a limit that is not a positive amount, and a proxy that can't say, writing nothing", async () => {
+      const { t, taskId, workspaceId, deps } = await blocked();
+      await expect(resumeAfterRunLimitApproval(deps as never, taskId, { requestId: randomUUID(), runLimitUsd: 0 })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      t.h.db.set({ ...t.meta(taskId), modelKeyIds: ["a".repeat(64)] });
+      t.access!.goDown();
+      await expect(resumeAfterRunLimitApproval(deps as never, taskId, { requestId: randomUUID(), runLimitUsd: 20 })).rejects.toMatchObject({ code: "MODEL_PROXY_UNAVAILABLE" });
+      expect(implementations(t, workspaceId)).toEqual([]);
+      expect(t.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    });
+  });
+
+  it("accepts no more than the limit a run was asked to start with", async () => {
+    const t = await world();
+    const starter = createAgentRunStarter(t.h.brokerInput as never)!;
+    const started = await startAgentRun(starter, {
+      requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId: ROVARA_CODE }, input: { text: "Fix the retry bug" }, origin: "app" as const,
+      owner: { developerId: MAYA.developerId }, startedBy: { developerId: MAYA.developerId }, payer: { kind: "member" as const, developerId: MAYA.developerId }, runLimitUsd: 1,
+    });
+    const workspaceId = t.meta(started.taskId).workspaceId;
+    await t.finishPrepare(workspaceId);
+    const plan = await t.finishPlanning(started.taskId, workspaceId);
+    expect(t.meta(started.taskId).runEstimate).toMatchObject({ runLimitUsd: 6 });
+    expect((await t.decide(started.taskId, plan)).status).toBe(200);
+    expect(t.meta(started.taskId)).toMatchObject({ budgetUsd: 1 });
+  });
+
   it("tells the task page what the task waits for", async () => {
     const t = await world();
     seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
@@ -534,13 +629,31 @@ describe("approving the plan", () => {
     });
   });
 
-  it("blocks with the same words and creates no request while the seam is not wired", async () => {
+  it("does not say it asked while the seam is not wired, and creates no request", async () => {
     const t = await world({ requestRunLimit: "none" });
     seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
     const { taskId, workspaceId, plan } = await t.planned("QUICK");
     expect((await t.decide(taskId, plan)).status).toBe(200);
-    expect(t.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", blockReason: "This plan's run limit is $20, which needs a project maintainer's approval. I've asked for it." });
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", blockReason: "This plan's run limit is $20, which needs a project maintainer's approval." });
     expect(t.operations(workspaceId).filter((item) => item.workflowMode === "IMPLEMENT")).toEqual([]);
+  });
+
+  it("does not say it asked when the seam made no request, and says an admin's for a larger limit", async () => {
+    const t = await world({ requestRunLimit: vi.fn<RequestRunLimit>(async () => undefined) });
+    seedCosts(t.h.db, "QUICK", [75, 75, 75, 75, 75]);
+    const { taskId, plan } = await t.planned("QUICK");
+    expect((await t.decide(taskId, plan)).status).toBe(200);
+    expect(t.meta(taskId).workflow.blockReason).toBe("This plan's run limit is $150, which needs an admin's approval.");
+  });
+
+  it("says it asked only when a request was made, and names the decision in the request", async () => {
+    const t = await world();
+    seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
+    const { taskId, plan } = await t.planned("QUICK");
+    const requestId = randomUUID();
+    expect((await t.decide(taskId, plan, requestId)).status).toBe(200);
+    expect(t.meta(taskId).workflow.blockReason).toBe("This plan's run limit is $20, which needs a project maintainer's approval. I've asked for it.");
+    expect(t.requestRunLimit.mock.calls[0]![0]).toMatchObject({ requestId });
   });
 
   it("refuses the approval, and records nothing, when the request can't be made", async () => {
@@ -660,6 +773,16 @@ describe("the cost of a run that finished", () => {
     // The next estimate reads it.
     seedCosts(t.h.db, "QUICK", [6.5, 6.5, 6.5, 6.5]);
     expect(await estimateOf(t.h.db, "QUICK")).toMatchObject({ samples: 5, highUsd: 6.5, basis: "history" });
+  });
+
+  it("dates the cost by the task's last change, not by the clock", async () => {
+    const t = await world();
+    const taskId = await mergedTask(t, { modelKeyIds: [await keyOf("sk-a")] });
+    const merged = { ...t.meta(taskId).workflow, updatedAt: "2026-10-05T08:00:00.000Z" };
+    t.h.db.set({ ...t.meta(taskId), workflow: merged });
+    t.access!.setKeySpent("sk-a", 3);
+    await release(t, taskId);
+    expect(costsOf(t)[0]).toMatchObject({ endedAt: "2026-10-05T08:00:00.000Z" });
   });
 
   it("writes a Full task's cost under the Full path", async () => {
