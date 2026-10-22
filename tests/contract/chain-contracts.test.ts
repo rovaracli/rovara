@@ -332,6 +332,10 @@ describe("a chain design", () => {
     const result = PinnedChainDefinitionSchema.safeParse(pinned);
     expect(result.success).toBe(false);
     expect(paths(result)).toContain("steps/3/agent/version");
+    pinned.steps[3].agent.version = 0;
+    expect(PinnedChainDefinitionSchema.safeParse(pinned).success).toBe(false);
+    pinned.steps[3].agent.version = 1.5;
+    expect(PinnedChainDefinitionSchema.safeParse(pinned).success).toBe(false);
   });
 });
 
