@@ -83,6 +83,7 @@ export * from "./org-scoped-keys.js";
 export * from "./spend.js";
 export * from "./agent.js";
 export * from "./connections.js";
+export * from "./connection-types-observability.js";
 export * from "./agent-recipe.js";
 export * from "./agent-guardrails.js";
 export * from "./comment-triggers.js";

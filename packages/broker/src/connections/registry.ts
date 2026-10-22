@@ -8,7 +8,10 @@ import { hostPinProblem, type ConnectorCredentials, type HostPin } from "../aws/
 import { orgConnectorSecretName } from "./org-secrets.js";
 import { readConnection, readConnectionToken, type OrgConnectionDeps, type OrgConnectionRecord } from "./store.js";
 
-/** A connection is served only when it exists in this org and has a saved secret. */
+/**
+ * A connection is served only when it exists in this org and has a saved secret. A CloudWatch connection never has one (its connector assumes
+ * the customer's role), so it is not registered here and no token is ever issued for it.
+ */
 async function usable(deps: OrgConnectionDeps, orgId: OrgId, ref: string): Promise<(OrgConnectionRecord & { secretVersion?: string }) | undefined> {
   const connection = await readConnection(deps, orgId, ref);
   return connection !== undefined && connection.hasSecret ? connection : undefined;
@@ -20,7 +23,7 @@ function recordOf(deps: OrgConnectionDeps, orgId: OrgId, connection: OrgConnecti
     // Every connection holds one static key or token.
     type: "static-secret",
     secretName: orgConnectorSecretName(deps.env, orgId, connection.connectionId),
-    ...(connection.type === "mcp" ? { host: new URL(connection.endpoint).hostname } : {}),
+    ...(connection.type === "mcp" ? { host: new URL(connection.endpoint).hostname } : connection.type === "grafana" ? { host: new URL(connection.baseUrl).hostname } : {}),
     registeredBy: connection.createdBy,
     registeredAt: connection.createdAt,
   };

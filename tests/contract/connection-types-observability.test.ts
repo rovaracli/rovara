@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CredentialUnavailable } from "@agentx/gateway";
 import { orgCredentialRegistry } from "../../packages/broker/src/connections/registry.js";
-import { OrgConnectionStore, connectionActorIds, readConnectionSecret } from "../../packages/broker/src/connections/store.js";
+import { OrgConnectionStore, connectionActorIds, readConnection, readConnectionSecret } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets, orgConnectorSecretName } from "../../packages/broker/src/connections/org-secrets.js";
 import { routeConnectionRequest } from "../../packages/broker/src/connections/routes.js";
 import {
@@ -63,7 +63,10 @@ function setup() {
 const storeOf = (deps: ReturnType<typeof setup>["deps"], extra: Partial<ConstructorParameters<typeof OrgConnectionStore>[0]> = {}) =>
   new OrgConnectionStore({ ...deps, checkEndpoint: async () => undefined, ...extra });
 
-const failure = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string; name?: string }) => ({ code: error.code, name: error.name, message: error.message }));
+// An AgentXError's message reads "<CODE>: <text>"; the text is what the plan fixes.
+const failure = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string; name?: string }) => ({
+  code: error.code, name: error.name, message: error.code !== undefined && error.message.startsWith(`${error.code}: `) ? error.message.slice(error.code.length + 2) : error.message,
+}));
 
 const secretFor = (connection: OrgConnection) => SECRETS[connection.type];
 
@@ -190,9 +193,8 @@ describe("saving the new connections", () => {
       const { deps } = setup();
       const store = storeOf(deps);
       await store.put({ orgId: ORG_A, connection, secret: secretFor(connection), by: ALICE });
-      const record = await store.get(ORG_A, CON_A);
-      expect(record).toMatchObject({ type: connection.type, hasSecret: true, access: "read" });
-      expect(await readConnectionSecret(deps, ORG_A, record!)).toEqual(secretFor(connection));
+      expect(await store.get(ORG_A, CON_A)).toMatchObject({ type: connection.type, hasSecret: true, access: "read" });
+      expect(await readConnectionSecret(deps, ORG_A, (await readConnection(deps, ORG_A, CON_A))!)).toEqual(secretFor(connection));
       const registry = orgCredentialRegistry(deps, ORG_A);
       expect(await registry.typeOf(CON_A)).toBe("static-secret");
       const issued = await registry.provider(CON_A).issue({}, "read");
@@ -208,7 +210,7 @@ describe("saving the new connections", () => {
       [DATADOG, { apiKey: "ONLY-ONE-KEY-VALUE" }],
       [GRAFANA, { token: "WRONGSHAPE-VALUE" }],
       [PAGERDUTY, { apiKey: "has a space" }],
-      [VERCEL, { token: "ok", extra: "EXTRA-VALUE" }],
+      [VERCEL, { token: "FINE-TOKEN-VALUE", extra: "EXTRA-VALUE" }],
     ];
     for (const [connection, secret] of cases) {
       const refusal = await failure(store.put({ orgId: ORG_A, connection, secret, by: ALICE }));
@@ -254,7 +256,7 @@ describe("saving the new connections", () => {
       const { db, fake, deps } = setup();
       const store = storeOf(deps);
       const refusal = await failure(store.put({ orgId: ORG_A, connection: { ...connection, access: "read_write" }, ...(secretFor(connection) === undefined ? {} : { secret: secretFor(connection) }), by: ALICE }));
-      expect(refusal, connection.type).toEqual({ code: "CONFIG_INVALID", name: expect.any(String), message: `access: ${connection.type} connections are read-only` });
+      expect(refusal, connection.type).toMatchObject({ code: "CONFIG_INVALID", message: `access: ${connection.type} connections are read-only` });
       expect(readOnlyConnectionMessage(connection.type as "sentry")).toBe(`access: ${connection.type} connections are read-only`);
       expect(db.items.size).toBe(0);
       expect(fake.calls.filter((call) => call.service === "secretsmanager")).toEqual([]);
@@ -264,7 +266,7 @@ describe("saving the new connections", () => {
     const store = storeOf(deps);
     await store.put({ orgId: ORG_A, connection: SENTRY, secret: secretFor(SENTRY), by: ALICE });
     const before = JSON.stringify(db.get(connectionKey(ORG_A, CON_A)));
-    expect((await failure(store.put({ orgId: ORG_A, connection: { ...SENTRY, access: "read_write" }, by: ALICE }))).message).toBe("access: sentry connections are read-only");
+    expect((await failure(store.put({ orgId: ORG_A, connection: { ...SENTRY, access: "read_write" }, by: ALICE })))?.message).toBe("access: sentry connections are read-only");
     expect(JSON.stringify(db.get(connectionKey(ORG_A, CON_A)))).toBe(before);
   });
 
@@ -285,24 +287,25 @@ describe("saving the new connections", () => {
       { connection: PAGERDUTY, change: { region: "us" } },
       { connection: GRAFANA, change: { baseUrl: "https://grafana.other.dev" } },
     ] as const;
-    for (const { connection, change } of moved) {
+    for (const [index, { connection: base, change }] of moved.entries()) {
+      // Each type gets its own id: a removed connection's secret is waiting for deletion and its name cannot be written again.
+      const connection = { ...base, connectionId: `con_move${String(index).padStart(16, "0")}` } as OrgConnection;
       await store.put({ orgId: ORG_A, connection, secret: secretFor(connection), by: ALICE });
-      const refusal = await failure(store.put({ orgId: ORG_A, connection: { ...connection, ...change } as OrgConnection, by: ALICE }));
+      const refusal = await failure(store.put({ orgId: ORG_A, connection: { ...connection, ...change }, by: ALICE }));
       expect(refusal, connection.type).toMatchObject({ code: "CONFIG_INVALID", message: "connection: the saved secret would be sent to a different host; give the new secret with it" });
-      expect(await store.get(ORG_A, CON_A)).toMatchObject(connection);
-      await store.put({ orgId: ORG_A, connection: { ...connection, ...change } as OrgConnection, secret: secretFor(connection), by: ALICE });
-      expect(await store.get(ORG_A, CON_A)).toMatchObject(change);
-      await store.remove({ orgId: ORG_A, connectionId: CON_A, by: ALICE });
+      expect(await store.get(ORG_A, connection.connectionId)).toMatchObject(connection);
+      await store.put({ orgId: ORG_A, connection: { ...connection, ...change }, secret: secretFor(connection), by: ALICE });
+      expect(await store.get(ORG_A, connection.connectionId)).toMatchObject(change);
     }
     // A label, an org slug or a team id goes to the same place, so the saved token stays.
     await store.put({ orgId: ORG_A, connection: SENTRY, secret: secretFor(SENTRY), by: ALICE });
     await store.put({ orgId: ORG_A, connection: { ...SENTRY, orgSlug: "other-org", label: "Other" }, by: ALICE });
     expect(await store.get(ORG_A, CON_A)).toMatchObject({ orgSlug: "other-org", hasSecret: true });
     expect((await orgCredentialRegistry(deps, ORG_A).provider(CON_A).issue({}, "read")).token).toBe(SENTRY_TOKEN);
-    await store.remove({ orgId: ORG_A, connectionId: CON_A, by: ALICE });
-    await store.put({ orgId: ORG_A, connection: VERCEL, secret: secretFor(VERCEL), by: ALICE });
-    await store.put({ orgId: ORG_A, connection: { ...VERCEL, teamId: "team_abc123" }, by: ALICE });
-    expect(await store.get(ORG_A, CON_A)).toMatchObject({ teamId: "team_abc123", hasSecret: true });
+    const vercel = { ...VERCEL, connectionId: "con_vvvvvvvvvvvvvvvvvvvv" };
+    await store.put({ orgId: ORG_A, connection: vercel, secret: secretFor(VERCEL), by: ALICE });
+    await store.put({ orgId: ORG_A, connection: { ...vercel, teamId: "team_abc123" }, by: ALICE });
+    expect(await store.get(ORG_A, vercel.connectionId)).toMatchObject({ teamId: "team_abc123", hasSecret: true });
   });
 
   it("checks a Grafana address before saving it, and refuses the save when it may not be called or cannot be checked", async () => {
@@ -465,7 +468,7 @@ describe("checking the new connections", () => {
     await store.put({ orgId: ORG_A, connection: DATADOG, secret: secretFor(DATADOG), by: ALICE });
     const result = await store.check(ORG_A, CON_A);
     capture.restore();
-    expect(result).toEqual({ ok: false, message: "could not check the saved datadog secret" });
+    expect(result).toEqual({ ok: false, message: "could not check the datadog connection" });
     expect(JSON.stringify([result, capture.lines])).not.toContain("dd-api-key");
     expect((await store.get(ORG_A, CON_A))?.lastCheck).toMatchObject({ ok: false });
   });
@@ -487,6 +490,16 @@ describe("checking the new connections", () => {
     grafana.mockClear();
     expect(await store.check(ORG_A, CON_A)).toEqual({ ok: false, message: "that address is not allowed" });
     expect(grafana).not.toHaveBeenCalled();
+  });
+
+  it("answers a check that could not reach its vendor as retryable, records nothing, and names nothing it threw", async () => {
+    const { deps } = setup();
+    const store = storeOf(deps, { checks: { pagerduty: async () => { throw Object.assign(new Error(`down: ${JSON.stringify(secretFor(PAGERDUTY))}`), { code: "RUNTIME_UNAVAILABLE" }); } } });
+    await store.put({ orgId: ORG_A, connection: PAGERDUTY, secret: secretFor(PAGERDUTY), by: ALICE });
+    const refusal = await failure(store.check(ORG_A, CON_A));
+    expect(refusal).toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: "could not reach pagerduty to check the connection; try again" });
+    expect(refusal?.message).not.toContain("pd-api-key");
+    expect((await store.get(ORG_A, CON_A))?.lastCheck).toBeUndefined();
   });
 
   it("answers a failed address lookup as retryable and records no check", async () => {
