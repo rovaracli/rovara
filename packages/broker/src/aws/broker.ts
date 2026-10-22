@@ -366,7 +366,7 @@ import type { AgentRouteDependencies } from "../agents/routes.js";
 import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
 import { approvalsNotWiredGate, callAgentTool, listAgentTools, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
 import { taskRunCache } from "../agents/run-cache.js";
-import { applyAgentStep, priorStepIds, stepForOperation, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
+import { applyAgentStep, givesAgentTools, priorStepIds, stepForOperation, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
 import { readGuardrails } from "../agents/guardrails.js";
 import { DecideStore, DecideReauthRequired, type DecideRequestContext } from "../developer/decide-session.js";
 import type { DecideKinds } from "../developer/decide-kinds.js";
@@ -5111,7 +5111,7 @@ async function taskOperationParts(
       // The worker reads the step's skills through the broker, which serves only the snapshot's, so the capability is granted only when the step has some.
       agentSkills: (applied?.agentStep?.skills?.length ?? 0) > 0,
       // The connector tools of an agent step whose recipe grants some (Task 19); the broker serves only the granted ones.
-      agentTools: applied?.agentStep?.kind === "agent" && applied.toolGrants === true,
+      agentTools: givesAgentTools(applied),
     }),
     payload: {
       conversationId: input.conversationId,

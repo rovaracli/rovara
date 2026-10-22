@@ -9,6 +9,8 @@ import { connectMcp, type McpConnection } from "@agentx/gateway";
 import { EMPTY_RECIPE, type ResolvedRecipe, type ToolGrant } from "../../packages/contracts/src/agent-recipe.js";
 import { recipeDigest } from "../../packages/contracts/src/agent-recipe.js";
 import { validateRecipeForOrg } from "../../packages/broker/src/agents/guardrails.js";
+import { applyAgentStep, givesAgentTools } from "../../packages/broker/src/agents/dispatch.js";
+import { DEFAULT_AGENT_GUARDRAILS as GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { nonTextFactProblems } from "../../packages/broker/src/agents/write-class.js";
 import {
   factsForCall, resolveToolGrants, stepToolPatterns, toolGrantProblems, toolFactsFor, type GrantConnector,
@@ -170,6 +172,25 @@ describe("resolveToolGrants", () => {
   });
 });
 
+describe("grants and the capability", () => {
+  it("an agent step of a recipe with tool grants is given the agent-tools capability, and nothing else is", () => {
+    const agentStep = { kind: "agent" as const, agentId: AGENT.agentId, version: 1, stepId: "triage", instructions: "x", workspace: "none" as const, inputs: "y" };
+    const codingStep = { kind: "coding" as const, agentId: AGENT.agentId, version: 1, stepId: "build" };
+    expect(givesAgentTools({ agentStep, toolGrants: true })).toBe(true);
+    expect(givesAgentTools({ agentStep })).toBe(false);
+    expect(givesAgentTools({ agentStep: codingStep, toolGrants: true })).toBe(false);
+    expect(givesAgentTools({ toolGrants: true })).toBe(false);
+    expect(givesAgentTools(undefined)).toBe(false);
+  });
+
+  it("the dispatch marks a recipe that grants tools, and one that grants none", () => {
+    const recipe = (tools: ToolGrant[]): ResolvedRecipe => ({ ...EMPTY_RECIPE, chain: [{ agentId: AGENT.agentId, name: "triage-bot", version: 1, builtin: false }], steps: [{ id: "triage", name: "Triage", kind: "agent", workspace: "none", settings: { instructions: [] } }], tools });
+    const apply = (tools: ToolGrant[]) => applyAgentStep({ recipe: recipe(tools), guardrails: GUARDRAILS, project: "payments", priorOperations: [], mode: "IMPLEMENT" });
+    expect(apply([grant({ type: "linear" }, "read")]).toolGrants).toBe(true);
+    expect(apply([]).toolGrants).toBeUndefined();
+  });
+});
+
 describe("stepToolPatterns", () => {
   const step = (tools?: string[]) => ({ id: "s", name: "S", kind: "agent" as const, workspace: "read" as const, settings: { instructions: [], ...(tools === undefined ? {} : { tools }) } });
   it("takes the step's connector tool patterns and leaves out the workspace tools (Pi names)", () => {
@@ -177,6 +198,8 @@ describe("stepToolPatterns", () => {
     expect(stepToolPatterns(step(["read", "grep"]))).toBeUndefined();
     expect(stepToolPatterns(step())).toBeUndefined();
     expect(stepToolPatterns(undefined)).toBeUndefined();
+    // Only an agent step narrows connector tools.
+    expect(stepToolPatterns({ id: "p", name: "P", kind: "plan", settings: { instructions: [], tools: ["get_*"] } })).toBeUndefined();
   });
 });
 
@@ -211,6 +234,22 @@ describe("the facts of a granted tool", () => {
     expect(factsOf("github", "github", "issue_write", "write", { itemArguments: ["issue_number"] })).toMatchObject({
       itemArguments: ["issue_number"], labelArgument: "labels", labelsReplace: true, resultItemArguments: ["number"], nonTextArguments: ["method"],
     });
+  });
+
+  it("GitHub's other issue writes take labels as a list that replaces the set", () => {
+    expect(factsOf("github", "github", "create_issue", "write")).toMatchObject({ labelArgument: "labels", labelsReplace: true, resultItemArguments: ["number"] });
+    expect(factsOf("github", "github", "update_issue", "write")).toMatchObject({ labelArgument: "labels", labelsReplace: true });
+  });
+
+  it("what the caller passes beats the table, and the table beats the catalog", () => {
+    const facts = toolFactsFor({ name: "github", type: "github" }, tool("github", "add_issue_comment", "write", { itemArguments: ["issue_number"] }), "write", { itemArguments: ["x"], nonTextArguments: ["method"] });
+    expect(facts.itemArguments).toEqual(["x"]);
+    expect(facts.nonTextArguments).toEqual(["method"]);
+    expect(facts.itemScopeArguments).toEqual(["owner", "repo"]);
+  });
+
+  it("editing a Jira issue replaces labels it sets", () => {
+    expect(factsOf("jira", "jira", "editJiraIssue", "write").labelsReplace).toBe(true);
   });
 
   it("a comment on Jira annotates its issue; a Jira create takes labels as a list", () => {
@@ -254,6 +293,8 @@ describe("the facts of a granted tool", () => {
     });
     it("leaves every other type's facts as they are", () => {
       expect(factsForCall("jira", factsOf("jira", "jira", "createJiraIssue", "write"), { labels: [UUID] })).toEqual(factsOf("jira", "jira", "createJiraIssue", "write"));
+      expect(factsForCall("github", factsOf("github", "github", "issue_write", "write"), { labels: [UUID] }).labelIdArguments).toBeUndefined();
+      expect(factsForCall("mcp", factsOf("mcp", "c", "x", "write"), { addLabels: [UUID] }).labelIdArguments).toBeUndefined();
     });
   });
 });
@@ -279,6 +320,9 @@ describe("connectorLabelLister", () => {
     const run = vi.fn(async (name: string) => (name === "list_labels" ? labels : undefined));
     await expect(connectorLabelLister({ tools: ["list_issue_labels", "list_labels"], run })({ orgId: TEST_ORG, connector: { type: "mcp", id: "sentry" } })).resolves.toBeInstanceOf(Map);
     await expect(connectorLabelLister({ tools: [], run })({ orgId: TEST_ORG, connector: { type: "mcp", id: "sentry" } })).rejects.toThrow();
+  });
+  it("fails when the list holds no label", async () => {
+    await expect(connectorLabelLister({ tools: ["list_labels"], run: async () => JSON.stringify({ labels: [] }) })({ orgId: TEST_ORG, connector: { type: "mcp", id: "c" } })).rejects.toThrow(/no labels/u);
   });
   it("fails when the tool answers nothing readable", async () => {
     await expect(connectorLabelLister({ tools: ["list_labels"], run: async () => "not json" })({ orgId: TEST_ORG, connector: { type: "mcp", id: "c" } })).rejects.toThrow();
@@ -321,7 +365,7 @@ const GITHUB_FAKE_TOOLS: McpConnection["tools"] = [
   { name: "pull_request_read", description: "Read a pull request", inputSchema: objectSchema({ owner: { type: "string" }, repo: { type: "string" }, pullNumber: { type: "number" }, method: { type: "string" } }, ["owner", "repo", "pullNumber", "method"]) },
 ];
 
-interface WorldOptions { workflowFiles?: Record<string, string>; pinnedInstallation?: number; labelTool?: boolean }
+interface WorldOptions { workflowFiles?: Record<string, string>; pinnedInstallation?: number; labelTool?: boolean | "write"; linearAttribution?: boolean }
 
 const UUID_AUTOMERGE = "5d8a1f0e-3b7c-4e2a-9f10-6c2b8d4e7a91";
 const UUID_BUG = "7a1c2d3e-4f50-4a61-8b72-9c83d4e5f607";
@@ -331,7 +375,7 @@ async function world(options: WorldOptions = {}) {
   let labelListings = 0;
   const labelTool: McpConnection["tools"][number] = { name: "list_issue_labels", description: "List labels", inputSchema: { type: "object", properties: {} } };
   /** The fake Linear server, plus (when asked) a label list the recorded fixtures lack. */
-  const linearType = options.labelTool !== true ? linearViaFake(linear).type : {
+  const linearType = options.labelTool === undefined ? linearViaFake(linear).type : {
     type: "linear",
     resolve: (config: Parameters<typeof linearConnectorType.resolve>[0], project: Parameters<typeof linearConnectorType.resolve>[1], context: Parameters<typeof linearConnectorType.resolve>[2]) => linearConnectorType.resolve(config, project, {
       ...context,
@@ -367,6 +411,8 @@ async function world(options: WorldOptions = {}) {
   });
   const repositories: string[] = [];
   const readerPins: Array<number | undefined> = [];
+  const labelReads: Array<{ url: string; options: unknown }> = [];
+  const listAgentRepositoryLabels = vi.fn(async (url: string, _scope: unknown, labelOptions?: unknown) => { labelReads.push({ url, options: labelOptions }); return [{ id: 11, nodeId: "LA_automerge", name: "automerge" }, { id: 12, nodeId: "LA_bug", name: "bug" }]; });
   const agentRepositoryReader = vi.fn(async (url: string, _scope: unknown, readerOptions?: { installationId?: number }) => { repositories.push(url); readerPins.push(readerOptions?.installationId); return treeReader(options.workflowFiles ?? {}); });
   const secrets = { read: vi.fn(async (name: string) => (name === "agentx/connectors/linear-charterarc" ? JSON.stringify({ apiKey: LINEAR_KEY }) : undefined)) };
   let configure: (base: AgentToolsDependencies) => AgentToolsDependencies = (base) => base;
@@ -378,14 +424,19 @@ async function world(options: WorldOptions = {}) {
       githubMcp: { credentials: vi.fn(async () => ({ owner: "example", repo: "demo", token: "human-token" })), connect: connectGithub },
       githubPullRequests: {
         reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(),
-        createAgentInstallationToken: tokens, getAgentPullRequestHead: heads, agentRepositoryReader,
+        createAgentInstallationToken: tokens, getAgentPullRequestHead: heads, agentRepositoryReader, listAgentRepositoryLabels,
       },
       agents: {},
       agentTools: { configure: (base: AgentToolsDependencies) => configure(base) },
     },
   });
   expect((await call(h.handler, { method: "POST", path: "/v1/admin/credentials", user: ADMIN, body: { ref: "linear-charterarc", type: "static-secret", secretName: "agentx/connectors/linear-charterarc" } })).status).toBe(201);
-  const linearProject = options.labelTool === true ? { ...LINEAR_CONNECTOR, tools: [...LINEAR_PROJECT_TOOLS, { name: "list_issue_labels", access: "read" }] } : LINEAR_CONNECTOR;
+  const linearProject = {
+    ...LINEAR_CONNECTOR,
+    ...(options.linearAttribution === undefined ? {} : { attribution: options.linearAttribution }),
+    // `retired_tool` is approved but the vendor no longer offers it.
+    tools: [...LINEAR_PROJECT_TOOLS, { name: "retired_tool", access: "read" }, ...(options.labelTool === undefined ? [] : [{ name: "list_issue_labels", access: options.labelTool === "write" ? "write" : "read" }])],
+  };
   await registerSlackProject(h.handler, { connectors: [linearProject, GITHUB_CONNECTOR] });
   if (options.pinnedInstallation !== undefined) {
     const key = projectRevisionKey(TEST_ORG, "payments", 1);
@@ -436,7 +487,7 @@ async function world(options: WorldOptions = {}) {
     h.db.set({ ...orgRemovedKey(TEST_ORG, MAYA.developerId), entityType: "ORG_REMOVED", orgId: TEST_ORG, developerId: MAYA.developerId, removedAt: new Date().toISOString() });
   };
   return {
-    ...h, linear, labelListings: () => labelListings, githubCalls, githubConnections, connectGithub, tokens, heads, agentRepositoryReader, repositories, readerPins, secrets,
+    ...h, linear, labelListings: () => labelListings, labelReads, githubCalls, githubConnections, connectGithub, tokens, heads, agentRepositoryReader, repositories, readerPins, secrets,
     startRun, tools, callTool, linearCall, githubCall, schemaHash, removeCreator,
     configure: (next: (base: AgentToolsDependencies) => AgentToolsDependencies) => { configure = next; },
   };
@@ -516,6 +567,23 @@ describe("the routes' authorization", () => {
     expect(w.linear.calls).toEqual([]);
   });
 
+  it("refuses a task of another org, or of another workspace, than the operation's", async () => {
+    const w = await world();
+    const run = await w.startRun();
+    const task = w.db.get(`DEVTASK#${run.taskId}`, "META") as Record<string, unknown>;
+    const workspace = w.db.get(`WORKSPACE#${run.workspaceId}`, "META") as Record<string, unknown>;
+    w.db.set({ ...task, orgId: "org_bbbbbbbbbbbbbbbbbbbb" });
+    expect((await w.tools(run.capability)).status).toBe(404);
+    w.db.set(task);
+    w.db.set({ ...task, workspaceId: randomUUID() });
+    expect((await w.tools(run.capability)).status).toBe(404);
+    w.db.set(task);
+    w.db.set({ ...workspace, orgId: "org_bbbbbbbbbbbbbbbbbbbb" });
+    expect((await w.tools(run.capability)).status).toBe(404);
+    w.db.set(workspace);
+    expect((await w.tools(run.capability)).status).toBe(200);
+  });
+
   it("an operation of a task with no agent gets an empty tool list, and cannot call", async () => {
     const w = await world();
     const run = await w.startRun();
@@ -551,6 +619,9 @@ describe("the routes' authorization", () => {
     const operation = w.db.get(`WORKSPACE#${run.workspaceId}`, `OPERATION#${run.operationId}`) as Record<string, unknown>;
     w.db.set({ ...operation, status: "CANCEL_REQUESTED" });
     for (const reply of [await w.tools(run.capability), await w.callTool(run.capability, body)]) expect(errorOf(reply).code).toBe("STALE_FENCE");
+    // A finished step that is still the workspace's active operation (the callback has not cleared it yet) is refused too.
+    w.db.set({ ...operation, status: "SUCCEEDED" });
+    for (const reply of [await w.tools(run.capability), await w.callTool(run.capability, body)]) expect(errorOf(reply).code).toBe("STALE_FENCE");
     w.db.set(operation);
     const workspace = w.db.get(`WORKSPACE#${run.workspaceId}`, "META") as Record<string, unknown>;
     w.db.set({ ...workspace, activeOperationId: randomUUID() });
@@ -559,6 +630,12 @@ describe("the routes' authorization", () => {
       expect(errorOf(reply).code).toBe("STALE_FENCE");
     }
     expect(w.linear.calls).toEqual([]);
+  });
+
+  it("serves nothing for an operation whose step is not an agent step", async () => {
+    const w = await world();
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read")], steps: [{ id: "triage", name: "Triage", kind: "plan", settings: { instructions: [] } }] });
+    expect((await w.tools(run.capability)).status).toBe(404);
   });
 
   it("serves nothing for an operation that is not a step of the task's agent", async () => {
@@ -684,6 +761,23 @@ describe("POST /v1/internal/agent-tools/call", () => {
     expect(refused.status).toBe(403);
     expect(errorOf(refused)).toEqual({ code: "AGENT_TOOL_NOT_GRANTED", message: NOT_GRANTED("triage-bot", "linear", "save_issue") });
     expect(seen).toEqual([]);
+    expect(w.linear.calls).toEqual([]);
+  });
+
+  it("asks no vendor anything about a tool the grants do not give", async () => {
+    const w = await world();
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read")] });
+    const refused = await w.callTool(run.capability, { requestId: randomUUID(), connector: "linear", scope: "charterarc", tool: "save_issue", schemaHash: "a".repeat(64), arguments: { title: "x" } });
+    expect(refused.status).toBe(403);
+    expect(w.linear.headers).toEqual([]);
+  });
+
+  it("refuses a tool the grants give but the vendor no longer offers, with the same words", async () => {
+    const w = await world();
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read")] });
+    const reply = await w.callTool(run.capability, { requestId: randomUUID(), connector: "linear", scope: "charterarc", tool: "retired_tool", schemaHash: "a".repeat(64), arguments: {} });
+    expect(reply.status).toBe(403);
+    expect(errorOf(reply)).toEqual({ code: "AGENT_TOOL_NOT_GRANTED", message: NOT_GRANTED("triage-bot", "linear", "retired_tool") });
     expect(w.linear.calls).toEqual([]);
   });
 
@@ -865,6 +959,15 @@ describe("POST /v1/internal/agent-tools/call", () => {
       expect(w.linear.calls.find((entry) => entry.name === "save_issue")!.arguments).toMatchObject({ labels: ["bug", "rovara"] });
     });
 
+    it("classifies once however often the gate asks", async () => {
+      const w = await world();
+      const same: boolean[] = [];
+      w.configure((base) => ({ ...base, gate: async (input) => { same.push(input.classify() === input.classify()); return { decision: "run" }; } }));
+      const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+      await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "hello" });
+      expect(same).toEqual([true]);
+    });
+
     it("hands the gate a classification built from live data: the org's guardrails are read on each call", async () => {
       const w = await world();
       const classes: string[] = [];
@@ -919,6 +1022,28 @@ describe("POST /v1/internal/agent-tools/call", () => {
   });
 
   describe("the items a run created", () => {
+    it("records nothing when the create failed", async () => {
+      const w = await world();
+      const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+      const hash = await w.schemaHash(run.capability, "linear", "save_issue");
+      w.linear.unauthorized.value = true;
+      const failed = await w.callTool(run.capability, { requestId: randomUUID(), connector: "linear", scope: "charterarc", tool: "save_issue", schemaHash: hash, arguments: { title: "Found a bug" } });
+      expect(failed.body.result).toMatchObject({ status: "FAILED" });
+      expect(w.db.find((item) => item.entityType === "AGENT_ITEM")).toEqual([]);
+    });
+
+    it("records a GitHub issue under its repository, so only that repository's issue is the run's own", async () => {
+      const w = await world();
+      const run = await w.startRun({ tools: [grant({ type: "github" }, "read_write")] });
+      const created = await w.githubCall(run.capability, "issue_write", { method: "create", title: "Found a bug", body: "details" });
+      expect(created.status, JSON.stringify(created.body)).toBe(200);
+      expect(w.db.find((item) => item.entityType === "AGENT_ITEM").map((item) => item.sk)).toEqual(["github#example/demo#7"]);
+      const own = await w.githubCall(run.capability, "issue_write", { method: "update", issue_number: 7, title: "A worse bug" });
+      expect(own.status, JSON.stringify(own.body)).toBe(200);
+      const foreign = await w.githubCall(run.capability, "issue_write", { method: "update", issue_number: 8, title: "Rename it" });
+      expect(foreign.status).toBe(503);
+    });
+
     it("records what a create made, so the same run may change it, and nothing else", async () => {
       const w = await world();
       const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
@@ -934,6 +1059,13 @@ describe("POST /v1/internal/agent-tools/call", () => {
   });
 
   describe("attribution", () => {
+    it("adds no footer for a connector the project set to attribution: false", async () => {
+      const w = await world({ linearAttribution: false });
+      const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+      await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "Looks like a duplicate" });
+      expect(bodyOf(w.linear.calls.find((entry) => entry.name === "save_comment")!)).toBe("Looks like a duplicate");
+    });
+
     it("adds a footer naming the person and the agent to the long text of a write", async () => {
       const w = await world();
       const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
@@ -956,6 +1088,30 @@ describe("POST /v1/internal/agent-tools/call", () => {
       expect(classes.map((entry) => entry.class)).toEqual(["consequential", "safe", "safe"]);
       expect(classes[0]!.reason).toMatch(/automation/u);
       expect(w.labelListings()).toBe(1);
+    });
+
+    it("a lister the dependencies hand in replaces the connector's own", async () => {
+      const w = await world({ labelTool: true });
+      const classes: string[] = [];
+      w.configure((base) => ({
+        ...base,
+        labelListers: () => ({ linear: async () => new Map([[UUID_AUTOMERGE, "bug"], ["rovara", "rovara"]]) }),
+        gate: async (input) => { classes.push((await input.classify()).class); return { decision: "run" }; },
+      }));
+      const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+      await w.linearCall(run.capability, "save_issue", { title: "x", addLabels: [UUID_AUTOMERGE] });
+      expect(classes).toEqual(["safe"]);
+      expect(w.labelListings()).toBe(0);
+    });
+
+    it("a label list tool the project approved for writing is not read", async () => {
+      const w = await world({ labelTool: "write" });
+      const classes: string[] = [];
+      w.configure((base) => ({ ...base, gate: async (input) => { classes.push((await input.classify()).class); return { decision: "run" }; } }));
+      const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+      await w.linearCall(run.capability, "save_issue", { title: "x", addLabels: [UUID_BUG] });
+      expect(classes).toEqual(["consequential"]);
+      expect(w.labelListings()).toBe(0);
     });
 
     it("a label id the connector's list does not hold makes the call wait", async () => {
@@ -1049,6 +1205,20 @@ describe("GitHub through the agent routes", () => {
     expect(w.githubCalls).toEqual([]);
     const found = await w.githubCall(run.capability, "pull_request_read", { pullNumber: 5, method: "get" });
     expect(found.body.result).toMatchObject({ status: "SUCCEEDED" });
+  });
+
+  it("holds the pull request lookup and the label read to the pinned installation too", async () => {
+    const w = await world({ pinnedInstallation: 4242 });
+    const classes: string[] = [];
+    w.configure((base) => ({ ...base, gate: async (input) => { classes.push((await input.classify()).class); return { decision: "run" }; } }));
+    const run = await w.startRun({ tools: [grant({ type: "github" }, "read_write")] });
+    await w.githubCall(run.capability, "pull_request_read", { pullNumber: 5, method: "get" });
+    expect(w.heads.mock.calls.length).toBeGreaterThan(0);
+    for (const entry of w.heads.mock.calls) expect(entry[3]).toEqual({ installationId: 4242 });
+    await w.githubCall(run.capability, "add_issue_comment", { issue_number: 3, body: "hello", labelIds: [11] });
+    expect(w.labelReads.length).toBeGreaterThan(0);
+    for (const read of w.labelReads) expect(read.options).toEqual({ installationId: 4242 });
+    expect(classes.at(-1)).toBe("consequential");
   });
 
   it("a read mints a read-only token for just that tool", async () => {

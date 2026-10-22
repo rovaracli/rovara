@@ -37,7 +37,11 @@ describe("pinnedLookup", () => {
 
 describe("pinnedFetch", () => {
   it("connects to the address it was given even though the name is not one anything resolves", async () => {
-    const server = createServer((request, response) => { response.writeHead(200, { "content-type": "text/plain", "x-seen-host": String(request.headers.host) }).end(`${request.method} ${request.url}`); });
+    const server = createServer((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => { body += String(chunk); });
+      request.on("end", () => { response.writeHead(200, { "content-type": "text/plain", "x-seen-host": String(request.headers.host) }).end(`${String(request.method)} ${String(request.url)} ${String(request.headers["content-type"])} ${body}`); });
+    });
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
     const port = (server.address() as { port: number }).port;
@@ -46,7 +50,7 @@ describe("pinnedFetch", () => {
       const fetchPinned = pinnedFetch(["127.0.0.1"]);
       const response = await fetchPinned(`http://never-resolves.invalid:${port}/path?q=1`, { method: "POST", body: "hello", headers: { "content-type": "text/plain" } });
       expect(response.status).toBe(200);
-      expect(await response.text()).toBe("POST /path?q=1");
+      expect(await response.text()).toBe("POST /path?q=1 text/plain hello");
       expect(response.headers.get("x-seen-host")).toBe(`never-resolves.invalid:${port}`);
     } finally {
       server.closeAllConnections();
@@ -181,6 +185,12 @@ describe("the MCP connector type", () => {
     const linear = linearConnectorType.resolve({ name: "linear", type: "linear", credentialRef: "linear-key", scopes: [{ alias: "team", teamId: "c408e946-78aa-4db8-923e-f78053dd954f" }], tools: [{ name: "get_issue", access: "read" }] }, project, { endpointGuard: vi.fn() });
     if ("unusable" in linear) throw new Error("unusable");
     expect(linear.connect).toBeUndefined();
+  });
+
+  it("the production broker puts the guard on every request to a company's endpoint on Rovara Cloud", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
+    expect(source).toContain("...(cloudOrgResolver === undefined ? {} : { mcpEndpointGuard: mcpEndpointGuard() }),");
   });
 
   it("the broker hands every connector type its endpoint guard", async () => {

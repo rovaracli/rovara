@@ -77,6 +77,11 @@ export interface AppliedAgentStep {
   ranModel?: ModelSelection;
 }
 
+/** Whether an operation is an agent step of a recipe that grants connector tools: it is given the `agent-tools` capability, and nothing else is (Task 19). */
+export function givesAgentTools(applied: Pick<AppliedAgentStep, "agentStep" | "toolGrants"> | undefined): boolean {
+  return applied?.agentStep?.kind === "agent" && applied.toolGrants === true;
+}
+
 const sameModel = (left: ModelIdentifier, right: ModelIdentifier): boolean => modelKey(left) === modelKey(right);
 
 /** Whether `left` is from a known AI company other than `right`'s. A model of an unrecognised company can never be shown to differ. */
