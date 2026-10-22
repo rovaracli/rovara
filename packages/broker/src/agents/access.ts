@@ -17,6 +17,7 @@ import {
   principalKey,
   projectAllows,
   type AgentAccessLevel,
+  type AuditProof,
   type AgentId,
   type AgentOwner,
   type AgentPrincipal,
@@ -25,6 +26,7 @@ import {
   type OrgRole,
   type ProjectRole,
 } from "@agentx/contracts";
+import type { AuditRuntime } from "../audit/outbox.js";
 import type { DeveloperSignInStore } from "../developer/store.js";
 import { readGuardrails } from "./guardrails.js";
 import type { AgentRecord, AgentShareLevel, AgentStore, RequestMark } from "./store.js";
@@ -48,12 +50,19 @@ export interface AgentAccessDeps {
   resolveDeveloper?: (orgId: OrgId, developerId: string) => Promise<string>;
   /** Where a stored record that can't be read is reported; by default one JSON line on stderr. */
   log?: (event: string, fields: Record<string, unknown>) => void;
+  /** The Audit Ledger's outbox, for the writes the routes make outside the agent store (the project AI settings, the spend policy); absent on a legacy install. */
+  audit?: AuditRuntime;
 }
 
 export interface AgentCaller {
   orgId: OrgId;
   developerId: string;
   orgRole: OrgRole;
+  /**
+   * How a decision was made, set only by the decide routes (`requireDecideSession`'s proof) and read only by the audit hooks of the decision.
+   * Absent, the decision's event says `{ kind: "none" }`. A request body can never set it.
+   */
+  decideProof?: AuditProof;
 }
 
 /** A custom agent's record, or a built-in (which has no record of its own; the org's settings for it are not access). */

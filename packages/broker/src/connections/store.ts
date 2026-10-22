@@ -2,7 +2,7 @@
 // the hook secrets of Plan 4's event hooks. A record holds the connection's settings, whether a secret has been saved,
 // and what the last check found. It never holds the key or token, or even the secret's name: that name is derived from
 // the org id and the connection id each time, and the value lives only in the org-tagged secret (org-secrets.ts).
-import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { listMcpTools } from "@agentx/gateway";
 import {
   ConnectionIdSchema,
@@ -18,6 +18,10 @@ import {
   type OrgConnection,
   type OrgId,
 } from "@agentx/contracts";
+import { auditConnectionRemoved, auditConnectionSaved, auditOccurrence } from "../audit/events.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPending, auditTransact, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
+import { auditActorOf } from "../audit/plan3-hooks.js";
 import { isSecretLeaf, orgConnectorSecretName, orgHookSecretName, type OrgSecrets } from "./org-secrets.js";
 
 type Item = Record<string, unknown>;
@@ -61,6 +65,11 @@ export interface OrgConnectionStoreInput extends OrgConnectionDeps {
    */
   checkEndpoint?: (url: string) => Promise<void>;
   listMcpTools?: typeof listMcpTools;
+  /**
+   * The Audit Ledger's outbox. With it, saving or removing a connection adds its pending audit item to the write that changes the record
+   * (after the secret, which is never part of an event). Absent on a legacy install: nothing is added.
+   */
+  audit?: AuditRuntime;
 }
 
 const CHECK_TIMEOUT_MS = 10_000;
@@ -143,7 +152,7 @@ export class OrgConnectionStore {
    * the saved one stays. A saved secret is never sent to another host: pointing a connection at a different site or
    * endpoint host needs a new secret with it.
    */
-  async put(input: { orgId: string; connection: unknown; secret?: unknown; by: string }): Promise<OrgConnectionRecord> {
+  async put(input: { orgId: string; connection: unknown; secret?: unknown; by: string; /** The request's id, when it has one: it makes the audit event's occurrence. */ requestId?: string }): Promise<OrgConnectionRecord> {
     const orgId = parseOrg(input.orgId);
     const parsed = OrgConnectionSchema.safeParse(input.connection);
     if (!parsed.success) {
@@ -181,31 +190,47 @@ export class OrgConnectionStore {
       updatedBy: input.by,
       updatedAt: at,
     };
+    // The event names the connection and its type, never the label or any part of the secret.
+    const event = await tryAuditEvent(this.input, () => auditConnectionSaved({
+      orgId, actor: auditActorOf(input.by), occurredAt: at, connectionId: connection.connectionId, connectorType: connection.type,
+      occurrence: input.requestId === undefined ? auditOccurrence(connection.connectionId, at) : auditOccurrence(input.requestId, connection.connectionId),
+    }));
+    const events = event === undefined ? [] : [event];
     if (existing === undefined) {
       await this.input.documentClient.send(new TransactWriteCommand({
         TransactItems: [
           { Put: { TableName: this.input.tableName, Item: item, ConditionExpression: "attribute_not_exists(pk)" } },
           { Put: { TableName: this.input.tableName, Item: { ...connectionsKey(orgId, connection.connectionId), entityType: "ORG_CONNECTION_DIRECTORY", orgId, connectionId: connection.connectionId }, ConditionExpression: "attribute_not_exists(pk)" } },
+          ...events.flatMap((pending) => auditPending(this.input, pending)),
         ],
       }));
     } else {
-      await this.input.documentClient.send(new PutCommand({ TableName: this.input.tableName, Item: item, ConditionExpression: "attribute_exists(pk)" }));
+      await auditTransact(this.input, { Put: { TableName: this.input.tableName, Item: item, ConditionExpression: "attribute_exists(pk)" } }, events);
     }
+    await flushAuditEvents(this.input, events);
     return strip(item) as unknown as OrgConnectionRecord;
   }
 
   /** Removes the connection and schedules its secret for deletion (7 days to recover it). */
-  async remove(input: { orgId: string; connectionId: string }): Promise<void> {
+  async remove(input: { orgId: string; connectionId: string; /** Who removed it; Rovara itself when absent. */ by?: string; /** The request's id, when it has one: it makes the audit event's occurrence. */ requestId?: string }): Promise<void> {
     const orgId = parseOrg(input.orgId);
     const existing = await readItem(this.input, orgId, input.connectionId);
     if (existing === undefined) throw coded("NOT_FOUND", "no connection has that ID");
     if (existing.hasSecret === true) await this.input.secrets.scheduleDelete(orgId, orgConnectorSecretName(this.input.env, orgId, input.connectionId));
+    const at = this.iso();
+    const event = await tryAuditEvent(this.input, () => auditConnectionRemoved({
+      orgId, actor: auditActorOf(input.by), occurredAt: at, connectionId: input.connectionId, connectorType: String(existing.type),
+      occurrence: input.requestId === undefined ? auditOccurrence(input.connectionId, at) : auditOccurrence(input.requestId, input.connectionId),
+    }));
+    const events = event === undefined ? [] : [event];
     await this.input.documentClient.send(new TransactWriteCommand({
       TransactItems: [
         { Delete: { TableName: this.input.tableName, Key: connectionKey(orgId, input.connectionId) } },
         { Delete: { TableName: this.input.tableName, Key: connectionsKey(orgId, input.connectionId) } },
+        ...events.flatMap((pending) => auditPending(this.input, pending)),
       ],
     }));
+    await flushAuditEvents(this.input, events);
   }
 
   /**

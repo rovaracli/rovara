@@ -832,12 +832,16 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
       resolveOwner: (_orgId, developerId) => followMerges(signInStore, developerId),
       ...(agents.newId === undefined ? {} : { newId: agents.newId }),
       ...(agents.builtins === undefined ? {} : { builtins: agents.builtins }),
+      // Publishes, rollbacks, owner and budget changes and the guardrails record their events in their own transactions (Audit Task 19).
+      ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
     }),
     projectMembers,
     documentClient: dependencies.documentClient,
     tableName: dependencies.tableName,
     signInStore,
     now: Date.now,
+    // The project AI settings and the spend policy are written by the routes themselves (Audit Task 19).
+    ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
     // The confirmation page is served by the cell, at the origin its access tokens are issued from.
     confirmOrigin: new URL(developer.issuer).origin,
     ...(agents.resolveSkill === undefined ? {} : { resolveSkill: agents.resolveSkill }),

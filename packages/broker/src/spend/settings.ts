@@ -28,6 +28,9 @@ import type { OwnerShare } from "./owner-total.js";
 import type { AgentRecord, BuiltinSettings, OwnerCap } from "../agents/store.js";
 import { commit, coded, type Item, type RequestMark, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { memberLimitOf, readBudgets, type OrgBudgetSettings } from "../org/budget.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPending, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
+import { auditActorOf, projectAiEvents, spendPolicyEvents } from "../audit/plan3-hooks.js";
 import { cleanUsd, readTopUp, withTopUp } from "./top-ups.js";
 
 /** What reading and writing the settings needs: the State table, and whether the install is a cloud one (it sets the placeholder budgets). */
@@ -36,6 +39,8 @@ export interface SpendSettingsDependencies {
   tableName: string;
   /** Ruling R47: true on a cloud install, whose orgs start with the placeholder monthly limits. */
   cloud?: boolean;
+  /** The Audit Ledger's outbox; absent on a legacy install, where a change to the project AI settings or the spend policy records nothing. */
+  audit?: AuditRuntime;
 }
 
 type Document = Record<string, unknown>;
@@ -98,11 +103,18 @@ export async function writeProjectAi(
   project: string,
   settings: ProjectAiSettings,
   by: string,
-  options: { expectedRevision?: number; request?: RequestMark } = {},
+  options: { expectedRevision?: number; request?: RequestMark; /** The settings the caller has just read at `expectedRevision`; read here when absent (only on an install with a ledger). */ before?: ProjectAiSettings } = {},
 ): Promise<StoredProjectAi> {
   const expected = options.expectedRevision ?? (await readProjectAiWithRevision(deps, orgId, project)).revision;
-  const item = putRevised(deps, projectAiKey(orgId, project), "PROJECT_AI", { ...settings, updatedBy: by, updatedAt: new Date(deps.now()).toISOString() }, expected);
-  await commit(deps, [item], () => changedUnderYou(`${project}'s AI settings`), options.request, { settings, revision: expected + 1 });
+  const updatedAt = new Date(deps.now()).toISOString();
+  // One `budget.changed` for each money limit that moved. The write commits once per revision, so the revision is each event's occurrence.
+  const events = await tryAuditEvents(deps, async () => projectAiEvents({
+    orgId, actor: auditActorOf(by), occurredAt: updatedAt, project, revision: expected + 1, after: settings,
+    before: options.before ?? (await readProjectAiWithRevision(deps, orgId, project)).settings,
+  }));
+  const item = putRevised(deps, projectAiKey(orgId, project), "PROJECT_AI", { ...settings, updatedBy: by, updatedAt }, expected);
+  await commit(deps, [item, ...events.flatMap((event) => auditPending(deps, event))], () => changedUnderYou(`${project}'s AI settings`), options.request, { settings, revision: expected + 1 });
+  await flushAuditEvents(deps, events);
   return { settings, revision: expected + 1 };
 }
 
@@ -176,12 +188,19 @@ export async function writeSpendPolicy(
   orgId: OrgId,
   policy: SpendPolicy,
   by: string,
-  options: { expectedRevision?: number; request?: RequestMark } = {},
+  options: { expectedRevision?: number; request?: RequestMark; /** The policy the caller has just read at `expectedRevision`; read here when absent (only on an install with a ledger). */ before?: SpendPolicy } = {},
 ): Promise<StoredSpendPolicy> {
   const now = deps.now ?? Date.now;
   const expected = options.expectedRevision ?? (await readSpendPolicyWithRevision(deps, orgId)).revision;
-  const item = putRevised({ ...deps, now }, orgSettingsKey(orgId, "SPEND_POLICY"), "ORG_SPEND_POLICY", { ...policy, updatedBy: by, updatedAt: new Date(now()).toISOString() }, expected);
-  await commit({ ...deps, now }, [item], () => changedUnderYou("your company's spend policy"), options.request, { policy, revision: expected + 1 });
+  const updatedAt = new Date(now()).toISOString();
+  // One `spend_policy.changed` for each figure that moved, at the revision the write commits.
+  const events = await tryAuditEvents(deps, async () => spendPolicyEvents({
+    orgId, actor: auditActorOf(by), occurredAt: updatedAt, revision: expected + 1, after: policy,
+    before: options.before ?? (await readSpendPolicyWithRevision(deps, orgId)).policy,
+  }));
+  const item = putRevised({ ...deps, now }, orgSettingsKey(orgId, "SPEND_POLICY"), "ORG_SPEND_POLICY", { ...policy, updatedBy: by, updatedAt }, expected);
+  await commit({ ...deps, now }, [item, ...events.flatMap((event) => auditPending(deps, event))], () => changedUnderYou("your company's spend policy"), options.request, { policy, revision: expected + 1 });
+  await flushAuditEvents(deps, events);
   return { policy, revision: expected + 1 };
 }
 

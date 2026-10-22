@@ -38,6 +38,7 @@ import {
   type AgentOwner,
   type AgentPrincipal,
   type AgentXError,
+  type AuditEventInput,
   type BaseRef,
   type OrgId,
   type OrgKey,
@@ -54,6 +55,10 @@ import {
 import { SkillStore } from "./skills.js";
 import { budgetOwnerOf, ownerShare, ownerTotalItems, withBudgetFields, type BudgetSubject, type OwnerShare } from "../spend/owner-total.js";
 import { cleanUsd } from "../spend/top-ups.js";
+import { auditBuiltinAdopted, auditGuardrailsChanged, auditOccurrence, auditPublished, auditRolledBack } from "../audit/events.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPending, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
+import { accountableChangedEvent, agentBudgetEvents, auditActorOf, ownerMovedEvent } from "../audit/plan3-hooks.js";
 
 /** PF28: the most custom layers a recipe can be built from; a built-in base underneath is not counted. */
 export const MAX_CUSTOM_LAYERS = 3;
@@ -157,6 +162,11 @@ export interface AgentStoreInput {
    * of agent budgets (Task 28). Without it an id is its own person.
    */
   resolveOwner?: (orgId: OrgId, developerId: string) => Promise<string>;
+  /**
+   * The Audit Ledger's outbox. With it, a publish, rollback, adoption, owner or accountable change, budget change and guardrails write adds its
+   * pending audit item to the transaction that commits it. Absent on a legacy install: nothing is added.
+   */
+  audit?: AuditRuntime;
 }
 
 const SHIPPED_BUILTINS: BuiltinSource = {
@@ -288,11 +298,29 @@ export class AgentStore {
     return updateItem(this.input, key, change);
   }
 
-  /** The one EVENT# item a write leaves. The sequence keeps one process's events in order; the random tail keeps two processes' apart. */
-  private event(orgId: OrgId, agentId: AgentId, kind: AgentEventKind, by: string, detail: Item = {}): TransactItem {
+  /**
+   * The one EVENT# item a write leaves, with its sort key and time, which are also the occurrence and the time of the audit events about the
+   * same change. The sequence keeps one process's events in order; the random tail keeps two processes' apart.
+   */
+  private newEvent(orgId: OrgId, agentId: AgentId, kind: AgentEventKind, by: string, detail: Item = {}): { item: TransactItem; sk: string; at: string } {
     const at = this.iso();
     const tail = `${String(++this.eventSequence).padStart(6, "0")}-${randomBytes(3).toString("hex")}`;
-    return this.put(agentKey(orgId, agentId, `EVENT#${at}#${tail}`), "AGENT_EVENT", { orgId, agentId, kind, at, by, ...detail });
+    const sk = `EVENT#${at}#${tail}`;
+    return { item: this.put(agentKey(orgId, agentId, sk as `EVENT#${string}`), "AGENT_EVENT", { orgId, agentId, kind, at, by, ...detail }), sk, at };
+  }
+
+  private event(orgId: OrgId, agentId: AgentId, kind: AgentEventKind, by: string, detail: Item = {}): TransactItem {
+    return this.newEvent(orgId, agentId, kind, by, detail).item;
+  }
+
+  /**
+   * The audit events of a write and their pending items, to add to the write's transaction (after every item whose refusal is mapped by position).
+   * `build` runs only on an install with a ledger; if it throws, or an event is not valid, the write goes on without that event (logged, no value).
+   * After the commit, `flushAuditEvents(this.input, events)` sends them.
+   */
+  private async audited(build: () => AuditEventInput[]): Promise<{ items: TransactItem[]; events: AuditEventInput[] }> {
+    const events = await tryAuditEvents(this.input, build);
+    return { items: events.flatMap((event) => auditPending(this.input, event)), events };
   }
 
   private transact(items: TransactItem[], refuse: (failed: Set<number>) => Error | undefined): Promise<void> {
@@ -422,13 +450,19 @@ export class AgentStore {
     const before = await this.ensureBuiltinSettings(input.orgId, input.agentId, input.by);
     const updatedAt = this.iso();
     const adopted: BuiltinSettings = { ...before, pinnedVersion: input.version, updatedBy: input.by, updatedAt };
+    const event = this.newEvent(input.orgId, input.agentId, "base_updated", input.by, { from: input.expectedPinnedVersion, to: input.version });
+    const audit = await this.audited(() => [auditBuiltinAdopted({
+      orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: event.at, occurrence: event.sk, agentId: input.agentId, version: input.version,
+    })]);
     await this.commit([
       this.update(builtinSettingsKey(input.orgId, input.agentId), {
         set: { pinnedVersion: input.version, updatedBy: input.by, updatedAt },
         when: (a) => `${a.name("pinnedVersion")} = ${a.value(input.expectedPinnedVersion)}`,
       }),
-      this.event(input.orgId, input.agentId, "base_updated", input.by, { from: input.expectedPinnedVersion, to: input.version }),
+      event.item,
+      ...audit.items,
     ], () => conflict(), input.request, { settings: adopted, previous: input.expectedPinnedVersion });
+    await flushAuditEvents(this.input, audit.events);
     return adopted;
   }
 
@@ -579,7 +613,11 @@ export class AgentStore {
    * was resolved with, so the version is the recipe that was compared) or else the skill's current digest. The write applies only while
    * the skill still has that content, so a skill edited in between refuses the publish instead of publishing something else.
    */
-  async publish(input: { orgId: OrgId; agentId: AgentId; expectedDraftRevision: number; digest: string; note?: string; by: string; expectedCurrentVersion?: number | null; skillDigests?: Readonly<Record<string, string>>; request?: RequestMark }): Promise<AgentVersion> {
+  async publish(input: {
+    orgId: OrgId; agentId: AgentId; expectedDraftRevision: number; digest: string; note?: string; by: string; expectedCurrentVersion?: number | null; skillDigests?: Readonly<Record<string, string>>; request?: RequestMark;
+    /** Whether the publish made anything less safe than what ran before, which a person confirmed (`less_safe`), or nothing (`safe`, the default); the audit event says which. */
+    safety?: "safe" | "less_safe";
+  }): Promise<AgentVersion> {
     if (!SHA256_HEX.test(input.digest)) throw coded("CONFIG_INVALID", "digest: must be the recipe's SHA-256 digest");
     const agent = await this.require(input.orgId, input.agentId);
     const draft = await this.getDraft(input.orgId, input.agentId);
@@ -602,6 +640,10 @@ export class AgentStore {
       publishedAt,
       ...(input.note === undefined ? {} : { note: input.note }),
     };
+    const event = this.newEvent(input.orgId, input.agentId, "published", input.by, { version, digest: input.digest, ...(input.note === undefined ? {} : { note: input.note }) });
+    const audit = await this.audited(() => [auditPublished({
+      orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: event.at, occurrence: event.sk, scope: "agent", targetId: input.agentId, version, safety: input.safety ?? "safe",
+    })]);
     const written: TransactItem[] = [
       this.put(agentKey(input.orgId, input.agentId, agentVersionSk(version)), "AGENT_VERSION", published as unknown as Item),
       this.update(agentKey(input.orgId, input.agentId, "META"), {
@@ -614,10 +656,11 @@ export class AgentStore {
           ...(input.expectedCurrentVersion === undefined ? [] : [input.expectedCurrentVersion === null ? `attribute_not_exists(${a.name("currentVersion")})` : `${a.name("currentVersion")} = ${a.value(input.expectedCurrentVersion)}`]),
         ].join(" AND "),
       }),
-      this.event(input.orgId, input.agentId, "published", input.by, { version, digest: input.digest, ...(input.note === undefined ? {} : { note: input.note }) }),
+      event.item,
     ];
-    // The skills' checks follow what is written; one of them failing is a skill that moved, not a draft that did.
-    await this.commit([...written, ...(pinned?.checks ?? [])], (failed) => ([...failed].some((index) => index < written.length) ? conflict() : coded("AGENT_REVISION_CONFLICT", "A skill this agent uses changed while it was being published. Publish again.")), input.request, published);
+    // The skills' checks follow what is written; one of them failing is a skill that moved, not a draft that did. The audit item is last of all.
+    await this.commit([...written, ...(pinned?.checks ?? []), ...audit.items], (failed) => ([...failed].some((index) => index < written.length) ? conflict() : coded("AGENT_REVISION_CONFLICT", "A skill this agent uses changed while it was being published. Publish again.")), input.request, published);
+    await flushAuditEvents(this.input, audit.events);
     return published;
   }
 
@@ -630,13 +673,20 @@ export class AgentStore {
     if (await this.getVersion(input.orgId, input.agentId, input.version) === undefined) throw coded("NOT_FOUND", `${agent.name} has no version ${String(input.version)}`);
     const updatedAt = this.iso();
     const rolled: AgentRecord = { ...agent, currentVersion: input.version, updatedAt };
+    const event = this.newEvent(input.orgId, input.agentId, "rolled_back", input.by, { from: input.expectedCurrentVersion, to: input.version });
+    const audit = await this.audited(() => [auditRolledBack({
+      orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: event.at, occurrence: event.sk, scope: "agent", targetId: input.agentId,
+      fromVersion: input.expectedCurrentVersion, toVersion: input.version,
+    })]);
     await this.commit([
       this.update(agentKey(input.orgId, input.agentId, "META"), {
         set: { currentVersion: input.version, updatedAt },
         when: (a) => `${a.name("currentVersion")} = ${a.value(input.expectedCurrentVersion)}`,
       }),
-      this.event(input.orgId, input.agentId, "rolled_back", input.by, { from: input.expectedCurrentVersion, to: input.version }),
+      event.item,
+      ...audit.items,
     ], () => conflict(), input.request, rolled);
+    await flushAuditEvents(this.input, audit.events);
     return rolled;
   }
 
@@ -818,11 +868,18 @@ export class AgentStore {
     const { monthlyBudgetUsd: _monthly, maxPerRunUsd: _perRun, ...others } = current; // eslint-disable-line @typescript-eslint/no-unused-vars -- replaced below
     const written = { ...others, ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }), ...(maxPerRunUsd === undefined ? {} : { maxPerRunUsd }), updatedAt, ...(isBuiltinAgentId(agentId) ? { updatedBy: by } : {}) };
     const totals = await this.totalsFor(orgId, current, written, options.ownerCap);
+    const event = this.newEvent(orgId, agentId, "budget_changed", by, withoutUndefined(detail));
+    const audit = await this.audited(() => agentBudgetEvents({
+      orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId,
+      before: { monthlyBudgetUsd: current.monthlyBudgetUsd, maxPerRunUsd: current.maxPerRunUsd }, after: { monthlyBudgetUsd, maxPerRunUsd },
+    }));
     await this.commit([
       this.update(key, { set, ...(remove.length > 0 ? { remove } : {}), when: budgetGuard(current) }),
       ...totals.items,
-      this.event(orgId, agentId, "budget_changed", by, withoutUndefined(detail)),
+      event.item,
+      ...audit.items,
     ], totals.refuse, request, written);
+    await flushAuditEvents(this.input, audit.events);
     return written;
   }
 
@@ -841,6 +898,11 @@ export class AgentStore {
     // The agent's budget leaves the old owner's total and joins the new one's, which the cap holds when one is given.
     const totals = await this.totalsFor(orgId, agent, moved, options.ownerCap);
     const guard = budgetGuard(agent);
+    const event = this.newEvent(orgId, agentId, "owner_changed", by, { from: agent.owner, to: owner, ...(accountable === undefined ? {} : { accountable }) });
+    const audit = await this.audited(() => [ownerMovedEvent({
+      orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId, from: agent.owner, to: owner,
+      ...(accountable === undefined ? {} : { accountable: accountable.developerId }),
+    })]);
     await this.commit([
       this.update(agentKey(orgId, agentId, "META"), {
         set: { owner, accountable, updatedAt },
@@ -848,8 +910,10 @@ export class AgentStore {
         when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${guard(a)}`,
       }),
       ...totals.items,
-      this.event(orgId, agentId, "owner_changed", by, { from: agent.owner, to: owner, ...(accountable === undefined ? {} : { accountable }) }),
+      event.item,
+      ...audit.items,
     ], totals.refuse, request, moved);
+    await flushAuditEvents(this.input, audit.events);
     return moved;
   }
 
@@ -862,22 +926,36 @@ export class AgentStore {
     if (isBuiltinAgentId(agentId)) {
       const before = await this.ensureBuiltinSettings(orgId, agentId, by);
       const totals = await this.totalsFor(orgId, before, withBudgetFields(before, { accountable }), options.ownerCap);
+      const event = this.newEvent(orgId, agentId, "owner_changed", by, { accountable, ...(before.accountable === undefined ? {} : { from: before.accountable }) });
+      const audit = await this.audited(() => [accountableChangedEvent({
+        orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId, accountable: accountable.developerId,
+        ...(before.accountable === undefined ? {} : { previous: before.accountable.developerId }),
+      })]);
       await this.commit([
         this.update(builtinSettingsKey(orgId, agentId), { set: { accountable, updatedBy: by, updatedAt }, when: budgetGuard(before) }),
         ...totals.items,
-        this.event(orgId, agentId, "owner_changed", by, { accountable, ...(before.accountable === undefined ? {} : { from: before.accountable }) }),
+        event.item,
+        ...audit.items,
       ], totals.refuse, request, { accountable });
+      await flushAuditEvents(this.input, audit.events);
       return;
     }
     const agent = await this.require(orgId, agentId);
     if (agent.owner.kind !== "project") throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
     const totals = await this.totalsFor(orgId, agent, withBudgetFields(agent, { accountable }), options.ownerCap);
     const guard = budgetGuard(agent);
+    const event = this.newEvent(orgId, agentId, "owner_changed", by, { accountable, ...(agent.accountable === undefined ? {} : { from: agent.accountable }) });
+    const audit = await this.audited(() => [accountableChangedEvent({
+      orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId, accountable: accountable.developerId,
+      ...(agent.accountable === undefined ? {} : { previous: agent.accountable.developerId }),
+    })]);
     await this.commit([
       this.update(agentKey(orgId, agentId, "META"), { set: { accountable, updatedAt }, when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${guard(a)}` }),
       ...totals.items,
-      this.event(orgId, agentId, "owner_changed", by, { accountable, ...(agent.accountable === undefined ? {} : { from: agent.accountable }) }),
+      event.item,
+      ...audit.items,
     ], totals.refuse, request, { accountable });
+    await flushAuditEvents(this.input, audit.events);
   }
 
   /**
@@ -958,19 +1036,30 @@ export class AgentStore {
    * document is still at `expectedRevision` (0 before the first write), so of two concurrent writes one wins and the other conflicts.
    * Returns the document as stored, with its new revision; that is also what a repeat of the request is answered with.
    */
-  async putGuardrails(input: { orgId: OrgId; guardrails: AgentGuardrails; expectedRevision: number; by: string; request?: RequestMark }): Promise<{ guardrails: AgentGuardrails; revision: number }> {
+  async putGuardrails(input: {
+    orgId: OrgId; guardrails: AgentGuardrails; expectedRevision: number; by: string; request?: RequestMark;
+    /** Whether this write makes anything less safe, which a person confirmed; the audit event says so. Default: no. */
+    widened?: boolean;
+  }): Promise<{ guardrails: AgentGuardrails; revision: number }> {
     const expected = input.expectedRevision;
     const stored = { guardrails: input.guardrails, revision: expected + 1 };
     const aliases = new Aliases();
+    const updatedAt = this.iso();
+    // One document per org, committed once per revision: the revision is the occurrence.
+    const audit = await this.audited(() => [auditGuardrailsChanged({
+      orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: updatedAt, occurrence: auditOccurrence(String(stored.revision)),
+      guardrailsId: input.orgId, revision: stored.revision, widened: input.widened === true,
+    })]);
     const item: TransactItem = {
       Put: {
         TableName: this.input.tableName,
-        Item: { ...agentGuardrailsKey(input.orgId), entityType: "AGENT_GUARDRAILS", revision: stored.revision, guardrails: withoutUndefined(input.guardrails as unknown as Item), updatedBy: input.by, updatedAt: this.iso() },
+        Item: { ...agentGuardrailsKey(input.orgId), entityType: "AGENT_GUARDRAILS", revision: stored.revision, guardrails: withoutUndefined(input.guardrails as unknown as Item), updatedBy: input.by, updatedAt },
         ConditionExpression: expected === 0 ? NOT_EXISTS : `${aliases.name("revision")} = ${aliases.value(expected)}`,
         ...(expected === 0 ? {} : { ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values }),
       },
     };
-    await this.commit([item], () => guardrailsConflict(), input.request, stored);
+    await this.commit([item, ...audit.items], () => guardrailsConflict(), input.request, stored);
+    await flushAuditEvents(this.input, audit.events);
     return stored;
   }
 }

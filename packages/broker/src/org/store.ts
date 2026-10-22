@@ -38,7 +38,8 @@ import {
 import { scheduleAuditShred } from "../audit/erase.js";
 import { auditMemberJoined, auditMemberLeft, auditMemberRemoved, auditMemberRoleChanged, auditOccurrence, auditOrgClosed } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import { auditPending, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
+import { auditPending, auditTransact, tryAuditEvent, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
+import { memberLimitChangedEvent } from "../audit/plan3-hooks.js";
 import { sha256Hex } from "../developer/tokens.js";
 import { INVITE_HASH_PATTERN, inviteTokenHash } from "./invite-url.js";
 
@@ -559,9 +560,22 @@ export class OrgStore {
       const seen = item?.memberOverrides;
       if (item === undefined || typeof seen !== "object" || seen === null || !Object.hasOwn(seen, developerId)) return;
       const others = Object.fromEntries(Object.entries(seen).filter(([id]) => id !== developerId));
+      // The limit is the member's own until now and the members' default after. The change is Rovara's (the system), recorded with the write that makes it:
+      // one occurrence per override, because a later override of the same member is another write of the settings (`updatedAt`).
+      const own = (seen as Record<string, unknown>)[developerId];
+      const fallback = item.memberDefaultMonthlyUsd;
+      const events = await tryAuditEvents(this.deps(), () => typeof own !== "number" ? [] : [memberLimitChangedEvent({
+        orgId, actor: SYSTEM_ACTOR, occurredAt: this.iso(), occurrence: auditOccurrence("override_removed", developerId, typeof item.updatedAt === "string" ? item.updatedAt : "", String(own)),
+        developerId, from: own, to: typeof fallback === "number" ? fallback : undefined,
+      })]);
       try {
         // The whole item is written back, as the budget settings are; the condition keeps a concurrent edit of the overrides from being lost.
-        await this.input.documentClient.send(new PutCommand({ TableName: this.input.tableName, Item: { ...item, memberOverrides: others }, ConditionExpression: "memberOverrides = :seen", ExpressionAttributeValues: { ":seen": seen } }));
+        await auditTransact(
+          { ...this.deps(), documentClient: this.input.documentClient },
+          { Put: { TableName: this.input.tableName, Item: { ...item, memberOverrides: others }, ConditionExpression: "memberOverrides = :seen", ExpressionAttributeValues: { ":seen": seen } } },
+          events,
+        );
+        await flushAuditEvents(this.deps(), events);
         return;
       } catch (error) {
         if (errorName(error) !== "ConditionalCheckFailedException") throw error;

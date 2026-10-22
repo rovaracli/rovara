@@ -9,7 +9,7 @@
 // Raw values (the ticket, the cookie, the state, the PKCE verifier) are never stored or logged: only their hashes.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, agentXError, type OrgId } from "@agentx/contracts";
+import { AgentXError, agentXError, type AuditProof, type OrgId } from "@agentx/contracts";
 import { mayDecide, type DecideKinds } from "./decide-kinds.js";
 import { sha256Hex } from "./tokens.js";
 
@@ -240,8 +240,21 @@ export interface DecideRequestContext {
 export interface DecideRequest { method: string; path: string; headers: Record<string, string | undefined>; body?: string }
 export interface DecideAuthority {
   orgId: OrgId; developerId: string; approvalId: string;
+  /**
+   * What the decision will carry in the Audit Ledger (R66): a fresh sign-in by email code, at the session's own sign-in time, and a hash of the
+   * session's key (never the cookie). The decide routes hand it to the kind that decides, which sets `caller.decideProof`.
+   */
+  proof: AuditProof;
   /** Ends the session once the decision is made (R5-2: it already cannot be used again). */
   finish(): Promise<void>;
+}
+
+/** The proof of a decide session: `authTime` is when the person signed in (not when they decided), `sessionRef` the SHA-256 of the session's key. */
+export function decideProofOf(cookie: string, session: Pick<DecideSession, "signedInAt" | "method">): AuditProof {
+  return {
+    kind: "fresh_sign_in", method: session.method, authTime: new Date(session.signedInAt * 1000).toISOString(),
+    sessionRef: sha256Hex(decideSessionKey(cookie).pk),
+  };
 }
 
 const DECIDE_PATHS = [
@@ -320,7 +333,7 @@ export async function requireDecideSession(context: DecideRequestContext, reques
   if (session === undefined || session.usedAt !== undefined || session.approvalId !== approvalId
     || session.expiresAt <= nowSeconds || nowSeconds - session.signedInAt > DECIDE_SECONDS) throw reauth();
   const authority = (): DecideAuthority => ({
-    orgId: session.orgId, developerId: session.developerId, approvalId,
+    orgId: session.orgId, developerId: session.developerId, approvalId, proof: decideProofOf(cookie, session),
     finish: () => context.store.deleteSession(cookie),
   });
   if (request.method === "GET" || request.method === "HEAD") return authority();

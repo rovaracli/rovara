@@ -18,6 +18,10 @@ import {
   projectMemberKey, trialGithubKey, type OrgId, type OrgRole,
 } from "@agentx/contracts";
 import { ownerKeyForSubject } from "../aws/lambda.js";
+import { auditOccurrence } from "../audit/events.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditTransact, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
+import { SYSTEM_ACTOR, memberLimitChangedEvent } from "../audit/plan3-hooks.js";
 import type { DeveloperRecord, DeveloperSignInStore } from "../developer/store.js";
 
 export interface MergeDuplicateMemberDependencies {
@@ -31,6 +35,8 @@ export interface MergeDuplicateMemberDependencies {
    * nothing spent. A failure to answer counts as "spend unknown", so the org is not disposable.
    */
   orgSpentUsd?: (orgId: OrgId) => Promise<number>;
+  /** The Audit Ledger's outbox: moving the duplicate's monthly limit records `budget.changed` (by the system) in the write that moves it. Absent: nothing is recorded. */
+  audit?: AuditRuntime;
 }
 
 export interface MergeDuplicateMemberInput {
@@ -233,14 +239,27 @@ async function moveBudgetOverride(deps: Deps, orgId: OrgId, survivorId: string, 
     if (item === undefined || !isRecord(seen) || !Object.hasOwn(seen, duplicateId)) return false;
     const { [duplicateId]: limit, ...others } = seen;
     const survivorHasOne = Object.hasOwn(others, survivorId);
+    // Recorded as Rovara's own change, in the write that makes it: the duplicate's limit falls back to the members' default, and the survivor's
+    // takes the duplicate's figure when the survivor had none. One occurrence per merge of this pair and limit (a second merge reads another limit or another settings write).
+    const fallback = typeof item.memberDefaultMonthlyUsd === "number" ? item.memberDefaultMonthlyUsd : undefined;
+    const events = await tryAuditEvents(deps, () => typeof limit !== "number" ? [] : [
+      { developerId: duplicateId, from: limit, to: fallback },
+      ...(survivorHasOne ? [] : [{ developerId: survivorId, from: fallback, to: limit }]),
+    ].map((change) => memberLimitChangedEvent({
+      orgId, actor: SYSTEM_ACTOR, occurredAt: new Date(deps.now()).toISOString(),
+      occurrence: auditOccurrence("override_merged", duplicateId, survivorId, typeof item.updatedAt === "string" ? item.updatedAt : "", String(limit), change.developerId), ...change,
+    })));
     try {
       // The whole item is written back, as the budget settings are; the condition keeps a concurrent edit of the overrides from being lost.
-      await deps.documentClient.send(new PutCommand({
-        TableName: deps.tableName,
-        Item: { ...item, memberOverrides: survivorHasOne ? others : { ...others, [survivorId]: limit } },
-        ConditionExpression: "memberOverrides = :seen",
-        ExpressionAttributeValues: { ":seen": seen },
-      }));
+      await auditTransact(deps, {
+        Put: {
+          TableName: deps.tableName,
+          Item: { ...item, memberOverrides: survivorHasOne ? others : { ...others, [survivorId]: limit } },
+          ConditionExpression: "memberOverrides = :seen",
+          ExpressionAttributeValues: { ":seen": seen },
+        },
+      }, events);
+      await flushAuditEvents(deps, events);
       return !survivorHasOne;
     } catch (error) {
       if (errorName(error) !== "ConditionalCheckFailedException") throw error;
