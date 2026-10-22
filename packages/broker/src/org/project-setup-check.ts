@@ -1,20 +1,22 @@
 // Plan 2, Task 22: a project's setup check. A maintainer asks for the project's setup commands and then its test commands to run on a fresh
 // workspace of theirs at the project's latest revision. Starting one writes, in ONE transaction: the workspace and its prepare (what a task start
 // writes for its own), the project's META `setupCheck` (which workspace, which revision, when, by whom) and the request record that makes the
-// request id replayable. Nothing else is written, and no model runs: no budget is asked and no limit slot is taken (the check is one prepare, and
-// the idle reaper stops its machine like any other).
+// request id replayable, plus (final review I3) the check's limit slot, its `SETUP_CHECK` record (which slot it holds) and its watch for the sweep.
+// No model runs: no budget is asked. The slot is given back, and the workspace closed, when the check ends (`closeSetupCheck`).
 //
 // The status is never stored. `setupStateOf` derives it on every read from META and the check's workspace:
-//   no `setupCheck` -> unchecked; a newer revision exists -> outdated; the workspace is PREPARING -> checking (failed after 50 minutes, as the
-//   stuck-setup sweep treats a task's prepare, because a check has no task for that sweep to find); PREPARATION_FAILED -> failed, with the failing
-//   step read from the prepare's recorded error; anything else -> ready.
+//   no `setupCheck` -> unchecked; a newer revision exists -> outdated; the workspace is PREPARING -> checking (failed after 50 minutes, the limit
+//   the sweep fails a stalled check at); PREPARATION_FAILED -> failed, with the failing step read from the prepare's recorded error; anything else
+//   -> ready. A workspace the check closed reads as the status it had when it closed (`closedFrom`).
 import { QueryCommand, TransactWriteCommand, GetCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import {
   INDEX_EXPIRY_ATTRIBUTE, agentXError, formatCommandLine, projectMetaKey, redactText,
   type AppProjectSummary, type OrgId, type OrgKey, type ProjectCommand,
 } from "@agentx/contracts";
 import { STUCK_SETUP_MS } from "../aws/stuck-setup.js";
+import { chargeConflict, chargeItems, limitReached } from "../developer/limits.js";
 import type { ProjectMetaItem } from "../developer/project-roles.js";
+import type { WorkspaceCharge } from "../developer/task-records.js";
 
 type Send = { send(command: unknown): Promise<unknown> };
 type TransactItems = NonNullable<TransactWriteCommandInput["TransactItems"]>;
@@ -38,6 +40,21 @@ export interface SetupCheckedDefinition {
 export const FAILED_REASON_MAX = 300;
 const COMMAND_SHOWN_MAX = 120;
 export const STALLED_STEP = "setup: did not finish within 50 minutes";
+/** What the sweep records as a stalled check's prepare error: with the "setup: " the status adds, it reads as `STALLED_STEP`. */
+export const STALLED_CHECK_ERROR = "did not finish within 50 minutes";
+
+/** The partition the sweep reads: one watch per check, sorted by the check's start, so "older than 50 minutes" is one key range. */
+export const SETUP_CHECK_WATCH_PK = "SETUP_CHECK_WATCH";
+export const setupCheckWatchKey = (createdAt: string, workspaceId: string): OrgKey => ({ pk: SETUP_CHECK_WATCH_PK, sk: `${createdAt}#${workspaceId}` });
+/** The check's own record in its workspace's partition: which slot it holds, and whether that was given back. */
+export const setupCheckRecordKey = (workspaceId: string): OrgKey => ({ pk: `WORKSPACE#${workspaceId}`, sk: "SETUP_CHECK" });
+
+/** What a refused limit says; the admission and the write that raced it say the same. */
+export function setupCheckLimitMessage(full: "member" | "organization", limits: { member: number; organization: number }): string {
+  return full === "member"
+    ? `you have reached the limit of ${limits.member} open workspaces per person; close a task or wait for one to finish, then run the setup check again`
+    : `this AgentX has reached its limit of ${limits.organization} open workspaces; close a task, or ask an admin, then run the setup check again`;
+}
 
 const first = (text: string, limit: number) => [...text].slice(0, limit).join("").trimEnd();
 /** Text for a person's screen: redacted, on one line, with every control and format character (escapes, direction overrides) turned into a space. */
@@ -85,13 +102,15 @@ export async function setupStateOf(deps: SetupCheckDependencies, meta: ProjectMe
   if (check.revision < definition.revision) return { status: "outdated", ...checked };
   const workspace = await getItem(deps.documentClient, deps.tableName, { pk: `WORKSPACE#${check.workspaceId}`, sk: "META" });
   if (workspace === undefined || typeof workspace.status !== "string") return { status: "unchecked" };
-  if (workspace.status === "PREPARING") {
+  // A closed workspace reads as it did when it closed; one closed with no record of that (never PREPARING, or failed) reads ready.
+  const workspaceStatus = workspace.status === "CLOSED" && typeof workspace.closedFrom === "string" ? workspace.closedFrom : workspace.status;
+  if (workspaceStatus === "PREPARING") {
     const started = Date.parse(check.startedAt);
     // A prepare nobody finished: it reads as failed, so the person is told and a new check may start. (A task's prepare has the stuck-setup sweep.)
     if (Number.isFinite(started) && deps.now() - started > STUCK_SETUP_MS) return { status: "failed", ...checked, failedStep: STALLED_STEP };
     return { status: "checking", ...checked };
   }
-  if (workspace.status === "PREPARATION_FAILED") {
+  if (workspaceStatus === "PREPARATION_FAILED") {
     const error = await recordedFailure(deps, check.workspaceId);
     return { status: "failed", ...checked, ...(error === undefined ? {} : { failedStep: failedStepOf(error, definition) }) };
   }
@@ -124,15 +143,21 @@ export interface SetupCheckStart {
   revision: number;
   /** The workspace the prepare creates, and the items that create it (a task start's own: workspace, default pointer, operation, outbox, membership). */
   workspaceId: string;
+  /** When the prepare was created: the watch is keyed by it. */
+  createdAt: string;
   preparation: TransactItems;
+  /** The slot the check takes (the person's and the org's counters) and the limits it is taken under. The workspace's id is the holder. */
+  charge: WorkspaceCharge;
+  limits: { member: number; organization: number };
   /** The workspace of the `setupCheck` this start read in META (undefined when it read none): the write holds only while that is still the one there. */
   seenWorkspaceId: string | undefined;
 }
 
 /**
- * Starts the check: the prepare's items, the META `setupCheck` and the request record, in one transaction. True when it committed; false when it was
- * cancelled (another check, an archive or the same request id got in first: the caller reads again and decides). The META write also holds only
- * while the project is not archived, so a check never starts on a project archived since the caller looked.
+ * Starts the check: the slot, the prepare's items, the check's record and watch, the META `setupCheck` and the request record, in one transaction.
+ * True when it committed; false when it was cancelled (another check, an archive or the same request id got in first: the caller reads again and
+ * decides). A counter that filled since the caller read it is WORKSPACE_LIMIT. The META write also holds only while the project is not archived, so
+ * a check never starts on a project archived since the caller looked.
  */
 export async function commitSetupCheck(deps: SetupCheckDependencies, input: SetupCheckStart): Promise<boolean> {
   const at = new Date(deps.now());
@@ -157,11 +182,33 @@ export async function commitSetupCheck(deps: SetupCheckDependencies, input: Setu
     ConditionExpression: `attribute_not_exists(pk) OR ${INDEX_EXPIRY_ATTRIBUTE} <= :now`,
     ExpressionAttributeValues: { ":now": seconds },
   } };
+  const record = { Put: {
+    TableName: deps.tableName,
+    Item: { ...setupCheckRecordKey(input.workspaceId), entityType: "SETUP_CHECK", orgId: input.orgId, project: input.project, workspaceId: input.workspaceId, charge: input.charge, createdAt: input.createdAt },
+    ConditionExpression: "attribute_not_exists(pk)",
+  } };
+  const watch = { Put: {
+    TableName: deps.tableName,
+    Item: { ...setupCheckWatchKey(input.createdAt, input.workspaceId), entityType: "SETUP_CHECK_WATCH", workspaceId: input.workspaceId },
+  } };
   try {
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...input.preparation, meta, request] }));
+    // The slot first, at positions 0 and 1: chargeConflict reads the cancellation reasons by position.
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...chargeItems(deps.tableName, input.charge, input.limits, input.workspaceId), ...input.preparation, record, watch, meta, request] }));
     return true;
   } catch (error) {
-    if (error instanceof Error && error.name === "TransactionCanceledException") return false;
-    throw error;
+    if (!(error instanceof Error) || error.name !== "TransactionCanceledException") throw error;
+    let full: Awaited<ReturnType<typeof chargeConflict>> | undefined;
+    try {
+      full = await chargeConflict(deps.documentClient, deps.tableName, input.charge, input.workspaceId, error);
+    } catch (unmodeled) {
+      // Not about the counters (or unreadable): the caller reads again and decides.
+      if (unmodeled !== error) throw unmodeled;
+    }
+    // The counters are read again before a refusal: a cancellation only says an item's condition failed, and a counter that has room is no reason.
+    if (full === "member" || full === "organization") {
+      const reached = await limitReached(deps.documentClient, deps.tableName, input.charge, input.limits);
+      if (reached !== undefined) throw agentXError("WORKSPACE_LIMIT", setupCheckLimitMessage(reached, input.limits));
+    }
+    return false;
   }
 }

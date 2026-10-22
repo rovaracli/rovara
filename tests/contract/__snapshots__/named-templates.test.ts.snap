@@ -9569,6 +9569,13 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               },
             },
             {
+              "Action": "states:StartExecution",
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SessionsDeleterB48741EA",
+              },
+            },
+            {
               "Action": [
                 "ec2:DescribeInstances",
                 "ec2:DescribeVolumes",

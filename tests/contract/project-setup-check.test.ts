@@ -5,6 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { AppProjectDetailSchema, machineTimeMonthKey, orgMetaKey, projectMemberKey, projectMetaKey, projectRevisionKey, type OrgId, type OrgRole, type ProjectRole } from "../../packages/contracts/src/index.js";
+import { sweepStuckSetupChecks } from "../../packages/broker/src/aws/setup-check-close.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, registerRevision, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -429,5 +430,140 @@ describe("POST /v1/app/projects/{name}/setup-check: the request id", () => {
     h.db.injectFault({ command: "TransactWriteCommand", times: 5, error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }] } });
     expect(rejection(await check(h, OMAR))).toMatchObject({ status: 409, code: "WORKSPACE_BUSY" });
     expect(workspaces(h)).toEqual([]);
+  });
+});
+
+// Final review I3. A check takes a limit slot, which its end gives back, and its workspace is closed when the check ends, when a new check
+// supersedes it, or (a check that never reported) by the sweep. The tests count open workspaces and the member counter.
+describe("the setup check's workspace and slot (final review I3)", () => {
+  /** Every workspace item that is not closed. */
+  const openWorkspaces = (h: Harness) => h.db.find((item) => item.sk === "META" && String(item.pk).startsWith("WORKSPACE#") && item.entityType === "WORKSPACE" && item.status !== "CLOSED");
+  /** The slots the people's counters hold (the member counter is the one with a set of holders; the org's counter moves with it). */
+  const heldSlots = (h: Harness) => h.db.find((item) => (item.entityType === "SLACK_LIMIT" || item.entityType === "DEVELOPER_LIMIT") && item.tasks !== undefined)
+    .reduce((total, item) => total + (typeof item.count === "number" ? item.count : 0), 0);
+
+  it("takes a slot while checking, so a person at their limit cannot start a task meanwhile, and gives it back when the check succeeds", async () => {
+    const h = await harness({ memberLimit: 1 });
+    const { workspaceId, operationId } = await started(h);
+    expect(heldSlots(h)).toBeGreaterThan(0);
+    const refused = await h.dev(OMAR, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: NAME, instructions: "Fix it", client: "claude-code" });
+    expect(rejection(refused)).toMatchObject({ code: "WORKSPACE_LIMIT" });
+    await h.finish(workspaceId, operationId, "SUCCEEDED");
+    expect(heldSlots(h)).toBe(0);
+    expect(openWorkspaces(h)).toEqual([]);
+    expect(h.deleteEc2Session).toHaveBeenCalledWith(workspaceId);
+    expect(h.db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ status: "CLOSED", closedFrom: "READY" });
+    // The status still reads what the check found.
+    expect(await setupOf(h)).toMatchObject({ status: "ready", checkedRevision: 1 });
+    const task = await h.dev(OMAR, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: NAME, instructions: "Fix it", client: "claude-code" });
+    expect(task.status, JSON.stringify(task.body)).toBe(200);
+  });
+
+  it("gives the slot back and closes the workspace when the check fails, and the status still names the failing step", async () => {
+    const h = await harness({ memberLimit: 1 });
+    const { workspaceId, operationId } = await started(h);
+    await h.finish(workspaceId, operationId, "FAILED", { error: "setup step 0 (npm ci in repo/demo) exited 1" });
+    expect(heldSlots(h)).toBe(0);
+    expect(openWorkspaces(h)).toEqual([]);
+    expect(h.db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ status: "CLOSED", closedFrom: "PREPARATION_FAILED" });
+    expect(await setupOf(h)).toMatchObject({ status: "failed", failedStep: expect.stringMatching(/^setup: npm ci/) as string });
+  });
+
+  it("refuses a check that would pass the limit when the counter fills between the read and the write", async () => {
+    const h = await harness();
+    // The counters fill just as the transaction is sent; the cancellation names the first counter.
+    h.db.injectFault({
+      command: "TransactWriteCommand",
+      match: (input) => {
+        for (const item of (input.TransactItems as Array<{ Update?: { Key: { pk: string; sk: string } } }>).slice(0, 2)) h.db.set({ ...item.Update!.Key, entityType: "DEVELOPER_LIMIT", count: 99 });
+        return true;
+      },
+      error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }, { Code: "None" }] },
+    });
+    expect(rejection(await check(h, OMAR))).toMatchObject({ code: "WORKSPACE_LIMIT" });
+    expect(workspaces(h)).toEqual([]);
+  });
+
+  it("closes the workspace a new check supersedes when its own close did not land, and takes only the new check's slot", async () => {
+    const h = await harness({ memberLimit: 2 });
+    h.deleteEc2Session!.mockRejectedValueOnce(new Error("compute is busy"));
+    const first = await started(h);
+    await h.finish(first.workspaceId, first.operationId, "SUCCEEDED");
+    // The close after the result failed: the workspace is open and still holds its slot.
+    expect(openWorkspaces(h)).toHaveLength(1);
+    expect(heldSlots(h)).toBe(1);
+    const second = await started(h);
+    expect(h.db.get(`WORKSPACE#${first.workspaceId}`, "META")).toMatchObject({ status: "CLOSED" });
+    expect(h.deleteEc2Session).toHaveBeenCalledWith(first.workspaceId);
+    expect(openWorkspaces(h).map((item) => (item as { id?: string }).id)).toEqual([second.workspaceId]);
+    expect(heldSlots(h)).toBe(1);
+    await h.finish(second.workspaceId, second.operationId, "SUCCEEDED");
+    expect(openWorkspaces(h)).toEqual([]);
+    expect(heldSlots(h)).toBe(0);
+  });
+
+  it("lets the sweep fail and close a check that never reported, and give its slot back", async () => {
+    const h = await harness({ memberLimit: 1 });
+    const { workspaceId, operationId } = await started(h);
+    const deleteCompute = vi.fn(async () => undefined);
+    // Not yet 50 minutes: untouched.
+    expect(await sweepStuckSetupChecks(h.db, "state", new Date(Date.now() + 10 * 60_000), deleteCompute)).toEqual({ closed: [], dropped: 0, kept: 0 });
+    expect(openWorkspaces(h)).toHaveLength(1);
+    const late = new Date(Date.now() + 55 * 60_000);
+    expect(await sweepStuckSetupChecks(h.db, "state", late, deleteCompute)).toEqual({ closed: [workspaceId], dropped: 0, kept: 0 });
+    expect(deleteCompute).toHaveBeenCalledWith(expect.objectContaining({ id: workspaceId }));
+    expect(openWorkspaces(h)).toEqual([]);
+    expect(heldSlots(h)).toBe(0);
+    expect(h.db.get(`WORKSPACE#${workspaceId}`, `OPERATION#${operationId}`)).toMatchObject({ status: "FAILED" });
+    expect(h.db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ status: "CLOSED", closedFrom: "PREPARATION_FAILED" });
+    expect(h.db.find((item) => item.pk === "SETUP_CHECK_WATCH")).toEqual([]);
+    // Run again: nothing left to do.
+    expect(await sweepStuckSetupChecks(h.db, "state", late, deleteCompute)).toEqual({ closed: [], dropped: 0, kept: 0 });
+    expect(heldSlots(h)).toBe(0);
+  });
+
+  it("closes a finished check the sweep finds still open, and keeps the watch when the compute cannot be deleted yet", async () => {
+    const h = await harness({ memberLimit: 1 });
+    h.deleteEc2Session!.mockRejectedValueOnce(new Error("compute is busy"));
+    const { workspaceId, operationId } = await started(h);
+    await h.finish(workspaceId, operationId, "SUCCEEDED");
+    expect(openWorkspaces(h)).toHaveLength(1);
+    const late = new Date(Date.now() + 55 * 60_000);
+    const failing = vi.fn(async () => { throw new Error("busy"); });
+    expect(await sweepStuckSetupChecks(h.db, "state", late, failing)).toEqual({ closed: [], dropped: 0, kept: 1 });
+    expect(openWorkspaces(h)).toHaveLength(1);
+    expect(await sweepStuckSetupChecks(h.db, "state", late, vi.fn(async () => undefined))).toEqual({ closed: [workspaceId], dropped: 0, kept: 0 });
+    expect(openWorkspaces(h)).toEqual([]);
+    expect(heldSlots(h)).toBe(0);
+  });
+
+  it("takes the check's slot, workspace, watch and record in the one transaction, within 100 items", async () => {
+    const h = await harness();
+    const sent: Array<Array<Record<string, unknown>>> = [];
+    const send = h.db.send.bind(h.db);
+    h.db.send = (async (command: { constructor: { name: string }; input?: { TransactItems?: Array<Record<string, unknown>> } }) => {
+      if (command.constructor.name === "TransactWriteCommand") sent.push(command.input?.TransactItems ?? []);
+      return send(command as never);
+    });
+    const { workspaceId } = await started(h);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.length).toBeLessThanOrEqual(100);
+    expect(h.db.get(`WORKSPACE#${workspaceId}`, "SETUP_CHECK")).toMatchObject({ orgId: TEST_ORG, project: NAME, workspaceId });
+    expect(h.db.find((item) => item.pk === "SETUP_CHECK_WATCH")).toHaveLength(1);
+  });
+
+  it("does not touch another person's check workspace or any task's workspace when it supersedes", async () => {
+    const h = await harness({ memberLimit: 3 });
+    await addPerson(h, MAYA, "owner");
+    const task = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: NAME, instructions: "Fix it", client: "claude-code" });
+    expect(task.status).toBe(200);
+    const first = await started(h);
+    await h.finish(first.workspaceId, first.operationId, "SUCCEEDED");
+    const second = await started(h);
+    await h.finish(second.workspaceId, second.operationId, "SUCCEEDED");
+    const stillOpen = openWorkspaces(h);
+    expect(stillOpen).toHaveLength(1);
+    expect(stillOpen[0]).toMatchObject({ ownerKey: expect.any(String) as string });
+    expect(h.deleteEc2Session!.mock.calls.map(([id]) => id).sort()).toEqual([first.workspaceId, second.workspaceId].sort());
   });
 });

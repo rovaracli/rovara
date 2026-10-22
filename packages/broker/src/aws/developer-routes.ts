@@ -64,6 +64,7 @@ import {
   UnlinkableSignInMethodSchema,
   type LinkedIdentity,
   type OrgId,
+  type WorkspaceInstance,
   type OrgRole,
   OrgIdSchema,
   OrgRoleSchema,
@@ -98,10 +99,12 @@ import { checkTaskPersonIdentity, registerTaskChannelPeople, resolveTaskPickerPe
 import { taskPeopleDisplayAdmission, type TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
 import { DeveloperSignInStore, META, endedByAdmin, endedByUnlink, methodSince, startedBeforeMethodOn, type DeveloperMarks, type DeveloperRecord, type SessionRecord } from "../developer/store.js";
 import type { ChatGptConnections } from "../chatgpt/connections.js";
-import { developerTaskIdentity, type DeveloperTaskRecord } from "../developer/task-records.js";
-import { developerCharge, limitReached, readWorkspaceLimits } from "../developer/limits.js";
+import { developerTaskIdentity, type DeveloperTaskRecord, type WorkspaceCharge } from "../developer/task-records.js";
+import { developerCharge, limitReached, readWorkspaceLimits, type WorkspaceLimits } from "../developer/limits.js";
+import { STUCK_SETUP_MS } from "./stuck-setup.js";
+import { closeSetupCheck } from "./setup-check-close.js";
 import { admitMachineTime, admitTrial } from "../org/trial.js";
-import { commitSetupCheck, setupCheckReplay, setupStateOf, type SetupCheckDependencies } from "../org/project-setup-check.js";
+import { commitSetupCheck, setupCheckLimitMessage, setupCheckReplay, setupStateOf, type SetupCheckDependencies } from "../org/project-setup-check.js";
 import type { DeveloperTaskActions } from "./developer-task-actions.js";
 import {
   createPageComment, decideOnPage, deletePageComment, editPageComment, getTaskDocumentView, getTaskFreshness, getTaskPageState, listPageComments, setPageSuggestion,
@@ -941,10 +944,10 @@ function setupCheckDepsOf(deps: DeveloperRouteDependencies): SetupCheckDependenc
 /**
  * What a setup check must pass: the admissions of a task start except the model budget (no model runs). The org's GitHub connection must still
  * reach every repository, a cloud org's trial must be unlocked and its month of machine time not used up, and the person must be under the
- * workspace limits. It takes no limit slot: the check is one prepare, which the idle reaper stops like any other. Everything is read before
- * anything is written, so a refused check leaves nothing behind.
+ * workspace limits; the check then takes a slot (`commitSetupCheck`). Everything is read before anything is written, so a refused check leaves
+ * nothing behind.
  */
-async function admitSetupCheck(deps: DeveloperRouteDependencies, caller: DeveloperCaller, definition: Parameters<NonNullable<DeveloperRouteDependencies["requireRepositoriesConnected"]>>[1], limitDefaults: { member: number; organization: number }): Promise<void> {
+async function admitSetupCheck(deps: DeveloperRouteDependencies, caller: DeveloperCaller, definition: Parameters<NonNullable<DeveloperRouteDependencies["requireRepositoriesConnected"]>>[1], limitDefaults: { member: number; organization: number }): Promise<{ charge: WorkspaceCharge; limits: WorkspaceLimits }> {
   if (deps.requireRepositoriesConnected !== undefined) await deps.requireRepositoriesConnected(caller.orgId, definition);
   if (deps.cloud === true) {
     const trial = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };
@@ -952,9 +955,26 @@ async function admitSetupCheck(deps: DeveloperRouteDependencies, caller: Develop
     await admitMachineTime(trial, caller.orgId);
   }
   const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, caller.orgId, limitDefaults);
-  const full = await limitReached(deps.documentClient, deps.tableName, developerCharge({ orgId: caller.orgId, teamId: deps.developer.slackTeamId, slackUserId: caller.slackUserId, developerId: caller.developerId }), limits);
-  if (full === "member") throw agentXError("WORKSPACE_LIMIT", `you have reached the limit of ${limits.member} open workspaces per person; close a task or wait for one to finish, then run the setup check again`);
-  if (full === "organization") throw agentXError("WORKSPACE_LIMIT", `this AgentX has reached its limit of ${limits.organization} open workspaces; close a task, or ask an admin, then run the setup check again`);
+  const charge = developerCharge({ orgId: caller.orgId, teamId: deps.developer.slackTeamId, slackUserId: caller.slackUserId, developerId: caller.developerId });
+  const full = await limitReached(deps.documentClient, deps.tableName, charge, limits);
+  if (full !== undefined) throw agentXError("WORKSPACE_LIMIT", setupCheckLimitMessage(full, limits));
+  return { charge, limits };
+}
+
+/**
+ * The workspace a new check replaces is closed (its machine and volume deleted, its slot given back) before the new one is admitted, so the new
+ * check does not count the old. Best effort: a close that cannot land now is left to the sweep, which closes any check older than 50 minutes.
+ */
+async function closeSupersededCheck(deps: DeveloperRouteDependencies, tasks: NonNullable<DeveloperRouteDependencies["tasks"]>, previous: { workspaceId: string; startedAt: string } | undefined): Promise<void> {
+  if (previous === undefined) return;
+  const started = Date.parse(previous.startedAt);
+  try {
+    await closeSetupCheck(deps.documentClient, deps.tableName, previous.workspaceId, {
+      now: new Date(deps.now()), stalled: Number.isFinite(started) && deps.now() - started > STUCK_SETUP_MS, deleteCompute: (workspace) => tasks.deleteCompute(workspace as WorkspaceInstance),
+    });
+  } catch (error) {
+    logDeveloperEvent({ event: "developer.setup_check_supersede_close_failed", workspaceId: previous.workspaceId, error: error instanceof Error ? error.name : "unknown" });
+  }
 }
 
 const SETUP_CHECK_ATTEMPTS = 3;
@@ -986,14 +1006,15 @@ async function startProjectSetupCheck(deps: DeveloperRouteDependencies, caller: 
     if (project === undefined) throw agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
     const meta = await readProjectMeta(deps, caller.orgId, name);
     if ((await setupStateOf(checks, meta, project.definition)).status === "checking") throw agentXError("WORKSPACE_BUSY", SETUP_CHECK_BUSY);
-    await admitSetupCheck(deps, caller, project.definition, tasks.limitDefaults);
+    await closeSupersededCheck(deps, tasks, meta?.setupCheck);
+    const { charge, limits } = await admitSetupCheck(deps, caller, project.definition, tasks.limitDefaults);
     // The workspace is the caller's own and fresh: an owner key of its own, derived from the caller (as a task's is), so the check never touches
     // a task's workspace or the caller's default one, and re-checking at a newer revision is a new workspace.
     const identity = developerTaskIdentity({ taskId: randomUUID(), developerId: caller.developerId, provider: caller.amr, developerName: caller.name, client: "Rovara app" }, caller.orgId);
     const preparation = await tasks.preparation(identity, project, requestId);
     const committed = await commitSetupCheck(checks, {
       orgId: caller.orgId, project: name, requestId, actorId: caller.developerId, revision: project.definition.revision,
-      workspaceId: preparation.workspace.id, preparation: preparation.items, seenWorkspaceId: meta?.setupCheck?.workspaceId,
+      workspaceId: preparation.workspace.id, createdAt: preparation.workspace.createdAt, preparation: preparation.items, charge, limits, seenWorkspaceId: meta?.setupCheck?.workspaceId,
     });
     if (committed) {
       logDeveloperEvent({ event: "developer.project_setup_check_started", orgId: caller.orgId, project: name, workspaceId: preparation.workspace.id });

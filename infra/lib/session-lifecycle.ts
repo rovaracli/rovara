@@ -232,6 +232,9 @@ export class SessionLifecycle extends Construct {
     this.provisioner.grantStartExecution(this.reconciler);
     this.provisioner.grantRead(this.reconciler);
     this.deleter.grantRead(this.reconciler);
+    // Final review I3, named environments only (setup checks exist only there; the legacy templates stay as they were): the sweep of project setup
+    // checks closes a stalled check's workspace, which starts the deleter for its session.
+    if (naming.env !== undefined) this.deleter.grantStartExecution(this.reconciler);
     this.reconciler.addToRolePolicy(new iam.PolicyStatement({ sid: "Describe", actions: ["ec2:DescribeInstances", "ec2:DescribeVolumes"], resources: ["*"] }));
     this.reconciler.addToRolePolicy(new iam.PolicyStatement({
       sid: "RepairOwn",

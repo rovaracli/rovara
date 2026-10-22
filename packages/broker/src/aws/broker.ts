@@ -256,6 +256,7 @@ import { ZodError, z } from "zod";
 import { healthProbes } from "./health-probes.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
 import { releaseFailedPreparation, slackThreadKey } from "./failed-preparation.js";
+import { closeSetupCheck } from "./setup-check-close.js";
 import { releaseFailedCancelWorkspace } from "./failed-cancel-release.js";
 import { assertNoUntrustedRoutingFields, authorizeWorkspace } from "../authorization.js";
 import type { GitHubAppCredentialProvider, GitHubTokenScope } from "../github-app.js";
@@ -11683,6 +11684,17 @@ async function recordTerminalResult(
   }
   // #213: a prepare that did not succeed leaves the workspace PREPARATION_FAILED, which stops
   // counting toward the workspace limits now; the release logs, and never fails the callback.
+  // Final review I3: a project setup check has nothing more to do on its machine once its prepare reports, success or not: its workspace is
+  // closed and its limit slot given back now. A close that cannot land here is the next check's, or the sweep's. Never fails the callback.
+  if (operation.kind === "prepare") {
+    try {
+      await closeSetupCheck(dependencies.documentClient, dependencies.tableName, workspace.id, {
+        now: new Date(), stalled: false, deleteCompute: (target) => deleteWorkspaceCompute(dependencies, target as WorkspaceInstance),
+      });
+    } catch (error) {
+      console.log(JSON.stringify({ component: "broker", event: "developer.setup_check_close_failed", workspaceId: workspace.id, error: error instanceof Error ? error.name : "unknown" }));
+    }
+  }
   if (operation.kind === "prepare" && recordedStatus !== "SUCCEEDED") {
     await releaseFailedPreparation(dependencies.documentClient, dependencies.tableName, workspace.id);
     // #225: a developer task's failed setup is an event of its own, so the task shows when it failed.

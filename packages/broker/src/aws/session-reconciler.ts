@@ -16,6 +16,7 @@ import { requiredEnvironment } from "./lambda.js";
 import { failActiveOperation } from "./outbox-failure.js";
 import { SessionManager, computeMeteringFromEnvironment, workspaceBinding } from "./sessions.js";
 import { expireIndexDays, indexSweepWanted } from "./index-expiry.js";
+import { sweepStuckSetupChecks } from "./setup-check-close.js";
 import { sweepStuckSetups } from "./stuck-setup.js";
 import { stuckCancelRetrier, sweepStuckCancels, type StuckCancelCandidate, type StuckCancelCompute, type StuckCancelSweepResult, type StuckCancelWorker } from "./stuck-cancels.js";
 import { slackBotTokenFrom, sweepUnwaitedTasks, unwaitedTaskBackstopConfiguration, type SlackThreadPlace, type UnwaitedTaskSweepResult } from "./unwaited-tasks.js";
@@ -459,19 +460,34 @@ function slackThreadPoster(): (thread: SlackThreadPlace, text: string) => Promis
 const backstop = unwaitedTaskBackstopConfiguration(process.env);
 if (backstop.state === "partial") console.log(JSON.stringify({ component: "session-reconciler", event: "reconciler.unwaited_task_backstop_partial", missing: backstop.missing.join(",") }));
 
-export const handler = createReconcilerHandler({
-  sessions: new SessionManager({
-    documentClient,
-    tableName,
-    ...computeMeteringFromEnvironment(documentClient, tableName),
-    executions: {
-      provisionerArn: process.env.PROVISIONER_ARN ?? "",
-      deleterArn: process.env.DELETER_ARN ?? "",
-      async start(input) {
-        return (await sfn.send(new StartExecutionCommand(input))).executionArn!;
-      },
+const sessionManager = new SessionManager({
+  documentClient,
+  tableName,
+  ...computeMeteringFromEnvironment(documentClient, tableName),
+  executions: {
+    provisionerArn: process.env.PROVISIONER_ARN ?? "",
+    deleterArn: process.env.DELETER_ARN ?? "",
+    async start(input) {
+      return (await sfn.send(new StartExecutionCommand(input))).executionArn!;
     },
-  }),
+  },
+});
+
+/** The stuck-setup sweep for developer tasks, and (final review I3) the one for project setup checks, which closes a stalled check's workspace. */
+async function sweepSetups(now: Date): Promise<{ failed: string[] }> {
+  const log = (entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "session-reconciler", ...entry }));
+  const [tasks, checks] = await Promise.allSettled([
+    sweepStuckSetups(documentClient, tableName, now, log),
+    sweepStuckSetupChecks(documentClient, tableName, now, async (workspace) => { await sessionManager.deleteSession(workspace.id); }, log),
+  ]);
+  // Both ran; the run fails (and the alarm sees it) when either did.
+  if (tasks.status === "rejected") throw tasks.reason;
+  if (checks.status === "rejected") throw checks.reason;
+  return { failed: [...tasks.value.failed, ...checks.value.closed] };
+}
+
+export const handler = createReconcilerHandler({
+  sessions: sessionManager,
   async instances() {
     const found: InstanceView[] = [];
     let NextToken: string | undefined;
@@ -544,7 +560,7 @@ export const handler = createReconcilerHandler({
   },
   binding: (workspaceId) => workspaceBinding(documentClient, tableName, installOrgIdFromEnvironment(), workspaceId),
   sweepStuckCancels: stuckCancelSweep(),
-  sweepStuckSetups: (now) => sweepStuckSetups(documentClient, tableName, now, (entry) => console.log(JSON.stringify({ component: "session-reconciler", ...entry }))),
+  sweepStuckSetups: sweepSetups,
   ...(backstop.state === "on" ? { sweepUnwaitedTasks: unwaitedTaskSweep() } : {}),
   ...(indexSweepWanted(process.env) ? { expireIndexDays: (now: Date) => expireIndexDays(documentClient, tableName, installOrgIdFromEnvironment(), now, (entry) => console.log(JSON.stringify({ component: "session-reconciler", ...entry }))) } : {}),
   emit(metrics) {
