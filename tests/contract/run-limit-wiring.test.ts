@@ -9,7 +9,7 @@ import { runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { SPEND_REQUEST_TTL_DAYS } from "../../packages/contracts/src/spend.js";
 import { AgentRunStateSchema } from "../../packages/contracts/src/agent-run.js";
 import { MAYA } from "../support/developer-task-broker.js";
-import { BEN, PREPARED, TRIAGE, setup, type World } from "../support/spend-world.js";
+import { ADA, BEN, DEB, PREPARED, TRIAGE, setup, type World } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 
@@ -170,5 +170,33 @@ describe("Task 22's run state through Task 32's resume", () => {
     expect(AgentRunStateSchema.safeParse(Object.fromEntries(Object.entries(resumed).filter(([key]) => !["pk", "sk", "entityType"].includes(key)))).success).toBe(true);
     expect(resumed.steps[1]).toMatchObject({ pendingBranch: "ship" });
     expect(resumed.state).toBe("RUNNING");
+  });
+});
+
+describe("the org's only owner or admin, who started a run and is not its payer (Task 32 concern 1)", () => {
+  /** Ada (the only owner or admin when `secondAdmin` is false) runs an agent whose limit is past the admin threshold; Ben pays. */
+  async function adaRun(options: { secondAdmin: boolean }) {
+    const w = await setup({ secondAdmin: options.secondAdmin });
+    const agentId = await w.agentOf(TRIAGE, { by: ADA, name: "Ada's looker" });
+    const run = await w.runOf(agentId, { who: ADA });
+    await w.set(run.taskId, "SET budgetUsd = :limit, payer = :payer", { ":limit": 300, ":payer": { kind: "member", developerId: BEN.developerId } });
+    await w.pauseAndEnd(run);
+    const [request] = w.requestOf(run.taskId, "run_limit");
+    return { w, run, request: request! };
+  }
+
+  it("may decide the run limit of their own run: nobody else could", async () => {
+    const { w, run, request } = await adaRun({ secondAdmin: false });
+    expect(request).toMatchObject({ kind: "run_limit", approverRole: "org_admin", requestedFor: { developerId: ADA.developerId } });
+    expect(request.approverIds).toEqual([ADA.developerId]);
+    expect((await w.decide(ADA, request.spendRequestId)).spendRequest).toMatchObject({ status: "APPROVED" });
+    expect(w.meta(run.taskId).budgetUsd).toBeGreaterThan(300);
+  });
+
+  it("is still kept from their own run's limit when another owner or admin exists", async () => {
+    const { w, request } = await adaRun({ secondAdmin: true });
+    expect(request.approverIds).toEqual([DEB.developerId]);
+    await expect(w.decide(ADA, request.spendRequestId)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect((await w.decide(DEB, request.spendRequestId)).spendRequest).toMatchObject({ status: "APPROVED" });
   });
 });
