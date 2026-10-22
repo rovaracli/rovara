@@ -2292,16 +2292,21 @@ export async function decideTaskWorkflow(
   // Else the request is made first (a repeat of it is the same request) and the workflow blocks here with the decision recorded: its Retry coding, after the
   // limit is raised, starts what the approval would have started.
   const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task) : undefined;
+  // The corrected plan's approval ends the E2E correction fence, whether coding starts now or waits for the run limit.
+  const correctedPlan = correction !== undefined && request.decision === "APPROVE" && documentType === "plan"
+    && currentPlan.sha256 !== correction.artifactSha256 && workflow.candidate?.digest === correction.candidateDigest
+    && loaded?.format === "structured" && loaded.plan.e2e !== undefined;
   if (runLimit !== undefined && !runLimit.accepted) {
     const blocked = blockWorkflow(decidedNext, runLimit.message, receivedAt);
     try {
       await deps.actions.transact([
         { Update: {
           TableName: deps.tableName, Key: taskKey(taskId),
-          UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
-          ConditionExpression: "workflow.revision = :revision AND workflow.#state = :waiting AND attribute_not_exists(closedAt)",
+          UpdateExpression: `SET workflow = :workflow, updatedAt = :now${correctedPlan ? " REMOVE e2ePlanCorrection" : ""}`,
+          ConditionExpression: `workflow.revision = :revision AND workflow.#state = :waiting AND attribute_not_exists(closedAt)${correctedPlan ? " AND e2ePlanCorrection.artifactId = :correctionArtifact AND e2ePlanCorrection.artifactSha256 = :correctionSha AND e2ePlanCorrection.candidateDigest = :correctionCandidate" : ""}`,
           ExpressionAttributeNames: { "#state": "state" },
-          ExpressionAttributeValues: { ":workflow": blocked, ":now": receivedAt, ":revision": workflow.revision, ":waiting": "WAITING" },
+          ExpressionAttributeValues: { ":workflow": blocked, ":now": receivedAt, ":revision": workflow.revision, ":waiting": "WAITING",
+            ...(correctedPlan ? { ":correctionArtifact": correction.artifactId, ":correctionSha": correction.artifactSha256, ":correctionCandidate": correction.candidateDigest } : {}) },
         } },
         putNew(turnTable(deps), aiToolTurn({
           party: partyOfTaskActor(task, caller), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
@@ -2333,9 +2338,6 @@ export async function decideTaskWorkflow(
       const fed = fedThroughUpdate(notes);
       return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: request.requestId, conversationId: current.conversationId, prompt: basePrompt + notes.suffix }, (operation) => {
         const workflowToStore = workflowWithCurrentGraphOperation(next, workflowDependencies === undefined ? undefined : operation.id, workflowDependencies);
-        const correctedPlan = correction !== undefined && request.decision === "APPROVE" && documentType === "plan"
-          && currentPlan.sha256 !== correction.artifactSha256 && workflow.candidate?.digest === correction.candidateDigest
-          && loaded?.format === "structured" && loaded.plan.e2e !== undefined;
         return [
           { Update: {
             TableName: deps.tableName, Key: taskKey(taskId),
