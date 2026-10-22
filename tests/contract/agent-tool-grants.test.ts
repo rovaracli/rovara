@@ -173,6 +173,11 @@ describe("resolveToolGrants", () => {
 });
 
 describe("grants and the capability", () => {
+  it("the broker gives the capability exactly when the dispatch says so", async () => {
+    const { readFileSync } = await import("node:fs");
+    expect(readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8")).toContain("agentTools: givesAgentTools(applied),");
+  });
+
   it("an agent step of a recipe with tool grants is given the agent-tools capability, and nothing else is", () => {
     const agentStep = { kind: "agent" as const, agentId: AGENT.agentId, version: 1, stepId: "triage", instructions: "x", workspace: "none" as const, inputs: "y" };
     const codingStep = { kind: "coding" as const, agentId: AGENT.agentId, version: 1, stepId: "build" };
@@ -365,7 +370,7 @@ const GITHUB_FAKE_TOOLS: McpConnection["tools"] = [
   { name: "pull_request_read", description: "Read a pull request", inputSchema: objectSchema({ owner: { type: "string" }, repo: { type: "string" }, pullNumber: { type: "number" }, method: { type: "string" } }, ["owner", "repo", "pullNumber", "method"]) },
 ];
 
-interface WorldOptions { workflowFiles?: Record<string, string>; pinnedInstallation?: number; labelTool?: boolean | "write"; linearAttribution?: boolean }
+interface WorldOptions { workflowFiles?: Record<string, string>; pinnedInstallation?: number; labelTool?: boolean | "write"; linearAttribution?: boolean; extraRepositories?: unknown[] }
 
 const UUID_AUTOMERGE = "5d8a1f0e-3b7c-4e2a-9f10-6c2b8d4e7a91";
 const UUID_BUG = "7a1c2d3e-4f50-4a61-8b72-9c83d4e5f607";
@@ -437,7 +442,7 @@ async function world(options: WorldOptions = {}) {
     // `retired_tool` is approved but the vendor no longer offers it.
     tools: [...LINEAR_PROJECT_TOOLS, { name: "retired_tool", access: "read" }, ...(options.labelTool === undefined ? [] : [{ name: "list_issue_labels", access: options.labelTool === "write" ? "write" : "read" }])],
   };
-  await registerSlackProject(h.handler, { connectors: [linearProject, GITHUB_CONNECTOR] });
+  await registerSlackProject(h.handler, { connectors: [linearProject, GITHUB_CONNECTOR], ...(options.extraRepositories === undefined ? {} : { extraRepositories: options.extraRepositories }) });
   if (options.pinnedInstallation !== undefined) {
     const key = projectRevisionKey(TEST_ORG, "payments", 1);
     const record = h.db.get(key) as { definition: { repositories: Array<Record<string, unknown>> } };
@@ -1169,6 +1174,18 @@ describe("GitHub through the agent routes", () => {
     await w.tools(run.capability);
     const before = w.tokens.mock.calls.length;
     const reply = await w.githubCall(run.capability, "add_issue_comment", { owner: "other", repo: "secret", issue_number: 3, body: "hi" });
+    expect(reply.status).toBe(403);
+    expect(errorOf(reply)).toEqual({ code: "AGENT_TOOL_NOT_GRANTED", message: NOT_GRANTED("triage-bot", "github", "add_issue_comment") });
+    expect(w.tokens.mock.calls).toHaveLength(before);
+    expect(w.githubCalls).toEqual([]);
+  });
+
+  it("refuses a call that names another repository of the project than the scope's, before any token is minted", async () => {
+    const w = await world({ extraRepositories: [{ name: "billing", url: "https://github.com/example/billing.git", path: "repo/billing", defaultBranch: "main", credentialRef: "github-app" }] });
+    const run = await w.startRun({ tools: [grant({ type: "github" }, "read_write")] });
+    await w.tools(run.capability);
+    const before = w.tokens.mock.calls.length;
+    const reply = await w.githubCall(run.capability, "add_issue_comment", { owner: "example", repo: "billing", issue_number: 3, body: "hi" });
     expect(reply.status).toBe(403);
     expect(errorOf(reply)).toEqual({ code: "AGENT_TOOL_NOT_GRANTED", message: NOT_GRANTED("triage-bot", "github", "add_issue_comment") });
     expect(w.tokens.mock.calls).toHaveLength(before);

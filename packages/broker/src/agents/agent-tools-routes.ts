@@ -410,9 +410,12 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
   if (connector.type === "github") githubAgentToolPermissions(request.tool);
   if (toolGranted({ grants: frame.recipe.tools, stepTools: frame.stepTools, connector: asGrantConnector(connector), upstreamName: request.tool }) === undefined) throw notGranted();
   if (!connector.scopes.some((entry) => entry.alias === request.scope)) throw agentXError("NOT_FOUND", "connector scope not found");
-  // A call that names a repository (the server binds the right one, so a model has no reason to) names one of the project's, or is refused before any token.
+  // The repository a GitHub call is about is the scope's, from the project's repositories; the server binds owner and repo from it. A call that names a
+  // repository of its own (a model has no reason to) names that one, or is refused before any token is minted.
   const named = namedRepository(request.arguments);
-  if (connector.type === "github" && named !== undefined && !projectOwnsRepository(frame.project.definition, named)) throw notGranted();
+  const scopeRepository = connector.type === "github" ? githubScopeRepository(connector, request.scope) : undefined;
+  if (connector.type === "github" && scopeRepository === undefined) throw notGranted();
+  if (scopeRepository !== undefined && named !== undefined && named !== `${scopeRepository.owner}/${scopeRepository.name}`.toLowerCase()) throw notGranted();
 
   const catalog = await discover(deps, run, frame, connector);
   const granted = resolveToolGrants({ grants: frame.recipe.tools, stepTools: frame.stepTools, connectors: [asGrantConnector(connector)], catalogs: [catalog] })
@@ -421,7 +424,7 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
 
   // Prepared: what the vendor will be sent is what the gate decides on.
   const prepared = prepareAgentWrite(granted, request.arguments, { allowMentions: frame.recipe.allowMentions });
-  const github = connector.type === "github" ? githubScopeRepository(connector, request.scope) : undefined;
+  const github = scopeRepository;
   // The server binds a GitHub call's owner and repo; classification needs them to tell the run's own issues from another repository's.
   const classifyArgs = github === undefined ? prepared.args : { ...prepared.args, owner: github.owner, repo: github.name };
   const classifyTool: GrantedTool = { ...granted, facts: factsForCall(granted.type, granted.facts, classifyArgs) };
@@ -492,15 +495,4 @@ function pinOfProjectRepository(definition: ProjectDefinition, url: string): Age
 function namedRepository(args: Record<string, unknown>): string | undefined {
   const { owner, repo } = args;
   return typeof owner === "string" && typeof repo === "string" ? `${owner.trim()}/${repo.trim()}`.toLowerCase() : undefined;
-}
-
-function projectOwnsRepository(definition: ProjectDefinition, named: string): boolean {
-  return definition.repositories.some((repository) => {
-    try {
-      const parsed = parseGitHubRepository(repository.url);
-      return `${parsed.owner}/${parsed.name}`.toLowerCase() === named;
-    } catch {
-      return false;
-    }
-  });
 }
