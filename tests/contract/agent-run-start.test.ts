@@ -3,12 +3,14 @@
 // of an agent-step recipe, the agent's task index and the run's request item in the one start transaction. `startAgentRun` is the same start
 // for a caller that is not a person at a keyboard (H2): it is idempotent on its request id and takes the run limit, the payer and the
 // result contract. The broker is built with `agents: {}` as the deployed handler is, so the real project members answer.
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
 import { startAgentRun, readTaskRecipe, type AgentRunRequest } from "../../packages/broker/src/agents/runs.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
+import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-app.js";
+import { agentXError } from "@agentx/contracts";
 import { StartDeveloperTaskRequestSchema } from "../../packages/contracts/src/developer-tasks.js";
 import { AgentRunStateSchema, SHORTENED_MARKER, renderRunInput, type RunInput } from "../../packages/contracts/src/agent-run.js";
 import { ResolvedRecipeSchema, codingProgram, recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
@@ -31,6 +33,7 @@ const PROXY_URL = "http://internal-proxy.example.test:4000";
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 const VIEWER_MESSAGE = "You can view `payments` but not start tasks in it. Ask a maintainer to make you a contributor.";
 const HEAD = "a".repeat(40);
+const PRIVATE_KEY = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
 
 // The broker module reads its environment when it loads, which loadSlackBroker sets up first.
 let createAgentRunStarter: typeof BrokerModule.createAgentRunStarter;
@@ -562,13 +565,73 @@ describe("a pull request in the run's context (PF16)", () => {
     expect(t.charges()).toEqual([]);
   });
 
-  it("uses the broker's GitHub App for the org when no reader is injected", async () => {
-    const getPullRequest = vi.fn(async () => ({ number: 12, url: "u", state: "open", headBranch: "b", baseBranch: "main", headCommit: HEAD, title: "t", body: "" }));
-    const t = await setup({ brokerExtra: { githubPullRequests: { getPullRequest } } });
+  it("uses the broker's GitHub App for the org, with an agent token, when no reader is injected", async () => {
+    const getAgentPullRequestHead = vi.fn(async () => ({ headSha: HEAD, state: "open" as const }));
+    const t = await setup({ brokerExtra: { githubPullRequests: { getAgentPullRequestHead } } });
     const reply = await t.run(MAYA, "code-reviewer", { input: review("example/demo#12") });
     expect(reply.status, JSON.stringify(reply.body)).toBe(202);
-    expect(getPullRequest).toHaveBeenCalledWith("https://github.com/example/demo.git", 12, { system: "private-install" });
+    // The org's own scope, never the system scope the older reads of a private install pass.
+    expect(getAgentPullRequestHead).toHaveBeenCalledWith("https://github.com/example/demo.git", 12, { orgId: TEST_ORG });
     expect(AgentRunStateSchema.parse(t.agentRunItem(t.taskOf(reply).taskId)).checkout?.[0]?.headSha).toBe(HEAD);
+  });
+
+  it("fails closed when the App can't read pull requests at all", async () => {
+    const t = await setup({ brokerExtra: { githubPullRequests: {} } });
+    const reply = await t.run(MAYA, "code-reviewer", { input: review("example/demo#12") });
+    expect(reply.status).toBe(503);
+    expect(t.taskCount()).toBe(0);
+  });
+
+  describe("through the real GitHub App provider (PF10, PF16)", () => {
+    const github = (answers: { pull?: Response; unbound?: boolean } = {}) => {
+      const requests: Array<{ method: string; path: string; body?: { permissions?: Record<string, string>; repositories?: string[] } }> = [];
+      const fetchImplementation = (async (url: string | URL | Request, init?: RequestInit) => {
+        const parsed = new URL(typeof url === "string" ? url : url instanceof URL ? url.href : url.url);
+        requests.push({ method: init?.method ?? "GET", path: parsed.pathname, ...(typeof init?.body === "string" ? { body: JSON.parse(init.body) as never } : {}) });
+        if (parsed.pathname.endsWith("/installation")) return Response.json({ id: 55, account: { login: "example" } });
+        if (parsed.pathname === "/app/installations/55/access_tokens") return Response.json({ token: "agent-token" }, { status: 201 });
+        if (parsed.pathname === "/repos/example/demo/pulls/12") return answers.pull ?? Response.json({ number: 12, state: "open", merged: false, head: { sha: HEAD, ref: "fix" }, base: { ref: "main" } });
+        return Response.json({ message: "unexpected" }, { status: 500 });
+      }) as typeof fetch;
+      return { fetchImplementation, requests };
+    };
+    const provider = (fake: ReturnType<typeof github>, bound: (orgId: OrgId) => Promise<void>) => new GitHubAppCredentialProvider({
+      credentialRef: "github-app", appId: "123", getPrivateKey: async () => PRIVATE_KEY, fetchImplementation: fake.fetchImplementation,
+      requireInstallationBound: async (orgId) => bound(orgId),
+    });
+
+    it("mints a token with pull requests and contents read plus metadata read, for the run's org, and records the head it read", async () => {
+      const fake = github();
+      const checked: OrgId[] = [];
+      const t = await setup({ brokerExtra: { githubPullRequests: provider(fake, async (orgId) => { checked.push(orgId); }) } });
+      const reply = await t.run(MAYA, "code-reviewer", { input: review("example/demo#12") });
+      expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+      expect(checked).toEqual([TEST_ORG]);
+      expect(fake.requests.filter((request) => request.path.endsWith("/access_tokens")).map((request) => request.body)).toEqual([
+        { repositories: ["demo"], permissions: { pull_requests: "read", contents: "read", metadata: "read" } },
+      ]);
+      expect(AgentRunStateSchema.parse(t.agentRunItem(t.taskOf(reply).taskId)).checkout).toEqual([{ repository: "demo", pullRequest: 12, headSha: HEAD }]);
+    });
+
+    it("reads nothing, and starts nothing, when the installation is not bound to the run's org", async () => {
+      const fake = github();
+      const t = await setup({ brokerExtra: { githubPullRequests: provider(fake, async () => { throw agentXError("GITHUB_NOT_CONNECTED", "GitHub isn't connected for this repository"); }) } });
+      const reply = await t.run(MAYA, "code-reviewer", { input: review("example/demo#12") });
+      expect(reply.status).toBe(403);
+      expect(errorOf(reply).code).toBe("GITHUB_NOT_CONNECTED");
+      expect(fake.requests.some((request) => request.path.endsWith("/access_tokens") || request.path.includes("/pulls/"))).toBe(false);
+      expect(t.taskCount()).toBe(0);
+      expect(t.charges()).toEqual([]);
+    });
+
+    it("says a pull request that doesn't exist doesn't, and starts nothing", async () => {
+      const fake = github({ pull: Response.json({ message: "Not Found" }, { status: 404 }) });
+      const t = await setup({ brokerExtra: { githubPullRequests: provider(fake, async () => undefined) } });
+      const reply = await t.run(MAYA, "code-reviewer", { input: review("example/demo#12") });
+      expect(reply.status).toBe(400);
+      expect(errorOf(reply)).toEqual({ code: "CONFIG_INVALID", message: "pull request 12 of example/demo doesn't exist" });
+      expect(t.taskCount()).toBe(0);
+    });
   });
 });
 

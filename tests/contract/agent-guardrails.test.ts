@@ -251,7 +251,10 @@ async function setup(options: { servable?: ModelIdentifier[]; builtins?: Constru
   const call = (who: Developer, method: string, path: string, body?: Record<string, unknown>): Promise<Reply> =>
     unwrapped(h.dev(who, method, path, body === undefined ? undefined : { requestId: randomUUID(), ...body }));
   const GUARDRAILS = "/v1/app/org/agent-guardrails";
-  const current = async (): Promise<{ guardrails: AgentGuardrails; revision: number }> => (await call(EVE, "GET", GUARDRAILS)).body as unknown as { guardrails: AgentGuardrails; revision: number };
+  const current = async (): Promise<{ guardrails: AgentGuardrails; revision: number }> => {
+    const { guardrails, revision } = (await call(EVE, "GET", GUARDRAILS)).body as unknown as { guardrails: AgentGuardrails; revision: number };
+    return { guardrails, revision };
+  };
   /** Puts `next` against the revision now, as `who`. */
   const put = async (who: Developer, next: AgentGuardrails, extra: Record<string, unknown> = {}): Promise<Reply> =>
     call(who, "PUT", GUARDRAILS, { expectedRevision: (await current()).revision, guardrails: next, ...extra });
@@ -267,14 +270,15 @@ describe("GET and PUT /v1/app/org/agent-guardrails", () => {
     for (const who of [EVE, DANA, OWEN]) {
       const shown = await call(who, "GET", GUARDRAILS);
       expect(shown.status).toBe(200);
-      expect(shown.body).toEqual({ guardrails: defaults(), revision: 0 });
+      // The comment-trigger opt-outs (Task 14b) are listed with the document; there are none.
+      expect(shown.body).toEqual({ guardrails: defaults(), revision: 0, commentTriggerOptOuts: [] });
     }
   });
 
   it("answers another org's caller with that org's own document", async () => {
     const { call, put, GUARDRAILS } = await setup();
     expect((await put(DANA, guardrails({ maxAutonomy: "suggest" }))).status).toBe(200);
-    expect((await call(OMAR, "GET", GUARDRAILS)).body).toEqual({ guardrails: defaults(), revision: 0 });
+    expect((await call(OMAR, "GET", GUARDRAILS)).body).toEqual({ guardrails: defaults(), revision: 0, commentTriggerOptOuts: [] });
   });
 
   it("refuses a member's PUT with 403 and changes nothing", async () => {

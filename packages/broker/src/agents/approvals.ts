@@ -28,6 +28,7 @@ import {
 import type { AgentAccessDeps, AgentCaller, AgentShare } from "./access.js";
 import type { ServableModels } from "./guardrails.js";
 import type { ResolveOptions } from "./store.js";
+import type { AgentRepositoryReader } from "../github-app.js";
 
 /** What an agent's routes and the approvals that act on agents need: access checks, the store and where the page lives. */
 export interface ApprovalDependencies extends AgentAccessDeps {
@@ -38,6 +39,10 @@ export interface ApprovalDependencies extends AgentAccessDeps {
   resolveSkill?: ResolveOptions["resolveSkill"];
   /** The models some source the company can use serves (Task 26); without it, the models Rovara's own AI serves. */
   servableModels?: ServableModels;
+  /** Task 14b: a read-only reader of a repository's default branch for an org, for the comment-triggered workflow scan. Without it, nothing can be reviewed or opted out. */
+  repositoryReader?: (input: { orgId: OrgId; repositoryUrl: string }) => Promise<AgentRepositoryReader>;
+  /** Task 14b: the repositories of a project as they are registered now (undefined when there is no such project in the org). */
+  projectRepositories?: (orgId: OrgId, project: string) => Promise<ReadonlyArray<{ name: string; url: string }> | undefined>;
 }
 
 /** The part of the dependencies the record's own writes need. */
@@ -63,8 +68,14 @@ export type AgentChangeSubject =
   /** Make `next` the company's agent guardrails, while they are still at `expectedRevision`. */
   | { kind: "guardrails"; next: AgentGuardrails; expectedRevision: number };
 
-/** The other kinds of change (connector widenings, opt-outs) carry their own details, typed by the task that makes them. */
-export type OtherChangeSubject = { kind: "connector_widen" | "opt_out" } & Record<string, unknown>;
+/**
+ * Task 14b: lets agents comment, review and label in a repository whose workflows act on comments, on one project, while the workflows still have
+ * the digest that was reviewed. `files` is what the admin saw.
+ */
+export interface OptOutChangeSubject { kind: "opt_out"; project: string; repository: string; expectedDigest: string; files: string[]; reason: string }
+
+/** The other kinds of change (connector widenings) carry their own details, typed by the task that makes them. */
+export type OtherChangeSubject = ({ kind: "connector_widen" } & Record<string, unknown>) | OptOutChangeSubject;
 export type ChangeSubject = AgentChangeSubject | OtherChangeSubject;
 
 export interface ChangeApprovalRecord {
@@ -135,8 +146,11 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
     shares: z.array(z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]) }).strict()),
   }).strict(),
   z.object({ kind: z.literal("guardrails"), next: AgentGuardrailsSchema, expectedRevision: z.number().int().min(0) }).strict(),
+  z.object({
+    kind: z.literal("opt_out"), project: z.string(), repository: z.string(), expectedDigest: Hex64, files: z.array(z.string()), reason: z.string(),
+  }).strict(),
   // The other kinds carry details their own tasks type; only the kind is checked here.
-  z.object({ kind: z.enum(["connector_widen", "opt_out"]) }).passthrough(),
+  z.object({ kind: z.literal("connector_widen") }).passthrough(),
 ]);
 /** What a stored change record must look like to be read; `passthrough`, so a field a later task adds is kept. */
 const ChangeApprovalRecordSchema = z.object({

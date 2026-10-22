@@ -51,6 +51,8 @@ import {
   type AgentCaller,
   type AgentScope,
 } from "./access.js";
+import { COMMENT_TRIGGERS_PATH, routeCommentTriggers } from "./comment-trigger-routes.js";
+import { listOptOutViews, registerCommentTriggerApprovals } from "./comment-trigger-optouts.js";
 import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, updateGuardrails, type ChangeResult } from "./changes.js";
 import type { ApprovalDependencies } from "./approvals.js";
 import { readGuardrails, readGuardrailsWithRevision, requireBaseEnabled } from "./guardrails.js";
@@ -830,7 +832,8 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
   const spend = await routeSpendRequest(deps, caller, request, url);
   if (spend !== undefined) return spend;
   if (url.pathname === GUARDRAILS_PATH) {
-    if (request.method === "GET") return readGuardrailsWithRevision(deps, caller.orgId);
+    // The opt-outs of the comment rule are listed with the guardrails (Task 14b); they are read now, with the document.
+    if (request.method === "GET") return { ...await readGuardrailsWithRevision(deps, caller.orgId), commentTriggerOptOuts: await listOptOutViews(deps, caller.orgId) };
     if (request.method === "PUT") return putGuardrails(deps, caller, jsonBody(request));
     throw agentXError("NOT_FOUND", "route not found");
   }
@@ -850,6 +853,8 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
     if (request.method === "PUT") return putProjectAiSettings(deps, caller, project, jsonBody(request));
     throw agentXError("NOT_FOUND", "route not found");
   }
+  const commentTriggers = COMMENT_TRIGGERS_PATH.exec(url.pathname);
+  if (commentTriggers !== null) return routeCommentTriggers(deps, caller, request, url, commentTriggers[1]!);
   const projectAgents = PROJECT_AGENTS_PATH.exec(url.pathname);
   if (projectAgents !== null) {
     let project: string;
@@ -915,3 +920,4 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
 }
 
 registerAgentApprovals();
+registerCommentTriggerApprovals();

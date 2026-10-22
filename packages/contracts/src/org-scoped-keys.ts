@@ -357,3 +357,35 @@ export function ledgerKey(orgId: OrgId, month: string, at: string, keyId: string
 export function agentRunsKey(orgId: OrgId, month: string, agentId: AgentId, runId: string): OrgKey {
   return { pk: orgScoped(orgId, `AGENT_RUNS#${month}#${agentId}`), sk: runId };
 }
+
+// ---- comment-triggered workflows (Plan 3 Task 14b)
+
+/** The partition of an org's comment-trigger opt-outs: one item per (repository, project), listed with one query. */
+export function commentTriggerOptOutsPk(orgId: OrgId): string {
+  return orgScoped(orgId, "COMMENT_TRIGGER_OPT_OUTS");
+}
+
+/** The sort-key prefix of every project's opt-out for one repository (`owner/name`, lower case), for a query on `commentTriggerOptOutsPk`. */
+export function commentTriggerOptOutRepositoryPrefix(repository: string): string {
+  return `${repository.toLowerCase()}#`;
+}
+
+/** An opt-out of the repository-level comment rule for one repository on one project. The repository is `owner/name` (letters, digits, `_`, `.`, `-`: no `#`). */
+export function commentTriggerOptOutKey(orgId: OrgId, repository: string, project: string): OrgKey {
+  return { pk: commentTriggerOptOutsPk(orgId), sk: `${commentTriggerOptOutRepositoryPrefix(repository)}${project}` };
+}
+
+/** The partition of an org's comment-trigger events (an opt-out applied or lapsed); a lapse is also the notice maintainers and admins are shown. */
+export function commentTriggerEventsPk(orgId: OrgId): string {
+  return orgScoped(orgId, "COMMENT_TRIGGER_EVENTS");
+}
+
+/** One event of `kind` ("applied" or "lapsed", so each kind lists on its own); `at` is an instant and `eventId` makes the key unique. */
+export function commentTriggerEventKey(orgId: OrgId, kind: "applied" | "lapsed", at: string, eventId: string): OrgKey {
+  return { pk: commentTriggerEventsPk(orgId), sk: `EVENT#${kind}#${canonicalInstant(at)}#${eventId}` };
+}
+
+/** What one run looked up and keeps for its own length (a repository scan, a connector's label names): one item per (org, task, kind, name). */
+export function runCacheKey(orgId: OrgId, taskId: string, kind: string, name: string): OrgKey {
+  return { pk: orgScoped(orgId, `RUN_CACHE#${taskId}`), sk: `${kind}#${name}` };
+}

@@ -85,6 +85,7 @@ export * from "./agent.js";
 export * from "./connections.js";
 export * from "./agent-recipe.js";
 export * from "./agent-guardrails.js";
+export * from "./comment-triggers.js";
 export * from "./agent-run.js";
 export * from "./agent-templates.js";
 export * from "./app-projects.js";
