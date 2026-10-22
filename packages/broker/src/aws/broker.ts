@@ -622,7 +622,7 @@ interface AwsBrokerDependencies {
    * Plan 3 Task 12b: how the connection routes reach a vendor. By default a connection is checked with `fetch`, the MCP server's tools are
    * listed over the network, and an MCP endpoint is checked with `checkEndpointUrl` and the system resolver; a test replaces any of them.
    */
-  connectionChecks?: Pick<OrgConnectionStoreInput, "fetch" | "listMcpTools" | "checkEndpoint">;
+  connectionChecks?: Pick<OrgConnectionStoreInput, "fetch" | "listMcpTools" | "checkEndpoint" | "endpointGuard">;
   /** The administrator turn record export; absent when the deployment has no TurnRecords table. */
   turnRecords?: TurnRecordExport;
   /** The TurnRecords table developer task audit records go to (spec 025); absent when there is none. */
@@ -907,6 +907,8 @@ function orgConnectionStoreOf(dependencies: AwsBrokerDependencies): OrgConnectio
     tableName: dependencies.tableName,
     ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
     checkEndpoint: async (url) => { await checkEndpointUrl(url, dnsResolveHost); },
+    // The checks of an MCP endpoint and a Grafana address go over a connection pinned to the addresses checked, through the broker's own guard when it has one.
+    ...(dependencies.mcpEndpointGuard === undefined ? {} : { endpointGuard: dependencies.mcpEndpointGuard }),
     ...dependencies.connectionChecks,
   });
 }

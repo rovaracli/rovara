@@ -6,6 +6,7 @@ import { connectionKey } from "../../packages/contracts/src/connections.js";
 import type { OrgConnection } from "../../packages/contracts/src/connections.js";
 import type { OrgId } from "../../packages/contracts/src/org.js";
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
+import { mcpEndpointGuard } from "../../packages/broker/src/connections/pinned-endpoint.js";
 import { BEING_REMOVED_MESSAGE, OrgSecrets, orgConnectorSecretName, orgHookSecretName } from "../../packages/broker/src/connections/org-secrets.js";
 import { HookSecretStore, OrgConnectionStore, clearOrgConnections, connectionActorIds } from "../../packages/broker/src/connections/store.js";
 import { orgCredentialRegistry } from "../../packages/broker/src/connections/registry.js";
@@ -158,7 +159,7 @@ describe("an MCP endpoint is checked when a connection is saved", () => {
     const resolver = async () => [address];
     const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
     const tools = vi.fn(async () => [{ name: "a" }]);
-    const store = new OrgConnectionStore({ ...deps, fetch: fetchSpy, listMcpTools: tools as never, checkEndpoint: async (url) => { await checkEndpointUrl(url, resolver); } });
+    const store = new OrgConnectionStore({ ...deps, fetch: fetchSpy, listMcpTools: tools as never, checkEndpoint: async (url) => { await checkEndpointUrl(url, resolver); }, endpointGuard: mcpEndpointGuard({ resolveHost: resolver }) });
     await store.put({ orgId: ORG_A, connection: MCP, secret: { token: "t" }, by: ALICE });
     expect(await store.check(ORG_A, CON_A)).toEqual({ ok: true, message: "1 tool" });
     address = "10.1.2.3";
@@ -247,7 +248,7 @@ describe("the secret a connection uses is the version its winning save wrote", (
     expect((await refusedA)?.code).toBe("CHANGE_STALE");
     // The record says vendor B; every use of the secret reads B's version, never the newer one A wrote.
     const tokens: string[] = [];
-    const checker = new OrgConnectionStore({ ...deps, checkEndpoint: allow, listMcpTools: (async (request: { token: string }) => { tokens.push(request.token); return []; }) });
+    const checker = new OrgConnectionStore({ ...deps, checkEndpoint: allow, endpointGuard: async () => fetch, listMcpTools: (async (request: { token: string }) => { tokens.push(request.token); return []; }) });
     expect((await checker.check(ORG_A, CON_A)).ok).toBe(true);
     const issued = await orgCredentialRegistry(deps, ORG_A).provider(CON_A).issue({}, "read");
     expect(tokens).toEqual(["t-B"]);
@@ -306,7 +307,8 @@ describe("a lookup that fails during a check is not a result", () => {
     const { deps, db } = setup();
     let failing = false;
     const tools = vi.fn(async () => [{ name: "a" }]);
-    const store = new OrgConnectionStore({ ...deps, listMcpTools: tools as never, checkEndpoint: async (url) => { await checkEndpointUrl(url, async () => { if (failing) throw new Error("ETIMEOUT"); return ["52.1.2.3"]; }); } });
+    const resolver = async () => { if (failing) throw new Error("ETIMEOUT"); return ["52.1.2.3"]; };
+    const store = new OrgConnectionStore({ ...deps, listMcpTools: tools as never, checkEndpoint: async (url) => { await checkEndpointUrl(url, resolver); }, endpointGuard: mcpEndpointGuard({ resolveHost: resolver }) });
     await store.put({ orgId: ORG_A, connection: MCP, secret: { token: "t" }, by: ALICE });
     failing = true;
     const failed = await code(store.check(ORG_A, CON_A, request(R1)));

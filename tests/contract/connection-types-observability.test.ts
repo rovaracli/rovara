@@ -5,7 +5,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CredentialUnavailable } from "@agentx/gateway";
 import { orgCredentialRegistry } from "../../packages/broker/src/connections/registry.js";
-import { mcpEndpointGuard, type McpEndpointGuard } from "../../packages/broker/src/connections/pinned-endpoint.js";
+import { mcpEndpointGuard, type McpEndpointGuard, type RequestFunction } from "../../packages/broker/src/connections/pinned-endpoint.js";
 import { OrgConnectionStore, connectionActorIds, readConnection, readConnectionSecret } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets, orgConnectorSecretName } from "../../packages/broker/src/connections/org-secrets.js";
 import { routeConnectionRequest } from "../../packages/broker/src/connections/routes.js";
@@ -432,7 +432,7 @@ describe("checking the new connections", () => {
     await store.put({ orgId: ORG_A, connection: SENTRY, secret: secretFor(SENTRY), by: ALICE });
     expect(await store.check(ORG_A, CON_A)).toEqual({ ok: true, message: "3 projects" });
     expect(check).toHaveBeenCalledTimes(1);
-    expect(check).toHaveBeenCalledWith({ orgId: ORG_A, connection: SENTRY, secret: secretFor(SENTRY), fetch: expect.any(Function) });
+    expect(check).toHaveBeenCalledWith({ orgId: ORG_A, connection: SENTRY, secret: secretFor(SENTRY), fetch: expect.any(Function) as unknown });
     expect((await store.get(ORG_A, CON_A))?.lastCheck).toMatchObject({ ok: true });
     expect(JSON.stringify(await store.get(ORG_A, CON_A))).not.toContain("sentry-user-1");
     expect([...await connectionActorIds(deps, ORG_A, "sentry")]).toEqual(["sentry-user-1"]);
@@ -449,7 +449,7 @@ describe("checking the new connections", () => {
     expect(sentry).not.toHaveBeenCalled();
     await store.put({ orgId: ORG_A, connection: { ...CLOUDWATCH, connectionId: "con_cccccccccccccccccccc" }, by: ALICE });
     expect(await store.check(ORG_A, "con_cccccccccccccccccccc")).toEqual({ ok: true, message: "role assumed" });
-    expect(cloudwatch).toHaveBeenCalledWith({ orgId: ORG_A, connection: { ...CLOUDWATCH, connectionId: "con_cccccccccccccccccccc" }, secret: undefined, fetch: expect.any(Function) });
+    expect(cloudwatch).toHaveBeenCalledWith({ orgId: ORG_A, connection: { ...CLOUDWATCH, connectionId: "con_cccccccccccccccccccc" }, secret: undefined, fetch: expect.any(Function) as unknown });
   });
 
   it("reads the secret by the version its own save wrote, so a check never uses a save that lost", async () => {
@@ -620,7 +620,7 @@ function recordingRequest(status = 200, headers: Record<string, string> = {}) {
       end: () => { const response = Object.assign(new PassThrough(), { statusCode: status, headers, statusMessage: "" }); response.end("{}"); callback?.(response); },
     } as never;
   });
-  return { request, calls };
+  return { request: request as unknown as RequestFunction, calls };
 }
 
 const lookupAnswer = (lookup: (host: string, options: object, callback: (...args: unknown[]) => void) => void) =>
@@ -712,10 +712,10 @@ describe("a check's fetch (review I1, M7)", () => {
     let refuse = false;
     const store = storeOf(deps, {
       endpointGuard: async () => { if (refuse) throw new Error("that address is not allowed"); return pinned; },
-      fetch: (async () => { throw new Error("the unpinned fetch was used"); }) as typeof fetch,
+      fetch: (async () => { throw new Error("the unpinned fetch was used"); }),
       listMcpTools: listMcpTools as never,
     });
-    await store.put({ orgId: ORG_A, connection: MCP, secret: { apiKey: "mcp-secret-0123456789" }, by: ALICE });
+    await store.put({ orgId: ORG_A, connection: MCP, secret: { token: "mcp-secret-0123456789" }, by: ALICE });
     expect(await store.check(ORG_A, CON_A)).toEqual({ ok: true, message: "1 tool" });
     expect(seen).toEqual([{ endpoint: "https://mcp.acme.dev/mcp", fetchImplementation: pinned }]);
     refuse = true;
@@ -750,7 +750,7 @@ describe("a check's fetch (review I1, M7)", () => {
       outcomes.push(await held(new Request(own.replace(origin, "https://evil.example"))).then(() => "reached", (error: Error) => error.message));
       return { ok: true };
     });
-    const store = storeOf(deps, { fetch: base as never, checks: { [connection.type]: check } as never });
+    const store = storeOf(deps, { fetch: base, checks: { [connection.type]: check } });
     await store.put({ orgId: ORG_A, connection, secret: secretFor(connection), by: ALICE });
     expect(await store.check(ORG_A, CON_A)).toEqual({ ok: true });
     expect(outcomes).toEqual(["own ok", "url ok", ...elsewhere.map(() => "a request to anywhere but the vendor's address was refused"), "a request to anywhere but the vendor's address was refused"]);
@@ -763,7 +763,7 @@ describe("a check's fetch (review I1, M7)", () => {
     const { deps } = setup();
     const base = vi.fn(async () => new Response("{}"));
     let outcome = "";
-    const store = storeOf(deps, { fetch: base as never, checks: { cloudwatch: async ({ fetch: held }) => { outcome = await held("https://monitoring.us-east-1.amazonaws.com/").then(() => "reached", (error: Error) => error.message); return { ok: true }; } } });
+    const store = storeOf(deps, { fetch: base, checks: { cloudwatch: async ({ fetch: held }) => { outcome = await held("https://monitoring.us-east-1.amazonaws.com/").then(() => "reached", (error: Error) => error.message); return { ok: true }; } } });
     await store.put({ orgId: ORG_A, connection: CLOUDWATCH, by: ALICE });
     await store.check(ORG_A, CON_A);
     expect(outcome).toMatch(/refused/u);

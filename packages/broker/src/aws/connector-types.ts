@@ -43,7 +43,7 @@ export interface ConnectorTypeContext {
   connect?: typeof connectMcp;
   /**
    * Plan 3 Task 19: checks a company's MCP endpoint before every request and pins the connection to the addresses it checked (`mcpEndpointGuard`). Only
-   * the generic `mcp` type, whose endpoint a person typed, goes through it; a vendor's own endpoint (Linear, Jira, Asana, GitHub) does not.
+   * the types whose address a person typed (`HOST_TYPED_CONNECTOR_TYPES`: `mcp`, and Grafana's runtime connector) go through it; a vendor's own endpoint (Linear, Jira, Asana, GitHub) does not.
    */
   endpointGuard?: McpEndpointGuard;
 }

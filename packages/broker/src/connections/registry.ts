@@ -6,6 +6,7 @@ import { staticSecretProvider, CredentialUnavailable, type Access, type Credenti
 import { OrgIdSchema, type CredentialRecord, type CredentialType, type OrgId } from "@agentx/contracts";
 import { hostPinProblem, type ConnectorCredentials, type HostPin } from "../aws/credentials.js";
 import { orgConnectorSecretName } from "./org-secrets.js";
+import { vendorHostOf } from "./vendor-hosts.js";
 import { readConnection, readConnectionToken, type OrgConnectionDeps, type OrgConnectionRecord } from "./store.js";
 
 /**
@@ -23,7 +24,8 @@ function recordOf(deps: OrgConnectionDeps, orgId: OrgId, connection: OrgConnecti
     // Every connection holds one static key or token.
     type: "static-secret",
     secretName: orgConnectorSecretName(deps.env, orgId, connection.connectionId),
-    ...(connection.type === "mcp" ? { host: new URL(connection.endpoint).hostname } : connection.type === "grafana" ? { host: new URL(connection.baseUrl).hostname } : {}),
+    // The host a token may go to: the address a person typed (MCP, Grafana), or the vendor's own host for the region or site the connection names.
+    ...(connection.type === "mcp" ? { host: new URL(connection.endpoint).hostname } : connection.type === "grafana" ? { host: new URL(connection.baseUrl).hostname } : vendorHostOf(connection) === undefined ? {} : { host: vendorHostOf(connection)! }),
     registeredBy: connection.createdBy,
     registeredAt: connection.createdAt,
   };

@@ -6,6 +6,7 @@ import { agentRequestKey } from "../../packages/contracts/src/org-scoped-keys.js
 import { connectionKey } from "../../packages/contracts/src/connections.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
+import { mcpEndpointGuard } from "../../packages/broker/src/connections/pinned-endpoint.js";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
 import { BEING_REMOVED_MESSAGE, OrgSecrets, orgConnectorSecretName } from "../../packages/broker/src/connections/org-secrets.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
@@ -50,7 +51,7 @@ async function setup(options: { addresses?: () => string[]; fetch?: typeof fetch
       ...(options.cloud === true ? { cloud: true } : {}),
       ...(options.agents === false ? {} : { agents: { projectMembers: new FakeProjectMembers() } }),
       orgConnections: { documentClient: { send: (command: unknown) => holder.db!.send(command) }, tableName: "state", env: ENV, secrets, now: Date.now },
-      connectionChecks: { checkEndpoint, listMcpTools, fetch: fetchImplementation },
+      connectionChecks: { checkEndpoint, listMcpTools, fetch: fetchImplementation, endpointGuard: mcpEndpointGuard({ resolveHost: async () => (options.addresses ?? (() => ["52.1.2.3"]))() }) },
     },
   });
   holder.db = h.db;

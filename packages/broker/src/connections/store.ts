@@ -30,6 +30,8 @@ import { auditPending, tryAuditEvent, type AuditRuntime } from "../audit/outbox.
 import { auditActorOf } from "../audit/plan3-hooks.js";
 import { commit, type RequestMark } from "../agents/table-writes.js";
 import { isSecretLeaf, orgConnectorSecretName, orgHookSecretName, type OrgSecrets } from "./org-secrets.js";
+import { mcpEndpointGuard, type McpEndpointGuard } from "./pinned-endpoint.js";
+import { noWebRequests, originHeldFetch, vendorHostOf } from "./vendor-hosts.js";
 
 type Item = Record<string, unknown>;
 
@@ -80,6 +82,12 @@ export interface ConnectionCheckInput<T extends ObservabilityConnectionType = Ob
   orgId: OrgId;
   connection: Extract<OrgConnection, { type: T }>;
   secret: ConnectionSecret | undefined;
+  /**
+   * The only fetch a check may use to reach the vendor (review I1). A Grafana check's is pinned to the addresses checked for this very request, keeps to the
+   * connection's origin and follows no redirect (`mcpEndpointGuard`); Sentry's, Datadog's, PagerDuty's and Vercel's are held to the vendor's fixed origin;
+   * CloudWatch's refuses everything, since it speaks to AWS through its own client. A check must not build its own.
+   */
+  fetch: typeof fetch;
 }
 
 /** Each of the six types' check, supplied by its connector task (Tasks 13 to 16). A type with none answers that checking is not available yet. */
@@ -94,6 +102,12 @@ export interface OrgConnectionStoreInput extends OrgConnectionDeps {
   checkEndpoint?: (url: string) => Promise<void>;
   /** The checks of the Plan 4 connection types; see `ConnectionChecks`. */
   checks?: ConnectionChecks;
+  /**
+   * Checks an address a person typed (a Grafana base URL, an MCP endpoint) and gives the fetch pinned to the addresses it returned, for this request
+   * only (review I1, M7). `checkEndpoint` alone cannot do this: it forgets the addresses, so the connection would resolve the name again. Defaults to
+   * `mcpEndpointGuard()`. The Grafana runtime connector must be built on the same guard (`HOST_TYPED_CONNECTOR_TYPES`).
+   */
+  endpointGuard?: McpEndpointGuard;
   listMcpTools?: typeof listMcpTools;
   /**
    * The Audit Ledger's outbox. With it, saving or removing a connection adds its pending audit item to the write that changes the record
@@ -103,6 +117,9 @@ export interface OrgConnectionStoreInput extends OrgConnectionDeps {
 }
 
 const CHECK_TIMEOUT_MS = 10_000;
+/** The longest message a check may answer, in characters. */
+const CHECK_MESSAGE_MAX = 300;
+const DEFAULT_ENDPOINT_GUARD = mcpEndpointGuard();
 const MAX_CHECK_RESPONSE_BYTES = 1_000_000;
 const LINEAR_GRAPHQL = "https://api.linear.app/graphql";
 
@@ -142,6 +159,16 @@ function endpointTarget(connection: OrgConnection): { url: string; noun: string;
   if (connection.type === "mcp") return { url: connection.endpoint, noun: "an MCP endpoint", what: "an MCP connection" };
   if (connection.type === "grafana") return { url: connection.baseUrl, noun: "a Grafana address", what: "a Grafana connection" };
   return undefined;
+}
+
+/**
+ * A check's message as it may be recorded and shown: control and format characters removed (they can hide or rewrite text on a terminal or page), at most
+ * `CHECK_MESSAGE_MAX` characters, and none at all when nothing is left. A vendor's reply that a careless check passes on is held to this too.
+ */
+function cleanMessage(message: string | undefined): string | undefined {
+  if (message === undefined) return undefined;
+  const cleaned = Array.from(message.replace(/[\p{Cc}\p{Cf}]/gu, "")).slice(0, CHECK_MESSAGE_MAX).join("").trim();
+  return cleaned === "" ? undefined : cleaned;
 }
 
 const isObservability = (connection: OrgConnection): connection is ObservabilityConnection => ObservabilityConnectionTypeSchema.safeParse(connection.type).success;
@@ -376,7 +403,8 @@ export class OrgConnectionStore {
         ? { ok: false, message: "the saved secret could not be read; save it again" }
         : await this.ask(org, connection, secret);
     }
-    const answer: CheckResult = result.message === undefined ? { ok: result.ok } : { ok: result.ok, message: result.message };
+    const message = cleanMessage(result.message);
+    const answer: CheckResult = message === undefined ? { ok: result.ok } : { ok: result.ok, message };
     await this.record(org, connectionId, revisionOf(item), result, answer, request);
     return answer;
   }
@@ -458,14 +486,36 @@ export class OrgConnectionStore {
     return undefined;
   }
 
+  /**
+   * The address a person typed, checked now, and the fetch pinned to the addresses that check returned; or why it may not be called. A lookup that
+   * failed is thrown (retryable, never recorded), as `endpointRefusal` does.
+   */
+  private async pinnedFetchFor(endpoint: string): Promise<{ fetch: typeof fetch } | { refused: CheckResult }> {
+    try {
+      return { fetch: await (this.input.endpointGuard ?? DEFAULT_ENDPOINT_GUARD)(new URL(endpoint)) };
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code === "RUNTIME_UNAVAILABLE") throw error;
+      return { refused: { ok: false, message: error instanceof Error ? error.message : "the endpoint is not allowed" } };
+    }
+  }
+
+  /** The only fetch a type's check is given (see `ConnectionCheckInput.fetch`). */
+  private async checkFetch(connection: ObservabilityConnection): Promise<{ fetch: typeof fetch } | { refused: CheckResult }> {
+    if (connection.type === "grafana") return this.pinnedFetchFor(connection.baseUrl);
+    if (connection.type === "cloudwatch") return { fetch: noWebRequests };
+    return { fetch: originHeldFetch(this.input.fetch ?? fetch, vendorHostOf(connection)!) };
+  }
+
   private async askObservability(orgId: OrgId, connection: ObservabilityConnection, secret: ConnectionSecret | undefined): Promise<CheckResult & { actorId?: string }> {
     // A customer's Grafana address is checked here, before the type's check can call it.
     const refused = await this.endpointRefusal(connection);
     if (refused !== undefined) return refused;
     const check = this.input.checks?.[connection.type] as ((input: ConnectionCheckInput) => Promise<CheckResult & { actorId?: string }>) | undefined;
     if (check === undefined) return { ok: false, message: `checking a ${connection.type} connection is not available yet` };
+    const held = await this.checkFetch(connection);
+    if ("refused" in held) return held.refused;
     try {
-      return await check({ orgId, connection, secret });
+      return await check({ orgId, connection, secret, fetch: held.fetch });
     } catch (error) {
       // What a check threw can quote the request or the secret, so only the type is named. A failure to reach the vendor is retryable and not recorded.
       if ((error as { code?: unknown } | null)?.code === "RUNTIME_UNAVAILABLE") throw coded("RUNTIME_UNAVAILABLE", `could not reach ${connection.type} to check the connection; try again`);
@@ -476,13 +526,16 @@ export class OrgConnectionStore {
   private async askMcp(connection: Extract<OrgConnection, { type: "mcp" }>, token: string): Promise<CheckResult> {
     const refused = await this.endpointRefusal(connection);
     if (refused !== undefined) return refused;
+    // The tool listing goes over a connection pinned to the addresses checked now (review M7), not one that resolves the name again.
+    const held = await this.pinnedFetchFor(connection.endpoint);
+    if ("refused" in held) return held.refused;
     try {
       const tools = await (this.input.listMcpTools ?? listMcpTools)({
         endpoint: new URL(connection.endpoint),
         token,
         signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
         ...(connection.auth === undefined ? {} : { auth: connection.auth }),
-        ...(this.input.fetch === undefined ? {} : { fetchImplementation: this.input.fetch }),
+        fetchImplementation: held.fetch,
       });
       return { ok: true, message: `${String(tools.length)} tool${tools.length === 1 ? "" : "s"}` };
     } catch (error) {
