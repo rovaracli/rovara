@@ -340,17 +340,15 @@ export function agentRunDispatchItem(tableName: string, input: { taskId: string;
   };
   return { Put: { TableName: tableName, Item: item } };
 }
+
 /** A task has one `operation_end` row at a time: the latest operation that ended where only a row could tell the broker (Task 22 review, I2). */
 export const operationEndDispatchKey = (taskId: string) => ({ pk: WORKFLOW_DISPATCH_PK, sk: `${taskId}#end` } as const);
 
 export function operationEndDispatchItem(tableName: string, input: { taskId: string; orgId: string; workspaceId: string; operationId: string; now: string }): TransactItems[number] {
   const key = operationEndDispatchKey(input.taskId);
-  const item: WorkflowDispatchRecord & { orgId: string; workspaceId: string; operationId: string } = {
-    ...key, entityType: "WORKFLOW_DISPATCH", taskId: input.taskId, orgId: input.orgId, workspaceId: input.workspaceId, operationId: input.operationId, workflowRevision: 0,
-    kind: "operation_end", candidateDigest: WORKFLOW_NO_CANDIDATE_DIGEST, createdAt: input.now, attempts: 0, nextAttemptAt: input.now, dispatchDuePk: WORKFLOW_DISPATCH_PK,
-    dispatchDueSk: `${input.now}#${key.sk}`, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(input.now) / 1000) + WORKFLOW_DISPATCH_RETENTION_SECONDS,
-  };
-  return { Put: { TableName: tableName, Item: item } };
+  // The agent-step engine's row with its own key and kind (one builder keeps the due-time index keys and the expiry backstop the same for every row).
+  const base = agentRunDispatchItem(tableName, { taskId: input.taskId, orgId: input.orgId, revision: 0, dueAt: input.now, now: input.now }) as { Put: { Item: Record<string, unknown> } };
+  return { Put: { TableName: tableName, Item: { ...base.Put.Item, ...key, kind: "operation_end", dispatchDueSk: `${input.now}#${key.sk}`, workspaceId: input.workspaceId, operationId: input.operationId } } };
 }
 /** The candidate digest of a dispatch row due before the task has a candidate. */
 export const WORKFLOW_NO_CANDIDATE_DIGEST = "0".repeat(64);

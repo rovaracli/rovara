@@ -2,10 +2,12 @@
 // reaches the broker's agent-tools route with the step's capability and nothing else; the tools never include bash, edit
 // or write; the system prompt starts with AGENT_STEP_PREAMBLE; the user turn is the broker's rendering, byte for byte;
 // choose_branch accepts only the contract's ids. No network, no Docker (the sandbox path is in worker-agent-run-sandbox).
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt, getCurrentTools, type FauxResponseStep, type TranscriptContext } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -523,5 +525,25 @@ describe("run-task with an agent step", () => {
     await expect(runTaskInvocation(invocation(step()), {
       rootPath, model: FAUX_MODEL, eventSink: async () => undefined, artifactSink: async () => undefined,
     })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("agent tools") as unknown });
+  });
+
+  it("does not run a step whose pull request head is not the commit the workspace holds, and starts nothing for it (Task 22 review, M5)", async () => {
+    const rootPath = await workspaceRoot();
+    const repository = join(rootPath, "repo", "demo");
+    await mkdir(repository, { recursive: true });
+    const git = (...args: string[]) => promisify(execFile)("git", ["-C", repository, "-c", "user.name=Test", "-c", "user.email=test@example.test", ...args]).then((result) => result.stdout.trim());
+    await git("init", "--quiet", "--initial-branch=main");
+    await writeFile(join(repository, "README.md"), "x\n");
+    await git("add", ".");
+    await git("commit", "--quiet", "-m", "x");
+    const head = await git("rev-parse", "HEAD");
+    await mkdir(join(rootPath, ".agentx"), { recursive: true });
+    await writeFile(join(rootPath, ".agentx", "preparation-manifest.json"), JSON.stringify({
+      schemaVersion: 2, complete: true, projectName: "payments", projectRevision: 1, completedSetupSteps: [],
+      repositories: [{ name: "demo", path: "repo/demo", defaultBranch: "main", resolvedCommit: head, resolvedAt: "2026-10-22T00:00:00.000Z", completedAt: "2026-10-22T00:00:00.000Z" }],
+    }));
+    const dependencies = { rootPath, model: FAUX_MODEL, eventSink: async () => undefined, artifactSink: async () => undefined, agentRun: { brokerUrl: BROKER, catalogs: async () => [], call: async () => ({}) } };
+    await expect(runTaskInvocation(invocation({ ...step(), checkout: [{ repository: "demo", pullRequest: 12, headSha: "b".repeat(40) }] }), dependencies as never))
+      .rejects.toThrow("not at the recorded commit of pull request 12");
   });
 });

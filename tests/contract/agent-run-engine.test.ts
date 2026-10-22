@@ -32,6 +32,7 @@ import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org.js
 import type { AgentId } from "../../packages/contracts/src/agent.js";
 import { DEV_ISSUER, MAYA, OMAR, bindChannel, createDeveloperTaskBroker, grantProject, recordStream, unbindChannel, type Developer } from "../support/developer-task-broker.js";
 import { taskPageUrl } from "../../packages/broker/src/aws/developer-tasks.js";
+import { operationEndDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, loadSlackBroker, registerSlackProject } from "../support/slack-broker.js";
@@ -1907,6 +1908,13 @@ describe("Task 22 review: the Slack report can never ping (C2) and flattens bare
     expect(prepareSlackReport("v1.2.3 changed README.md, index.ts and package.json; node.js 22.1 was used", options()).text).toBe("v1.2.3 changed README.md, index.ts and package.json; node.js 22.1 was used");
     expect(prepareSlackReport("docs at acme.example/runbook", options({ reportLinkDomains: ["acme.example"] })).text).toBe("docs at acme.example/runbook");
   });
+
+  it("flattens a link written in the label of an allowed link, so the label never shows an address that is not the link's", () => {
+    const result = prepareSlackReport("<https://docs.acme.example/x|https://evil.example/login>", options({ reportLinkDomains: ["acme.example"] }));
+    expect(result.text).not.toContain("https://evil.example");
+    expect(result.text).toContain("(evil.example)");
+    expect(result.text).toMatch(/^<https:\/\/docs\.acme\.example\/x\|/u);
+  });
 });
 
 describe("Task 22 review: cancelling stops the run (C1)", () => {
@@ -2004,6 +2012,24 @@ describe("Task 22 review: cancelling stops the run (C1)", () => {
     const row = t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)[0]!;
     t.db.set({ ...row, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
     await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED" });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+  });
+
+  it("a cancel that lands while the engine is writing a step's result is not lost: the engine's write fails on the raised revision and the run ends CANCELLED", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const deps = t.routeDeps();
+    let cancelled = false;
+    // The engine has read the run when it keeps the step's report; the person cancels at that moment.
+    const hooked = { ...deps, agentRuns: { ...deps.agentRuns!, saveReport: async () => {
+      if (!cancelled) { cancelled = true; expect((await cancelRoute(t, run.taskId)).status).toBe(200); }
+      return undefined;
+    } } } as ApprovalDependencies;
+    await onAgentStepFinished(hooked, { taskId: run.taskId, operationId: first.id, outcome: "SUCCEEDED", report: "Found it." });
+    expect(cancelled).toBe(true);
     expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED" });
     expect(t.stepOps(run.workspaceId)).toHaveLength(1);
   });
@@ -2122,6 +2148,24 @@ describe("Task 22 review: a plain task's end by the reaper or a stuck cancel blo
     expect(rowsOf(t, run.taskId).map((row) => row.sk)).toEqual([`${run.taskId}#agent`]);
     await t.handler({ source: "agentx.workflow-dispatch-recovery" });
     expect(events).toHaveLength(1);
+  });
+
+  it("an operation_end row for an operation that has not ended, or that belongs to another org, blocks and tells nothing", async () => {
+    const t = await setup({ proxy: true });
+    const events = endHandler();
+    const plain = await plainTurn(t);
+    const rowFor = (orgId: string) => (operationEndDispatchItem("state", { taskId: plain.taskId, orgId, workspaceId: plain.workspaceId, operationId: plain.turn.id, now: new Date().toISOString() }) as { Put: { Item: Record<string, unknown> } }).Put.Item;
+    t.db.set(rowFor(TEST_ORG));
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(t.access!.blockKey).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    expect(rowsOf(t, plain.taskId)).toEqual([]);
+    t.db.set({ ...t.db.get(`WORKSPACE#${plain.workspaceId}`, `OPERATION#${plain.turn.id}`)!, status: "FAILED" });
+    t.db.set(rowFor("org_zzzzzzzzzzzzzzzzzzzz"));
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(t.access!.blockKey).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    expect(rowsOf(t, plain.taskId)).toEqual([]);
   });
 });
 
@@ -2292,5 +2336,68 @@ describe("Task 22 review: one gate for every dispatch (M1), the step's pending c
     await t.finishStep(run, rerun.id, "Done after the comment.");
     expect(t.stepOps(run.workspaceId)).toHaveLength(3);
     expect(t.stepOps(run.workspaceId)[2]).toMatchObject({ programStepId: "report" });
+  });
+
+  it("M7: a step run again is told only the writes that were decided, not the ones still waiting", async () => {
+    const { t, run, first, deps, write } = await waitingOnWrite();
+    await askWrite(t, deps, { taskId: run.taskId, stepId: "investigate", operationId: first.id, summary: "comment on LIN-13" });
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "SET budgetPause = :pause", ExpressionAttributeValues: { ":pause": { scope: { kind: "task", taskId: run.taskId }, at: new Date().toISOString() } } }));
+    await t.finish(run.workspaceId, first.id, "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    await approve(deps, write.approvalId);
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "REMOVE budgetPause" }));
+    await advanceAgentRun(deps, run.taskId);
+    const inputs = t.invocationOf(t.stepOps(run.workspaceId)[1]!.id).payload.agentStep!.inputs;
+    expect(inputs).toContain("Approved and done: comment on LIN-12");
+    expect(inputs).not.toContain("LIN-13");
+  });
+
+  it("M2: a step the counter still holds is not taken on when another of its approvals is decided", async () => {
+    const { t, run, first, deps, write } = await waitingOnWrite();
+    await t.finishStep(run, first.id, "Waiting.");
+    const counter = { pk: orgScoped(TEST_ORG, `STEP_APPROVALS#${run.taskId}`), sk: "investigate" };
+    t.db.set({ ...counter, pending: 2 });
+    await approve(deps, write.approvalId);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL" });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    // The counter reaching zero lets the sweep take the step on, with the outcome it knows.
+    t.db.set({ ...counter, pending: 0 });
+    const row = t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)[0]!;
+    t.db.set({ ...row, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(2);
+    expect(t.invocationOf(t.stepOps(run.workspaceId)[1]!.id).payload.agentStep!.inputs).toContain("Approved and done: comment on LIN-12");
+  });
+
+  it("an approval step whose record is gone is never taken for decided by the sweep", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf(WITH_GATE);
+    const run = await t.start(agentId);
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "The draft.");
+    const [approvalId] = t.runItem(run.taskId)!.steps[1]!.approvalIds;
+    await t.db.send(new DeleteCommand({ TableName: "state", Key: approvalKey(TEST_ORG, approvalId as never) }));
+    const row = t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)[0]!;
+    t.db.set({ ...row, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL" });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+  });
+
+  it("M3: the branch of the first report is not carried over to a continuation's own report", async () => {
+    const t = await setup();
+    const contract = { branches: [{ id: "fix", description: "A fix is needed" }, { id: "close", description: "Nothing to do" }] };
+    const run = await startWithContract(t, contract);
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Looked.");
+    const last = t.stepOps(run.workspaceId)[1]!;
+    const deps = t.routeDeps();
+    const write = await askWrite(t, deps, { taskId: run.taskId, stepId: "report", operationId: last.id, summary: "comment on LIN-12" });
+    await t.finishStep(run, last.id, "Needs a fix.", { branch: "fix" });
+    await approve(deps, write.approvalId);
+    const continuation = t.stepOps(run.workspaceId)[2]!;
+    expect(continuation).toMatchObject({ programStepId: "report" });
+    await t.finishStep(run, continuation.id, "Done after the comment.");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "COMPLETE" });
+    expect(t.runItem(run.taskId)!.branch).toBeUndefined();
   });
 });

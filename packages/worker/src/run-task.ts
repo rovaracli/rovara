@@ -160,6 +160,9 @@ async function runTask(
   if (!manifest.complete || manifest.projectRevision !== invocation.projectRevision) {
     throw agentXError("WORKSPACE_NOT_READY", "workspace manifest is incomplete or revision-mismatched");
   }
+  // A run that looks at a pull request: the workspace must hold the head commit the step was told about, or the step does not run, and nothing is started
+  // for it (Task 22 review, M5).
+  if (step?.kind === "agent" && step.checkout !== undefined && step.checkout.length > 0) await verifyCheckedOutHeads(dependencies.rootPath, manifest, step.checkout);
   // A coding step's skills: the broker's snapshot, only those the step was published with. Fetched before any container starts.
   let stepSkills: AgentSkillFile[] | undefined;
   if (step?.skills !== undefined && step.skills.length > 0) {
@@ -243,8 +246,6 @@ async function runTask(
   const candidateSweep = fileTools === undefined ? undefined : async (directory: string): Promise<void> => { await sweepFileOps(fileTools, canonicalRoot, directory); };
 
   if (step?.kind === "agent") {
-    // A run that looks at a pull request: the workspace must hold the head commit the step was told about, or the step does not run (Task 22 review, M5).
-    if (step.checkout !== undefined && step.checkout.length > 0) await verifyCheckedOutHeads(dependencies.rootPath, manifest, step.checkout);
     const { brokerUrl, ...hooks } = dependencies.agentRun!;
     const agentStepResult = await runAgentStep({
       payload: step, operationId: invocation.operationId, workspaceId: invocation.workspaceId, conversationId: invocation.payload.conversationId,
