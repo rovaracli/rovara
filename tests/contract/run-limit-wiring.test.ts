@@ -9,7 +9,7 @@ import type { OrgId } from "../../packages/contracts/src/org.js";
 import { runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { SPEND_REQUEST_TTL_DAYS } from "../../packages/contracts/src/spend.js";
 import { MAYA } from "../support/developer-task-broker.js";
-import { BEN, DEB, PREPARED, setup, type World } from "../support/spend-world.js";
+import { BEN, PREPARED, setup, type World } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 
@@ -81,7 +81,7 @@ describe("a plan blocked on its run limit, through the real spend request", () =
     // The same decision again is the stored answer.
     expect(await decideSpendRequest(w.deps(), w.caller(BEN), id, { requestId, decision: "APPROVE" })).toEqual(first);
     // Another decision on a request that is decided is refused.
-    await expect(decideSpendRequest(w.deps(), w.caller(DEB, "admin"), id, { requestId: randomUUID(), decision: "APPROVE" })).rejects.toMatchObject({ code: "APPROVAL_CLOSED" });
+    await expect(decideSpendRequest(w.deps(), w.caller(BEN), id, { requestId: randomUUID(), decision: "APPROVE" })).rejects.toMatchObject({ code: "APPROVAL_CLOSED" });
     // The sweep has nothing left to start.
     await escalateOwnerRequests(w.deps(), { budgetMs: 5_000 });
     expect(implementations()).toHaveLength(1);

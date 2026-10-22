@@ -18,6 +18,7 @@ import { roleOnProject } from "../agents/roster.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { budgetOwnerOf, ownerVersionItem } from "./owner-total.js";
 import { readGuardrails } from "../agents/guardrails.js";
+import type { RequestRunLimit } from "./estimate.js";
 import { checkTime, registerMemberMover, registerOwnerCapConfirmation, type LifecycleDeps } from "../agents/lifecycle.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { failedIndexes, readRequest, requestMarkItem, type RequestMark, type TransactItem } from "../agents/table-writes.js";
@@ -35,7 +36,7 @@ import { cleanUsd, readTopUp } from "./top-ups.js";
 /** What the broker does for a request once it is approved: the parts that live with the developer tasks. */
 export interface SpendRequestHost {
   /** Goes on with a task whose limit was raised (`resumeTaskAfterSpendApproval` in developer-tasks.ts). Never asked for a task in another org. */
-  resumeTask(input: { orgId: OrgId; taskId: string; spendRequestId: string; resetRunWindow: boolean; firstDispatch: boolean }): Promise<void>;
+  resumeTask(input: { orgId: OrgId; taskId: string; spendRequestId: string; resetRunWindow: boolean; firstDispatch: boolean; resume?: "implement"; runLimitUsd?: number }): Promise<void>;
   /** A test run that reached its cap goes on as a normal task of its owner (`POST /v1/app/tasks/{id}/continue-as-task`). */
   continueAsTask?(caller: AgentCaller, taskId: string, body: unknown): Promise<unknown>;
   /** What a task's model keys have spent so far, in dollars (the proxy's figure); how a pause that was never written is worked out from the end. */
@@ -538,6 +539,24 @@ export async function createSpendRequest(deps: SpendRequestDependencies, input: 
     return { record, created: true, approvers };
   }
   throw agentXError("AGENT_REVISION_CONFLICT", "Someone else asked for this at the same time. Try again.");
+}
+
+/**
+ * Task 34's seam `agents.requestRunLimit`, wired to this module: a plan approved at a run limit above the approver's tier makes a `run_limit` request that
+ * `resume: "implement"` (no pause, since the workflow is blocked on the limit, not paused by the budget). It is made once per task (`createSpendRequest`'s slot), so
+ * a repeat of the plan's approval answers the request that is open; the task's starter is the person it is for (`requestedFor`), as for any run's request.
+ * Answers `undefined` for a task that is not the org's (nothing asked), and throws what `createSpendRequest` throws, which refuses the plan's approval.
+ */
+export function runLimitRequester(deps: SpendRequestDependencies): RequestRunLimit {
+  return async (request) => {
+    const task = await readTask(deps, request.orgId, request.taskId);
+    if (task === undefined) return undefined;
+    const { record } = await createSpendRequest(deps, {
+      orgId: request.orgId, kind: "run_limit", scope: { kind: "task", taskId: task.taskId }, taskId: task.taskId, amountUsd: request.amountUsd, newLimitUsd: request.newLimitUsd,
+      reason: request.reason, requestedBy: request.requestedBy, requestedFor: { developerId: task.startedBy?.developerId ?? task.developerId }, resume: "implement",
+    });
+    return { spendRequestId: record.spendRequestId };
+  };
 }
 
 /** A task event, written once per key: a pause message, an approval's note. */
@@ -1076,11 +1095,18 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
         `That is more than this run's ${dollars(change.raisedPastRunLimit)} run limit, so I also asked ${followUpWords} to raise it.`));
     }
     // A run held at its start is dispatched by the resume; the due item lets the settlement run try again if that fails now (M-1).
-    const held = current !== undefined && change?.resume === true && change.firstDispatch ? heldStartKey(decidedAt, record.orgId, current.taskId) : undefined;
+    // A plan blocked on its run limit (`resume: "implement"`) is started by the same list: the approval commits the limit, the start is made after it, and a start
+    // that was lost is made again by the settlement run (the only way to unblock the plan is this approval, so it must not be lost).
+    const implementing = current !== undefined && change?.resume === true && record.kind === "run_limit" && record.resume === "implement" && approvedUsd !== undefined;
+    const held = current !== undefined && change?.resume === true && (change.firstDispatch || implementing) ? heldStartKey(decidedAt, record.orgId, current.taskId) : undefined;
+    const runLimitUsd = implementing && approvedUsd !== undefined ? newLimitFor(record, approvedUsd) : undefined;
     if (held !== undefined && change !== undefined) {
-      extra.push({ Put: { TableName: deps.tableName, Item: { ...held, entityType: "SPEND_HELD_START", orgId: record.orgId, taskId: record.taskId, spendRequestId: record.spendRequestId, resetRunWindow: change.resetRunWindow, expiresAt: record.expiresAt } } });
+      extra.push({ Put: { TableName: deps.tableName, Item: {
+        ...held, entityType: "SPEND_HELD_START", orgId: record.orgId, taskId: record.taskId, spendRequestId: record.spendRequestId, resetRunWindow: change.resetRunWindow, expiresAt: record.expiresAt,
+        ...(runLimitUsd === undefined ? {} : { resume: "implement", runLimitUsd }),
+      } } });
     }
-    return { change, followUp, followUpWords, extra, held };
+    return { change, followUp, followUpWords, extra, held, runLimitUsd };
   };
   const pauseOf = (current: DeveloperTaskRecord) => `${current.budgetPause?.scope.kind ?? ""}|${current.budgetPause?.firstDispatch?.operationId ?? ""}`;
   let planned = await plan(task);
@@ -1099,7 +1125,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
       await refused(error);
     }
   }
-  const { change, followUp, followUpWords, held } = planned;
+  const { change, followUp, followUpWords, held, runLimitUsd } = planned;
   await flushAuditEvents(deps, events);
   if (task !== undefined && change !== undefined) {
     if (followUp !== undefined && followUpWords !== undefined) {
@@ -1112,7 +1138,10 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
     // A held start's failure is said on the task, and the settlement run tries it again (`retryHeldStarts`).
     if (change.resume) {
       try {
-        await deps.spendRequests?.resumeTask({ orgId: record.orgId, taskId: task.taskId, spendRequestId: record.spendRequestId, resetRunWindow: change.resetRunWindow, firstDispatch: change.firstDispatch });
+        await deps.spendRequests?.resumeTask({
+          orgId: record.orgId, taskId: task.taskId, spendRequestId: record.spendRequestId, resetRunWindow: change.resetRunWindow, firstDispatch: change.firstDispatch,
+          ...(runLimitUsd === undefined ? {} : { resume: "implement" as const, runLimitUsd }),
+        });
         if (held !== undefined) await clearHeldStart(deps, held, record.orgId, task.taskId);
       } catch (error) {
         logLine(deps, "spend_request.resume_failed", { spendRequestId: record.spendRequestId, taskId: task.taskId, error: errorName(error) });
@@ -1319,6 +1348,24 @@ async function retryHeldStarts(deps: SpendRequestDependencies, deadline: number)
         } catch (error) {
           if (memberLeft(error)) await dropMonthResume(deps, key, orgId as OrgId, taskId, spendRequestId).catch(() => undefined);
           else logLine(deps, "spend_request.month_resume_failed", { spendRequestId, taskId, error: errorName(error) });
+        }
+        continue;
+      }
+      if (item["resume"] === "implement") {
+        // A plan's run limit that was approved (Task 34): done once the task closed, or its time ran out; the resume itself is a no-op for a plan that is no longer blocked on it.
+        const runLimitUsd = item["runLimitUsd"];
+        if (task === undefined || task.closedAt !== undefined || expired || host === undefined || typeof runLimitUsd !== "number") {
+          if (expired && task?.closedAt === undefined) logLine(deps, "spend_request.run_limit_start_gave_up", { spendRequestId, taskId });
+          if (host !== undefined || expired) await clearHeldStart(deps, key, orgId, taskId, true).catch(() => false);
+          continue;
+        }
+        try {
+          await host.resumeTask({ orgId, taskId, spendRequestId, resetRunWindow: true, firstDispatch: false, resume: "implement", runLimitUsd });
+          if (await clearHeldStart(deps, key, orgId, taskId, true)) dispatched += 1;
+        } catch (error) {
+          // The task's creator was removed (R60) or its owner can't act now: nothing later can start it.
+          if (memberLeft(error)) await clearHeldStart(deps, key, orgId, taskId, true).catch(() => false);
+          logLine(deps, "spend_request.run_limit_start_failed", { spendRequestId, taskId, error: errorName(error) });
         }
         continue;
       }

@@ -380,7 +380,7 @@ import { readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
 import { SkillStore, servedSkills } from "../agents/skills.js";
 import { followMerges, orgRoleOf, type ProjectMembers } from "../agents/access.js";
-import { escalateOwnerRequests, requestForPausedTask, spendDecideKind, type SpendRequestHost } from "../spend/requests.js";
+import { escalateOwnerRequests, requestForPausedTask, runLimitRequester, spendDecideKind, type SpendRequestHost } from "../spend/requests.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
 import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
@@ -960,7 +960,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
       if (read === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "reading pull requests is not set up in this deployment");
       return { headSha: (await read.call(dependencies.githubPullRequests, repositoryUrl, number, { orgId }, ...(installationId === undefined ? [] : [{ installationId }]))).headSha };
     }),
-    // Task 34's seam to Task 32: the `run_limit` request a plan's approval makes when the approver's tier is too low. Task 32 wires it; until then none is made.
+    // Task 34's seam to Task 32: the `run_limit` request a plan's approval makes when the approver's tier is too low. A test may inject its own; the broker's is wired below.
     ...(agents.requestRunLimit === undefined ? {} : { requestRunLimit: agents.requestRunLimit }),
     // Task 14b: the scan of a repository's workflows for the comment rule and the opt-out reads the default branch with the same kind of token.
     ...(dependencies.githubPullRequests.agentRepositoryReader === undefined ? {} : {
@@ -1003,6 +1003,9 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
   routeDependencies.agentRuns = agentRunHostOf(dependencies, tasks, routeDependencies);
   // Plan 3, Task 32: what an approved spend request does with its task (the owner's resume, continue-as-task) and what a task's keys have spent.
   routeDependencies.spendRequests = spendRequestHostOf(dependencies, tasks, routeDependencies);
+  // Plan 3, merge of Tasks 32 and 34: a plan approved at a run limit above the approver's tier makes a `run_limit` spend request, and that request's approval starts coding
+  // (`resumeAfterRunLimitApproval`, through the host above). Without this a member's Full task would block with no request and no way to run.
+  routeDependencies.requestRunLimit ??= runLimitRequester(routeDependencies);
   // Plan 3, Task 21a-wiring: decisions need a person present. The decide routes call this guard first (a token is sent to the page with a ticketed
   // confirmUrl), and `GET /v1/app/approvals/{id}` mints the same ticket for the person who may decide it. Both use the page's own context.
   if (dependencies.decide !== undefined) {

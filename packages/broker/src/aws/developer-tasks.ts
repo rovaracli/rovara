@@ -2122,6 +2122,9 @@ export interface SpendResumeInput {
   spendRequestId: string;
   resetRunWindow: boolean;
   firstDispatch: boolean;
+  /** `"implement"`: the approved request was for a plan blocked on its run limit (Task 34), and `runLimitUsd` is the limit approved. */
+  resume?: "implement";
+  runLimitUsd?: number;
 }
 
 /**
@@ -2137,6 +2140,12 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
   await creatorGuard(deps, task);
   if (input.firstDispatch) {
     await dispatchHeldStart(deps, task);
+    return;
+  }
+  // A plan blocked on its run limit starts coding by this approval and nothing else (`resumeAfterRunLimitApproval`); a repeat of it is the same request.
+  if (input.resume === "implement") {
+    if (input.runLimitUsd === undefined) throw agentXError("CONFIG_INVALID", "a run limit approval names the limit it approved");
+    await resumeAfterRunLimitApproval(deps, task.taskId, { requestId: resumeRequestId(input.spendRequestId, "implement"), runLimitUsd: input.runLimitUsd });
     return;
   }
   if (task.budgetPause !== undefined) return;
