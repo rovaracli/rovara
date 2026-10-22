@@ -670,6 +670,8 @@ export type ClassifyAgentWriteInput = Omit<ClassifyWriteInput, "ownItems" | "lab
   project: string;
   /** The repository (`owner/name`) a GitHub write is in: the project's connector for the call. */
   repository?: string | undefined;
+  /** The installation the project pinned for that repository: the scan is held to it (Task 14b's fix round). */
+  installationId?: number | undefined;
 };
 
 /**
@@ -678,7 +680,7 @@ export type ClassifyAgentWriteInput = Omit<ClassifyWriteInput, "ownItems" | "lab
  * call consequential. A read, and a merge, need none of them and read nothing.
  */
 export async function classifyAgentWrite(deps: ClassifyAgentWriteDependencies, input: ClassifyAgentWriteInput): Promise<WriteClassification> {
-  const { orgId, taskId, project, repository, ...rest } = input;
+  const { orgId, taskId, project, repository, installationId, ...rest } = input;
   const { tool, args } = input;
   if (isReadByName(tool) || (tool.access === "write" && isMergeTool(tool))) return classifyWrite({ ...rest, ownItems: new Set<string>() });
 
@@ -703,7 +705,7 @@ export async function classifyAgentWrite(deps: ClassifyAgentWriteDependencies, i
   let repositoryRule: { consequential: boolean } | undefined;
   if (tool.type === "github" && repository !== undefined) {
     try {
-      const rule = await commentTriggerRule(deps, { orgId, project, repository, taskId, cache: deps.runCache({ orgId, taskId }) });
+      const rule = await commentTriggerRule(deps, { orgId, project, repository, taskId, cache: deps.runCache({ orgId, taskId }), ...(installationId === undefined ? {} : { installationId }) });
       repositoryRule = { consequential: rule.consequential };
     } catch {
       repositoryRule = { consequential: true };

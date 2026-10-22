@@ -665,6 +665,15 @@ describe("classifyAgentWrite", () => {
     expect(w.reads).toHaveBeenCalled();
   });
 
+  it("holds the scan to the installation the project pinned for the repository", async () => {
+    const seen: unknown[] = [];
+    const w = wrapper();
+    const deps = { ...w.deps, repositoryReader: async (request: { installationId?: number }) => { seen.push(request.installationId); return treeReader({ [WORKFLOW]: workflow("push") }); } };
+    await classifyAgentWrite(deps, { ...w.base, tool: githubComment(), args: { body: PLAIN }, installationId: 4242 });
+    await classifyAgentWrite(deps, { ...w.base, taskId: "task-2", tool: githubComment(), args: { body: PLAIN } });
+    expect(seen).toEqual([4242, undefined]);
+  });
+
   it("calls a plain comment safe when no workflow reacts to comments, and scans once per run", async () => {
     const w = wrapper();
     for (let call = 0; call < 3; call += 1) expect((await classifyAgentWrite(w.deps, { ...w.base, tool: githubComment(), args: { body: PLAIN } })).class).toBe("safe");
