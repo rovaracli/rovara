@@ -260,3 +260,10 @@ export interface SpendRequestRecord {
 export function suggestedTopUpUsd(limitUsd: number): number {
   return Math.max(5, Math.ceil(limitUsd * 0.5));
 }
+
+// ---- monthly requests (Task 33)
+
+/** What a month's request asks for by default: a fifth of the scope's limit, rounded up to whole dollars, and never less than $10. */
+export function suggestedMonthTopUpUsd(limitUsd: number): number {
+  return Math.max(10, Math.ceil(limitUsd * 0.2));
+}

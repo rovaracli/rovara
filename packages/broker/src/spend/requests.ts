@@ -10,7 +10,7 @@ import { z } from "zod";
 import {
   AgentXError, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, spendRequestKey, spendRequestSlotKey, suggestedTopUpUsd,
-  type AuditEventInput, type AuditProof, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
+  type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { orgRoleOf, resolveSurvivor, type AgentCaller } from "../agents/access.js";
 import { readGuardrails } from "../agents/guardrails.js";
@@ -132,6 +132,29 @@ async function nameOf(deps: Pick<SpendRequestDependencies, "signInStore">, devel
     return "a teammate";
   }
 }
+
+// ---- a month's budget (Task 33)
+
+/** One kind of budget an owner holds, summed for the owner cap: its base plus this month's top-ups. Plan 3 registers agents; Plan 4 adds chains (N3). */
+export type OwnerTotalContributor = (deps: SpendRequestDependencies, input: { orgId: OrgId; owner: string; month: string }) => Promise<number>;
+
+/** Every budget an owner holds counts toward the cap through one of these. */
+export const OWNER_TOTAL_CONTRIBUTORS: OwnerTotalContributor[] = [];
+
+/** What one owner's budgets total this month, top-ups included, and the owner counter's `version` it was summed at (R4-6). */
+export async function ownerEffectiveTotal(_deps: SpendRequestDependencies, _input: { orgId: OrgId; owner: string; month: string }): Promise<{ totalUsd: number; version: number }> {
+  throw new Error("not implemented");
+}
+
+/** How a `month` request is routed for each kind of scope (Plan 4 adds `chain`). */
+export type MonthApproverRule = (deps: SpendRequestDependencies, request: SpendRequestRecord, amountUsd: number) => Promise<SpendApprovers>;
+export const MONTH_APPROVERS: Record<BudgetScope["kind"], MonthApproverRule> = {
+  org: async () => { throw new Error("not implemented"); },
+  member: async () => { throw new Error("not implemented"); },
+  project: async () => { throw new Error("not implemented"); },
+  testing: async () => { throw new Error("not implemented"); },
+  agent: async () => { throw new Error("not implemented"); },
+};
 
 // ---- who decides
 
