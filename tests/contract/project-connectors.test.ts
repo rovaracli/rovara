@@ -1813,6 +1813,22 @@ describe("Plan 4 Task 12: PUT accepts the seven new types", () => {
     await s.fakeLinear.close();
   });
 
+  it("holds a connector that changes nothing it was confirmed for to the list as it stands, so a narrowing cannot keep a tool the type no longer offers", async () => {
+    QUIET();
+    stub(["sentry"]);
+    const s = await install();
+    const id = await connectionOf(s, "sentry");
+    const two = { ...connectorOf("sentry", id), tools: [{ name: "list_things", access: "read" }, { name: "get_thing", access: "read" }] };
+    expect((await s.put(MIA, "sentry", two)).status).toBe(200);
+    PROJECT_CONNECTOR_TOOLS["sentry"] = ["list_things"];
+    // The same target with fewer tools holds what was confirmed, and needs no connection; its tools are still the type's.
+    const kept = await s.put(MIA, "sentry", { ...two, tools: [{ name: "get_thing", access: "read" }] }, { expectedRevision: 2 });
+    expect(kept.body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.0: get_thing is not a sentry tool" });
+    expect((await s.put(MIA, "sentry", { ...two, tools: [{ name: "list_things", access: "read" }] }, { expectedRevision: 2 })).status).toBe(200);
+    expect(s.revisions()).toHaveLength(3);
+    await s.fakeLinear.close();
+  });
+
   it.each(NEW_TYPES)("refuses a %s tool approved to write outright, never to the confirmation page, writing nothing", async (type) => {
     QUIET();
     stub();
