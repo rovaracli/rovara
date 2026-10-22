@@ -6,12 +6,12 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
-import { releaseFinishedTask } from "../../packages/broker/src/aws/developer-tasks.js";
+import { getTaskDocumentView, releaseFinishedTask } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import {
-  acceptRunLimit, estimateRun, recordRunCost, suggestMaxPerRun, type EstimatePath, type RequestRunLimit, type RunLimitRequest,
+  acceptRunLimit, estimateRun, recordRunCost, suggestMaxPerRun, type EstimatePath, type RequestRunLimit,
 } from "../../packages/broker/src/spend/estimate.js";
 import { writeSpendPolicy } from "../../packages/broker/src/spend/settings.js";
 import { createWorkflowSnapshot, WorkflowSnapshotSchema, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow.js";
@@ -19,8 +19,7 @@ import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/a
 import type { AgentId } from "../../packages/contracts/src/agent.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { agentRunsKey, projectAgentKey, projectAiKey, projectMemberKey, runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { MAX_RUN_LIMIT_USD, defaultSpendPolicy, type RunEstimate } from "../../packages/contracts/src/spend.js";
-import { PER_TASK_BUDGET_USD } from "../../packages/contracts/src/org-budget.js";
+import { MAX_RUN_LIMIT_USD, defaultSpendPolicy, runLimitBlockText, type RunEstimate } from "../../packages/contracts/src/spend.js";
 import type { ProjectRole } from "../../packages/contracts/src/app-projects.js";
 import { MAYA, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -51,7 +50,7 @@ function seedCost(db: FakeDynamoDb, input: { org?: OrgId; project?: string; agen
   const project = input.project ?? "payments";
   const agentId = input.agentId ?? ROVARA_CODE;
   db.set({
-    ...runCostKey(org, project, agentId as AgentId, input.path, endedAt, taskId), entityType: "RUN_COST",
+    ...runCostKey(org, project, agentId, input.path, endedAt, taskId), entityType: "RUN_COST",
     orgId: org, project, agentId, path: input.path, taskId, endedAt, costUsd: input.costUsd,
   });
 }
@@ -146,7 +145,7 @@ describe("estimateRun", () => {
 describe("suggestMaxPerRun", () => {
   /** A run of the agent as the settlement ledger keeps it: the total the run spent in a month. */
   const run = (db: FakeDynamoDb, agentId: string, month: string, taskId: string, usd: number, lastAt: string, project = "payments") =>
-    db.set({ ...agentRunsKey(TEST_ORG, month, agentId as AgentId, taskId), entityType: "AGENT_RUN", orgId: TEST_ORG, agentId, project, origin: "app", usd, taskId, lastAt });
+    db.set({ ...agentRunsKey(TEST_ORG, month, agentId, taskId), entityType: "AGENT_RUN", orgId: TEST_ORG, agentId, project, origin: "app", usd, taskId, lastAt });
 
   it("doubles the p80 of the agent's last runs", async () => {
     const db = new FakeDynamoDb();
@@ -158,8 +157,8 @@ describe("suggestMaxPerRun", () => {
     const db = new FakeDynamoDb();
     expect(await suggestMaxPerRun(deps(db), { orgId: TEST_ORG, agentId: ROVARA_CODE })).toBe(20);
     expect(await suggestMaxPerRun(deps(db), { orgId: TEST_ORG, agentId: "ticket-triage" })).toBe(4);
-    expect(await suggestMaxPerRun(deps(db), { orgId: TEST_ORG, agentId: "agt_aaaaaaaaaaaaaaaaaaaa" as AgentId, coding: true })).toBe(20);
-    expect(await suggestMaxPerRun(deps(db), { orgId: TEST_ORG, agentId: "agt_aaaaaaaaaaaaaaaaaaaa" as AgentId })).toBe(4);
+    expect(await suggestMaxPerRun(deps(db), { orgId: TEST_ORG, agentId: "agt_aaaaaaaaaaaaaaaaaaaa", coding: true })).toBe(20);
+    expect(await suggestMaxPerRun(deps(db), { orgId: TEST_ORG, agentId: "agt_aaaaaaaaaaaaaaaaaaaa" })).toBe(4);
   });
 
   it("needs five runs, counts only the last twenty and reads only this agent in this org", async () => {
@@ -169,6 +168,20 @@ describe("suggestMaxPerRun", () => {
     Array.from({ length: 20 }, (_, index) => run(db, ROVARA_CODE, "2026-10", `new${index}`, 1, `2026-10-2${index % 10}T0${Math.floor(index / 10)}:00:00.000Z`));
     run(db, "ticket-triage", "2026-10", "other", 40, "2026-10-29T00:00:00.000Z");
     expect(await suggestMaxPerRun(deps(db), { orgId: TEST_ORG, agentId: ROVARA_CODE })).toBe(2);
+  });
+});
+
+describe("the agent's page", () => {
+  it("suggests the default until the agent has runs, then twice the p80 of its last runs", async () => {
+    const t = await world();
+    const suggested = async () => (await t.api(MAYA, "GET", `/v1/app/agents/${ROVARA_CODE}`)).body.suggestedMaxPerRunUsd;
+    expect(await suggested()).toBe(20);
+    const month = new Date().toISOString().slice(0, 7);
+    [1, 2, 2, 3, 4, 9].forEach((usd, index) => t.h.db.set({
+      ...agentRunsKey(TEST_ORG, month, ROVARA_CODE, `run-${String(index)}`), entityType: "AGENT_RUN", orgId: TEST_ORG, agentId: ROVARA_CODE, project: "payments", origin: "app", usd, taskId: `run-${String(index)}`,
+      lastAt: `${month}-0${String(index + 1)}T00:00:00.000Z`,
+    }));
+    expect(await suggested()).toBe(8);
   });
 });
 
@@ -270,6 +283,14 @@ describe("the plan-ready message", () => {
     expect(textOf(estimate())).toContain(plain.split("\n")[0]!);
   });
 
+  it("says a plan blocked on its run limit in the same words, with nothing to retry", () => {
+    const blocked = WorkflowSnapshotSchema.parse({ ...workflow, stage: "IMPLEMENT", state: "BLOCKED", blockReason: runLimitBlockText(20, "maintainer") });
+    const message = workflowMessage({ taskId, workflow: blocked })!;
+    expect(message.text).toBe("This plan's run limit is $20, which needs a project maintainer's approval. I've asked for it.");
+    const buttons = message.blocks.filter((block) => block.type === "actions").flatMap((block) => (block.elements as Array<{ action_id: string }>).map((button) => button.action_id));
+    expect(buttons).toEqual(["agentx_workflow_close"]);
+  });
+
   it("escapes an agent name that Slack would read as markup", () => {
     expect(textOf(estimate({ stopAtUsd: 3 }), "<!channel> &")).toContain("&lt;!channel&gt; &amp;'s max per run is $3");
   });
@@ -281,7 +302,7 @@ type Reply = { status: number; body: Record<string, unknown> };
 
 async function world(options: { proxy?: boolean; requestRunLimit?: RequestRunLimit | "none" } = {}) {
   const access = options.proxy === false ? undefined : fakeModelAccess();
-  const requestRunLimit = vi.fn(async (_request: RunLimitRequest) => ({ spendRequestId: "spr_aaaaaaaaaaaaaaaaaaaa" }));
+  const requestRunLimit = vi.fn<RequestRunLimit>(async () => ({ spendRequestId: "spr_aaaaaaaaaaaaaaaaaaaa" }));
   const seam = options.requestRunLimit === "none" ? undefined : options.requestRunLimit ?? requestRunLimit;
   const h = await createDeveloperTaskBroker({
     brokerExtra: { agents: { ...(seam === undefined ? {} : { requestRunLimit: seam }) }, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }) },
@@ -479,6 +500,18 @@ describe("approving the plan", () => {
     expect(again.status, JSON.stringify(again.body)).toBe(200);
     expect(t.requestRunLimit).toHaveBeenCalledTimes(1);
     expect(t.meta(taskId).workflow.revision).toBe(after.workflow.revision);
+  });
+
+  it("tells the task page what the task waits for", async () => {
+    const t = await world();
+    seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
+    const { taskId, plan } = await t.planned("QUICK");
+    expect((await t.decide(taskId, plan)).status).toBe(200);
+    const deps = { documentClient: t.h.db, tableName: "state", actions: t.h.actions, log: () => undefined, orgId: TEST_ORG,
+      checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() };
+    expect(await getTaskDocumentView(deps as never, { orgId: TEST_ORG, developerId: MAYA.developerId } as never, taskId)).toMatchObject({
+      status: "Waiting for the run limit to be approved", nextStep: "Coding starts once a project maintainer or an admin approves it, or close the task in the task's Slack thread.",
+    });
   });
 
   it("blocks with the same words and creates no request while the seam is not wired", async () => {

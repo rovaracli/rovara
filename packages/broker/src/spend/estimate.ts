@@ -7,7 +7,7 @@
 // `MAX_RUN_LIMIT_USD`. Plan 6 Task 7 builds on `estimateRun` and `RunEstimate`: keep both stable.
 import { QueryCommand, TransactWriteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  DEFAULT_RUN_ESTIMATE_USD, ESTIMATE_HISTORY_SIZE, ESTIMATE_MIN_SAMPLES, INDEX_EXPIRY_ATTRIBUTE, MAX_RUN_LIMIT_USD, ROVARA_CODE_AGENT_ID, agentRunsKey, runCostKey,
+  DEFAULT_RUN_ESTIMATE_USD, ESTIMATE_HISTORY_SIZE, ESTIMATE_MIN_SAMPLES, INDEX_EXPIRY_ATTRIBUTE, MAX_RUN_LIMIT_USD, ROVARA_CODE_AGENT_ID, agentRunsKey, runCostKey, runLimitBlockText,
   type AgentId, type OrgId, type OrgRole, type ProjectRole, type RunEstimate,
 } from "@agentx/contracts";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
@@ -155,10 +155,6 @@ export type RequestRunLimit = (request: RunLimitRequest) => Promise<{ spendReque
 export type RunLimitDecision =
   | { accepted: true; runLimitUsd: number }
   | { accepted: false; runLimitUsd: number; needs: "maintainer" | "admin"; approverRole: RunLimitRequest["approverRole"]; message: string };
-
-/** The words the workflow blocks with when the approver may not accept the run limit. */
-export const runLimitBlockText = (runLimitUsd: number, needs: "maintainer" | "admin"): string =>
-  `This plan's run limit is $${String(runLimitUsd)}, which needs ${needs === "maintainer" ? "a project maintainer's" : "an admin's"} approval. I've asked for it.`;
 
 export interface AcceptRunLimitDependencies extends EstimateDependencies {
   /** Where the approver's project role is read from. Without it, or when it fails, the approver is a member. */

@@ -3,7 +3,7 @@
 // value from a record, the model or a reviewer is redacted where it is free text, cut short and escaped here.
 import {
   WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
-  WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, type RunEstimate, type WorkflowSnapshot,
+  RUN_LIMIT_BLOCK_PREFIX, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, type RunEstimate, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { WORKFLOW_ACTION_IDS } from "./workflow-actions.js";
 import { E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON } from "./task-records.js";
@@ -715,7 +715,9 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
       ? `The saved ${workflowDocumentName(workflow)} couldn't be checked, so I stopped. Close this task and start again.`
       : `I stopped before your approval of the ${workflowDocumentName(workflow)}. ${plainBlockReason(workflow.blockReason)}`, buttons: [exits.close] };
     case "IMPLEMENT/RUNNING": return plain(implementRunning(context));
-    case "IMPLEMENT/BLOCKED": if (workflow.blockReason === WORKFLOW_BLOCK_REASONS.fixChangedNothing) return fixChangedNothing(context, exits);
+    // Approving the plan needs someone else to accept its run limit (Task 34): the words say who, and coding starts once they do, so there is nothing to retry.
+    case "IMPLEMENT/BLOCKED": if (workflow.blockReason?.startsWith(RUN_LIMIT_BLOCK_PREFIX) === true) return { text: slackText(workflow.blockReason), buttons: [exits.close] };
+      if (workflow.blockReason === WORKFLOW_BLOCK_REASONS.fixChangedNothing) return fixChangedNothing(context, exits);
       return { text: workflow.blockReason === WORKFLOW_BLOCK_REASONS.noCodeChanged ? WORKFLOW_BLOCK_REASONS.noCodeChanged
       : `Coding stopped before it finished. ${plainBlockReason(workflow.blockReason)}`,
       // Rewritten history can't be coded on again: a new task is the way on.

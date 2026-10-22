@@ -155,6 +155,7 @@ import {
   workflowVerificationPosition,
   capText,
   ROVARA_CODE_AGENT_ID,
+  RUN_LIMIT_BLOCK_PREFIX,
   type ProjectRole,
 } from "@agentx/contracts";
 import { z } from "zod";
@@ -3501,7 +3502,10 @@ function taskPageStage(workflow: WorkflowSnapshot | undefined, closed: boolean, 
         : { status: "Waiting for the owner's approval", nextStep: `The task owner approves or requests changes ${inSlack}.` };
     case "PLAN_REVIEW/BLOCKED": return { status: `Stopped before approval of the ${name}`, nextStep: `Close the task ${inSlack} and start again.` };
     case "IMPLEMENT/READY": case "IMPLEMENT/RUNNING": return { status: "Writing the code", nextStep: "The checks and reviews run when coding finishes." };
-    case "IMPLEMENT/BLOCKED": return workflow.blockReason === WORKFLOW_BLOCK_REASONS.fixChangedNothing
+    case "IMPLEMENT/BLOCKED": if (workflow.blockReason?.startsWith(RUN_LIMIT_BLOCK_PREFIX) === true) {
+      return { status: "Waiting for the run limit to be approved", nextStep: owner ? `Coding starts once a project maintainer or an admin approves it, or close the task ${inSlack}.` : "Coding starts once a project maintainer or an admin approves the run limit." };
+    }
+      return workflow.blockReason === WORKFLOW_BLOCK_REASONS.fixChangedNothing
       ? { status: "The approved fix didn't change any code", nextStep: workflowKeepPullRequestsOffered(workflow)
         ? `Retry coding, keep the pull request as it is, or close the task ${inSlack}.` : `Retry coding or close the task ${inSlack}.` }
       : { status: workflow.blockReason === WORKFLOW_BLOCK_REASONS.noCodeChanged ? "Coding finished, but no code changed" : "Coding stopped before it finished",
