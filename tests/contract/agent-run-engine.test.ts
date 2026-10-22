@@ -2339,7 +2339,7 @@ describe("Task 22 review: a plain task's end by the reaper or a stuck cancel blo
     t.db.send = (async (command: { constructor: { name: string }; input?: { Key?: { pk?: string; sk?: string } } }) => {
       if (down && command.constructor.name === "GetCommand" && command.input?.Key?.pk === `DEVTASK#${plain.taskId}` && command.input.Key.sk === "META") throw new Error("throttled");
       return original(command as never);
-    }) as never;
+    });
     await t.handler({ source: "agentx.workflow-dispatch-recovery" });
     expect(events).toEqual([]);
     expect(rowsOf(t, plain.taskId)[0]).toMatchObject({ kind: "operation_end", attempts: 1 });
