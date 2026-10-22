@@ -2,8 +2,11 @@
 // ends because of it. Pi's own error drops the proxy's body, so the body is read once, classified and discarded here.
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
 
-/** Whose budget ran out: the organisation's (Team=), the member's (User=) or the task's own key (Key=). */
-export type ModelBudgetScope = "org" | "member" | "task";
+/**
+ * Whose budget ran out: the organisation's (Team=), the member's (User=) or the task's own key (Key=) as the proxy reports them; the control plane's refusal
+ * to mint a key also names the project's, the agent's and a member's testing allowance (the budget levels of Plan 3).
+ */
+export type ModelBudgetScope = "org" | "member" | "task" | "project" | "agent" | "test";
 
 /** The model's budget ran out; a task that hits it ends, and the owner can raise the budget and continue. */
 export class ModelBudgetExhaustedError extends Error {
@@ -31,7 +34,7 @@ export function budgetScopeOfProxyBody(status: number, body: string): ModelBudge
   return undefined;
 }
 
-const MARKER = /^AI budget exhausted \((org|member|task)\)$/u;
+const MARKER = /^AI budget exhausted \((org|member|task|project|agent|test)\)$/u;
 
 /** What a stream's error message says when the budget ran out: Pi carries only text, so the scope travels in it. */
 export const budgetExhaustedMarker = (scope: ModelBudgetScope): string => `AI budget exhausted (${scope})`;

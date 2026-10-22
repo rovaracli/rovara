@@ -99,6 +99,18 @@ describe("the model runtime meets the proxy's budget refusal", () => {
     expect(transport).not.toHaveBeenCalled();
   });
 
+  it.each(["project", "agent", "test"] as const)("carries the %s's refusal of a re-minted key to the worker in the stream's message", async (scope) => {
+    let asked = 0;
+    const { runtime, model } = await proxiedRuntime(vi.fn<typeof fetch>(), async () => {
+      asked += 1;
+      if (asked > 1) throw new ModelBudgetExhaustedError(scope);
+      return PROXY_KEY;
+    });
+    const result = await runtime.streamSimple(model, context, { maxTokens: 64 }).result();
+    expect(result).toMatchObject({ stopReason: "error", errorMessage: `AI budget exhausted (${scope})` });
+    expect(budgetExhaustedFromMarker(result.errorMessage)).toMatchObject({ name: "ModelBudgetExhaustedError", scope, message: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+  });
+
   it("refuses a runtime whose first key is already refused for budget, as the budget and not as a proxy fault", async () => {
     const error = await createConfiguredModelRuntime({ provider: "amazon-bedrock", modelId: BEDROCK_MODEL }, { proxy: { baseUrl: PROXY_URL, apiKey: async () => { throw new ModelBudgetExhaustedError("member"); } } }).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ModelBudgetExhaustedError);
@@ -114,8 +126,12 @@ describe("the worker's model access meets a spent budget at a re-mint (ruling R3
     ["the organisation's", "ORG_BUDGET_EXCEEDED", "Your company's monthly AI budget is used up. Ask an admin to raise it.", "org"],
     ["the member's", "BUDGET_EXCEEDED", "Your monthly AI budget is used up ($29.00 of $29.00). Ask an admin to raise it.", "member"],
     ["the task's own", "BUDGET_EXCEEDED", "This task has used its AI budget ($25.00 of $25.00). Choose Continue to resume this task with a fresh budget.", "task"],
-  ] as const)("ends on %s 402 with ModelBudgetExhaustedError", async (_name, code, message, scope) => {
-    const error = await caught(new Response(body(code, message), { status: 402 }));
+    ["the project's", "PROJECT_BUDGET_EXCEEDED", "The web project's monthly AI budget is used up ($5.00 of $5.00). Ask for more from the project's page.", "project", 402],
+    ["the agent's", "AGENT_BUDGET_EXCEEDED", "Ticket Triage's monthly AI budget is used up ($20.00 of $20.00). Ask its owner for more.", "agent", 402],
+    ["a member's testing allowance", "TEST_ALLOWANCE_USED", "Your testing allowance for this month is used up ($10.00 of $10.00). Run the agent as a normal task instead.", "test", 402],
+    ["an agent with no budget", "AGENT_BUDGET_REQUIRED", "Ticket Triage has no monthly budget, so it can't run work that no person started. Ask its owner to set one.", "agent", 409],
+  ] as const)("ends on %s refusal with ModelBudgetExhaustedError", async (_name, code, message, scope, status = 402) => {
+    const error = await caught(new Response(body(code, message), { status }));
     // By name: the worker's source imports the package's built copy of the class, this test its source's.
     expect(error).toMatchObject({ name: "ModelBudgetExhaustedError", scope, message: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
   });
@@ -124,6 +140,8 @@ describe("the worker's model access meets a spent budget at a re-mint (ruling R3
     ["a 503", new Response(body("MODEL_PROXY_UNAVAILABLE", "x"), { status: 503 })],
     ["a 402 of another code", new Response(body("SOMETHING_ELSE", "x"), { status: 402 })],
     ["a 402 without a body", new Response("", { status: 402 })],
+    ["a 402 whose code is an object property's name", new Response(body("constructor", "x"), { status: 402 })],
+    ["a 409 of another code", new Response(body("WORKSPACE_BUSY", "x"), { status: 409 })],
   ])("keeps %s a RUNTIME_UNAVAILABLE", async (_name, response) => {
     const error = await caught(response);
     expect(error).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });

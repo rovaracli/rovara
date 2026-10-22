@@ -37,17 +37,24 @@ function parseModelAccess(body: unknown): ModelAccess {
   return { baseUrl: baseUrl as string, apiKey, expiresAt };
 }
 
+/** The budget level each refusal code of the control plane names; BUDGET_EXCEEDED is the member's or, by its message, the task's. */
+const BUDGET_CODE_SCOPES: ReadonlyMap<string, ModelBudgetScope> = new Map([
+  ["ORG_BUDGET_EXCEEDED", "org"], ["PROJECT_BUDGET_EXCEEDED", "project"], ["AGENT_BUDGET_EXCEEDED", "agent"], ["TEST_ALLOWANCE_USED", "test"],
+]);
+
 /**
- * A 402 from the control plane is a spent budget (ruling R37): ORG_BUDGET_EXCEEDED is the organisation's, and BUDGET_EXCEEDED
- * is the task's own when its message says so (ruling R35) and the member's otherwise. Only the code and the first words
- * of the message are read; nothing of the body is kept.
+ * A 402 from the control plane is a spent budget (ruling R37): ORG_BUDGET_EXCEEDED is the organisation's, PROJECT_BUDGET_EXCEEDED the project's,
+ * AGENT_BUDGET_EXCEEDED the agent's and TEST_ALLOWANCE_USED the member's testing allowance; BUDGET_EXCEEDED is the task's own when its message says so
+ * (ruling R35) and the member's otherwise. An agent with no budget (AGENT_BUDGET_REQUIRED, a 409) is the agent's too. Only the code and the first words of
+ * the message are read; nothing of the body is kept.
  */
 async function budgetScopeOf(response: Response): Promise<ModelBudgetScope | undefined> {
-  if (response.status !== 402) return undefined;
+  if (response.status !== 402 && response.status !== 409) return undefined;
   const body = await response.json().catch(() => undefined) as { error?: { code?: unknown; message?: unknown } } | undefined;
   const { code, message } = body?.error ?? {};
-  if (code === "ORG_BUDGET_EXCEEDED") return "org";
-  if (code !== "BUDGET_EXCEEDED") return undefined;
+  if (typeof code !== "string") return undefined;
+  if (response.status === 409) return code === "AGENT_BUDGET_REQUIRED" ? "agent" : undefined;
+  if (code !== "BUDGET_EXCEEDED") return BUDGET_CODE_SCOPES.get(code);
   return typeof message === "string" && message.startsWith(TASK_BUDGET_EXCEEDED_PREFIX) ? "task" : "member";
 }
 

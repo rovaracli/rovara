@@ -77,6 +77,28 @@ export function scopeKey(scope: BudgetScope): string {
   }
 }
 
+/**
+ * What a paused run is waiting on (Task 31): a budget scope that is full, or one of the run's own limits (the task's run limit, the agent's max per run,
+ * a test run's cap, the planning limit). Task 32's requests are keyed by `pauseKey`, so a second pause on the same scope asks for nothing new.
+ */
+export type PauseScope =
+  | BudgetScope
+  | { kind: "task"; taskId: string }
+  | { kind: "max_per_run"; taskId: string }
+  | { kind: "test"; taskId: string }
+  | { kind: "planning"; taskId: string };
+
+/** The name a pause scope has in a request's key: a budget scope's `scopeKey`, or the run's limit and the task it belongs to. */
+export function pauseKey(scope: PauseScope): string {
+  switch (scope.kind) {
+    case "task": return `TASK#${scope.taskId}`;
+    case "max_per_run": return `MAX_PER_RUN#${scope.taskId}`;
+    case "test": return `TEST#${scope.taskId}`;
+    case "planning": return `PLANNING#${scope.taskId}`;
+    default: return scopeKey(scope);
+  }
+}
+
 // ---- the ledger and settlement (Task 30)
 
 /** How long after an operation ends its model keys are blocked before they are finalized, so a request the proxy admitted before the block still counts (spike Q11). */
