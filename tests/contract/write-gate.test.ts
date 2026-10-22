@@ -1843,5 +1843,21 @@ describe("the wiring fix round", () => {
     expect(early.redriven).toBe(1);
     expect(await w.record(id)).toMatchObject({ status: "APPROVED_DONE" });
   });
+
+  it("claims the call's request id in the transaction that makes the approval, and replays when the id is already claimed (N1)", async () => {
+    const w = world();
+    const claim = (requestId: string) => (approvalId: string) => ({
+      Put: { TableName: "state", Item: { pk: "WORKSPACE#ws", sk: `CONNECTOR#linear#${requestId}`, approvalId }, ConditionExpression: "attribute_not_exists(pk)" },
+    });
+    const held = await decideWrite(w.deps, w.input({ claimRequest: claim(REQ(7)) }));
+    expect(held.outcome).toBe("wait");
+    expect(w.db.get("WORKSPACE#ws", `CONNECTOR#linear#${REQ(7)}`)).toMatchObject({ approvalId: (held as { approvalId: string }).approvalId });
+    // Another call with the same request id finds it claimed: no approval is made, and the caller replays what the claim holds.
+    const before = w.db.find((item) => item.entityType === "APPROVAL").length;
+    const other = await decideWrite(w.deps, w.input({ call: { scope: "eng", schemaHash: SCHEMA, arguments: { id: "ENG-12", stateId: "s2" } }, claimRequest: claim(REQ(7)) }));
+    expect(other).toEqual({ outcome: "replay" });
+    expect(w.db.find((item) => item.entityType === "APPROVAL")).toHaveLength(before);
+    expect(w.db.find((item) => item.entityType === "OPEN_APPROVAL")).toHaveLength(before);
+  });
 });
 

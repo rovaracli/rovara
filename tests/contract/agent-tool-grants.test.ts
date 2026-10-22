@@ -1611,5 +1611,76 @@ describe("write approvals through the agent routes", () => {
     expect(bodyOf(sent)).toContain("via Rovara agent `triage-bot`");
     expect(bodyOf(sent)).not.toContain("renamed-bot");
   });
+
+  // ---- wiring fix round 2 (N1)
+
+  it("replays a call that already ran when it is sent again with the same request id, even if it would be held now, and sends it once", async () => {
+    const { w, run } = await approvalWorld();
+    const requestId = randomUUID();
+    const first = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(first.body.result).toMatchObject({ status: "SUCCEEDED" });
+    setPolicy(w, [ASK_COMMENT]);
+    const again = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body.result).toMatchObject({ status: "SUCCEEDED", replayed: true });
+    expect(again.body.approvalId).toBeUndefined();
+    expect(w.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(1);
+    // The same request id with other arguments is still a conflict, as for any call.
+    const changed = await w.linearCall(run.capability, "save_comment", { ...COMMENT, body: "Another body" }, { requestId });
+    expect(changed.status).toBeGreaterThanOrEqual(400);
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(1);
+  });
+
+  it("holds a call and claims its request id with the approval, so a repeat of the id answers the approval, and after the approval its result", async () => {
+    const { w, run, approve } = await approvalWorld();
+    setPolicy(w, [ASK_COMMENT]);
+    const requestId = randomUUID();
+    const held = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    const approvalId = String(held.body.approvalId);
+    expect(held.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL" });
+    // The rule is lifted; the repeat of the same id is answered from the approval, not run.
+    setPolicy(w, undefined);
+    const repeat = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(repeat.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL" });
+    expect(repeat.body.approvalId).toBe(approvalId);
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toEqual([]);
+    expect((await approve(approvalId)).status).toBe("APPROVED_DONE");
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(1);
+    const after = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(after.body.result).toMatchObject({ status: "SUCCEEDED", replayed: true });
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(1);
+  });
+
+  it("never both holds and runs two calls with the same request id that race: the one that claims the id wins and the other replays it", async () => {
+    const { w, run } = await approvalWorld();
+    setPolicy(w, [ASK_COMMENT]);
+    // The first call classifies as consequential, then is slow to reach the gate; meanwhile the rule is lifted and the second call, the same id, runs.
+    let release: () => void = () => undefined;
+    const slow = new Promise<void>((resolve) => { release = resolve; });
+    let first = true;
+    w.configure((base) => ({
+      ...base,
+      gate: async (input) => {
+        const classification = await input.classify();
+        if (first) { first = false; await slow; }
+        expect(classification.class).toBeDefined();
+        return base.gate(input);
+      },
+    }));
+    const requestId = randomUUID();
+    const a = w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    await vi.waitFor(() => expect(first).toBe(false));
+    setPolicy(w, undefined);
+    const b = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(b.body.result).toMatchObject({ status: "SUCCEEDED" });
+    release();
+    const resolved = await a;
+    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
+    expect(resolved.body.result).toMatchObject({ status: "SUCCEEDED", replayed: true });
+    expect(resolved.body.approvalId).toBeUndefined();
+    expect(w.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(1);
+  });
 });
 

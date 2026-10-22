@@ -1397,4 +1397,24 @@ describe("the scheduled run's time", () => {
     expect(REDRIVE_MIN_REMAINING_MS).toBe(22_000);
     expect(redriveUntil(1_000)).toBe(1_000 + SETTLEMENT_TOTAL_LIMIT_MS - REDRIVE_MIN_REMAINING_MS);
   });
+
+  it("skips a job that has no time left, and reports that it was skipped, without running it (the 'timed' job)", async () => {
+    const { timedSettlementJob } = await import("../../packages/broker/src/spend/settlement-job.js");
+    let now = 1_000;
+    const ran: number[] = [];
+    const job = (pick: "drain" | "spend" | "audit") => timedSettlementJob({ name: pick, pick, startedAt: 1_000, now: () => now, run: async (budgetMs) => { ran.push(budgetMs); return { done: true }; } });
+    expect(await job("spend").run()).toEqual({ done: true });
+    expect(ran).toEqual([23_000]);
+    now = 1_000 + 25_000;
+    expect(await job("audit").run()).toEqual({ done: true });
+    expect(ran).toEqual([23_000, 2_000]);
+    // Nothing is left: spend gets nothing at 23 s, and everything is over at 27 s.
+    now = 1_000 + 24_000;
+    expect(await job("spend").run()).toEqual({ skipped: "no time left in this run" });
+    now = 1_000 + 27_000;
+    expect(await job("drain").run()).toEqual({ skipped: "no time left in this run" });
+    expect(await job("audit").run()).toEqual({ skipped: "no time left in this run" });
+    expect(ran).toEqual([23_000, 2_000]);
+  });
 });
+
