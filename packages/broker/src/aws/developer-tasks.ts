@@ -304,6 +304,11 @@ export interface DeveloperTaskRouteDependencies {
    * where it should (`keepWindow` false); otherwise a retry keeps the window instead of starting a new one as a person's retry does (R38).
    */
   spendResume?: { keepWindow: boolean };
+  /**
+   * Plan 3, Task 32 (fix round 1, I-3): the open spend request of the pause a person's Continue removes, ended in the Continue's own transaction (the items),
+   * with its audit flushed once that committed. Absent where agents are not set up.
+   */
+  withdrawSpendRequests?(task: DeveloperTaskRecord): Promise<{ items: TransactItems; flush(): Promise<void> }>;
 }
 
 /** Ruling R60: refuses a task whose creator is no longer a member of its org, before any other access check (see developer/creator-member.ts). */
@@ -2004,11 +2009,14 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   const baseline = deps.modelAccess === undefined ? undefined
     : await taskSpendBaseline({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, task.modelKeyIds ?? []);
   const receivedAt = iso(deps);
+  // Task 32: the request the stale pause asked for is withdrawn with it, so a later approval starts no second turn.
+  const withdrawal = staleBudgetPause(task) && deps.withdrawSpendRequests !== undefined ? await deps.withdrawSpendRequests(task) : undefined;
   try {
     // acceptTask answers a repeated requestId with its first operation and writes nothing, and
     // refuses a second running turn (TASK_BUSY) before anything is written.
     await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId: request.requestId, conversationId: task.conversationId, prompt: request.instructions }, (operation) => [
       ...windowAndPauseUpdate(deps, task, baseline),
+      ...(withdrawal?.items ?? []),
       // R12: the accepted record commits with the operation or not at all.
       putNew(turns, aiToolTurn({
         party: partyOfTaskActor(task, caller), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
@@ -2020,6 +2028,7 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
     if (isConditional(error)) await authorizeTaskAction(deps, caller, taskId, "work");
     return busyOrClosing(deps, task, error);
   }
+  await withdrawal?.flush();
   const view = await taskView(deps, task, { events: 0, details: false });
   await syncIndex(deps, task, view.status, view.updatedAt);
   return { task: view };
@@ -2089,13 +2098,13 @@ export interface SpendResumeInput {
 export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDependencies, owner: DeveloperCaller, input: SpendResumeInput): Promise<void> {
   const task = await get<DeveloperTaskRecord>(deps, taskKey(input.taskId));
   if (task === undefined || task.orgId !== deps.orgId || task.orgId !== input.orgId || task.closedAt !== undefined) return;
+  // Ruling R60, first: a task whose creator was removed is not resumed, nor a held start dispatched.
+  await creatorGuard(deps, task);
   if (input.firstDispatch) {
     await dispatchHeldStart(deps, task);
     return;
   }
   if (task.budgetPause !== undefined) return;
-  // Ruling R60, first: a task whose creator was removed is not resumed.
-  await creatorGuard(deps, task);
   const resumed: DeveloperTaskRouteDependencies = { ...deps, spendResume: { keepWindow: !input.resetRunWindow } };
   if (task.agent !== undefined && task.workflow === undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) {
     if (deps.agentEngine === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "agents are not set up in this deployment");
