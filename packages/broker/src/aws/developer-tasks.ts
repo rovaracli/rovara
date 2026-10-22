@@ -1536,6 +1536,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
         ...(run?.autonomous === true ? {} : { caller, role: access.role }),
         ...(run === undefined ? { startedBy: { developerId: caller.developerId } } : run.startedBy === undefined ? {} : { startedBy: run.startedBy }),
         ...(run?.payer === undefined ? {} : { payer: run.payer }),
+        ...(run?.payerFromRules === true ? { payerFromRules: true } : {}),
         ...(run?.payerFacts === undefined ? {} : { payerFacts: run.payerFacts }),
         ...(run?.chain === undefined ? {} : { chain: run.chain }),
         ...(run?.runLimitUsd === undefined ? {} : { runLimitUsd: run.runLimitUsd }),
@@ -1554,6 +1555,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     return refused(agentXError("CONFIG_INVALID", "agents are not set up in this deployment"));
   }
   const paused = prepared?.paused === true;
+  // Who started the run, kept on the record: a person's start is the caller; a run no person started has none.
+  const startedBy = run === undefined ? { developerId: caller.developerId } : run.startedBy;
   // A coding agent chosen by name is a workflow; a start that names none is a workflow only when it says so, as it always was.
   const asWorkflow = request.workflow === true || (request.agent !== undefined && prepared?.runner === "coding");
   const workflowPath = request.workflowPath ?? "QUICK";
@@ -1608,6 +1611,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     }) } : {}),
     ...(prepared === undefined ? {} : {
       agent: prepared.ref, origin: prepared.origin, payer: prepared.payer, place: prepared.place,
+      ...(startedBy === undefined ? {} : { startedBy }),
       ...(prepared.chain === undefined ? {} : { chain: prepared.chain }),
       ...(prepared.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: prepared.maxPerRunUsd }),
       ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, firstDispatch: { operationId: preparation.operationId } } } : {}),

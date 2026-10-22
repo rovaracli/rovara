@@ -123,6 +123,8 @@ export interface DeveloperTaskRecord {
    */
   payer?: Payer;
   place?: Place;
+  /** Plan 3, Task 29: the person who started the run (a test run is counted on their testing allowance). A task without it was started by its owner. */
+  startedBy?: { developerId: string };
   /** Plan 3, Task 15: the chain step that started the run, for work Plan 4's chains start. */
   chain?: { chainRunId: string; stepId: string };
   /** Plan 3, Task 15: the agent's cap on one run as it was when the run started; absent when the agent set none. */

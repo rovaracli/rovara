@@ -70,7 +70,7 @@ describe("Rovara Code before agents", () => {
 });
 
 // Plan 3 Task 15: with the agents switched on, a start that names no agent runs Rovara Code at the org's pinned version and records it. The only
-// differences from the fixtures are change 5's paths: the task's `agent`, `origin`, `payer` and `place`, the `tags` of each model key minted, and the RECIPE item beside the task.
+// differences from the fixtures are change 5's paths: the task's `agent`, `origin`, `payer`, `place` and `startedBy`, the `tags` of each model key minted, and the RECIPE item beside the task.
 /** The paths of the `tags` on every model proxy key the record shows minting (a mint call has a `purpose` and a `refId`), with the tags. */
 function mintTagPaths(record: unknown, path = ""): Array<{ path: string; value: unknown }> {
   if (record === null || typeof record !== "object") return [];
@@ -108,6 +108,7 @@ describe("Rovara Code with agents switched on", () => {
         { path: `taskItems[${String(meta)}].origin`, expected: "cli", change: 5 },
         { path: `taskItems[${String(meta)}].payer`, expected: payer, change: 5 },
         { path: `taskItems[${String(meta)}].place`, expected: { project: "payments" }, change: 5 },
+        { path: `taskItems[${String(meta)}].startedBy`, expected: { developerId: payer.developerId }, change: 5 },
         ...tagged.map(({ path, value }) => ({ path, expected: value, change: 5 as const })),
       ]);
     }, 120_000);

@@ -93,14 +93,14 @@ export interface TaskPayment {
 
 /**
  * The payment of a task, from the record the start wrote. A task from before payers were recorded was paid for by its owner, in the project it
- * names, and ran Rovara Code. A test run (a draft agent's run) is counted on its starter's testing allowance; the starter is the task's owner,
- * since a person runs a draft as themselves.
+ * names, and ran Rovara Code. A test run (a draft agent's run) is counted on the testing allowance of the person who started it (`startedBy`;
+ * a task from before that was recorded was started by its owner).
  */
-export function paymentOfTask(task: Pick<DeveloperTaskRecord, "payer" | "place" | "project" | "developerId" | "origin" | "agent">): TaskPayment {
+export function paymentOfTask(task: Pick<DeveloperTaskRecord, "payer" | "place" | "project" | "developerId" | "origin" | "agent" | "startedBy">): TaskPayment {
   const payer: Payer = task.payer ?? { kind: "member", developerId: task.developerId };
   const place: Place = task.place ?? { project: task.project };
   const agentId = task.agent?.agentId ?? ROVARA_CODE_AGENT_ID;
-  return { payer, place, agentId, origin: task.origin, scopes: budgetScopesFor(payer, place, { agentId, testRunBy: task.origin === "test_run" ? task.developerId : undefined }) };
+  return { payer, place, agentId, origin: task.origin, scopes: budgetScopesFor(payer, place, { agentId, testRunBy: task.origin === "test_run" ? (task.startedBy?.developerId ?? task.developerId) : undefined }) };
 }
 
 /** What identifies the payer in a key's tags and the ledger: the member, the project or the agent. */

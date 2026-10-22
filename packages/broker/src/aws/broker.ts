@@ -5186,7 +5186,12 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       };
     }
     if (current.orgId === undefined) return undefined;
-    const slack = withAgents ? await slackWorkPayment(dependencies, current.orgId, (await requireWorkspace(dependencies, current.workspaceId)).projectName, current.requestedBy) : undefined;
+    const project = withAgents ? (await requireWorkspace(dependencies, current.workspaceId)).projectName : undefined;
+    // Who pays is read from the project's settings: a setting that can't be read is the proxy's retryable answer, and no key is minted.
+    const slack = project === undefined ? undefined : await slackWorkPayment(dependencies, current.orgId, project, current.requestedBy).catch((error: unknown) => {
+      console.log(JSON.stringify({ component: "broker", event: "model_access.payer_unreadable", operationId: current.id, errorName: error instanceof Error ? error.name : "unknown" }));
+      throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
+    });
     return {
       orgId: current.orgId, developerId: slack === undefined ? await linkedRequester(dependencies, current.orgId, current.requestedBy) : keyMember(slack.payer), refId: current.id,
       budgetUsd: PER_TASK_BUDGET_USD, previousKeyIds: current.modelKeyIds ?? [], owner: operationKey(current.workspaceId, current.id), budgetBaselineUsd: 0,
@@ -5243,9 +5248,9 @@ async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, reque
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
   // Task 29: with agents set up the turn is the bound project's expense, paid by the linked member (or the project when it pays, or when no member is
   // known) and tagged so; without them it is minted as it always was.
-  const slack = dependencies.agents === undefined ? undefined : await slackWorkPayment(dependencies, teamOrg, binding.projectName, requester);
-  const developerId = slack === undefined ? await linkedRequester(dependencies, teamOrg, requester) : keyMember(slack.payer);
   try {
+    const slack = dependencies.agents === undefined ? undefined : await slackWorkPayment(dependencies, teamOrg, binding.projectName, requester);
+    const developerId = slack === undefined ? await linkedRequester(dependencies, teamOrg, requester) : keyMember(slack.payer);
     // Ruling R50: a turn is admitted like any chat work (which also syncs the proxy, the lazy half of syncBudgets), and its key is
     // capped at what the member and the org have left, never above one turn's allowance. Nothing left is a 402, before any key.
     const admitted = await admitSpend(

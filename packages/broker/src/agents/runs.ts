@@ -85,11 +85,12 @@ export interface AgentRunRequest {
   /** Absent for work no person started. */
   startedBy?: { developerId: string };
   /**
-   * Who pays. Left out, it is `resolvePayer`'s answer for the origin (the usual call); given, it must equal that answer, so a caller that has its own
-   * idea of who pays (Plan 4's chain payer, a person's own start) is checked and never trusted. For a `chain` run it is the chain's payer.
+   * Who pays. Left out, it is `resolvePayer`'s answer for the origin (the usual call); given, it must equal that answer. The one exception is a
+   * `chain` run, whose payer is the chain's and is taken as given. A `chain` payer and `payerFacts` are trusted inputs: Plans 4 and 5 must take
+   * them from their own trusted records (the chain, the Linear link, the offer), never from a client's request body.
    */
   payer?: Payer;
-  /** The facts a Linear or offered run's payer is named from. */
+  /** The facts a Linear or offered run's payer is named from (trusted, see `payer`). */
   payerFacts?: PayerFacts;
   chain?: { chainRunId: string; stepId: string };
   /** A cap on this run: the smaller of it and the run limit applies, and 0 starts the run paused. */
@@ -110,6 +111,8 @@ export interface RunStartOptions {
   startedBy?: { developerId: string };
   /** Worked out by `startAgentRun` with `resolvePayer`; `prepareRun` works it out again from the settings at the start and refuses a different answer. */
   payer?: Payer;
+  /** True when the request named no payer, so one that no longer matches the rules (the project's setting changed meanwhile) is a retryable busy answer. */
+  payerFromRules?: boolean;
   payerFacts?: PayerFacts;
   chain?: { chainRunId: string; stepId: string };
   runLimitUsd?: number;
@@ -158,6 +161,8 @@ const originOf = (origin: WorkOrigin, agent: { version?: number | "draft" } | un
  */
 export async function resolveRunPayer(deps: AgentRunDependencies, input: {
   orgId: OrgId; project: string; agentId: AgentId; origin: WorkOrigin; startedBy?: { developerId: string } | undefined; payer?: Payer | undefined; payerFacts?: PayerFacts | undefined;
+  /** The payer was worked out by an earlier read of the same settings, not named by the caller: a difference now is the setting changing under the start. */
+  payerFromRules?: boolean | undefined;
 }): Promise<{ payer: Payer; place: Place; projectAiRevision: number }> {
   const { settings, revision } = await readProjectAiWithRevision(deps, input.orgId, input.project);
   const payer = resolvePayer({
@@ -167,6 +172,7 @@ export async function resolveRunPayer(deps: AgentRunDependencies, input: {
     ...(input.payerFacts ?? {}),
   });
   if (input.payer !== undefined && canonicalJson(input.payer) !== canonicalJson(payer)) {
+    if (input.payerFromRules === true) throw agentXError("WORKSPACE_BUSY", "the project's payment settings changed while starting; try again with the same request_id");
     throw agentXError("CONFIG_INVALID", "payer: this run's payer is not the one its origin names");
   }
   return { payer, place: { project: input.project }, projectAiRevision: revision };
@@ -221,6 +227,7 @@ export interface PrepareRunInput {
   startedBy?: { developerId: string };
   /** The payer the caller worked out or was given; checked against the rules, never trusted. Absent: the rules decide. */
   payer?: Payer;
+  payerFromRules?: boolean;
   payerFacts?: PayerFacts;
   chain?: { chainRunId: string; stepId: string };
   runLimitUsd?: number;
@@ -273,7 +280,7 @@ export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunIn
     if (!contract.success) throw agentXError("CONFIG_INVALID", `resultContract: ${contract.error.issues[0]?.message ?? "is not valid"}`);
   }
   const origin: WorkOrigin = resolved.testRun ? "test_run" : input.origin;
-  const { payer, place, projectAiRevision } = await resolveRunPayer(deps, { orgId: input.orgId, project: input.project, agentId: ref.agentId, origin, startedBy: input.startedBy, payer: input.payer, payerFacts: input.payerFacts });
+  const { payer, place, projectAiRevision } = await resolveRunPayer(deps, { orgId: input.orgId, project: input.project, agentId: ref.agentId, origin, startedBy: input.startedBy, payer: input.payer, payerFromRules: input.payerFromRules, payerFacts: input.payerFacts });
   if (autonomous && input.startedBy !== undefined) throw agentXError("CONFIG_INVALID", "startedBy: a run no person started has no one who started it");
   const program = runner === "coding" ? codingProgram(recipe) : undefined;
   if (program !== undefined) {
@@ -406,7 +413,7 @@ export function runStartItems(table: TableInput, input: {
         TableName: table.tableName,
         Item: {
           ...runRequestKey(input.orgId, input.request.requestId), entityType: "RUN_REQUEST", orgId: input.orgId, taskId: input.taskId, developerId: input.developerId,
-          fingerprint: input.request.fingerprint, runLimitUsd: prepared.runLimitUsd, stopAtUsd: prepared.stopAtUsd, paused: prepared.paused,
+          fingerprint: input.request.fingerprint, payer: prepared.payer, runLimitUsd: prepared.runLimitUsd, stopAtUsd: prepared.stopAtUsd, paused: prepared.paused,
           at: new Date(table.now()).toISOString(), [INDEX_EXPIRY_ATTRIBUTE]: expires,
         },
         // An expired item the TTL has not removed yet is as good as gone.
@@ -433,7 +440,7 @@ export async function readTaskRecipe(deps: Pick<TableInput, "documentClient" | "
 }
 
 /** The request item of a run, if one is there and has not expired. */
-export async function readRunRequest(deps: Pick<TableInput, "documentClient" | "tableName" | "now">, orgId: OrgId, requestId: string): Promise<{ taskId: string; fingerprint: string; result: AgentRunResult } | undefined> {
+export async function readRunRequest(deps: Pick<TableInput, "documentClient" | "tableName" | "now">, orgId: OrgId, requestId: string): Promise<{ taskId: string; fingerprint: string; payer?: Payer; result: AgentRunResult } | undefined> {
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: runRequestKey(orgId, requestId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
   const item = response.Item;
   if (item === undefined || item.orgId !== orgId) return undefined;
@@ -441,10 +448,14 @@ export async function readRunRequest(deps: Pick<TableInput, "documentClient" | "
   if (typeof expires === "number" && expires <= Math.floor(deps.now() / 1000)) return undefined;
   const { taskId, fingerprint, runLimitUsd, stopAtUsd, paused } = item;
   if (typeof taskId !== "string" || typeof fingerprint !== "string" || typeof runLimitUsd !== "number" || typeof stopAtUsd !== "number" || typeof paused !== "boolean") return undefined;
-  return { taskId, fingerprint, result: { taskId, runLimitUsd, stopAtUsd, paused } };
+  const payer = PayerSchema.safeParse(item["payer"]);
+  return { taskId, fingerprint, ...(payer.success ? { payer: payer.data } : {}), result: { taskId, runLimitUsd, stopAtUsd, paused } };
 }
 
-/** What identifies a request, so the same ID with other contents is refused. The owner and the agent are in it; the ID itself is not. */
+/**
+ * What identifies a request, so the same ID with other contents is refused. The owner and the agent are in it; the ID itself is not. The payer in it is
+ * the one the run was started with (`startAgentRun` puts the resolved payer there), so naming the payer the rules chose is the same request.
+ */
 export function runRequestFingerprint(request: Omit<AgentRunRequest, "caller">): string {
   return sha256({
     project: request.project, agent: request.agent, input: request.input, origin: request.origin, owner: request.owner, startedBy: request.startedBy ?? null,
@@ -467,10 +478,11 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
     throw agentXError("CONFIG_INVALID", `${issue === undefined || issue.path.length === 0 ? "request" : issue.path.join(".")}: ${issue?.message ?? "is not valid"}`);
   }
   const { caller, ...rest } = request;
-  const fingerprint = runRequestFingerprint(rest);
   const previous = await readRunRequest(deps, request.orgId, request.requestId);
   if (previous !== undefined) {
-    if (previous.fingerprint !== fingerprint) throw agentXError("IDEMPOTENCY_CONFLICT", "this request_id was already used for another run; use a new request_id");
+    // A request that names no payer is the same request as the first run's, whatever the rules would say now; one that names it must name that one.
+    const effective = request.payer ?? previous.payer;
+    if (previous.fingerprint !== runRequestFingerprint({ ...rest, ...(effective === undefined ? {} : { payer: effective }) })) throw agentXError("IDEMPOTENCY_CONFLICT", "this request_id was already used for another run; use a new request_id");
     return previous.result;
   }
   const autonomous = request.startedBy === undefined;
@@ -488,11 +500,12 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
     orgId: request.orgId, project: request.project, agentId: request.agent.agentId, origin: originOf(request.origin, request.agent),
     startedBy: request.startedBy, payer: request.payer, payerFacts: request.payerFacts,
   });
+  const fingerprint = runRequestFingerprint({ ...rest, payer });
   const named = new Set([request.startedBy?.developerId, payer.kind === "member" ? payer.developerId : undefined].filter((id): id is string => id !== undefined && id !== request.owner.developerId));
   for (const developerId of named) await requireMayStart(deps, { orgId: request.orgId, project: request.project, developerId });
   const body = { requestId: request.requestId, project: request.project, instructions: request.input.text, input: request.input, agent: request.agent, client: request.origin };
   const started = await deps.startTask(actingAs, body, {
-    origin: request.origin, autonomous, payer, requestFingerprint: fingerprint,
+    origin: request.origin, autonomous, payer, ...(request.payer === undefined ? { payerFromRules: true } : {}), requestFingerprint: fingerprint,
     ...(request.payerFacts === undefined ? {} : { payerFacts: request.payerFacts }),
     ...(request.startedBy === undefined ? {} : { startedBy: request.startedBy }),
     ...(request.chain === undefined ? {} : { chain: request.chain }),

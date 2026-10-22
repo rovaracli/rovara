@@ -504,6 +504,93 @@ describe("the model key carries the payer and the tags", () => {
   });
 });
 
+describe("fix round 1", () => {
+  it("keys a draft run's testing allowance on the person who started it, not the owner it acts as", async () => {
+    const t = await setup();
+    t.addKit();
+    const agentId = await t.agentOf();
+    const { payer: _payer, ...unnamed } = t.request({ agent: { agentId, version: "draft" }, owner: { developerId: DEV_MAYA.developerId }, startedBy: { developerId: KIT } }); // eslint-disable-line @typescript-eslint/no-unused-vars -- the rules name the payer
+    const started = await startAgentRun(t.starter(), unnamed);
+    const stored = t.meta(started.taskId);
+    expect(stored).toMatchObject({ origin: "test_run", developerId: DEV_MAYA.developerId, startedBy: { developerId: KIT }, payer: { kind: "project", project: "payments" } });
+    const scopes = paymentOfTask(stored as never).scopes.map(scopeKey);
+    expect(scopes).toEqual(["ORG", "PROJECT#payments", `TESTING#${KIT}`]);
+    expect(scopes).not.toContain(`TESTING#${DEV_MAYA.developerId}`);
+  });
+
+  it("records who started every run with agents set up, and falls back to the owner for an old task", async () => {
+    const t = await setup();
+    const reply = await t.call(DEV_MAYA, "POST", "/v1/dev/tasks", { project: "payments", instructions: "Fix it", client: "claude-code" });
+    expect(t.meta((reply.body.task as { taskId: string }).taskId)).toMatchObject({ startedBy: { developerId: DEV_MAYA.developerId } });
+    const old = { project: "payments", developerId: DEV_MAYA.developerId, origin: "test_run" as const };
+    expect(paymentOfTask(old as never).scopes.map(scopeKey)).toContain(`TESTING#${DEV_MAYA.developerId}`);
+    expect(paymentOfTask({ ...old, startedBy: { developerId: KIT } }).scopes.map(scopeKey)).toContain(`TESTING#${KIT}`);
+    // The scopes helper takes the starter as it is given.
+    expect(budgetScopesFor({ kind: "project", project: "payments" }, { project: "payments" }, { agentId: AGENT, testRunBy: KIT }).map(scopeKey)).toEqual(["ORG", "PROJECT#payments", `TESTING#${KIT}`]);
+  });
+
+  it("answers a project-pays flip between the two payer reads with the retryable busy answer, and the retry uses the new setting", async () => {
+    const t = await setup();
+    const { payer: _payer, ...unnamed } = t.request(); // eslint-disable-line @typescript-eslint/no-unused-vars -- the payer is left to the rules
+    const send = t.db.send.bind(t.db);
+    let reads = 0;
+    t.db.send = (async (command: { constructor: { name: string }; input?: { Key?: { pk?: string } } }) => {
+      const result = await send(command as never);
+      if (command.constructor.name === "GetCommand" && command.input?.Key?.pk?.includes("PROJECT_AI#payments") === true) {
+        reads += 1;
+        if (reads === 1) t.projectPays(true);
+      }
+      return result;
+    });
+    expect(await refusal(startAgentRun(t.starter(), unnamed))).toMatchObject({ code: "WORKSPACE_BUSY" });
+    expect(t.taskCount()).toBe(0);
+    const retried = await startAgentRun(t.starter(), unnamed);
+    expect(t.meta(retried.taskId)).toMatchObject({ payer: { kind: "project", project: "payments" } });
+  });
+
+  it("treats a retry that names the payer the rules chose as the same request, and one that names another as a conflict", async () => {
+    const t = await setup();
+    const { payer: _payer, ...unnamed } = t.request(); // eslint-disable-line @typescript-eslint/no-unused-vars -- the payer is left to the rules
+    const first = await startAgentRun(t.starter(), unnamed);
+    const named = { ...unnamed, payer: { kind: "member", developerId: DEV_MAYA.developerId } as const };
+    expect(await startAgentRun(t.starter(), named)).toEqual(first);
+    expect(await refusal(startAgentRun(t.starter(), { ...unnamed, payer: { kind: "project", project: "payments" } }))).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    expect(t.taskCount()).toBe(1);
+    // The other way round: a first request that named the payer is answered again when the retry leaves it to the rules.
+    const namedFirst = t.request({ payer: { kind: "member", developerId: DEV_MAYA.developerId } });
+    const answer = await startAgentRun(t.starter(), namedFirst);
+    const { payer: _unnamed, ...retry } = namedFirst; // eslint-disable-line @typescript-eslint/no-unused-vars -- left to the rules
+    expect(await startAgentRun(t.starter(), retry)).toEqual(answer);
+    expect(t.taskCount()).toBe(2);
+  });
+
+  it("still answers an unnamed retry from the first run after the project's setting flipped", async () => {
+    const t = await setup();
+    const { payer: _payer, ...unnamed } = t.request(); // eslint-disable-line @typescript-eslint/no-unused-vars -- the payer is left to the rules
+    const first = await startAgentRun(t.starter(), unnamed);
+    t.projectPays(true);
+    expect(await startAgentRun(t.starter(), unnamed)).toEqual(first);
+    expect(await startAgentRun(t.starter(), { ...unnamed, payer: { kind: "member", developerId: DEV_MAYA.developerId } })).toEqual(first);
+    expect(t.taskCount()).toBe(1);
+  });
+
+  it("answers unreadable project AI settings at a key mint with the retryable proxy answer, and mints nothing", async () => {
+    const h = (() => {
+      const access = fakeModelAccess();
+      const { handler, db } = createBroker({ extra: { agents: {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+      return { handler, db, access };
+    })();
+    await registerSlackProject(h.handler);
+    h.access.setOrgSpent(TEST_ORG, 0);
+    const turn = () => serviceCall(h.handler, `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000001`, "U0123456789", "POST", "/v1/service/model-access", { turnId: "EvBad" });
+    expect((await turn()).status).toBe(200);
+    h.access.mintKey.mockClear();
+    h.db.set({ ...projectAiKey(TEST_ORG, "payments"), entityType: "PROJECT_AI", projectPays: "yes", revision: 1 });
+    expect(await turn()).toMatchObject({ status: 503, body: { error: { code: "MODEL_PROXY_UNAVAILABLE" } } });
+    expect(h.access.mintKey).not.toHaveBeenCalled();
+  });
+});
+
 describe("Slack-thread work", () => {
   const SLACK_USER = "U0123456789";
   const THREAD = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000001`;
@@ -568,6 +655,14 @@ describe("Slack-thread work", () => {
     const member = h.access.mintKey.mock.calls[1]![0];
     expect(member).toMatchObject({ developerId: linked, purpose: "turn" });
     expect(member.tags).toMatchObject({ payerKind: "member", payerId: linked });
+  });
+
+  it("answers unreadable project AI settings at an operation's key mint with the retryable proxy answer, and mints nothing", async () => {
+    const h = install();
+    const { ask } = await slackOperation(h);
+    h.db.set({ ...projectAiKey(TEST_ORG, "payments"), entityType: "PROJECT_AI", projectPays: "yes", revision: 1 });
+    expect(await ask()).toMatchObject({ status: 503, body: { error: { code: "MODEL_PROXY_UNAVAILABLE" } } });
+    expect(h.access.mintKey).not.toHaveBeenCalled();
   });
 
   it("admits a linked member's thread against the member's limit, and against the org alone when the project pays", async () => {
