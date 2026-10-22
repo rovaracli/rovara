@@ -840,7 +840,7 @@ export async function runApprovalDecision(deps: ApprovalDependencies, caller: Ap
   if (!await mayDecideApproval(deps, caller, record)) throw agentXError("FORBIDDEN", forbiddenText(record));
   if (record.status !== "PENDING") throw agentXError("APPROVAL_CLOSED", "this request was already decided");
   const run = executor ?? executorFor(record);
-  if (record.kind === "write" && deps.writeGate === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "writes by agents are not set up in this deployment");
+  if (record.kind === "write" && body.decision === "APPROVE" && deps.writeGate === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "writes by agents are not set up in this deployment");
   if (body.decision === "APPROVE" && run === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "this kind of approval can't be decided in this deployment");
 
   const now = deps.now();

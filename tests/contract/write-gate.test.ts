@@ -1310,6 +1310,8 @@ describe("races and leftovers the guards are for", () => {
     delete w.deps.writeGate;
     expect(await code(w.approve(BOB, id))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     expect((await w.record(id)).status).toBe("PENDING");
+    // Saying no needs no connector path.
+    expect(await w.decline(BOB, id)).toEqual({ status: "DECLINED" });
   });
 
   it("answers a repeat of a decided call as decided even after the project dropped the connector", async () => {
