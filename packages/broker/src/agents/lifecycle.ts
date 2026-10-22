@@ -13,9 +13,9 @@
 //
 // Until the drain has run, readers see through the merge: `resolveMember` follows the duplicate's `mergedInto`, which access (Task 6) and the
 // deciders of approvals and spend requests use.
-import { DeleteCommand, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  BUILTIN_AGENT_IDS, MEMBER_MERGE_QUEUE_PK, orgMemberKey, orgPk, projectAgentKey,
+  BUILTIN_AGENT_IDS, MEMBER_MERGE_QUEUE_PK, MEMBER_REMOVAL_QUEUE_PK, orgMemberKey, orgPk, projectAgentKey,
   type AgentId, type AgentPrincipal, type OrgId,
 } from "@agentx/contracts";
 import type { MemberRemovalHook } from "../org/store.js";
@@ -26,6 +26,11 @@ import type { MoveCause } from "./store.js";
 /** What the lifecycle hooks need: the agent routes' own dependencies (`AgentRouteDependencies` is one). */
 export interface LifecycleDeps extends AgentAccessDeps {
   now: () => number;
+  /**
+   * When set, the movers stop between two items once `now()` has passed it, failing with `LifecycleDeadline`. The removal that runs inside an
+   * API request sets it, and leaves the rest to its queued marker; the settlement run has its own budget and leaves it unset.
+   */
+  deadline?: number;
 }
 
 /** A merge that happened: `duplicateId` is now `survivorId`, in `orgId`. */
@@ -73,9 +78,24 @@ type Fields = Record<string, unknown>;
 const SYSTEM = "system";
 const MEMBER_ID = /^[a-f0-9]{64}$/;
 const ORG_ID = /^org_[0-9a-z]{20}$/;
-const MARKER_SK = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z#(org_[0-9a-z]{20})#([a-f0-9]{64})(#removed)?$/;
+const MARKER_SK = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z#(org_[0-9a-z]{20})#([a-f0-9]{64})$/;
 const PAGE = 100;
 const CONFLICT_RETRIES = 3;
+/** How long the moves of a removal may take inside the request that removed the person; the rest is left to the removal's marker. */
+const REQUEST_MOVE_BUDGET_MS = 2_000;
+/** A marker that fails waits 5 minutes, then 10, then 20, up to an hour, before it is tried again; from the 12th failure it is parked (logged at error level, still retried hourly). */
+const BACKOFF_BASE_MS = 5 * 60_000;
+const BACKOFF_CAP_MS = 60 * 60_000;
+const PARK_AFTER_ATTEMPTS = 12;
+const backoffMs = (attempts: number) => Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1));
+
+/** The moves ran out of the time their caller gave them (`LifecycleDeps.deadline`). */
+class LifecycleDeadline extends Error {
+  override readonly name = "LifecycleDeadline";
+}
+function checkTime(deps: LifecycleDeps): void {
+  if (deps.deadline !== undefined && deps.now() >= deps.deadline) throw new LifecycleDeadline("the time for these moves has run out");
+}
 
 const defaultLog = (event: string, fields: Fields): void => {
   console.log(JSON.stringify({ component: "broker", event, ...fields }));
@@ -172,6 +192,7 @@ async function moveAgents(deps: LifecycleDeps, orgId: OrgId, from: string, to: s
   let moved = 0;
   for (const agent of await deps.store.list(orgId)) {
     if (agent.owner.kind !== "member" || agent.owner.developerId !== from) continue;
+    checkTime(deps);
     await untilSettled(async () => {
       const current = await deps.store.get(orgId, agent.agentId);
       if (current === undefined || current.owner.kind !== "member" || current.owner.developerId !== from) return;
@@ -186,6 +207,7 @@ async function moveAgents(deps: LifecycleDeps, orgId: OrgId, from: string, to: s
 async function moveSkills(deps: LifecycleDeps, orgId: OrgId, from: string, to: string): Promise<void> {
   for (const skill of await deps.store.skills.list(orgId)) {
     if (skill.owner.kind !== "member" || skill.owner.developerId !== from) continue;
+    checkTime(deps);
     await deps.store.skills.moveOwner(orgId, skill.skillId, skill.owner, { kind: "member", developerId: to });
   }
 }
@@ -194,6 +216,7 @@ async function moveSkills(deps: LifecycleDeps, orgId: OrgId, from: string, to: s
 async function moveShares(deps: LifecycleDeps, orgId: OrgId, from: string, to: string | undefined, cause: MoveCause): Promise<void> {
   const principal = (developerId: string): AgentPrincipal => ({ kind: "member", developerId });
   for (const agentId of await deps.store.listSharedWith(orgId, principal(from))) {
+    checkTime(deps);
     await deps.store.reassignShare({ orgId, agentId, from: principal(from), ...(to === undefined ? {} : { to: principal(to) }), by: SYSTEM, cause });
   }
 }
@@ -211,10 +234,12 @@ async function moveAccountable(deps: LifecycleDeps, orgId: OrgId, from: string, 
   };
   for (const agent of await deps.store.list(orgId)) {
     if (agent.accountable?.developerId !== from) continue;
+    checkTime(deps);
     await give(agent.agentId, agent.owner.kind === "project" ? agent.owner.project : undefined, async () => (await deps.store.get(orgId, agent.agentId))?.accountable?.developerId);
   }
   for (const builtin of BUILTIN_AGENT_IDS) {
     if ((await deps.store.getBuiltinSettings(orgId, builtin))?.accountable?.developerId !== from) continue;
+    checkTime(deps);
     await give(builtin, undefined, async () => (await deps.store.getBuiltinSettings(orgId, builtin))?.accountable?.developerId);
   }
   return [...took];
@@ -254,10 +279,10 @@ registerMemberMover({
 });
 
 /**
- * Runs every registered mover with `run`, each even when another failed; throws the first failure after the last one ran. Answers the people
- * the movers gave budgeted things to.
+ * Runs every registered mover with `run`, each even when another failed. Answers the people the movers gave budgeted things to (also when some
+ * failed, so a caller can remember them) and the first failure, if any.
  */
-async function runMovers(deps: LifecycleDeps, event: string, fields: Fields, run: (mover: MemberMover) => Promise<void | readonly string[]> | undefined): Promise<Set<string>> {
+async function runMovers(deps: LifecycleDeps, event: string, fields: Fields, run: (mover: MemberMover) => Promise<void | readonly string[]> | undefined): Promise<{ owners: Set<string>; failure?: unknown }> {
   const failures: unknown[] = [];
   const owners = new Set<string>();
   for (const mover of [...movers.values()]) {
@@ -268,8 +293,38 @@ async function runMovers(deps: LifecycleDeps, event: string, fields: Fields, run
       log(deps, event, { ...fields, mover: mover.name, error: errorName(error) });
     }
   }
-  if (failures.length > 0) throw failures[0];
-  return owners;
+  return failures.length > 0 ? { owners, failure: failures[0] } : { owners };
+}
+
+/**
+ * Who a change gave budgeted things to, kept on its marker, so a later run that moves nothing (the first did it all, then something failed)
+ * still looks at their cap once it succeeds. `carried` is what earlier runs remembered; `remember` stores the union so far.
+ */
+export interface RecipientLedger {
+  carried: readonly string[];
+  remember(recipients: readonly string[]): Promise<void>;
+}
+
+/** A ledger that keeps its recipients on the marker item at `key` (best effort: the item may be gone). */
+function markerLedger(deps: LifecycleDeps, key: { pk: string; sk: string }, carried: readonly string[]): RecipientLedger {
+  return {
+    carried,
+    remember: async (recipients) => {
+      await deps.documentClient.send(new UpdateCommand({
+        TableName: deps.tableName, Key: key, UpdateExpression: "SET #recipients = :recipients", ConditionExpression: "attribute_exists(pk)",
+        ExpressionAttributeNames: { "#recipients": "recipients" }, ExpressionAttributeValues: { ":recipients": [...recipients] },
+      }));
+    },
+  };
+}
+
+async function remember(deps: LifecycleDeps, orgId: OrgId, ledger: RecipientLedger | undefined, recipients: ReadonlySet<string>): Promise<void> {
+  if (ledger === undefined || recipients.size === 0) return;
+  try {
+    await ledger.remember([...recipients]);
+  } catch (error) {
+    log(deps, "member_move.recipients_not_kept", { orgId, error: errorName(error) });
+  }
 }
 
 // ---- merges and removals
@@ -278,16 +333,14 @@ async function runMovers(deps: LifecycleDeps, event: string, fields: Fields, run
  * The duplicate's things become the survivor's: member-owned agents and skills, `accountable` ids, share and share-index items, and whatever
  * other movers are registered (the approvals and spend requests addressed to the duplicate). Repeatable. Then the totals of the agent
  * budgets are rebuilt, because the duplicate's agents were counted under the duplicate until now (Task 28). Who the marker says merged is
- * checked by `drainMemberMerges`, not here.
+ * checked by `drainMemberMerges`, not here. When the run succeeds, the cap is looked at for the survivor and for everyone a mover (this run's
+ * or an earlier one's, through `ledger`) gave something to.
  */
-export async function onMembersMerged(deps: LifecycleDeps, merge: MergedMembers): Promise<void> {
-  const failures: unknown[] = [];
-  let owners = new Set<string>();
-  try {
-    owners = await runMovers(deps, "member_merge.mover_failed", { orgId: merge.orgId, duplicateId: merge.duplicateId }, (mover) => mover.merged?.(deps, merge));
-  } catch (error) {
-    failures.push(error);
-  }
+export async function onMembersMerged(deps: LifecycleDeps, merge: MergedMembers, ledger?: RecipientLedger): Promise<void> {
+  const { owners, failure } = await runMovers(deps, "member_merge.mover_failed", { orgId: merge.orgId, duplicateId: merge.duplicateId }, (mover) => mover.merged?.(deps, merge));
+  const recipients = new Set([...(ledger?.carried ?? []), ...owners]);
+  await remember(deps, merge.orgId, ledger, recipients);
+  const failures: unknown[] = failure === undefined ? [] : [failure];
   for (const owner of [merge.survivorId, merge.duplicateId]) {
     try {
       await deps.store.rebuildOwnerTotal(merge.orgId, owner);
@@ -297,16 +350,18 @@ export async function onMembersMerged(deps: LifecycleDeps, merge: MergedMembers)
     }
   }
   if (failures.length > 0) throw failures[0];
-  for (const owner of owners) await noteOwnerCap(deps, merge.orgId, owner, "member_merged");
+  recipients.add(merge.survivorId);
+  for (const owner of recipients) await noteOwnerCap(deps, merge.orgId, owner, "member_merged");
 }
 
 /**
  * A member was removed: what they owned moves to the first owner of the org (agents and skills, with one `owner_changed` event naming the
  * removal; their agent budgets count against that owner's total), `accountable` moves to another maintainer of that project by grant, else to
  * that owner, their shares are deleted and whatever other movers are registered re-route. Repeatable. An org with no other owner (a closed one)
- * has nobody to hand anything to: that is logged and nothing moves.
+ * has nobody to hand anything to: that is logged and nothing moves. When the run succeeds, the cap is looked at for that owner and for everyone
+ * a mover (this run's or an earlier one's, through `ledger`) gave something to.
  */
-export async function onMemberRemoved(deps: LifecycleDeps, removal: { orgId: OrgId; developerId: string; by: string }): Promise<void> {
+export async function onMemberRemoved(deps: LifecycleDeps, removal: { orgId: OrgId; developerId: string; by: string }, ledger?: RecipientLedger): Promise<void> {
   const { orgId, developerId, by } = removal;
   const successorId = await firstOwner(deps, orgId, developerId);
   if (successorId === undefined) {
@@ -314,37 +369,55 @@ export async function onMemberRemoved(deps: LifecycleDeps, removal: { orgId: Org
     return;
   }
   const moved: RemovedMember = { orgId, developerId, by, successorId };
-  const owners = await runMovers(deps, "member_removed.mover_failed", { orgId, developerId }, (mover) => mover.removed?.(deps, moved));
-  for (const owner of owners) await noteOwnerCap(deps, orgId, owner, "member_removed");
+  const { owners, failure } = await runMovers(deps, "member_removed.mover_failed", { orgId, developerId }, (mover) => mover.removed?.(deps, moved));
+  const recipients = new Set([...(ledger?.carried ?? []), ...owners]);
+  await remember(deps, orgId, ledger, recipients);
+  if (failure !== undefined) throw failure as Error;
+  recipients.add(successorId);
+  for (const owner of recipients) await noteOwnerCap(deps, orgId, owner, "member_removed");
 }
 
-/** What `OrgStore.removeMember` calls once a member is removed (and the sweep calls again if it failed). */
-export function memberRemovalHook(deps: LifecycleDeps): MemberRemovalHook {
-  return { onRemoved: (event) => onMemberRemoved(deps, event) };
+/**
+ * What `OrgStore.removeMember` calls once a member is removed (and the sweep calls again if it failed). It works for at most `budgetMs`
+ * (2 seconds by default) inside the request; whatever is left stays with the removal's marker for the sweep.
+ */
+export function memberRemovalHook(deps: LifecycleDeps, options: { budgetMs?: number } = {}): MemberRemovalHook {
+  const budgetMs = options.budgetMs ?? REQUEST_MOVE_BUDGET_MS;
+  return { onRemoved: (event) => onMemberRemoved({ ...deps, deadline: deps.now() + budgetMs }, event, markerLedger(deps, event.marker, [])) };
 }
 
-// ---- the queue
+// ---- the queues
 
-/** What one sweep of the queue did. `next` is where the next page starts; `stopped` says it ran out of time before the end of the page. */
+/**
+ * What one sweep of a queue did. `next` is where the next page starts; `stopped` says it ran out of time before the end of the page; `skipped`
+ * counts markers still waiting out the back-off of an earlier failure (absent when none).
+ */
 export interface DrainReport {
   processed: number;
   rejected: number;
   failed: number;
+  skipped?: number;
   next?: string;
   stopped?: true;
 }
 
+type Queue = "merge" | "removal";
 type Marker =
   | { kind: "merged"; orgId: OrgId; survivorId: string; duplicateId: string }
   | { kind: "removed"; orgId: OrgId; developerId: string; by: string };
 
-/** A marker as the key and the item say it, or undefined when they do not agree (the org in the key is the org on the item, the ids are ids). */
-function readMarker(item: Item): Marker | undefined {
+const QUEUE_PK: Record<Queue, string> = { merge: MEMBER_MERGE_QUEUE_PK, removal: MEMBER_REMOVAL_QUEUE_PK };
+
+/**
+ * A marker as the partition, the key and the item say it, or undefined when they do not agree (the org in the key is the org on the item, the
+ * ids are ids, the item is the kind its partition holds). A removal is only ever read from the broker-only removal queue.
+ */
+function readMarker(item: Item, queue: Queue): Marker | undefined {
   const parsed = MARKER_SK.exec(String(item["sk"]));
-  if (parsed === null) return undefined;
-  const [, orgId, memberId, removed] = parsed;
+  if (parsed === null || item["pk"] !== QUEUE_PK[queue]) return undefined;
+  const [, orgId, memberId] = parsed;
   if (!ORG_ID.test(String(orgId)) || item["orgId"] !== orgId) return undefined;
-  if (removed !== undefined) {
+  if (queue === "removal") {
     const by = item["by"];
     return item["developerId"] === memberId && typeof by === "string" && by.length > 0 ? { kind: "removed", orgId: orgId as OrgId, developerId: memberId!, by } : undefined;
   }
@@ -353,72 +426,120 @@ function readMarker(item: Item): Marker | undefined {
     ? { kind: "merged", orgId: orgId as OrgId, survivorId, duplicateId: memberId! } : undefined;
 }
 
-/** Whether the marker's change really happened (R2-5), and who the survivor is now. The marker is trusted for where to look, never for what it says. */
-type Verdict = { ok: true; survivorId: string } | { ok: false; reason: string };
+/**
+ * Whether the marker's change really happened (R2-5), and what to do about it. The marker is trusted for where to look, never for what it says.
+ * A merge whose duplicate checks out but whose survivor (at the end of its own chain) is no longer a member was followed by that survivor
+ * leaving: what the duplicate owned is then a removed member's, and is handled as the duplicate's removal.
+ */
+type Verdict = { ok: true; kind: "move"; survivorId: string } | { ok: true; kind: "survivor_gone" } | { ok: false; reason: string };
 
 async function verify(deps: LifecycleDeps, marker: Marker): Promise<Verdict> {
   if (marker.kind === "removed") {
-    return await isMember(deps, marker.orgId, marker.developerId) ? { ok: false, reason: "member_still_in_org" } : { ok: true, survivorId: marker.developerId };
+    return await isMember(deps, marker.orgId, marker.developerId) ? { ok: false, reason: "member_still_in_org" } : { ok: true, kind: "move", survivorId: marker.developerId };
   }
   const { orgId, duplicateId } = marker;
   if ((await deps.signInStore.getDeveloper(duplicateId))?.mergedInto !== marker.survivorId) return { ok: false, reason: "duplicate_not_merged" };
   if (await isMember(deps, orgId, duplicateId)) return { ok: false, reason: "duplicate_still_member" };
   // The survivor may itself have been merged away since: what the duplicate owned goes to the end of that chain, who must be a member.
   const survivorId = await resolveMember(deps, orgId, marker.survivorId);
-  return await isMember(deps, orgId, survivorId) ? { ok: true, survivorId } : { ok: false, reason: "survivor_not_member" };
+  return await isMember(deps, orgId, survivorId) ? { ok: true, kind: "move", survivorId } : { ok: true, kind: "survivor_gone" };
 }
 
-/**
- * One page of the merge queue (100 markers, oldest first; `cursor` is the sort key to start after). For each: check the change really
- * happened (a merge: the duplicate's record says it was merged into the survivor, the duplicate is no longer a member and the survivor is;
- * a removal: the person is not a member) and, if it did not, delete the marker with a `member_merge.rejected` line and move nothing; else run
- * the moves and delete the marker. A failure leaves the marker for the next sweep. `now` is the sweep's clock, for its log lines; `options.deadline` stops the page before the next marker once it has passed.
- */
-export async function drainMemberMerges(deps: LifecycleDeps, now: number, cursor?: string, options: { deadline?: number } = {}): Promise<DrainReport> {
-  const report: DrainReport = { processed: 0, rejected: 0, failed: 0 };
+const recipientsOf = (item: Item): string[] => (Array.isArray(item["recipients"]) ? (item["recipients"] as unknown[]).filter((id): id is string => typeof id === "string") : []);
+
+async function drainQueue(deps: LifecycleDeps, now: number, queue: Queue, cursor?: string, options: { deadline?: number } = {}): Promise<DrainReport> {
+  const pk = QUEUE_PK[queue];
+  const report = { processed: 0, rejected: 0, failed: 0, skipped: 0 };
   const page = await deps.documentClient.send(new QueryCommand({
     TableName: deps.tableName,
     KeyConditionExpression: "pk = :pk",
-    ExpressionAttributeValues: { ":pk": MEMBER_MERGE_QUEUE_PK },
+    ExpressionAttributeValues: { ":pk": pk },
     ConsistentRead: true,
     Limit: PAGE,
-    ...(cursor === undefined ? {} : { ExclusiveStartKey: { pk: MEMBER_MERGE_QUEUE_PK, sk: cursor } }),
+    ...(cursor === undefined ? {} : { ExclusiveStartKey: { pk, sk: cursor } }),
   })) as { Items?: Item[]; LastEvaluatedKey?: { sk?: unknown } };
   let resumeAfter = cursor;
+  const finish = (extra: Partial<DrainReport>): DrainReport => ({
+    processed: report.processed, rejected: report.rejected, failed: report.failed, ...(report.skipped > 0 ? { skipped: report.skipped } : {}), ...extra,
+  });
   const remove = (item: Item) => deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: item["pk"], sk: item["sk"] } }));
   for (const item of page.Items ?? []) {
     if (options.deadline !== undefined && deps.now() >= options.deadline) {
-      return { ...report, ...(resumeAfter === undefined ? {} : { next: resumeAfter }), stopped: true };
+      return finish({ ...(resumeAfter === undefined ? {} : { next: resumeAfter }), stopped: true });
     }
-    const marker = readMarker(item);
+    resumeAfter = String(item["sk"]);
+    const attempts = typeof item["attempts"] === "number" ? item["attempts"] : 0;
+    const triedAt = typeof item["lastTriedAt"] === "number" ? item["lastTriedAt"] : 0;
+    // A marker that failed waits out its back-off, so the ones behind it are reached.
+    if (attempts > 0 && deps.now() < triedAt + backoffMs(attempts)) {
+      report.skipped += 1;
+      continue;
+    }
+    const marker = readMarker(item, queue);
     try {
       if (marker === undefined) {
         log(deps, "member_merge.rejected", { reason: "malformed" });
         await remove(item);
         report.rejected += 1;
-      } else {
-        const verdict = await verify(deps, marker);
-        if (!verdict.ok) {
-          log(deps, "member_merge.rejected", marker.kind === "merged"
-            ? { orgId: marker.orgId, survivorId: marker.survivorId, duplicateId: marker.duplicateId, reason: verdict.reason }
-            : { orgId: marker.orgId, developerId: marker.developerId, reason: verdict.reason });
-          await remove(item);
-          report.rejected += 1;
-        } else {
-          if (marker.kind === "merged") await onMembersMerged(deps, { orgId: marker.orgId, survivorId: verdict.survivorId, duplicateId: marker.duplicateId });
-          else await onMemberRemoved(deps, { orgId: marker.orgId, developerId: marker.developerId, by: marker.by });
-          await remove(item);
-          report.processed += 1;
-        }
+        continue;
       }
+      const verdict = await verify(deps, marker);
+      if (!verdict.ok) {
+        log(deps, "member_merge.rejected", marker.kind === "merged"
+          ? { orgId: marker.orgId, survivorId: marker.survivorId, duplicateId: marker.duplicateId, reason: verdict.reason }
+          : { orgId: marker.orgId, developerId: marker.developerId, reason: verdict.reason });
+        await remove(item);
+        report.rejected += 1;
+        continue;
+      }
+      const ledger = markerLedger(deps, { pk, sk: String(item["sk"]) }, recipientsOf(item));
+      if (marker.kind === "removed") await onMemberRemoved(deps, { orgId: marker.orgId, developerId: marker.developerId, by: marker.by }, ledger);
+      else if (verdict.kind === "survivor_gone") {
+        log(deps, "member_merge.survivor_gone", { orgId: marker.orgId, survivorId: marker.survivorId, duplicateId: marker.duplicateId });
+        await onMemberRemoved(deps, { orgId: marker.orgId, developerId: marker.duplicateId, by: SYSTEM }, ledger);
+      } else await onMembersMerged(deps, { orgId: marker.orgId, survivorId: verdict.survivorId, duplicateId: marker.duplicateId }, ledger);
+      await remove(item);
+      report.processed += 1;
     } catch (error) {
       report.failed += 1;
-      log(deps, "member_merge.failed", { ...(marker === undefined ? {} : { orgId: marker.orgId }), at: new Date(now).toISOString(), error: errorName(error) });
+      await recordFailure(deps, now, item, marker, attempts + 1, errorName(error));
     }
-    resumeAfter = String(item["sk"]);
   }
   const next = page.LastEvaluatedKey?.sk;
-  return { ...report, ...(typeof next === "string" ? { next } : {}) };
+  return finish(typeof next === "string" ? { next } : {});
+}
+
+/** Notes a failed attempt on the marker (how many, what kind of error, when) so the next sweep can back off; from the 12th it logs `member_merge.parked`. */
+async function recordFailure(deps: LifecycleDeps, now: number, item: Item, marker: Marker | undefined, attempts: number, error: string): Promise<void> {
+  const who = marker === undefined ? {} : marker.kind === "merged" ? { orgId: marker.orgId, duplicateId: marker.duplicateId } : { orgId: marker.orgId, developerId: marker.developerId };
+  log(deps, "member_merge.failed", { ...who, at: new Date(now).toISOString(), attempts, error });
+  if (attempts >= PARK_AFTER_ATTEMPTS) log(deps, "member_merge.parked", { level: "error", ...who, attempts, error });
+  try {
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: { pk: item["pk"], sk: item["sk"] },
+      UpdateExpression: "SET #attempts = :attempts, #error = :error, #at = :at", ConditionExpression: "attribute_exists(pk)",
+      ExpressionAttributeNames: { "#attempts": "attempts", "#error": "lastError", "#at": "lastTriedAt" },
+      ExpressionAttributeValues: { ":attempts": attempts, ":error": error, ":at": deps.now() },
+    }));
+  } catch (cause) {
+    log(deps, "member_merge.attempt_not_kept", { ...who, error: errorName(cause) });
+  }
+}
+
+/**
+ * One page of the merge queue (100 markers, oldest first; `cursor` is the sort key to start after). For each: check the change really
+ * happened (the duplicate's record says it was merged into the survivor, the duplicate is no longer a member and the survivor is) and, if it
+ * did not, delete the marker with a `member_merge.rejected` line and move nothing; else run the moves and delete the marker. If the survivor
+ * has left since, the merge is handled as the duplicate's removal (`member_merge.survivor_gone`). A failure leaves the marker, notes the
+ * attempt on it and backs off. `now` is the sweep's clock, for its log lines; `options.deadline` stops the page before the next marker once it has passed.
+ */
+export function drainMemberMerges(deps: LifecycleDeps, now: number, cursor?: string, options: { deadline?: number } = {}): Promise<DrainReport> {
+  return drainQueue(deps, now, "merge", cursor, options);
+}
+
+/** The same for the broker-only queue of removals: the person must still not be a member; then the moves run as `onMemberRemoved`. */
+export function drainMemberRemovals(deps: LifecycleDeps, now: number, cursor?: string, options: { deadline?: number } = {}): Promise<DrainReport> {
+  return drainQueue(deps, now, "removal", cursor, options);
 }
 
 export interface DrainRun {
@@ -426,33 +547,40 @@ export interface DrainRun {
   processed: number;
   rejected: number;
   failed: number;
-  /** True when the run reached the end of the queue; false when its time ran out. */
+  /** Markers left alone this run because an earlier failure's back-off has not passed (absent when none). */
+  skipped?: number;
+  /** True when the run reached the end of both queues; false when its time ran out. */
   complete: boolean;
 }
 
 /**
- * Drains pages of the queue until the end or until `budgetMs` has passed. Markers that fail stay where they are and are tried again by the
- * next run; within one run each is tried once, because the next page starts after the last one.
+ * Drains pages of the removal queue, then of the merge queue, until the end or until `budgetMs` has passed. A marker that fails stays where it
+ * is, with its attempts noted, and the next run leaves it alone until its back-off is over; within one run each is tried once.
  */
 export async function runMemberMergeDrain(deps: LifecycleDeps, options: { budgetMs: number }): Promise<DrainRun> {
   const deadline = deps.now() + options.budgetMs;
   const run: DrainRun = { pages: 0, processed: 0, rejected: 0, failed: 0, complete: false };
-  let cursor: string | undefined;
-  while (deps.now() < deadline) {
-    const page = await drainMemberMerges(deps, deps.now(), cursor, { deadline });
-    run.pages += 1;
-    run.processed += page.processed;
-    run.rejected += page.rejected;
-    run.failed += page.failed;
-    if (page.stopped === true) return run;
-    cursor = page.next;
-    if (cursor === undefined) {
-      run.complete = true;
-      return run;
+  let skipped = 0;
+  for (const queue of ["removal", "merge"] as const) {
+    let cursor: string | undefined;
+    for (;;) {
+      if (deps.now() >= deadline) return withSkipped(run, skipped);
+      const page = await drainQueue(deps, deps.now(), queue, cursor, { deadline });
+      run.pages += 1;
+      run.processed += page.processed;
+      run.rejected += page.rejected;
+      run.failed += page.failed;
+      skipped += page.skipped ?? 0;
+      if (page.stopped === true) return withSkipped(run, skipped);
+      cursor = page.next;
+      if (cursor === undefined) break;
     }
   }
-  return run;
+  run.complete = true;
+  return withSkipped(run, skipped);
 }
+
+const withSkipped = (run: DrainRun, skipped: number): DrainRun => (skipped > 0 ? { ...run, skipped } : run);
 
 // ---- a project archive
 
