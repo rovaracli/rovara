@@ -9,7 +9,7 @@ export interface StreamRecord {
   eventName?: string;
   dynamodb?: { ApproximateCreationDateTime?: number; NewImage?: Record<string, AttributeValue>; OldImage?: Record<string, AttributeValue> };
 }
-export type NoticeKind = "start" | "mode" | "closed" | "cancelled" | "ready" | "setup_failed" | "ended" | "pull_request" | "workflow" | "github_feedback" | "canvas_closeout" | "admin_change_dm" | "admin_change_outcome" | "admin_change_expiry" | "workflow_refusal" | "comment_nudge" | "people_dm" | "chatgpt_fallback";
+export type NoticeKind = "start" | "mode" | "closed" | "cancelled" | "ready" | "setup_failed" | "ended" | "pull_request" | "workflow" | "github_feedback" | "canvas_closeout" | "admin_change_dm" | "admin_change_outcome" | "admin_change_expiry" | "workflow_refusal" | "comment_nudge" | "people_dm" | "chatgpt_fallback" | "agent_report";
 export interface Notice {
   /** Fixed per change, so a repeated delivery posts once (C9). */
   id: string;
@@ -144,6 +144,12 @@ export function noticesOf(previous: Record<string, unknown> | undefined, next: R
       const requestId = text(next.requestId);
       if (previous !== undefined || taskId === "" || requestId === "" || next.status !== "PENDING") return [];
       return [{ id: `${taskId}:people:${requestId}`, kind: "people_dm", taskId, peopleRequestId: requestId, at }];
+    }
+    // Plan 3, Task 22 (R4-2): an agent-step run's final report, prepared for a project's channel, waits to be posted. Once, when it is written.
+    case "AGENT_REPORT_POST": {
+      const taskId = text(next.taskId);
+      if (previous !== undefined || taskId === "" || next.status !== "PENDING") return [];
+      return [{ id: `${taskId}:agent_report`, kind: "agent_report", taskId, at }];
     }
     case "ADMIN_CHANGE": {
       // Spec 025 E13: the Slack step started, or a change with a message ended. Only stored

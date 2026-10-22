@@ -6,9 +6,9 @@
 //   - approvals-store.ts:   the records and their schemas, the registries of rules and handlers, creating and listing, who may decide;
 //   - approvals-decide.ts:  deciding (the state machine), the sweep that expires, retries and tells handlers;
 //   - approvals-movers.ts:  the member movers (a merge or a removal changes who may decide a pending approval).
-export { MAX_APPROVAL_ATTEMPTS, approvalIdFromSeed, approvalTaskEventKey, confirmUrlFor, createPendingChange, createStepApproval, createWriteApprovalRecord, getAnyApproval, getApproval, getApprovalSubjectHandler, getApproverRule, listApprovalsFor, mayDecideApproval, pendingChangeFor, registerApprovalSubjectHandler, registerApproverRule, requireRegisteredApprovers, runOfApproval, shownText } from "./approvals-store.js";
+export { MAX_APPROVAL_ATTEMPTS, approvalIdFromSeed, approvalTaskEventKey, confirmUrlFor, createPendingChange, createStepApproval, createWriteApprovalRecord, getAnyApproval, getApproval, getApprovalSubjectHandler, getApproverRule, listApprovalsFor, mayDecideApproval, pendingChangeFor, registerApprovalGaveUpHandler, registerApprovalSubjectHandler, registerApproverRule, requireRegisteredApprovers, runOfApproval, shownText } from "./approvals-store.js";
 export type { AgentChangeSubject, AnyApprovalRecord, ApprovalCaller, ApprovalDependencies, ApprovalRecord, ApprovalRun, ApprovalRunView, ApprovalStatus, ApprovalStoreDependencies, ApprovalSubject, ApprovalSubjectHandler, ApproverRuleCheck, ApproverSpec, ChangeApprovalRecord, ChangeSubject, ConnectorWidenSubject, DecideBody, OptOutChangeSubject, OtherChangeSubject, StepApprovalRecord, WriteApprovalRecord } from "./approvals-store.js";
-export { MAX_HANDLER_TRIES, decideApproval, expireApprovals, registerWriteApprovalDriver, runApprovalDecision, runApprovalSweep } from "./approvals-decide.js";
+export { MAX_HANDLER_TRIES, decideApproval, expireApprovalNow, expireApprovals, registerWriteApprovalDriver, runApprovalDecision, runApprovalSweep } from "./approvals-decide.js";
 export type { ApprovalSweepReport, Execution, WriteApprovalDriver } from "./approvals-decide.js";
 // Loading this module registers the approvals' member mover (Task 11's hand-off): the settlement run and OrgStore use the one global registry.
 import "./approvals-movers.js";

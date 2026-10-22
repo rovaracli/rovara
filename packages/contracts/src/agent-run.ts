@@ -166,5 +166,7 @@ export const AgentRunStateSchema = z.object({
   /** Why the run ended FAILED or CANCELLED, in words the person reads, and when it ended (any ended state). */
   endReason: z.string().max(1000).optional(),
   endedAt: z.string().optional(),
+  /** The limit that paused the run (a `PauseScope`) and when; `notifiedAt` is when the pause handlers were told. */
+  pause: z.object({ scope: z.unknown(), at: z.string(), notifiedAt: z.string().optional() }).strict().optional(),
 }).strict();
 export type AgentRunState = z.infer<typeof AgentRunStateSchema>;

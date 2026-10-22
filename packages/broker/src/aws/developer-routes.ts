@@ -1370,7 +1370,7 @@ export function developerTaskRouteDependencies(
     ...(deps.workflowE2EPublicationChecks === undefined ? {} : { workflowE2EPublicationChecks: deps.workflowE2EPublicationChecks }),
     ...(deps.registeredRepositoryIdentity === undefined ? {} : { registeredRepositoryIdentity: deps.registeredRepositoryIdentity }),
     ...(deps.requireRepositoriesConnected === undefined ? {} : { requireRepositoriesConnected: deps.requireRepositoriesConnected }),
-    ...(deps.agents === undefined ? {} : { agentRuns: deps.agents }),
+    ...(deps.agents === undefined ? {} : { agentRuns: deps.agents, agentEngine: deps.agents }),
     ...(deps.developer.taskPeopleConfiguration === undefined ? {} : { taskPeopleConfiguration: deps.developer.taskPeopleConfiguration }),
     ...(deps.developer.workflowDependenciesEnabled === undefined ? {} : { workflowDependenciesEnabled: deps.developer.workflowDependenciesEnabled }),
     checkTaskPerson: async (task, developerId, admission) => {

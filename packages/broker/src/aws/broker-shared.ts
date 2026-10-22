@@ -289,8 +289,8 @@ export interface WorkflowDispatchRecord {
   entityType: "WORKFLOW_DISPATCH";
   taskId: string;
   workflowRevision: number;
-  /** UPDATE: an approved fix's checks and reviews passed, and it is pushed to the pull requests already open. */
-  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT";
+  /** UPDATE: an approved fix's checks and reviews passed, and it is pushed to the pull requests already open. `agent_run` (Plan 3, Task 22): the agent-step engine has something to do for the task. */
+  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT" | "agent_run";
   /** IMPLEMENT (a custom sequence's next coding step) may be due before any candidate exists: then it is WORKFLOW_NO_CANDIDATE_DIGEST. */
   candidateDigest: string;
   /** A single internal resume operation warms EC2 before a required E2E round is immutably admitted. */
@@ -317,6 +317,25 @@ export interface WorkflowE2EReadinessMarker {
 }
 
 export const WORKFLOW_DISPATCH_PK = "WORKFLOW_DISPATCH";
+
+/** An agent-step run has one dispatch row at a time, under this sort key: it is both what runs the engine after a step ends and the watchdog that finds a step whose result was lost. */
+export const agentRunDispatchKey = (taskId: string) => ({ pk: WORKFLOW_DISPATCH_PK, sk: `${taskId}#agent` } as const);
+
+/**
+ * The agent-step engine's row (Task 22), due at `dueAt` (an ISO time). Written, in the transaction that makes the engine owe something, over any row the task
+ * already has: when a step is dispatched it is a watchdog (due after the step's time limit), when a result commits it is due at once, and when the run ends
+ * it stays until the end's follow-up work is done. `operationId` is the operation whose result made it due.
+ */
+export function agentRunDispatchItem(tableName: string, input: { taskId: string; orgId: string; revision: number; dueAt: string; now: string; operationId?: string }): TransactItems[number] {
+  const key = agentRunDispatchKey(input.taskId);
+  const item: WorkflowDispatchRecord & { orgId: string; operationId?: string } = {
+    ...key, entityType: "WORKFLOW_DISPATCH", taskId: input.taskId, orgId: input.orgId, workflowRevision: input.revision, kind: "agent_run", candidateDigest: WORKFLOW_NO_CANDIDATE_DIGEST,
+    createdAt: input.now, attempts: 0, nextAttemptAt: input.dueAt, dispatchDuePk: WORKFLOW_DISPATCH_PK, dispatchDueSk: `${input.dueAt}#${key.sk}`,
+    [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(input.dueAt) / 1000) + WORKFLOW_DISPATCH_RETENTION_SECONDS,
+    ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
+  };
+  return { Put: { TableName: tableName, Item: item } };
+}
 /** The candidate digest of a dispatch row due before the task has a candidate. */
 export const WORKFLOW_NO_CANDIDATE_DIGEST = "0".repeat(64);
 const WORKFLOW_DISPATCH_RETENTION_SECONDS = 7 * 86_400;

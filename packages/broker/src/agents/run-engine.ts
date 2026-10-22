@@ -1,23 +1,858 @@
-// Plan 3, Task 22: the agent-step engine. STUB until the implementation commit.
-import type { AnyApprovalRecord, ApprovalDependencies } from "./approvals.js";
+// Plan 3, Task 22: the agent-step engine. A run of an agent made of agent steps (`recipeRunner(recipe) === "agent_steps"`) is a task that holds ONE
+// workspace. When its preparation is done the engine dispatches the steps in order, each as an ordinary task operation whose payload is
+// `agentStep.kind === "agent"`; an `approval` step waits for a person in place; a step whose calls asked for write approvals waits for them too, and
+// once they are decided the same step runs again with what came of each. The run's state is the one item `DEVTASK#<task> / AGENT_RUN`, and every change
+// of it is a conditional write on its `revision`, in the same transaction as what the change owes (the operation, the task event, the dispatch row), so a
+// repeated callback or a second process finds the work done and does nothing.
+//
+// What makes the engine run: the worker's terminal result and a decided approval, each of which calls it directly, and ONE row of the WORKFLOW_DISPATCH
+// index (`kind: "agent_run"`), written in the same transaction as whatever made the engine owe something, run by the recovery sweep when the direct call
+// was lost, and when a step's result never arrived, by the time it was due as a watchdog. Everything the sweep does is what the direct call does.
+//
+// Public surface (Plan 4 and Plan 5 build on these): `advanceAgentRun`, `onAgentStepFinished`, `onWriteDecided`, `cancelAgentRun`, `registerTaskEndHandler`,
+// `registerTaskPauseHandler`, `onTaskEnded`, `prepareSlackReport`.
+import { createHash } from "node:crypto";
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  AGENT_REPORT_MAX_BYTES, AGENT_STEP_INPUTS_MAX_BYTES, AgentRunStateSchema, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, SHORTENED_MARKER,
+  agentXError, redactText, renderRunInput, shortenToBytes,
+  type AgentRunState, type OrgId, type PauseScope, type ResolvedRecipe, type ResolvedStep, type ResultContract, type RunCheckout,
+} from "@agentx/contracts";
+import type { DeveloperTaskActions, TransactItems } from "../aws/developer-task-actions.js";
+import { WORKFLOW_DISPATCH_PK, agentRunDispatchItem, agentRunDispatchKey } from "../aws/broker-shared.js";
+import { taskAgentRunKey, taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import {
+  createStepApproval, getAnyApproval, registerApprovalSubjectHandler,
+  type AnyApprovalRecord, type ApprovalDependencies, type StepApprovalRecord, type WriteApprovalRecord,
+} from "./approvals.js";
+import { expireApprovalNow } from "./approvals-decide.js";
+import { commitOrLost, errorNameOf, iso, log, registerApprovalGaveUpHandler, shownText, type TransactItem } from "./approvals-store.js";
+import { readGuardrails } from "./guardrails.js";
+import { readTaskRecipe } from "./runs.js";
+import { prepareSlackReport } from "./slack-report.js";
+import { WRITE_APPROVER_RULE, writeApproversFor } from "./write-gate.js";
+import { onTaskEnded, onTaskPaused, type TaskEndHost, type TaskEndOutcome } from "./task-end.js";
 
-export type { TaskEndEvent, TaskEndOutcome, TaskPauseEvent } from "./task-end.js";
-export { onTaskEnded, registerTaskEndHandler, registerTaskPauseHandler } from "./task-end.js";
+export type { TaskEndEvent, TaskEndHandler, TaskEndOutcome, TaskPauseEvent, TaskPauseHandler } from "./task-end.js";
+export { hasTaskEndHandlers, onTaskEnded, onTaskPaused, registerTaskEndHandler, registerTaskPauseHandler } from "./task-end.js";
 export { CHATOPS_PATTERNS, prepareSlackReport } from "./slack-report.js";
+export type { PreparedSlackReport } from "./slack-report.js";
+
+// ---- what the engine needs from the broker
+
+export interface StartStepInput {
+  task: DeveloperTaskRecord;
+  /** Derived from the task, step and attempt, so a repeat of the same dispatch is the broker's duplicate of the first. */
+  requestId: string;
+  /** Known before the operation is made, so the run's own update (written in the operation's transaction) can name it. */
+  operationId: string;
+  prompt: string;
+  step: Extract<ResolvedStep, { kind: "agent" }>;
+  /** What the worker is given as the one user turn: the request, the earlier steps' reports and, on a continuation, what came of the approvals. */
+  inputs: string;
+  resultContract?: ResultContract;
+  checkout?: readonly RunCheckout[];
+  /** Items for the operation's own transaction: the run's update, its event and its dispatch row. */
+  extra: (operationId: string) => TransactItems;
+}
+
+/**
+ * What the broker supplies to the engine (`agentRouteDependencies` builds it). `startStep` is `acceptTask` with the step's payload; the rest is the broker's
+ * own checks and the parts of an end that are not the engine's. Every method may be missing in a test that does not need it.
+ */
+export interface AgentRunHost extends TaskEndHost {
+  startStep(input: StartStepInput): Promise<{ operationId: string; duplicate: boolean }>;
+  /** `requireCreatorStillMember` (R60): throws `TASK_ACCESS_DENIED` and records `creator_removed` on the task when its creator has left the org. */
+  requireCreator(task: DeveloperTaskRecord): Promise<void>;
+  /** Task 10's `requireRecipeAllowed` against the company's guardrails as they are now. */
+  requireRecipeAllowed(task: DeveloperTaskRecord, recipe: ResolvedRecipe): Promise<void>;
+  /** Keeps a step's report with the task (`agent-step-<id>.md`); the object key, or undefined when it could not be kept. */
+  saveReport?(input: { task: DeveloperTaskRecord; operationId: string; stepId: string; text: string }): Promise<string | undefined>;
+  /** The task's page. */
+  taskUrl?(taskId: string): string | undefined;
+  /** The Slack channels bound to the project, sorted. */
+  slackChannels?(orgId: OrgId, project: string): Promise<readonly string[]>;
+}
 
 export type AgentRunEngineDependencies = ApprovalDependencies;
 
-export async function advanceAgentRun(deps: AgentRunEngineDependencies, taskId: string): Promise<string> {
-  void deps; void taskId;
-  throw new Error("not implemented");
+// ---- vocabulary
+
+const ENDED = new Set<AgentRunState["state"]>(["COMPLETE", "FAILED", "CANCELLED"]);
+/** After a step's outcomes were handed back this many times, a step that asks for more approvals still waits for them, but its outcomes are not handed back again. */
+const MAX_CONTINUATIONS = 4;
+/** What a run keeps of the reports in its state item (DynamoDB's item limit is 400 KB, and the request and the steps share it). */
+const REPORTS_TOTAL_MAX_BYTES = 150 * 1024;
+const MINUTE = 60_000;
+/** A step's watchdog is due this long after its time limit; a run waiting for a person is looked at every six hours. */
+const WATCHDOG_GRACE_MS = 15 * MINUTE;
+const DEFAULT_STEP_MINUTES = 60;
+const WAITING_WATCHDOG_MS = 6 * 60 * MINUTE;
+const OUTCOMES_HEADER = "Outcomes of the actions that needed approval:";
+const CANCELLED_REASON = "Cancelled.";
+const FAILED_NO_REPORT = "The step ended without a report.";
+const GAVE_UP_REASON = "Rovara couldn't continue this run after an approval was decided, so it stopped. Start the run again.";
+
+export type AdvanceResult = "no_run" | "ended" | "paused" | "waiting" | "busy" | "dispatched" | "completed";
+
+const utf8Length = (text: string): number => Buffer.byteLength(text, "utf8");
+const sha = (text: string): Buffer => createHash("sha256").update(text, "utf8").digest();
+
+/** A UUID made from a seed alone, so the same dispatch always has the same request and operation ids. */
+function uuidFrom(seed: string): string {
+  const bytes = sha(`rovara-agent-run:${seed}`).subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-export async function onAgentStepFinished(deps: AgentRunEngineDependencies, input: { taskId: string; operationId: string; outcome: string; report?: string }): Promise<void> {
-  void deps; void input;
-  throw new Error("not implemented");
+function hostOf(deps: AgentRunEngineDependencies): AgentRunHost {
+  const host = (deps as { agentRuns?: AgentRunHost }).agentRuns;
+  if (host === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "agent runs are not set up in this deployment");
+  return host;
 }
 
+// ---- reading
+
+interface Loaded { task: DeveloperTaskRecord; run: AgentRunState }
+
+async function getItem<T>(deps: AgentRunEngineDependencies, key: { pk: string; sk: string }): Promise<T | undefined> {
+  return ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: T }).Item;
+}
+
+/** The task and its run, both read now. A task partition is global: an item that names another org reads as missing. */
+async function load(deps: AgentRunEngineDependencies, taskId: string, orgId?: OrgId): Promise<Loaded | undefined> {
+  const [task, raw] = await Promise.all([getItem<DeveloperTaskRecord>(deps, taskKey(taskId)), getItem<Record<string, unknown>>(deps, taskAgentRunKey(taskId))]);
+  if (task === undefined || raw === undefined || task.orgId === undefined || raw["orgId"] !== task.orgId) return undefined;
+  if (orgId !== undefined && task.orgId !== orgId) return undefined;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- only the key attributes are dropped
+  const { pk: _pk, sk: _sk, entityType: _type, ...state } = raw;
+  const run = AgentRunStateSchema.safeParse(state);
+  if (!run.success) {
+    log(deps, "agent_run.unreadable", { taskId, problem: run.error.issues[0]?.path.join(".") ?? "run" });
+    return undefined;
+  }
+  return { task, run: run.data };
+}
+
+function stepOf(recipe: ResolvedRecipe, stepId: string): ResolvedStep | undefined {
+  return recipe.steps.find((step) => step.id === stepId);
+}
+
+const lastAgentStepId = (recipe: ResolvedRecipe): string | undefined => recipe.steps.filter((step) => step.kind === "agent").at(-1)?.id;
+
+async function recipeOf(deps: AgentRunEngineDependencies, task: DeveloperTaskRecord): Promise<ResolvedRecipe> {
+  const frozen = await readTaskRecipe(deps, task.taskId, task.orgId as OrgId);
+  if (frozen === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
+  return frozen.recipe;
+}
+
+// ---- the approvals of a task
+
+const APPROVAL_EVENT_SK = /^EVENT#[^#]+#(apr_[0-9a-z]{20})$/;
+
+/** The ids of the write approvals a task's steps asked for: each left one task event named by it (Task 21). The partition is global, so the org on each item is checked. */
+async function writeApprovalIds(deps: AgentRunEngineDependencies, orgId: OrgId, taskId: string): Promise<string[]> {
+  const ids = new Set<string>();
+  let start: Record<string, unknown> | undefined;
+  for (let pages = 0; pages < 10; pages += 1) {
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": `DEVTASK#${taskId}`, ":prefix": "EVENT#" },
+      ConsistentRead: true, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of page.Items ?? []) {
+      const id = typeof item["sk"] === "string" ? APPROVAL_EVENT_SK.exec(item["sk"])?.[1] : undefined;
+      if (id !== undefined && item["orgId"] === orgId) ids.add(id);
+    }
+    start = page.LastEvaluatedKey;
+    if (start === undefined) break;
+  }
+  return [...ids];
+}
+
+/** Every approval of the run, each read now and checked to be this task's in this org: the write approvals of its steps and the approvals its steps are waiting on. */
+async function taskApprovals(deps: AgentRunEngineDependencies, task: DeveloperTaskRecord, run: AgentRunState): Promise<AnyApprovalRecord[]> {
+  const orgId = task.orgId as OrgId;
+  const ids = new Set([...await writeApprovalIds(deps, orgId, task.taskId), ...run.steps.flatMap((step) => step.approvalIds)]);
+  const found: AnyApprovalRecord[] = [];
+  for (const id of ids) {
+    const record = await getAnyApproval(deps, orgId, id as never);
+    if (record === undefined || record.kind === "change" || (record.subject as { taskId?: unknown }).taskId !== task.taskId) continue;
+    found.push(record);
+  }
+  return found.sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.approvalId.localeCompare(right.approvalId));
+}
+
+const isOpen = (record: AnyApprovalRecord): boolean => record.status === "PENDING" || record.status === "EXECUTING";
+
+/** One line of what came of a write approval, in the words the model is handed. */
+function outcomeLine(record: WriteApprovalRecord): string {
+  switch (record.status) {
+    case "APPROVED_DONE": return `Approved and done: ${record.summary}`;
+    case "APPROVED_FAILED": return `Approved but not run: ${record.summary} (${record.failure ?? "it didn't go through"})`;
+    case "DECLINED": return `Declined: ${record.summary}`;
+    case "EXPIRED": return `Expired: ${record.summary}`;
+    default: return `Waiting: ${record.summary}`;
+  }
+}
+
+// ---- what the model is handed
+
+/**
+ * The one user turn of a step: the run's request, then each earlier report under `Report from <step name>:`, shortened to leave room (the payload carries at most
+ * 256 KiB). A continuation also gets the step's own report from before the outcomes were known, and then the outcomes themselves.
+ */
+export function renderStepInputs(run: AgentRunState, stepId: string, continuation?: { ownReport?: string; lines: readonly string[] }): string {
+  const base = renderRunInput(run.input);
+  const tail = continuation === undefined ? "" : `\n\n${OUTCOMES_HEADER}\n${continuation.lines.join("\n")}`;
+  const earlier = run.reports.filter((report) => report.stepId !== stepId);
+  const own = continuation?.ownReport === undefined ? undefined : `\n\nYour report for this step before the outcomes were known:\n${continuation.ownReport}`;
+  const headers = earlier.reduce((total, report) => total + utf8Length(`\n\nReport from ${report.name}:\n`), 0);
+  const room = AGENT_STEP_INPUTS_MAX_BYTES - utf8Length(base) - utf8Length(tail) - headers - (own === undefined ? 0 : utf8Length(own)) - 1024;
+  const share = Math.max(utf8Length(SHORTENED_MARKER) + 64, Math.floor(room / Math.max(1, earlier.length + (own === undefined ? 0 : 1))));
+  const reports = earlier.map((report) => `\n\nReport from ${report.name}:\n${shortenToBytes(report.text, share)}`).join("");
+  const ownBlock = own === undefined ? "" : `\n\nYour report for this step before the outcomes were known:\n${shortenToBytes(continuation!.ownReport!, share)}`;
+  return `${base}${reports}${ownBlock}${tail}`;
+}
+
+/** A report as the run keeps it: redacted, at most 32,768 bytes (cut inside no character), and non-empty. */
+function reportText(report: string | undefined): string | undefined {
+  if (report === undefined || report.trim() === "") return undefined;
+  return shortenToBytes(redactText(report), AGENT_REPORT_MAX_BYTES);
+}
+
+/** The run's reports with `text` for `stepId` (replacing the step's earlier one), keeping the total the state item can hold. */
+function withReport(run: AgentRunState, step: { id: string; name: string }, text: string): AgentRunState["reports"] {
+  const others = run.reports.filter((report) => report.stepId !== step.id);
+  const used = others.reduce((total, report) => total + utf8Length(report.text), 0);
+  const kept = shortenToBytes(text, Math.max(1024, Math.min(AGENT_REPORT_MAX_BYTES, REPORTS_TOTAL_MAX_BYTES - used)));
+  const entry = { stepId: step.id, name: step.name, text: kept };
+  const at = run.reports.findIndex((report) => report.stepId === step.id);
+  return at < 0 ? [...run.reports, entry] : run.reports.map((report, index) => (index === at ? entry : report));
+}
+
+// ---- writing
+
+const stateItem = (taskId: string, state: AgentRunState): Record<string, unknown> => ({ ...taskAgentRunKey(taskId), entityType: "AGENT_RUN", ...state });
+
+/** The run's next state as one conditional write on the revision that was read: a lost race changes nothing. */
+function putRun(deps: AgentRunEngineDependencies, taskId: string, previous: AgentRunState, next: Omit<AgentRunState, "revision">): TransactItem {
+  return {
+    Put: {
+      TableName: deps.tableName, Item: stateItem(taskId, { ...next, revision: previous.revision + 1 }),
+      ConditionExpression: "#revision = :revision AND #org = :org", ExpressionAttributeNames: { "#revision": "revision", "#org": "orgId" }, ExpressionAttributeValues: { ":revision": previous.revision, ":org": previous.orgId },
+    },
+  };
+}
+
+function eventItem(deps: AgentRunEngineDependencies, task: DeveloperTaskRecord, revision: number, text: string, kind: "status" | "error" = "status", at = iso(deps.now())): TransactItem {
+  return { Put: { TableName: deps.tableName, Item: { pk: `DEVTASK#${task.taskId}`, sk: `EVENT#${at}#run${String(revision)}`, entityType: "TASK_EVENT", orgId: task.orgId, kind, text: shownText(text, 500), at } } };
+}
+
+const dispatchRow = (deps: AgentRunEngineDependencies, task: DeveloperTaskRecord, revision: number, dueInMs: number, operationId?: string): TransactItem =>
+  agentRunDispatchItem(deps.tableName, { taskId: task.taskId, orgId: task.orgId as string, revision, dueAt: iso(deps.now() + dueInMs), now: iso(deps.now()), ...(operationId === undefined ? {} : { operationId }) }) as TransactItem;
+
+const withStep = (run: AgentRunState, stepId: string, change: Partial<AgentRunState["steps"][number]>): AgentRunState["steps"] =>
+  run.steps.map((step) => (step.id === stepId ? { ...step, ...change } : step));
+
+const withoutFields = (run: AgentRunState): Omit<AgentRunState, "revision"> => {
+  const { revision: _revision, ...rest } = run; // eslint-disable-line @typescript-eslint/no-unused-vars -- putRun sets it
+  return rest;
+};
+
+// ---- ending
+
+const END_OUTCOME: Record<"COMPLETE" | "FAILED" | "CANCELLED", TaskEndOutcome> = { COMPLETE: "succeeded", FAILED: "failed", CANCELLED: "cancelled" };
+
+/**
+ * Ends the run in ONE transaction: its terminal state and reason, the mark on the task that gives its workspace back (`agentRunEnd`), the event and the
+ * dispatch row that stays, due at once, until the follow-up (`finishEnd`) is done. Then does the follow-up. Answers false when another writer got there first.
+ */
+async function endRun(deps: AgentRunEngineDependencies, loaded: Loaded, end: { state: "COMPLETE" | "FAILED" | "CANCELLED"; reason?: string; outcome?: TaskEndOutcome; finalReport?: string; branch?: string; stepStatus?: "failed" | "done" }): Promise<boolean> {
+  const { task, run } = loaded;
+  const at = iso(deps.now());
+  const steps = run.steps.map((step) => (step.status === "running" || step.status === "waiting" ? { ...step, status: end.stepStatus ?? (end.state === "COMPLETE" ? "done" as const : "failed" as const) } : step));
+  const next: Omit<AgentRunState, "revision"> = {
+    ...withoutFields(run), state: end.state, steps, endedAt: at,
+    ...(end.reason === undefined ? {} : { endReason: end.reason }),
+    ...(end.finalReport === undefined ? {} : { finalReport: end.finalReport }),
+    ...(end.branch === undefined ? {} : { branch: end.branch }),
+  };
+  const words = end.state === "COMPLETE" ? "The run finished." : end.state === "CANCELLED" ? (end.reason ?? CANCELLED_REASON) : `The run failed. ${end.reason ?? ""}`.trim();
+  const items: TransactItem[] = [
+    putRun(deps, task.taskId, run, next),
+    { Update: { TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET agentRunEnd = :end", ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":end": { state: end.state, at } } } },
+    eventItem(deps, task, run.revision + 1, words, end.state === "FAILED" ? "error" : "status", at),
+    dispatchRow(deps, task, run.revision + 1, 0),
+  ];
+  if (!await commitOrLost(deps, items)) return false;
+  const ended: Loaded = { task: { ...task, agentRunEnd: { state: end.state, at } }, run: { ...next, revision: run.revision + 1 } };
+  await finishEnd(deps, ended, end.outcome ?? END_OUTCOME[end.state]);
+  return true;
+}
+
+/**
+ * What follows a run's end, each part safe to do again: the approvals still PENDING end, the task's end is told (its workspace, keys and handlers), the final
+ * report is posted or noted, and the dispatch row goes. A failure leaves the row, so the sweep does the rest.
+ */
+async function finishEnd(deps: AgentRunEngineDependencies, loaded: Loaded, outcome?: TaskEndOutcome): Promise<void> {
+  const { task, run } = loaded;
+  const host = hostOf(deps);
+  for (const record of await taskApprovals(deps, task, run)) {
+    if (record.status === "PENDING") await expireApprovalNow(deps, record);
+  }
+  const ended = outcome ?? (task.outcome === "creator_removed" ? "creator_removed" : END_OUTCOME[run.state as "COMPLETE" | "FAILED" | "CANCELLED"]);
+  await onTaskEnded({ ...deps, agentRuns: host }, task, ended, { ...(run.finalReport === undefined ? {} : { finalReport: run.finalReport }), ...(run.branch === undefined ? {} : { branch: run.branch }) }, { record: true });
+  if (run.state === "COMPLETE") await reportToSlack(deps, loaded);
+  await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: agentRunDispatchKey(task.taskId) }));
+}
+
+/** The final report of a run whose last agent step reports to Slack: handed to the notifier for the project's channel, or noted on the task when there is none. Once per run. */
+async function reportToSlack(deps: AgentRunEngineDependencies, loaded: Loaded): Promise<void> {
+  const { task, run } = loaded;
+  const host = hostOf(deps);
+  const recipe = await recipeOf(deps, task);
+  const reporting = [...recipe.steps].reverse().find((step) => step.kind === "agent" && run.reports.some((report) => report.stepId === step.id));
+  if (reporting === undefined || reporting.kind !== "agent" || reporting.report?.slack !== true || run.finalReport === undefined) return;
+  const orgId = task.orgId as OrgId;
+  const at = run.endedAt ?? iso(deps.now());
+  const channels = host.slackChannels === undefined ? [] : await host.slackChannels(orgId, task.project);
+  const channel = channels[0];
+  if (channel === undefined) {
+    // No channel is bound: nothing is posted, and the owner is told why on the task's page (always so on Rovara Cloud until Slack is set up there).
+    await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { pk: `DEVTASK#${task.taskId}`, sk: `EVENT#${at}#report`, entityType: "TASK_EVENT", orgId, kind: "status", at,
+      text: `No Slack channel is set up for ${task.project}, so the report is only on this page.` } }));
+    return;
+  }
+  const taskUrl = host.taskUrl?.(task.taskId);
+  if (taskUrl === undefined) return;
+  const guardrails = await readGuardrails(deps, orgId);
+  const prepared = prepareSlackReport(run.finalReport, { orgId, taskUrl, reportLinkDomains: guardrails.reportLinkDomains, extraCommandWords: guardrails.extraCommandWords });
+  try {
+    await deps.documentClient.send(new PutCommand({
+      TableName: deps.tableName, ConditionExpression: "attribute_not_exists(pk)",
+      Item: { pk: `DEVTASK#${task.taskId}`, sk: "AGENT_REPORT", entityType: "AGENT_REPORT_POST", orgId, taskId: task.taskId, channelId: channel, kind: prepared.kind, text: prepared.text, status: "PENDING", attempts: 0, createdAt: at },
+    }));
+  } catch (error) {
+    if (errorNameOf(error) !== "ConditionalCheckFailedException") throw error;
+  }
+}
+
+/** The run ends because of how the task stands (closed, its creator removed): not a step's own failing. */
+async function endFor(deps: AgentRunEngineDependencies, loaded: Loaded, error: unknown): Promise<boolean | undefined> {
+  if (!(error instanceof AgentXError)) return undefined;
+  const reason = error.message.startsWith(`${error.code}: `) ? error.message.slice(error.code.length + 2) : error.message;
+  if (error.code === "TASK_ACCESS_DENIED") return endRun(deps, loaded, { state: "CANCELLED", reason, outcome: "creator_removed" });
+  if (error.code === "MODEL_NOT_ALLOWED" || error.code === "CONFIG_INVALID") return endRun(deps, loaded, { state: "FAILED", reason });
+  return undefined;
+}
+
+// ---- dispatching
+
+/** Whether the task was closed or cancelled behind the run's back. */
+async function taskIsOver(deps: AgentRunEngineDependencies, task: DeveloperTaskRecord): Promise<boolean> {
+  if (task.closedAt !== undefined) return true;
+  const pointer = await getItem<{ cancelledAt?: unknown }>(deps, taskPointerKey(task.workspaceId));
+  return pointer?.cancelledAt !== undefined;
+}
+
+function watchdogMs(step: ResolvedStep): number {
+  const minutes = (step.settings as { timeoutMinutes?: number | null }).timeoutMinutes ?? DEFAULT_STEP_MINUTES;
+  return (minutes * MINUTE) + WATCHDOG_GRACE_MS;
+}
+
+/** Dispatches the step's operation (or a continuation of it): the operation, and with it the run's next state, its event and its watchdog, in one transaction. */
+async function dispatchStep(
+  deps: AgentRunEngineDependencies, loaded: Loaded, recipe: ResolvedRecipe, step: Extract<ResolvedStep, { kind: "agent" }>,
+  options: { continuation?: { ownReport?: string; lines: string[]; told: string[] } } = {},
+): Promise<boolean> {
+  const { task, run } = loaded;
+  const host = hostOf(deps);
+  const existing = run.steps.find((entry) => entry.id === step.id)!;
+  const attempt = existing.operationIds.length;
+  const operationId = uuidFrom(`op|${task.taskId}|${step.id}|${String(attempt)}`);
+  const requestId = uuidFrom(`request|${task.taskId}|${step.id}|${String(attempt)}`);
+  const inputs = renderStepInputs(run, step.id, options.continuation);
+  const next: Omit<AgentRunState, "revision"> = {
+    ...withoutFields(run), state: "RUNNING",
+    steps: withStep(run, step.id, {
+      status: "running", operationIds: [...existing.operationIds, operationId],
+      ...(options.continuation === undefined ? {} : { told: [...new Set([...(existing.told ?? []), ...options.continuation.told])] }),
+    }),
+  };
+  const text = options.continuation === undefined ? `Started ${step.name}.` : `Carrying on with ${step.name} now that the outcomes of the actions that needed approval are known.`;
+  try {
+    await host.startStep({
+      task, requestId, operationId, prompt: `Agent step: ${step.name}`, step, inputs,
+      ...(step.id === lastAgentStepId(recipe) && run.resultContract !== undefined ? { resultContract: run.resultContract } : {}),
+      ...(run.checkout === undefined ? {} : { checkout: run.checkout }),
+      extra: (id) => [putRun(deps, task.taskId, run, next) as TransactItems[number], eventItem(deps, task, run.revision + 1, text) as TransactItems[number], dispatchRow(deps, task, run.revision + 1, watchdogMs(step), id) as TransactItems[number]],
+    });
+  } catch (error) {
+    // The run moved on while the operation was being made (another process dispatched it, or ended the run): look again.
+    if (error instanceof AgentXError && (error.code === "WORKSPACE_BUSY" || error.code === "STALE_FENCE")) {
+      const fresh = await load(deps, task.taskId);
+      if (fresh !== undefined && (fresh.run.revision !== run.revision || ENDED.has(fresh.run.state))) return false;
+    }
+    throw error;
+  }
+  return true;
+}
+
+/** Asks the owner and the maintainers to let the run go on, and waits: the approval, then the run's waiting state, its event and its slow watchdog. */
+async function askForApproval(deps: AgentRunEngineDependencies, loaded: Loaded, step: Extract<ResolvedStep, { kind: "approval" }>): Promise<boolean> {
+  const { task, run } = loaded;
+  const orgId = task.orgId as OrgId;
+  const owner = { developerId: task.developerId, name: task.developerName };
+  const record = await createStepApproval(deps, {
+    orgId, subject: { kind: "agent_run", taskId: task.taskId, stepId: step.id }, prompt: step.prompt,
+    approvers: { kind: "rule", rule: WRITE_APPROVER_RULE, candidates: await writeApproversFor(deps, { orgId, project: task.project, owner }) },
+    project: task.project, owner,
+  });
+  const next: Omit<AgentRunState, "revision"> = { ...withoutFields(run), state: "WAITING_FOR_APPROVAL", steps: withStep(run, step.id, { status: "waiting", approvalIds: [record.approvalId] }) };
+  const committed = await commitOrLost(deps, [
+    putRun(deps, task.taskId, run, next),
+    eventItem(deps, task, run.revision + 1, `Waiting for approval: ${step.prompt}`),
+    dispatchRow(deps, task, run.revision + 1, WAITING_WATCHDOG_MS),
+  ]);
+  if (!committed) return false;
+  // Decided in the moments before the run was waiting: the handler found the step not waiting yet, so it hears it now.
+  const again = await getAnyApproval(deps, orgId, record.approvalId);
+  if (again !== undefined && again.status !== "PENDING") await onWriteDecided(deps, again);
+  return true;
+}
+
+/**
+ * Takes the run as far as it can go with nothing to wait for: dispatches the next step, asks for an approval, ends the run when its steps are done or when the
+ * task no longer lets it go on. Safe to call at any time and from any process: a run that is waiting, paused, busy or over is left as it is.
+ * `PAUSED_BUDGET` runs again from the step that was cut off once the task's `budgetPause` has been cleared (Task 32's approval of the raise).
+ */
+export async function advanceAgentRun(deps: AgentRunEngineDependencies, taskId: string): Promise<AdvanceResult> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    let loaded = await load(deps, taskId);
+    if (loaded === undefined) return "no_run";
+    const { task, run } = loaded;
+    if (ENDED.has(run.state)) {
+      await finishEnd(deps, loaded);
+      return "ended";
+    }
+    if (run.state === "WAITING_FOR_APPROVAL") return "waiting";
+    if (run.state === "PAUSED_BUDGET") {
+      if (task.budgetPause !== undefined) return "paused";
+      const resumed: Omit<AgentRunState, "revision"> = { ...withoutFields(run), state: "RUNNING" };
+      delete (resumed as { pause?: unknown }).pause;
+      if (!await commitOrLost(deps, [putRun(deps, taskId, run, resumed), eventItem(deps, task, run.revision + 1, "The run's budget was raised, so it carries on."), dispatchRow(deps, task, run.revision + 1, 0)])) continue;
+      loaded = { task, run: { ...resumed, revision: run.revision + 1 } };
+    }
+    const current = loaded.run;
+    if (current.steps.some((step) => step.status === "running")) return "busy";
+    const index = current.steps.findIndex((step) => step.status !== "done");
+    if (index < 0) {
+      const reports = current.reports;
+      await endRun(deps, loaded, { state: "COMPLETE", ...(reports.at(-1) === undefined ? {} : { finalReport: reports.at(-1)!.text }) });
+      return "completed";
+    }
+    if (await taskIsOver(deps, task)) {
+      await endRun(deps, loaded, { state: "CANCELLED", reason: "The task was closed." });
+      return "ended";
+    }
+    const host = hostOf(deps);
+    let recipe: ResolvedRecipe;
+    try {
+      await host.requireCreator(task);
+      recipe = await recipeOf(deps, task);
+      await host.requireRecipeAllowed(task, recipe);
+    } catch (error) {
+      const ended = await endFor(deps, loaded, error);
+      if (ended === undefined) throw error;
+      if (!ended) continue;
+      return "ended";
+    }
+    const step = stepOf(recipe, current.steps[index]!.id);
+    if (step === undefined) {
+      await endRun(deps, loaded, { state: "FAILED", reason: "The agent's snapshot no longer matches this run." });
+      return "ended";
+    }
+    const ok = step.kind === "approval" ? await askForApproval(deps, loaded, step) : step.kind === "agent" ? await dispatchStep(deps, loaded, recipe, step) : undefined;
+    if (ok === undefined) {
+      await endRun(deps, loaded, { state: "FAILED", reason: `${step.name} is not a step an agent run can take.` });
+      return "ended";
+    }
+    if (ok) return step.kind === "approval" ? "waiting" : "dispatched";
+  }
+  return "busy";
+}
+
+// ---- a step ended
+
+/** What the worker's terminal result came to, as the engine hears it. */
+export interface AgentStepFinished {
+  taskId: string;
+  operationId: string;
+  outcome: "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED" | "budget_exhausted";
+  /** The step's report (`result.agentStepResult.report`). */
+  report?: string;
+  /** The branch the worker chose (`result.agentStepResult.branch`). */
+  branch?: string;
+  /** The worker's error, for a failed step. */
+  error?: string;
+}
+
+/** The step goes on to its continuation, or is done and the run moves to its next step. */
+async function afterApprovals(deps: AgentRunEngineDependencies, loaded: Loaded, recipe: ResolvedRecipe, step: ResolvedStep, approvals: WriteApprovalRecord[], branch?: string): Promise<boolean> {
+  const { run } = loaded;
+  const state = run.steps.find((entry) => entry.id === step.id)!;
+  const toTell = approvals.filter((record) => !(state.told ?? []).includes(record.approvalId));
+  if (toTell.length > 0 && state.operationIds.length < 1 + MAX_CONTINUATIONS && step.kind === "agent") {
+    return dispatchStep(deps, loaded, recipe, step, {
+      continuation: { ...(run.reports.find((report) => report.stepId === step.id) === undefined ? {} : { ownReport: run.reports.find((report) => report.stepId === step.id)!.text }), lines: toTell.map(outcomeLine), told: toTell.map((record) => record.approvalId) },
+    });
+  }
+  return stepDone(deps, loaded, recipe, step, branch);
+}
+
+/** The step is done: the run moves on (the next step is dispatched by the caller's advance) or, past the last step, ends COMPLETE. */
+async function stepDone(deps: AgentRunEngineDependencies, loaded: Loaded, recipe: ResolvedRecipe, step: ResolvedStep, branch?: string): Promise<boolean> {
+  const { task, run } = loaded;
+  const index = run.steps.findIndex((entry) => entry.id === step.id);
+  const steps = withStep(run, step.id, { status: "done" });
+  const last = index === run.steps.length - 1;
+  const chosen = branch !== undefined && step.id === lastAgentStepId(recipe) && run.resultContract?.branches.some((entry) => entry.id === branch) === true ? branch : undefined;
+  const next: Omit<AgentRunState, "revision"> = { ...withoutFields(run), state: "RUNNING", steps, cursor: Math.min(index + 1, run.steps.length), ...(chosen === undefined ? {} : { branch: chosen }) };
+  if (last) {
+    return endRun(deps, { task, run }, { state: "COMPLETE", ...(run.reports.at(-1) === undefined ? {} : { finalReport: run.reports.at(-1)!.text }), ...(chosen === undefined ? {} : { branch: chosen }) });
+  }
+  return commitOrLost(deps, [putRun(deps, task.taskId, run, next), eventItem(deps, task, run.revision + 1, `${step.name} is done.`), dispatchRow(deps, task, run.revision + 1, 0)]);
+}
+
+/**
+ * The worker's result for a step's operation. Hears each operation once: a result for an operation that is not the step's latest, or a step that is no longer
+ * running, changes nothing. A successful step whose calls asked for write approvals waits for them (the run is WAITING_FOR_APPROVAL), or, when they were all
+ * decided while it ran, goes on at once with what came of each; any other successful step is done and the run goes on to the next. A step that ran out of
+ * budget pauses the run; a failed or interrupted one fails it; a cancelled one cancels it.
+ */
+export async function onAgentStepFinished(deps: AgentRunEngineDependencies, input: AgentStepFinished): Promise<void> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const loaded = await load(deps, input.taskId);
+    if (loaded === undefined) return;
+    const { task, run } = loaded;
+    const state = run.steps.find((entry) => entry.operationIds.at(-1) === input.operationId);
+    if (state === undefined || state.status !== "running" || ENDED.has(run.state)) return;
+    const recipe = await recipeOf(deps, task);
+    const step = stepOf(recipe, state.id);
+    if (step === undefined) return;
+    if (input.outcome === "CANCELLED") {
+      if (await endRun(deps, loaded, { state: "CANCELLED", reason: CANCELLED_REASON })) return;
+      continue;
+    }
+    if (input.outcome === "budget_exhausted") {
+      if (await pauseRun(deps, loaded, state.id)) return;
+      continue;
+    }
+    if (input.outcome === "FAILED" || input.outcome === "INTERRUPTED") {
+      const reason = input.outcome === "INTERRUPTED" ? "The step was interrupted before it finished." : shownText(input.error ?? "The step failed.", 400);
+      if (input.error === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? await pauseRun(deps, loaded, state.id) : await endRun(deps, loaded, { state: "FAILED", reason })) return;
+      continue;
+    }
+    const text = reportText(input.report);
+    if (text === undefined) {
+      if (await endRun(deps, loaded, { state: "FAILED", reason: FAILED_NO_REPORT })) return;
+      continue;
+    }
+    const host = hostOf(deps);
+    const reportKey = host.saveReport === undefined ? undefined : await host.saveReport({ task, operationId: input.operationId, stepId: state.id, text }).catch((error: unknown) => {
+      log(deps, "agent_run.report_not_kept", { taskId: task.taskId, error: errorNameOf(error) });
+      return undefined;
+    });
+    const reported: AgentRunState = { ...run, reports: withReport(run, step, text), steps: withStep(run, state.id, reportKey === undefined ? {} : { reportKey }) };
+    const approvals = (await taskApprovals(deps, task, reported)).filter((record): record is WriteApprovalRecord => record.kind === "write" && record.subject.stepId === state.id);
+    const open = approvals.filter(isOpen);
+    if (open.length > 0) {
+      const next: Omit<AgentRunState, "revision"> = {
+        ...withoutFields(reported), state: "WAITING_FOR_APPROVAL",
+        steps: withStep(reported, state.id, { status: "waiting", approvalIds: approvals.map((record) => record.approvalId) }),
+      };
+      if (!await commitOrLost(deps, [putRun(deps, task.taskId, run, next), eventItem(deps, task, run.revision + 1, `${step.name} is waiting for ${String(open.length)} ${open.length === 1 ? "action" : "actions"} to be approved.`), dispatchRow(deps, task, run.revision + 1, WAITING_WATCHDOG_MS)])) continue;
+      return;
+    }
+    // Every approval the step asked for is decided: the report goes into the transaction that moves the step on (its continuation, or the next step).
+    const withApprovals: AgentRunState = { ...reported, steps: withStep(reported, state.id, { approvalIds: approvals.map((record) => record.approvalId) }) };
+    const moved = await afterApprovals(deps, { task, run: withApprovals }, recipe, step, approvals, input.branch);
+    if (!moved) continue;
+    await advanceAgentRun(deps, task.taskId);
+    return;
+  }
+}
+
+// ---- a budget pause
+
+/** The step ran out of budget: the step is to run again, the run is PAUSED_BUDGET and the pause handlers hear it (not the end handlers). */
+async function pauseRun(deps: AgentRunEngineDependencies, loaded: Loaded, stepId: string): Promise<boolean> {
+  const { task, run } = loaded;
+  const scope: PauseScope = task.budgetPause?.scope ?? { kind: "task", taskId: task.taskId };
+  const next: Omit<AgentRunState, "revision"> = { ...withoutFields(run), state: "PAUSED_BUDGET", steps: withStep(run, stepId, { status: "pending" }), pause: { scope, at: iso(deps.now()) } };
+  if (!await commitOrLost(deps, [putRun(deps, task.taskId, run, next), eventItem(deps, task, run.revision + 1, "The run is paused: its budget ran out."), dispatchRow(deps, task, run.revision + 1, 0)])) return false;
+  await notifyPause(deps, { task, run: { ...next, revision: run.revision + 1 } });
+  return true;
+}
+
+/** Tells the pause handlers once; the row stays until they have been told. */
+async function notifyPause(deps: AgentRunEngineDependencies, loaded: Loaded): Promise<void> {
+  const { task, run } = loaded;
+  if (run.state !== "PAUSED_BUDGET" || run.pause === undefined) return;
+  if (run.pause.notifiedAt === undefined) {
+    await onTaskPaused({ ...deps, agentRuns: hostOf(deps) }, task, run.pause.scope as PauseScope);
+    const next: Omit<AgentRunState, "revision"> = { ...withoutFields(run), pause: { ...run.pause, notifiedAt: iso(deps.now()) } };
+    await commitOrLost(deps, [putRun(deps, task.taskId, run, next)]);
+  }
+  await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: agentRunDispatchKey(task.taskId) }));
+}
+
+// ---- an approval was decided
+
+/**
+ * The subject handler for `agent_run` approvals (registered for `write` and `step` records). The approvals core calls it up to 8 times for one decision, so it
+ * changes nothing the second time:
+ *   - a step approval that was APPROVED lets the run go on; DECLINED or EXPIRED ends it CANCELLED, with `<step name> declined: <prompt>` or `... expired: ...`;
+ *   - a write approval for a step that waits: once every approval the step asked for is decided, the same step runs again with one line for each (see
+ *     `outcomeLine`) and its report replaces the step's;
+ *   - a write approval for a step that still runs, or a run that is over, is not the handler's business (the step hears it when it ends).
+ * An approval of a task or run it does not know is ignored.
+ */
 export async function onWriteDecided(deps: AgentRunEngineDependencies, record: AnyApprovalRecord): Promise<void> {
-  void deps; void record;
-  throw new Error("not implemented");
+  if (record.kind === "change" || record.subject.kind !== "agent_run") return;
+  const subject = record.subject as { taskId?: string; stepId?: string };
+  if (typeof subject.taskId !== "string" || typeof subject.stepId !== "string") return;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const loaded = await load(deps, subject.taskId, record.orgId);
+    if (loaded === undefined) return;
+    const { task, run } = loaded;
+    const state = run.steps.find((entry) => entry.id === subject.stepId);
+    if (state === undefined || state.status !== "waiting" || ENDED.has(run.state)) return;
+    const recipe = await recipeOf(deps, task);
+    const step = stepOf(recipe, state.id);
+    if (step === undefined) return;
+    if (record.kind === "step") {
+      if (!state.approvalIds.includes(record.approvalId)) return;
+      if (record.status === "APPROVED") {
+        if (!await stepDone(deps, loaded, recipe, step)) continue;
+        await advanceAgentRun(deps, task.taskId);
+        return;
+      }
+      if (record.status === "DECLINED" || record.status === "EXPIRED") {
+        if (await endRun(deps, loaded, { state: "CANCELLED", reason: `${step.name} ${record.status === "DECLINED" ? "declined" : "expired"}: ${record.prompt}` })) return;
+        continue;
+      }
+      return;
+    }
+    const approvals = (await taskApprovals(deps, task, run)).filter((entry): entry is WriteApprovalRecord => entry.kind === "write" && entry.subject.stepId === state.id);
+    if (approvals.some(isOpen)) return;
+    // The step runs again (or is done) in the one transaction that takes the run out of its waiting state.
+    if (!await afterApprovals(deps, loaded, recipe, step, approvals)) continue;
+    await advanceAgentRun(deps, task.taskId);
+    return;
+  }
 }
+
+/**
+ * `approval.handler_gave_up` (Task 21's sweep stopped trying to tell the handler about a decision): the run can't be taken up again from that approval, so
+ * it fails with a clear reason and the owner finds it on the task. It must never hang.
+ */
+export async function onApprovalGaveUp(deps: AgentRunEngineDependencies, record: AnyApprovalRecord): Promise<void> {
+  if (record.kind === "change" || record.subject.kind !== "agent_run") return;
+  const taskId = (record.subject as { taskId?: string }).taskId;
+  if (typeof taskId !== "string") return;
+  const loaded = await load(deps, taskId, record.orgId);
+  if (loaded === undefined || ENDED.has(loaded.run.state)) return;
+  await endRun(deps, loaded, { state: "FAILED", reason: GAVE_UP_REASON });
+}
+
+registerApprovalSubjectHandler("agent_run", (deps, record) => onWriteDecided(deps as AgentRunEngineDependencies, record));
+registerApprovalGaveUpHandler("agent_run", (deps, record) => onApprovalGaveUp(deps as AgentRunEngineDependencies, record));
+
+// ---- cancelling
+
+/** Ends the run CANCELLED now, whatever it is doing, when nothing is running for it to wait for (a cancel of a run that waits, or between steps). */
+export async function cancelAgentRun(deps: AgentRunEngineDependencies, taskId: string, reason = CANCELLED_REASON): Promise<boolean> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const loaded = await load(deps, taskId);
+    if (loaded === undefined) return false;
+    if (ENDED.has(loaded.run.state)) {
+      await finishEnd(deps, loaded);
+      return false;
+    }
+    if (await endRun(deps, loaded, { state: "CANCELLED", reason })) return true;
+  }
+  return false;
+}
+
+// ---- driven by the sweep or by a result
+
+/** Writes the run's dispatch row again, due `inMs` from now: the run is looked at then, not before. */
+async function rearm(deps: AgentRunEngineDependencies, task: DeveloperTaskRecord, run: AgentRunState, inMs: number): Promise<void> {
+  const item = agentRunDispatchItem(deps.tableName, { taskId: task.taskId, orgId: task.orgId as string, revision: run.revision, dueAt: iso(deps.now() + inMs), now: iso(deps.now()) });
+  await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: (item as { Put: { Item: Record<string, unknown> } }).Put.Item }));
+}
+
+/** The prepare operation of the task's workspace, for a run whose preparation did not succeed. */
+async function preparation(deps: AgentRunEngineDependencies, task: DeveloperTaskRecord): Promise<{ status: string; error?: string } | undefined> {
+  const page = await deps.documentClient.send(new QueryCommand({
+    TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", FilterExpression: "kind = :prepare",
+    ExpressionAttributeValues: { ":pk": `WORKSPACE#${task.workspaceId}`, ":prefix": "OPERATION#", ":prepare": "prepare" }, ConsistentRead: true,
+  })) as { Items?: Array<{ status?: unknown; error?: unknown }> };
+  const prepare = page.Items?.[0];
+  return prepare === undefined ? undefined : { status: String(prepare.status), ...(typeof prepare.error === "string" ? { error: prepare.error } : {}) };
+}
+
+/**
+ * A run that waits whose approvals have all been decided without anyone going on from them (the handler was not told, or gave up and its hook failed): the
+ * handler's own work is done now, from the records. A step approval that was decided and a step whose write approvals are all closed are the cases.
+ */
+async function reconcileWaiting(deps: AgentRunEngineDependencies, loaded: Loaded): Promise<void> {
+  const { task, run } = loaded;
+  const waiting = run.steps.find((step) => step.status === "waiting");
+  if (waiting === undefined) return;
+  const approvals = await taskApprovals(deps, task, run);
+  const mine = approvals.filter((record) => (record.subject as { stepId?: unknown }).stepId === waiting.id);
+  const decided = mine.find((record) => record.status !== "PENDING" && record.status !== "EXECUTING");
+  if (decided !== undefined && !mine.some(isOpen)) await onWriteDecided(deps, decided);
+}
+
+/**
+ * What the dispatch row runs. First the end of a run that already ended (its follow-up may not have been done), then the pause's notice, then a preparation
+ * that failed, then the step's own result when the operation has ended but nothing heard it (the callback was lost), then the approvals that were decided
+ * without anyone going on from them, then the next step. A step whose operation is still running is left, and the row is looked at again after its
+ * watchdog; a run that waits for a person is looked at again after six hours.
+ */
+export async function driveAgentRun(deps: AgentRunEngineDependencies, taskId: string): Promise<"DONE" | "WAIT" | "STALE"> {
+  const loaded = await load(deps, taskId);
+  if (loaded === undefined) {
+    await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: agentRunDispatchKey(taskId) }));
+    return "STALE";
+  }
+  const { task, run } = loaded;
+  if (ENDED.has(run.state)) {
+    await finishEnd(deps, loaded);
+    return "DONE";
+  }
+  if (run.state === "PAUSED_BUDGET") {
+    if (task.budgetPause !== undefined) {
+      await notifyPause(deps, loaded);
+      return "DONE";
+    }
+    await advanceAgentRun(deps, taskId);
+  } else if (run.state === "WAITING_FOR_APPROVAL") {
+    await reconcileWaiting(deps, loaded);
+  } else {
+    if (run.steps.every((step) => step.operationIds.length === 0)) {
+      const workspace = await getItem<{ status?: unknown }>(deps, { pk: `WORKSPACE#${task.workspaceId}`, sk: "META" });
+      if (workspace?.status === "PREPARATION_FAILED") {
+        const prepare = await preparation(deps, task);
+        const cancelled = prepare?.status === "CANCELLED";
+        await endRun(deps, loaded, { state: cancelled ? "CANCELLED" : "FAILED", reason: cancelled ? CANCELLED_REASON : shownText(prepare?.error ?? "The workspace could not be prepared, so the run could not start.", 400) });
+        return "DONE";
+      }
+    }
+    for (const step of run.steps.filter((entry) => entry.status === "running")) {
+      const operationId = step.operationIds.at(-1)!;
+      const operation = await getItem<Record<string, unknown>>(deps, { pk: `WORKSPACE#${task.workspaceId}`, sk: `OPERATION#${operationId}` });
+      if (operation === undefined) continue;
+      const status = String(operation["status"]);
+      if (!["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"].includes(status)) continue;
+      const result = (operation["result"] ?? undefined) as { agentStepResult?: { report?: unknown; branch?: unknown } } | undefined;
+      const error = typeof operation["error"] === "string" ? operation["error"] : undefined;
+      await onAgentStepFinished(deps, {
+        taskId, operationId, outcome: status as AgentStepFinished["outcome"],
+        ...(typeof result?.agentStepResult?.report === "string" ? { report: result.agentStepResult.report } : {}),
+        ...(typeof result?.agentStepResult?.branch === "string" ? { branch: result.agentStepResult.branch } : {}),
+        ...(error === undefined ? {} : { error }),
+      });
+    }
+    await advanceAgentRun(deps, taskId);
+  }
+  const after = await load(deps, taskId);
+  if (after === undefined) return "STALE";
+  if (ENDED.has(after.run.state)) {
+    await finishEnd(deps, after);
+    return "DONE";
+  }
+  if (after.run.state === "PAUSED_BUDGET") return "DONE";
+  // Nothing more to do now: the row is due again when the watchdog says, not at the next sweep.
+  const stepRunning = after.run.steps.find((step) => step.status === "running");
+  await rearm(deps, after.task, after.run, after.run.state === "WAITING_FOR_APPROVAL" ? WAITING_WATCHDOG_MS : (stepRunning === undefined ? 2 * MINUTE : 30 * MINUTE));
+  return "WAIT";
+}
+
+/** Gives a run the sweep could not take forward a clear end: the row ran out of tries. */
+export async function giveUpAgentRun(deps: AgentRunEngineDependencies, taskId: string): Promise<void> {
+  const loaded = await load(deps, taskId);
+  if (loaded === undefined) {
+    await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: agentRunDispatchKey(taskId) }));
+    return;
+  }
+  if (ENDED.has(loaded.run.state)) {
+    await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: agentRunDispatchKey(taskId) }));
+    return;
+  }
+  await endRun(deps, loaded, { state: "FAILED", reason: "Rovara couldn't continue this run. Start it again." });
+}
+
+// ---- what the task shows
+
+/** The run as the task view shows it; `confirmOrigin` is where approvals are decided. Undefined for a task with no run (or another org's). */
+export async function agentRunView(deps: Pick<ApprovalDependencies, "documentClient" | "tableName" | "now" | "log">, task: DeveloperTaskRecord, confirmOrigin?: string): Promise<{
+  state: AgentRunState["state"]; currentStep?: { id: string; name: string };
+  steps: Array<{ id: string; name: string; status: AgentRunState["steps"][number]["status"]; report?: string }>;
+  pendingApprovals: Array<{ approvalId: string; kind: "write" | "step"; text: string; confirmUrl?: string }>;
+  finalReport?: string; branch?: string; endReason?: string;
+} | undefined> {
+  const engine = deps as AgentRunEngineDependencies;
+  const loaded = await load(engine, task.taskId, task.orgId as OrgId);
+  if (loaded === undefined) return undefined;
+  const { run } = loaded;
+  const recipe = await recipeOf(engine, task).catch(() => undefined);
+  const nameOf = (id: string): string => (recipe === undefined ? undefined : stepOf(recipe, id)?.name) ?? id;
+  const current = ENDED.has(run.state) ? undefined : run.steps.find((step) => step.status !== "done");
+  const pending = ENDED.has(run.state) ? [] : (await taskApprovals(engine, task, run)).filter((record) => record.status === "PENDING");
+  return {
+    state: run.state,
+    ...(current === undefined ? {} : { currentStep: { id: current.id, name: nameOf(current.id) } }),
+    steps: run.steps.map((step) => {
+      const report = run.reports.find((entry) => entry.stepId === step.id)?.text;
+      return { id: step.id, name: nameOf(step.id), status: step.status, ...(report === undefined ? {} : { report: shownReport(report) }) };
+    }),
+    pendingApprovals: pending.flatMap((record) => (record.kind === "write" || record.kind === "step") ? [{
+      approvalId: record.approvalId, kind: record.kind, text: record.kind === "write" ? record.summary : (record as StepApprovalRecord).prompt,
+      ...(confirmOrigin === undefined ? {} : { confirmUrl: `${confirmOrigin}/v1/app/approve/${record.approvalId}` }),
+    }] : []),
+    ...(run.finalReport === undefined ? {} : { finalReport: run.finalReport }),
+    ...(run.branch === undefined ? {} : { branch: run.branch }),
+    ...(run.endReason === undefined ? {} : { endReason: run.endReason }),
+  };
+}
+
+/** A step's report in the view is cut to 8 KiB (the whole one is the task's artifact), so a run of many steps stays a view a client can read. */
+const shownReport = (text: string): string => shortenToBytes(text, 8192);
+
+/** The approval events of a task (Task 21 writes one per write approval, in the task's own partition), as the view's events; another org's items are left out. */
+export async function taskLevelEvents(deps: Pick<ApprovalDependencies, "documentClient" | "tableName">, task: DeveloperTaskRecord): Promise<Array<{ at: string; kind: "status" | "error"; text: string }>> {
+  const events: Array<{ at: string; kind: "status" | "error"; text: string }> = [];
+  let start: Record<string, unknown> | undefined;
+  for (let pages = 0; pages < 5; pages += 1) {
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": `DEVTASK#${task.taskId}`, ":prefix": "EVENT#" },
+      ConsistentRead: true, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of page.Items ?? []) {
+      if (item["orgId"] !== task.orgId || typeof item["text"] !== "string" || typeof item["at"] !== "string") continue;
+      events.push({ at: item["at"], kind: item["kind"] === "error" ? "error" : "status", text: item["text"] });
+    }
+    start = page.LastEvaluatedKey;
+    if (start === undefined) break;
+  }
+  return events.sort((left, right) => left.at.localeCompare(right.at));
+}
+
+export { WORKFLOW_DISPATCH_PK };
+export type { DeveloperTaskActions };

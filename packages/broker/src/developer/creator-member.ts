@@ -5,7 +5,8 @@
 // tombstone present (OrgStore writes it in the same transaction): a person with no member record and no tombstone never joined. Their workspaces are left to the idle reaper.
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { OrgIdSchema, agentXError, orgMemberKey, orgMetaKey, orgRemovedKey, type OrgId } from "@agentx/contracts";
-import { taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "./task-records.js";
+import { hasTaskEndHandlers, onTaskEnded } from "../agents/task-end.js";
+import { taskAgentRunKey, taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "./task-records.js";
 
 export interface CreatorCheckDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -47,10 +48,25 @@ export async function requireCreatorStillMember(deps: CreatorCheckDependencies, 
       ExpressionAttributeNames: { "#outcome": "outcome" },
       ExpressionAttributeValues: { ":outcome": "creator_removed", ":reason": message, ":at": new Date((deps.now ?? Date.now)()).toISOString() },
     }));
+    await tellRemoved(deps, task);
   } catch (error) {
     if ((error instanceof Error ? error.name : undefined) !== "ConditionalCheckFailedException") throw error;
   }
   throw agentXError("TASK_ACCESS_DENIED", message);
+}
+
+/**
+ * The task ended because its creator was removed (G7): the end handlers hear it, once. An agent-step run's end is told by its engine, which ends the run
+ * right after this check refuses. Never throws: the end is recorded already, and the handlers are told again by the next call that reaches the task's end.
+ */
+async function tellRemoved(deps: CreatorCheckDependencies, task: DeveloperTaskRecord): Promise<void> {
+  if (!hasTaskEndHandlers()) return;
+  try {
+    if (task.agent !== undefined && await readConsistent(deps, taskAgentRunKey(task.taskId)) !== undefined) return;
+    await onTaskEnded({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now ?? Date.now }, task, "creator_removed");
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "task_end.not_told", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
+  }
 }
 
 /**

@@ -88,8 +88,6 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
   modelSources?: ModelSourceRouteDependencies;
   /** Reads a pull request's head commit for a run whose context names one (Task 15); the broker supplies the GitHub App's. */
   pullRequestHead?: PullRequestHeadReader;
-  /** Task 22 removes this with the refusal it lifts: whether a run of an agent made of agent steps may start (see AgentRunDependencies). */
-  agentStepRuns?: boolean;
   /** Task 12b: the org's connections (`/v1/app/connections*`). Without it (no connection secrets role) those routes answer NOT_FOUND. */
   connections?: ConnectionRouteDependencies["store"];
   /** Starts a person's run (Task 15). The developer API supplies it, since it holds the task start; without it the route answers NOT_FOUND. */

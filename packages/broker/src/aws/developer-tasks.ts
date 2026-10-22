@@ -26,6 +26,7 @@ import {
   DEVELOPER_TASK_LIST_DEFAULT,
   DEVELOPER_TASK_LIST_MAX,
   DEVELOPER_TASK_SUMMARY_MAX,
+  DEVELOPER_FAILURE_MESSAGE_MAX,
   DeveloperPullRequestRequestSchema,
   DeveloperTaskActionRequestSchema,
   DeveloperTaskCloseRequestSchema,
@@ -49,11 +50,13 @@ import {
   developerTaskPolicy,
   diffStat,
   lastAssistantResponse,
+  redactAndCap,
   redactText,
   sharedTaskKey,
   taskTitle,
   type DeveloperCloseResponse,
   type DeveloperPullRequestResponse,
+  type DeveloperTaskFailure,
   type DeveloperTaskListItem,
   type DeveloperTaskPolicy,
   type DeveloperTaskShare,
@@ -222,6 +225,8 @@ import type { TaskPeopleDisplayAdmission } from "../developer/task-people-displa
 import { requireCreatorStillMember } from "../developer/creator-member.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
 import { prepareRun, readRunRequest, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
+import { agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
+import { onTaskEnded, type TaskEndOutcome } from "../agents/task-end.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -287,6 +292,8 @@ export interface DeveloperTaskRouteDependencies {
    * up: a start then names no agent, and the task is the plain task it always was, with no recipe stored.
    */
   agentRuns?: AgentRunDependencies;
+  /** Plan 3, Task 22: the agent-step engine's dependencies (the same object as `agentRuns` where agents are set up); a cancel of a run that waits ends the run through it. */
+  agentEngine?: AgentRunEngineDependencies;
 }
 
 /** Ruling R60: refuses a task whose creator is no longer a member of its org, before any other access check (see developer/creator-member.ts). */
@@ -1236,6 +1243,16 @@ async function workspaceReads(deps: DeveloperTaskRouteDependencies, task: Develo
   return { workspace, operations };
 }
 
+/** A task's derived status once its agent-step run is known: the run's state decides, except that a paused run keeps the budget failure its last operation shows. */
+function statusOfRun<T extends { status: DeveloperTaskStatus; failure?: DeveloperTaskFailure | undefined }>(derived: T, run: NonNullable<DeveloperTaskView["run"]>, task: DeveloperTaskRecord): T {
+  if (task.closedAt !== undefined) return derived;
+  if (run.state === "COMPLETE") return { ...derived, status: "SUCCEEDED", failure: undefined };
+  if (run.state === "CANCELLED") return { ...derived, status: "CANCELLED", failure: undefined };
+  if (run.state === "FAILED") return { ...derived, status: "FAILED", failure: { category: "task_failed", message: redactAndCap(run.endReason ?? "The run failed.", DEVELOPER_FAILURE_MESSAGE_MAX).text } };
+  if ((run.state === "RUNNING" || run.state === "WAITING_FOR_APPROVAL") && derived.status === "SUCCEEDED") return { ...derived, status: "RUNNING" };
+  return derived;
+}
+
 /** The live view of a task (R4), with the result details once it has ended. Callers load the owned task first. */
 export async function taskView(
   deps: DeveloperTaskRouteDependencies,
@@ -1261,17 +1278,24 @@ export async function taskView(
   const readinessFailed = readinessOperation !== undefined && ["FAILED", "CANCELLED", "INTERRUPTED"].includes(readinessOperation.status);
   // A readiness resume is an internal compute warmup, not task work or a verification result. Keep
   // the task visibly starting and use its startup events until the broker admits the immutable round.
-  const derived = workflowWaitingForE2ECompute && readinessOperation !== undefined
+  const derivedWithE2E = workflowWaitingForE2ECompute && readinessOperation !== undefined
     ? readinessFailed
       ? { ...derivedBase, status: "FAILED" as const, current: readinessOperation,
         failure: { category: "task_failed" as const, message: "E2E compute readiness failed; no feature round was admitted." } }
       : { ...derivedBase, status: "STARTING" as const, current: readinessOperation, failure: undefined }
     : derivedBase;
+  // Plan 3, Task 22: an agent-step run's status is the run's, not the last operation's (a step that finished is not a run that finished).
+  const run = task.agent === undefined ? undefined : await agentRunView({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, task, deps.issuer === undefined ? undefined : new URL(deps.issuer).origin);
+  const derived = run === undefined ? derivedWithE2E : statusOfRun(derivedWithE2E, run, task);
   // #225: a task whose setup failed shows its prepare's events (the failure the broker recorded).
   const eventsOf = derived.current ?? derived.failedPrepare;
-  const events = eventsOf === undefined || options.events === 0
+  const operationEvents = eventsOf === undefined || options.events === 0
     ? []
     : recentTaskEvents(await deps.actions.eventsNewestFirst(eventsOf.id, 200), options.events);
+  // The run's own events and the approval events of its steps (Task 21 writes them in the task's partition) are the task's too.
+  const events = run === undefined || options.events === 0
+    ? operationEvents
+    : [...operationEvents, ...await taskLevelEvents({ documentClient: deps.documentClient, tableName: deps.tableName }, task)].sort((left, right) => left.at.localeCompare(right.at)).slice(-options.events);
   const details = options.details && derived.status !== "STARTING" && derived.status !== "RUNNING" ? await taskDetails(deps, task, operations) : {};
   // C15: only the full read shows channel turns, and a storage problem never breaks it.
   let channelTurns: DeveloperTaskView["channelTurns"];
@@ -1339,6 +1363,7 @@ export async function taskView(
     ...(task.share === undefined ? {} : { share: shareView(task.share) }),
     ...(derived.closing ? { closing: true } : {}),
     ...(task.agent === undefined ? {} : { agent: { agentId: task.agent.agentId, name: task.agent.name, version: task.agent.version, builtin: task.agent.builtin } }),
+    ...(run === undefined ? {} : { run }),
     createdAt: task.createdAt,
     // #225: a failed setup's task changed when its prepare ended, not when it was made.
     updatedAt: derived.failedPrepare?.updatedAt !== undefined && derived.failedPrepare.updatedAt > task.updatedAt ? derived.failedPrepare.updatedAt : derived.current?.createdAt ?? task.updatedAt,
@@ -1602,7 +1627,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   if (full !== undefined) return refused(await limitError(deps, caller, full, limits));
 
   const identity = developerTaskIdentity({ taskId, developerId: caller.developerId, provider: caller.amr, developerName: caller.name, client }, deps.orgId);
-  const preparation = await deps.actions.preparation(identity, project, request.requestId);
+  const preparation = await deps.actions.preparation(identity, project, request.requestId, prepared === undefined || prepared.checkout.length === 0 ? undefined : { checkout: prepared.checkout });
   const workspaceId = preparation.workspace.id;
   const conversationId = randomUUID();
   const revision = project.definition.revision;
@@ -5191,6 +5216,15 @@ async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: Develope
         if (!isConditional(error)) turnRecordFailed(deps, error);
       }
     }
+    // An agent-step run that waits (for a person, or between two steps) has nothing running for the cancel to stop: the run itself ends (Plan 3, Task 22).
+    // One whose step is running ends when that step's cancel result comes. Ended runs are left as they are.
+    if (outcome === "NOTHING_RUNNING" && task.agent !== undefined && deps.agentEngine !== undefined) {
+      try {
+        await cancelAgentRun(deps.agentEngine, task.taskId, "Cancelled by the person who started it.");
+      } catch (error) {
+        log(deps, { event: "agent_run.cancel_failed", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
+      }
+    }
   }
   const view = await taskView(deps, task, { events: 0, details: false });
   await syncIndex(deps, task, view.status, view.updatedAt);
@@ -5373,9 +5407,29 @@ export async function finishTaskClose(
  * step and has no pull request step also ends CLOSED, with the outcome PASSED, but its code was never published: it is
  * not released here: its workspace and the owner's task slot are kept until the owner closes the task (an owner action, which works on this ending).
  */
-export function workflowTaskFinished(task: Pick<DeveloperTaskRecord, "workflow">): boolean {
+export function workflowTaskFinished(task: Pick<DeveloperTaskRecord, "workflow"> & Partial<Pick<DeveloperTaskRecord, "agentRunEnd">>): boolean {
+  // An agent-step run that ended (completed, failed or cancelled) is finished the same way (Plan 3, Task 22).
+  if (task.agentRunEnd !== undefined) return true;
   const workflow = task.workflow;
   return workflow?.state === "COMPLETE" && ((workflow.stage === "MERGED" && workflow.outcome === "MERGED") || (workflow.stage === "CLOSED" && workflow.outcome !== "PASSED"));
+}
+
+/** How a finished workflow task ended, for the end handlers: merged, passed every step of its own sequence, or closed (its plan rejected). */
+export function workflowEndOutcome(task: Pick<DeveloperTaskRecord, "workflow">): TaskEndOutcome | undefined {
+  const workflow = task.workflow;
+  if (workflow?.state !== "COMPLETE") return undefined;
+  if (workflow.stage === "MERGED" && workflow.outcome === "MERGED") return "merged";
+  if (workflow.stage === "CLOSED") return workflow.outcome === "PASSED" ? "succeeded" : "closed";
+  return undefined;
+}
+
+/** Tells the end handlers a task ended (Plan 3, G7). Never throws: the ending it follows is done, and a handler that failed is taken up again by the next call that reaches it. */
+export async function noteTaskEnded(deps: { tableName: string; documentClient: { send(command: unknown): Promise<unknown> } }, task: DeveloperTaskRecord, outcome: TaskEndOutcome): Promise<void> {
+  try {
+    await onTaskEnded({ documentClient: deps.documentClient, tableName: deps.tableName, now: Date.now }, task, outcome);
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "task_end.not_told", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
+  }
 }
 
 /** Workspace states whose compute a finished task can remove: nothing is starting, stopping, closing or running there. */
@@ -5408,6 +5462,11 @@ function releaseTurnId(taskId: string): string {
 export async function releaseFinishedTask(deps: ReleaseDeps, task: DeveloperTaskRecord): Promise<FinishedTaskRelease> {
   const closed = task.closedAt !== undefined;
   if (!closed && !workflowTaskFinished(task)) return "not_finished";
+  // A merged or closed workflow task has ended: its end handlers hear it (an agent-step run's end is told by its engine).
+  if (!closed && task.agentRunEnd === undefined) {
+    const outcome = workflowEndOutcome(task);
+    if (outcome !== undefined) await noteTaskEnded(deps, task, outcome);
+  }
   if (task.releasedAt !== undefined) return "already_released";
   let releaseWorkspace = false;
   if (!closed) {
@@ -5456,7 +5515,7 @@ export async function releaseFinishedTask(deps: ReleaseDeps, task: DeveloperTask
     }
   }
   const now = new Date().toISOString();
-  const reason = task.workflow?.stage !== "CLOSED" ? "its pull request merged" : task.workflow.outcome === "PASSED" ? "it finished every step" : "its plan was rejected";
+  const reason = task.agentRunEnd !== undefined ? "its run ended" : task.workflow?.stage !== "CLOSED" ? "its pull request merged" : task.workflow.outcome === "PASSED" ? "it finished every step" : "its plan was rejected";
   const rest = (): TransactItems => [
     ...(releaseWorkspace ? [{ Update: {
       TableName: deps.tableName,

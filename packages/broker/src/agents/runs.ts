@@ -64,11 +64,6 @@ export type PullRequestHeadReader = (input: { orgId: OrgId; repositoryUrl: strin
 export interface AgentRunDependencies extends RosterDependencies {
   /** Without it, a run whose context names a pull request of a project repository is refused (it fails closed: it never reviews the wrong commit). */
   pullRequestHead?: PullRequestHeadReader;
-  /**
-   * TASK 22 REMOVES THIS SEAM. Until the agent-step engine exists, a run of an agent made of agent steps would take a workspace, run its
-   * prepare and read as finished having done nothing, so it is refused before anything is written. Only the tests switch it on.
-   */
-  agentStepRuns?: boolean;
 }
 
 /** H2: a start that is not necessarily a person at a keyboard. */
@@ -262,11 +257,6 @@ export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunIn
   }
   const { recipe, digest, ref } = resolved;
   const runner = recipeRunner(recipe);
-  // TASK 22 REMOVES THIS REFUSAL (with `agentStepRuns`): nothing runs an agent step yet, so such a run is refused here. Resolving the agent above may
-  // have pinned a built-in's version for the org (an idempotent write); no task, workspace slot, charge or run record is written.
-  if (runner === "agent_steps" && deps.agentStepRuns !== true) {
-    throw agentXError("AGENT_UNAVAILABLE", `${ref.name} can't run yet: Rovara doesn't run agents that work in steps in this version.`);
-  }
   // The project's half of the model checks (the company's guardrails were checked while the agent was resolved): refused before any charge.
   requireStepModelsApproved(recipe, ref, input.project, input.projectApproved);
   // A coding run is asked the text as written; an agent-step run keeps its input as state, so it must be a run input.

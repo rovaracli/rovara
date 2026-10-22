@@ -8,7 +8,7 @@ import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf, decisionProofOf } from "../audit/plan3-hooks.js";
 import { sameMember } from "./lifecycle.js";
-import { type AnyApprovalRecord, type ApprovalCaller, type ApprovalDependencies, type ApprovalStatus, DUE_SK, MAX_APPROVAL_ATTEMPTS, PAGE_LIMIT, RETRY_MS, type TransactItem, type WriteApprovalRecord, approverDrops, commitOrLost, counterDrop, dropItem, dueItems, errorNameOf, forbiddenText, getAnyApproval, getApprovalSubjectHandler, hasHandlerPhase, iso, log, mayDecideApproval, parseDecideBody, shownText, stripCode, updateRecord, withFields } from "./approvals-store.js";
+import { type AnyApprovalRecord, type ApprovalCaller, type ApprovalDependencies, type ApprovalStatus, DUE_SK, MAX_APPROVAL_ATTEMPTS, PAGE_LIMIT, RETRY_MS, type TransactItem, type WriteApprovalRecord, approverDrops, commitOrLost, counterDrop, dropItem, dueItems, errorNameOf, forbiddenText, getAnyApproval, getApprovalGaveUpHandler, getApprovalSubjectHandler, hasHandlerPhase, iso, log, mayDecideApproval, parseDecideBody, shownText, stripCode, updateRecord, withFields } from "./approvals-store.js";
 
 // ---- deciding
 
@@ -100,8 +100,21 @@ async function deferHandler(deps: ApprovalDependencies, record: AnyApprovalRecor
     const when: Array<[string, unknown]> = [["status", record.status], ["handlerDone", false]];
     if (counts && tries >= MAX_HANDLER_TRIES) {
       log(deps, "approval.handler_gave_up", { orgId: record.orgId, approvalId: record.approvalId, kind: record.subject.kind, tries });
-      await commitOrLost(deps, [updateRecord(deps, record, { handlerDone: true, handlerTries: tries }, when), ...dueItems(deps, record, [record.handlerDueAt, claimDue].filter((at): at is string => at !== undefined), undefined)]);
-      return;
+      // Whoever waits on this decision is told it will not come (Task 22 fails the run); only once that is done is the record let go. If it fails, the sweep tries again.
+      let told = true;
+      const hook = getApprovalGaveUpHandler(record.subject.kind);
+      if (hook !== undefined) {
+        try {
+          await hook(deps, record);
+        } catch (error) {
+          told = false;
+          log(deps, "approval.gave_up_hook_failed", { orgId: record.orgId, approvalId: record.approvalId, kind: record.subject.kind, error: errorNameOf(error) });
+        }
+      }
+      if (told) {
+        await commitOrLost(deps, [updateRecord(deps, record, { handlerDone: true, handlerTries: tries }, when), ...dueItems(deps, record, [record.handlerDueAt, claimDue].filter((at): at is string => at !== undefined), undefined)]);
+        return;
+      }
     }
     const dueAt = iso(now + Math.min(MAX_HANDLER_DELAY_MS, RETRY_MS * 2 ** Math.max(0, tries - 1)));
     await commitOrLost(deps, [updateRecord(deps, record, { handlerTries: tries, handlerDueAt: dueAt }, when), ...dueItems(deps, record, [record.handlerDueAt, claimDue].filter((at): at is string => at !== undefined), dueAt)]);
@@ -254,6 +267,16 @@ async function expireOne(deps: ApprovalDependencies, record: AnyApprovalRecord):
   if (!await commitOrLost(deps, items)) return undefined;
   await flushAuditEvents(deps, events);
   return withFields(record, fields);
+}
+
+/**
+ * Ends a PENDING record now, as its time running out does (Task 22: a run that ended leaves nothing PENDING behind it). A record that is no longer PENDING is left
+ * as it is. Its handler is told by the sweep, as for any expiry.
+ */
+export async function expireApprovalNow(deps: ApprovalDependencies, record: AnyApprovalRecord): Promise<boolean> {
+  const current = await getAnyApproval(deps, record.orgId, record.approvalId);
+  if (current === undefined || current.status !== "PENDING") return false;
+  return await expireOne(deps, current) !== undefined;
 }
 
 /** Drives a record that stayed EXECUTING past the retry time again: claimed by a conditional update of `executingAt`, so two sweeps never both run it. */

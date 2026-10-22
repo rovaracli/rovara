@@ -3,6 +3,7 @@ import { WORKFLOW_BLOCK_REASONS, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, W
 import { releaseFailedPreparation } from "./failed-preparation.js";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { taskKey, taskPointerKey } from "../developer/task-records.js";
+import { wakeAgentRun } from "./agent-run-wakeup.js";
 
 /**
  * Fails an outbox record's operation for good: the operation becomes FAILED, the workspace is
@@ -74,6 +75,8 @@ export async function failOutboxOperation(
   if (record.invocation.kind === "prepare") await releaseFailedPreparation(documentClient, tableName, record.workspaceId);
   if (record.invocation.kind === "maintain") await blockFailedPullRequestUpdate(documentClient, tableName, record.workspaceId, record.operationId, error);
   if (record.invocation.kind === "task") await blockFailedWorkflowRun(documentClient, tableName, record.workspaceId, record.operationId);
+  // An agent-step run is not told by a callback: its engine is woken (Plan 3, Task 22).
+  if (record.invocation.kind === "task" || record.invocation.kind === "prepare") await wakeAgentRun(documentClient, tableName, record.workspaceId, record.operationId);
 }
 
 /** Why a workflow step stopped when its run ended FAILED or INTERRUPTED: the reason a failed result records too. */
@@ -209,6 +212,7 @@ export async function failActiveOperation(
     if (released === "PREPARATION_FAILED") await releaseFailedPreparation(documentClient, tableName, workspaceId);
     if (operation.kind === "maintain") await blockFailedPullRequestUpdate(documentClient, tableName, workspaceId, operationId, error);
     if (operation.kind === "task") await blockFailedWorkflowRun(documentClient, tableName, workspaceId, operationId);
+    if (operation.kind === "task" || operation.kind === "prepare") await wakeAgentRun(documentClient, tableName, workspaceId, operationId);
     return operationId;
   } catch (failure) {
     if (failure instanceof Error && failure.name === "TransactionCanceledException") return undefined;

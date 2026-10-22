@@ -17,6 +17,7 @@ import { resolveMember, sameMember } from "./lifecycle.js";
 import type { ResolveOptions } from "./store.js";
 import type { AgentRepositoryReader } from "../github-app.js";
 import type { DecideGuard, WriteGateRuntime } from "./write-gate.js";
+import type { AgentRunHost } from "./run-engine.js";
 
 /** What an agent's routes and the approvals that act on agents need: access checks, the store and where the page lives. */
 export interface ApprovalDependencies extends AgentAccessDeps {
@@ -39,6 +40,8 @@ export interface ApprovalDependencies extends AgentAccessDeps {
   requireDecide?: DecideGuard;
   /** Task 21a-wiring: the confirmation link for a token's member, with a decide ticket minted for them (after the same live check as `mayDecideApproval`); only `POST /v1/app/approvals/{id}/confirm-link` mints, a read never does. */
   mintConfirmUrl?: (caller: AgentCaller, approvalId: string) => Promise<string>;
+  /** Task 22: what the agent-step engine needs of the broker (dispatching a step's operation, the creator and recipe checks, the parts of a task's end). Without it a run cannot go on. */
+  agentRuns?: AgentRunHost;
 }
 
 /** The part of the dependencies the record's own writes need. */
@@ -201,6 +204,7 @@ export type ApprovalSubjectHandler = { handle(deps: ApprovalDependencies, record
 
 const rules = new Map<string, ApproverRuleCheck>();
 const handlers = new Map<string, ApprovalSubjectHandler>();
+const gaveUp = new Map<string, ApprovalSubjectHandler>();
 
 /** Registers (or replaces) the rule a record's `approvers` can name. */
 export function registerApproverRule(rule: string, eligible: ApproverRuleCheck): void {
@@ -212,6 +216,16 @@ export function registerApprovalSubjectHandler(kind: ChangeSubject["kind"] | App
   handlers.set(kind, handler);
 }
 
+/**
+ * Registers what is done when the sweep gives up telling a subject's handler about a decision (`MAX_HANDLER_TRIES` failures, `approval.handler_gave_up`):
+ * the subject can no longer be taken forward from that approval, so whoever waits on it must be able to stop waiting (Task 22 fails the run). The sweep
+ * gives up for good only once this has run; when it throws, it tries again later.
+ */
+export function registerApprovalGaveUpHandler(kind: ApprovalSubject["kind"], handler: ApprovalSubjectHandler): void {
+  gaveUp.set(kind, handler);
+}
+
+export const getApprovalGaveUpHandler = (kind: string): ApprovalSubjectHandler | undefined => gaveUp.get(kind);
 export const getApproverRule = (rule: string): ApproverRuleCheck | undefined => rules.get(rule);
 export const getApprovalSubjectHandler = (kind: string): ApprovalSubjectHandler | undefined => handlers.get(kind);
 

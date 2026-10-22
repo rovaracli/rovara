@@ -74,7 +74,7 @@ class CanvasCloseoutPending extends Error {
 /** 30, 60, 120, 240, 480, then 900 seconds, by the delivery attempt that failed. */
 export const retryDelaySeconds = (attempt: number): number => Math.min(900, 30 * 2 ** Math.max(0, Math.min(attempt - 1, 5)));
 
-const NOTICE_KINDS = new Set(["start", "mode", "closed", "cancelled", "ready", "setup_failed", "ended", "pull_request", "workflow", "github_feedback", "canvas_closeout", "admin_change_dm", "admin_change_outcome", "admin_change_expiry", "workflow_refusal", "comment_nudge", "people_dm", "chatgpt_fallback"]);
+const NOTICE_KINDS = new Set(["start", "mode", "closed", "cancelled", "ready", "setup_failed", "ended", "pull_request", "workflow", "github_feedback", "canvas_closeout", "admin_change_dm", "admin_change_outcome", "admin_change_expiry", "workflow_refusal", "comment_nudge", "people_dm", "chatgpt_fallback", "agent_report"]);
 
 class PeopleDeliveryRetry extends Error {
   constructor(readonly attempt: number) { super("People notification delivery should retry"); this.name = "PeopleDeliveryRetry"; }
@@ -129,6 +129,49 @@ async function deliverPeopleNotification(deps: NotifierDependencies, notice: Not
   } catch (error) {
     const uncertain = postMayHaveLanded(error);
     await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :next REMOVE claimUntil", ConditionExpression: "#status = :sending AND attempts = :attempt", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":next": uncertain ? "UNKNOWN" : "FAILED", ":sending": "SENDING", ":attempt": attempt } })).catch(() => undefined);
+    if (uncertain || attempt >= 3) return uncertain ? "unknown" : "failed";
+    throw new PeopleDeliveryRetry(attempt);
+  }
+}
+
+/**
+ * Plan 3, Task 22 (R4-2): posts an agent-step run's final report to its project's channel, once. The broker prepared the text (mentions gone, links made plain,
+ * commands withheld: `prepareSlackReport`) and chose the channel when the run ended; this only posts what it was given. A post that may have landed is never
+ * posted again.
+ */
+async function deliverAgentReport(deps: NotifierDependencies, notice: Notice): Promise<string> {
+  if (notice.taskId === undefined) return "invalid";
+  const key = { pk: `DEVTASK#${notice.taskId}`, sk: "AGENT_REPORT" };
+  const row = await getItem<Record<string, unknown>>(deps, key);
+  if (row === undefined || row.entityType !== "AGENT_REPORT_POST" || row.taskId !== notice.taskId || typeof row.channelId !== "string" || typeof row.text !== "string"
+    || typeof row.attempts !== "number" || typeof row.status !== "string") return "invalid";
+  if (row.status === "SENT" || row.status === "UNKNOWN" || row.status === "FAILED") return row.status.toLowerCase();
+  if (row.status === "SENDING") {
+    if (typeof row.claimUntil === "number" && row.claimUntil >= deps.now()) return "claimed";
+    await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :unknown", ConditionExpression: "#status = :sending", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":unknown": "UNKNOWN", ":sending": "SENDING" } })).catch(() => undefined);
+    return "unknown";
+  }
+  const attempt = row.attempts + 1;
+  if (attempt > 3) return "failed";
+  await deps.documentClient.send(new UpdateCommand({
+    TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :sending, attempts = :attempt, claimUntil = :until",
+    ConditionExpression: "#status = :expected AND attempts = :previous", ExpressionAttributeNames: { "#status": "status" },
+    ExpressionAttributeValues: { ":sending": "SENDING", ":expected": row.status, ":attempt": attempt, ":previous": row.attempts, ":until": deps.now() + 30_000 },
+  }));
+  try {
+    const posted = await deps.post({ channel: row.channelId, text: row.text });
+    try {
+      await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :sent, postedTs = :ts REMOVE claimUntil",
+        ConditionExpression: "#status = :sending AND attempts = :attempt", ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: { ":sent": "SENT", ":sending": "SENDING", ":attempt": attempt, ":ts": posted.ts } }));
+      return "sent";
+    } catch {
+      await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :unknown REMOVE claimUntil", ConditionExpression: "#status = :sending", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":unknown": "UNKNOWN", ":sending": "SENDING" } })).catch(() => undefined);
+      return "unknown";
+    }
+  } catch (error) {
+    const uncertain = postMayHaveLanded(error);
+    await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #status = :next REMOVE claimUntil", ConditionExpression: "#status = :sending AND attempts = :attempt", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":next": uncertain ? "UNKNOWN" : "PENDING", ":sending": "SENDING", ":attempt": attempt } })).catch(() => undefined);
     if (uncertain || attempt >= 3) return uncertain ? "unknown" : "failed";
     throw new PeopleDeliveryRetry(attempt);
   }
@@ -1502,6 +1545,7 @@ export function createNotifierHandler(deps: NotifierDependencies) {
       }
       try {
         const outcome = notice.kind === "people_dm" ? await deliverPeopleNotification(deps, notice)
+          : notice.kind === "agent_report" ? await deliverAgentReport(deps, notice)
           : notice.kind === "admin_change_dm" || notice.kind === "admin_change_outcome" || notice.kind === "admin_change_expiry" ? await deliverAdminChange(deps, notice) : await deliver(deps, notice);
         deps.log({ event: "developer_notifier.notice", kind: notice.kind, noticeId: notice.id, outcome });
       } catch (error) {

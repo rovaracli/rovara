@@ -195,8 +195,10 @@ async function forWorker(
   const agentStep = invocation.kind === "task" ? invocation.payload.agentStep : undefined;
   const carriesAgentStep = agentStep !== undefined;
   const carriesModelRoute = invocation.kind === "task" && invocation.payload.modelRoute !== undefined;
+  // A preparation that checks a pull request's head out is the agent-step engine's: only a worker that runs agent steps does it.
+  const carriesCheckout = invocation.kind === "prepare" && invocation.payload.checkout !== undefined;
   const carriesReviewers = invocation.kind === "task" && invocation.payload.workflowReviewers !== undefined;
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers) return invocation;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesCheckout) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -226,6 +228,9 @@ async function forWorker(
   // An agent step changes what the operation is allowed to do and a model route changes where its model comes from,
   // so neither is ever dropped; the agent kind (a step with no coding workflow) also needs task.agentRun.
   if (agentStep !== undefined && !(features.includes(AGENT_STEP_FEATURE) && (agentStep.kind !== "agent" || features.includes(AGENT_RUN_FEATURE)))) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  if (carriesCheckout && !features.includes(AGENT_RUN_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   if (carriesModelRoute && !features.includes(MODEL_ROUTE_FEATURE)) {

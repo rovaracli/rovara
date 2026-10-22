@@ -31,6 +31,7 @@ import { AgentXError, WorkspaceInstanceSchema, workspaceRecordFields } from "@ag
 import { taskPointerKey } from "../developer/task-records.js";
 import { getItem, requestCancellation, type CancellationDependencies } from "./cancellation.js";
 import { releaseFailedPreparation } from "./failed-preparation.js";
+import { wakeAgentRun } from "./agent-run-wakeup.js";
 import {
   FAILED_CANCEL_GRACE_MS,
   FAILED_CANCEL_RELEASED_MESSAGE,
@@ -154,6 +155,7 @@ async function settle(
       return;
     }
     result.interrupted.push(operationId);
+    await wakeAgentRun(client, tableName, workspaceId, operationId);
     log({ event: "stuck_cancel.released", workspaceId, operationId, reason });
     if (dependencies.postNote !== undefined) await noteRelease(dependencies, workspace!, { workspaceId, operationId }, log);
     return;
@@ -346,6 +348,8 @@ async function end(
       } },
     ] }));
     if (released === "PREPARATION_FAILED") await releaseFailedPreparation(client, tableName, workspaceId);
+    // An agent-step run is not told by a callback: its engine is woken (Plan 3, Task 22).
+    await wakeAgentRun(client, tableName, workspaceId, operationId);
     return true;
   } catch (failure) {
     if (failure instanceof Error && failure.name === "TransactionCanceledException") return false;

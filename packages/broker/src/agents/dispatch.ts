@@ -4,6 +4,7 @@
 // here reads or writes a table: the broker (`taskOperationParts`) reads the snapshot, the guardrails and the earlier operations and passes
 // them in, so every rule below is a plain function of its input.
 import {
+  AGENT_STEP_INSTRUCTIONS_MAX_BYTES,
   STEP_TOOLS,
   agentXError,
   canonicalModelName,
@@ -19,6 +20,8 @@ import {
   type PiToolName,
   type ResolvedRecipe,
   type ResolvedStep,
+  type ResultContract,
+  type RunCheckout,
   type StepSettings,
 } from "@agentx/contracts";
 import type { ProxyGeography } from "@agentx/model-runtime/catalog";
@@ -49,6 +52,14 @@ type StepModelSettings = Pick<StepSettings, "differentCompanyFrom" | "timeoutMin
 };
 const settingsOf = (step: ResolvedStep | undefined): StepModelSettings => (step?.settings ?? {});
 
+/** What an agent-step run's operation is (Task 22): the step itself (no coding mode names it), and what its worker is given. */
+export interface AgentRunStepInput {
+  step: Extract<ResolvedStep, { kind: "agent" }>;
+  inputs: string;
+  resultContract?: ResultContract | undefined;
+  checkout?: readonly RunCheckout[] | undefined;
+}
+
 export interface ApplyAgentStepInput {
   /** The task's frozen recipe; absent for work that has no agent (a Slack thread operation, a task from before agents): nothing changes. */
   recipe?: ResolvedRecipe | undefined;
@@ -65,6 +76,8 @@ export interface ApplyAgentStepInput {
   chatgptModel?: ModelSelection | undefined;
   /** The models the earlier operations of this task ran on, by recipe step (only operations that recorded one). */
   priorOperations: ReadonlyArray<{ stepId: string; model?: ModelSelection | undefined }>;
+  /** An agent-step run's step: then the mode and program step are not used, and the payload is the agent kind's. */
+  agentRun?: AgentRunStepInput | undefined;
 }
 
 export interface AppliedAgentStep {
@@ -111,8 +124,8 @@ export function crossCompanyTargets(recipe: ResolvedRecipe, step: ResolvedStep |
 }
 
 /** The ids of the recipe steps `applyAgentStep` will compare this operation's model with: the broker reads the earlier operations only when there are any. */
-export function priorStepIds(input: Pick<ApplyAgentStepInput, "recipe" | "mode" | "programStepId" | "guardrails">): string[] {
-  return input.recipe === undefined ? [] : crossCompanyTargets(input.recipe, stepForOperation(input.recipe, input.mode, input.programStepId), input.guardrails);
+export function priorStepIds(input: Pick<ApplyAgentStepInput, "recipe" | "mode" | "programStepId" | "guardrails" | "agentRun">): string[] {
+  return input.recipe === undefined ? [] : crossCompanyTargets(input.recipe, input.agentRun?.step ?? stepForOperation(input.recipe, input.mode, input.programStepId), input.guardrails);
 }
 
 const label = (model: ModelIdentifier): string => `${model.provider}/${model.modelId}`;
@@ -166,7 +179,7 @@ export function applyAgentStep(input: ApplyAgentStepInput): AppliedAgentStep {
   const lastLayer = recipe.chain.at(-1);
   const ref = input.ref ?? (lastLayer === undefined ? undefined : { agentId: lastLayer.agentId, name: lastLayer.name, version: lastLayer.version, builtin: lastLayer.builtin });
   if (ref === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task has no agent in it");
-  const step = stepForOperation(recipe, input.mode, input.programStepId);
+  const step = input.agentRun?.step ?? stepForOperation(recipe, input.mode, input.programStepId);
   const settings = settingsOf(step);
   const stepName = step?.name ?? KIND_LABEL[KIND_OF_MODE[input.mode ?? "IMPLEMENT"]];
 
@@ -219,11 +232,13 @@ export function applyAgentStep(input: ApplyAgentStepInput): AppliedAgentStep {
   const dropChatgpt = input.chatgptModel !== undefined && (planModel === undefined || (own && chosen !== undefined && !servedByPlan(chosen)));
   const ranModel = dropChatgpt ? model : planModel ?? model;
 
-  const promptSection = promptSectionOf(recipe, step, ref, stepName);
+  // An agent step's instructions travel in its payload (the worker puts them after its own preamble), not in a prompt section.
+  const promptSection = input.agentRun === undefined ? promptSectionOf(recipe, step, ref, stepName) : undefined;
   if (promptSection !== undefined && Buffer.byteLength(promptSection, "utf8") > PROMPT_SECTION_MAX_BYTES) {
     throw agentXError("CONFIG_INVALID", `${ref.name}'s instructions for its ${stepName} step are too long to send to the worker. Ask the agent's owner to shorten them.`);
   }
-  const agentStep = step === undefined || (ref.builtin && ref.agentId === "rovara-code") ? undefined : agentStepOf(recipe, step, ref, promptSection);
+  const agentStep = input.agentRun !== undefined ? agentRunStepOf(recipe, ref, stepName, input.agentRun)
+    : step === undefined || (ref.builtin && ref.agentId === "rovara-code") ? undefined : agentStepOf(recipe, step, ref, promptSection);
   return {
     ...(model === undefined ? {} : { model }),
     ...(promptSection === undefined ? {} : { promptSection }),
@@ -251,6 +266,36 @@ function agentStepOf(recipe: ResolvedRecipe, step: ResolvedStep, ref: { agentId:
     ...(skills.length === 0 ? {} : { skills }),
     ...(timeoutMinutes === undefined ? {} : { timeoutMs: timeoutMinutes * 60_000 }),
     ...(promptSection === undefined ? {} : { promptSection }),
+  };
+}
+
+/** The recipe's instructions for a step as one block: the whole agent's layers first (base agent first), then the step's, each under the name of the agent that wrote it. */
+export function instructionBlock(recipe: ResolvedRecipe, step: ResolvedStep): string {
+  const layers = [...recipe.instructions, ...(settingsOf(step).instructions ?? [])].filter((layer) => layer.text.length > 0);
+  return layers.map((layer) => (layer.agentName === "" ? layer.text : `From ${layer.agentName}:\n${layer.text}`)).join("\n\n");
+}
+
+/** What the worker is sent for an agent step of a run: the step's instructions, workspace, time limit and skills, what it is handed to read, and the branches it may choose. */
+function agentRunStepOf(recipe: ResolvedRecipe, ref: { agentId: TaskAgentRef["agentId"]; version: number | "draft" }, stepName: string, run: AgentRunStepInput): AgentStepPayload {
+  const { step } = run;
+  const instructions = instructionBlock(recipe, step);
+  if (Buffer.byteLength(instructions, "utf8") > AGENT_STEP_INSTRUCTIONS_MAX_BYTES) {
+    throw agentXError("CONFIG_INVALID", `The instructions for the ${stepName} step are too long to send to the worker. Ask the agent's owner to shorten them.`);
+  }
+  const timeoutMinutes = settingsOf(step).timeoutMinutes ?? undefined;
+  const skills = recipe.skills.map((skill) => ({ skillId: skill.skillId, digest: skill.digest }));
+  return {
+    kind: "agent",
+    agentId: ref.agentId,
+    version: ref.version,
+    stepId: step.id,
+    instructions,
+    workspace: step.workspace,
+    inputs: run.inputs,
+    ...(timeoutMinutes === undefined ? {} : { timeoutMs: timeoutMinutes * 60_000 }),
+    ...(skills.length === 0 ? {} : { skills }),
+    ...(run.resultContract === undefined ? {} : { resultContract: run.resultContract }),
+    ...(run.checkout === undefined || run.checkout.length === 0 ? {} : { checkout: [...run.checkout] }),
   };
 }
 
