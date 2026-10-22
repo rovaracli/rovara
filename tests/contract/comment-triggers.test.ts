@@ -7,6 +7,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  COMMENT_TRIGGER_COVERAGE_NOTE,
   COMMENT_TRIGGER_STALE_TEXT,
   agentGuardrailsKey,
   commentSignal,
@@ -150,10 +151,12 @@ describe("GET /v1/app/projects/{p}/connectors/github/comment-triggers", () => {
     const shown = await w.review();
     expect(shown.status, JSON.stringify(shown.body)).toBe(200);
     expect(shown.body).toEqual({
+      coverage: COMMENT_TRIGGER_COVERAGE_NOTE,
       project: "payments",
       repositories: [{ repository: REPOSITORY, triggers: true, failedClosed: false, digest: expect.stringMatching(/^[a-f0-9]{64}$/) as string, files: [SCRIPT, WORKFLOW].sort() }],
     });
     expect(w.reads).toEqual([`https://github.com/${REPOSITORY}.git ${TEST_ORG}`]);
+    expect(typeof shown.body.coverage).toBe("string");
     expect((await w.review(OWEN)).status).toBe(200);
   });
 
@@ -172,6 +175,15 @@ describe("GET /v1/app/projects/{p}/connectors/github/comment-triggers", () => {
     const before = (await w.digest())[0]!.digest;
     w.setFiles({ ...baseFiles(), [SCRIPT]: "echo changed" });
     expect((await w.digest())[0]!.digest).not.toBe(before);
+  });
+
+  it("carries a short fixed hint when the scan failed closed for a reason it knows (round 3)", async () => {
+    const w = await world({ files: { [WORKFLOW]: workflow("issue_comment", "cd secret-dir && ./x.sh") } });
+    const reply = await w.review();
+    expect(reply.body.repositories).toEqual([{ repository: REPOSITORY, triggers: true, failedClosed: true, digest: "0".repeat(64), files: [], hint: "use working-directory instead of cd" }]);
+    expect(JSON.stringify(reply.body)).not.toContain("secret-dir");
+    const open = await world();
+    expect(((await open.review()).body.repositories as Array<Record<string, unknown>>)[0]).not.toHaveProperty("hint");
   });
 
   it("shows a scan that could not be read as failed closed, with nothing to review", async () => {

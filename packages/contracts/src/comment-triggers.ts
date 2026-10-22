@@ -64,3 +64,26 @@ export function commentTriggerLapseNotice(repository: string, files: readonly st
   const named = shown.length === 0 ? "the workflow files" : `${shown.join(", ")}${clean.length > shown.length ? ` and ${String(clean.length - shown.length)} more` : ""}`;
   return `Rovara is asking again about comment-triggered workflows in ${repository}: ${named} changed. Agent comments there wait for a person until an admin reviews them.`;
 }
+
+/** What the page shows beside a repository's scan: what the scan reads, and what it can't see. Fixed text; nothing from a repository goes in it. */
+export const COMMENT_TRIGGER_COVERAGE_NOTE = "Rovara reads every workflow of the repository, the scripts and manifests they name, local actions and the shell scripts those run in turn. It can't see code fetched or built at run time, a command run by bare name or found on the PATH, files a Python or JavaScript script imports, a Docker build context, or tool configuration such as tox.ini; where it can't tell which file runs, it asks a person.";
+
+/**
+ * Why a scan failed closed, in a few fixed words an admin can act on. Only the scan's own reasons are here: nothing from the repository is ever put in a hint.
+ * A scan that fails closed for a reason with no hint here carries none.
+ */
+export const COMMENT_TRIGGER_HINTS = {
+  directory: "use working-directory instead of cd",
+  dynamic: "name scripts by a fixed path, not by an expression or a variable",
+  path: "keep paths inside the repository: no .., glob or brace expansion",
+  folderFlag: "use working-directory instead of -C, --prefix, --cwd or --chdir",
+  runtimeFiles: "name each script in the run block instead of finding or piping them",
+  missing: "name only files that exist in the repository",
+  pythonModule: "run Python scripts by path instead of python -m",
+  shell: "use a standard shell or a plain script path for shell:",
+  submodule: "files in a submodule can't be read; copy them into the repository",
+  plainCommand: "write the command name plainly, without a backslash or empty quotes",
+  rootAction: "make the root action composite, or move it into a folder",
+  arguments: "pass the files a script runs by name in the run block that calls it",
+} as const;
+export type CommentTriggerHint = (typeof COMMENT_TRIGGER_HINTS)[keyof typeof COMMENT_TRIGGER_HINTS];
