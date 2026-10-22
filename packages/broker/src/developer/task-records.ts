@@ -138,6 +138,11 @@ export interface DeveloperTaskRecord {
    * (and, for `firstDispatch`, takes the slot and writes the outbox and the watch).
    */
   budgetPause?: { scope: PauseScope; at: string; firstDispatch?: { operationId: string } };
+  /**
+   * Plan 3, Task 22: set in the transaction that ends an agent-step run (COMPLETE, FAILED or CANCELLED), with when. An ended run is finished the way a
+   * merged workflow task is: it gives back its workspace slot and its workspace (`workflowTaskFinished`, `releaseFinishedTask`).
+   */
+  agentRunEnd?: { state: "COMPLETE" | "FAILED" | "CANCELLED"; at: string };
 }
 
 /** C1: a shared task's thread, as the task record keeps it. */

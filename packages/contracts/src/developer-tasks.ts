@@ -2,8 +2,9 @@
 // server parses responses with the non-strict schemas here, so a newer control plane can add fields.
 import { Buffer } from "node:buffer";
 import { z } from "zod";
-import { AgentIdSchema } from "./agent.js";
-import { RunInputSchema } from "./agent-run.js";
+import { AgentIdSchema, ApprovalIdSchema } from "./agent.js";
+import { AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES, RunInputSchema } from "./agent-run.js";
+import { StepIdSchema } from "./agent-recipe.js";
 import { cleanDisplayName } from "./display-name.js";
 import { OperationStatusSchema } from "./operation.js";
 import { DeveloperShareModeSchema } from "./project.js";
@@ -288,6 +289,22 @@ const PullRequestSummarySchema = z.object({
   state: z.enum(["open", "closed", "merged"]),
 });
 
+/**
+ * Plan 3, Task 22: where an agent-step run is. `currentStep` is the step the run is at (the one that runs or waits); a step's `report` is its
+ * latest one; `pendingApprovals` are the actions and approval steps waiting for a person, each with the page where it is decided; `finalReport` is
+ * the last step's report once the run is COMPLETE, `branch` the result the worker chose, `endReason` why a FAILED or CANCELLED run ended.
+ */
+export const DeveloperTaskRunViewSchema = z.object({
+  state: z.enum(AGENT_RUN_STATES),
+  currentStep: z.object({ id: StepIdSchema, name: z.string() }).strict().optional(),
+  steps: z.array(z.object({ id: StepIdSchema, name: z.string(), status: z.enum(AGENT_RUN_STEP_STATUSES), report: z.string().optional() }).strict()),
+  pendingApprovals: z.array(z.object({ approvalId: ApprovalIdSchema, kind: z.enum(["write", "step"]), text: z.string(), confirmUrl: z.string().optional() }).strict()),
+  finalReport: z.string().optional(),
+  branch: z.string().optional(),
+  endReason: z.string().optional(),
+}).strict();
+export type DeveloperTaskRunView = z.infer<typeof DeveloperTaskRunViewSchema>;
+
 export const DeveloperTaskViewSchema = z.object({
   taskId: z.string().uuid(),
   title: z.string(),
@@ -321,6 +338,8 @@ export const DeveloperTaskViewSchema = z.object({
   channelTurns: z.array(ChannelTurnSchema).max(CHANNEL_TURNS_MAX).optional(),
   /** Plan 3, Task 15: the agent and version the task runs; absent on a task from before agents. */
   agent: z.object({ agentId: AgentIdSchema, name: z.string(), version: z.union([z.number().int().min(1), z.literal("draft")]), builtin: z.boolean() }).strict().optional(),
+  /** Plan 3, Task 22: an agent-step run's progress; absent on every other task. */
+  run: DeveloperTaskRunViewSchema.optional(),
 });
 export type DeveloperTaskView = z.infer<typeof DeveloperTaskViewSchema>;
 

@@ -7,7 +7,7 @@ import { E2EFeaturePlanIntentSchema, E2EWorkflowAdmissionRefSchema } from "./e2e
 import { DEVELOPER_INSTRUCTIONS_MAX_BYTES } from "./developer-tasks.js";
 import { AgentIdSchema, SkillIdSchema } from "./agent.js";
 import { MAX_RESOLVED_SKILLS, PI_TOOL_NAMES, PiToolNameSchema, StepIdSchema } from "./agent-recipe.js";
-import { ResultContractSchema } from "./agent-run.js";
+import { ResultContractSchema, RunCheckoutSchema } from "./agent-run.js";
 
 export const AGENTX_PROTOCOL_VERSION = 1 as const;
 
@@ -126,6 +126,8 @@ export const AgentStepPayloadSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("agent"),
     ...AgentStepBase,
+    // A draft test run has no published version, as for the coding variant.
+    version: z.union([AgentStepBase.version, z.literal("draft")]),
     instructions: textUpTo(AGENT_STEP_INSTRUCTIONS_MAX_BYTES),
     workspace: z.enum(["none", "read"]),
     inputs: textUpTo(AGENT_STEP_INPUTS_MAX_BYTES).pipe(z.string().min(1)),
@@ -133,6 +135,8 @@ export const AgentStepPayloadSchema = z.discriminatedUnion("kind", [
     skills: AgentStepSkillsSchema.optional(),
     /** On the last agent step of a run whose start named the branches it may choose between (G1). */
     resultContract: ResultContractSchema.optional(),
+    /** The pull request heads the run's workspace has checked out read-only (`AGENT_RUN.checkout`); the worker verifies the commit is what it holds. */
+    checkout: z.array(RunCheckoutSchema).max(10).optional(),
   }).strict(),
 ]);
 export type AgentStepPayload = z.infer<typeof AgentStepPayloadSchema>;
@@ -175,7 +179,12 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
   }).strict(),
   InvocationBaseSchema.extend({
     kind: z.literal("prepare"),
-    payload: z.object({ project: StoredProjectDefinitionSchema, repositoryGrant: z.string().min(1) }).strict(),
+    payload: z.object({
+      project: StoredProjectDefinitionSchema,
+      repositoryGrant: z.string().min(1),
+      /** An agent-step run that looks at pull requests: after cloning, the worker fetches each head, checks the commit out detached and verifies it (Plan 3, Task 22). Sent only to a worker that lists `task.agentRun`. */
+      checkout: z.array(RunCheckoutSchema).max(10).optional(),
+    }).strict(),
   }).strict(),
   InvocationBaseSchema.extend({
     kind: z.literal("task"),

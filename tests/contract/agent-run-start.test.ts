@@ -64,7 +64,7 @@ async function setup(options: { proxy?: boolean; agents?: Record<string, unknown
   const h = await createDeveloperTaskBroker({
     orgResolver,
     ...(options.memberLimit === undefined ? {} : { memberLimit: options.memberLimit }),
-    brokerExtra: { agents: { agentStepRuns: true, ...options.agents }, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }), ...options.brokerExtra },
+    brokerExtra: { agents: { ...options.agents }, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }), ...options.brokerExtra },
   });
   if (access !== undefined) {
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
@@ -689,29 +689,6 @@ describe("what a start reads, whom it is for and what it refuses until the step 
     expect(t.taskCount()).toBe(0);
     expect(t.charges()).toEqual([]);
     expect(t.db.find((item) => item.entityType === "RUN_REQUEST")).toEqual([]);
-  });
-
-  it("refuses to start an agent-step run until the step engine is turned on, taking no slot and writing nothing", async () => {
-    const t = await setup({ agents: { agentStepRuns: false } });
-    const reply = await t.run(MAYA, "ticket-triage");
-    expect(reply.status).toBe(409);
-    expect(errorOf(reply)).toEqual({ code: "AGENT_UNAVAILABLE", message: "Ticket triage can't run yet: Rovara doesn't run agents that work in steps in this version." });
-    expect(t.taskCount()).toBe(0);
-    expect(t.workspaces()).toEqual([]);
-    expect(t.charges()).toEqual([]);
-    expect(t.agentTasks("ticket-triage")).toEqual([]);
-    // Through startAgentRun too, and a coding agent is not affected.
-    expect(await refusal(startAgentRun(t.starter(), t.request({ agent: { agentId: "ticket-triage" } })))).toMatchObject({ code: "AGENT_UNAVAILABLE" });
-    expect((await t.run(MAYA, "rovara-code")).status).toBe(202);
-  });
-
-  it("refuses an agent-step run in a broker built the way the deployed handler builds it", async () => {
-    // The harness switches the step engine on by default; the deployed handler passes `agents: {}` and nothing else.
-    const plain = await createDeveloperTaskBroker({ orgResolver, brokerExtra: { agents: {} } });
-    const reply = await plain.dev(MAYA, "POST", "/v1/app/agents/ticket-triage/runs", { requestId: randomUUID(), project: "payments", input: { text: "Triage LIN-1" } });
-    expect(reply.status).toBe(409);
-    expect((reply.body.error as { code: string }).code).toBe("AGENT_UNAVAILABLE");
-    expect(plain.db.find((item) => item.entityType === "DEVELOPER_TASK")).toEqual([]);
   });
 
   it("admits a coding agent named on the start as the workflow it will be: QUICK unless the start asks for FULL", async () => {

@@ -193,7 +193,7 @@ const CODING: RecipeOverlay = {
 async function setup(options: { agents?: boolean } = {}) {
   const access = fakeModelAccess();
   const h = await createDeveloperTaskBroker({
-    brokerExtra: { ...(options.agents === false ? {} : { agents: { agentStepRuns: true } }), modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true },
+    brokerExtra: { ...(options.agents === false ? {} : { agents: {} }), modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true },
   });
   access.setMemberSpent(TEST_ORG, DEV_MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);

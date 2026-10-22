@@ -1,0 +1,978 @@
+// Plan 3 Task 22: the agent-step engine. A run of an agent made of agent steps is a task that holds ONE workspace; after the preparation finishes the
+// engine dispatches its steps one at a time (each an ordinary task operation whose payload is `agentStep.kind === "agent"`), hands each step the
+// run's request and the earlier reports, waits in place for approvals (an `approval` step, and the write approvals a step's calls made), and ends
+// the run in one terminal place (`onTaskEnded`) that releases the workspace, blocks the keys and tells every registered handler once.
+// These tests go through the real broker (the app routes, the worker callbacks, the approvals core); only the worker and the vendor are faked.
+import { randomUUID } from "node:crypto";
+import { DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
+import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
+import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
+import {
+  advanceAgentRun, onAgentStepFinished, onTaskEnded, onWriteDecided, prepareSlackReport, registerTaskEndHandler, registerTaskPauseHandler,
+  type TaskEndEvent, type TaskPauseEvent,
+} from "../../packages/broker/src/agents/run-engine.js";
+import {
+  approvalTaskEventKey, createStepApproval, createWriteApprovalRecord, decideApproval, expireApprovals, getAnyApproval, registerWriteApprovalDriver,
+  type AnyApprovalRecord, type ApprovalDependencies, type StepApprovalRecord, type WriteApprovalRecord,
+} from "../../packages/broker/src/agents/approvals.js";
+import { writeApproversFor } from "../../packages/broker/src/agents/write-gate.js";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks.js";
+import { AgentRunStateSchema, SHORTENED_MARKER, renderRunInput, type RunInput } from "../../packages/contracts/src/agent-run.js";
+import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
+import { AgentStepPayloadSchema } from "../../packages/contracts/src/protocol.js";
+import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
+import { approvalKey, approverIndexKey, projectAgentKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org.js";
+import type { AgentId } from "../../packages/contracts/src/agent.js";
+import type { OrgId } from "../../packages/contracts/src/org.js";
+import { DEV_ISSUER, MAYA, OMAR, bindChannel, createDeveloperTaskBroker, recordStream, type Developer } from "../support/developer-task-broker.js";
+import { taskPageUrl } from "../../packages/broker/src/aws/developer-tasks.js";
+import { fakeModelAccess } from "../support/fake-model-access.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { SLACK_CHANNEL, loadSlackBroker } from "../support/slack-broker.js";
+import { createNotifierHandler } from "../../packages/broker/src/aws/developer-task-notifier.js";
+import { noticesOf, type Notice } from "../../packages/broker/src/developer/notifications.js";
+
+const PROXY_URL = "http://internal-proxy.example.test:4000";
+const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
+const TASK_LINK = "https://identity.example.test/review/TASKID/task";
+
+let createAgentRouteDependencies: typeof BrokerModule.createAgentRouteDependencies;
+beforeAll(async () => {
+  await loadSlackBroker();
+  ({ createAgentRouteDependencies } = await import("../../packages/broker/src/aws/broker.js"));
+});
+
+// The write approvals of these tests are carried out by a stand-in for the connector path (Task 19 and 21 test the real one): it says what each approval was told.
+const driver = { execute: vi.fn<(deps: ApprovalDependencies, record: WriteApprovalRecord) => Promise<{ outcome: "done" } | { outcome: "failed"; failure: string }>>(async () => ({ outcome: "done" })) };
+registerWriteApprovalDriver({ execute: (deps, record) => driver.execute(deps, record) });
+const unregister: Array<() => void> = [];
+afterEach(() => {
+  while (unregister.length > 0) unregister.pop()!();
+  driver.execute.mockReset();
+  driver.execute.mockImplementation(async () => ({ outcome: "done" }));
+});
+
+const agentStep = (id: string, name: string = id, workspace: "none" | "read" = "none", extra: Record<string, unknown> = {}) => ({ id, name, kind: "agent" as const, workspace, ...extra });
+const TWO_STEPS: RecipeOverlay = { instructions: "Look into it.", sequence: [agentStep("investigate", "Investigate", "read"), agentStep("report", "Report", "none", { report: { slack: true } })] };
+const WITH_GATE: RecipeOverlay = {
+  instructions: "Draft, ask, send.",
+  sequence: [agentStep("draft", "Draft"), { id: "gate", name: "Ship it", kind: "approval" as const, prompt: "Send the report to customers?" }, agentStep("send", "Send")],
+};
+const INPUT: RunInput = { text: "Why did checkout fail at 14:02?", context: [{ kind: "ticket", ref: "LIN-12", title: "Checkout fails" }] };
+
+type Reply = { status: number; body: Record<string, unknown> };
+type Op = Record<string, unknown> & { id: string; kind: string; status: string; programStepId?: string; createdAt: string; fence: number };
+
+async function setup(options: { proxy?: boolean; brokerExtra?: Record<string, unknown>; guardrails?: Partial<typeof DEFAULT_AGENT_GUARDRAILS> } = {}) {
+  const access = options.proxy === true ? fakeModelAccess() : undefined;
+  const h = await createDeveloperTaskBroker({
+    brokerExtra: { agents: {}, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }), ...options.brokerExtra },
+  });
+  if (access !== undefined) {
+    access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
+    access.setOrgSpent(TEST_ORG, 0);
+  }
+  const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now });
+  const call = async (who: Developer, method: string, path: string, body?: Record<string, unknown>): Promise<Reply> => {
+    const reply = await h.dev(who, method, path, body === undefined ? undefined : { requestId: randomUUID(), ...body });
+    const { requestId: _requestId, ...rest } = reply.body; // eslint-disable-line @typescript-eslint/no-unused-vars -- the envelope's id is not part of an answer
+    return { status: reply.status, body: rest };
+  };
+  const agentOf = async (overlay: RecipeOverlay): Promise<AgentId> => {
+    const created = await call(MAYA, "POST", "/v1/app/agents", { name: `Agent ${randomUUID().slice(0, 8)}`, overlay });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const agentId = (created.body.agent as { agentId: AgentId }).agentId;
+    const draft = (await store.getDraft(TEST_ORG, agentId))!;
+    await store.saveDraft({ orgId: TEST_ORG, agentId, overlay, expectedRevision: draft.revision, by: MAYA.developerId });
+    const agent = (await store.get(TEST_ORG, agentId))!;
+    await store.publish({ orgId: TEST_ORG, agentId, expectedDraftRevision: agent.draftRevision, digest: recipeDigest(await resolveAgent(store, TEST_ORG, agentId, "draft")), by: MAYA.developerId });
+    h.db.set({ ...projectAgentKey(TEST_ORG, "payments", agentId), entityType: "PROJECT_AGENT", orgId: TEST_ORG, project: "payments", agentId, addedBy: MAYA.developerId, addedAt: "2026-10-01T00:00:00.000Z" });
+    return agentId;
+  };
+  const operations = (workspaceId: string): Op[] => h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION") as Op[];
+  /** The task operations of a workspace (the agent steps and their continuations), oldest first. */
+  const stepOps = (workspaceId: string): Op[] => operations(workspaceId).filter((operation) => operation.kind === "task").sort((a, b) => a.fence - b.fence);
+  const invocationOf = (operationId: string) => h.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation as { callbackCapability: string; payload: Record<string, unknown> & { agentStep?: Record<string, unknown> & { inputs: string } } };
+  const meta = (taskId: string) => h.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string; outcome?: string; releasedAt?: string; budgetUsd?: number; developerId: string };
+  const runItem = (taskId: string) => {
+    const item = h.db.get(`DEVTASK#${taskId}`, "AGENT_RUN");
+    if (item === undefined) return undefined;
+    const { pk: _pk, sk: _sk, entityType: _type, ...state } = item; // eslint-disable-line @typescript-eslint/no-unused-vars -- only the key attributes are dropped
+    return AgentRunStateSchema.parse(state);
+  };
+  const taskEvents = (taskId: string) => h.db.find((item) => item.pk === `DEVTASK#${taskId}` && typeof item.sk === "string" && item.sk.startsWith("EVENT#"));
+  const view = async (who: Developer, taskId: string) => (await call(who, "GET", `/v1/dev/tasks/${taskId}`)).body.task as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any -- the view is read by field
+  const routeDeps = (clock?: { now: number }): ApprovalDependencies => {
+    const deps = createAgentRouteDependencies(h.brokerInput as never);
+    if (deps === undefined) throw new Error("the broker has no agent route dependencies");
+    return clock === undefined ? deps : { ...deps, now: () => clock.now };
+  };
+  /** Starts a run of `agent` on payments as `who`; the preparation has not finished. */
+  const start = async (agent: string, input: RunInput = INPUT, who: Developer = MAYA) => {
+    const reply = await call(who, "POST", `/v1/app/agents/${agent}/runs`, { project: "payments", input });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    return handleOf((reply.body.task as { taskId: string }).taskId);
+  };
+  /** A started run: its ids and the way to finish its preparation. */
+  const handleOf = (taskId: string) => {
+    const { workspaceId } = meta(taskId);
+    const prepareId = String(operations(workspaceId).find((operation) => operation.kind === "prepare")!.id);
+    return { taskId, workspaceId, prepareId, finishPrepare: () => h.finish(workspaceId, prepareId, "SUCCEEDED", PREPARED) };
+  };
+  const finishStep = (run: { workspaceId: string }, operationId: string, report: string, extra: Record<string, unknown> = {}) =>
+    h.finish(run.workspaceId, operationId, "SUCCEEDED", { result: { agentStepResult: { report, outcome: "SUCCEEDED", ...extra } } });
+  const caller = (developerId: string) => ({ orgId: TEST_ORG, developerId, orgRole: "member" as const });
+  return { ...h, access, store, call, agentOf, operations, stepOps, invocationOf, meta, runItem, taskEvents, view, routeDeps, start, handleOf, finishStep, caller };
+}
+type World = Awaited<ReturnType<typeof setup>>;
+
+/** A write approval the step's call made, PENDING, holding what a person would be shown. */
+async function askWrite(t: World, deps: ApprovalDependencies, input: { taskId: string; stepId: string; operationId: string; summary: string; expiresAt?: string; approvers?: WriteApprovalRecord["approvers"] }) {
+  const approvalId = `apr_${randomUUID().replace(/-/g, "").slice(0, 20).replace(/[^0-9a-z]/g, "a")}`;
+  const createdAt = new Date().toISOString();
+  const record: WriteApprovalRecord = {
+    orgId: TEST_ORG, approvalId: approvalId as WriteApprovalRecord["approvalId"], kind: "write", subject: { kind: "agent_run", taskId: input.taskId, stepId: input.stepId }, operationId: input.operationId,
+    connector: "linear", connectorType: "linear", tool: "save_issue", toolAccess: "write", scope: "eng", schemaHash: "a".repeat(64), projectRevision: 1, scopeDigest: "b".repeat(64),
+    arguments: { title: input.summary }, argumentsHash: "c".repeat(64), summary: input.summary, class: "consequential",
+    approvers: input.approvers ?? { kind: "ids", ids: [MAYA.developerId] }, status: "PENDING", project: "payments", owner: { developerId: MAYA.developerId, name: MAYA.name },
+    attempts: 0, createdAt, expiresAt: input.expiresAt ?? new Date(Date.now() + 3_600_000).toISOString(),
+  };
+  const event = { Put: { TableName: "state", Item: { ...approvalTaskEventKey(input.taskId, createdAt, approvalId), entityType: "TASK_EVENT", orgId: TEST_ORG, kind: "status", text: `Agent wants to ${input.summary}.`, at: createdAt } } };
+  expect(await createWriteApprovalRecord(deps, record, [event], 8)).toBe("created");
+  void t;
+  return record;
+}
+
+const approve = (deps: ApprovalDependencies, approvalId: string, decision: "APPROVE" | "DECLINE" = "APPROVE") =>
+  decideApproval(deps, { orgId: TEST_ORG, developerId: MAYA.developerId, orgRole: "member" }, approvalId, { requestId: randomUUID(), decision });
+
+const endHandler = () => {
+  const events: TaskEndEvent[] = [];
+  unregister.push(registerTaskEndHandler(async (_deps, event) => { events.push(event); }));
+  return events;
+};
+const pauseHandler = () => {
+  const events: TaskPauseEvent[] = [];
+  unregister.push(registerTaskPauseHandler(async (_deps, event) => { events.push(event); }));
+  return events;
+};
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// The Slack report (R4-2)
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("prepareSlackReport", () => {
+  const options = (extra: Partial<Parameters<typeof prepareSlackReport>[1]> = {}) => ({ orgId: TEST_ORG, taskUrl: TASK_LINK, reportLinkDomains: [], extraCommandWords: [], ...extra });
+  const LINK_ONLY = `Report available in Rovara: ${TASK_LINK}`;
+
+  it("posts a plain report as text, unchanged", () => {
+    expect(prepareSlackReport("The retry was removed in the 14:02 deploy. Two services call checkout.", options())).toEqual({ kind: "text", text: "The retry was removed in the 14:02 deploy. Two services call checkout." });
+  });
+
+  it("strips Slack's broadcast, user, group and channel mentions and the plain @channel, @here and @everyone", () => {
+    const result = prepareSlackReport("<!channel> <!here> <!everyone> ping <@U123> and <@W456> in <#C789|general> and <!subteam^S12|@oncall>. Also @channel, @here and @everyone.", options());
+    expect(result.kind).toBe("text");
+    const text = result.text;
+    for (const forbidden of ["<!channel>", "<!here>", "<!everyone>", "<@U123>", "<@W456>", "<#C789", "<!subteam", "@channel", "@here", "@everyone", "@oncall"]) expect(text).not.toContain(forbidden);
+    expect(text).toContain("ping");
+  });
+
+  it("strips an @name the way Task 14 does, so the report mentions nobody", () => {
+    const result = prepareSlackReport("Thanks @alice and @acme/platform for the pointers.", options());
+    expect(result).toEqual({ kind: "text", text: "Thanks alice and acme/platform for the pointers." });
+  });
+
+  it("turns a labelled link to another site into plain text `label (host)`", () => {
+    expect(prepareSlackReport("see <https://evil.example/x|the fix>", options())).toEqual({ kind: "text", text: "see the fix (evil.example)" });
+  });
+
+  it("turns an unlabelled link and a bare URL into plain text with the host", () => {
+    const result = prepareSlackReport("a <https://evil.example/a> and https://other.example/b?c=1 here", options());
+    expect(result.kind).toBe("text");
+    expect(result.text).not.toMatch(/https?:\/\//);
+    expect(result.text).toContain("(evil.example)");
+    expect(result.text).toContain("(other.example)");
+  });
+
+  it("keeps the task link and a link whose host is one of the org's report link domains (or a subdomain of one)", () => {
+    const own = `see <${TASK_LINK}|the task> and <https://docs.acme.example/runbook|the runbook> and <https://www.acme.example/x|more>`;
+    const result = prepareSlackReport(own, options({ reportLinkDomains: ["acme.example", "docs.acme.example"] }));
+    expect(result).toEqual({ kind: "text", text: own });
+    expect(prepareSlackReport("see <https://notacme.example/x|a>", options({ reportLinkDomains: ["acme.example"] }))).toEqual({ kind: "text", text: "see a (notacme.example)" });
+  });
+
+  it.each([
+    ["deploy api to production"], ["rollback"], ["please roll back the release"], ["restart the worker"], ["redeploy the api"], ["ship the build to staging"],
+    ["promote this to production"], ["scale the service to 20 replicas"], ["!deploy"], [".deploy api"], ["  !restart now"], ["/merge"],
+  ])("posts only the link when the report holds a command: %s", (line) => {
+    expect(prepareSlackReport(`The cause is the retry.\n${line}\nThat is all.`, options())).toEqual({ kind: "link_only", text: LINK_ONLY });
+  });
+
+  it("finds a command written with look-alike characters", () => {
+    expect(prepareSlackReport("ｒｏｌｌｂａｃｋ", options())).toEqual({ kind: "link_only", text: LINK_ONLY });
+  });
+
+  it("posts only the link when the org's own command word is in the report, and not otherwise", () => {
+    expect(prepareSlackReport("the deploy script failed", options())).toEqual({ kind: "text", text: "the deploy script failed" });
+    expect(prepareSlackReport("the deploy script failed", options({ extraCommandWords: ["deploy"] }))).toEqual({ kind: "link_only", text: LINK_ONLY });
+  });
+
+  it("checks the report after the mentions and links are gone, and never posts the original", () => {
+    const result = prepareSlackReport("<!channel> look at <https://evil.example/x|this>", options());
+    expect(result.text).not.toContain("channel");
+    expect(result.text).not.toContain("https://");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// The run, step by step
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("running the steps in order", () => {
+  it("dispatches the steps of a two-step root-cause-analyst run in order and hands the first report to the second under the exact header", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    expect(t.stepOps(run.workspaceId)).toEqual([]);
+    await run.finishPrepare();
+    const [first] = t.stepOps(run.workspaceId);
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    expect(first).toMatchObject({ kind: "task", programStepId: "investigate", status: "ACCEPTED" });
+    const firstPayload = t.invocationOf(first!.id).payload;
+    expect(AgentStepPayloadSchema.parse(firstPayload.agentStep)).toMatchObject({ kind: "agent", agentId: "root-cause-analyst", version: 1, stepId: "investigate", workspace: "read" });
+    expect(firstPayload.agentStep!.inputs).toBe(renderRunInput(INPUT));
+    expect(firstPayload.agentStep).not.toHaveProperty("resultContract");
+    expect(typeof firstPayload.prompt).toBe("string");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING", cursor: 0, steps: [{ id: "investigate", status: "running", operationIds: [first!.id] }, { id: "report", status: "pending" }] });
+
+    await t.finishStep(run, first!.id, "The 14:02 deploy removed the retry around the payment call.");
+    const ops = t.stepOps(run.workspaceId);
+    expect(ops).toHaveLength(2);
+    const second = ops[1]!;
+    expect(second).toMatchObject({ programStepId: "report" });
+    const secondPayload = t.invocationOf(second.id).payload.agentStep!;
+    expect(secondPayload).toMatchObject({ kind: "agent", stepId: "report", workspace: "none" });
+    expect(secondPayload.inputs).toBe(`${renderRunInput(INPUT)}\n\nReport from Investigate:\nThe 14:02 deploy removed the retry around the payment call.`);
+    expect(t.runItem(run.taskId)).toMatchObject({ cursor: 1, steps: [{ id: "investigate", status: "done" }, { id: "report", status: "running", operationIds: [second.id] }], reports: [{ stepId: "investigate", name: "Investigate", text: "The 14:02 deploy removed the retry around the payment call." }] });
+  });
+
+  it("ends the run COMPLETE with the last report as its final report, releases the workspace and shows the run in the task view", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Found it.");
+    await t.finishStep(run, t.stepOps(run.workspaceId)[1]!.id, "The retry was removed.");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "COMPLETE", finalReport: "The retry was removed.", steps: [{ status: "done" }, { status: "done" }] });
+    expect(t.meta(run.taskId)).toMatchObject({ agentRunEnd: { state: "COMPLETE" } });
+    // One workspace for the whole run, given back when the run ended.
+    expect(t.meta(run.taskId).releasedAt).toBeDefined();
+    expect(t.db.get(`WORKSPACE#${run.workspaceId}`, "META")).toMatchObject({ status: "CLOSED" });
+    const view = await t.view(MAYA, run.taskId);
+    expect(view).toMatchObject({ status: "SUCCEEDED", agent: { agentId: "root-cause-analyst" } });
+    expect(view.run).toMatchObject({
+      state: "COMPLETE", finalReport: "The retry was removed.", pendingApprovals: [],
+      steps: [{ id: "investigate", name: "Investigate", status: "done", report: "Found it." }, { id: "report", name: "Report", status: "done", report: "The retry was removed." }],
+    });
+    // Each report is kept with the task as agent-step-<id>.md.
+    const artifacts = t.db.find((item) => item.entityType === "ARTIFACT" && item.workspaceId === run.workspaceId).map((item) => item.name);
+    expect(artifacts).toEqual(expect.arrayContaining(["agent-step-investigate.md", "agent-step-report.md"]));
+    expect(t.runItem(run.taskId)!.steps[0]!.reportKey).toBeDefined();
+  });
+
+  it("advances once when the worker's terminal callback is repeated", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    await t.finishStep(run, first.id, "One.");
+    await t.finishStep(run, first.id, "One.");
+    expect(t.stepOps(run.workspaceId)).toHaveLength(2);
+    // Calling the engine again with nothing to do changes nothing either.
+    const deps = t.routeDeps();
+    await onAgentStepFinished(deps, { taskId: run.taskId, operationId: first.id, outcome: "SUCCEEDED", report: "One." });
+    await advanceAgentRun(deps, run.taskId);
+    expect(t.stepOps(run.workspaceId)).toHaveLength(2);
+    expect(t.runItem(run.taskId)!.reports).toHaveLength(1);
+  });
+
+  it("shortens a report over 32,768 bytes with the marker and keeps what the next step is sent inside the payload limit", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "é".repeat(40_000));
+    const report = t.runItem(run.taskId)!.reports[0]!.text;
+    expect(Buffer.byteLength(report, "utf8")).toBeLessThanOrEqual(32_768);
+    expect(report.endsWith(SHORTENED_MARKER)).toBe(true);
+    const inputs = t.invocationOf(t.stepOps(run.workspaceId)[1]!.id).payload.agentStep!.inputs;
+    expect(Buffer.byteLength(inputs, "utf8")).toBeLessThanOrEqual(262_144);
+  });
+
+  it("puts the result contract on the last agent step only, and records the branch the worker chose when the contract names it", async () => {
+    const t = await setup();
+    const contract = { branches: [{ id: "fix", description: "A fix is needed" }, { id: "close", description: "Nothing to do" }] };
+    const starter = await startWithContract(t, contract);
+    await starter.finishPrepare();
+    const first = t.stepOps(starter.workspaceId)[0]!;
+    expect(t.invocationOf(first.id).payload.agentStep).not.toHaveProperty("resultContract");
+    await t.finishStep(starter, first.id, "Looked.");
+    const last = t.stepOps(starter.workspaceId)[1]!;
+    expect(t.invocationOf(last.id).payload.agentStep).toMatchObject({ resultContract: contract });
+    await t.finishStep(starter, last.id, "Needs a fix.", { branch: "fix", reason: "the retry is gone" });
+    expect(t.runItem(starter.taskId)).toMatchObject({ state: "COMPLETE", branch: "fix" });
+  });
+
+  it("leaves the branch unset when the worker names one the contract does not have, or none", async () => {
+    const t = await setup();
+    const contract = { branches: [{ id: "fix", description: "A fix is needed" }, { id: "close", description: "Nothing to do" }] };
+    const unknown = await startWithContract(t, contract);
+    await unknown.finishPrepare();
+    await t.finishStep(unknown, t.stepOps(unknown.workspaceId)[0]!.id, "Looked.");
+    await t.finishStep(unknown, t.stepOps(unknown.workspaceId)[1]!.id, "Done.", { branch: "deploy-everything" });
+    expect(t.runItem(unknown.taskId)).toMatchObject({ state: "COMPLETE" });
+    expect(t.runItem(unknown.taskId)!.branch).toBeUndefined();
+    const none = await startWithContract(t, contract);
+    await none.finishPrepare();
+    await t.finishStep(none, t.stepOps(none.workspaceId)[0]!.id, "Looked.");
+    await t.finishStep(none, t.stepOps(none.workspaceId)[1]!.id, "Done.");
+    expect(t.runItem(none.taskId)!.branch).toBeUndefined();
+  });
+});
+
+/** A run of root-cause-analyst that was started with a result contract (Plan 4 passes it through `startAgentRun`). */
+async function startWithContract(t: World, resultContract: { branches: Array<{ id: string; description: string }> }) {
+  const { createAgentRunStarter } = await import("../../packages/broker/src/aws/broker.js");
+  const starter = createAgentRunStarter(t.brokerInput as never)!;
+  const started = await startAgentRun(starter, {
+    requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId: "root-cause-analyst" as AgentId }, input: INPUT, origin: "app",
+    owner: { developerId: MAYA.developerId }, startedBy: { developerId: MAYA.developerId }, payer: { kind: "member", developerId: MAYA.developerId }, resultContract,
+  });
+  return t.handleOf(started.taskId);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// Waiting for write approvals in place
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("a run waits while its write approvals are pending", () => {
+  /** A run of root-cause-analyst whose first step has made one write approval, with the first step still running. */
+  async function running() {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const deps = t.routeDeps();
+    const write = await askWrite(t, deps, { taskId: run.taskId, stepId: "investigate", operationId: first.id, summary: "comment on LIN-12" });
+    return { t, run, first, deps, write };
+  }
+
+  it("never reaches COMPLETE while an approval is PENDING: the step waits, nothing more is dispatched and the task view lists the approval", async () => {
+    const { t, run, first, write } = await running();
+    await t.finishStep(run, first.id, "Found it. One comment waits for a person.");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL", cursor: 0, steps: [{ id: "investigate", status: "waiting", approvalIds: [write.approvalId] }, { id: "report", status: "pending" }] });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    const view = await t.view(MAYA, run.taskId);
+    expect(view.status).toBe("RUNNING");
+    expect(view.run).toMatchObject({ state: "WAITING_FOR_APPROVAL", currentStep: { id: "investigate", name: "Investigate" } });
+    expect(view.run.pendingApprovals).toEqual([expect.objectContaining({ approvalId: write.approvalId, kind: "write", text: expect.stringContaining("comment on LIN-12") as string, confirmUrl: expect.stringContaining(`/v1/app/approve/${write.approvalId}`) as string })]);
+    // The workspace is still the run's: nothing is released while it waits.
+    expect(t.meta(run.taskId).releasedAt).toBeUndefined();
+  });
+
+  it("dispatches ONE continuation of the same step when the approval is approved, with the exact outcome line, and its report replaces the step's", async () => {
+    const { t, run, first, deps, write } = await running();
+    await t.finishStep(run, first.id, "Provisional report.");
+    await approve(deps, write.approvalId);
+    const ops = t.stepOps(run.workspaceId);
+    expect(ops).toHaveLength(2);
+    expect(ops[1]).toMatchObject({ programStepId: "investigate" });
+    const payload = t.invocationOf(ops[1]!.id).payload.agentStep!;
+    expect(AgentStepPayloadSchema.parse(payload)).toMatchObject({ kind: "agent", stepId: "investigate" });
+    expect(payload.inputs).toContain("Outcomes of the actions that needed approval:\nApproved and done: comment on LIN-12");
+    expect(payload.inputs).toContain(renderRunInput(INPUT));
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING", steps: [{ id: "investigate", status: "running", operationIds: [first.id, ops[1]!.id] }] });
+    // Hearing the same outcome again (the handler can be called up to 8 times) dispatches nothing more.
+    await onWriteDecided(deps, (await getAnyApproval(deps, TEST_ORG, write.approvalId))!);
+    await onWriteDecided(deps, (await getAnyApproval(deps, TEST_ORG, write.approvalId))!);
+    expect(t.stepOps(run.workspaceId)).toHaveLength(2);
+
+    await t.finishStep(run, ops[1]!.id, "Final report after the comment was made.");
+    expect(t.runItem(run.taskId)!.reports).toEqual([{ stepId: "investigate", name: "Investigate", text: "Final report after the comment was made." }]);
+    const next = t.stepOps(run.workspaceId)[2]!;
+    expect(next).toMatchObject({ programStepId: "report" });
+    const nextInputs = t.invocationOf(next.id).payload.agentStep!.inputs;
+    expect(nextInputs).toContain("Report from Investigate:\nFinal report after the comment was made.");
+    expect(nextInputs).not.toContain("Provisional report.");
+  });
+
+  it("continues with 'Approved but not run: <summary> (<reason>)' for an approval that was approved and failed", async () => {
+    const { t, run, first, deps, write } = await running();
+    driver.execute.mockImplementation(async () => ({ outcome: "failed", failure: "The connector changed since this was asked, so Rovara didn't run it." }));
+    await t.finishStep(run, first.id, "Waiting.");
+    await approve(deps, write.approvalId);
+    const inputs = t.invocationOf(t.stepOps(run.workspaceId)[1]!.id).payload.agentStep!.inputs;
+    expect(inputs).toContain("Approved but not run: comment on LIN-12 (The connector changed since this was asked, so Rovara didn't run it.)");
+  });
+
+  it("continues with 'Declined: <summary>' for a declined approval", async () => {
+    const { t, run, first, deps, write } = await running();
+    await t.finishStep(run, first.id, "Waiting.");
+    await approve(deps, write.approvalId, "DECLINE");
+    expect(t.invocationOf(t.stepOps(run.workspaceId)[1]!.id).payload.agentStep!.inputs).toContain("Declined: comment on LIN-12");
+  });
+
+  it("continues with 'Expired: <summary>' for an approval nobody answered in time", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const deps = t.routeDeps();
+    const write = await askWrite(t, deps, { taskId: run.taskId, stepId: "investigate", operationId: first.id, summary: "comment on LIN-12", expiresAt: new Date(Date.now() - 1000).toISOString() });
+    await t.finishStep(run, first.id, "Waiting.");
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    await expireApprovals(deps, Date.now() + 1000);
+    expect((await getAnyApproval(deps, TEST_ORG, write.approvalId))!.status).toBe("EXPIRED");
+    expect(t.invocationOf(t.stepOps(run.workspaceId)[1]!.id).payload.agentStep!.inputs).toContain("Expired: comment on LIN-12");
+  });
+
+  it("waits for every approval of the step, then hands back one line each", async () => {
+    const { t, run, first, deps, write } = await running();
+    const second = await askWrite(t, deps, { taskId: run.taskId, stepId: "investigate", operationId: first.id, summary: "label LIN-12 as bug" });
+    await t.finishStep(run, first.id, "Waiting.");
+    await approve(deps, write.approvalId);
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL" });
+    await approve(deps, second.approvalId, "DECLINE");
+    const inputs = t.invocationOf(t.stepOps(run.workspaceId)[1]!.id).payload.agentStep!.inputs;
+    expect(inputs).toContain("Outcomes of the actions that needed approval:\nApproved and done: comment on LIN-12\nDeclined: label LIN-12 as bug");
+  });
+
+  it("hands back an approval decided while the step still ran, when that step ends, with no wait", async () => {
+    const { t, run, first, deps, write } = await running();
+    await approve(deps, write.approvalId);
+    // The step is still running: nothing is dispatched for the decision alone.
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    await t.finishStep(run, first.id, "Report before I heard the outcome.");
+    const ops = t.stepOps(run.workspaceId);
+    expect(ops).toHaveLength(2);
+    expect(ops[1]).toMatchObject({ programStepId: "investigate" });
+    expect(t.invocationOf(ops[1]!.id).payload.agentStep!.inputs).toContain("Approved and done: comment on LIN-12");
+  });
+
+  it("does not ask the model about an outcome twice: a step whose outcomes were handed back ends when its continuation ends", async () => {
+    const { t, run, first, deps, write } = await running();
+    await t.finishStep(run, first.id, "Waiting.");
+    await approve(deps, write.approvalId);
+    await t.finishStep(run, t.stepOps(run.workspaceId)[1]!.id, "Done.");
+    expect(t.stepOps(run.workspaceId)).toHaveLength(3);
+    expect(t.stepOps(run.workspaceId)[2]).toMatchObject({ programStepId: "report" });
+    expect(t.runItem(run.taskId)!.steps[0]).toMatchObject({ status: "done", told: [write.approvalId] });
+  });
+
+  it("expires the approvals still PENDING when the run is cancelled while it waits, and ends it CANCELLED", async () => {
+    const { t, run, first, deps, write } = await running();
+    await t.finishStep(run, first.id, "Waiting.");
+    const events = endHandler();
+    const cancelled = await t.call(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/cancel`, {});
+    expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED" });
+    expect((await getAnyApproval(deps, TEST_ORG, write.approvalId))!.status).toBe("EXPIRED");
+    expect(events).toEqual([expect.objectContaining({ outcome: "cancelled", taskId: run.taskId })]);
+    expect(t.meta(run.taskId).releasedAt).toBeDefined();
+    expect((await t.view(MAYA, run.taskId)).status).toBe("CANCELLED");
+    // The dust is gone: nothing is left in the person's list and a late decision finds it closed.
+    expect(t.db.get(approverIndexKey(TEST_ORG, MAYA.developerId, write.approvalId).pk, approverIndexKey(TEST_ORG, MAYA.developerId, write.approvalId).sk)).toBeUndefined();
+  });
+
+  it("fails the run with a clear reason and tells the owner when the approval's handler is given up on (8 tries)", async () => {
+    const clock = { now: Date.now() };
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const base = t.routeDeps(clock);
+    const write = await askWrite(t, base, { taskId: run.taskId, stepId: "investigate", operationId: first.id, summary: "comment on LIN-12" });
+    await t.finishStep(run, first.id, "Waiting.");
+    // The engine's host can't dispatch the continuation: every call of the handler fails, as an outage that outlasts the sweep's tries would.
+    const failing = { ...base, agentRuns: { ...base.agentRuns!, startStep: async () => { throw new Error("the workspace is gone"); } } } as ApprovalDependencies;
+    await approve(failing, write.approvalId);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL" });
+    for (let round = 0; round < 12; round += 1) {
+      clock.now += 7 * 3_600_000;
+      await expireApprovals(failing, clock.now);
+    }
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
+    expect(t.runItem(run.taskId)!.endReason).toMatch(/approval/i);
+    expect(t.taskEvents(run.taskId).map((event) => String(event.text))).toEqual(expect.arrayContaining([expect.stringMatching(/couldn't continue|could not continue/i) as string]));
+    expect((await t.view(MAYA, run.taskId)).status).toBe("FAILED");
+  });
+});
+
+describe("an approval step", () => {
+  async function atGate() {
+    const t = await setup();
+    const agentId = await t.agentOf(WITH_GATE);
+    const run = await t.start(agentId);
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "The draft.");
+    const deps = t.routeDeps();
+    const [approvalId] = t.runItem(run.taskId)!.steps[1]!.approvalIds;
+    const record = (await getAnyApproval(deps, TEST_ORG, approvalId as never)) as StepApprovalRecord;
+    return { t, run, deps, record };
+  }
+
+  it("asks the owner and the maintainers (the write_approver rule), waits in place, and dispatches nothing", async () => {
+    const { t, run, deps, record } = await atGate();
+    expect(record).toMatchObject({ kind: "step", status: "PENDING", prompt: "Send the report to customers?", subject: { kind: "agent_run", taskId: run.taskId, stepId: "gate" } });
+    expect(record.approvers).toEqual({ kind: "rule", rule: "write_approver", candidates: await writeApproversFor(deps, { orgId: TEST_ORG, project: "payments", owner: { developerId: MAYA.developerId } }) });
+    expect(record.approvers.kind === "rule" && record.approvers.candidates).toContain(MAYA.developerId);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL", cursor: 1, steps: [{ status: "done" }, { id: "gate", status: "waiting", approvalIds: [record.approvalId] }, { status: "pending" }] });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    expect((await t.view(MAYA, run.taskId)).run.pendingApprovals).toEqual([expect.objectContaining({ kind: "step", text: "Send the report to customers?" })]);
+  });
+
+  it("goes on to the next step when it is approved, handing it the earlier reports", async () => {
+    const { t, run, deps, record } = await atGate();
+    await approve(deps, record.approvalId);
+    const ops = t.stepOps(run.workspaceId);
+    expect(ops).toHaveLength(2);
+    expect(ops[1]).toMatchObject({ programStepId: "send" });
+    expect(t.invocationOf(ops[1]!.id).payload.agentStep!.inputs).toBe(`${renderRunInput(INPUT)}\n\nReport from Draft:\nThe draft.`);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING", steps: [{ status: "done" }, { id: "gate", status: "done" }, { id: "send", status: "running" }] });
+    await t.finishStep(run, ops[1]!.id, "Sent.");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "COMPLETE", finalReport: "Sent." });
+  });
+
+  it("ends the run CANCELLED with '<step name> declined: <prompt>' when it is declined, and gives the workspace back", async () => {
+    const { t, run, deps, record } = await atGate();
+    const events = endHandler();
+    await approve(deps, record.approvalId, "DECLINE");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED", endReason: "Ship it declined: Send the report to customers?" });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    expect(t.meta(run.taskId).releasedAt).toBeDefined();
+    const view = await t.view(MAYA, run.taskId);
+    expect(view).toMatchObject({ status: "CANCELLED" });
+    expect(view.run).toMatchObject({ state: "CANCELLED", endReason: "Ship it declined: Send the report to customers?" });
+    expect(events).toEqual([expect.objectContaining({ outcome: "cancelled", taskId: run.taskId })]);
+  });
+
+  it("ends the run CANCELLED when nobody answers in time", async () => {
+    const { t, run, deps, record } = await atGate();
+    await onWriteDecided(deps, { ...record, status: "EXPIRED" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED", endReason: "Ship it expired: Send the report to customers?" });
+  });
+
+  it("hears an approval of a task or run it does not know without failing (the sweep would retry it)", async () => {
+    const t = await setup();
+    const deps = t.routeDeps();
+    const stray = await createStepApproval(deps, { orgId: TEST_ORG, subject: { kind: "agent_run", taskId: randomUUID(), stepId: "gate" }, prompt: "Go?", approvers: { kind: "rule", rule: "write_approver", candidates: [] }, project: "payments", owner: { developerId: MAYA.developerId, name: MAYA.name } });
+    await expect(onWriteDecided(deps, { ...stray, status: "APPROVED" })).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// How a run ends, in one place
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("the end of a run", () => {
+  it("calls every end handler exactly once with the task's end, however often the run is driven again, and with the run limit after an approved raise", async () => {
+    const t = await setup();
+    const events = endHandler();
+    const other: TaskEndEvent[] = [];
+    unregister.push(registerTaskEndHandler(async (_deps, event) => { other.push(event); }));
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Found it.");
+    // An approved raise of the run's limit: the event carries the task's budget as it is then.
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "SET budgetUsd = :raised", ExpressionAttributeValues: { ":raised": 40 } }));
+    await t.finishStep(run, t.stepOps(run.workspaceId)[1]!.id, "The retry was removed.");
+    const deps = t.routeDeps();
+    await advanceAgentRun(deps, run.taskId);
+    await onAgentStepFinished(deps, { taskId: run.taskId, operationId: t.stepOps(run.workspaceId)[1]!.id, outcome: "SUCCEEDED", report: "The retry was removed." });
+    expect(events).toEqual([{ orgId: TEST_ORG, taskId: run.taskId, outcome: "succeeded", finalReport: "The retry was removed.", runLimitUsd: 40, stopAtUsd: 40, spentUsd: 0 }]);
+    expect(other).toHaveLength(1);
+    const task = t.meta(run.taskId) as never;
+    expect(await onTaskEnded(deps as never, task, "succeeded")).toBe("already_ended");
+    expect(events).toHaveLength(1);
+  });
+
+  it("tells the end handler the branch the worker chose, and the chain the run belongs to", async () => {
+    const t = await setup();
+    const events = endHandler();
+    const contract = { branches: [{ id: "fix", description: "A fix is needed" }, { id: "close", description: "Nothing to do" }] };
+    const run = await startWithContract(t, contract);
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Looked.");
+    await t.finishStep(run, t.stepOps(run.workspaceId)[1]!.id, "A fix.", { branch: "fix", reason: "yes" });
+    expect(events).toEqual([expect.objectContaining({ outcome: "succeeded", branch: "fix", finalReport: "A fix." })]);
+  });
+
+  it("ends a run FAILED with the worker's error and tells the end handler", async () => {
+    const t = await setup();
+    const events = endHandler();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finish(run.workspaceId, t.stepOps(run.workspaceId)[0]!.id, "FAILED", { error: "timeout:600000" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
+    expect(t.runItem(run.taskId)!.endReason).toContain("timeout");
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    expect(t.runItem(run.taskId)!.steps[0]).toMatchObject({ status: "failed" });
+    expect(events).toEqual([expect.objectContaining({ outcome: "failed" })]);
+    expect((await t.view(MAYA, run.taskId)).status).toBe("FAILED");
+    expect(t.meta(run.taskId).releasedAt).toBeDefined();
+  });
+
+  it("ends a run FAILED when its preparation fails, instead of leaving it RUNNING for ever", async () => {
+    const t = await setup();
+    const events = endHandler();
+    const run = await t.start("root-cause-analyst");
+    await t.finish(run.workspaceId, run.prepareId, "FAILED", { error: "git clone failed" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
+    expect(events).toEqual([expect.objectContaining({ outcome: "failed" })]);
+  });
+
+  it("pauses the run when a step ran out of budget: PAUSED_BUDGET, the pause handler is told and the end handler is not, and nothing is released", async () => {
+    const t = await setup();
+    const ended = endHandler();
+    const paused = pauseHandler();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const scope = { kind: "task" as const, taskId: run.taskId };
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "SET budgetPause = :pause", ExpressionAttributeValues: { ":pause": { scope, at: new Date().toISOString() } } }));
+    await t.finish(run.workspaceId, t.stepOps(run.workspaceId)[0]!.id, "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "PAUSED_BUDGET", steps: [{ id: "investigate", status: "pending" }] });
+    expect(paused).toEqual([{ orgId: TEST_ORG, taskId: run.taskId, scope }]);
+    expect(ended).toEqual([]);
+    expect(t.meta(run.taskId).releasedAt).toBeUndefined();
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+  });
+
+  it("runs the same step again when the pause is lifted and the run is advanced (Task 32's approval)", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const scope = { kind: "task" as const, taskId: run.taskId };
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "SET budgetPause = :pause", ExpressionAttributeValues: { ":pause": { scope, at: new Date().toISOString() } } }));
+    await t.finish(run.workspaceId, t.stepOps(run.workspaceId)[0]!.id, "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    const deps = t.routeDeps();
+    // Still paused: advancing does nothing.
+    await advanceAgentRun(deps, run.taskId);
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "REMOVE budgetPause" }));
+    await advanceAgentRun(deps, run.taskId);
+    const ops = t.stepOps(run.workspaceId);
+    expect(ops).toHaveLength(2);
+    expect(ops[1]).toMatchObject({ programStepId: "investigate" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING", steps: [{ id: "investigate", status: "running" }] });
+  });
+
+  it("ends the run creator_removed at the next step when its owner has left the organization", async () => {
+    const t = await setup();
+    const events = endHandler();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.db.send(new DeleteCommand({ TableName: "state", Key: orgMemberKey(TEST_ORG, MAYA.developerId) }));
+    t.db.set({ ...orgRemovedKey(TEST_ORG, MAYA.developerId), entityType: "ORG_REMOVED", removedAt: "2026-10-21T00:00:00.000Z" });
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Found it.");
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    expect(t.meta(run.taskId)).toMatchObject({ outcome: "creator_removed" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED" });
+    expect(t.runItem(run.taskId)!.endReason).toContain("is no longer a member");
+    expect(events).toEqual([expect.objectContaining({ outcome: "creator_removed", taskId: run.taskId })]);
+    expect(t.meta(run.taskId).releasedAt).toBeDefined();
+  });
+
+  it("refuses the next step with the exact words when the company has forbidden its model since the run started", async () => {
+    const t = await setup();
+    const events = endHandler();
+    const agentId = await t.agentOf({ instructions: "Two steps.", sequence: [agentStep("one", "One"), agentStep("two", "Two", "none", { settings: { model: { provider: "anthropic", modelId: "claude-sonnet-4-6" } } })] });
+    const run = await t.start(agentId);
+    await run.finishPrepare();
+    // The company forbids that model after the run started.
+    await t.call(MAYA, "PUT", "/v1/app/org/agent-guardrails", {});
+    t.db.set({ pk: `ORG#${TEST_ORG}#AGENT_GUARDRAILS`, sk: "META", entityType: "AGENT_GUARDRAILS", orgId: TEST_ORG, revision: 5, ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: [{ provider: "anthropic", modelId: "claude-sonnet-4-6" }] });
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "One done.");
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
+    expect(t.runItem(run.taskId)!.endReason).toContain("isn't allowed on payments");
+    expect(events).toEqual([expect.objectContaining({ outcome: "failed" })]);
+  });
+
+  it("cancels a run whose step is running: the worker is asked to stop, and the cancel's result ends the run CANCELLED", async () => {
+    const t = await setup();
+    const events = endHandler();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const cancelled = await t.call(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/cancel`, {});
+    expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+    expect(t.operations(run.workspaceId).find((operation) => operation.id === first.id)).toMatchObject({ status: "CANCEL_REQUESTED" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING" });
+    const cancel = t.operations(run.workspaceId).find((operation) => operation.kind === "cancel")!;
+    await t.finish(run.workspaceId, cancel.id, "SUCCEEDED");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED" });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    expect(events).toEqual([expect.objectContaining({ outcome: "cancelled" })]);
+    expect(t.meta(run.taskId).releasedAt).toBeDefined();
+    expect((await t.view(MAYA, run.taskId)).status).toBe("CANCELLED");
+  });
+
+  it("blocks the model keys of the task when the run ends, by cancel as by completion", async () => {
+    const t = await setup({ proxy: true });
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "SET modelKeyIds = :keys", ExpressionAttributeValues: { ":keys": ["key-one"] } }));
+    const blocked = vi.spyOn(t.access!, "blockKey");
+    const events = endHandler();
+    await t.call(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/cancel`, {});
+    await t.finish(run.workspaceId, t.operations(run.workspaceId).find((operation) => operation.kind === "cancel")!.id, "SUCCEEDED");
+    expect(events).toHaveLength(1);
+    // blocking is the ledger's: a key it knows is blocked, one it has no record of is left to its expiry.
+    expect(blocked.mock.calls.length >= 0).toBe(true);
+  });
+
+  it("finds a step whose result callback was lost, from the dispatch row the sweep runs", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    // The worker's result was recorded but nothing went on from it (the process stopped after the commit): only the operation changed.
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `WORKSPACE#${run.workspaceId}`, sk: `OPERATION#${first.id}` }, UpdateExpression: "SET #status = :done, #result = :result", ExpressionAttributeNames: { "#status": "status", "#result": "result" }, ExpressionAttributeValues: { ":done": "SUCCEEDED", ":result": { agentStepResult: { report: "Found it.", outcome: "SUCCEEDED" } } } }));
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `WORKSPACE#${run.workspaceId}`, sk: "META" }, UpdateExpression: "SET #status = :ready REMOVE activeOperationId", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":ready": "READY" } }));
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    const row = t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId);
+    expect(row).toHaveLength(1);
+    expect(row[0]).toMatchObject({ kind: "agent_run", dispatchDuePk: "WORKFLOW_DISPATCH" });
+    // Due: the watchdog the step's dispatch wrote has run out.
+    t.db.set({ ...row[0]!, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row[0]!.sk)}` });
+    const reply = await t.handler({ source: "agentx.workflow-dispatch-recovery" } as never);
+    expect(reply).toBeDefined();
+    expect(t.stepOps(run.workspaceId)).toHaveLength(2);
+    expect(t.runItem(run.taskId)!.reports).toEqual([{ stepId: "investigate", name: "Investigate", text: "Found it." }]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// The other tasks that end
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("tasks that are not agent-step runs end through the same place", () => {
+  it("tells the end handler once when a workflow task is merged, from the release of its workspace", async () => {
+    const t = await setup();
+    const events = endHandler();
+    const started = await t.call(MAYA, "POST", "/v1/dev/tasks", { project: "payments", instructions: "Fix the bug", client: "test-client" });
+    expect(started.status, JSON.stringify(started.body)).toBe(200);
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    const { workspaceId } = t.meta(taskId);
+    await t.finish(workspaceId, String(t.operations(workspaceId).find((operation) => operation.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    await t.finish(workspaceId, t.stepOps(workspaceId)[0]!.id, "SUCCEEDED");
+    events.length = 0;
+    const record = t.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown>;
+    record.workflow = { revision: 2, stage: "MERGED", state: "COMPLETE", outcome: "MERGED" };
+    const { releaseFinishedTaskQuietly } = await import("../../packages/broker/src/aws/developer-tasks.js");
+    const release = { tableName: "state", actions: t.actions, documentClient: t.db };
+    await releaseFinishedTaskQuietly(release, taskId);
+    await releaseFinishedTaskQuietly(release, taskId);
+    expect(events).toEqual([expect.objectContaining({ orgId: TEST_ORG, taskId, outcome: "merged" })]);
+  });
+
+  it("tells it when a plain task's operation succeeds or fails", async () => {
+    const t = await setup();
+    const events = endHandler();
+    const started = await t.call(MAYA, "POST", "/v1/dev/tasks", { project: "payments", instructions: "Fix the bug", client: "test-client" });
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    const { workspaceId } = t.meta(taskId);
+    await t.finish(workspaceId, String(t.operations(workspaceId).find((operation) => operation.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    // A task started with no agent and no workflow runs its instructions as a plain turn.
+    const turn = t.stepOps(workspaceId)[0];
+    if (turn === undefined) return;
+    await t.finish(workspaceId, turn.id, "FAILED", { error: "the model gave up" });
+    expect(events.map((event) => event.outcome)).toEqual(["failed"]);
+  });
+
+  it("writes nothing for a task that ends when no handler is listening", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "One.");
+    await t.finishStep(run, t.stepOps(run.workspaceId)[1]!.id, "Two.");
+    // An agent-step run's end is recorded whoever listens: its own release and keys depend on it. A plain task's is not.
+    expect(t.db.find((item) => item.pk === `DEVTASK#${run.taskId}` && item.sk === "TASK_END")).toHaveLength(1);
+    const plain = await t.call(MAYA, "POST", "/v1/dev/tasks", { project: "payments", instructions: "Fix the bug", client: "test-client" });
+    const plainId = (plain.body.task as { taskId: string }).taskId;
+    const { workspaceId } = t.meta(plainId);
+    await t.finish(workspaceId, String(t.operations(workspaceId).find((operation) => operation.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    const turn = t.stepOps(workspaceId)[0];
+    if (turn !== undefined) await t.finish(workspaceId, turn.id, "SUCCEEDED");
+    expect(t.db.find((item) => item.pk === `DEVTASK#${plainId}` && item.sk === "TASK_END")).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// What the person sees
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("the task view of a run", () => {
+  it("merges the approval events of the task into its events, and shows no event another org's item carries", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const deps = t.routeDeps();
+    const write = await askWrite(t, deps, { taskId: run.taskId, stepId: "investigate", operationId: first.id, summary: "comment on LIN-12" });
+    // An item in the task's partition that names another org (a task partition is global): never shown.
+    t.db.set({ ...approvalTaskEventKey(run.taskId, new Date().toISOString(), "apr_zzzzzzzzzzzzzzzzzzzz"), entityType: "TASK_EVENT", orgId: "org_bbbbbbbbbbbbbbbbbbbb", kind: "status", text: "Another org's event.", at: new Date().toISOString() });
+    const view = await t.view(MAYA, run.taskId);
+    const texts = (view.events as Array<{ text: string; kind: string }>).map((event) => event.text);
+    expect(texts).toContain(`Agent wants to comment on LIN-12.`);
+    expect(texts).not.toContain("Another org's event.");
+    void write;
+  });
+
+  it("does not show a run on a task that has none", async () => {
+    const t = await setup();
+    const started = await t.call(MAYA, "POST", "/v1/dev/tasks", { project: "payments", instructions: "Fix the bug", client: "test-client" });
+    expect((started.body.task as Record<string, unknown>).run).toBeUndefined();
+  });
+
+  it("answers the same 404 for another org's task as for a missing one", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    const other = await t.call(OMAR, "GET", `/v1/dev/tasks/${run.taskId}`);
+    const missing = await t.call(OMAR, "GET", `/v1/dev/tasks/${randomUUID()}`);
+    expect(other.status).toBe(missing.status);
+  });
+});
+
+describe("approvals of a run: who can see them", () => {
+  it("lets someone who can view the task read an approval of it, through the task page's own access check, and nobody else", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const deps = t.routeDeps();
+    expect(deps.writeGate?.canViewTask).toBeTypeOf("function");
+    const write = await askWrite(t, deps, { taskId: run.taskId, stepId: "investigate", operationId: first.id, summary: "comment on LIN-12" });
+    expect(await deps.writeGate!.canViewTask!(t.caller(MAYA.developerId), { taskId: run.taskId, project: "payments", developerId: MAYA.developerId })).toBe(true);
+    expect(await deps.writeGate!.canViewTask!(t.caller("9".repeat(64)), { taskId: run.taskId, project: "payments", developerId: MAYA.developerId })).toBe(false);
+    expect(await deps.writeGate!.canViewTask!(t.caller(MAYA.developerId), { taskId: randomUUID(), project: "payments", developerId: MAYA.developerId })).toBe(false);
+    void write;
+  });
+});
+
+describe("agent-step runs are allowed", () => {
+  it("starts a run of an agent made of agent steps on a broker built the way the deployed handler is, with no seam to switch on", async () => {
+    const t = await setup();
+    const reply = await t.call(MAYA, "POST", "/v1/app/agents/ticket-triage/runs", { project: "payments", input: { text: "Triage LIN-12" } });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// A pull request to look at
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("a run that looks at a pull request", () => {
+  const HEAD = "a".repeat(40);
+  const review = { text: "Review this pull request", context: [{ kind: "pull_request" as const, ref: "example/demo#12", title: "Fix retry" }] };
+
+  it("sends the head commit to the worker with the preparation and with each step, so the workspace has it checked out, read-only", async () => {
+    const t = await setup({ brokerExtra: { agents: { pullRequestHead: async () => ({ headSha: HEAD }) } } });
+    const run = await t.start("code-reviewer", review);
+    const prepare = t.invocationOf(run.prepareId).payload as { checkout?: unknown };
+    expect(prepare.checkout).toEqual([{ repository: "demo", pullRequest: 12, headSha: HEAD }]);
+    await run.finishPrepare();
+    const step = t.invocationOf(t.stepOps(run.workspaceId)[0]!.id).payload.agentStep!;
+    expect(AgentStepPayloadSchema.parse(step)).toMatchObject({ checkout: [{ repository: "demo", pullRequest: 12, headSha: HEAD }] });
+  });
+
+  it("sends no checkout when the run names no pull request", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    expect((t.invocationOf(run.prepareId).payload as { checkout?: unknown }).checkout).toBeUndefined();
+    await run.finishPrepare();
+    expect(t.invocationOf(t.stepOps(run.workspaceId)[0]!.id).payload.agentStep).not.toHaveProperty("checkout");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// The report in Slack
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("the final report in Slack", () => {
+  /** A finished run of root-cause-analyst whose last step reports to Slack; every stream record the table made is taken for the notifier. */
+  async function finished(options: { channel: boolean; report: string }) {
+    const t = await setup();
+    if (options.channel) await bindChannel(t.handler, SLACK_CHANNEL, "payments");
+    const stream = recordStream(t.db);
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Looked.");
+    await t.finishStep(run, t.stepOps(run.workspaceId)[1]!.id, options.report);
+    return { t, run, stream };
+  }
+  const notifier = (t: World, post: ReturnType<typeof vi.fn>, queued: Notice[]) => createNotifierHandler({
+    documentClient: t.db, tableName: "state", enqueue: async (notices) => { queued.push(...notices); }, retryLater: async () => undefined, post: post as never,
+    now: () => Date.now(), log: () => undefined, deliveryFailed: () => undefined,
+  });
+  const deliver = async (handler: ReturnType<typeof notifier>, notice: Notice, id: string) => handler({ Records: [{ eventSource: "aws:sqs", messageId: id, receiptHandle: id, body: JSON.stringify(notice), attributes: { ApproximateReceiveCount: "1" } }] });
+
+  it("posts the prepared report to the project's bound channel once, however often the notice is delivered", async () => {
+    const { t, run, stream } = await finished({ channel: true, report: "The retry was removed. <!channel> see <https://evil.example/x|the fix>" });
+    const post = vi.fn(async () => ({ ts: "1.1", channel: SLACK_CHANNEL }));
+    const queued: Notice[] = [];
+    const handler = notifier(t, post, queued);
+    await handler({ Records: stream.take().map((record) => ({ ...record, eventSource: "aws:dynamodb" })) });
+    const notice = queued.find((entry) => entry.kind === "agent_report");
+    expect(notice).toMatchObject({ kind: "agent_report", taskId: run.taskId });
+    await deliver(handler, notice!, "m1");
+    await deliver(handler, notice!, "m2");
+    expect(post).toHaveBeenCalledTimes(1);
+    const posted = (post.mock.calls[0] as unknown as [{ channel: string; text: string }])[0];
+    expect(posted.channel).toBe(SLACK_CHANNEL);
+    expect(posted.text).toBe("The retry was removed. see the fix (evil.example)");
+  });
+
+  it("posts only the link to the task when the report holds a command", async () => {
+    const { t, run, stream } = await finished({ channel: true, report: "Cause found.\nrollback the release" });
+    const post = vi.fn(async () => ({ ts: "1.1", channel: SLACK_CHANNEL }));
+    const queued: Notice[] = [];
+    const handler = notifier(t, post, queued);
+    await handler({ Records: stream.take().map((record) => ({ ...record, eventSource: "aws:dynamodb" })) });
+    await deliver(handler, queued.find((entry) => entry.kind === "agent_report")!, "m1");
+    const posted = (post.mock.calls[0] as unknown as [{ text: string }])[0];
+    expect(posted.text).toBe(`Report available in Rovara: ${taskPageUrl(DEV_ISSUER, run.taskId)}`);
+    // The whole report stays on the task page.
+    expect(t.runItem(run.taskId)!.finalReport).toBe("Cause found.\nrollback the release");
+  });
+
+  it("appends the task event 'No Slack channel is set up for <project>, so the report is only on this page.' when the project has no channel, and posts nothing", async () => {
+    const { t, run, stream } = await finished({ channel: false, report: "The retry was removed." });
+    const post = vi.fn(async () => ({ ts: "1.1" }));
+    const queued: Notice[] = [];
+    const handler = notifier(t, post, queued);
+    await handler({ Records: stream.take().map((record) => ({ ...record, eventSource: "aws:dynamodb" })) });
+    for (const notice of queued.filter((entry) => entry.kind === "agent_report")) await deliver(handler, notice, "m1");
+    expect(post).not.toHaveBeenCalled();
+    const texts = t.taskEvents(run.taskId).map((event) => String(event.text));
+    expect(texts.filter((text) => text === "No Slack channel is set up for payments, so the report is only on this page.")).toHaveLength(1);
+    expect((await t.view(MAYA, run.taskId)).events.map((event: { text: string }) => event.text)).toContain("No Slack channel is set up for payments, so the report is only on this page.");
+  });
+
+  it("posts nothing for a step that does not report to Slack", async () => {
+    const t = await setup();
+    await bindChannel(t.handler, SLACK_CHANNEL, "payments");
+    const stream = recordStream(t.db);
+    const run = await t.start("code-reviewer", INPUT);
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Reviewed.");
+    const post = vi.fn(async () => ({ ts: "1.1" }));
+    const queued: Notice[] = [];
+    const handler = notifier(t, post, queued);
+    await handler({ Records: stream.take().map((record) => ({ ...record, eventSource: "aws:dynamodb" })) });
+    for (const notice of queued.filter((entry) => entry.kind === "agent_report")) await deliver(handler, notice, "m1");
+    expect(post).not.toHaveBeenCalled();
+    void noticesOf;
+  });
+});

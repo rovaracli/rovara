@@ -102,9 +102,16 @@ export function renderRunInput(input: RunInput): string {
  */
 export function codingRequestText(input: RunInput, limit: number): string {
   if (!hasContext(input)) return input.text;
-  const rendered = renderRunInput(input);
-  const encoded = utf8.encode(rendered);
-  if (encoded.length <= limit) return rendered;
+  return shortenToBytes(renderRunInput(input), limit);
+}
+
+/**
+ * The text itself when it fits `limit` UTF-8 bytes, else cut so that, with "… (shortened)" after it, it fits (never inside a character).
+ * Throws `RangeError` when `limit` is under the marker's own length.
+ */
+export function shortenToBytes(text: string, limit: number): string {
+  const encoded = utf8.encode(text);
+  if (encoded.length <= limit) return text;
   const marker = utf8.encode(SHORTENED_MARKER).length;
   if (limit < marker) throw new RangeError(`the request limit must be at least ${marker} bytes`);
   let end = limit - marker;
@@ -112,6 +119,9 @@ export function codingRequestText(input: RunInput, limit: number): string {
   while (end > 0 && (encoded[end]! & 0xc0) === 0x80) end -= 1;
   return `${utf8Decoder.decode(encoded.subarray(0, end))}${SHORTENED_MARKER}`;
 }
+
+/** An agent step's report is at most this many bytes (the worker cuts it too); a longer one ends "… (shortened)". */
+export const AGENT_REPORT_MAX_BYTES = 32_768;
 
 /** A pull request of a project repository a run was asked to look at: the head commit the run's workspace checks out, read-only. */
 export const RunCheckoutSchema = z.object({
@@ -139,14 +149,22 @@ export const AgentRunStateSchema = z.object({
   steps: z.array(z.object({
     id: StepIdSchema,
     status: z.enum(AGENT_RUN_STEP_STATUSES),
+    /** Every operation the step has run: the first, then one continuation for each time the outcomes of approved actions were handed back. */
     operationIds: z.array(z.string()),
+    /** Where the step's report is stored as `agent-step-<id>.md` (the task's artifacts). */
     reportKey: z.string().optional(),
+    /** The approvals the step waits on or waited on: its own approval (an `approval` step) or the write approvals its calls made. */
     approvalIds: z.array(z.string()),
+    /** The write approvals whose outcome the model has been told in a continuation. */
+    told: z.array(z.string()).optional(),
   }).strict()),
   reports: z.array(z.object({ stepId: StepIdSchema, name: z.string(), text: z.string() }).strict()),
   finalReport: z.string().optional(),
   resultContract: ResultContractSchema.optional(),
   branch: z.string().optional(),
   checkout: z.array(RunCheckoutSchema).max(RUN_INPUT_CONTEXT_MAX).optional(),
+  /** Why the run ended FAILED or CANCELLED, in words the person reads, and when it ended (any ended state). */
+  endReason: z.string().max(1000).optional(),
+  endedAt: z.string().optional(),
 }).strict();
 export type AgentRunState = z.infer<typeof AgentRunStateSchema>;
