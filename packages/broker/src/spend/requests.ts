@@ -366,15 +366,15 @@ async function starterOf(deps: SpendRequestDependencies, request: SpendRequestRe
 }
 
 /**
- * Whether a run's starter may decide their own run's request (fix round 1, I-4): a run limit or planning limit when they are the payer member; a max per
- * run never, even as the agent's owner, unless they are the org's only owner or admin (as an owner's cap is ruled). A month's request (Task 33 fix round 1,
+ * Whether a run's starter may decide their own run's request (fix round 1, I-4): a run limit or planning limit when they are the payer member, or the org's
+ * only owner or admin (merge of Tasks 32 and 34: else nobody could decide it); a max per run never, even as the agent's owner, unless they are the org's only owner or admin (as an owner's cap is ruled). A month's request (Task 33 fix round 1,
  * I-3, M-11) the same as a max per run: its asker, or the starter of the task whose pause asked, never decides it unless they are the only owner or admin.
  */
 async function starterMayDecide(deps: SpendRequestDependencies, request: SpendRequestRecord, starter: string): Promise<boolean> {
-  if (request.kind === "max_per_run" || request.kind === "month") {
-    const ids = await orgAdmins(deps, request.orgId);
-    return ids.length === 1 && ids[0] === starter;
-  }
+  // The org's only owner or admin, whatever the kind: nobody else could decide it, and the request would wait until it expired.
+  const ids = await orgAdmins(deps, request.orgId);
+  if (ids.length === 1 && ids[0] === starter) return true;
+  if (request.kind === "max_per_run" || request.kind === "month") return false;
   const payer = await taskPayerId(deps, request);
   return payer !== undefined && await resolveSurvivor(deps, request.orgId, payer) === starter;
 }
