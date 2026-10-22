@@ -250,6 +250,26 @@ describe("running the tools", () => {
     ]);
   });
 
+  it("lists only issues that are in the scope's project, whatever the vendor's endpoint answered (review M-5)", async () => {
+    const { result } = await run("list_issues", {}, { api: fakeSentry({ token: TOKEN, leakOtherProjects: true }) });
+    expect(result.status).toBe("SUCCEEDED");
+    expect(result.text).toContain("WEB-1");
+    expect(result.text).not.toContain("API-1");
+    expect(result.text).not.toContain("Database connection lost");
+    expect(result.text.startsWith("2 issues in web")).toBe(true);
+  });
+
+  it("shows the tags of an event that describe the software, not the person or the request (review M-5)", async () => {
+    const { result } = await run("get_latest_event", { issueId: "101" });
+    expect(result.status).toBe("SUCCEEDED");
+    expect(result.text).toContain("environment=prod");
+    expect(result.text).toContain("release=web@1.2.3");
+    expect(result.text).toContain("browser.name=Chrome");
+    for (const hidden of ["id:4242", "private@example.com", "shop.example", "token=abc", "203.0.113.9", "203.0.113.10", "web-7f9c", "cus_123456", "user=", "user.email", "url=", "ip=", "client_ip", "server_name", "customer_id"]) {
+      expect(result.text, hidden).not.toContain(hidden);
+    }
+  });
+
   it("refuses an issue of another project with the plan's words, and fetches no event for it", async () => {
     const r = await resolved();
     const connection = await r.connector.connect!({ endpoint: r.definition.endpoint, token: TOKEN, tools: [...TOOLS], signal: AbortSignal.timeout(5_000) });

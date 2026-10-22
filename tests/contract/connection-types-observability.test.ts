@@ -852,11 +852,15 @@ describe("a check's message (review M3)", () => {
     expect(JSON.stringify(answer)).not.toContain(SENTRY_TOKEN);
     // A connection with two secret values (Datadog's API and application keys) has both replaced; the message is no longer after the cap.
     const other = setup();
-    const datadog = storeOf(other.deps, { checks: { datadog: async ({ secret }) => ({ ok: false, message: `${"x".repeat(285)} keys ${JSON.stringify(secret)}` }) } });
+    // The cap (300) falls inside the API key: 279 characters and the 11 of `{"apiKey":"` put the key at 290. A cap that ran first would leave its first ten characters.
+    const datadog = storeOf(other.deps, { checks: { datadog: async ({ secret }) => ({ ok: false, message: `${"x".repeat(279)}${JSON.stringify(secret)}` }) } });
     await datadog.put({ orgId: ORG_A, connection: DATADOG, secret: secretFor(DATADOG), by: ALICE });
     const refused = await datadog.check(ORG_A, CON_A);
     expect(refused.message!.length).toBeLessThanOrEqual(300);
-    expect(JSON.stringify(refused)).not.toMatch(/dd-api-key|dd-app-key/u);
+    expect(refused.message).toContain("[redacted]");
+    for (const key of [secretFor(DATADOG)!.apiKey, secretFor(DATADOG)!.appKey]) {
+      for (let start = 0; start + 6 <= key!.length; start += 1) expect(refused.message!.includes(key!.slice(start, start + 6)), key!.slice(start, start + 6)).toBe(false);
+    }
     const both = storeOf(other.deps, { checks: { datadog: async () => ({ ok: false, message: "api dd-api-key-0123456789 app dd-app-key-0123456789" }) } });
     expect((await both.check(ORG_A, CON_A)).message).toBe("api [redacted] app [redacted]");
   });

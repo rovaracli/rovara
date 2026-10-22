@@ -32,6 +32,8 @@ export interface FakeSentryOptions {
   issues?: readonly FakeSentryIssue[];
   /** Answers every request with this status (a vendor outage, a 429). */
   status?: number;
+  /** The project issues endpoint answers with every project's issues, as a misbehaving vendor (or a free-form query) could make it. */
+  leakOtherProjects?: boolean;
 }
 
 /** Sentry's API as the Sentry connector uses it: `https://<us|de>.sentry.io/api/0/...` with `Authorization: Bearer <token>`. */
@@ -61,7 +63,7 @@ export function fakeSentry(options: FakeSentryOptions): { handler: VendorHandler
     const projectIssues = new RegExp(`^/api/0/projects/${org}/([^/]+)/issues/$`).exec(path);
     if (projectIssues !== null) {
       const limit = Number(url.searchParams.get("limit") ?? "100");
-      return json(issues.filter((issue) => issue.project === projectIssues[1]).slice(0, limit).map(view));
+      return json(issues.filter((issue) => options.leakOtherProjects === true || issue.project === projectIssues[1]).slice(0, limit).map(view));
     }
     const latest = new RegExp(`^/api/0/organizations/${org}/issues/(\\d+)/events/latest/$`).exec(path);
     if (latest !== null) {
@@ -69,7 +71,12 @@ export function fakeSentry(options: FakeSentryOptions): { handler: VendorHandler
       if (issue === undefined) return json({ detail: "not found" }, 404);
       return json({
         eventID: `evt${issue.id}`, dateCreated: "2026-10-22T00:00:00Z", title: issue.title, message: issue.title, platform: "javascript",
-        tags: [{ key: "environment", value: "prod" }, { key: "release", value: "web@1.2.3" }],
+        tags: [
+          { key: "environment", value: "prod" }, { key: "release", value: "web@1.2.3" }, { key: "browser.name", value: "Chrome" },
+          // What real events carry about the person and the request: none of it may reach the model.
+          { key: "user", value: "id:4242" }, { key: "user.email", value: "private@example.com" }, { key: "url", value: "https://shop.example/cart?token=abc" },
+          { key: "ip", value: "203.0.113.9" }, { key: "client_ip", value: "203.0.113.10" }, { key: "server_name", value: "web-7f9c" }, { key: "customer_id", value: "cus_123456" },
+        ],
         user: { email: "private@example.com", ip_address: "203.0.113.9" },
         entries: [{ type: "exception", data: { values: [{ type: "TypeError", value: "x is undefined", stacktrace: { frames: [{ filename: "app/checkout.js", function: "pay", lineNo: 42, inApp: true }] } }] } }],
       });
