@@ -89,7 +89,7 @@ describe("createAgentInstallationToken", () => {
     ["contents: write beside a legal one", { issues: "read", contents: "write" }],
   ])("refuses %s before GitHub is asked anything", async (_name, permissions) => {
     const github = fakeGithub();
-    const refused = await refusal(providerOf(github).createAgentInstallationToken(REPOSITORY, permissions as never, { orgId: TEST_ORG }));
+    const refused = await refusal(providerOf(github).createAgentInstallationToken(REPOSITORY, permissions, { orgId: TEST_ORG }));
     expect(refused.code).toBe("FORBIDDEN");
     expect(github.requests).toEqual([]);
   });

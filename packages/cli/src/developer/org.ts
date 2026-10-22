@@ -2,9 +2,10 @@
 // one signed-in call to the control plane's /v1/app/org routes; the control plane decides who may do what, and this only names the
 // person (by email or ID), asks before leaving, and prints what happened.
 import { randomUUID } from "node:crypto";
-import { AppMeResponseSchema, DeveloperSignInMethodSchema, OrgRoleSchema, agentXError, type OrgRole } from "@agentx/contracts";
+import { AppMeResponseSchema, CommentTriggerOptOutSchema, DeveloperSignInMethodSchema, OrgRoleSchema, agentXError, type CommentTriggerOptOut, type OrgRole } from "@agentx/contracts";
 import { z } from "zod";
 import { sanitizeServerText } from "../auth.js";
+import { neutralised, terminalSafe } from "./audit.js";
 import { developerRequest } from "./commands.js";
 import type { DeveloperSessionDeps } from "./session.js";
 
@@ -90,3 +91,29 @@ export async function orgLeave(deps: DeveloperSessionDeps, env: string | undefin
 }
 
 export const orgLeaveText = (result: { orgClosed: boolean; message: string }) => `${result.orgClosed ? "You left and the organization is closed." : "You left the organization."}\n`;
+
+// Plan 3, Task 14b: `agentx org comment-triggers list`, the repositories an org admin opted out of the rule that every agent comment needs a person
+// where workflows act on comments or labels. They are read from the guardrails (`GET /v1/app/org/agent-guardrails`); nothing here sets one.
+const GuardrailsOptOutsSchema = z.object({ commentTriggerOptOuts: z.array(CommentTriggerOptOutSchema) });
+export type OrgCommentTriggersResult = { env: string; url: string; optOuts: CommentTriggerOptOut[] };
+
+export async function orgCommentTriggers(deps: DeveloperSessionDeps, env: string | undefined): Promise<OrgCommentTriggersResult> {
+  // What the server says, a refusal's words included, is text from outside this computer.
+  const { env: resolved, url, body } = await neutralised(() => developerRequest(deps, env, "/v1/app/org/agent-guardrails", GuardrailsOptOutsSchema, { explain: true }));
+  return { env: resolved, url, optOuts: body.commentTriggerOptOuts };
+}
+
+const MAX_FILES_SHOWN = 20;
+
+/** Every value is shown through `terminalSafe`: a name, a reason or a path from a repository can't move the cursor, recolour the terminal or hide behind a bidi mark. */
+export function orgCommentTriggersText(result: OrgCommentTriggersResult): string {
+  if (result.optOuts.length === 0) return `No repository is opted out of the comment-triggered workflow rule in your organization on ${terminalSafe(result.env)} (${terminalSafe(result.url)}).\n`;
+  const lines = [`Repositories opted out of the comment-triggered workflow rule on ${terminalSafe(result.env)} (${terminalSafe(result.url)}):`];
+  for (const optOut of result.optOuts) {
+    lines.push(`  ${terminalSafe(optOut.project)}  ${terminalSafe(optOut.repository)}  digest ${terminalSafe(optOut.digest.slice(0, 12))}  reviewed by ${terminalSafe(optOut.reviewedBy)} at ${terminalSafe(optOut.reviewedAt)}`);
+    lines.push(`    reason: ${terminalSafe(optOut.reason)}`);
+    for (const file of optOut.files.slice(0, MAX_FILES_SHOWN)) lines.push(`    ${terminalSafe(file)}`);
+    if (optOut.files.length > MAX_FILES_SHOWN) lines.push(`    and ${String(optOut.files.length - MAX_FILES_SHOWN)} more files`);
+  }
+  return `${lines.join("\n")}\n`;
+}

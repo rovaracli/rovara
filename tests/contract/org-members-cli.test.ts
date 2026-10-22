@@ -123,3 +123,52 @@ describe("agentx org", () => {
     expect(h.out.join("")).toBe("You left the organization.\n");
   });
 });
+
+describe("agentx org comment-triggers list (Plan 3, Task 14b)", () => {
+  const OPT_OUT = {
+    project: "payments", repository: "example/demo", digest: "d".repeat(64), files: [".github/workflows/triage.yml", "scripts/triage.sh"],
+    reviewedBy: MAYA, reviewedAt: "2026-10-22T09:00:00.000Z", reason: "Only our own triage bot reacts",
+  };
+  const guardrails = (commentTriggerOptOuts: unknown[]) => Response.json({ guardrails: {}, revision: 1, commentTriggerOptOuts, requestId: "r" });
+
+  it("reads the opt-outs from the guardrails and prints each with its reviewer, reason and files", async () => {
+    const h = await cli((method, path) => (method === "GET" && path === "/v1/app/org/agent-guardrails" ? guardrails([OPT_OUT]) : undefined));
+    expect(await h.run(["org", "comment-triggers", "list"])).toBe(0);
+    expect(h.out.join("")).toBe([
+      `Repositories opted out of the comment-triggered workflow rule on staging (${URL_}):`,
+      `  payments  example/demo  digest dddddddddddd  reviewed by ${MAYA} at 2026-10-22T09:00:00.000Z`,
+      "    reason: Only our own triage bot reacts",
+      "    .github/workflows/triage.yml",
+      "    scripts/triage.sh",
+      "",
+    ].join("\n"));
+    expect(h.calls.filter((call) => call.method !== "GET")).toEqual([]);
+  });
+
+  it("says so when there are none, and prints JSON on request", async () => {
+    const none = await cli((method, path) => (method === "GET" && path === "/v1/app/org/agent-guardrails" ? guardrails([]) : undefined));
+    expect(await none.run(["org", "comment-triggers", "list"])).toBe(0);
+    expect(none.out.join("")).toBe(`No repository is opted out of the comment-triggered workflow rule in your organization on staging (${URL_}).\n`);
+    const json = await cli((method, path) => (method === "GET" && path === "/v1/app/org/agent-guardrails" ? guardrails([OPT_OUT]) : undefined));
+    expect(await json.run(["--json", "org", "comment-triggers", "list"])).toBe(0);
+    expect(JSON.parse(json.out.join(""))).toMatchObject({ ok: true, data: { commentTriggerOptOuts: [OPT_OUT] } });
+  });
+
+  it("neutralises what the server sent and shows a long file list in part", async () => {
+    const files = Array.from({ length: 25 }, (_, index) => `scripts/s${String(index)}.sh`);
+    const h = await cli((method, path) => (method === "GET" && path === "/v1/app/org/agent-guardrails"
+      ? guardrails([{ ...OPT_OUT, reason: "line\u001b[31m red\nnext", files: ["a\u202Eb.yml", ...files.slice(1)] }]) : undefined));
+    expect(await h.run(["org", "comment-triggers", "list"])).toBe(0);
+    const text = h.out.join("");
+    expect(text.includes("\u001b") || text.includes("\u202E")).toBe(false);
+    expect(text).toContain("and 5 more files");
+    expect(text.split("\n").filter((line) => line.startsWith("    scripts/")).length).toBe(19);
+  });
+
+  it("shows the server's words when the call is refused", async () => {
+    const h = await cli(() => Response.json({ error: { code: "FORBIDDEN", message: "FORBIDDEN: nope\u202Eflipped" } }, { status: 403 }));
+    expect(await h.run(["org", "comment-triggers", "list"])).not.toBe(0);
+    expect(h.err.join("")).toContain("nope[U+202E]flipped");
+    expect(h.err.join("")).not.toContain("\u202E");
+  });
+});

@@ -146,7 +146,7 @@ describe("GET /v1/app/projects/{p}/connectors/github/comment-triggers", () => {
     expect(shown.status, JSON.stringify(shown.body)).toBe(200);
     expect(shown.body).toEqual({
       project: "payments",
-      repositories: [{ repository: REPOSITORY, triggers: true, failedClosed: false, digest: expect.stringMatching(/^[a-f0-9]{64}$/), files: [SCRIPT, WORKFLOW].sort() }],
+      repositories: [{ repository: REPOSITORY, triggers: true, failedClosed: false, digest: expect.stringMatching(/^[a-f0-9]{64}$/) as string, files: [SCRIPT, WORKFLOW].sort() }],
     });
     expect(w.reads).toEqual([`https://github.com/${REPOSITORY}.git ${TEST_ORG}`]);
     expect((await w.review(OWEN)).status).toBe(200);
@@ -216,7 +216,7 @@ describe("PUT /v1/app/projects/{p}/connectors/github/comment-triggers", () => {
       kind: "change", status: "PENDING", requestedBy: DANA.developerId, subject: { kind: "opt_out", project: "payments", repository: REPOSITORY, expectedDigest: current.digest, files: current.files, reason: "Only our own triage bot reacts" },
       approvers: { kind: "rule", rule: "org_admin" },
     });
-    const spec = record!.approvers as { candidates: string[] };
+    const spec = record!.approvers as unknown as { candidates: string[] };
     expect([...spec.candidates].sort()).toEqual([DANA.developerId, OWEN.developerId].sort());
     // Nothing was applied: no opt-out, no event, no audit item, and a plain comment still waits for a person.
     expect(await readOptOut(w.deps, TEST_ORG, REPOSITORY, "payments")).toBeUndefined();
@@ -297,7 +297,7 @@ describe("PUT /v1/app/projects/{p}/connectors/github/comment-triggers", () => {
     ["an empty reason", { reason: "   " }],
     ["a reason of 301 characters", { reason: "x".repeat(301) }],
     ["a reason with a control character", { reason: "line one\nline two" }],
-    ["a reason with a zero-width character", { reason: "looks​fine" }],
+    ["a reason with a zero-width character", { reason: "looks\u200Bfine" }],
     ["a field it does not know", { surprise: true }],
   ])("refuses a body with %s", async (_name, change) => {
     const w = await world();
@@ -659,7 +659,7 @@ describe("who is told when an opt-out lapses", () => {
     await w.optOutThrough();
     w.setFiles({ ...baseFiles(), [SCRIPT]: "echo changed" });
     await w.rule();
-    const notice = { at: expect.any(String), project: "payments", repository: REPOSITORY, notice: LAPSE_TEXT(SCRIPT) };
+    const notice = { at: expect.any(String) as string, project: "payments", repository: REPOSITORY, notice: LAPSE_TEXT(SCRIPT) };
     const seenBy = (who: Developer, orgRole: OrgRole, orgId: OrgId = TEST_ORG) => listCommentTriggerNotices(w.deps, { orgId, developerId: who.developerId, orgRole });
     expect(await seenBy(DANA, "admin")).toEqual([notice]);
     expect(await seenBy(OWEN, "owner")).toEqual([notice]);
@@ -693,7 +693,7 @@ describe("who is told when an opt-out lapses", () => {
     expect(commentTriggerLapseNotice("a/b", ["x.yml"])).toBe("Rovara is asking again about comment-triggered workflows in a/b: x.yml changed. Agent comments there wait for a person until an admin reviews them.");
     expect(commentTriggerLapseNotice("a/b", [])).toContain("the workflow files changed");
     expect(commentTriggerLapseNotice("a/b", Array.from({ length: 12 }, (_, index) => `f${String(index)}.sh`))).toContain("f0.sh, f1.sh, f2.sh, f3.sh, f4.sh, f5.sh, f6.sh, f7.sh, f8.sh, f9.sh and 2 more changed");
-    const nasty = commentTriggerLapseNotice("a/b", ["evil\n‮file​.sh", "y".repeat(500)]);
+    const nasty = commentTriggerLapseNotice("a/b", ["evil\n\u202Efile\u200B.sh", "y".repeat(500)]);
     expect(nasty).not.toMatch(/[\p{Cc}\p{Cf}]/u);
     expect(nasty).not.toContain("y".repeat(121));
   });
@@ -709,7 +709,7 @@ describe("GET /v1/app/org/agent-guardrails lists the opt-outs", () => {
     const shown = await w.call(EVE, "GET", path);
     expect(shown.status).toBe(200);
     expect(shown.body.commentTriggerOptOuts).toEqual([{
-      project: "payments", repository: REPOSITORY, digest: current.digest, files: current.files, reviewedBy: DANA.developerId, reviewedAt: expect.any(String), reason: "Only our own triage bot reacts",
+      project: "payments", repository: REPOSITORY, digest: current.digest, files: current.files, reviewedBy: DANA.developerId, reviewedAt: expect.any(String) as string, reason: "Only our own triage bot reacts",
     }]);
     // The stored internals (the blob shas and the approval) are not shown.
     expect(JSON.stringify(shown.body)).not.toContain("fileShas");
@@ -740,8 +740,10 @@ describe("requestOptOut at the function boundary", () => {
     await expect(requestOptOut(w.deps, caller, { ...base, repository: "someone/else" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     await expect(requestOptOut(w.deps, caller, { ...base, expectedDigest: "b".repeat(64) })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     await expect(requestOptOut(w.deps, { ...caller, orgId: ORG_B }, base)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    await expect(requestOptOut({ ...w.deps, projectRepositories: undefined }, caller, base)).rejects.toMatchObject({ code: "NOT_FOUND" });
-    await expect(requestOptOut({ ...w.deps, repositoryReader: undefined }, caller, base)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    const { projectRepositories: _projects, ...withoutProjects } = w.deps; // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose
+    const { repositoryReader: _reader, ...withoutReader } = w.deps; // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose
+    await expect(requestOptOut(withoutProjects, caller, base)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(requestOptOut(withoutReader, caller, base)).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(w.approvals()).toEqual([]);
     expect((await requestOptOut(w.deps, caller, base)).confirmUrl).toMatch(/\/v1\/app\/approve\/apr_/u);
   });

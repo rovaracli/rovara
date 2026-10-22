@@ -153,7 +153,7 @@ function reachOf(document: unknown, directory: string): Reach {
     // A local action that is not a composite one runs a file of its own.
     if (isRecord(node["runs"])) {
       for (const key of ["main", "pre", "post", "image"] as const) {
-        const value = (node["runs"] as Record<string, unknown>)[key];
+        const value = node["runs"][key];
         if (typeof value === "string" && !value.startsWith("docker://")) {
           const path = normalizedPath(directory === "" ? value : `${directory}/${value}`);
           if (path !== undefined) reach.scripts.push(path);

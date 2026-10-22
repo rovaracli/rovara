@@ -51,7 +51,7 @@ import {
   type AuditLogFlags, type AuditRuntime,
 } from "./developer/audit.js";
 import { projectAddMember, projectAddMemberText, projectMembers, projectMembersText, projectRemoveMember, projectRemoveMemberText } from "./developer/project-members.js";
-import { orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
+import { orgCommentTriggers, orgCommentTriggersText, orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
 import { LOOPBACK_HOSTS, developerLogin } from "./developer/login.js";
 import { INVITE_QUESTION, INVITE_QUESTION_NO_BROWSER, askYesByDefault, fetchCurrentOrg, fetchInviteSummary, inviteConfirmationLine, inviteOutcomeText, parseInviteLink, resolveInviteCell } from "./developer/invite-link.js";
@@ -607,6 +607,19 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       if (!await confirm(question)) throw agentXError("CONFIRMATION_DECLINED", "you did not leave the organization; nothing changed");
       const result = await orgLeave(developerSession(), env);
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, orgClosed: result.orgClosed, message: result.message }, true) : orgLeaveText(result));
+    });
+
+  // Plan 3, Task 14b: the repositories opted out of the comment-triggered workflow rule. Setting one is an org admin's request on the project and a
+  // confirmation on the page; no command here (or MCP tool) sets or confirms one.
+  org
+    .command("comment-triggers")
+    .description("the repositories an org admin opted out of the rule that agent comments wait for a person where workflows act on comments")
+    .command("list")
+    .description("list the active opt-outs: project, repository, the digest of the workflows that were reviewed, who reviewed them and why")
+    .action(async (_options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await orgCommentTriggers(developerSession(), developerEnv(command));
+      services.stdout.write(globals.json ? formatSuccess(jsonSafe({ env: result.env, url: result.url, commentTriggerOptOuts: result.optOuts }), true) : orgCommentTriggersText(result));
     });
 
   const githubCommand = program.command("github").description("the GitHub App of a Rovara Cloud install");

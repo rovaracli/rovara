@@ -315,7 +315,7 @@ export class GitHubAppCredentialProvider {
     requireAgentScope(scope);
     const checked = checkAgentTokenPermissions(permissions);
     const installed = await this.installed(typeof repository === "string" ? parseGitHubRepository(repository) : repository, scope);
-    return this.createInstallationToken(installed, { ...checked, metadata: "read" } as Record<string, "read" | "write">, scope);
+    return this.createInstallationToken(installed, { ...checked, metadata: "read" }, scope);
   }
 
   /** The repository as the installation spells it, checked for the org (once), with an agent token for it. */
@@ -323,7 +323,7 @@ export class GitHubAppCredentialProvider {
     requireAgentScope(scope);
     const checked = checkAgentTokenPermissions(permissions);
     const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
-    return { repository, token: await this.createInstallationToken(repository, { ...checked, metadata: "read" } as Record<string, "read" | "write">, scope) };
+    return { repository, token: await this.createInstallationToken(repository, { ...checked, metadata: "read" }, scope) };
   }
 
   /**
