@@ -66,6 +66,8 @@ export const DEFAULT_HANDOFF = "previous";
 
 const utf8 = new TextEncoder();
 const CONTROL_OR_FORMAT = /[\p{Cc}\p{Cf}]/u;
+/** What one line of text a person reads may not hold: any control, format, private-use, unassigned or surrogate character, and the line and paragraph separators. */
+const NOT_LINE_TEXT = /[\p{C}\p{Zl}\p{Zp}]/u;
 
 /** One line of text of 1 to `max` code points, with no control or invisible characters (a name, a prompt or a label a person reads). */
 function line(max: number) {
@@ -74,7 +76,7 @@ function line(max: number) {
     .trim()
     .min(1)
     .refine((text) => [...text].length <= max, `must be at most ${max} characters`)
-    .refine((text) => !CONTROL_OR_FORMAT.test(text), "must not contain control or invisible characters");
+    .refine((text) => !NOT_LINE_TEXT.test(text), "must not contain control or invisible characters");
 }
 
 /** Text of at most `max` UTF-8 bytes (`.max` would count UTF-16 units), with no control or invisible characters besides line breaks and tabs. */
@@ -86,7 +88,7 @@ function bytes(max: number) {
 }
 
 function hasInvisible(text: string): boolean {
-  return CONTROL_OR_FORMAT.test(text.replace(/[\n\r\t]/gu, ""));
+  return NOT_LINE_TEXT.test(text.replace(/[\n\r\t]/gu, ""));
 }
 
 const NameSchema = line(STEP_NAME_MAX);
