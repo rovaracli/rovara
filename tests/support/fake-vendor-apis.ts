@@ -156,6 +156,8 @@ export interface FakeGrafanaOptions {
   host?: string;
   /** A path the Grafana is served under, such as `/grafana`. */
   basePath?: string;
+  /** Answers /api/health alone with this status (the rest keep working). */
+  healthStatus?: number;
   /** Answers every request with this status. */
   status?: number;
   /** A body for /api/ds/query's result, to test failures. */
@@ -183,6 +185,7 @@ export function fakeGrafana(options: FakeGrafanaOptions): { handler: VendorHandl
     requests.push({ method: init?.method ?? "GET", url: url.href, authorization, body });
     if (options.status !== undefined) return json({ message: "fake outage with details" }, options.status);
     const path = options.basePath !== undefined && url.pathname.startsWith(`${options.basePath}/`) ? url.pathname.slice(options.basePath.length) : url.pathname;
+    if (path === "/api/health" && options.healthStatus !== undefined) return json({ message: "unhealthy" }, options.healthStatus);
     if (path === "/api/health") return json({ commit: "abc", database: "ok", version: "11.0.0" });
     if (authorization !== `Bearer ${options.token}`) return json({ message: "Unauthorized" }, 401);
     if (path === "/api/user") return json({ id: 5, login: "sa-rovara", isServiceAccount: true });

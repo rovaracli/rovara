@@ -150,6 +150,15 @@ describe("the Datadog connector type", () => {
     expect(await registry.connectionSecret?.(CON)).toEqual({ apiKey: API_KEY, appKey: APP_KEY });
   });
 
+  it("refuses to issue a credential when the connection's secret can no longer be read", async () => {
+    const s = await connected();
+    const unreadable = { ...s.registry, connectionSecret: async () => undefined };
+    const [connector] = resolveConnectors(project([connectorConfig()]), { credentialRegistry: unreadable });
+    const definition = await connector!.definition();
+    if ("notConnected" in definition) throw new Error("expected a definition");
+    await expect(definition.credentials.issue(PAY, "read")).rejects.toThrow(`credential ${CON} could not be read; save the connection's secret again`);
+  });
+
   it("treats a malformed stored entry as unusable and never throws", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const stored = { ...project([connectorConfig()]), integrations: { connectors: [connectorConfig({ scopes: [{ alias: "pay" }] })] } } as never;
@@ -221,6 +230,13 @@ describe("running the tools", () => {
     // Brackets and quotes that balance are fine.
     await expect(connection.call("search_logs", { ...ROUTING, query: '(a OR b) AND "c (d"', fromMinutesAgo: 5 })).resolves.toMatchObject({});
     expect(r.api.requests).toHaveLength(1);
+  });
+
+  it("refuses a monitor search that could close the scope's group, like a log search, making no request", async () => {
+    const r = await resolved();
+    const connection = await r.connector.connect!({ endpoint: r.definition.endpoint, token: await tokenOf(r), tools: [...TOOLS], signal: AbortSignal.timeout(5_000) });
+    await expect(connection.call("search_monitors", { ...ROUTING, query: "x) OR (y" })).rejects.toMatchObject({ message: "search_monitors: query is not allowed", reason: "policy_denied" });
+    expect(r.api.requests).toEqual([]);
   });
 
   it("shows a monitor only if it carries every one of the scope's tags", async () => {

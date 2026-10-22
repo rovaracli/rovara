@@ -218,6 +218,7 @@ describe("the address a person typed (Review Focus 6)", () => {
 
   it("is not connected where the deployment has no endpoint guard, and uses the guard's fetch rather than the test fetch when it has one", async () => {
     const withoutGuard = await resolved({ context: { endpointGuard: undefined as never } });
+    await expect(discoverTools(withoutGuard.definition, context(withoutGuard.scope), { connect: withoutGuard.connector.connect! })).rejects.toThrow("address checks are not configured in this deployment");
     await expect(discoverTools(withoutGuard.definition, context(withoutGuard.scope), { connect: withoutGuard.connector.connect! })).rejects.toBeInstanceOf(ConnectorNotConnected);
     const nativeSpy = vi.fn(async () => new Response("[]"));
     const r = await resolved({ context: { nativeFetch: nativeSpy } });
@@ -394,6 +395,13 @@ describe("the Grafana connection check", () => {
     const refusal = await down.store.check(ORG_A, CON).then(() => undefined, (error: { code?: string }) => error);
     expect(refusal).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     expect((await down.store.get(ORG_A, CON))?.lastCheck).toBeUndefined();
+  });
+
+  it("answers an unhealthy Grafana as retryable even when the token would be accepted, recording nothing", async () => {
+    const { store } = await checkWith(fakeGrafana({ token: TOKEN, healthStatus: 500 }));
+    const refusal = await store.check(ORG_A, CON).then(() => undefined, (error: { code?: string }) => error);
+    expect(refusal).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect((await store.get(ORG_A, CON))?.lastCheck).toBeUndefined();
   });
 
   it("refuses an address the guard refuses, running no check", async () => {
