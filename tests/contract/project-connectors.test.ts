@@ -351,6 +351,33 @@ describe("attaching a connection", () => {
   });
 });
 
+describe("a project that cannot be changed from the app", () => {
+  it("refuses an archived project with PROJECT_ARCHIVED, on a change and on confirming a widening, and writes nothing", async () => {
+    const s = await install();
+    const id = await s.connection({ type: "linear", label: "Team Linear", access: "read" });
+    s.h.db.set({ ...projectMetaKey(TEST_ORG, "web"), entityType: "PROJECT_META", name: "web", status: "archived", createdAt: "x", createdBy: "x" });
+    const put = await s.put(MIA, "linear", linear(id));
+    expect(put.status).toBe(409);
+    expect(put.body.error).toMatchObject({ code: "PROJECT_ARCHIVED", message: "`web` is archived; restore it before changing its settings." });
+    expect((await s.del(MIA, "linear")).body.error).toMatchObject({ code: "PROJECT_ARCHIVED" });
+    // Reading is allowed: the connectors are as they were when it was archived.
+    expect((await s.list(MIA)).status).toBe(200);
+    expect(s.revisions()).toHaveLength(1);
+    await s.fakeLinear.close();
+  });
+
+  it("refuses a revision that carries a setup approval, the way the settings route does, because only an administrator can register it", async () => {
+    const s = await install();
+    const id = await s.connection({ type: "linear", label: "Team Linear", access: "read" });
+    s.h.db.set({ ...(s.h.db.get(projectRevisionKey(TEST_ORG, "web", 1)) as Record<string, unknown>), setupApproval: { proposalRef: "x", proposalSha256: "a".repeat(64), candidateDigest: "b", decision: "decline" } });
+    const refused = await s.put(MIA, "linear", linear(id));
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("only an administrator can change") as string });
+    expect(s.revisions()).toHaveLength(1);
+    await s.fakeLinear.close();
+  });
+});
+
 describe("Jira and MCP connections", () => {
   const CLOUD_ID = "5f2c1a9e-3b7d-4c6a-9e11-0a1b2c3d4e5f";
   const jira = (credentialRef: string, tools: unknown[] = [{ name: "getJiraIssue", access: "read" }]) => ({
