@@ -261,11 +261,33 @@ describe("the /key/list audit", () => {
     expect(await client(small, { now: () => clock }).auditKeys({ budgetMs: 2_500 })).toEqual({ checked: 2, blocked: 0, truncated: false });
   });
 
-  it("stops at the first page made only of expired keys, since every older key has expired too", async () => {
+  // Review re-check N1: keys have two lifetimes (a turn's 15 minutes, an operation's hour), so a page of newer, expired keys says nothing about older ones.
+  it("reads past newer expired keys to the live, drifted key behind them, and blocks it", async () => {
     const proxy = litellm({ pageSize: 2 });
-    proxy.keys.push(scoped(["*"]), scoped(["*"]), scoped([OWN], { expires: "2020-01-01T00:00:00Z" }), scoped([OWN], { expires: "2020-01-01T00:00:00Z" }));
-    expect(await client(proxy).auditKeys()).toEqual({ checked: 0, blocked: 0, truncated: false });
-    expect(proxy.seen.filter((entry) => entry.path === "/key/list")).toHaveLength(1);
+    const wildcard = scoped(["*"], { expires: "2030-01-01T00:00:00Z" });
+    proxy.keys.push(wildcard, scoped([OWN], { expires: "2020-01-01T00:00:00Z" }), scoped([OWN], { expires: "2020-01-01T00:00:00Z" }));
+    expect(await client(proxy).auditKeys()).toEqual({ checked: 1, blocked: 1, truncated: false });
+    expect(wildcard.blocked).toBe(true);
+    expect(proxy.seen.filter((entry) => entry.path === "/key/list")).toHaveLength(2);
+  });
+
+  it("says it was truncated whenever it stops before the last page, never reporting a clean audit it did not finish", async () => {
+    const proxy = litellm({ pageSize: 1 });
+    const behind = scoped(["*"]);
+    proxy.keys.push(behind);
+    for (let index = 0; index < AUDIT_MAX_PAGES; index += 1) proxy.keys.push(scoped([OWN], { expires: "2020-01-01T00:00:00Z" }));
+    const result = await client(proxy).auditKeys();
+    expect(result).toEqual({ checked: 0, blocked: 0, truncated: true });
+    expect(behind.blocked).toBeUndefined();
+  });
+
+  it("checks its budget between blocks within a page, and says it stopped", async () => {
+    let clock = 0;
+    const proxy = litellm({ failOn: (seen) => { if (seen.path === "/key/block") clock += 1_000; return undefined; } });
+    const drifted = Array.from({ length: 6 }, () => scoped(["*"]));
+    proxy.keys.push(...drifted);
+    expect(await client(proxy, { now: () => clock }).auditKeys({ budgetMs: 2_500 })).toEqual({ checked: 4, blocked: 3, truncated: true });
+    expect(proxy.seen.filter((entry) => entry.path === "/key/block")).toHaveLength(3);
   });
 
   it("goes on to the other drifted keys when one block fails, counts the failure, and then fails visibly", async () => {
@@ -278,6 +300,8 @@ describe("the /key/list audit", () => {
     const refused = await failure(client(proxy).auditKeys());
     expect(refused.code).toBe("MODEL_PROXY_UNAVAILABLE");
     expect(refused.message).toContain("1 of 3");
+    // The counts of the run travel in the error, so the broker can log them.
+    expect(refused.message).toContain("checked 3, blocked 2");
     expect(proxy.seen.filter((entry) => entry.path === "/key/block")).toHaveLength(3);
     expect([first.blocked, second.blocked, third.blocked].filter((blocked) => blocked === true)).toHaveLength(2);
   });

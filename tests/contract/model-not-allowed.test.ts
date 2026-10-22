@@ -3,6 +3,7 @@
 // with the first key or with a key asked for again an hour in; the Slack service shows the member the text, not "proxy unavailable".
 import { describe, expect, it, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
+import { safeRefusalWords } from "../../packages/contracts/src/index.js";
 import { ModelNotAllowedError, createConfiguredModelRuntime, modelNotAllowedFromMarker } from "../../packages/model-runtime/src/index.js";
 import { modelAccessSource } from "../../packages/worker/src/model-access.js";
 import { failedTurn } from "../../packages/worker/src/session-events.js";
@@ -25,6 +26,18 @@ describe("the worker's model access meets MODEL_NOT_ALLOWED", () => {
     expect(error.name).toBe("ModelNotAllowedError");
     expect(error.text).not.toMatch(/\p{Cc}/u);
     expect(error.text.length).toBeLessThanOrEqual(300);
+  });
+
+  it("turns Slack mentions and links into plain text, as one shared helper does for the worker and the Slack service (re-check m1, m5)", async () => {
+    const dirty = "Ask <@U123ABC> or <!channel> in <#C0123|ops>, see <https://evil.example/x|the docs>.";
+    const clean = "Ask @U123ABC or !channel in #C0123|ops, see https://evil.example/x|the docs.";
+    expect(safeRefusalWords(dirty)).toBe(clean);
+    expect(safeRefusalWords(dirty)).not.toMatch(/[<>]/u);
+    expect(safeRefusalWords("  \u001b[31m<<x>>  ")).toBe("[31mx");
+    expect(safeRefusalWords(5)).toBeUndefined();
+    expect(safeRefusalWords("<>")).toBeUndefined();
+    expect(safeRefusalWords("y".repeat(900))).toHaveLength(300);
+    expect(await caught(refusal("MODEL_NOT_ALLOWED", dirty))).toMatchObject({ name: "ModelNotAllowedError", text: clean });
   });
 
   it.each([

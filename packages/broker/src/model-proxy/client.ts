@@ -247,11 +247,12 @@ export class ModelProxyClient implements ModelAccess {
     const master = await this.master();
     const started = this.input.now();
     const audit: KeyAudit = { checked: 0, blocked: 0, truncated: false };
+    const overBudget = () => options.budgetMs !== undefined && this.input.now() - started >= options.budgetMs;
     let drifted = 0;
     let failed = 0;
     for (let page = 1; ; page += 1) {
       // Newest keys first, so a proxy that holds more keys than one run reads still has its recent ones audited; what is left unread is said so.
-      if (page > AUDIT_MAX_PAGES || (page > 1 && options.budgetMs !== undefined && this.input.now() - started >= options.budgetMs)) {
+      if (page > AUDIT_MAX_PAGES || (page > 1 && overBudget())) {
         audit.truncated = true;
         break;
       }
@@ -259,14 +260,15 @@ export class ModelProxyClient implements ModelAccess {
       if (reply.status !== 200) throw refusal(reply);
       const body = isRecord(reply.body) ? reply.body : {};
       const entries: unknown[] = Array.isArray(body.keys) ? body.keys : [];
-      // A page of nothing but expired keys ends the audit: every key older than these has expired too.
-      if (entries.length > 0 && entries.every((entry) => this.isExpired(entry))) break;
+      // No page is skipped for holding only expired keys: keys have two lifetimes (a turn's, an operation's), so newer expired keys say nothing of older live ones.
       for (const entry of entries) {
         const verdict = this.auditVerdict(entry, catalog);
         if (verdict === undefined) continue;
         audit.checked += 1;
         if (!verdict.violation) continue;
         drifted += 1;
+        // The budget is kept between blocks too: a page can hold a hundred drifted keys. What is left unblocked is said by `truncated`, and the next run starts again.
+        if (overBudget()) { audit.truncated = true; break; }
         // One key that cannot be blocked does not leave the rest of the page unchecked; the audit fails at the end instead of reporting itself clean.
         try {
           await this.blockKey(verdict.token);
@@ -275,9 +277,9 @@ export class ModelProxyClient implements ModelAccess {
           failed += 1;
         }
       }
-      if (page >= (numberOf(body.total_pages) ?? 1)) break;
+      if (audit.truncated || page >= (numberOf(body.total_pages) ?? 1)) break;
     }
-    if (failed > 0) throw unavailable(`the audit could not block ${String(failed)} of ${String(drifted)} drifted keys`);
+    if (failed > 0) throw unavailable(`the audit could not block ${String(failed)} of ${String(drifted)} drifted keys (checked ${String(audit.checked)}, blocked ${String(audit.blocked)})`);
     return audit;
   }
 

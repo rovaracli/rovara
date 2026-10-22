@@ -116,6 +116,13 @@ function payloadModelPaths(record: unknown, path = ""): Array<{ path: string; va
   for (const [key, child] of Object.entries(here)) found.push(...payloadModelPaths(child, Array.isArray(record) ? `${path}[${key}]` : path === "" ? key : `${path}.${key}`));
   return found;
 }
+/** How many task payloads (a prompt and `conversationStarted`) the record shows. */
+function taskPayloadCount(record: unknown): number {
+  if (record === null || typeof record !== "object") return 0;
+  const here = record as Record<string, unknown>;
+  const own = !Array.isArray(record) && "conversationStarted" in here && "prompt" in here ? 1 : 0;
+  return own + Object.values(here).reduce<number>((total, child) => total + taskPayloadCount(child), 0);
+}
 function operationRoutePaths(record: unknown, path = ""): Array<{ path: string; value: unknown }> {
   if (record === null || typeof record !== "object") return [];
   const here = record as Record<string, unknown>;
@@ -150,6 +157,9 @@ describe("Rovara Code with agents switched on", () => {
       }
       // Every key that carries tags carries `models` too: a mint that lost its scope would match the fixture (which has none) and go unlisted otherwise.
       expect(mintModelPaths(record), "every minted key is scoped").toHaveLength(tagged.length);
+      // Every task payload names the model its key allows: one that lost it would match the fixture (which has none) and go unlisted otherwise.
+      // (The one scenario without a model proxy chooses no route.)
+      if (scenario !== "task-no-workflow-no-proxy") expect(payloadModelPaths(record), "every task payload names its model").toHaveLength(taskPayloadCount(record));
       expectGolden(scenario, { ...record, taskItems: kept }, [
         { path: `taskItems[${String(meta)}].agent`, expected: { agentId: "rovara-code", name: "Rovara Code", version: latest.version, builtin: true, digest: recipeDigest(latest.recipe) }, change: 5 },
         { path: `taskItems[${String(meta)}].origin`, expected: "cli", change: 5 },

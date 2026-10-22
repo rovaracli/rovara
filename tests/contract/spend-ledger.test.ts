@@ -1023,7 +1023,7 @@ describe("a key the broker mints", () => {
     const logged = vi.spyOn(console, "log").mockImplementation(() => undefined);
     try {
       const run = await t.sweep();
-      expect(t.access.auditKeys).toHaveBeenCalledWith({ budgetMs: 6_000 });
+      expect(t.access.auditKeys).toHaveBeenCalledWith({ budgetMs: 4_000 });
       const jobs = (JSON.parse(run.body) as { jobs: Array<{ name: string; ok: boolean; result?: unknown }> }).jobs;
       expect(jobs.map((job) => job.name)).toEqual(["sweep-model-sources", "sweep-spend", "audit-model-keys"]);
       expect(jobs.at(-1)).toMatchObject({ ok: true, result: { checked: 7, blocked: 1, truncated: true } });
@@ -1033,6 +1033,10 @@ describe("a key the broker mints", () => {
       const failed = await t.sweep();
       expect(JSON.parse(failed.body)).toMatchObject({ jobs: [{ ok: true }, { name: "sweep-spend", ok: true }, { name: "audit-model-keys", ok: false, error: "BlockFailed" }] });
       expect(failed.body).not.toContain("secret detail");
+      // What an audit that threw had done is logged: the counts travel in its error's words.
+      t.access.auditKeys.mockRejectedValueOnce(Object.assign(new Error("MODEL_PROXY_UNAVAILABLE: the audit could not block 1 of 3 drifted keys (checked 9, blocked 2)"), { name: "AgentXError" }));
+      await t.sweep();
+      expect(logged.mock.calls.map((call) => String(call[0])).some((line) => line.includes("model_keys.audit_failed") && line.includes("checked 9, blocked 2"))).toBe(true);
     } finally { logged.mockRestore(); }
   });
 
@@ -1352,5 +1356,14 @@ describe("the spend settlement schedule", () => {
 
   it("is not in the legacy template", () => {
     expect(schedules({}).map(([id]) => id).filter((id) => id.startsWith("SpendSettlement"))).toStrictEqual([]);
+  });
+});
+
+describe("the scheduled run's time", () => {
+  it("keeps every job's budget, taken together, under the function's 30 seconds with a margin (Task 26 re-check m2)", async () => {
+    const { SETTLEMENT_BUDGETS_MS, SETTLEMENT_TOTAL_LIMIT_MS } = await import("../../packages/broker/src/spend/settlement-job.js");
+    expect(Object.values(SETTLEMENT_BUDGETS_MS).reduce((total, budget) => total + budget, 0)).toBeLessThanOrEqual(SETTLEMENT_TOTAL_LIMIT_MS);
+    expect(SETTLEMENT_TOTAL_LIMIT_MS).toBeLessThanOrEqual(27_000);
+    expect(SETTLEMENT_BUDGETS_MS.audit).toBe(4_000);
   });
 });

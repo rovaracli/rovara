@@ -65,10 +65,3 @@ export function modelNotAllowedFromMarker(message: string | undefined): ModelNot
   const text = message === undefined ? undefined : NOT_ALLOWED_MARKER.exec(message)?.[1];
   return text === undefined ? undefined : new ModelNotAllowedError(text);
 }
-
-/** The control plane's words for a refusal, as safe text: printable characters only, at most 300. */
-export function refusalText(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const cleaned = value.replace(/[\p{Cc}\p{Cf}]/gu, "").trim().slice(0, 300);
-  return cleaned === "" ? undefined : cleaned;
-}

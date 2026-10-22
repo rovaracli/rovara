@@ -2,7 +2,7 @@ import { MissingProviderSecret, defaultBedrockModel, type ModelRole } from "./co
 import { openRouterRouting, readProviderKey, requireKeyedModel } from "./config.js";
 import { bedrockClaudeModelIds, catalogModelByName, proxyGeographyOfModelId } from "./catalog.js";
 import { ModelBudgetExhaustedError, ModelNotAllowedError, budgetExhaustedMarker, budgetScopeOfProxyBody, modelNotAllowedMarker, type ModelBudgetScope } from "./budget.js";
-export { ModelBudgetExhaustedError, ModelNotAllowedError, budgetExhaustedFromMarker, modelNotAllowedFromMarker, refusalText, type ModelBudgetScope } from "./budget.js";
+export { ModelBudgetExhaustedError, ModelNotAllowedError, budgetExhaustedFromMarker, modelNotAllowedFromMarker, type ModelBudgetScope } from "./budget.js";
 export { readOpenRouterKey, readProviderKey, openRouterRouting, openRouterModel, requireKeyedModel } from "./config.js";
 import { CHATGPT_PLAN_LIMIT_ERROR, KEYED_MODEL_PROVIDERS, agentXError, isKeyedModelProvider, type InvocationModelRoute, type KeyedModelProvider, type ModelIdentifier } from "@agentx/contracts";
 import { InMemoryCredentialStore, createAssistantMessageEventStream, type Api, type Model, type SimpleStreamOptions, type TranscriptContext, type AssistantMessage, type AssistantMessageEventStream, type AnthropicMessagesCompat, type OpenAICompletionsCompat, type OpenAIResponsesCompat } from "@earendil-works/pi-ai";

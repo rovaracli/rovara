@@ -377,6 +377,11 @@ describe("turnModelAccessSource", () => {
       expect(error.message.length).toBeLessThanOrEqual(330);
     });
 
+    it("shows a user mention, a channel mention or a link in the words as plain text", async () => {
+      const error = await failure(refused(403, "MODEL_NOT_ALLOWED", "Ask <@U123ABC> or <!here> in <#C0123|ops>, see <https://evil.example/x|the docs>."));
+      expect(error.message).toBe("MODEL_NOT_ALLOWED: Ask @U123ABC or !here in #C0123|ops, see https://evil.example/x|the docs.");
+    });
+
     it("still hides every other refusal behind its code alone", async () => {
       expect(await failure(refused(403, "FORBIDDEN", "secret detail"))).toMatchObject({ code: "FORBIDDEN", message: expect.not.stringContaining("secret detail") as unknown });
       expect(await failure(refused(503, "MODEL_PROXY_UNAVAILABLE", "secret detail"))).toMatchObject({ code: "MODEL_PROXY_UNAVAILABLE", message: expect.not.stringContaining("secret detail") as unknown });

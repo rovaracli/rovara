@@ -360,7 +360,7 @@ import { changeBudgets, keyIdOf, mintKeyHealing, type OrgBudgetSettings } from "
 import { admitWork, mintOperationKey, type MintOperationKeyInput } from "../spend/admission.js";
 import { blockOperationKeys, forgetKey, registerKey, type LedgerDependencies } from "../spend/ledger.js";
 import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTask, resolvePayer } from "../spend/payer.js";
-import { runSettlementJobs, runSpendSweep } from "../spend/settlement-job.js";
+import { SETTLEMENT_BUDGETS_MS, runSettlementJobs, runSpendSweep } from "../spend/settlement-job.js";
 import { readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
 import { SkillStore, servedSkills } from "../agents/skills.js";
@@ -1365,9 +1365,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (ledger === undefined && sources === undefined) return json({ skipped: true }, "spend-settlement");
       const jobs = await runSettlementJobs(
         [
-          // Before the spend sweep, with a small budget of its own: the function has 30 seconds and the spend sweep takes up to 20 of them.
-          ...(sources === undefined ? [] : [{ name: "sweep-model-sources", run: () => sweepModelSources(sources, { budgetMs: MODEL_SOURCE_SWEEP_BUDGET_MS }) }]),
-          ...(ledger === undefined ? [] : [{ name: "sweep-spend", run: () => runSpendSweep(ledger, { budgetMs: SPEND_SWEEP_BUDGET_MS }) }]),
+          // Before the spend sweep, with a small budget of its own: the function has 30 seconds, and the budgets together stay under 27 (SETTLEMENT_BUDGETS_MS).
+          ...(sources === undefined ? [] : [{ name: "sweep-model-sources", run: () => sweepModelSources(sources, { budgetMs: SETTLEMENT_BUDGETS_MS.sources }) }]),
+          ...(ledger === undefined ? [] : [{ name: "sweep-spend", run: () => runSpendSweep(ledger, { budgetMs: SETTLEMENT_BUDGETS_MS.spend }) }]),
           // Last: it reads the proxy's keys over several calls and must not take time the sweeps need (Task 26).
           ...(keyAudit === undefined ? [] : [{ name: "audit-model-keys", run: () => auditModelKeys(keyAudit) }]),
         ],
@@ -10427,19 +10427,18 @@ function isSpendSettlementEvent(event: unknown): event is { source: "agentx.spen
   return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.spend-settlement";
 }
 
-/** The broker's function has 30 seconds; a sweep that has not finished by then stops and the next run resumes from where it was. */
-const SPEND_SWEEP_BUDGET_MS = 20_000;
-/** The audit of the proxy's scoped keys is the last job and gets what is left of the function's time; what it did not reach it says. */
-const KEY_AUDIT_BUDGET_MS = 6_000;
-
+/**
+ * The audit of the proxy's scoped keys is the last job and gets the least of the function's time (`SETTLEMENT_BUDGETS_MS`); what it did not reach it says,
+ * and when it throws, what it had done (the counts travel in the error's words) is logged, since the report names only the error.
+ */
 async function auditModelKeys(access: { auditKeys(options?: { budgetMs?: number }): Promise<{ checked: number; blocked: number; truncated: boolean }> }) {
-  const result = await access.auditKeys({ budgetMs: KEY_AUDIT_BUDGET_MS });
+  const result = await access.auditKeys({ budgetMs: SETTLEMENT_BUDGETS_MS.audit }).catch((error: unknown) => {
+    console.log(JSON.stringify({ component: "broker", event: "model_keys.audit_failed", errorName: error instanceof Error ? error.name : "unknown", message: error instanceof Error && error.name === "AgentXError" ? error.message.slice(0, 300) : undefined }));
+    throw error;
+  });
   if (result.truncated) console.log(JSON.stringify({ component: "broker", event: "model_keys.audit_truncated", checked: result.checked, blocked: result.blocked }));
   return result;
 }
-
-/** The company AI sources' sweep runs before the spend sweep and leaves it its 20 seconds. */
-const MODEL_SOURCE_SWEEP_BUDGET_MS = 5_000;
 
 /** Task 24b: what the model-source sweep needs, or undefined where the install has no agents or no model proxy (it then has no sources to sweep). */
 function modelSourceSweepOf(dependencies: AwsBrokerDependencies): ModelSourceSweepDependencies | undefined {
