@@ -87,7 +87,7 @@ function parentRemainderDigest(template: TemplateJson): string {
     if (document?.Statement !== undefined) document.Statement = kept;
     return removed > 0 ? [removed] : [];
   });
-  expect(mergeMarkerGrants.length, "at most the one merge marker grant is taken out").toBeLessThanOrEqual(1);
+  expect(mergeMarkerGrants.reduce((total, removed) => total + removed, 0), "at most the one merge marker statement is taken out").toBeLessThanOrEqual(1);
   const dispatchers = Object.entries(resources).filter(([id, resource]) => id.startsWith("Dispatcher") && resource.Type === "AWS::Lambda::Function");
   expect(dispatchers, "the actual Dispatcher remains in the parent template remainder").toHaveLength(1);
   const variables = dispatchers[0]![1].Properties!.Environment as { Variables: Record<string, unknown> };

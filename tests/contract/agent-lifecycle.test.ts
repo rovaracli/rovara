@@ -3,11 +3,11 @@
 // owned. A removal moves what the person owned at once, and leaves the same kind of marker until it has.
 import { describe, expect, it, vi } from "vitest";
 import {
-  MEMBER_MERGE_QUEUE_PK, agentKey, developerOrgKey, memberMergeQueueKey, orgMemberKey, orgProjectCatalogKey, principalSharesKey, projectMetaKey, skillKey, type AgentId, type OrgId, type OrgRole, type RecipeOverlay,
+  MEMBER_MERGE_QUEUE_PK, MEMBER_REMOVAL_QUEUE_PK, agentKey, developerOrgKey, memberMergeQueueKey, memberRemovalQueueKey, orgMemberKey, orgProjectCatalogKey, principalSharesKey, projectMetaKey, skillKey, type AgentId, type OrgId, type OrgRole, type RecipeOverlay,
 } from "@agentx/contracts";
 import { agentAccess, followMerges, type AgentAccessDeps, type AgentCaller } from "../../packages/broker/src/agents/access.js";
 import {
-  drainMemberMerges, onMemberRemoved, onMembersMerged, onProjectArchived, registerMemberMover, resolveMember, runMemberMergeDrain, sameMember, type LifecycleDeps, type MemberMover,
+  drainMemberMerges, drainMemberRemovals, memberRemovalHook, onMemberRemoved, onMembersMerged, onProjectArchived, registerMemberMover, resolveMember, runMemberMergeDrain, sameMember, type LifecycleDeps, type MemberMover,
 } from "../../packages/broker/src/agents/lifecycle.js";
 import { checkRosterChange } from "../../packages/broker/src/agents/roster.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -584,6 +584,7 @@ describe("drainMemberMerges", () => {
     expect(await drainMemberMerges(w.deps, T0)).toEqual({ processed: 0, rejected: 0, failed: 1 });
     expect(w.db.find((item) => item.pk === MEMBER_MERGE_QUEUE_PK)).toHaveLength(1);
     const events = (await w.ownerEvents(agent.agentId)).length;
+    w.clock.now += 10 * 60_000;
 
     expect(await drainMemberMerges(w.deps, T0)).toEqual({ processed: 1, rejected: 0, failed: 0 });
 
@@ -604,6 +605,8 @@ describe("drainMemberMerges", () => {
       expect(w.db.find((item) => item.pk === MEMBER_MERGE_QUEUE_PK)).toHaveLength(1);
       expect(w.logs.map((entry) => entry.event)).toContain("member_merge.failed");
       broken = false;
+      // The failed marker waits out its back-off before it is tried again.
+      w.clock.now += 10 * 60_000;
       expect(await drainMemberMerges(w.deps, T0)).toEqual({ processed: 1, rejected: 0, failed: 0 });
     });
     expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: ALICE });
@@ -616,7 +619,6 @@ describe("drainMemberMerges", () => {
       ["the duplicate was merged into someone else", (w) => { w.merged(OLD_ALICE, BOB); }, "duplicate_not_merged"],
       ["the duplicate has no record at all", (w) => { w.merged(OLD_ALICE, ALICE); w.db.delete(`DEVELOPER#${OLD_ALICE}`, "META"); }, "duplicate_not_merged"],
       ["the duplicate is still a member of the org", (w) => { w.merged(OLD_ALICE, ALICE); w.member(ORG_A, OLD_ALICE, "member", "2026-10-04T00:00:00.000Z"); w.db.set({ pk: `DEVELOPER#${OLD_ALICE}`, sk: "META", developerId: OLD_ALICE, mergedInto: ALICE }); }, "duplicate_still_member"],
-      ["the survivor is not a member of the org", (w) => { w.merged(OLD_ALICE, ALICE); w.db.delete(orgMemberKey(ORG_A, ALICE)); }, "survivor_not_member"],
     ];
     it.each(refusedCases)("deletes the marker, logs member_merge.rejected and moves nothing when %s", async (_name, arrange, reason) => {
       const w = agentWorld();
@@ -667,6 +669,174 @@ describe("drainMemberMerges", () => {
     });
   });
 
+  it("treats a merge whose survivor has left since as the removal of the duplicate: the first owner takes its things", async () => {
+    const w = agentWorld();
+    const agent = await w.memberAgent(OLD_ALICE, "Old triage", 20);
+    const web = await w.projectAgent("web", OLD_ALICE, "Web helper", 5);
+    const shared = await w.memberAgent(BOB, "Bob's agent");
+    await w.shareWith(shared.agentId, OLD_ALICE, "use");
+    const skill = await w.store.skills.create({ orgId: ORG_A, content: skillFile("triage"), owner: { kind: "member", developerId: OLD_ALICE }, by: OLD_ALICE });
+    w.merged(OLD_ALICE, ALICE);
+    w.queue(at(1), ORG_A, ALICE, OLD_ALICE);
+    // Before the sweep reaches the marker, an owner removes the survivor. That removal moves only what Alice's own id owns.
+    const orgs = new OrgStore({ documentClient: w.db, tableName: "T", now: () => w.clock.now, memberRemoval: memberRemovalHook(w.deps) });
+    await orgs.removeMember({ orgId: ORG_A, developerId: ALICE, emails: [], ban: false, by: { kind: "member", id: OLIVE } });
+    expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OLD_ALICE });
+
+    expect(await drainMemberMerges(w.deps, T0)).toEqual({ processed: 1, rejected: 0, failed: 0 });
+
+    expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OWEN });
+    expect((await w.store.get(ORG_A, web.agentId))!.accountable).toEqual({ developerId: BOB });
+    expect((await w.store.skills.get(ORG_A, skill.skillId))!.owner).toEqual({ kind: "member", developerId: OWEN });
+    expect(await w.store.listShares(ORG_A, shared.agentId)).toEqual([]);
+    expect(await readOwnerTotal(w.deps, ORG_A, OWEN)).toBe(20);
+    expect((await w.ownerEvents(agent.agentId))[0]).toMatchObject({ by: "system", cause: { kind: "member_removed", developerId: OLD_ALICE } });
+    expect(w.db.find((item) => item.pk === MEMBER_MERGE_QUEUE_PK)).toEqual([]);
+    expect(w.logs.map((entry) => entry.event)).toContain("member_merge.survivor_gone");
+    expect(w.logs.map((entry) => entry.event)).not.toContain("member_merge.rejected");
+  });
+
+  it("does the same when the end of the survivor's chain has left", async () => {
+    const w = agentWorld();
+    const agent = await w.memberAgent(OLD_ALICE, "Old triage");
+    w.merged(OLD_ALICE, ALICE);
+    w.merged(ALICE, ERIN);
+    w.db.delete(orgMemberKey(ORG_A, ERIN));
+    w.queue(at(1), ORG_A, ALICE, OLD_ALICE);
+    expect(await drainMemberMerges(w.deps, T0)).toEqual({ processed: 1, rejected: 0, failed: 0 });
+    expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OWEN });
+  });
+
+  describe("backs off a marker that keeps failing (I2)", () => {
+    const GOOD_AGENT_OWNER = OLD_ALICE;
+
+    it("reaches the markers behind 30 that always fail, within a run or two, and records why each failed", async () => {
+      const w = agentWorld();
+      const good = await w.memberAgent(GOOD_AGENT_OWNER, "Old triage");
+      w.merged(OLD_ALICE, ALICE);
+      const stuckIds: string[] = [];
+      for (let index = 0; index < 30; index += 1) {
+        const duplicate = String(index + 1).padStart(64, "0");
+        stuckIds.push(duplicate);
+        w.db.set({ pk: `DEVELOPER#${duplicate}`, sk: "META", developerId: duplicate, mergedInto: ALICE });
+        w.queue(at(index), ORG_A, ALICE, duplicate);
+      }
+      w.queue(at(40), ORG_A, ALICE, OLD_ALICE);
+      const attempted: string[] = [];
+      // Each failing attempt costs a second of the run's time, as a large org's moves would.
+      await withMover({ name: "probe", merged: async (_deps, move) => {
+        if (move.duplicateId === OLD_ALICE) return;
+        attempted.push(move.duplicateId);
+        w.clock.now += 1000;
+        throw new Error("secret detail of a stuck move");
+      } }, async () => {
+        const first = await runMemberMergeDrain(w.deps, { budgetMs: 20_000 });
+        expect(first).toMatchObject({ processed: 0, failed: 20, complete: false });
+        expect((await w.store.get(ORG_A, good.agentId))!.owner).toEqual({ kind: "member", developerId: OLD_ALICE });
+
+        const second = await runMemberMergeDrain(w.deps, { budgetMs: 20_000 });
+        // The 20 that just failed wait out their back-off; the other 10 fail; the good marker behind them all goes through.
+        expect(second).toMatchObject({ processed: 1, failed: 10, skipped: 20, complete: true });
+      });
+      expect((await w.store.get(ORG_A, good.agentId))!.owner).toEqual({ kind: "member", developerId: ALICE });
+      expect(attempted.filter((id) => id === stuckIds[0])).toHaveLength(1);
+      const stuck = w.db.get(memberMergeQueueKey(at(0), ORG_A, stuckIds[0]!))!;
+      expect(stuck).toMatchObject({ attempts: 1, lastError: "Error" });
+      expect(typeof stuck.lastTriedAt).toBe("number");
+      expect(JSON.stringify(stuck)).not.toContain("secret detail");
+    });
+
+    it("waits longer after each failure, at most an hour, and tries again when the wait is over", async () => {
+      const w = agentWorld();
+      const duplicate = hex("7");
+      w.db.set({ pk: `DEVELOPER#${duplicate}`, sk: "META", developerId: duplicate, mergedInto: ALICE });
+      const key = memberMergeQueueKey(at(1), ORG_A, duplicate);
+      const calls = vi.fn(async () => { throw new Error("stuck"); });
+      await withMover({ name: "probe", merged: calls }, async () => {
+        w.db.set({ ...key, entityType: "MEMBER_MERGE", orgId: ORG_A, survivorId: ALICE, duplicateId: duplicate, attempts: 3, lastTriedAt: w.clock.now - 19 * 60_000 });
+        // Three failures wait 20 minutes (5, 10, 20): 19 minutes is still inside it.
+        expect(await drainMemberMerges(w.deps, w.clock.now)).toEqual({ processed: 0, rejected: 0, failed: 0, skipped: 1 });
+        expect(calls).not.toHaveBeenCalled();
+        w.clock.now += 2 * 60_000;
+        expect(await drainMemberMerges(w.deps, w.clock.now)).toEqual({ processed: 0, rejected: 0, failed: 1 });
+        expect(w.db.get(key)).toMatchObject({ attempts: 4 });
+        // Many failures never wait more than an hour.
+        w.db.set({ ...w.db.get(key)!, attempts: 30, lastTriedAt: w.clock.now - 59 * 60_000 });
+        expect(await drainMemberMerges(w.deps, w.clock.now)).toMatchObject({ skipped: 1 });
+        w.db.set({ ...w.db.get(key)!, attempts: 30, lastTriedAt: w.clock.now - 61 * 60_000 });
+        expect(await drainMemberMerges(w.deps, w.clock.now)).toMatchObject({ failed: 1 });
+      });
+    });
+
+    it("logs member_merge.parked at error level from the 12th failure on, and keeps the marker", async () => {
+      const w = agentWorld();
+      const duplicate = hex("7");
+      w.db.set({ pk: `DEVELOPER#${duplicate}`, sk: "META", developerId: duplicate, mergedInto: ALICE });
+      const key = memberMergeQueueKey(at(1), ORG_A, duplicate);
+      w.db.set({ ...key, entityType: "MEMBER_MERGE", orgId: ORG_A, survivorId: ALICE, duplicateId: duplicate, attempts: 10, lastTriedAt: 0 });
+      await withMover({ name: "probe", merged: async () => { throw new Error("stuck"); } }, async () => {
+        await drainMemberMerges(w.deps, w.clock.now);
+        expect(w.logs.map((entry) => entry.event)).not.toContain("member_merge.parked");
+        w.db.set({ ...w.db.get(key)!, lastTriedAt: 0 });
+        await drainMemberMerges(w.deps, w.clock.now);
+      });
+      expect(w.db.get(key)).toMatchObject({ attempts: 12 });
+      expect(w.logs.filter((entry) => entry.event === "member_merge.parked")).toEqual([{
+        event: "member_merge.parked", fields: { level: "error", orgId: ORG_A, duplicateId: duplicate, attempts: 12, error: "Error" },
+      }]);
+    });
+  });
+
+  it("looks at the per-person cap on the run that succeeds, even when an earlier run did the moving (M1)", async () => {
+    const w = agentWorld();
+    await w.memberAgent(ALICE, "Alice's big one", 70);
+    await w.memberAgent(OLD_ALICE, "Old big one", 60);
+    w.merged(OLD_ALICE, ALICE);
+    w.queue(at(1), ORG_A, ALICE, OLD_ALICE);
+    let broken = true;
+    await withMover({ name: "zz-flaky", merged: async () => { if (broken) throw new Error("not yet"); } }, async () => {
+      expect(await drainMemberMerges(w.deps, T0)).toEqual({ processed: 0, rejected: 0, failed: 1 });
+      expect(w.logs.filter((entry) => entry.event === "owner_cap.exceeded_by_move")).toEqual([]);
+      broken = false;
+      w.clock.now += 10 * 60_000;
+      // This run moves nothing (the agents moved in the first), and still looks.
+      expect(await drainMemberMerges(w.deps, T0)).toEqual({ processed: 1, rejected: 0, failed: 0 });
+    });
+    expect(w.logs.filter((entry) => entry.event === "owner_cap.exceeded_by_move")).toMatchObject([{ fields: { owner: ALICE, totalUsd: 130, capUsd: 100, reason: "member_merged" } }]);
+  });
+
+  it("remembers who a removal's accountable moves went to, and looks at their cap when a later run succeeds (M1)", async () => {
+    const w = agentWorld();
+    await w.memberAgent(CARA, "Cara's own", 40);
+    await w.projectAgent("web", BOB, "Web helper", 70);
+    let broken = true;
+    const orgs = new OrgStore({ documentClient: w.db, tableName: "T", now: () => w.clock.now, memberRemoval: memberRemovalHook(w.deps) });
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await withMover({ name: "zz-flaky", removed: async () => { if (broken) throw new Error("not yet"); } }, async () => {
+        await orgs.removeMember({ orgId: ORG_A, developerId: BOB, emails: [], ban: false, by: { kind: "member", id: OLIVE } });
+        // The first run moved web's accountable to Cara (the other maintainer by grant) and then a mover failed.
+        expect(w.logs.filter((entry) => entry.event === "owner_cap.exceeded_by_move")).toEqual([]);
+        broken = false;
+        expect(await drainMemberRemovals(w.deps, T0)).toEqual({ processed: 1, rejected: 0, failed: 0 });
+      });
+    } finally { vi.restoreAllMocks(); }
+    expect(w.logs.filter((entry) => entry.event === "owner_cap.exceeded_by_move")).toMatchObject([{ fields: { owner: CARA, totalUsd: 110, capUsd: 100, reason: "member_removed" } }]);
+  });
+
+  it("never treats an item in the merge partition as a removal, whatever its key says (M2)", async () => {
+    const w = agentWorld();
+    const agent = await w.memberAgent(ERIN, "Erin's agent");
+    w.db.delete(orgMemberKey(ORG_A, ERIN));
+    // The sign-in function can write this partition and no other; a removal it forged here would send Erin's things to the first owner.
+    w.db.set({ pk: MEMBER_MERGE_QUEUE_PK, sk: `${at(1)}#${ORG_A}#${ERIN}#removed`, entityType: "MEMBER_REMOVAL", orgId: ORG_A, developerId: ERIN, by: OLIVE });
+    expect(await drainMemberMerges(w.deps, T0)).toEqual({ processed: 0, rejected: 1, failed: 0 });
+    expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: ERIN });
+    // And the removal queue holds only removals: a merge marker put there moves nothing either.
+    w.db.set({ ...memberRemovalQueueKey(at(2), ORG_A, ERIN), entityType: "MEMBER_MERGE", orgId: ORG_A, survivorId: ALICE, duplicateId: ERIN });
+    expect(await drainMemberRemovals(w.deps, T0)).toEqual({ processed: 0, rejected: 1, failed: 0 });
+  });
+
   it("takes a page of 100 markers at a time and hands back the cursor to the next", async () => {
     const w = agentWorld();
     for (let index = 0; index < 150; index += 1) {
@@ -695,7 +865,8 @@ describe("drainMemberMerges", () => {
     const w = agentWorld();
     for (let index = 0; index < 120; index += 1) w.queue(`2026-10-22T11:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`, ORG_A, ALICE, String(index).padStart(64, "0"));
     const run = await runMemberMergeDrain(w.deps, { budgetMs: 20_000 });
-    expect(run).toEqual({ pages: 2, processed: 0, rejected: 120, failed: 0, complete: true });
+    // Two pages of the merge queue and the empty removal queue ahead of them.
+    expect(run).toEqual({ pages: 3, processed: 0, rejected: 120, failed: 0, complete: true });
     expect(w.db.find((item) => item.pk === MEMBER_MERGE_QUEUE_PK)).toEqual([]);
     // With no time at all it does not even start a page.
     const none = await runMemberMergeDrain(w.deps, { budgetMs: 0 });
@@ -871,7 +1042,7 @@ describe("OrgStore.removeMember with the lifecycle hook", () => {
     const plain = new OrgStore({ documentClient: w.db, tableName: "T", now: () => w.clock.now });
     return { ...w, orgs, plain, calls };
   }
-  const markersOf = (db: FakeDynamoDb) => db.find((item) => item.pk === MEMBER_MERGE_QUEUE_PK);
+  const markersOf = (db: FakeDynamoDb) => db.find((item) => item.pk === MEMBER_REMOVAL_QUEUE_PK);
 
   it("moves what the person owned as part of the removal, and leaves no marker behind", async () => {
     const w = await removalWorld();
@@ -880,7 +1051,7 @@ describe("OrgStore.removeMember with the lifecycle hook", () => {
     await w.orgs.removeMember({ orgId: ORG_A, developerId: ERIN, emails: [], ban: false, by: { kind: "member", id: OLIVE } });
 
     expect(w.db.get(orgMemberKey(ORG_A, ERIN))).toBeUndefined();
-    expect(w.calls).toEqual([{ orgId: ORG_A, developerId: ERIN, by: OLIVE }]);
+    expect(w.calls).toEqual([{ orgId: ORG_A, developerId: ERIN, by: OLIVE, marker: expect.objectContaining({ pk: MEMBER_REMOVAL_QUEUE_PK }) as unknown }]);
     expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OWEN });
     expect(markersOf(w.db)).toEqual([]);
   });
@@ -902,12 +1073,38 @@ describe("OrgStore.removeMember with the lifecycle hook", () => {
 
     expect(w.db.get(orgMemberKey(ORG_A, ERIN))).toBeUndefined();
     expect(markersOf(w.db)).toHaveLength(1);
-    expect(markersOf(w.db)[0]).toMatchObject({ ...memberMergeQueueKey(new Date(w.clock.now).toISOString(), ORG_A, ERIN, "removed"), entityType: "MEMBER_REMOVAL", orgId: ORG_A, developerId: ERIN, by: OLIVE });
+    expect(markersOf(w.db)[0]).toMatchObject({ ...memberRemovalQueueKey(new Date(w.clock.now).toISOString(), ORG_A, ERIN), entityType: "MEMBER_REMOVAL", orgId: ORG_A, developerId: ERIN, by: OLIVE });
     expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: ERIN });
 
     broken = false;
-    expect(await drainMemberMerges(w.deps, T0)).toEqual({ processed: 1, rejected: 0, failed: 0 });
+    expect(await drainMemberRemovals(w.deps, T0)).toEqual({ processed: 1, rejected: 0, failed: 0 });
     expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OWEN });
+    expect(markersOf(w.db)).toEqual([]);
+  });
+
+  it("stops the moves it makes inside the request at their time bound, and leaves the rest to the marker (M6)", async () => {
+    const w = await removalWorld();
+    const agents: Array<{ agentId: AgentId }> = [];
+    for (let index = 0; index < 6; index += 1) agents.push(await w.memberAgent(ERIN, `Erin's ${index}`));
+    // Every look at the clock costs half a second, so a two second bound allows only a few moves.
+    let ticks = 0;
+    const slow = { ...w.deps, now: () => T0 + (ticks += 500) };
+    const orgs = new OrgStore({ documentClient: w.db, tableName: "T", now: () => w.clock.now, memberRemoval: memberRemovalHook(slow, { budgetMs: 2000 }) });
+    const logs = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await orgs.removeMember({ orgId: ORG_A, developerId: ERIN, emails: [], ban: false, by: { kind: "member", id: OLIVE } });
+
+    const owners = async () => Promise.all(agents.map(async (agent) => ((await w.store.get(ORG_A, agent.agentId))!.owner as { developerId: string }).developerId));
+    const moved = (await owners()).filter((owner) => owner === OWEN).length;
+    expect(moved).toBeGreaterThan(0);
+    expect(moved).toBeLessThan(6);
+    expect(markersOf(w.db)).toHaveLength(1);
+    expect(logs.mock.calls.map(([line]) => String(line)).join("\n")).toContain("member_removal.hook_failed");
+    logs.mockRestore();
+
+    // The sweep has no such bound and finishes the rest.
+    expect(await runMemberMergeDrain(w.deps, { budgetMs: 20_000 })).toMatchObject({ processed: 1, failed: 0 });
+    expect((await owners()).every((owner) => owner === OWEN)).toBe(true);
     expect(markersOf(w.db)).toEqual([]);
   });
 
@@ -924,7 +1121,7 @@ describe("OrgStore.removeMember with the lifecycle hook", () => {
     await w.orgs.removeMember({ orgId: ORG_A, developerId: ERIN, emails: [], ban: false });
     w.member(ORG_A, ERIN, "member", "2026-10-22T10:00:00.000Z");
 
-    expect(await drainMemberMerges(w.deps, T0)).toEqual({ processed: 0, rejected: 1, failed: 0 });
+    expect(await drainMemberRemovals(w.deps, T0)).toEqual({ processed: 0, rejected: 1, failed: 0 });
 
     expect(markersOf(w.db)).toEqual([]);
     expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: ERIN });
@@ -955,7 +1152,7 @@ describe("the broker's wiring", () => {
     const h = await createDeveloperTaskBroker({ brokerExtra: options.agents === false ? {} : { agents: {} }, developerExtra: { endDeveloperSessions: vi.fn(async () => ({ ok: true as const })) } });
     seedMembership(h.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
     const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now });
-    const markers = () => h.db.find((item) => item.pk === MEMBER_MERGE_QUEUE_PK);
+    const markers = () => h.db.find((item) => item.pk === MEMBER_MERGE_QUEUE_PK || item.pk === MEMBER_REMOVAL_QUEUE_PK);
     const mayasAgent = () => store.create({ orgId: TEST_ORG, name: "Maya's agent", owner: { kind: "member", developerId: MAYA.developerId }, overlay: SCRATCH, createdBy: MAYA.developerId });
     return { ...h, store, markers, mayasAgent };
   }

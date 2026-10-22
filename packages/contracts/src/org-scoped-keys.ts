@@ -270,17 +270,24 @@ export function openApprovalKey(expiresAt: string, orgId: OrgId, approvalId: App
   return { pk: "OPEN_APPROVALS", sk: `${canonicalInstant(expiresAt)}#${orgId}#${approvalId}` };
 }
 
-/** The one partition that lists every member merge (and member removal) whose moves have not been finished yet. A named exception to org scoping: ids and the org only. */
+/** The one partition that lists every member merge whose moves have not been finished yet. A named exception to org scoping: ids and the org only. The sign-in function can write it (PutItem, nothing else). */
 export const MEMBER_MERGE_QUEUE_PK = "MEMBER_MERGE_QUEUE";
 
+/** The partition that lists every member removal whose moves have not been finished yet. The broker's alone: no other role is granted it by name. */
+export const MEMBER_REMOVAL_QUEUE_PK = "MEMBER_REMOVAL_QUEUE";
+
 /**
- * The marker of one member lifecycle change the broker has yet to finish, in the sparse `MEMBER_MERGE_QUEUE` partition, so one query lists
- * them all oldest first. A merge (the default) is keyed `<instant>#<orgId>#<duplicateId>`, written by the sign-in function in the merge's own
- * transaction; a removal (`removed`) adds `#removed` and is written by the broker in the removal's own transaction. The item holds ids and
+ * The marker of one member merge the broker has yet to finish, in the sparse `MEMBER_MERGE_QUEUE` partition, so one query lists them all oldest
+ * first. Keyed `<instant>#<orgId>#<duplicateId>` and written by the sign-in function in the merge's own transaction. The item holds ids and
  * `orgId` only; whoever reads it checks `orgId` against the key. `at` is an instant.
  */
-export function memberMergeQueueKey(at: string, orgId: OrgId, memberId: string, kind: "merged" | "removed" = "merged"): OrgKey {
-  return { pk: MEMBER_MERGE_QUEUE_PK, sk: `${canonicalInstant(at)}#${orgId}#${memberId}${kind === "removed" ? "#removed" : ""}` };
+export function memberMergeQueueKey(at: string, orgId: OrgId, duplicateId: string): OrgKey {
+  return { pk: MEMBER_MERGE_QUEUE_PK, sk: `${canonicalInstant(at)}#${orgId}#${duplicateId}` };
+}
+
+/** The marker of one member removal, in the broker-only `MEMBER_REMOVAL_QUEUE` partition; keyed like a merge's. Written in the removal's own transaction. */
+export function memberRemovalQueueKey(at: string, orgId: OrgId, developerId: string): OrgKey {
+  return { pk: MEMBER_REMOVAL_QUEUE_PK, sk: `${canonicalInstant(at)}#${orgId}#${developerId}` };
 }
 
 /** The item that lists one approval for one person who may be asked to decide it (an id it names, or a candidate of its rule). */

@@ -11,7 +11,7 @@ import {
   developerOrgKey,
   githubInstallationKey,
   memberGrantsPk,
-  memberMergeQueueKey,
+  memberRemovalQueueKey,
   newOrgId as generateOrgId,
   normalizeEmail,
   orgBanKey,
@@ -62,7 +62,7 @@ export interface InviteDescription {
  * developer who removed them (themselves when they left), or `system`.
  */
 export interface MemberRemovalHook {
-  onRemoved(event: { orgId: OrgId; developerId: string; by: string }): Promise<void>;
+  onRemoved(event: { orgId: OrgId; developerId: string; by: string; /** The marker's key, so the hook can note on it what it already did. */ marker: OrgKey }): Promise<void>;
 }
 
 export interface OrgStoreInput {
@@ -430,7 +430,7 @@ export class OrgStore {
     // The removal's marker (Task 11) goes in the same transaction, so a removal that happened always has one until its moves are done.
     const hook = this.input.memberRemoval;
     const by = actor.kind === "member" ? actor.id : "system";
-    const marker = memberMergeQueueKey(this.iso(), orgId, developerId, "removed");
+    const marker = memberRemovalQueueKey(this.iso(), orgId, developerId);
     const items = this.removalItems(input, role, pointers, guard, [
       ...this.pendingFor(event),
       ...(hook === undefined ? [] : [{ Put: { TableName: this.input.tableName, Item: { ...marker, entityType: "MEMBER_REMOVAL", orgId, developerId, by } } }]),
@@ -440,7 +440,7 @@ export class OrgStore {
     if (hook === undefined) return;
     // The person is removed whatever happens here: a hook that fails leaves its marker, and the sweep calls it again.
     try {
-      await hook.onRemoved({ orgId, developerId, by });
+      await hook.onRemoved({ orgId, developerId, by, marker });
       await this.input.documentClient.send(new DeleteCommand({ TableName: this.input.tableName, Key: marker }));
     } catch (error) {
       console.log(JSON.stringify({ component: "broker", level: "error", event: "member_removal.hook_failed", orgId, error: errorName(error) ?? "unknown" }));

@@ -312,7 +312,9 @@ async function retire(
         ]),
       ]),
       // Plan 3, Task 11: the broker finishes what the duplicate owned (agents, skills, shares) from this marker; this function only leaves it,
-      // in the transaction that retires the duplicate, so a merge that happened always has one and one that did not never does.
+      // in the transaction that retires the duplicate, so a merge that happened always has one and one that did not never does. The marker's org is
+      // the survivor's. In the race-org case the duplicate's own org differs and is closed in this same transaction, so anything the duplicate owned
+      // there stays with it in a closed org on purpose: this is not a cross-org move, and the broker never makes one.
       { Put: { TableName, Item: { ...memberMergeQueueKey(state.at, orgId, duplicateId), entityType: "MEMBER_MERGE", orgId, survivorId, duplicateId } } },
       ...deps.signInStore.mergeItems({
         duplicate: state.record, duplicateIdentityKey: input.duplicateIdentityKey, survivorId, at: state.at,
