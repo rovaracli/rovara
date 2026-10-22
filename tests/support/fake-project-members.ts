@@ -1,7 +1,8 @@
 // PF6: an in-memory stand-in for Plan 2 Task 21's `createProjectMembers` (packages/broker/src/org/project-members.ts), kept in step with it
 // (tests/contract/project-members-parity.test.ts runs both over the same people). Org owners and admins are `maintainer` of every project
-// (listed once, as `org_role` rows, whatever grants they also hold); everyone else has the role a grant gives them, or none. A project that
-// is archived is left out of `projectsOf`. The real one is wired into the broker; this one is for unit tests that want no table.
+// (listed once, as `org_role` rows, whatever grants they also hold); everyone else has the role a grant gives them, else `contributor` when the
+// project's Slack channel gives them access (`channel`), else none. A person who reaches a project only through its channel is not in `list`.
+// A project that is archived is left out of `projectsOf`. The real one is wired into the broker; this one is for unit tests that want no table.
 import type { ProjectMembers } from "../../packages/broker/src/agents/access.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import type { ProjectRole } from "../../packages/contracts/src/app-projects.js";
@@ -14,6 +15,7 @@ export class FakeProjectMembers implements ProjectMembers {
   private readonly projects = new Map<OrgId, Set<string>>();
   private readonly archived = new Set<string>();
   private readonly orgRoles = new Map<string, OrgRole>();
+  private readonly channels = new Set<string>();
   /** Every `roleOf`, `list` and `projectsOf` call, so a test can check what was asked. */
   readonly calls: string[] = [];
 
@@ -33,6 +35,11 @@ export class FakeProjectMembers implements ProjectMembers {
     this.archived.add(`${orgId}|${project}`);
   }
 
+  /** The project's Slack channel gives this developer access: a contributor, unless they hold a grant (an explicit grant is the role). The project need not exist. */
+  channel(orgId: OrgId, project: string, developerId: string): void {
+    this.channels.add(`${orgId}|${project}|${developerId}`);
+  }
+
   /** Gives a developer a role on a project (the project joins the org's catalog too). */
   grant(orgId: OrgId, project: string, developerId: string, role: ProjectRole): void {
     this.addProject(orgId, project);
@@ -43,7 +50,7 @@ export class FakeProjectMembers implements ProjectMembers {
     this.calls.push(`roleOf ${project}`);
     if (!this.projects.get(orgId)?.has(project)) return Promise.resolve(undefined);
     if (isOrgAdmin(caller.orgRole)) return Promise.resolve("maintainer");
-    return Promise.resolve(this.grants.get(`${orgId}|${project}|${caller.developerId}`));
+    return Promise.resolve(this.grants.get(`${orgId}|${project}|${caller.developerId}`) ?? (this.channels.has(`${orgId}|${project}|${caller.developerId}`) ? "contributor" : undefined));
   };
 
   list = (orgId: OrgId, project: string): Promise<Array<{ developerId: string; role: ProjectRole; source: "grant" | "org_role" }>> => {
@@ -72,7 +79,7 @@ export class FakeProjectMembers implements ProjectMembers {
     const found: Array<{ project: string; role: ProjectRole }> = [];
     for (const project of names) {
       if (this.archived.has(`${orgId}|${project}`)) continue;
-      const role = isOrgAdmin(caller.orgRole) ? "maintainer" : this.grants.get(`${orgId}|${project}|${caller.developerId}`);
+      const role = isOrgAdmin(caller.orgRole) ? "maintainer" : this.grants.get(`${orgId}|${project}|${caller.developerId}`) ?? (this.channels.has(`${orgId}|${project}|${caller.developerId}`) ? "contributor" : undefined);
       if (role !== undefined) found.push({ project, role });
     }
     return Promise.resolve(found);

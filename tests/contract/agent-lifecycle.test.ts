@@ -16,8 +16,10 @@ import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { mergeDuplicateMember } from "../../packages/broker/src/org/merge-members.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
+import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const T0 = Date.parse("2026-10-22T09:00:00.000Z");
 const GITHUB_ISSUER = "https://github.com";
@@ -790,3 +792,99 @@ describe("a project archive", () => {
   });
 });
 
+
+// ---- through the broker: the routes that remove people and archive projects, and the scheduled run
+
+describe("the broker's wiring", () => {
+  async function installWithAgents(options: { agents?: boolean } = {}) {
+    const h = await createDeveloperTaskBroker({ brokerExtra: options.agents === false ? {} : { agents: {} }, developerExtra: { endDeveloperSessions: vi.fn(async () => ({ ok: true as const })) } });
+    seedMembership(h.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
+    const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now });
+    const markers = () => h.db.find((item) => item.pk === MEMBER_MERGE_QUEUE_PK);
+    const mayasAgent = () => store.create({ orgId: TEST_ORG, name: "Maya's agent", owner: { kind: "member", developerId: MAYA.developerId }, overlay: SCRATCH, createdBy: MAYA.developerId });
+    return { ...h, store, markers, mayasAgent };
+  }
+
+  it("moves a removed member's agents to the first owner when an owner removes them, and leaves no marker", async () => {
+    const h = await installWithAgents();
+    const agent = await h.mayasAgent();
+
+    const removed = await h.dev(OMAR, "DELETE", `/v1/app/org/members/${MAYA.developerId}`);
+
+    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+    expect(h.db.get(orgMemberKey(TEST_ORG, MAYA.developerId))).toBeUndefined();
+    expect((await h.store.get(TEST_ORG, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OMAR.developerId });
+    expect(h.markers()).toEqual([]);
+  });
+
+  it("answers the removal and leaves a marker when the moves fail, and the scheduled run finishes them", async () => {
+    const h = await installWithAgents();
+    const agent = await h.mayasAgent();
+    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("owner_changed"), error: { name: "InternalServerError" }, times: 1 });
+    const logs = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const removed = await h.dev(OMAR, "DELETE", `/v1/app/org/members/${MAYA.developerId}`);
+
+    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+    expect(h.markers()).toHaveLength(1);
+    expect((await h.store.get(TEST_ORG, agent.agentId))!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
+    expect(logs.mock.calls.map(([line]) => String(line))).toEqual(expect.arrayContaining([expect.stringContaining("member_removal.hook_failed")]));
+
+    const sweep = await h.handler({ source: "agentx.spend-settlement" });
+    logs.mockRestore();
+    expect(JSON.parse(sweep.body)).toMatchObject({ jobs: [{ name: "drain-member-merges", ok: true, result: { processed: 1, rejected: 0, failed: 0, complete: true } }] });
+    expect((await h.store.get(TEST_ORG, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OMAR.developerId });
+    expect(h.markers()).toEqual([]);
+  });
+
+  it("writes no marker where agents are not set up", async () => {
+    const h = await installWithAgents({ agents: false });
+    const removed = await h.dev(OMAR, "DELETE", `/v1/app/org/members/${MAYA.developerId}`);
+    expect(removed.status).toBe(200);
+    expect(h.markers()).toEqual([]);
+  });
+
+  it("drains a merge on the scheduled run, alongside whatever else the run does", async () => {
+    const h = await installWithAgents();
+    const agent = await h.mayasAgent();
+    // The sign-in function merged Maya's duplicate (someone else's id) into her; the broker has not yet moved what the duplicate owned.
+    const duplicate = "9".repeat(64);
+    const owned = await h.store.create({ orgId: TEST_ORG, name: "The duplicate's agent", owner: { kind: "member", developerId: duplicate }, overlay: SCRATCH, createdBy: duplicate });
+    h.db.set({ pk: `DEVELOPER#${duplicate}`, sk: "META", developerId: duplicate, mergedInto: MAYA.developerId });
+    // (This harness puts anyone with a sign-in record in the org; the merge took the duplicate out.)
+    h.db.delete(orgMemberKey(TEST_ORG, duplicate));
+    h.db.delete(developerOrgKey(duplicate));
+    h.db.set({ ...memberMergeQueueKey("2026-10-22T09:00:00.000Z", TEST_ORG, duplicate), entityType: "MEMBER_MERGE", orgId: TEST_ORG, survivorId: MAYA.developerId, duplicateId: duplicate });
+
+    const sweep = await h.handler({ source: "agentx.spend-settlement" });
+
+    expect(sweep.statusCode).toBe(200);
+    expect(JSON.parse(sweep.body)).toMatchObject({ jobs: [{ name: "drain-member-merges", ok: true, result: { processed: 1, rejected: 0, failed: 0 } }] });
+    expect((await h.store.get(TEST_ORG, owned.agentId))!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
+    expect((await h.store.get(TEST_ORG, agent.agentId))!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
+    expect(h.markers()).toEqual([]);
+  });
+
+  it("tells the agents platform when a project is archived, once, and archives it whatever that does", async () => {
+    const h = await installWithAgents();
+    const logs = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const archivedLines = () => logs.mock.calls.map(([line]) => String(line)).filter((line) => line.includes("agents.project_archived"));
+    const requestId = "11111111-1111-4111-8111-111111111111";
+
+    const first = await h.dev(OMAR, "POST", "/v1/app/projects/payments/archive", { requestId });
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(archivedLines().map((line) => JSON.parse(line))).toEqual([{ component: "broker", event: "agents.project_archived", orgId: TEST_ORG, project: "payments", rosterAgents: 0, projectAgents: 0 }]);
+
+    // A replay applies nothing and tells nothing; restoring tells nothing.
+    expect((await h.dev(OMAR, "POST", "/v1/app/projects/payments/archive", { requestId })).status).toBe(200);
+    expect((await h.dev(OMAR, "POST", "/v1/app/projects/payments/restore", { requestId: "22222222-2222-4222-8222-222222222222" })).status).toBe(200);
+    expect(archivedLines()).toHaveLength(1);
+
+    // A hook that fails never fails the archive.
+    h.db.injectFault({ command: "QueryCommand", match: (input) => String((input.ExpressionAttributeValues as { ":pk"?: string } | undefined)?.[":pk"]).includes("PROJECT_AGENTS#payments"), error: { name: "InternalServerError" } });
+    const again = await h.dev(OMAR, "POST", "/v1/app/projects/payments/archive", { requestId: "33333333-3333-4333-8333-333333333333" });
+    logs.mockRestore();
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body.project).toMatchObject({ name: "payments", status: "archived" });
+  });
+});

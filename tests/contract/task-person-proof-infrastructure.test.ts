@@ -78,6 +78,16 @@ function parentRemainderDigest(template: TemplateJson): string {
   // Named environments have the one schedule (spend-ledger.test.ts asserts it) and the legacy template has none; nothing else may hide under the prefix.
   expect(spendSchedules.length, "at most the one spend settlement schedule is taken out").toBeLessThanOrEqual(1);
   for (const id of spendSchedules) delete resources[id];
+  // Plan 3 Task 11's one statement (PutItem on the MEMBER_MERGE_QUEUE partition, for the sign-in function) is no part of the proof-only addition either.
+  const mergeMarkerGrants = Object.values(resources).flatMap((resource) => {
+    if (resource.Type !== "AWS::IAM::Policy") return [];
+    const document = (resource.Properties as { PolicyDocument?: { Statement?: unknown[] } } | undefined)?.PolicyDocument;
+    const kept = (document?.Statement ?? []).filter((statement) => !JSON.stringify((statement as { Condition?: unknown }).Condition ?? {}).includes("MEMBER_MERGE_QUEUE"));
+    const removed = (document?.Statement ?? []).length - kept.length;
+    if (document?.Statement !== undefined) document.Statement = kept;
+    return removed > 0 ? [removed] : [];
+  });
+  expect(mergeMarkerGrants.length, "at most the one merge marker grant is taken out").toBeLessThanOrEqual(1);
   const dispatchers = Object.entries(resources).filter(([id, resource]) => id.startsWith("Dispatcher") && resource.Type === "AWS::Lambda::Function");
   expect(dispatchers, "the actual Dispatcher remains in the parent template remainder").toHaveLength(1);
   const variables = dispatchers[0]![1].Properties!.Environment as { Variables: Record<string, unknown> };
