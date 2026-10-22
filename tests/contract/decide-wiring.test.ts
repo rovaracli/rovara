@@ -567,6 +567,8 @@ describe("reads and the confirm-link route (fix round 1: I1, I2)", () => {
     const expired = await w.waitingWrite();
     const decided = await w.waitingWrite({ id: "ENG-13", stateId: "s2" });
     expect((await w.decide(decided, await w.session(BOB, decided))).statusCode).toBe(200);
+    // Decided, and well inside its time: still no mint.
+    expect(await route(w, caller(BOB), "POST", `/v1/app/approvals/${decided}/confirm-link`, spy, {})).toEqual({ confirmUrl: `${CELL}/v1/app/approve/${decided}`, ticketed: false });
     w.clock.now += 8 * 86_400_000;
     for (const id of [expired, decided]) {
       const shown = await route(w, caller(BOB), "GET", `/v1/app/approvals/${id}`);
