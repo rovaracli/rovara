@@ -13,6 +13,7 @@ import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import type { AgentId } from "../../packages/contracts/src/agent.js";
 import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
+import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { ChainDefinitionSchema, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey, ownerBudgetKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -714,6 +715,11 @@ describe("what the routes and the confirmation handlers hold to", () => {
     return s.approvals()[0]!;
   };
   const decided = (record: ApprovalRecord): ApprovalRecord => ({ ...record, decidedBy: DANA.developerId });
+  /** The company's guardrails as an admin set them since: no agent above `suggest`. */
+  const tighten = (s: Pick<Baseline, "db">) => s.db.set({
+    ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 2, updatedBy: DANA.developerId, updatedAt: "2026-10-22T00:00:00.000Z",
+    guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxAutonomy: "suggest" },
+  });
 
   it("answers a publish of a draft revision that is not the current one as a conflict, even for a design that would need a person, and asks nobody", async () => {
     const s = await publishedBaseline();
@@ -862,11 +868,96 @@ describe("what the routes and the confirmation handlers hold to", () => {
       expect((await s.state(s.chainId)).currentVersion).toBe(2);
     });
 
+    it("refuses to apply it when the version no longer meets the company's guardrails", async () => {
+      const s = await askToRollBack();
+      tighten(s);
+      expect(await thrownMessage(getApprovalSubjectHandler("chain_rollback")!(s.deps, decided(s.record)))).toMatch(/^CONFIG_INVALID: steps\.\d+\.agent\.autonomy: \w+ is more than your company allows \(suggest\)$/);
+      expect((await s.state(s.chainId)).currentVersion).toBe(2);
+    });
+
     it("refuses to apply it when the published version moved since it was asked", async () => {
       const s = await askToRollBack();
       await s.seed(s.chainId, variant({}, [], { limits: { maxRunUsd: 60 } }));
       expect(await thrownMessage(getApprovalSubjectHandler("chain_rollback")!(s.deps, decided(s.record)))).toBe("CHAIN_REVISION_CONFLICT: The published version changed after this was asked. Roll back again.");
       expect((await s.state(s.chainId)).currentVersion).toBe(3);
+    });
+  });
+
+  describe("a rollback is held to the rules of today", () => {
+    it("refuses to roll back to a version that breaks the company's guardrails as they are now", async () => {
+      const s = await publishedBaseline();
+      await s.seed(s.chainId, variant({ investigate: { name: "second" } }));
+      tighten(s);
+      const refused = await s.call(MAYA, "POST", `/v1/app/chains/${s.chainId}/rollback`, { version: 1 });
+      expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+      expect(errorOf(refused)).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringMatching(/^steps\.\d+\.agent\.autonomy: \w+ is more than your company allows \(suggest\)$/) as string });
+      expect((await s.state(s.chainId)).currentVersion).toBe(2);
+    });
+
+    it("commits the rollback at the guardrails it checked: a store call with another revision is a conflict", async () => {
+      const s = await publishedBaseline();
+      await s.seed(s.chainId, variant({ investigate: { name: "second" } }));
+      await expect(s.chains.rollback({ orgId: TEST_ORG, chainId: s.chainId, version: 1, expectedCurrentVersion: 2, guardrailsRevision: 0, by: MAYA.developerId })).rejects.toMatchObject({ code: "CHAIN_REVISION_CONFLICT" });
+      expect((await s.state(s.chainId)).currentVersion).toBe(2);
+    });
+
+    const onHelper = (helper: AgentId, instructions?: string): ChainDefinitionInput => ({
+      start: "a", steps: [{ kind: "agent", id: "a", name: "Do", agent: { agentId: helper, version: "current" }, ...(instructions === undefined ? {} : { instructions }), next: { kind: "end" } }],
+    });
+
+    it("refuses to roll back to a version whose agent the caller can no longer use", async () => {
+      const s = await setup();
+      const helper = await s.customAgent("Helper");
+      const chainId = await s.create(MAYA, onHelper(helper));
+      await s.seed(chainId, onHelper(helper));
+      await s.seed(chainId, onHelper(helper, "Say what you did."));
+      await s.call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "edit" }] });
+      const refused = await s.call(EVE, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 });
+      expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+      expect(errorOf(refused)).toEqual({ code: "CONFIG_INVALID", message: "steps.0.agent: unknown agent" });
+      expect((await s.state(chainId)).currentVersion).toBe(2);
+      expect((await s.call(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 })).status).toBe(200);
+    });
+
+    it("refuses to apply a confirmed rollback for someone who can no longer use the agents of the version", async () => {
+      const s = await setup();
+      const helper = await s.customAgent("Helper");
+      const rich = (usd: number) => ({ ...onHelper(helper), limits: { maxRunUsd: usd } });
+      const chainId = await s.create(MAYA, rich(60));
+      await s.seed(chainId, rich(60));
+      await s.seed(chainId, rich(30));
+      await s.call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "edit" }] });
+      await s.store.replaceShares({ orgId: TEST_ORG, agentId: helper, upsert: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "use" }], remove: [], expectedSharesRevision: 0, by: MAYA.developerId });
+      const asked = await s.call(EVE, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 });
+      expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+      await s.store.replaceShares({ orgId: TEST_ORG, agentId: helper, upsert: [], remove: [{ kind: "member", developerId: EVE.developerId }], expectedSharesRevision: 1, by: MAYA.developerId });
+      expect(await thrownMessage(getApprovalSubjectHandler("chain_rollback")!(s.deps, decided(s.approvals()[0]!)))).toBe("CONFIG_INVALID: steps.0.agent: unknown agent");
+      expect((await s.state(chainId)).currentVersion).toBe(2);
+    });
+  });
+
+  describe("when the version that runs can't be read", () => {
+    const withoutRunning = async () => {
+      const s = await publishedBaseline();
+      await s.seed(s.chainId, variant({ investigate: { name: "second" } }));
+      const [item] = s.db.find((found) => found["entityType"] === "CHAIN_VERSION" && found["version"] === 2 && String(found["pk"]).includes(s.chainId));
+      s.db.delete({ pk: item!["pk"] as string, sk: item!["sk"] as string });
+      return s;
+    };
+
+    it("refuses a rollback instead of treating it as a first publish", async () => {
+      const s = await withoutRunning();
+      const refused = await s.call(MAYA, "POST", `/v1/app/chains/${s.chainId}/rollback`, { version: 1 });
+      expect(errorOf(refused).code).toBe("RUNTIME_UNAVAILABLE");
+      expect((await s.state(s.chainId)).currentVersion).toBe(2);
+    });
+
+    it("refuses a publish, which would otherwise compare with nothing", async () => {
+      const s = await withoutRunning();
+      await s.putDraft(MAYA, s.chainId, raised(600));
+      const refused = await s.publish(MAYA, s.chainId);
+      expect(errorOf(refused).code).toBe("RUNTIME_UNAVAILABLE");
+      expect((await s.state(s.chainId)).currentVersion).toBe(2);
     });
   });
 
