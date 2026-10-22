@@ -470,6 +470,22 @@ describe("the setup check's workspace and slot (final review I3)", () => {
     expect(await setupOf(h)).toMatchObject({ status: "failed", failedStep: expect.stringMatching(/^setup: npm ci/) as string });
   });
 
+  it("closes the check's workspace when the same result is reported again after the first close did not land (follow-up N5)", async () => {
+    for (const [status, closedFrom] of [["SUCCEEDED", "READY"], ["FAILED", "PREPARATION_FAILED"]] as const) {
+      const h = await harness({ memberLimit: 1 });
+      h.deleteEc2Session!.mockRejectedValueOnce(new Error("compute is busy"));
+      const { workspaceId, operationId } = await started(h);
+      await h.finish(workspaceId, operationId, status, status === "FAILED" ? { error: "setup step 0 (npm ci in repo/demo) exited 1" } : {});
+      expect(openWorkspaces(h), status).toHaveLength(1);
+      expect(heldSlots(h), status).toBeGreaterThan(0);
+      // The worker repeats the result it already sent.
+      await h.finish(workspaceId, operationId, status, status === "FAILED" ? { error: "setup step 0 (npm ci in repo/demo) exited 1" } : {});
+      expect(openWorkspaces(h), status).toEqual([]);
+      expect(heldSlots(h), status).toBe(0);
+      expect(h.db.get(`WORKSPACE#${workspaceId}`, "META"), status).toMatchObject({ status: "CLOSED", closedFrom });
+    }
+  });
+
   it("refuses a check that would pass the limit when the counter fills between the read and the write", async () => {
     const h = await harness();
     // The counters fill just as the transaction is sent; the cancellation names the first counter.
