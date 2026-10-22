@@ -20,6 +20,7 @@ export type RequestFunction = (url: URL, options: RequestOptions, callback?: (re
 /** Decides, before one MCP request, whether the endpoint may be called, and gives the fetch that request must use. */
 export type McpEndpointGuard = (endpoint: URL) => Promise<typeof fetch>;
 
+const hasLogin = (url: URL): boolean => url.username !== "" || url.password !== "";
 const asError = (reason: unknown): Error => (reason instanceof Error ? reason : new Error(typeof reason === "string" ? reason : "the request was aborted"));
 const familyOf = (value: number | string | undefined): 0 | 4 | 6 => (value === 4 || value === "IPv4" ? 4 : value === 6 || value === "IPv6" ? 6 : 0);
 
@@ -89,9 +90,11 @@ export function lookupFetch(lookup: ConnectionLookup, options: { request?: Reque
     const original = input instanceof Request ? input : undefined;
     const url = new URL(original?.url ?? (input instanceof URL ? input.href : input));
     // Held to the endpoint that was checked: the lookup pins a DNS name, but an IP literal is connected to directly and `http:` is not the checked scheme.
-    if (options.origin !== undefined && (url.origin !== options.origin || url.protocol !== "https:" || isIP(url.hostname.replace(/^\[|\]$/gu, "")) !== 0)) {
+    if (options.origin !== undefined && (url.origin !== options.origin || url.protocol !== "https:" || isIP(url.hostname.replace(/^\[|\]$/gu, "")) !== 0 || hasLogin(url))) {
       throw new TypeError("a request to anywhere but the checked endpoint was refused");
     }
+    // The origin ignores a login, and node would send one as a Basic header that can replace the caller's own authorization: refused whatever the origin.
+    if (hasLogin(url)) throw new TypeError("a request with a login in the address was refused");
     const signal = init?.signal ?? original?.signal ?? undefined;
     if (signal?.aborted === true) throw asError(signal.reason ?? new DOMException("This operation was aborted", "AbortError"));
     const method = (init?.method ?? original?.method ?? "GET").toUpperCase();
