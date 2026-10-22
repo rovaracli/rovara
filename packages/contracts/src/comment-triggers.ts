@@ -64,3 +64,6 @@ export function commentTriggerLapseNotice(repository: string, files: readonly st
   const named = shown.length === 0 ? "the workflow files" : `${shown.join(", ")}${clean.length > shown.length ? ` and ${String(clean.length - shown.length)} more` : ""}`;
   return `Rovara is asking again about comment-triggered workflows in ${repository}: ${named} changed. Agent comments there wait for a person until an admin reviews them.`;
 }
+
+/** What the page shows beside a repository's scan: what the scan reads, and what it can't see. Fixed text; nothing from a repository goes in it. */
+export const COMMENT_TRIGGER_COVERAGE_NOTE = "Rovara reads the workflows, the scripts they name, local actions and the workflow_run workflows that follow them. It can't see code fetched at run time, a command run by bare name or found on the PATH, or modules a script imports; where it can't tell which file runs, it asks a person.";

@@ -2,7 +2,7 @@
 // comment rule. Both are for an org owner or admin only (a maintainer who is not one gets 403), and both are reached with a person's token alone: an agent
 // operation capability (scope `agent-tools`) is not a developer token, so it never gets past authentication (401). `PUT` applies nothing: it records a
 // pending change that an org admin confirms on the confirmation page (`202 { confirmUrl }`).
-import { CommentTriggerOptOutRequestSchema, CommentTriggerRepositorySchema, agentXError, type OrgId } from "@agentx/contracts";
+import { COMMENT_TRIGGER_COVERAGE_NOTE, CommentTriggerOptOutRequestSchema, CommentTriggerRepositorySchema, agentXError, type OrgId } from "@agentx/contracts";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { projectArchivedMessage, readProjectMeta } from "../developer/project-roles.js";
@@ -52,12 +52,12 @@ async function repositoriesToReview(deps: ApprovalDependencies, orgId: OrgId, pr
   return found;
 }
 
-async function review(deps: ApprovalDependencies, caller: AgentCaller, project: string, url: URL): Promise<{ project: string; repositories: RepositoryTriggerView[] }> {
+async function review(deps: ApprovalDependencies, caller: AgentCaller, project: string, url: URL): Promise<{ project: string; repositories: RepositoryTriggerView[]; coverage: string }> {
   const repositories: RepositoryTriggerView[] = [];
   for (const repository of await repositoriesToReview(deps, caller.orgId, project, url.searchParams.get("repository"))) {
     repositories.push(await reviewRepository(deps, { orgId: caller.orgId, project, repository }));
   }
-  return { project, repositories };
+  return { project, repositories, coverage: COMMENT_TRIGGER_COVERAGE_NOTE };
 }
 
 async function ask(deps: ApprovalDependencies, caller: AgentCaller, project: string, body: unknown): Promise<StatusReply> {

@@ -3,14 +3,28 @@
 // (Task 20b's `classifyWrite` asks `repoCommandTriggers`). The scan reads the repository's DEFAULT branch, because `issue_comment`, `issues` and
 // `discussion*` workflows always run from it, through a read-only agent token (`contents: read`), at one commit.
 //
-// The scan also reaches into what a triggering workflow runs: local actions and reusable workflows (followed, at most 50 files), and the scripts named in
-// `run:` lines. The digest covers all of them, so an opt-out (comment-trigger-optouts.ts) lapses when any of them changes. Remote actions are listed with
-// their ref but not hashed (Accepted residual risks). Anything the scan cannot read completely answers `triggers: true, failedClosed: true`.
+// The scan also reaches into what a triggering workflow runs, and hashes it: local actions and reusable workflows (and every file in a local action's
+// folder), the scripts and manifests named in `run:`, `shell:` and `BASH_ENV` (a shell script is read for the files it runs in turn, transitively),
+// every `workflow_run` workflow whenever the repository triggers, `package.json` and `Makefile` where npm, npx, yarn, pnpm or make is run, and this
+// repository's own files named remotely at its default branch. All of it counts against 50 files. The digest covers it, so an opt-out
+// (comment-trigger-optouts.ts) lapses when any of it changes. Remote actions are listed with their ref and not hashed.
 //
-// What else is hashed: every `workflow_run` workflow whenever the repository triggers (they run from the default branch after the commenting workflow, and
-// a chain of them is followed because each is a workflow of its own), every file under a local action's folder, `package.json` and `Makefile` where a run line
-// uses npm, npx, yarn, pnpm or make, and this repository's own files named remotely at its default branch. Accepted residual risks: a script run by name with
-// no path or extension and not through those tools, a command resolved from the PATH, and a script fetched at run time.
+// The scan can never be complete, so wherever it can't tell which file runs it FAILS CLOSED (`triggers: true, failedClosed: true`: no opt-out is
+// possible and comments stay consequential). That is: a file it can't read or parse, a listing that may be cut short, more than 100 workflow files, a file over
+// 512 KiB, more than 50 reached files, a name with a control or format character, a remote reference that is not `owner/repo[/path]@ref` or `docker://`,
+// a `${{ }}` expression or a shell variable (other than github.workspace/github.action_path and their environment forms) where a path goes (a `run:` path,
+// `working-directory`, `shell:`, `BASH_ENV`, `uses:`), `..` in a path, a glob or brace expansion, `cd`, `pushd` or `popd` in anything it reads, a custom
+// `shell:` that is not a plain path, a root action (`uses: ./`) that is not composite, and a symlink or submodule where it lists.
+//
+// What remains, exactly (Accepted residual risks, shown to the admin as COMMENT_TRIGGER_COVERAGE_NOTE):
+//  - a command run by bare name or resolved from the PATH, including a script run by name with no path (`deploy`), unless npm, npx, yarn, pnpm or make runs it;
+//  - code fetched or built at run time (a download, a package install, a Docker build step's context, a remote action or its ref's content);
+//  - files a script in another language imports or requires (only shell scripts are read for further paths; a Python or JavaScript script is hashed);
+//  - what a Makefile or package.json itself runs beyond hashing those two files, and a script reached by a path that only a runtime value decides inside a
+//    shell construct the tokenizer does not model (a here-document, eval, a variable built from pieces);
+//  - the bodies of a Dockerfile, of dependencies installed by a package manager, and of anything a local action's own non-composite code loads from outside its folder;
+//  - a workflow on a branch other than the default (it matters once it is merged, and the next run's scan sees it);
+//  - symlinked directories on the path to a script, which the API may report as absent.
 import { createHash } from "node:crypto";
 import { parseDocument } from "yaml";
 import { CommentTriggerRepositorySchema, COMMENT_TRIGGER_FILES_MAX, COMMENT_TRIGGER_FILE_NAME_MAX, agentXError, type OrgId } from "@agentx/contracts";
@@ -87,7 +101,8 @@ export function workflowTriggers(workflow: Record<string, unknown>): boolean {
 }
 
 function parseYaml(text: string): unknown {
-  const document = parseDocument(text, { version: "1.2", schema: "core", uniqueKeys: true });
+  // Merge keys (`<<`) are resolved, so a default or a step reused through one is walked as the runner reads it.
+  const document = parseDocument(text, { version: "1.2", schema: "core", uniqueKeys: true, merge: true });
   if (document.errors.length > 0) return fail("a file does not parse");
   return document.toJS({ maxAliasCount: 100 });
 }
@@ -128,64 +143,167 @@ const DOCKER_ACTION = /^docker:\/\/[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,300}$/u;
 
 const INTERPRETERS = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish", "node", "nodejs", "python", "python2", "python3", "ruby", "perl", "php", "deno", "bun", "tsx", "ts-node", "pwsh", "powershell", "source", "."]);
 const SCRIPT_EXTENSION = /\.(?:sh|bash|zsh|py|rb|js|mjs|cjs|ts|pl|ps1|php)$/u;
+/** Stands for one `${{ ... }}` expression while a run block is read: what an expression names is not known to the scan. */
+const EXPRESSION_MARK = "\u0001";
+const EXPRESSION = /\$\{\{(?:(?!\}\}).){0,1000}\}\}/gsu;
+const MAX_RUN_TEXT = 100_000;
+const DIRECTORY_COMMANDS = new Set(["cd", "pushd", "popd"]);
 
-/** The paths a shell block might run: `./x`, a path with a script extension, and the word after an interpreter (`bash scripts/x.sh`, `python x.py`). */
-export function scriptCandidates(run: string): string[] {
-  const found = new Set<string>();
-  for (const line of run.split(/\r\n|\r|\n|\u2028|\u2029|\u0085/u)) {
-    const tokens = line.split(/[\s;|&()<>"'`]+/u).filter((token) => token !== "");
-    let afterInterpreter = false;
-    for (const token of tokens) {
-      if (found.size >= MAX_CANDIDATES_PER_RUN_BLOCK) return [...found];
-      if (INTERPRETERS.has(token.toLowerCase())) { afterInterpreter = true; continue; }
-      if (token.startsWith("-") && afterInterpreter) continue;
-      const looksLikeScript = afterInterpreter || token.startsWith("./") || (token.includes("/") && SCRIPT_EXTENSION.test(token.toLowerCase()));
-      afterInterpreter = false;
-      if (!looksLikeScript || token.includes("://")) continue;
-      const path = normalizedPath(token);
-      if (path !== undefined) found.add(path);
-    }
-  }
-  return [...found];
+const POSITIONAL_PARAMETER = /^\$(?:[@*#?0-9]|\{[@*#?0-9]+\})$/u;
+
+type Classified = { path: string } | "outside" | "unresolvable";
+
+/**
+ * What a word in a path position names. A path outside the repository (absolute, `~`, a URL, the root itself) is `outside`: no file of the repository is
+ * meant. Anything the scan can't turn into one file of the repository (a variable or expression, `..`, a glob or brace expansion, a Windows path) is
+ * `unresolvable`, and the scan fails closed on it.
+ */
+function classifyPath(word: string): Classified {
+  // A positional parameter (`$@`, `$1`) is what the caller passed: its text is in the caller's own run block, where it is read.
+  if (word.startsWith("/") || word.startsWith("~") || word.includes("://") || word === "." || word === "./" || POSITIONAL_PARAMETER.test(word)) return "outside";
+  if (word.includes(EXPRESSION_MARK) || word.includes("$") || /[*{}\\]/u.test(word) || word.split("/").includes("..")) return "unresolvable";
+  const path = normalizedPath(word);
+  return path === undefined ? "unresolvable" : { path };
 }
 
+export interface RunAnalysis {
+  /** The files of the repository a shell block may run, source or read: `./x`, a path with a script extension, the word after an interpreter. */
+  candidates: string[];
+  /** The block holds something the scan can't resolve: a `cd`, `pushd` or `popd`, a variable or expression where a path goes, `..`, a glob, too much text. */
+  unresolvable: boolean;
+}
+
+/**
+ * Reads a shell block the way the scan needs: which repository files it may run. A path position is the command word, the word after an interpreter
+ * (`bash x`, `python x`, `source x`), a word starting `./`, and a word with a slash and a script extension. `BASH_ENV=<file>` names a file too. A bare command word
+ * (`make`, `git`) is not a path: it is found on the PATH (an accepted residual risk). Full-line comments are skipped.
+ */
+export function analyseRun(run: string): RunAnalysis {
+  if (run.length > MAX_RUN_TEXT) return { candidates: [], unresolvable: true };
+  const candidates = new Set<string>();
+  let unresolvable = false;
+  const take = (word: string): void => {
+    const classified = classifyPath(word);
+    if (classified === "unresolvable") unresolvable = true;
+    else if (classified !== "outside") candidates.add(classified.path);
+  };
+  const text = run.replace(EXPRESSION, EXPRESSION_MARK);
+  for (const line of text.split(/\r\n|\r|\n|\u2028|\u2029|\u0085/u)) {
+    if (line.trimStart().startsWith("#") && !line.startsWith("#!")) continue;
+    for (const segment of line.split(/&&|\|\||[;|&]/u)) {
+      const words = segment.split(/[\s()<>"'`]+/u).filter((word) => word !== "");
+      let leading = true;
+      let afterInterpreter = false;
+      for (let index = 0; index < words.length; index += 1) {
+        const word = words[index]!;
+        const lower = word.toLowerCase();
+        if (word.startsWith("BASH_ENV=")) {
+          let value = word.slice("BASH_ENV=".length);
+          if (value === "" && index + 1 < words.length) { index += 1; value = words[index]!; }
+          take(value);
+          continue;
+        }
+        if (DIRECTORY_COMMANDS.has(lower)) { unresolvable = true; continue; }
+        if (leading && /^[A-Za-z_][A-Za-z0-9_]*=/u.test(word)) continue;
+        const command = leading;
+        leading = false;
+        if (INTERPRETERS.has(lower) && (lower !== "." || command)) { afterInterpreter = true; continue; }
+        if (afterInterpreter && word.startsWith("-")) continue;
+        const dynamic = word.includes(EXPRESSION_MARK) || word.includes("$");
+        const pathPosition = afterInterpreter || (command && (dynamic || word.includes("/"))) || word.startsWith("./") || word.startsWith("../") || (word.includes("/") && SCRIPT_EXTENSION.test(lower));
+        afterInterpreter = false;
+        if (pathPosition) take(word);
+        if (candidates.size >= MAX_CANDIDATES_PER_RUN_BLOCK) return { candidates: [...candidates], unresolvable: true };
+      }
+    }
+  }
+  return { candidates: [...candidates], unresolvable };
+}
+
+/** The files a shell block may run (see `analyseRun`; what it can't resolve is not listed here). */
+export function scriptCandidates(run: string): string[] {
+  return analyseRun(run).candidates;
+}
+
+const STANDARD_SHELLS = new Set([...INTERPRETERS, "cmd"]);
+
+/**
+ * What a `shell:` value runs. The standard shells and their flags run nothing of the repository; a plain path to a file is that file; anything else
+ * (an expression, a variable, `..`, a command found on the PATH) can't be resolved.
+ */
+function shellFiles(value: string, actionDirectory: string): RunAnalysis {
+  const candidates = new Set<string>();
+  let unresolvable = false;
+  let afterFlag = false;
+  for (const raw of withKnownFolders(value, actionDirectory).replace(EXPRESSION, EXPRESSION_MARK).split(/\s+/u)) {
+    const word = raw.replace(/^["']+|["']+$/gu, "");
+    if (word === "" || word.includes("{0}")) continue;
+    if (word.startsWith("-")) { afterFlag = true; continue; }
+    if (afterFlag && /^[A-Za-z]+$/u.test(word)) { afterFlag = false; continue; }
+    afterFlag = false;
+    if (STANDARD_SHELLS.has(word.toLowerCase())) continue;
+    const classified = classifyPath(word);
+    if (classified === "unresolvable" || (classified !== "outside" && !word.includes("/") && !SCRIPT_EXTENSION.test(word.toLowerCase()))) unresolvable = true;
+    else if (classified !== "outside") candidates.add(classified.path);
+  }
+  return { candidates: [...candidates], unresolvable };
+}
+
+/** A `working-directory` value: the folder it names ("" for the root), undefined when it is outside the repository. An expression or variable the scan can't resolve fails closed. */
+function workingDirectoryOf(value: string, actionDirectory: string): string | undefined {
+  const classified = classifyPath(withKnownFolders(value, actionDirectory).replace(EXPRESSION, EXPRESSION_MARK));
+  if (classified === "unresolvable") return fail("a working directory the scan can't resolve");
+  if (classified === "outside") return value.trim() === "." || value.trim() === "./" ? "" : undefined;
+  return classified.path;
+}
+
+/** A script (or manifest) the scan should hash, with where it was named from: the step's working directory and the action folder `github.action_path` meant. */
+interface ScriptRef { path: string; here: string | undefined; directory: string }
+
 interface Reach {
-  /** `uses` values that name a local action or reusable workflow, and the folder their `runs` paths are relative to. */
+  /** `uses` values that name a local action or reusable workflow. */
   local: Array<{ path: string }>;
   remote: string[];
-  scripts: string[];
+  scripts: ScriptRef[];
 }
 
 /** The repository being scanned and its default branch: a remote reference to it at that branch is its own file. */
 interface Self { repository: string; branch: string }
 
 /**
- * Everything a parsed workflow or action file names: its `uses` (local or remote) and the scripts in its `run` blocks, wherever they are in the tree.
- * `directory` is the folder of the action the file is (empty for a workflow).
+ * Everything a parsed workflow or action file names: its `uses` (local or remote) and the files its `run`, `shell` and `BASH_ENV` can run, wherever they
+ * are in the tree. `directory` is the folder of the action the file is (empty for a workflow). Whatever can't be resolved fails the scan closed.
  */
 function reachOf(document: unknown, directory: string, self: Self): Reach {
   const reach: Reach = { local: [], remote: [], scripts: [] };
+  const addScripts = (paths: readonly string[], here: string | undefined): void => {
+    for (const path of paths) {
+      reach.scripts.push({ path, here, directory });
+      if (here !== undefined && here !== "") reach.scripts.push({ path: `${here}/${path}`, here, directory });
+    }
+  };
   const visit = (node: unknown, depth: number, workingDirectory: string | undefined): void => {
     if (depth > MAX_WALK_DEPTH) return fail("a workflow is nested too deeply");
     if (Array.isArray(node)) { for (const item of node) visit(item, depth + 1, workingDirectory); return; }
     if (!isRecord(node)) return;
     // A step's own working-directory wins; then the nearest `defaults.run.working-directory` (a job's over the workflow's); then what came down.
-    const own = typeof node["working-directory"] === "string" ? normalizedPath(node["working-directory"]) : undefined;
+    const own = typeof node["working-directory"] === "string" ? workingDirectoryOf(node["working-directory"], directory) : undefined;
     const defaults = isRecord(node["defaults"]) && isRecord(node["defaults"]["run"]) ? node["defaults"]["run"]["working-directory"] : undefined;
-    const fromDefaults = typeof defaults === "string" ? normalizedPath(defaults) : undefined;
+    const fromDefaults = typeof defaults === "string" ? workingDirectoryOf(defaults, directory) : undefined;
     const here = own ?? fromDefaults ?? workingDirectory;
     const uses = node["uses"];
     if (typeof uses === "string") {
       if (uses.startsWith("./") || uses === ".") {
         const path = uses === "." || uses === "./" ? "" : normalizedPath(uses);
-        if (path !== undefined) reach.local.push({ path });
+        if (path === undefined) return fail("a workflow names a local action by a path the scan can't resolve");
+        reach.local.push({ path });
       } else if (uses.startsWith("docker://")) {
         if (!DOCKER_ACTION.test(uses)) fail("a workflow names a container image that is not a plain reference");
         reach.remote.push(uses);
       } else {
         const match = REMOTE_ACTION.exec(uses);
         if (match === null || uses.length > COMMENT_TRIGGER_FILE_NAME_MAX) return fail("a workflow names an action that is not a plain reference");
-        if (`${match[1]!}/${match[2]!}`.toLowerCase() === self.repository && match[4] === self.branch) {
+        if (`${match[1]!}/${match[2]!}`.toLowerCase() === self.repository && (match[4] === self.branch || match[4] === `refs/heads/${self.branch}`)) {
           // This repository at its default branch is the file that is there.
           const path = match[3] === undefined ? "" : normalizedPath(match[3]);
           if (path === undefined) return fail("a workflow names a path of this repository that is not a plain one");
@@ -198,19 +316,30 @@ function reachOf(document: unknown, directory: string, self: Self): Reach {
     const run = node["run"];
     if (typeof run === "string") {
       const expanded = withKnownFolders(run, directory);
-      const named = [...scriptCandidates(expanded), ...toolManifests(expanded)];
-      for (const candidate of named) {
-        reach.scripts.push(candidate);
-        if (here !== undefined) reach.scripts.push(`${here}/${candidate}`);
-      }
+      const analysis = analyseRun(expanded);
+      if (analysis.unresolvable) return fail("a run block holds something the scan can't resolve");
+      addScripts([...analysis.candidates, ...toolManifests(expanded)], here);
+    }
+    const shell = node["shell"];
+    if (typeof shell === "string") {
+      const analysis = shellFiles(shell, directory);
+      if (analysis.unresolvable) return fail("a shell the scan can't resolve");
+      addScripts(analysis.candidates, here);
+    }
+    const bashEnv = node["BASH_ENV"];
+    if (typeof bashEnv === "string") {
+      const analysis = analyseRun(`BASH_ENV=${withKnownFolders(bashEnv, directory)}`);
+      if (analysis.unresolvable) return fail("a BASH_ENV the scan can't resolve");
+      addScripts(analysis.candidates, here);
     }
     // A local action that is not a composite one runs a file of its own.
     if (isRecord(node["runs"])) {
       for (const key of ["main", "pre", "post", "image"] as const) {
         const value = node["runs"][key];
         if (typeof value === "string" && !value.startsWith("docker://")) {
-          const path = normalizedPath(directory === "" ? value : `${directory}/${value}`);
-          if (path !== undefined) reach.scripts.push(path);
+          const classified = classifyPath(directory === "" ? value : `${directory}/${value}`);
+          if (classified === "unresolvable") return fail("an action runs a file the scan can't resolve");
+          if (classified !== "outside") reach.scripts.push({ path: classified.path, here: undefined, directory });
         }
       }
     }
@@ -218,6 +347,11 @@ function reachOf(document: unknown, directory: string, self: Self): Reach {
   };
   visit(document, 0, undefined);
   return reach;
+}
+
+/** Whether a file is a shell script the scan should read for further paths: by its extension, or by a shebang. Scripts in other languages are hashed but not read. */
+function isShellScript(text: string, path: string): boolean {
+  return /\.(?:sh|bash|zsh)$/iu.test(path) || (text.startsWith("#!") && /\b(?:ba|z|da|k)?sh\b/u.test(text.split("\n", 1)[0]!));
 }
 
 // ---- the scan
@@ -294,7 +428,11 @@ async function scan(reader: AgentRepositoryReader, now: () => number, selfReposi
   let reached = 0;
   const pending: Array<{ path: string; document: unknown; directory: string }> = reviewed.map((entry) => ({ path: entry.path, document: entry.document, directory: "" }));
   const visited = new Set<string>(reviewed.map((entry) => entry.path));
-  const take = async (path: string, followYaml: boolean, directory: string): Promise<void> => {
+  /**
+   * Hashes a file the workflows reach. A YAML file is followed (`followYaml`); a shell script is read for the files it runs in turn, with the same reading
+   * of a shell block as a `run:` line has (`origin` says where it was named from), transitively and within the same 50 files.
+   */
+  const take = async (path: string, followYaml: boolean, directory: string, origin?: { here: string | undefined; directory: string }): Promise<void> => {
     if (visited.has(path)) return;
     visited.add(path);
     const file = await read(path);
@@ -302,7 +440,17 @@ async function scan(reader: AgentRepositoryReader, now: () => number, selfReposi
     reached += 1;
     if (reached > MAX_REACHED_FILES) fail("a workflow reaches more than 50 files");
     hashed.set(path, file.sha);
-    if (followYaml) pending.push({ path, document: parseYaml(file.text), directory });
+    if (followYaml) {
+      pending.push({ path, document: parseYaml(file.text), directory });
+    } else if (isShellScript(file.text, path)) {
+      const expanded = withKnownFolders(file.text, origin?.directory ?? "");
+      const analysis = analyseRun(expanded);
+      if (analysis.unresolvable) fail("a script holds something the scan can't resolve");
+      for (const candidate of [...analysis.candidates, ...toolManifests(expanded)]) {
+        await take(candidate, false, "", origin);
+        if (origin?.here !== undefined && origin.here !== "") await take(`${origin.here}/${candidate}`, false, "", origin);
+      }
+    }
   };
   /** Every file under a local action's folder is that action's code, whether or not a run line names it. */
   const takeDirectory = async (directory: string, depth: number): Promise<void> => {
@@ -315,7 +463,7 @@ async function scan(reader: AgentRepositoryReader, now: () => number, selfReposi
       if (entry.type === "dir") await takeDirectory(entry.path, depth + 1);
       else if (entry.type === "file") {
         if (entry.size > MAX_FILE_BYTES) fail("a file is over the size limit");
-        await take(entry.path, false, "");
+        await take(entry.path, false, "", { here: undefined, directory: entry.path.includes("/") ? entry.path.slice(0, entry.path.lastIndexOf("/")) : "" });
       } else fail("a local action's folder holds something that is not a plain file");
     }
   };
@@ -328,7 +476,13 @@ async function scan(reader: AgentRepositoryReader, now: () => number, selfReposi
       else {
         const action = [path === "" ? "action.yml" : `${path}/action.yml`, path === "" ? "action.yaml" : `${path}/action.yaml`];
         for (const candidate of action) {
-          if (!visited.has(candidate) && (await read(candidate)) !== undefined) {
+          const manifest = visited.has(candidate) ? undefined : await read(candidate);
+          if (manifest !== undefined && "text" in manifest) {
+            // A root action's code can be anywhere in the repository, so only a composite one (whose steps the scan reads) is followed.
+            if (path === "") {
+              const parsed = parseYaml(manifest.text);
+              if (!isRecord(parsed) || !isRecord(parsed["runs"]) || parsed["runs"]["using"] !== "composite") fail("a root action that is not composite runs code the scan can't enumerate");
+            }
             await take(candidate, true, path);
             // The root action is the whole repository; only its action file is its own.
             if (path !== "") await takeDirectory(path, 0);
@@ -337,7 +491,7 @@ async function scan(reader: AgentRepositoryReader, now: () => number, selfReposi
         }
       }
     }
-    for (const script of reach.scripts) await take(script, false, "");
+    for (const script of reach.scripts) await take(script.path, false, "", { here: script.here, directory: script.directory });
   }
 
   const files = [...hashed.keys(), ...remote].sort();

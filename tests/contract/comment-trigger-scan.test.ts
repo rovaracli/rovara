@@ -174,7 +174,7 @@ describe("what a triggering workflow reaches", () => {
   it("hashes a script named in a run line, in each of the ways a script is run", async () => {
     for (const [run, path] of [
       ["./scripts/x.sh", "scripts/x.sh"], ["bash scripts/y.sh", "scripts/y.sh"], ["node tools/z.js", "tools/z.js"], ["python w.py", "w.py"],
-      ["sh -e ./ci/run.sh --fast", "ci/run.sh"], ["source ci/env.sh", "ci/env.sh"], ["ts-node tools/t.ts", "tools/t.ts"], ["cd app && bash \"scripts/q.sh\"", "scripts/q.sh"],
+      ["sh -e ./ci/run.sh --fast", "ci/run.sh"], ["source ci/env.sh", "ci/env.sh"], ["ts-node tools/t.ts", "tools/t.ts"], ["echo go && bash \"scripts/q.sh\"", "scripts/q.sh"],
       ["python3 -u tools/run.py", "tools/run.py"], ["scripts/direct.sh", "scripts/direct.sh"],
     ] as const) {
       const result = await scan({ [WORKFLOW]: trigger(run), [path]: "echo script" });
@@ -791,6 +791,13 @@ describe("a script that runs another script (round 2, item 5)", () => {
     expect((await scan({ ...files, "tools/run": "\u007fELF ./helper.sh" })).files).not.toContain("helper.sh");
     // A script in another language is hashed, and what it imports is an accepted residual risk.
     expect((await scan({ [WORKFLOW]: caller("node tools/go.js"), "tools/go.js": "require('./lib.sh'); // ./helper.sh", "helper.sh": "x" })).files).toEqual([WORKFLOW, "tools/go.js"].sort());
+  });
+
+  it("leaves a positional parameter alone: what the caller passed is read in the caller", async () => {
+    const files = { [WORKFLOW]: caller("./wrap.sh ./real.sh"), "wrap.sh": "#!/bin/sh\nexec \"$@\"\nbash \"$1\"\n", "real.sh": "x" };
+    const result = await scan(files);
+    expect(result).toMatchObject({ failedClosed: false });
+    expect(result.files).toEqual([WORKFLOW, "wrap.sh", "real.sh"].sort());
   });
 
   it("goes round a loop of scripts", async () => {
