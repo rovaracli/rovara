@@ -102,7 +102,7 @@ export function fakeSentry(options: FakeSentryOptions): { handler: VendorHandler
 
 export interface FakeDatadogMonitor { id: number; name: string; type?: string; overall_state?: string; tags: string[]; query?: string }
 
-export interface FakeDatadogLog { id: string; service: string; tags: string[]; message: string; status?: string }
+export interface FakeDatadogLog { id: string; service: string; tags: string[]; message: string; status?: string; host?: string }
 
 export interface FakeDatadogOptions {
   apiKey: string;
@@ -154,7 +154,7 @@ export function fakeDatadog(options: FakeDatadogOptions): { handler: VendorHandl
         { id: "l1", service: "payments", tags: ["env:prod"], message: options.logMessage ?? "charge failed for order 17", status: "error" },
         { id: "l2", service: "payments", tags: ["env:prod"], message: "charge started", status: "info" },
       ];
-      return json({ data: logs.map((log, index) => ({ id: log.id, type: "log", attributes: { timestamp: `2026-10-22T10:0${String(index)}:00Z`, status: log.status ?? "info", service: log.service, message: log.message, tags: log.tags } })) });
+      return json({ data: logs.map((log, index) => ({ id: log.id, type: "log", attributes: { timestamp: `2026-10-22T10:0${String(index)}:00Z`, status: log.status ?? "info", service: log.service, ...(log.host === undefined ? {} : { host: log.host }), message: log.message, tags: log.tags } })) });
     }
     return json({ errors: ["not found"] }, 404);
   };

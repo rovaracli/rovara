@@ -15,7 +15,7 @@ import { OrgConnectionStore } from "../../packages/broker/src/connections/store.
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { routeFetch } from "../support/developer-fakes.js";
-import { fakeDatadog } from "../support/fake-vendor-apis.js";
+import { fakeDatadog, type FakeDatadogLog } from "../support/fake-vendor-apis.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";
 
 const ORG_A = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
@@ -290,6 +290,19 @@ describe("running the tools", () => {
     expect(limited.result.text).toContain("1 log in pay");
     expect(limited.result.text).toContain("own log by service attribute");
     expect(limited.result.text).not.toContain("another service");
+  });
+
+  it("counts a log's host attribute as its host tag", async () => {
+    const scope = { alias: "web", tags: ["host:web1", "env:prod"] };
+    const logs: FakeDatadogLog[] = [
+      { id: "h1", service: "x", host: "web1", tags: ["env:prod"], message: "from web1" },
+      { id: "h2", service: "x", host: "web2", tags: ["env:prod"], message: "from web2" },
+      { id: "h3", service: "x", tags: ["env:prod"], message: "from nowhere" },
+    ];
+    const { result } = await run("search_logs", { query: "*", fromMinutesAgo: 60 }, { scope, config: { scopes: [scope] }, api: fakeDatadog({ apiKey: API_KEY, appKey: APP_KEY, logs }) });
+    expect(result.text).toContain("1 log in web");
+    expect(result.text).toContain("from web1");
+    expect(result.text).not.toMatch(/web2|nowhere/u);
   });
 
   it("drops a monitor from a search when it does not carry every scope tag, whatever the vendor's filter let through (review C-1)", async () => {

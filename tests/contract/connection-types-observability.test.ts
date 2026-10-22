@@ -147,6 +147,8 @@ describe("the six connection types' contracts", () => {
       expect(parsed.error?.issues.map((issue) => issue.message), baseUrl).toEqual(["baseUrl must use the standard https port (443); Grafana on another port is not supported"]);
     }
     expect(OrgConnectionSchema.safeParse({ ...GRAFANA, baseUrl: "https://grafana.acme.dev:443" }).success).toBe(true);
+    // An address with no port, or that is not a URL, is not also told about a port.
+    expect(OrgConnectionSchema.safeParse({ ...GRAFANA, baseUrl: "grafana.acme.dev" }).error?.issues.map((issue) => issue.message)).toEqual(["baseUrl must be an absolute URL"]);
     for (const teamId of ["acme", "team_", "team_a b", `team_${"a".repeat(65)}`, "Team_abc", "team_a-b"]) expect(OrgConnectionSchema.safeParse({ ...VERCEL, teamId }).success, teamId).toBe(false);
     expect(OrgConnectionSchema.safeParse({ ...VERCEL, teamId: `team_${"A1".repeat(32)}` }).success).toBe(true);
   });
