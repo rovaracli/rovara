@@ -42,7 +42,8 @@ function project(): ProjectDefinition {
 }
 
 const materializer = (source: string) => async (_repository: unknown, destination: string) => {
-  await run("git", ["clone", "--quiet", "--no-checkout", source, destination]);
+  // --no-local: a clone of a local path would copy every object, reachable or not; this one gets what a clone over the network gets.
+  await run("git", ["clone", "--quiet", "--no-checkout", "--no-local", source, destination]);
 };
 
 // The fixture repositories are local, which the worker's hardened Git refuses unless a test allows it.
