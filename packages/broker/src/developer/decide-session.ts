@@ -10,7 +10,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, agentXError, type OrgId } from "@agentx/contracts";
-import { kindPrefixOf, mayDecide, type DecideKinds } from "./decide-kinds.js";
+import { mayDecide, type DecideKinds } from "./decide-kinds.js";
 import { sha256Hex } from "./tokens.js";
 
 export const DECIDE_COOKIE = "__Host-rovara_decide";
@@ -312,4 +312,3 @@ export async function requireDecideSession(context: DecideRequestContext, reques
 
 /** "This was already decided by <name> at <time>." */
 export const decidedWords = (decided: { by: string; at: string }): string => `This was already decided by ${decided.by} at ${decided.at}.`;
-export { kindPrefixOf };

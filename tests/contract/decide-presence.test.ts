@@ -22,6 +22,7 @@ import type { HttpApiV2Event } from "../../packages/broker/src/aws/lambda.js";
 import type { HttpResult } from "../../packages/broker/src/developer/server.js";
 import { isDecidePagePath, routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";
 import { DECIDE_PKCE_COOKIE, TICKET_EXPIRED_MESSAGE as EXPIRED } from "../../packages/broker/src/developer/decide-session.js";
+import { isFreshInteractiveSignIn } from "../../packages/broker/src/developer/decide-signin.js";
 import { DECIDE_NOTICE_SENTENCE } from "../../packages/broker/src/developer/identity-notice.js";
 import { createAdminBroker } from "../support/admin-broker.js";
 import { developerTokenVerifier } from "../../packages/broker/src/developer/verify-token.js";
@@ -163,6 +164,21 @@ describe("decide tickets (R7-1)", () => {
     expect(stranger).toEqual(again);
     s.tick(86_400_000);
     await s.store.takeCreateUserSlot(ALICE);
+  });
+
+  it("redeems a ticket once even when two requests race for it", async () => {
+    const s = setup();
+    const value = await s.store.mintTicket({ orgId: ORG, developerId: ALICE, approvalId: APR_A, mintedBy: "token" });
+    const results = await Promise.all([s.store.redeemTicket(value), s.store.redeemTicket(value), s.store.redeemTicket(value)]);
+    expect(results.filter((result) => result !== undefined)).toHaveLength(1);
+  });
+
+  it("claims a session only for the approval it was opened for, and only once", async () => {
+    const s = setup();
+    const cookie = await sessionFor(s, APR_A);
+    expect(await s.store.claimSession(cookie, APR_B)).toBe(false);
+    expect(await s.store.claimSession(cookie, APR_A)).toBe(true);
+    expect(await s.store.claimSession(cookie, APR_A)).toBe(false);
   });
 
   it("has an expired-link text the sign-in and the page share", () => {
@@ -1009,5 +1025,29 @@ describe("through the broker", () => {
   it("answers not found where no approval kinds are registered", async () => {
     const b = await brokerWith({ decide: false });
     expect((await b.call("GET", `/v1/app/approve/${APR_A}`)).statusCode).toBe(404);
+  });
+});
+
+
+describe("isFreshInteractiveSignIn (R67, R6-4)", () => {
+  const state = { startedAt: T0, identityProvider: "COGNITO", prompt: "login" } as const;
+  const at = (offsetSeconds: number) => seconds(T0) + offsetSeconds;
+  it("accepts an auth_time from this flow that shows the email code, and one with no amr from the flow's own native sign-in", () => {
+    expect(isFreshInteractiveSignIn({ authTime: at(5), amr: ["otp"] }, state, T0 + 10_000)).toBe(true);
+    expect(isFreshInteractiveSignIn({ authTime: at(5) }, state, T0 + 10_000)).toBe(true);
+    expect(isFreshInteractiveSignIn({ authTime: seconds(T0) }, state, T0 + 600_000)).toBe(true);
+  });
+  it("refuses no auth_time, an auth_time before the flow began, one older than 10 minutes, and one from the future", () => {
+    expect(isFreshInteractiveSignIn({}, state, T0 + 10_000)).toBe(false);
+    expect(isFreshInteractiveSignIn({ authTime: Number.NaN }, state, T0 + 10_000)).toBe(false);
+    expect(isFreshInteractiveSignIn({ authTime: at(-1) }, state, T0 + 10_000)).toBe(false);
+    expect(isFreshInteractiveSignIn({ authTime: seconds(T0) }, state, T0 + 601_000)).toBe(false);
+    expect(isFreshInteractiveSignIn({ authTime: at(300) }, state, T0 + 10_000)).toBe(false);
+  });
+  it("refuses an amr that does not show the email code, and a missing amr when the state was not made by the decide start route", () => {
+    expect(isFreshInteractiveSignIn({ authTime: at(5), amr: ["pwd"] }, state, T0 + 10_000)).toBe(false);
+    expect(isFreshInteractiveSignIn({ authTime: at(5), amr: [] }, state, T0 + 10_000)).toBe(false);
+    expect(isFreshInteractiveSignIn({ authTime: at(5) }, { ...state, identityProvider: "Google" as never }, T0 + 10_000)).toBe(false);
+    expect(isFreshInteractiveSignIn({ authTime: at(5) }, { ...state, prompt: "none" as never }, T0 + 10_000)).toBe(false);
   });
 });
