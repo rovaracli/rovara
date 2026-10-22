@@ -237,6 +237,8 @@ export interface SpendRequestRecord {
   /** What the person deciding is told, at most `SPEND_REQUEST_REASON_MAX` code points. */
   reason: string;
   requestedBy: { kind: "member"; developerId: string } | { kind: "system" };
+  /** A task's request: the person whose run it is (the run's starter). They may not decide it unless they are the payer member (`max_per_run`: never, unless they are the org's only owner or admin). */
+  requestedFor?: { developerId: string };
   approverRole: SpendApproverRole;
   /** Who it was routed to when it was made (and moved since); who may decide is read live (`spendApprovers`), never from this list. */
   approverIds: string[];
@@ -254,6 +256,10 @@ export interface SpendRequestRecord {
   agentId?: AgentId;
   createdAt: string;
   expiresAt: string;
+  /** When the settlement run next looks at it (`openSpendRequestDueKey`): an unanswered owner's escalation, else its expiry. */
+  dueAt?: string;
+  /** Why an EXPIRED request ended before its time: the task went on without it, the task closed, or the person its change names left. */
+  endedBecause?: "continued" | "task_closed" | "target_left";
 }
 
 /** What a paused run asks for by default: half its limit again, rounded up to whole dollars, and never less than $5. */

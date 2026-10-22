@@ -46,6 +46,8 @@ import {
   listVisibleAgents,
   orgRoleOf,
   requireAgentAccess,
+  requireAccountable,
+  requireAgentBudgetAllowed,
   requireOwnerAllowed,
   resolveSurvivor,
   type AccessibleAgent,
@@ -404,16 +406,6 @@ async function markRequest(deps: AgentRouteDependencies, caller: AgentCaller, ro
 }
 
 // ---- writes
-
-/** Someone who may answer for a project's agent: in the org, holding `manage_agents` on the project. Returned as the survivor of any merge. */
-async function requireAccountable(deps: AgentRouteDependencies, orgId: OrgId, project: string, developerId: string): Promise<{ developerId: string }> {
-  const survivor = await resolveSurvivor(deps, orgId, developerId);
-  const orgRole = await orgRoleOf(deps, orgId, survivor);
-  if (orgRole === undefined) throw agentXError("CONFIG_INVALID", "accountable: nobody in your company has that ID");
-  const role = await deps.projectMembers.roleOf(orgId, project, { developerId: survivor, orgRole });
-  if (role === undefined || !projectAllows(role, "manage_agents")) throw agentXError("CONFIG_INVALID", `accountable: that person needs to be a maintainer of ${project}`);
-  return { developerId: survivor };
-}
 
 async function createAgent(deps: AgentRouteDependencies, caller: AgentCaller, body: unknown): Promise<StatusReply> {
   const input = parseBody(CreateBodySchema, body);
@@ -794,15 +786,8 @@ async function putAgentBudget(deps: AgentRouteDependencies, caller: AgentCaller,
   const shown = (written: AgentRecord | BuiltinSettings): Promise<Shown> | Shown => ("owner" in written ? customView(written, access) : view(deps, caller, { agentId: agentId as BuiltinAgentId }, access, undefined, written));
   if (replay !== undefined) return waitingReplay(replay.result) ?? { agent: await shown(replay.result as AgentRecord | BuiltinSettings) };
   if (input.monthlyUsd === undefined && input.maxPerRunUsd === undefined) throw agentXError("CONFIG_INVALID", "body: name at least one of monthlyUsd and maxPerRunUsd");
-  // Task 8 stored the guardrails' ceilings; this is where they hold.
-  const guardrails = await readGuardrails(deps, caller.orgId);
-  if (typeof input.monthlyUsd === "number" && input.monthlyUsd > guardrails.maxAgentMonthlyUsd) {
-    throw agentXError("CONFIG_INVALID", `monthlyUsd: your company's guardrails allow at most $${String(guardrails.maxAgentMonthlyUsd)} a month for one agent`);
-  }
-  if (typeof input.maxPerRunUsd === "number" && input.maxPerRunUsd > guardrails.maxPerRunCeilingUsd) {
-    throw agentXError("CONFIG_INVALID", `maxPerRunUsd: your company's guardrails allow at most $${String(guardrails.maxPerRunCeilingUsd)} for one run`);
-  }
-  await requireWithinTrial(deps, caller.orgId, "monthlyUsd", input.monthlyUsd, TRIAL_LIMITS_R49.agentMonthlyUsd, "agent budget");
+  // Task 8 stored the guardrails' ceilings; this is where they hold (and again when an admin approves it over the owner cap).
+  await requireAgentBudgetAllowed(deps, caller.orgId, input);
   const current: AgentRecord | BuiltinSettings = "owner" in agent ? agent : await deps.store.ensureBuiltinSettings(caller.orgId, agentId, caller.developerId);
   const monthlyBudgetUsd = typeof input.monthlyUsd === "number" ? input.monthlyUsd : input.monthlyUsd === null ? undefined : current.monthlyBudgetUsd;
   const change = { ...(input.monthlyUsd === undefined ? {} : { monthlyUsd: input.monthlyUsd }), ...(input.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: input.maxPerRunUsd }) };

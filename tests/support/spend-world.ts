@@ -106,6 +106,11 @@ export async function setup(options: { decide?: boolean; secondAdmin?: boolean; 
     return agentId;
   };
   const setBudget = (who: Developer, agentId: string, body: Record<string, unknown>) => api(who, "PUT", `/v1/app/agents/${agentId}/budget`, body);
+  /** Lets `who` run an agent of Maya's. */
+  const shareWith = async (agentId: string, who: Developer) => {
+    const shared = await api(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [{ principal: { kind: "member", developerId: who.developerId }, level: "use" }] });
+    expect(shared.status, JSON.stringify(shared.body)).toBe(200);
+  };
   /** An agent of `by` with a monthly budget of `usd`, set through the route (it fits the cap). */
   const budgeted = async (usd: number, by: Developer = MAYA, overlay: RecipeOverlay = TRIAGE): Promise<AgentId> => {
     const agentId = await agentOf(overlay, { by });
@@ -171,7 +176,7 @@ export async function setup(options: { decide?: boolean; secondAdmin?: boolean; 
   };
   // The harness's own fields the tests use, by name: a spread of the whole harness would carry the broker's input types into this module's declaration.
   return {
-    db: h.db, handler: h.handler, dev: h.dev, events: h.events, finish: h.finish, orgOf: h.orgOf, access, store, deps, api, caller, decide, agentOf, publishNext, setBudget, budgeted, ownerTotal, agentItem, agentEvents, grantRole,
+    db: h.db, handler: h.handler, dev: h.dev, events: h.events, finish: h.finish, orgOf: h.orgOf, access, store, deps, api, caller, decide, agentOf, publishNext, setBudget, shareWith, budgeted, ownerTotal, agentItem, agentEvents, grantRole,
     meta, operations, taskOps, activeOf, outboxOf, set, plainTask, runOf, pauseAndEnd, requests, requestOf, openItems, view, taskEvents, starter,
   };
 }
