@@ -4,6 +4,7 @@ import { z } from "zod";
 import { AGENTX_NAME_PATTERN } from "./names.js";
 import { AgentIdSchema } from "./agent.js";
 import { StepIdSchema } from "./agent-recipe.js";
+import { OrgIdSchema } from "./org.js";
 
 export const RUN_INPUT_TEXT_MAX_BYTES = 8192;
 export const RUN_INPUT_CONTEXT_MAX = 10;
@@ -107,3 +108,41 @@ export function codingRequestText(input: RunInput, limit: number): string {
   while (end > 0 && (encoded[end]! & 0xc0) === 0x80) end -= 1;
   return `${utf8Decoder.decode(encoded.subarray(0, end))}${SHORTENED_MARKER}`;
 }
+
+/** A pull request of a project repository a run was asked to look at: the head commit the run's workspace checks out, read-only. */
+export const RunCheckoutSchema = z.object({
+  /** The repository's name in the project. */
+  repository: z.string().min(1).max(200),
+  pullRequest: z.number().int().min(1),
+  headSha: z.string().regex(/^[a-f0-9]{40}$/),
+}).strict();
+export type RunCheckout = z.infer<typeof RunCheckoutSchema>;
+
+export const AGENT_RUN_STATES = ["RUNNING", "WAITING_FOR_APPROVAL", "PAUSED_BUDGET", "COMPLETE", "FAILED", "CANCELLED"] as const;
+export const AGENT_RUN_STEP_STATUSES = ["pending", "running", "waiting", "done", "failed"] as const;
+
+/**
+ * An agent-step run's state at `{ pk: DEVTASK#<taskId>, sk: "AGENT_RUN" }` (Plan 3, Task 22 owns the engine that moves it). Starting a run writes
+ * it with every step pending, `cursor` 0 (the index of the step the engine dispatches next) and no reports.
+ */
+export const AgentRunStateSchema = z.object({
+  orgId: OrgIdSchema,
+  revision: z.number().int().min(1),
+  state: z.enum(AGENT_RUN_STATES),
+  cursor: z.number().int().min(0),
+  /** What the run was asked: the engine hands it to each agent step beside the earlier steps' reports. */
+  input: RunInputSchema,
+  steps: z.array(z.object({
+    id: StepIdSchema,
+    status: z.enum(AGENT_RUN_STEP_STATUSES),
+    operationIds: z.array(z.string()),
+    reportKey: z.string().optional(),
+    approvalIds: z.array(z.string()),
+  }).strict()),
+  reports: z.array(z.object({ stepId: StepIdSchema, name: z.string(), text: z.string() }).strict()),
+  finalReport: z.string().optional(),
+  resultContract: ResultContractSchema.optional(),
+  branch: z.string().optional(),
+  checkout: z.array(RunCheckoutSchema).max(RUN_INPUT_CONTEXT_MAX).optional(),
+}).strict();
+export type AgentRunState = z.infer<typeof AgentRunStateSchema>;

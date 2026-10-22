@@ -1,0 +1,418 @@
+// Plan 3 Task 15: starting a run from a frozen recipe. The developer task start (`startTask`, aws/developer-tasks.ts) holds the project checks, the
+// budget floor, the workspace charge and the one transaction that creates a task; this file holds what is particular to an agent's run:
+//   `prepareRun`        resolves the agent (access, roster, guardrails: nothing is charged or written), checks the payer and the result contract,
+//                       works out the run limits, reads the head of a pull request in the run's context and builds the coding program;
+//   `runStartItems`     the items that join the start transaction: the RECIPE snapshot, the agent's task index, the AGENT_RUN of an agent-step
+//                       recipe and, for `startAgentRun`, the run's request item;
+//   `startAgentRun`     H2's entry for a start that is not a person at a keyboard (an event, a schedule, a chain step) and for the app route;
+//   `readTaskRecipe`    the frozen recipe of a task, for the dispatch and the worker.
+import { createHash } from "node:crypto";
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { z } from "zod";
+import {
+  AGENTX_NAME_PATTERN,
+  AgentIdSchema,
+  AgentXError,
+  INDEX_EXPIRY_ATTRIBUTE,
+  PER_TASK_BUDGET_USD,
+  OrgIdSchema,
+  PayerSchema,
+  ResolvedRecipeSchema,
+  ResultContractSchema,
+  RunInputSchema,
+  WORK_ORIGINS,
+  WorkflowProgramSchema,
+  agentTasksKey,
+  agentXError,
+  canonicalJson,
+  codingProgram,
+  recipeRunner,
+  runRequestKey,
+  type AgentId,
+  type AgentRunState,
+  type OrgId,
+  type Payer,
+  type ProjectRole,
+  type ResolvedRecipe,
+  type ResultContract,
+  type RunCheckout,
+  type RunInput,
+  type WorkOrigin,
+  type WorkflowProgram,
+} from "@agentx/contracts";
+import type { DeveloperCaller } from "../aws/developer-routes.js";
+import { effectiveMaxPerRun } from "../spend/settings.js";
+import type { AgentCaller } from "./access.js";
+import { readGuardrails } from "./guardrails.js";
+import { resolveAgentForAutonomousRun, resolveAgentForTask, type RosterDependencies, type TaskAgentRef } from "./roster.js";
+import { putNew, type TableInput, type TransactItem } from "./table-writes.js";
+import { taskAgentRunKey, taskRecipeKey } from "../developer/task-records.js";
+
+/** How long the run's request item and the agent's task index item last; the State table's TTL removes them after that. */
+export const RUN_RECORD_MEMORY_DAYS = 90;
+
+/** Reads a pull request's head commit through the GitHub App, for the org (a read-only token; the run only ever reads). */
+export type PullRequestHeadReader = (input: { orgId: OrgId; repositoryUrl: string; number: number }) => Promise<{ headSha: string }>;
+
+/** What the run start needs on top of the roster checks. */
+export interface AgentRunDependencies extends RosterDependencies {
+  /** Without it, a run whose context names a pull request of a project repository is refused (it fails closed: it never reviews the wrong commit). */
+  pullRequestHead?: PullRequestHeadReader;
+}
+
+/** H2: a start that is not necessarily a person at a keyboard. */
+export interface AgentRunRequest {
+  /** Idempotency key: one run per request ID in an org. Plan 4 derives it from the event ID. */
+  requestId: string;
+  orgId: OrgId;
+  project: string;
+  agent: { agentId: AgentId; version?: number | "draft" };
+  input: RunInput;
+  origin: WorkOrigin;
+  /** Becomes `DeveloperTaskRecord.developerId`, so the removed-creator rule (R60) covers the run. */
+  owner: { developerId: string };
+  /** Absent for work no person started. */
+  startedBy?: { developerId: string };
+  /** Must equal `resolvePayer` for the origin; until the payer rules arrive (Task 29) only the person who started the run. */
+  payer: Payer;
+  chain?: { chainRunId: string; stepId: string };
+  /** A cap on this run: the smaller of it and the run limit applies, and 0 starts the run paused. */
+  runLimitUsd?: number;
+  /** Agent-step recipes only. */
+  resultContract?: ResultContract;
+  /** The owner's own authenticated caller when a route started the run; it must be the owner. Any other start acts as the owner. */
+  caller?: DeveloperCaller;
+}
+
+export interface AgentRunResult { taskId: string; runLimitUsd: number; stopAtUsd: number; paused: boolean }
+
+/** What `startTask` takes from `startAgentRun` beyond the request body. */
+export interface RunStartOptions {
+  origin: WorkOrigin;
+  /** No person started it: the agent is resolved without a caller (H3). */
+  autonomous: boolean;
+  startedBy?: { developerId: string };
+  payer: Payer;
+  chain?: { chainRunId: string; stepId: string };
+  runLimitUsd?: number;
+  resultContract?: ResultContract;
+  /** The fingerprint of the request; when present the start also writes the run's request item. */
+  requestFingerprint?: string;
+}
+
+/** What `startAgentRun` needs from the developer API: who the owner is as a caller, and the task start. */
+export interface AgentRunStarter extends AgentRunDependencies {
+  callerFor(orgId: OrgId, developerId: string): Promise<DeveloperCaller | undefined>;
+  startTask(caller: DeveloperCaller, body: unknown, run: RunStartOptions): Promise<{ task: { taskId: string }; run: AgentRunResult }>;
+}
+
+const Hex64 = z.string().regex(/^[a-f0-9]{64}$/);
+/** The parts of a request that name something: checked here, since a caller of `startAgentRun` is not a route that parsed a body. */
+const AgentRunRequestShape = z.object({
+  requestId: z.string().uuid(),
+  orgId: OrgIdSchema,
+  project: z.string().regex(AGENTX_NAME_PATTERN),
+  agent: z.object({ agentId: AgentIdSchema, version: z.union([z.number().int().min(1), z.literal("draft")]).optional() }).strict(),
+  input: RunInputSchema,
+  origin: z.enum(WORK_ORIGINS),
+  owner: z.object({ developerId: Hex64 }).strict(),
+  startedBy: z.object({ developerId: Hex64 }).strict().optional(),
+  payer: PayerSchema,
+  chain: z.object({ chainRunId: z.string().min(1).max(200), stepId: z.string().min(1).max(200) }).strict().optional(),
+  runLimitUsd: z.number().finite().min(0).optional(),
+}).passthrough();
+
+const sha256 = (value: unknown) => createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
+
+// ---- the payer (Task 29 replaces this)
+
+/**
+ * Until the payer rules arrive (Task 29's `resolvePayer`), the only payer a run can have is the person who started it. A run no person
+ * started has none yet, so it is refused after its agent was resolved.
+ */
+export function requireAcceptablePayer(input: { startedBy?: { developerId: string } | undefined; payer: Payer }): void {
+  const accepted = input.startedBy !== undefined && input.payer.kind === "member" && input.payer.developerId === input.startedBy.developerId;
+  if (!accepted) throw agentXError("CONFIG_INVALID", "payer: only the person who started the run can pay for it");
+}
+
+// ---- preparing a run: nothing is charged or written
+
+export interface PreparedRun {
+  recipe: ResolvedRecipe;
+  digest: string;
+  ref: TaskAgentRef;
+  origin: WorkOrigin;
+  runner: "coding" | "agent_steps";
+  /** A coding recipe's own sequence, when it is not Rovara Code's built-in one. */
+  program?: WorkflowProgram;
+  input: RunInput;
+  runLimitUsd: number;
+  stopAtUsd: number;
+  paused: boolean;
+  maxPerRunUsd?: number;
+  resultContract?: ResultContract;
+  chain?: { chainRunId: string; stepId: string };
+  checkout: RunCheckout[];
+}
+
+export interface PrepareRunInput {
+  orgId: OrgId;
+  project: string;
+  /** Absent for a start that names no agent: Rovara Code at the org's pin. */
+  agent?: { agentId: AgentId; version?: number | "draft" };
+  input: RunInput;
+  origin: WorkOrigin;
+  /** The person starting it, with the role `checkProjectAccess` gave them; absent for an autonomous run. */
+  caller?: AgentCaller;
+  role?: ProjectRole;
+  startedBy?: { developerId: string };
+  payer: Payer;
+  chain?: { chainRunId: string; stepId: string };
+  runLimitUsd?: number;
+  resultContract?: ResultContract;
+  /** The project's repositories, from the revision the task starts on. */
+  repositories: ReadonlyArray<{ name: string; url: string }>;
+}
+
+/** The refusal for a result contract on a recipe that is not made of agent steps (G1). */
+export const RESULT_CONTRACT_CODING_REFUSAL = "resultContract: only agents with agent steps can choose a branch";
+
+/**
+ * The plan's order (PF23): the agent is resolved first (the roster, the archive state, the guardrails), then the rest of the request is
+ * checked, so a refusal never follows a charge. The seam for Task 34: the run limit is Plan 1's per-task cap until `estimateRun`
+ * and the budget settings exist (Tasks 28 and 34).
+ */
+export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunInput): Promise<PreparedRun> {
+  const autonomous = input.caller === undefined;
+  let resolved: { recipe: ResolvedRecipe; digest: string; ref: TaskAgentRef; testRun: boolean };
+  if (input.caller !== undefined) {
+    resolved = await resolveAgentForTask(deps, input.caller, {
+      project: input.project,
+      ...(input.agent === undefined ? {} : { agent: input.agent }),
+      ...(input.role === undefined ? {} : { role: input.role }),
+    });
+  } else {
+    if (input.agent === undefined) throw agentXError("CONFIG_INVALID", "agent: an autonomous run names its agent");
+    if (input.agent.version === "draft") throw agentXError("CONFIG_INVALID", "agent: only a person can run a draft");
+    resolved = { ...(await resolveAgentForAutonomousRun(deps, { orgId: input.orgId, project: input.project, agentId: input.agent.agentId, ...(input.agent.version === undefined ? {} : { version: input.agent.version }) })), testRun: false };
+  }
+  const { recipe, digest, ref } = resolved;
+  const runner = recipeRunner(recipe);
+  // A coding run is asked the text as written; an agent-step run keeps its input as state, so it must be a run input.
+  if (runner === "agent_steps") {
+    const valid = RunInputSchema.safeParse(input.input);
+    if (!valid.success) throw agentXError("CONFIG_INVALID", `input: ${valid.error.issues[0]?.message ?? "is not valid"}`);
+  }
+  if (input.resultContract !== undefined) {
+    if (runner === "coding") throw agentXError("CONFIG_INVALID", RESULT_CONTRACT_CODING_REFUSAL);
+    const contract = ResultContractSchema.safeParse(input.resultContract);
+    if (!contract.success) throw agentXError("CONFIG_INVALID", `resultContract: ${contract.error.issues[0]?.message ?? "is not valid"}`);
+  }
+  requireAcceptablePayer({ startedBy: input.startedBy, payer: input.payer });
+  if (autonomous && input.startedBy !== undefined) throw agentXError("CONFIG_INVALID", "startedBy: a run no person started has no one who started it");
+  const program = runner === "coding" ? codingProgram(recipe) : undefined;
+  if (program !== undefined) {
+    const valid = WorkflowProgramSchema.safeParse(program);
+    if (!valid.success) throw agentXError("CONFIG_INVALID", `${ref.name}'s steps can't run as a coding sequence: ${valid.error.issues[0]?.message ?? "the sequence is not valid"}`);
+  }
+  const limits = await runLimits(deps, input.orgId, ref, input.runLimitUsd);
+  const checkout = await pullRequestHeads(deps, input.orgId, input.input, input.repositories);
+  return {
+    recipe, digest, ref,
+    origin: resolved.testRun ? "test_run" : input.origin,
+    runner,
+    ...(program === undefined ? {} : { program }),
+    input: input.input,
+    ...limits,
+    ...(input.resultContract === undefined ? {} : { resultContract: input.resultContract }),
+    ...(input.chain === undefined ? {} : { chain: input.chain }),
+    checkout,
+  };
+}
+
+/** The limits of a run (H2): `stopAtUsd = min(runLimitUsd, maxPerRunUsd ?? Infinity)`, with a request lowering `runLimitUsd` and 0 starting it paused. */
+async function runLimits(deps: AgentRunDependencies, orgId: OrgId, ref: TaskAgentRef, requested: number | undefined): Promise<Pick<PreparedRun, "runLimitUsd" | "stopAtUsd" | "paused" | "maxPerRunUsd">> {
+  if (requested !== undefined && (!Number.isFinite(requested) || requested < 0)) throw agentXError("CONFIG_INVALID", "runLimitUsd: must be zero or more");
+  // Task 34 replaces this with estimateRun and the project's planning limits; until then it is Plan 1's cap on one task.
+  const base = PER_TASK_BUDGET_USD;
+  const runLimitUsd = requested === undefined ? base : Math.min(base, requested);
+  const record = ref.builtin ? await deps.store.getBuiltinSettings(orgId, ref.agentId) : await deps.store.get(orgId, ref.agentId);
+  const maxPerRunUsd = record === undefined ? undefined : effectiveMaxPerRun(record, await readGuardrails(deps, orgId));
+  return {
+    runLimitUsd,
+    stopAtUsd: maxPerRunUsd === undefined ? runLimitUsd : Math.min(runLimitUsd, maxPerRunUsd),
+    paused: runLimitUsd === 0,
+    ...(maxPerRunUsd === undefined ? {} : { maxPerRunUsd }),
+  };
+}
+
+// ---- a pull request in the run's context (PF16)
+
+const PULL_REQUEST_REFERENCE = /^([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})#([1-9][0-9]{0,8})$/;
+
+function githubRepositoryOf(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" || parsed.hostname.toLowerCase() !== "github.com") return undefined;
+    const parts = parsed.pathname.split("/").filter((part) => part !== "");
+    if (parts.length !== 2) return undefined;
+    return `${parts[0]!}/${parts[1]!.replace(/\.git$/u, "")}`.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * For each `pull_request` item named `<owner>/<repo>#<n>` that is a repository of the project, reads the head commit through the App for the
+ * org; the run's workspace checks that commit out read-only (Task 22 carries it to the step). Anything else in the context is information
+ * and reads nothing. Fails closed: when the head cannot be read the run is not started, so a review never looks at the wrong commit.
+ */
+async function pullRequestHeads(deps: AgentRunDependencies, orgId: OrgId, input: RunInput, repositories: ReadonlyArray<{ name: string; url: string }>): Promise<RunCheckout[]> {
+  const found: RunCheckout[] = [];
+  for (const item of input.context ?? []) {
+    if (item.kind !== "pull_request") continue;
+    const reference = PULL_REQUEST_REFERENCE.exec(item.ref);
+    if (reference === null) continue;
+    const named = `${reference[1]!}/${reference[2]!}`.toLowerCase();
+    const repository = repositories.find((candidate) => githubRepositoryOf(candidate.url) === named);
+    if (repository === undefined) continue;
+    const number = Number(reference[3]);
+    if (found.some((entry) => entry.repository === repository.name && entry.pullRequest === number)) continue;
+    try {
+      if (deps.pullRequestHead === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "reading pull requests is not set up in this deployment");
+      const { headSha } = await deps.pullRequestHead({ orgId, repositoryUrl: repository.url, number });
+      if (!/^[a-f0-9]{40}$/.test(headSha)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not answer with a commit");
+      found.push({ repository: repository.name, pullRequest: number, headSha });
+    } catch (error) {
+      if (error instanceof AgentXError && error.code !== "RUNTIME_UNAVAILABLE") throw error;
+      throw agentXError("RUNTIME_UNAVAILABLE", `Rovara couldn't read pull request ${String(number)} of ${repository.name} from GitHub, so the run wasn't started. Try again shortly.`);
+    }
+  }
+  return found;
+}
+
+// ---- what joins the start transaction
+
+/** What the start writes for a run, beside the task: all in the task's own transaction (the caller adds them to its items). */
+export function runStartItems(table: TableInput, input: {
+  orgId: OrgId;
+  taskId: string;
+  createdAt: string;
+  project: string;
+  developerId: string;
+  prepared: PreparedRun;
+  /** `startAgentRun`'s request: its item is written with the run, so a repeat of the request is answered from it. */
+  request?: { requestId: string; fingerprint: string };
+}): TransactItem[] {
+  const { prepared } = input;
+  const nowSeconds = Math.floor(table.now() / 1000);
+  const expires = nowSeconds + RUN_RECORD_MEMORY_DAYS * 86_400;
+  const items: TransactItem[] = [
+    putNew(table, taskRecipeKey(input.taskId), "TASK_RECIPE", { orgId: input.orgId, recipe: prepared.recipe, digest: prepared.digest }),
+    putNew(table, agentTasksKey(input.orgId, prepared.ref.agentId, input.createdAt, input.taskId), "AGENT_TASK", {
+      orgId: input.orgId, agentId: prepared.ref.agentId, taskId: input.taskId, project: input.project, version: prepared.ref.version, origin: prepared.origin, createdAt: input.createdAt,
+      [INDEX_EXPIRY_ATTRIBUTE]: expires,
+    }),
+  ];
+  if (prepared.runner === "agent_steps") {
+    const state: AgentRunState = {
+      orgId: input.orgId, revision: 1, state: "RUNNING", cursor: 0, input: prepared.input,
+      steps: prepared.recipe.steps.map((step) => ({ id: step.id, status: "pending" as const, operationIds: [], approvalIds: [] })),
+      reports: [],
+      ...(prepared.resultContract === undefined ? {} : { resultContract: prepared.resultContract }),
+      ...(prepared.checkout.length === 0 ? {} : { checkout: prepared.checkout }),
+    };
+    items.push(putNew(table, taskAgentRunKey(input.taskId), "AGENT_RUN", { ...state }));
+  }
+  if (input.request !== undefined) {
+    items.push({
+      Put: {
+        TableName: table.tableName,
+        Item: {
+          ...runRequestKey(input.orgId, input.request.requestId), entityType: "RUN_REQUEST", orgId: input.orgId, taskId: input.taskId, developerId: input.developerId,
+          fingerprint: input.request.fingerprint, runLimitUsd: prepared.runLimitUsd, stopAtUsd: prepared.stopAtUsd, paused: prepared.paused,
+          at: new Date(table.now()).toISOString(), [INDEX_EXPIRY_ATTRIBUTE]: expires,
+        },
+        // An expired item the TTL has not removed yet is as good as gone.
+        ConditionExpression: "attribute_not_exists(pk) OR #expires <= :now",
+        ExpressionAttributeNames: { "#expires": INDEX_EXPIRY_ATTRIBUTE },
+        ExpressionAttributeValues: { ":now": nowSeconds },
+      },
+    });
+  }
+  return items;
+}
+
+// ---- reading a run back
+
+/** The frozen recipe of a task, or undefined for a task from before agents. The item is a named exception to org-scoped keys: another org's refuses. */
+export async function readTaskRecipe(deps: Pick<TableInput, "documentClient" | "tableName">, taskId: string, orgId: OrgId): Promise<{ recipe: ResolvedRecipe; digest: string } | undefined> {
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskRecipeKey(taskId), ConsistentRead: true })) as { Item?: { orgId?: unknown; recipe?: unknown; digest?: unknown } };
+  const item = response.Item;
+  if (item === undefined) return undefined;
+  if (item.orgId !== orgId) throw agentXError("NOT_FOUND", "no agent snapshot belongs to this task");
+  const recipe = ResolvedRecipeSchema.safeParse(item.recipe);
+  if (!recipe.success || typeof item.digest !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
+  return { recipe: recipe.data, digest: item.digest };
+}
+
+/** The request item of a run, if one is there and has not expired. */
+export async function readRunRequest(deps: Pick<TableInput, "documentClient" | "tableName" | "now">, orgId: OrgId, requestId: string): Promise<{ taskId: string; fingerprint: string; result: AgentRunResult } | undefined> {
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: runRequestKey(orgId, requestId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
+  const item = response.Item;
+  if (item === undefined || item.orgId !== orgId) return undefined;
+  const expires = item[INDEX_EXPIRY_ATTRIBUTE];
+  if (typeof expires === "number" && expires <= Math.floor(deps.now() / 1000)) return undefined;
+  const { taskId, fingerprint, runLimitUsd, stopAtUsd, paused } = item;
+  if (typeof taskId !== "string" || typeof fingerprint !== "string" || typeof runLimitUsd !== "number" || typeof stopAtUsd !== "number" || typeof paused !== "boolean") return undefined;
+  return { taskId, fingerprint, result: { taskId, runLimitUsd, stopAtUsd, paused } };
+}
+
+/** What identifies a request, so the same ID with other contents is refused. The owner and the agent are in it; the ID itself is not. */
+export function runRequestFingerprint(request: Omit<AgentRunRequest, "caller">): string {
+  return sha256({
+    project: request.project, agent: request.agent, input: request.input, origin: request.origin, owner: request.owner, startedBy: request.startedBy ?? null,
+    payer: request.payer, chain: request.chain ?? null, runLimitUsd: request.runLimitUsd ?? null, resultContract: request.resultContract ?? null,
+  });
+}
+
+// ---- H2
+
+/**
+ * Starts a run. Idempotent on `requestId`: the repeat of a request returns the first run's result and starts nothing, and the same ID with
+ * other contents is `IDEMPOTENCY_CONFLICT`. A run no person started (no `startedBy`) resolves its agent through the roster first (G12) and is
+ * refused until a payer other than the person who started it can be named (Task 29).
+ */
+export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequest): Promise<AgentRunResult> {
+  const shape = AgentRunRequestShape.safeParse(request);
+  if (!shape.success) {
+    const issue = shape.error.issues[0];
+    throw agentXError("CONFIG_INVALID", `${issue === undefined || issue.path.length === 0 ? "request" : issue.path.join(".")}: ${issue?.message ?? "is not valid"}`);
+  }
+  const { caller, ...rest } = request;
+  const fingerprint = runRequestFingerprint(rest);
+  const previous = await readRunRequest(deps, request.orgId, request.requestId);
+  if (previous !== undefined) {
+    if (previous.fingerprint !== fingerprint) throw agentXError("IDEMPOTENCY_CONFLICT", "this request_id was already used for another run; use a new request_id");
+    return previous.result;
+  }
+  const autonomous = request.startedBy === undefined;
+  if (autonomous) {
+    await resolveAgentForAutonomousRun(deps, { orgId: request.orgId, project: request.project, agentId: request.agent.agentId, ...(typeof request.agent.version === "number" ? { version: request.agent.version } : {}) });
+    requireAcceptablePayer({ startedBy: request.startedBy, payer: request.payer });
+  }
+  if (caller !== undefined && (caller.developerId !== request.owner.developerId || caller.orgId !== request.orgId)) {
+    throw agentXError("CONFIG_INVALID", "caller: a run is started as its owner");
+  }
+  const actingAs = caller ?? await deps.callerFor(request.orgId, request.owner.developerId);
+  if (actingAs === undefined) throw agentXError("FORBIDDEN", "The person this run is for isn't a member of the organization.");
+  const body = { requestId: request.requestId, project: request.project, instructions: request.input.text, input: request.input, agent: request.agent, client: request.origin };
+  const started = await deps.startTask(actingAs, body, {
+    origin: request.origin, autonomous, payer: request.payer, requestFingerprint: fingerprint,
+    ...(request.startedBy === undefined ? {} : { startedBy: request.startedBy }),
+    ...(request.chain === undefined ? {} : { chain: request.chain }),
+    ...(request.runLimitUsd === undefined ? {} : { runLimitUsd: request.runLimitUsd }),
+    ...(request.resultContract === undefined ? {} : { resultContract: request.resultContract }),
+  });
+  return started.run;
+}

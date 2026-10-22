@@ -316,7 +316,7 @@ import {
 } from "./cancellation.js";
 import { requireCreatorStillMember, requireWorkspaceCreatorStillMember, type CreatorCheckDependencies } from "../developer/creator-member.js";
 import { effectiveProjectRole, grantRoleOf, requireNewWorkAllowed, viewerCannotStartTasksMessage } from "../developer/project-roles.js";
-import { aiToolTurn, completedTurn, developerFooter, E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON, githubWorkflowPullRequestKey, inertName, OUTCOME, partyOfTask, taskKey, taskOwnerKey, taskOwnerSubject, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type GithubWorkflowPullRequestRecord, type StoredEvent } from "../developer/task-records.js";
+import { aiToolTurn, completedTurn, developerFooter, E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON, githubWorkflowPullRequestKey, inertName, OUTCOME, partyOfTask, taskKey, taskOwnerKey, taskOwnerSubject, taskPointerKey, taskRecipeKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type GithubWorkflowPullRequestRecord, type StoredEvent } from "../developer/task-records.js";
 import { readWorkspaceLimits } from "../developer/limits.js";
 import { WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem, type WorkflowDispatchRecord, type WorkflowE2EReadinessMarker, AWS_TEMPORARY_MESSAGE, GATED_TASK_PULL_REQUEST_ACTION_REFUSAL, GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, UNEXPECTED_REQUEST_MESSAGE, hashJson, isConditional, isTemporaryAwsError, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, planDocumentInstructions, workerPrompt } from "./broker-shared.js";
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../e2e/feature-plan-planning-context.js";
@@ -335,10 +335,11 @@ import { AgentStore, type AgentStoreInput } from "../agents/store.js";
 import { SkillStore, servedSkills } from "../agents/skills.js";
 import { followMerges, type ProjectMembers } from "../agents/access.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
+import type { AgentRunStarter } from "../agents/runs.js";
 import { DecideStore, DecideReauthRequired, type DecideRequestContext } from "../developer/decide-session.js";
 import type { DecideKinds } from "../developer/decide-kinds.js";
 import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
-import { authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
+import { agentRunStarterOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import { ADMISSION_REFUSALS, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
@@ -537,7 +538,7 @@ interface AwsBrokerDependencies {
    * The store, access checks and approvals are built from the broker's State table and sign-in table. `projectMembers` (who holds which role
    * on a project) is Plan 2 Task 21's `createProjectMembers` over those same tables unless a test hands in a stand-in (PF6).
    */
-  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"] } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"] } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
    * Plan 3, Task 21a-presence (R66): the kinds of approval a person can decide on the confirmation page (`apr_` and `spr_`), each saying whether
    * a member may decide it now, what the page shows, and what deciding does. Absent, the confirmation page answers NOT_FOUND.
@@ -801,6 +802,10 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     ...(agents.resolveSkill === undefined ? {} : { resolveSkill: agents.resolveSkill }),
     ...(agents.servableModels === undefined ? {} : { servableModels: agents.servableModels }),
     ...(agents.orgSourceOrder === undefined ? {} : { orgSourceOrder: agents.orgSourceOrder }),
+    // A run that names a pull request of a project repository reads its head through the GitHub App, for the run's org (Task 15, PF16).
+    pullRequestHead: agents.pullRequestHead ?? (async ({ orgId, repositoryUrl, number }) => ({
+      headSha: (await dependencies.githubPullRequests.getPullRequest(repositoryUrl, number, githubScope(dependencies, orgId))).headCommit,
+    })),
     // A trial org keeps the placeholder limits (R49) on the budgets the routes set.
     orgs: orgStoreOf(dependencies),
   };
@@ -948,6 +953,25 @@ function brokerDependencies(input: AwsBrokerInput): AwsBrokerDependencies {
 /** The broker actions developer task routes call (spec 025); tests and the route wiring use this factory. */
 export function createDeveloperTaskActions(input: AwsBrokerInput): DeveloperTaskActions {
   return developerTaskActions(brokerDependencies(input));
+}
+
+/**
+ * Plan 3, Task 15: what `startAgentRun` (H2) needs to start a run as a person, from the broker's own dependencies; the entry for the event, schedule
+ * and chain starts of Plan 4 and for tests. Undefined where developer sign-in or agents are not set up.
+ */
+export function createAgentRunStarter(input: AwsBrokerInput): AgentRunStarter | undefined {
+  const dependencies = brokerDependencies(input);
+  const developer = dependencies.developer;
+  if (developer === undefined) return undefined;
+  const tasks = developerTaskActions(dependencies);
+  const agents = agentRouteDependencies(dependencies, tasks);
+  return agentRunStarterOf({
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
+    ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
+    ...(dependencies.cloud === true ? { cloud: true } : {}),
+    ...(agents === undefined ? {} : { agents }),
+    ...repositoriesGateRoute(dependencies),
+  });
 }
 
 /** Spec 025 phase 25d: what the admin read routes need, from the broker's own dependencies. */
@@ -5042,7 +5066,7 @@ async function handleAgentSkills(dependencies: AwsBrokerDependencies, request: A
   if (orgId === undefined) throw agentXError("NOT_FOUND", "this operation belongs to no organisation");
   if (task !== undefined && task.orgId !== orgId) throw agentXError("NOT_FOUND", "no agent snapshot belongs to this operation");
   // Task 15 writes the snapshot beside the task: `{ orgId, recipe, digest }` at `RECIPE`.
-  const snapshot = task === undefined ? undefined : await getItem<{ orgId?: string; recipe?: { skills?: unknown } }>(dependencies, { pk: taskKey(task.taskId).pk, sk: "RECIPE" });
+  const snapshot = task === undefined ? undefined : await getItem<{ orgId?: string; recipe?: { skills?: unknown } }>(dependencies, taskRecipeKey(task.taskId));
   if (snapshot?.recipe === undefined) return json({ skills: [] }, request.requestId);
   if (snapshot.orgId !== orgId) throw agentXError("NOT_FOUND", "no agent snapshot belongs to this operation");
   const pinned = ResolvedRecipeSchema.shape.skills.safeParse(snapshot.recipe.skills);
@@ -6199,9 +6223,12 @@ async function startSlackWorkflow(dependencies: AwsBrokerDependencies, tasks: De
     throw agentXError("WORKSPACE_BUSY", "this Slack thread already has a task; start the workflow in a new thread");
   }
   const caller = await slackCallerFor(dependencies, userId, thread.teamId);
+  const agents = agentRouteDependencies(dependencies, tasks);
   const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
     ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
-    ...(dependencies.cloud === true ? { cloud: true } : {}) }, caller, thread);
+    ...(dependencies.cloud === true ? { cloud: true } : {}),
+    // Plan 3, Task 15: a Slack-started workflow stores its agent snapshot like any other start.
+    ...(agents === undefined ? {} : { agents }) }, caller, thread);
   const request = {
     method: "POST", path: "/v1/dev/tasks", headers: {}, requestId,
     body: JSON.stringify({ requestId, project: binding.projectName, instructions, client: "slack", workflow: true, workflowPath: event.workflowPath, shareToChannel: true, channel: thread.channelId }),

@@ -32,6 +32,9 @@ import {
   projectPk,
   slackBindingPk,
   workspaceRecordFields,
+  type AgentId,
+  type DeveloperTaskView,
+  type RunInput,
   type AppMeResponse,
   type AppProjectDetail,
   type AppProjectSummary,
@@ -103,10 +106,11 @@ import {
   createPageComment, decideOnPage, deletePageComment, editPageComment, getTaskDocumentView, getTaskFreshness, getTaskPageState, listPageComments, setPageSuggestion,
   confirmTaskPeopleProposal, getTaskPeople, getTaskPeopleCapabilities, getTaskPeopleProposal, getTaskPeopleProposalMetadata, getTaskPersonPresentationName,
   proposeTaskOwnershipForPage, proposeTaskPeopleRoleForPage,
-  getWorkflowFeedbackReview, routeDeveloperTaskRequest, submitWorkflowFeedbackDecision, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
+  getWorkflowFeedbackReview, loadOwnedTask, routeDeveloperTaskRequest, startTask, submitWorkflowFeedbackDecision, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
+import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { createFeedbackReviewWeb } from "./feedback-review-web.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION, TASK_STATUS, createTaskWeb } from "./task-web.js";
 import { TASK_PAGE_API_PREFIX, createTaskWebApi } from "./task-web-api.js";
@@ -1237,6 +1241,49 @@ async function listWorkspaces(deps: DeveloperRouteDependencies, caller: Develope
   return { ...listing, workspaces };
 }
 
+/**
+ * Plan 3, Task 15: what `startAgentRun` needs from the developer API: the person a run acts as (their sign-in record and org membership now),
+ * and the task start for that person. Undefined where agents are not set up.
+ */
+export function agentRunStarterOf(deps: DeveloperRouteDependencies): AgentRunStarter | undefined {
+  if (deps.agents === undefined) return undefined;
+  return {
+    ...deps.agents,
+    callerFor: async (orgId, developerId) => {
+      const developer = await getSignIn<Pick<DeveloperRecord, "provider" | "displayName" | "slackUserId" | "email" | "revoked">>(deps, `DEVELOPER#${developerId}`);
+      const membership = await deps.orgs?.orgForDeveloper(developerId);
+      if (developer === undefined || developer.revoked || membership === undefined || membership.orgId !== orgId) return undefined;
+      return {
+        developerId, sessionId: "agent-run", amr: developer.provider, name: developer.displayName, orgId, orgRole: membership.role,
+        ...(developer.slackUserId === undefined ? {} : { slackUserId: developer.slackUserId }),
+        ...(developer.email === undefined ? {} : { email: developer.email }),
+      };
+    },
+    startTask: async (caller, body, run) => {
+      const answer = await startTask(developerTaskRouteDependencies(deps, caller), caller, body, run);
+      if (answer.run === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the run did not report its limits");
+      return { task: answer.task, run: answer.run };
+    },
+  };
+}
+
+/** The app route that starts a run (`POST /v1/app/agents/{id}/runs`): the person's own request, from their own session, through the run start. */
+async function startAppRun(
+  deps: DeveloperRouteDependencies,
+  caller: DeveloperCaller,
+  input: { requestId: string; project: string; agent: { agentId: AgentId; version?: number | "draft" }; input: RunInput },
+): Promise<{ task: DeveloperTaskView }> {
+  const starter = agentRunStarterOf(deps);
+  if (starter === undefined) throw agentXError("NOT_FOUND", "agents are not set up in this deployment");
+  const started = await startAgentRun(starter, {
+    requestId: input.requestId, orgId: caller.orgId, project: input.project, agent: input.agent, input: input.input, origin: "app",
+    owner: { developerId: caller.developerId }, startedBy: { developerId: caller.developerId },
+    payer: { kind: "member", developerId: caller.developerId }, caller,
+  });
+  const taskDeps = developerTaskRouteDependencies(deps, caller);
+  return { task: await taskView(taskDeps, await loadOwnedTask(taskDeps, caller, started.taskId), { events: 0, details: false }) };
+}
+
 export function developerTaskRouteDependencies(
   deps: DeveloperRouteDependencies,
   caller: DeveloperCaller,
@@ -1301,6 +1348,7 @@ export function developerTaskRouteDependencies(
     ...(deps.workflowE2EPublicationChecks === undefined ? {} : { workflowE2EPublicationChecks: deps.workflowE2EPublicationChecks }),
     ...(deps.registeredRepositoryIdentity === undefined ? {} : { registeredRepositoryIdentity: deps.registeredRepositoryIdentity }),
     ...(deps.requireRepositoriesConnected === undefined ? {} : { requireRepositoriesConnected: deps.requireRepositoriesConnected }),
+    ...(deps.agents === undefined ? {} : { agentRuns: deps.agents }),
     ...(deps.developer.taskPeopleConfiguration === undefined ? {} : { taskPeopleConfiguration: deps.developer.taskPeopleConfiguration }),
     ...(deps.developer.workflowDependenciesEnabled === undefined ? {} : { workflowDependenciesEnabled: deps.developer.workflowDependenciesEnabled }),
     checkTaskPerson: async (task, developerId, admission) => {
@@ -1421,7 +1469,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // Plan 3's paths, project sub-paths included, are matched before Plan 2's `/v1/app/projects/{name}*` handlers (PF24).
   if (isAgentRoute(url.pathname)) {
     if (deps.agents === undefined) throw agentXError("NOT_FOUND", "agents are not set up in this deployment");
-    return routeAgentRequest(deps.agents, caller, request, url);
+    return routeAgentRequest({ ...deps.agents, startRun: (_agentCaller, input) => startAppRun(deps, caller, input) }, caller, request, url);
   }
   if (request.method === "GET" && url.pathname === "/v1/app/me") return getAppMe(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);

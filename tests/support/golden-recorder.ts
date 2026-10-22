@@ -395,9 +395,12 @@ async function captureOperation(handles: BrokerHandles, workspaceId: string, ope
   };
 }
 
+/** What the developer-task scenarios add to the broker's inputs while `recordGolden` runs (Plan 3 Task 15 records them with `agents: {}`). */
+let recordingBrokerExtra: Record<string, unknown> = {};
+
 async function developerBroker(proxy: boolean, brokerExtra: Record<string, unknown> = {}) {
   const access = proxy ? fakeModelAccess() : undefined;
-  const harness = await createDeveloperTaskBroker({ brokerExtra: { ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }), ...brokerExtra } });
+  const harness = await createDeveloperTaskBroker({ brokerExtra: { ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }), ...recordingBrokerExtra, ...brokerExtra } });
   if (access !== undefined) {
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
     access.setOrgSpent(TEST_ORG, 0);
@@ -717,13 +720,15 @@ async function orchestratorScenario(): Promise<Captured> {
  * Records one scenario, with the clock fixed at 2026-10-20T00:00:00Z and the ids seeded for the scenario. Only Date is faked,
  * so timers and promises behave as they always do.
  */
-export async function recordGolden(scenario: GoldenScenario): Promise<GoldenRecord> {
+export async function recordGolden(scenario: GoldenScenario, options: { brokerExtra?: Record<string, unknown> } = {}): Promise<GoldenRecord> {
   seedGoldenIds(GOLDEN_SCENARIOS.indexOf(scenario) + 1);
   vi.useFakeTimers({ now: new Date(GOLDEN_CLOCK), toFake: ["Date"] });
+  recordingBrokerExtra = options.brokerExtra ?? {};
   try {
     const record = await brokerScenario(scenario);
     return canonical({ ...record, scenario }) as unknown as GoldenRecord;
   } finally {
+    recordingBrokerExtra = {};
     vi.useRealTimers();
   }
 }

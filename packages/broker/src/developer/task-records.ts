@@ -31,8 +31,10 @@ import {
   type WorkflowReviewBase,
   type DeveloperSignInMethod,
   type OrgId,
+  type WorkOrigin,
 } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
+import type { TaskAgentRef } from "../agents/roster.js";
 import type { ShareDecision } from "./share.js";
 
 export const E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON = "The approved feature E2E plan references a source operation that does not match the protected candidate. Request changes and submit a corrected E2E plan before coding resumes.";
@@ -109,6 +111,20 @@ export interface DeveloperTaskRecord {
   threadNotesFedFrom?: string;
   /** The owner's original request, redacted and cut to 4,000 characters; the first entry of each plan's "why". Tasks created earlier have none. */
   requestText?: string;
+  /** Plan 3, Task 15: the agent and version the task runs (its recipe is frozen at `RECIPE`, see `taskRecipeKey`). Tasks from before agents have none. */
+  agent?: TaskAgentRef;
+  /** Plan 3, Task 15: where the start came from. A draft test run is `test_run`. */
+  origin?: WorkOrigin;
+  /** Plan 3, Task 15: the chain step that started the run, for work Plan 4's chains start. */
+  chain?: { chainRunId: string; stepId: string };
+  /** Plan 3, Task 15: the agent's cap on one run as it was when the run started; absent when the agent set none. */
+  maxPerRunUsd?: number;
+  /**
+   * Plan 3, Task 15: set on a run started with a run limit of 0. Nothing was dispatched or charged: the workspace and its prepare operation
+   * exist (`firstDispatch.operationId`) but the prepare has no outbox item, no workspace slot is taken and no setup watch runs. Task 32's
+   * approval of the run limit takes the slot, writes the outbox and the watch, and removes this field.
+   */
+  budgetPause?: { scope: { kind: "task"; taskId: string }; firstDispatch: { operationId: string } };
 }
 
 /** C1: a shared task's thread, as the task record keeps it. */
@@ -203,6 +219,13 @@ export interface GithubWorkflowPullRequestRecord {
 }
 
 export const taskKey = (taskId: string) => ({ pk: `DEVTASK#${taskId}`, sk: "META" as const });
+/**
+ * The frozen recipe of an agent run, `{ orgId, recipe, digest }`. Task partitions are global, so a reader re-checks `orgId` on the item
+ * (a named exception to org-scoped keys, see the plan's global constraints).
+ */
+export const taskRecipeKey = (taskId: string) => ({ pk: `DEVTASK#${taskId}`, sk: "RECIPE" as const });
+/** The state of an agent-step run (Task 22's engine); the same named exception as `taskRecipeKey`. */
+export const taskAgentRunKey = (taskId: string) => ({ pk: `DEVTASK#${taskId}`, sk: "AGENT_RUN" as const });
 /** The item stored with a plan: which comments the planner answered in it (the Slack card for the plan reads it). */
 export const plannerRepliesKey = (taskId: string, artifactId: string) => ({ pk: `DEVTASK#${taskId}`, sk: `PLANREPLIES#${artifactId}` });
 export const taskIndexKey = (developerId: string, createdAt: string, taskId: string) => ({ pk: `DEVELOPER#${developerId}`, sk: `TASK#${createdAt}#${taskId}` });

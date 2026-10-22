@@ -7,7 +7,9 @@ import type * as NodeCrypto from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { GOLDEN_FIXTURE_DIRECTORY, GOLDEN_SCENARIOS, expectGolden, recordGolden, updatingGolden } from "../support/golden-recorder.js";
+import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
+import { recipeDigest } from "../../packages/contracts/src/agent-recipe.js";
+import { GOLDEN_FIXTURE_DIRECTORY, GOLDEN_SCENARIOS, expectGolden, recordGolden, updatingGolden, type GoldenScenario } from "../support/golden-recorder.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 
 // Every id the broker and the worker make comes from randomUUID; the recorder seeds a sequence per scenario.
@@ -65,4 +67,30 @@ describe("Rovara Code before agents", () => {
       expect(createHash("sha256").update(readFileSync(join(GOLDEN_FIXTURE_DIRECTORY, name))).digest("hex"), name).toBe(sha256);
     }
   });
+});
+
+// Plan 3 Task 15: with the agents switched on, a start that names no agent runs Rovara Code at the org's pinned version and records it. The only
+// differences from the fixtures are change 5's paths: the task's `agent` and `origin`, and the RECIPE item beside the task.
+describe("Rovara Code with agents switched on", () => {
+  const STARTS: GoldenScenario[] = [
+    "plan-quick", "plan-full-requirements", "plan-review-decision", "implement", "checks", "review", "task-no-workflow", "task-no-workflow-no-proxy", "shared-task", "plan-ready-quick",
+  ];
+  const latest = BUILTIN_AGENTS["rovara-code"].versions.at(-1)!;
+
+  for (const scenario of STARTS) {
+    it(`${scenario} differs from its golden fixture only by the task's agent, origin and RECIPE item`, async () => {
+      if (updatingGolden()) return;
+      const record = await recordGolden(scenario, { brokerExtra: { agents: {} } });
+      const items = record.taskItems as Array<Record<string, unknown>>;
+      const recipe = items.filter((item) => item.sk === "RECIPE");
+      expect(recipe).toHaveLength(1);
+      expect(recipe[0]).toMatchObject({ digest: recipeDigest(latest.recipe), recipe: latest.recipe });
+      const kept = items.filter((item) => item.sk !== "RECIPE");
+      const meta = kept.findIndex((item) => item.sk === "META");
+      expectGolden(scenario, { ...record, taskItems: kept }, [
+        { path: `taskItems[${String(meta)}].agent`, expected: { agentId: "rovara-code", name: "Rovara Code", version: latest.version, builtin: true, digest: recipeDigest(latest.recipe) }, change: 5 },
+        { path: `taskItems[${String(meta)}].origin`, expected: "cli", change: 5 },
+      ]);
+    }, 120_000);
+  }
 });

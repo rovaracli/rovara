@@ -2,6 +2,8 @@
 // server parses responses with the non-strict schemas here, so a newer control plane can add fields.
 import { Buffer } from "node:buffer";
 import { z } from "zod";
+import { AgentIdSchema } from "./agent.js";
+import { RunInputSchema } from "./agent-run.js";
 import { cleanDisplayName } from "./display-name.js";
 import { OperationStatusSchema } from "./operation.js";
 import { DeveloperShareModeSchema } from "./project.js";
@@ -165,6 +167,13 @@ const hasControlCharacter = (value: string) => [...value].some((character) => {
   return code < 32 || code === 127;
 });
 
+/** Plan 3, Task 15: the agent a start names, at a published version or as the owner's draft (a test run). Absent means Rovara Code at the org's pin. */
+export const StartAgentSelectionSchema = z.object({
+  agentId: AgentIdSchema,
+  version: z.union([z.number().int().min(1), z.literal("draft")]).optional(),
+}).strict();
+export type StartAgentSelection = z.infer<typeof StartAgentSelectionSchema>;
+
 export const StartDeveloperTaskRequestSchema = z
   .object({
     requestId: RequestIdSchema,
@@ -180,8 +189,13 @@ export const StartDeveloperTaskRequestSchema = z
     workflow: z.literal(true).optional(),
     /** Selects the required approval sequence for a native workflow. */
     workflowPath: WorkflowPathSchema.optional(),
+    /** Plan 3, Task 15: the agent that does the work; without it, Rovara Code. */
+    agent: StartAgentSelectionSchema.optional(),
+    /** Plan 3, Task 15: what the agent is asked, with context shown to it as information only. `instructions` must equal `input.text`. */
+    input: RunInputSchema.optional(),
   })
   .strict().superRefine((request, context) => {
+    if (request.input !== undefined && request.instructions !== request.input.text) context.addIssue({ code: "custom", path: ["instructions"], message: "instructions must equal input.text" });
     if (request.workflowPath !== undefined && request.workflow !== true) context.addIssue({ code: "custom", path: ["workflowPath"], message: "workflowPath requires workflow: true" });
     if (request.workflow === true && request.workflowPath === undefined) context.addIssue({ code: "custom", path: ["workflowPath"], message: "workflow requests require an explicit Quick or Full path" });
   });
@@ -305,6 +319,8 @@ export const DeveloperTaskViewSchema = z.object({
   share: DeveloperTaskShareSchema.optional(),
   /** C15: the shared thread's channel turns on this task, newest first. */
   channelTurns: z.array(ChannelTurnSchema).max(CHANNEL_TURNS_MAX).optional(),
+  /** Plan 3, Task 15: the agent and version the task runs; absent on a task from before agents. */
+  agent: z.object({ agentId: AgentIdSchema, name: z.string(), version: z.union([z.number().int().min(1), z.literal("draft")]), builtin: z.boolean() }).strict().optional(),
 });
 export type DeveloperTaskView = z.infer<typeof DeveloperTaskViewSchema>;
 

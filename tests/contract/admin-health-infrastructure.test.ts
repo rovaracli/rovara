@@ -119,6 +119,8 @@ describe("the health route's grants (A13)", () => {
       // The agent request items (Plan 3, Task 7): one per marked write, kept 7 days so a retry is answered, then deleted by the TTL.
       // table-writes.ts writes them for the agent store and the skill store; store.ts reads them back.
       "packages/broker/src/agents/store.ts", "packages/broker/src/agents/table-writes.ts",
+      // A run's request item and an agent's task index item (Plan 3, Task 15): kept 90 days, then deleted by the TTL.
+      "packages/broker/src/agents/runs.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

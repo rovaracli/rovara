@@ -18,6 +18,8 @@ import {
   type WorkflowPullRequestUpdateCause,
   CHANNEL_TURNS_MAX,
   PER_TASK_BUDGET_USD,
+  DEVELOPER_INSTRUCTIONS_MAX_BYTES,
+  codingRequestText,
   ContinueDeveloperTaskRequestSchema,
   DEVELOPER_EVENTS_DEFAULT,
   DEVELOPER_EVENTS_MAX,
@@ -217,6 +219,7 @@ import {
 import type { TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
 import { requireCreatorStillMember } from "../developer/creator-member.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
+import { prepareRun, readRunRequest, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -277,6 +280,11 @@ export interface DeveloperTaskRouteDependencies {
    * there are no bindings (a private install). Called at a task's start, before any budget, limit or machine time.
    */
   requireRepositoriesConnected?(orgId: OrgId, definition: { repositories: ReadonlyArray<{ url: string; installationId?: number | undefined }> }): Promise<void>;
+  /**
+   * Plan 3, Task 15: what choosing the agent a task runs needs (the roster, the guardrails, the frozen recipe). Absent where agents are not set
+   * up: a start then names no agent, and the task is the plain task it always was, with no recipe stored.
+   */
+  agentRuns?: AgentRunDependencies;
 }
 
 /** Ruling R60: refuses a task whose creator is no longer a member of its org, before any other access check (see developer/creator-member.ts). */
@@ -1328,6 +1336,7 @@ export async function taskView(
     shared: task.shared,
     ...(task.share === undefined ? {} : { share: shareView(task.share) }),
     ...(derived.closing ? { closing: true } : {}),
+    ...(task.agent === undefined ? {} : { agent: { agentId: task.agent.agentId, name: task.agent.name, version: task.agent.version, builtin: task.agent.builtin } }),
     createdAt: task.createdAt,
     // #225: a failed setup's task changed when its prepare ended, not when it was made.
     updatedAt: derived.failedPrepare?.updatedAt !== undefined && derived.failedPrepare.updatedAt > task.updatedAt ? derived.failedPrepare.updatedAt : derived.current?.createdAt ?? task.updatedAt,
@@ -1436,7 +1445,12 @@ async function confirmMayShareInto(deps: DeveloperTaskRouteDependencies, caller:
   if (!(await deps.channelMember(caller.slackUserId, channel.channelId))) throw refusal();
 }
 
-async function startTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, value: unknown): Promise<{ task: DeveloperTaskView }> {
+/**
+ * Starts a task. `run` is passed by `startAgentRun` for a start that is not a person's own request (an event, a schedule, a chain step, the app route):
+ * it names the origin, who started it and who pays, takes a run limit and a result contract, and makes the start write the run's request item; its
+ * answer then carries the run's limits. The AI-tool route and the Slack start pass nothing.
+ */
+export async function startTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, value: unknown, run?: RunStartOptions): Promise<{ task: DeveloperTaskView; run?: AgentRunResult }> {
   const request = parse(StartDeveloperTaskRequestSchema, value, deps, "start");
   const turns = turnTable(deps);
   // Only the Slack workflow's own caller can say "slack": an AI tool that sends that name is still an AI tool.
@@ -1445,6 +1459,8 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
     project: request.project, instructions: request.instructions, title: request.title ?? null,
     shareToChannel: request.shareToChannel ?? null, shareMode: request.shareMode ?? null, channel: request.channel ?? null,
     ...(request.workflow === true ? { workflow: true, ...(request.workflowPath === undefined ? {} : { workflowPath: request.workflowPath }) } : {}),
+    ...(request.agent === undefined ? {} : { agent: request.agent }),
+    ...(request.input === undefined ? {} : { input: request.input }),
   });
   const idempotencyKey = startIdempotencyKey(caller.developerId, request.requestId);
   // loadOwnedTask is the ownership check before taskView's reads. Access is not checked again: a
@@ -1452,7 +1468,7 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
   const returning = async (previous: { taskId: string; payloadHash: string }) => {
     if (previous.payloadHash !== payloadHash) throw agentXError("IDEMPOTENCY_CONFLICT", "this request_id was already used for another task; use a new request_id");
     const task = await loadOwnedTask(deps, caller, previous.taskId);
-    return { task: await taskView(deps, task, { events: DEVELOPER_EVENTS_DEFAULT, details: false }) };
+    return { task: await taskView(deps, task, { events: DEVELOPER_EVENTS_DEFAULT, details: false }), ...(run === undefined ? {} : { run: runResultOf(task) }) };
   };
   // R8: a retried call returns the first task, whatever changed since.
   const previous = await get<{ taskId: string; payloadHash: string }>(deps, idempotencyKey);
@@ -1508,8 +1524,42 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
       throw error;
     }
   }
+  // Plan 3, Task 15 (PF23): the agent is resolved after the project checks above and before any budget or charge, so a refused agent
+  // costs nothing and leaves nothing behind. The roster, archive state and guardrails are read as they stand now.
+  let prepared: PreparedRun | undefined;
+  if (deps.agentRuns !== undefined) {
+    try {
+      prepared = await prepareRun(deps.agentRuns, {
+        orgId: deps.orgId, project: request.project, input: request.input ?? { text: request.instructions },
+        ...(request.agent === undefined ? {} : { agent: { agentId: request.agent.agentId, ...(request.agent.version === undefined ? {} : { version: request.agent.version }) } }),
+        origin: run?.origin ?? (client === SLACK_CLIENT_NAME ? "slack" : "cli"),
+        ...(run?.autonomous === true ? {} : { caller, role: access.role }),
+        ...(run === undefined ? { startedBy: { developerId: caller.developerId } } : run.startedBy === undefined ? {} : { startedBy: run.startedBy }),
+        payer: run?.payer ?? { kind: "member", developerId: caller.developerId },
+        ...(run?.chain === undefined ? {} : { chain: run.chain }),
+        ...(run?.runLimitUsd === undefined ? {} : { runLimitUsd: run.runLimitUsd }),
+        ...(run?.resultContract === undefined ? {} : { resultContract: run.resultContract }),
+        repositories: project.definition.repositories.map((repository) => ({ name: repository.name, url: repository.url })),
+      });
+      if (request.workflow === true && prepared.runner === "agent_steps") {
+        throw agentXError("CONFIG_INVALID", `${prepared.ref.name} doesn't write code, so it can't run as a coding workflow`);
+      }
+    } catch (error) {
+      if (error instanceof AgentXError) return refused(error);
+      throw error;
+    }
+  } else if (request.agent !== undefined || request.input !== undefined) {
+    return refused(agentXError("CONFIG_INVALID", "agents are not set up in this deployment"));
+  }
+  const paused = prepared?.paused === true;
+  // A coding agent chosen by name is a workflow; a start that names none is a workflow only when it says so, as it always was.
+  const asWorkflow = request.workflow === true || (request.agent !== undefined && prepared?.runner === "coding");
+  const workflowPath = request.workflowPath ?? "QUICK";
+  // What a coding run is asked: the text as sent, or the text with its context rendered and cut to the request limit (G3).
+  const requestText = prepared?.runner === "coding" && request.input !== undefined ? codingRequestText(request.input, DEVELOPER_INSTRUCTIONS_MAX_BYTES) : request.instructions;
   // The budget comes first (ruling R23: soft caps, so this is a floor, not a promise): before the limit's counters are read
   // and before any write. A proxy that cannot answer fails the start with nothing recorded; a refusal is audited like any other.
+  // Task 31 replaces this with `admitWork` at this point, after the agent is resolved and before the workspace charge.
   let admitted: { maxBudgetUsd: number } | undefined;
   if (deps.modelAccess !== undefined) {
     try {
@@ -1523,7 +1573,8 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
   }
   const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.orgId, deps.actions.limitDefaults);
   const charge = developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: caller.slackUserId, developerId: caller.developerId });
-  let full = await limitReached(deps.documentClient, deps.tableName, charge, limits);
+  // A run started paused (run limit 0) takes no workspace slot until its run limit is raised, so there is nothing to count.
+  let full = paused ? undefined : await limitReached(deps.documentClient, deps.tableName, charge, limits);
   // Slots finished tasks kept (merged before releases ran on merge) are given back, then the limit is read once more.
   if (full !== undefined && await releaseFinishedTasksOf(deps, charge.member) > 0) full = await limitReached(deps.documentClient, deps.tableName, charge, limits);
   if (full !== undefined) return refused(await limitError(deps, caller, full, limits));
@@ -1534,15 +1585,28 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
   const conversationId = randomUUID();
   const revision = project.definition.revision;
   const title = redactedTitle(request);
+  // The run limit is the task's budget. A task keeps one when the proxy admitted it or the run limit is not the usual one (a lower limit, or 0).
+  const budgetUsd = prepared?.runLimitUsd ?? PER_TASK_BUDGET_USD;
+  const keepsBudget = admitted !== undefined || (prepared !== undefined && budgetUsd !== PER_TASK_BUDGET_USD);
   const task: DeveloperTaskRecord = {
-    ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: deps.orgId, ...(admitted === undefined ? {} : { budgetUsd: PER_TASK_BUDGET_USD }), developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
+    ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: deps.orgId,
+    ...(keepsBudget ? { budgetUsd } : {}), developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
     ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
     client, project: request.project, title, workspaceId, ownerKey: identity.ownerKey, conversationId, startingRevision: revision,
     // A workflow task quotes the request in each plan's "why"; every start (Slack and AI tool) comes through here.
-    ...(request.workflow === true ? { requestText: storedRequestText(request.instructions) } : {}),
+    ...(asWorkflow ? { requestText: storedRequestText(requestText) } : {}),
     charge, shared: share !== undefined, ...(share === undefined ? {} : { share, shareVersion: 1 }),
     createdAt: receivedAt, updatedAt: receivedAt,
-    ...(request.workflow === true ? { workflow: createWorkflowSnapshot({ taskId, ownerId: identity.ownerKey, now: receivedAt, path: request.workflowPath ?? "QUICK", checkPolicy: taskWorkflowCheckPolicy(project.definition) }) } : {}),
+    ...(asWorkflow ? { workflow: createWorkflowSnapshot({
+      taskId, ownerId: identity.ownerKey, now: receivedAt, path: workflowPath, checkPolicy: taskWorkflowCheckPolicy(project.definition),
+      ...(prepared?.program === undefined ? {} : { program: prepared.program }),
+    }) } : {}),
+    ...(prepared === undefined ? {} : {
+      agent: prepared.ref, origin: prepared.origin,
+      ...(prepared.chain === undefined ? {} : { chain: prepared.chain }),
+      ...(prepared.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: prepared.maxPerRunUsd }),
+      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, firstDispatch: { operationId: preparation.operationId } } } : {}),
+    }),
   };
   const index: DeveloperTaskIndexRecord = {
     ...taskIndexKey(caller.developerId, receivedAt, taskId), entityType: "DEVELOPER_TASK_INDEX", taskId, orgId: deps.orgId, project: request.project, title, client,
@@ -1552,17 +1616,20 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
     ...taskPointerKey(workspaceId), entityType: "DEVELOPER_TASK_POINTER", taskId, developerId: caller.developerId,
     requester: { kind: "developer", developerId: caller.developerId, provider: caller.amr },
     // FR-019: the instructions exactly as the tool sent them; only the audit record is redacted.
-    conversationId, firstRequestId: randomUUID(), pendingPrompt: request.instructions,
-    ...(request.workflow === true ? { pendingWorkflowMode: "PLAN" as const } : {}),
+    // An agent-step run queues no coding task: its first step is the engine's (Task 22), never Pi's task run.
+    conversationId, firstRequestId: randomUUID(), ...(prepared?.runner === "agent_steps" ? {} : { pendingPrompt: requestText }),
+    ...(asWorkflow ? { pendingWorkflowMode: "PLAN" as const } : {}),
   };
   const turn = aiToolTurn({
     party: { ...party, workspaceId, settingsRevision: revision }, turnId: randomUUID(), action: "start", phase: "accepted", outcome: "accepted",
     receivedAt, finishedAt: iso(deps), request: request.instructions, response: `Task ${taskId} is STARTING on ${request.project} revision ${revision}.`,
   });
+  // A paused run is prepared but not dispatched: the workspace and its prepare operation are written, the outbox item that sends the prepare is not.
+  const preparationItems = paused ? preparation.items.filter((item) => (item.Put?.Item as { entityType?: unknown } | undefined)?.entityType !== "OUTBOX") : preparation.items;
   const items: TransactItems = [
-    // First, at positions 0 and 1: chargeConflict reads the cancellation reasons by position.
-    ...chargeItems(deps.tableName, charge, limits, taskId),
-    ...preparation.items,
+    // First, at positions 0 and 1: chargeConflict reads the cancellation reasons by position (a paused run takes no slot).
+    ...(paused ? [] : chargeItems(deps.tableName, charge, limits, taskId)),
+    ...preparationItems,
     putNew(deps.tableName, { ...task }),
     ...(share?.threadTs === undefined ? [] : [putNew(deps.tableName, {
       ...sharedTaskKey({ teamId: share.teamId, channelId: share.channelId, threadTs: share.threadTs }),
@@ -1575,30 +1642,52 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
     putNew(deps.tableName, { ...pointer }),
     // FR-055, C17: the stuck-setup sweep's watch on this prepare, keyed by the prepare's creation
     // (the task's start, Q5). Only developer-task starts write one (Q4); the sweep removes it.
-    putNew(deps.tableName, {
+    ...(paused ? [] : [putNew(deps.tableName, {
       ...setupWatchKey(preparation.workspace.createdAt, workspaceId), entityType: "SETUP_WATCH",
       workspaceId, operationId: preparation.operationId, taskId, createdAt: preparation.workspace.createdAt,
-    }),
+    })]),
     putNew(deps.tableName, { pk: `WORKSPACE#${workspaceId}`, sk: `CONVERSATION#${conversationId}`, entityType: "CONVERSATION", id: conversationId, workspaceId, createdAt: receivedAt, updatedAt: receivedAt }),
     putNew(deps.tableName, { ...idempotencyKey, entityType: "IDEMPOTENCY", taskId, payloadHash }),
     // R12: the accepted record commits with the start or not at all (ruling F15).
     putNew(turns, turn),
+    // Plan 3, Task 15: the frozen recipe, the agent's task index, an agent-step run's state and (for startAgentRun) the run's request item.
+    ...(prepared === undefined ? [] : runStartItems({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, {
+      orgId: deps.orgId, taskId, createdAt: receivedAt, project: request.project, developerId: caller.developerId, prepared,
+      ...(run?.requestFingerprint === undefined ? {} : { request: { requestId: request.requestId, fingerprint: run.requestFingerprint } }),
+    })),
   ];
   try {
     await deps.actions.transact(items);
   } catch (error) {
     if (!isConditional(error)) throw error;
-    const conflict = await chargeFailure(deps, charge, taskId, error);
+    const conflict = paused ? undefined : await chargeFailure(deps, charge, taskId, error);
     // This task's own charge is there: the transaction committed and only its answer was lost.
     if (conflict === "already_charged") return returning({ taskId, payloadHash });
     // The same request, sent again, committed first.
     const concurrent = await get<{ taskId: string; payloadHash: string }>(deps, idempotencyKey);
     if (concurrent !== undefined) return returning(concurrent);
+    // The same run request, sent again by another path or person, committed first: the same request is answered from it, another is refused.
+    if (run?.requestFingerprint !== undefined) {
+      const stored = await readRunRequest({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, deps.orgId, request.requestId);
+      if (stored !== undefined) {
+        if (stored.fingerprint !== run.requestFingerprint) throw agentXError("IDEMPOTENCY_CONFLICT", "this request_id was already used for another run; use a new request_id");
+        return { task: await taskView(deps, await loadOwnedTask(deps, caller, stored.taskId), { events: DEVELOPER_EVENTS_DEFAULT, details: false }), run: stored.result };
+      }
+    }
     // A counter filled between the check and the transaction.
     if (conflict !== undefined) return refused(await limitError(deps, caller, conflict, limits));
     throw agentXError("WORKSPACE_BUSY", "AgentX could not start the task just now; try again with the same request_id");
   }
-  return { task: await taskView(deps, task, { events: 0, details: false }) };
+  return {
+    task: await taskView(deps, task, { events: 0, details: false }),
+    ...(run === undefined || prepared === undefined ? {} : { run: { taskId, runLimitUsd: prepared.runLimitUsd, stopAtUsd: prepared.stopAtUsd, paused: prepared.paused } }),
+  };
+}
+
+/** The limits of a run as its task record keeps them, for a repeat of the start that finds the task already made. */
+function runResultOf(task: DeveloperTaskRecord): AgentRunResult {
+  const runLimitUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
+  return { taskId: task.taskId, runLimitUsd, stopAtUsd: task.maxPerRunUsd === undefined ? runLimitUsd : Math.min(runLimitUsd, task.maxPerRunUsd), paused: task.budgetPause !== undefined };
 }
 
 /**

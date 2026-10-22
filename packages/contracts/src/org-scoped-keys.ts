@@ -244,6 +244,14 @@ export function agentTasksKey(orgId: OrgId, agentId: AgentId, createdAt: string,
   return { pk: orgScoped(orgId, `AGENT_TASKS#${agentId}`), sk: `${canonicalInstant(createdAt)}#${taskId}` };
 }
 
+/**
+ * The item that remembers one run's start (H2): one per (org, request id), written in the same transaction as the run, so a repeat of the
+ * request is answered from it. The org is in the key, so another org's request with the same id is a different request.
+ */
+export function runRequestKey(orgId: OrgId, requestId: string): OrgKey {
+  return { pk: orgScoped(orgId, `RUN_REQUEST#${requestId}`), sk: "META" };
+}
+
 /** An org's settings for one built-in agent: the version it pinned, its budget and its accountable person. */
 export function builtinSettingsKey(orgId: OrgId, agentId: AgentId): OrgKey {
   return { pk: orgScoped(orgId, "BUILTIN_AGENTS"), sk: agentId };

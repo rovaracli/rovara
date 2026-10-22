@@ -14,6 +14,7 @@ import {
   ModelSourceIdSchema,
   RUN_LIMIT_MULTIPLIER,
   RecipeOverlaySchema,
+  RunInputSchema,
   SkillIdSchema,
   SpendPolicyFieldsSchema,
   SpendPolicySchema,
@@ -35,6 +36,7 @@ import {
   type OrgId,
   type ProjectAiSettings,
   type ResolvedRecipe,
+  type RunInput,
 } from "@agentx/contracts";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
@@ -53,6 +55,7 @@ import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolv
 import type { ApprovalDependencies } from "./approvals.js";
 import { readGuardrails, readGuardrailsWithRevision, requireBaseEnabled } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
+import type { PullRequestHeadReader } from "./runs.js";
 import { addToRoster, checkRosterChange, listRoster, removeFromRoster, roleOnProject, rosterAgentView, type RosterEntry } from "./roster.js";
 import type { SkillRecord } from "./skills.js";
 import type { OrgStore } from "../org/store.js";
@@ -72,6 +75,24 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
    * with none follows it. Without it the order is Rovara's own AI alone.
    */
   orgSourceOrder?: (orgId: OrgId) => Promise<readonly string[]>;
+  /** Reads a pull request's head commit for a run whose context names one (Task 15); the broker supplies the GitHub App's. */
+  pullRequestHead?: PullRequestHeadReader;
+  /** Starts a person's run (Task 15). The developer API supplies it, since it holds the task start; without it the route answers NOT_FOUND. */
+  startRun?: (caller: AgentCaller, input: { requestId: string; project: string; agent: { agentId: AgentId; version?: number | "draft" }; input: RunInput }) => Promise<{ task: unknown }>;
+}
+
+/**
+ * `POST /v1/app/agents/{id}/runs` [`use`]: a person starts a run of the agent on a project. Access to the project, to the agent, the roster and the
+ * guardrails are checked by the start itself, before anything is charged (an agent the caller can't see answers the same 404 as one that doesn't exist).
+ */
+async function startRun(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<StatusReply> {
+  if (deps.startRun === undefined) throw agentXError("NOT_FOUND", "starting runs is not set up in this deployment");
+  const input = parseBody(RunBodySchema, body);
+  const started = await deps.startRun(caller, {
+    requestId: input.requestId, project: input.project, input: input.input,
+    agent: { agentId, ...(input.version === undefined ? {} : { version: input.version }) },
+  });
+  return new StatusReply(202, { task: started.task });
 }
 
 /** The answer for a change waiting on the page. */
@@ -134,6 +155,12 @@ const ProjectAiBodySchema = z.object({
 }).strict();
 const BudgetBodySchema = z.object({ requestId: RequestIdSchema, monthlyUsd: Amount.nullable().optional(), maxPerRunUsd: Amount.nullable().optional() }).strict();
 const SpendPolicyBodySchema = SpendPolicyFieldsSchema.partial().extend({ requestId: RequestIdSchema }).strict();
+const RunBodySchema = z.object({
+  requestId: RequestIdSchema,
+  project: z.string().min(1).max(200),
+  version: z.union([z.number().int().min(1), z.literal("draft")]).optional(),
+  input: RunInputSchema,
+}).strict();
 const GuardrailsBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(0), guardrails: AgentGuardrailsSchema }).strict();
 
 function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> {
@@ -874,6 +901,7 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
     if (sub === "budget" && method === "PUT") return putAgentBudget(deps, caller, agentId, body());
     if (sub === "update-base" && method === "POST") return updateBase(deps, caller, agentId, body());
     if (sub === "adopt" && method === "POST") return adopt(deps, caller, agentId, body());
+    if (sub === "runs" && method === "POST") return startRun(deps, caller, agentId, body());
   }
   throw agentXError("NOT_FOUND", "route not found");
 }
