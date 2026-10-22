@@ -33,8 +33,18 @@ export class InMemoryTokenStore implements TokenStore {
   }
 }
 
+const DEFAULT_SECURITY_PATH = "/usr/bin/security";
+
 export class SystemCredentialTokenStore implements TokenStore {
-  constructor(private readonly service = "dev.agentx.cli") {}
+  private readonly securityPath: string;
+
+  // On macOS the Keychain tool is run by absolute path, so a `security` earlier on PATH is never used. Tests inject a fake.
+  constructor(
+    private readonly service = "dev.agentx.cli",
+    options: { securityPath?: string } = {},
+  ) {
+    this.securityPath = options.securityPath ?? DEFAULT_SECURITY_PATH;
+  }
 
   async get(key: string): Promise<StoredTokens | undefined> {
     try {
@@ -42,7 +52,7 @@ export class SystemCredentialTokenStore implements TokenStore {
         process.platform === "darwin"
           ? (
               await execFileAsync(
-                "security",
+                this.securityPath,
                 ["find-generic-password", "-s", this.service, "-a", key, "-w"],
                 { maxBuffer: 131_072 },
               )
@@ -68,7 +78,7 @@ export class SystemCredentialTokenStore implements TokenStore {
     const serialized = JSON.stringify(parseStoredTokens(JSON.stringify(tokens)));
     if (process.platform === "darwin") {
       // The token goes to `security -i` on stdin, never into argv, where `ps` would show it to every process of this user.
-      await spawnWithInput("security", ["-i"], buildSecurityAddCommand(this.service, key, serialized), {
+      await spawnWithInput(this.securityPath, ["-i"], buildSecurityAddCommand(this.service, key, serialized), {
         failOnStderr: true,
       });
       return;
@@ -86,7 +96,7 @@ export class SystemCredentialTokenStore implements TokenStore {
 
   async delete(key: string): Promise<void> {
     if (process.platform === "darwin") {
-      await execFileAsync("security", ["delete-generic-password", "-s", this.service, "-a", key]).catch(
+      await execFileAsync(this.securityPath, ["delete-generic-password", "-s", this.service, "-a", key]).catch(
         () => undefined,
       );
       return;
