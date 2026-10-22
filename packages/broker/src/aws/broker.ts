@@ -341,13 +341,13 @@ import {
 } from "./cancellation.js";
 import { requireCreatorStillMember, requireWorkspaceCreatorStillMember, type CreatorCheckDependencies } from "../developer/creator-member.js";
 import { driveAgentRun, giveUpAgentRun, type AgentRunHost } from "../agents/run-engine.js";
-import { hasTaskEndHandlers } from "../agents/task-end.js";
+import { END_LEASE_MS, hasTaskEndHandlers } from "../agents/task-end.js";
 import { agentRunWakeItems } from "./agent-run-wakeup.js";
 import { requireRecipeAllowed } from "../agents/roster.js";
 import { effectiveProjectRole, grantRoleOf, requireNewWorkAllowed, viewerCannotStartTasksMessage } from "../developer/project-roles.js";
 import { aiToolTurn, completedTurn, developerFooter, developerTaskIdentity, E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON, githubWorkflowPullRequestKey, inertName, OUTCOME, partyOfTask, taskKey, taskOwnerKey, taskOwnerSubject, taskAgentRunKey, taskPointerKey, taskRecipeKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type GithubWorkflowPullRequestRecord, type StoredEvent } from "../developer/task-records.js";
 import { readWorkspaceLimits } from "../developer/limits.js";
-import { WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem, type WorkflowDispatchRecord, type WorkflowE2EReadinessMarker, AWS_TEMPORARY_MESSAGE, GATED_TASK_PULL_REQUEST_ACTION_REFUSAL, GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, UNEXPECTED_REQUEST_MESSAGE, hashJson, isConditional, isTemporaryAwsError, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, planDocumentInstructions, workerPrompt } from "./broker-shared.js";
+import { WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, operationEndDispatchItem, workflowDispatchItem, type WorkflowDispatchRecord, type WorkflowE2EReadinessMarker, AWS_TEMPORARY_MESSAGE, GATED_TASK_PULL_REQUEST_ACTION_REFUSAL, GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, UNEXPECTED_REQUEST_MESSAGE, hashJson, isConditional, isTemporaryAwsError, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, planDocumentInstructions, workerPrompt } from "./broker-shared.js";
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../e2e/feature-plan-planning-context.js";
 import { developerIdForSlackUser } from "./admin-actions.js";
 import { chatGptOwner, chatGptTaskSelection } from "../chatgpt/task-model.js";
@@ -393,6 +393,7 @@ import { approvalDecideKind } from "../agents/approval-decide-kind.js";
 import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
 import { agentRunStarterOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
+import type { EndTold } from "./developer-tasks.js";
 import { ADMISSION_REFUSALS, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
@@ -11209,7 +11210,9 @@ async function runAgentRunDispatch(dependencies: AwsBrokerDependencies, item: Wo
 /**
  * Plan 3, Task 22 (review I2): a task's operation ended in a Lambda that has no model proxy (the reaper, the dispatcher, the stuck-cancel sweep), which left this
  * row. The operation's model keys are blocked here, and the task's end is told as a result the broker heard itself would tell it (the first end a task has is the
- * one told). The row goes when both are done; both never throw, so a lost proxy is the key expiry's backstop, as for a result the broker heard.
+ * one told). Both never throw, so a lost proxy is the key expiry's backstop, as for a result the broker heard. The row goes only when the end is finished (every
+ * handler heard it, or none listens): while another call is telling it, the row is due again when that call's lease could have run out; when a handler threw, it
+ * is tried again with the row's backoff (Task 22 re-check, N1).
  */
 async function runOperationEndDispatch(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord): Promise<"DISPATCHED" | "STALE" | "RETRY"> {
   const row = item as WorkflowDispatchRecord & { orgId?: unknown; workspaceId?: unknown; operationId?: unknown };
@@ -11222,7 +11225,19 @@ async function runOperationEndDispatch(dependencies: AwsBrokerDependencies, item
       return "STALE";
     }
     await blockEndedOperationKeys(dependencies, operation);
-    await tellTaskEnd(dependencies, operation, item.taskId, operation.status);
+    const told = await tellTaskEnd(dependencies, operation, item.taskId, operation.status);
+    if (told === "in_progress") {
+      // Another call holds the end and may die with it: the row stays, due when its lease could have run out, so whoever looks then finishes the end.
+      await dependencies.documentClient.send(new PutCommand({ TableName: dependencies.tableName, Item: (operationEndDispatchItem(dependencies.tableName, {
+        taskId: item.taskId, orgId: operation.orgId, workspaceId: operation.workspaceId, operationId: operation.id, now: new Date().toISOString(), dueAt: new Date(Date.now() + END_LEASE_MS + 5_000).toISOString(),
+      }) as { Put: { Item: Record<string, unknown> } }).Put.Item }));
+      return "RETRY";
+    }
+    if (told === "failed") {
+      // A handler threw: tried again with the row's backoff, and dropped (the keys are already blocked) when its tries are used up.
+      await recordWorkflowDispatchFailure(dependencies, item);
+      return "RETRY";
+    }
     await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: key }));
     return "DISPATCHED";
   } catch (error) {
@@ -12790,7 +12805,11 @@ async function recordTerminalResult(
   // A task that finished while this ran (merged during a feedback review, say) gives back its slot and workspace now.
   if (taskPointer !== undefined && !closeCanFinish) await releaseIfFinished(dependencies, taskPointer.taskId);
   // Plan 3, Task 22 (G7): a workflow task that passed its sequence, and a plain task whose operation ended, tell the end handlers (an agent-step run's engine tells its own).
-  if (taskPointer !== undefined && !closeCanFinish && hasTaskEndHandlers()) await tellTaskEnd(dependencies, operation, taskPointer.taskId, terminalStatus);
+  if (taskPointer !== undefined && !closeCanFinish && hasTaskEndHandlers()) {
+    const told = await tellTaskEnd(dependencies, operation, taskPointer.taskId, terminalStatus);
+    // An end that is not finished (a handler threw, or another call is telling it) is left to the recovery sweep through an `operation_end` row (Task 22 re-check, N1).
+    if (told !== "told") await leaveOperationEndRow(dependencies, operation, taskPointer.taskId, told === "in_progress" ? END_LEASE_MS + 5_000 : 60_000);
+  }
   // Spec 061: read the code a new plan cites, in the background; a lost start is the sweep's.
   if (recordedStatus === terminalStatus) {
     await startPlanEvidenceJobs(dependencies, evidenceJobs);
@@ -12826,20 +12845,35 @@ async function recordTerminalResult(
  * says so (merged, passed its own sequence, closed); a task with no workflow when its operation ended, or its preparation failed, or a cancel stopped it. The first
  * end a task has is the one told, so a plain task that is continued later does not tell again. Never throws.
  */
-async function tellTaskEnd(dependencies: AwsBrokerDependencies, operation: OperationRecord, taskId: string, status: OperationStatus): Promise<void> {
+async function tellTaskEnd(dependencies: AwsBrokerDependencies, operation: OperationRecord, taskId: string, status: OperationStatus): Promise<EndTold> {
   try {
     const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
-    if (task === undefined || task.orgId === undefined) return;
-    if (task.agent !== undefined && await getItem(dependencies, taskAgentRunKey(taskId)) !== undefined) return;
+    if (task === undefined || task.orgId === undefined) return "told";
+    if (task.agent !== undefined && await getItem(dependencies, taskAgentRunKey(taskId)) !== undefined) return "told";
     let outcome = workflowEndOutcome(task);
     if (outcome === undefined && task.workflow === undefined) {
       if (operation.kind === "task") outcome = status === "SUCCEEDED" ? "succeeded" : status === "CANCELLED" ? "cancelled" : "failed";
       else if (operation.kind === "prepare" && status !== "SUCCEEDED") outcome = "failed";
       else if (operation.kind === "cancel" && status === "SUCCEEDED") outcome = "cancelled";
     }
-    if (outcome !== undefined) await noteTaskEnded(dependencies, task, outcome);
+    return outcome === undefined ? "told" : await noteTaskEnded(dependencies, task, outcome);
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "task_end.not_told", taskId, error: error instanceof Error ? error.name : "unknown" }));
+    return "failed";
+  }
+}
+
+/** Leaves the recovery sweep an `operation_end` row for an operation whose end was not finished here, due in `inMs`. Never throws: a lost write leaves the key expiry and the next end as the backstop. */
+async function leaveOperationEndRow(dependencies: AwsBrokerDependencies, operation: OperationRecord, taskId: string, inMs: number): Promise<void> {
+  try {
+    if (operation.orgId === undefined) return;
+    const now = Date.now();
+    const row = operationEndDispatchItem(dependencies.tableName, {
+      taskId, orgId: operation.orgId, workspaceId: operation.workspaceId, operationId: operation.id, now: new Date(now).toISOString(), dueAt: new Date(now + inMs).toISOString(),
+    }) as { Put: { Item: Record<string, unknown> } };
+    await dependencies.documentClient.send(new PutCommand({ TableName: dependencies.tableName, Item: row.Put.Item }));
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "operation_end.row_not_left", taskId, error: error instanceof Error ? error.name : "unknown" }));
   }
 }
 

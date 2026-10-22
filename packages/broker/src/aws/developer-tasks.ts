@@ -5441,12 +5441,19 @@ export function workflowEndOutcome(task: Pick<DeveloperTaskRecord, "workflow">):
   return undefined;
 }
 
-/** Tells the end handlers a task ended (Plan 3, G7). Never throws: the ending it follows is done, and a handler that failed is taken up again by the next call that reaches it. */
-export async function noteTaskEnded(deps: { tableName: string; documentClient: { send(command: unknown): Promise<unknown> } }, task: DeveloperTaskRecord, outcome: TaskEndOutcome): Promise<void> {
+/**
+ * How telling a task's end went: `told` (every handler heard it, or nobody listens), `in_progress` (another call holds the end and is telling now), `failed` (a
+ * handler threw, or the end could not be read or written). Anything but `told` means the end is not finished and has to be looked at again.
+ */
+export type EndTold = "told" | "in_progress" | "failed";
+
+/** Tells the end handlers a task ended (Plan 3, G7). Never throws: the ending it follows is done, and the answer says whether the end is finished, so a caller that can keep a row can try again. */
+export async function noteTaskEnded(deps: { tableName: string; documentClient: { send(command: unknown): Promise<unknown> } }, task: DeveloperTaskRecord, outcome: TaskEndOutcome): Promise<EndTold> {
   try {
-    await onTaskEnded({ documentClient: deps.documentClient, tableName: deps.tableName, now: Date.now }, task, outcome);
+    return await onTaskEnded({ documentClient: deps.documentClient, tableName: deps.tableName, now: Date.now }, task, outcome) === "in_progress" ? "in_progress" : "told";
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "task_end.not_told", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
+    return "failed";
   }
 }
 
