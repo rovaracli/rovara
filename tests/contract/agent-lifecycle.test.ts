@@ -3,7 +3,7 @@
 // owned. A removal moves what the person owned at once, and leaves the same kind of marker until it has.
 import { describe, expect, it, vi } from "vitest";
 import {
-  MEMBER_MERGE_QUEUE_PK, developerOrgKey, memberMergeQueueKey, orgMemberKey, orgProjectCatalogKey, principalSharesKey, projectMetaKey, skillKey, type AgentId, type OrgId, type OrgRole, type RecipeOverlay,
+  MEMBER_MERGE_QUEUE_PK, agentKey, developerOrgKey, memberMergeQueueKey, orgMemberKey, orgProjectCatalogKey, principalSharesKey, projectMetaKey, skillKey, type AgentId, type OrgId, type OrgRole, type RecipeOverlay,
 } from "@agentx/contracts";
 import { agentAccess, followMerges, type AgentAccessDeps, type AgentCaller } from "../../packages/broker/src/agents/access.js";
 import {
@@ -468,6 +468,29 @@ describe("a move that races another write", () => {
     expect(w.writesSince(commands)).toEqual([]);
   });
 
+  it("conflicts, reads the shares again and goes through when a share save lands between its read and its write", async () => {
+    const w = agentWorld();
+    const agent = await w.memberAgent(BOB, "Bob's agent");
+    await w.shareWith(agent.agentId, OLD_ALICE, "use");
+    let raced = false;
+    // The moment the move's transaction is about to run, someone else saves the agent's shares (revision 1 -> 5).
+    const send = w.db.send.bind(w.db);
+    w.db.send = (async (command: { constructor: { name: string }; input?: { TransactItems?: unknown[] } }) => {
+      if (!raced && command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes('"shared"')) {
+        raced = true;
+        w.db.set({ ...w.db.get(agentKey(ORG_A, agent.agentId, "META"))!, sharesRevision: 5 });
+      }
+      return send(command as never);
+    }) as typeof w.db.send;
+
+    await w.store.reassignShare({ orgId: ORG_A, agentId: agent.agentId, from: { kind: "member", developerId: OLD_ALICE }, to: { kind: "member", developerId: ALICE }, by: "system", cause: { kind: "member_merged", developerId: OLD_ALICE } });
+
+    expect(raced).toBe(true);
+    expect((await w.store.listShares(ORG_A, agent.agentId)).map((share) => (share.principal as { developerId: string }).developerId)).toEqual([ALICE]);
+    // The racing save's revision was kept, not overwritten: the move made it 6.
+    expect((await w.store.get(ORG_A, agent.agentId))!.sharesRevision).toBe(6);
+  });
+
   it("says nothing about the cap when the new owner lands exactly on it", async () => {
     const w = agentWorld();
     await w.memberAgent(ALICE, "Alice's", 40);
@@ -617,14 +640,19 @@ describe("drainMemberMerges", () => {
       const w = agentWorld();
       const agent = await w.memberAgent(OLD_ALICE, "Old triage");
       w.merged(OLD_ALICE, ALICE);
-      w.db.set({ ...memberMergeQueueKey(at(1), ORG_B, OLD_ALICE), entityType: "MEMBER_MERGE", orgId: ORG_A, survivorId: ALICE, duplicateId: OLD_ALICE });
+      // A marker keyed in org B that says org A, for a merge that is fully real in org B: the key's org and the item's must agree, or nothing moves in either.
+      const theirs = await w.memberAgent(OLD_XAVI, "Old in B", undefined, ORG_B);
+      w.merged(OLD_XAVI, XAVI, ORG_B);
+      w.db.set({ ...memberMergeQueueKey(at(1), ORG_B, OLD_XAVI), entityType: "MEMBER_MERGE", orgId: ORG_A, survivorId: XAVI, duplicateId: OLD_XAVI });
+      w.db.set({ ...memberMergeQueueKey(at(2), ORG_B, OLD_ALICE), entityType: "MEMBER_MERGE", orgId: ORG_A, survivorId: ALICE, duplicateId: OLD_ALICE });
       w.db.set({ pk: MEMBER_MERGE_QUEUE_PK, sk: "not-a-marker", entityType: "MEMBER_MERGE", orgId: ORG_A, survivorId: ALICE, duplicateId: OLD_ALICE });
       w.db.set({ ...memberMergeQueueKey(at(3), ORG_A, OLD_ALICE), entityType: "MEMBER_MERGE", orgId: ORG_A, survivorId: "x", duplicateId: OLD_ALICE });
 
-      expect(await drainMemberMerges(w.deps, T0)).toEqual({ processed: 0, rejected: 3, failed: 0 });
+      expect(await drainMemberMerges(w.deps, T0)).toEqual({ processed: 0, rejected: 4, failed: 0 });
 
       expect(w.db.find((item) => item.pk === MEMBER_MERGE_QUEUE_PK)).toEqual([]);
       expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OLD_ALICE });
+      expect((await w.store.get(ORG_B, theirs.agentId))!.owner).toEqual({ kind: "member", developerId: OLD_XAVI });
     });
 
     it("moves to the end of a chain when the survivor was itself merged away since", async () => {
@@ -708,6 +736,23 @@ describe("onMemberRemoved", () => {
     const agent = await w.memberAgent(OWEN, "Owen's agent");
     gone(w, OWEN);
     await onMemberRemoved(w.deps, removal(OWEN, OLIVE));
+    expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OLIVE });
+  });
+
+  it("never hands anything to the person being removed, even if their member row is still there", async () => {
+    const w = agentWorld();
+    const agent = await w.memberAgent(OWEN, "Owen's agent");
+    // Owen is the first owner and the one being removed; his row has not been deleted yet.
+    await onMemberRemoved(w.deps, removal(OWEN, OLIVE));
+    expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OLIVE });
+  });
+
+  it("skips an owner whose record says they were merged into someone else, even if their member row is still there", async () => {
+    const w = agentWorld();
+    const agent = await w.memberAgent(ERIN, "Erin's agent");
+    w.db.set({ pk: `DEVELOPER#${OWEN}`, sk: "META", developerId: OWEN, mergedInto: OLIVE });
+    gone(w);
+    await onMemberRemoved(w.deps, removal());
     expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OLIVE });
   });
 
