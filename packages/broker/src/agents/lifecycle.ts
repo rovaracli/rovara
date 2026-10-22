@@ -372,7 +372,7 @@ export async function onMemberRemoved(deps: LifecycleDeps, removal: { orgId: Org
   const { owners, failure } = await runMovers(deps, "member_removed.mover_failed", { orgId, developerId }, (mover) => mover.removed?.(deps, moved));
   const recipients = new Set([...(ledger?.carried ?? []), ...owners]);
   await remember(deps, orgId, ledger, recipients);
-  if (failure !== undefined) throw failure;
+  if (failure !== undefined) throw failure as Error;
   recipients.add(successorId);
   for (const owner of recipients) await noteOwnerCap(deps, orgId, owner, "member_removed");
 }
