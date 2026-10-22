@@ -906,7 +906,7 @@ describe("merge keys (round 2, item 8)", () => {
 describe("what the scan says it covers (round 2, item 10)", () => {
   it("has one fixed note the page can show", async () => {
     const { COMMENT_TRIGGER_COVERAGE_NOTE } = await import("@agentx/contracts");
-    expect(COMMENT_TRIGGER_COVERAGE_NOTE).toBe("Rovara reads every workflow of the repository, the scripts and manifests they name, local actions and the shell scripts those run in turn. It can't see code fetched or built at run time, a command run by bare name or found on the PATH, files a Python or JavaScript script imports, a Docker build context, or tool configuration such as tox.ini; where it can't tell which file runs, it asks a person.");
+    expect(COMMENT_TRIGGER_COVERAGE_NOTE).toBe("Rovara reads every workflow of the repository, the scripts and manifests they name, local actions and the shell scripts those run in turn. For npm, make and well-known Python tools it reads their configuration files, not the tests or code they run. It can't see code fetched or built at run time, a command run by bare name or found on the PATH, files a Python or JavaScript script imports, or a Docker build context; where it can't tell which file runs, it asks a person.");
   });
 });
 
@@ -1116,7 +1116,7 @@ describe("things that are not there, and submodules (round 3, B8)", () => {
 });
 
 describe("python -m (round 3, B9)", () => {
-  it.each<[string]>([["python -m pytest"], ["python3 -m tools.deploy"], ["python -mtools"], ["env python -m tools"], ["sudo python3 -m tools.run x"]])("fails closed for %s", async (run) => {
+  it.each<[string]>([["python -m something_else"], ["python3 -m tools.deploy"], ["python -mtools"], ["env python -m tools"], ["sudo python3 -m tools.run x"]])("fails closed for %s", async (run) => {
     expect(await scan({ [WORKFLOW]: block(run) })).toMatchObject(closedScan);
   });
 
@@ -1128,6 +1128,36 @@ describe("python -m (round 3, B9)", () => {
     expect(await scan({ [WORKFLOW]: workflowWith(steps("- shell: python -m tools {0}\n        run: echo hi")) })).toMatchObject(closedScan);
     expect(await scan({ [WORKFLOW]: workflowWith(steps("- shell: python -m pip {0}\n        run: echo hi")) })).toMatchObject({ failedClosed: false });
     expect(await scan({ [WORKFLOW]: workflowWith(steps("- shell: python\n        run: echo hi")) })).toMatchObject({ failedClosed: false });
+  });
+});
+
+describe("python -m of a well-known tool (round 3b)", () => {
+  const CONFIGS = ["pyproject.toml", "setup.cfg", "pytest.ini", "tox.ini", "noxfile.py"];
+  const config = Object.fromEntries(CONFIGS.map((name) => [name, `# ${name}`]));
+
+  it.each<[string]>([["pytest"], ["mypy"], ["ruff"], ["black"], ["flake8"], ["isort"], ["coverage"], ["tox"], ["nox"]])("python -m %s scans clean and hashes the root configuration files", async (tool) => {
+    const files = { [WORKFLOW]: block(`python -m ${tool} tests`), ...config };
+    const result = await scan(files);
+    expect(result).toMatchObject({ failedClosed: false });
+    expect(result.files).toEqual([WORKFLOW, ...CONFIGS].sort());
+    for (const name of CONFIGS) expect((await scan({ ...files, [name]: "changed" })).digest, name).not.toBe(result.digest);
+  });
+
+  it("hashes the ones that exist, in the working directory too, and none for a standard module", async () => {
+    expect((await scan({ [WORKFLOW]: block("python3 -m pytest"), "pyproject.toml": "x" })).files).toEqual([WORKFLOW, "pyproject.toml"].sort());
+    const inDirectory = { [WORKFLOW]: workflowWith(steps("- working-directory: app\n        run: python -m pytest")), "app/pytest.ini": "a", "pyproject.toml": "b" };
+    expect((await scan(inDirectory)).files).toEqual([WORKFLOW, "app/pytest.ini", "pyproject.toml"].sort());
+    expect((await scan({ [WORKFLOW]: block("python -m pip install x"), ...config })).files).toEqual([WORKFLOW]);
+    expect((await scan({ [WORKFLOW]: block("python -mpytest -q"), "tox.ini": "t" })).files).toContain("tox.ini");
+  });
+
+  it("works after a wrapper and in shell: python -m, and any other module still fails closed", async () => {
+    expect((await scan({ [WORKFLOW]: block("env CI=1 python -m pytest"), "pytest.ini": "p" })).files).toContain("pytest.ini");
+    const shell = await scan({ [WORKFLOW]: workflowWith(steps("- shell: python -m pytest {0}\n        run: echo hi")), "pyproject.toml": "p" });
+    expect(shell).toMatchObject({ failedClosed: false });
+    expect(shell.files).toContain("pyproject.toml");
+    expect(await scan({ [WORKFLOW]: block("python -m something_else"), ...config })).toMatchObject({ failedClosed: true, hint: "run Python scripts by path instead of python -m" });
+    expect(await scan({ [WORKFLOW]: block("python -m pytest_plugin_of_ours") })).toMatchObject({ failedClosed: true });
   });
 });
 
