@@ -22,6 +22,7 @@ import {
   type DeveloperTaskStatus,
   type DeveloperTaskView,
   type ShareDeveloperTaskRequest,
+  type RunInput,
   type StartDeveloperTaskRequest,
   type TaskPeopleChangeResult,
   type TaskPeopleRoleRequest,
@@ -92,7 +93,32 @@ export interface ControlPlaneClient {
   takeTaskOwnership(taskId: string, request: TaskPeopleTakeOwnershipRequest): Promise<TaskPeopleChangeResult>;
   /** Task 14: how far the signed-in person's organization audit log is sealed. Owners and admins only; anyone else gets the route's refusal. */
   auditStatus(): Promise<AuditStatusView>;
+  /** Plan 3 Task 35a: the agents the person can see, or those that work on a project. */
+  listAgents(query: { project?: string }): Promise<AgentSummary[]>;
+  /** Plan 3 Task 35a: starts a run of an agent on a project; the run is a task. */
+  runAgent(agentId: string, request: { requestId: string; project: string; version?: number | "draft"; input: RunInput }): Promise<DeveloperTaskView>;
+  /**
+   * Plan 3 Task 35a: the approvals that wait for the person, one with its full arguments, and its confirmation page's link (ticketed when they
+   * may decide it). There is no call that decides one: a person decides on the page (R3-4, R66).
+   */
+  listApprovals(): Promise<ApprovalSummary[]>;
+  getApproval(approvalId: string): Promise<ApprovalSummary>;
+  approvalConfirmLink(approvalId: string): Promise<{ confirmUrl: string; ticketed: boolean }>;
 }
+
+/** An agent as the agent routes list it; the tool reads only the fields it shows. */
+const AgentSummarySchema = z.object({
+  agentId: z.string(), name: z.string(), description: z.string().optional(), builtin: z.boolean(), status: z.string(), access: z.string(),
+  currentVersion: z.number().optional(), pinnedVersion: z.number().optional(), disabled: z.boolean().optional(),
+}).passthrough();
+export type AgentSummary = z.infer<typeof AgentSummarySchema>;
+/** An approval as the approval routes show it; `arguments` only when one approval is read. */
+const ApprovalSummarySchema = z.object({
+  approvalId: z.string(), kind: z.string(), status: z.string(), confirmUrl: z.string(), summary: z.string().optional(), prompt: z.string().optional(),
+  changes: z.array(z.string()).optional(), project: z.string().optional(), connector: z.string().optional(), tool: z.string().optional(),
+  expiresAt: z.string().optional(), arguments: z.unknown().optional(),
+}).passthrough();
+export type ApprovalSummary = z.infer<typeof ApprovalSummarySchema>;
 
 /** Spec 025 A1: adminApiVersion is absent from a control plane from before 25d. */
 /** Spec 025 E16 (C22): confirm is absent from a control plane from before 25e. */
@@ -281,5 +307,11 @@ export function httpControlPlaneClient(options: {
     setTaskPerson: async (taskId, request) => (await call(TaskPeopleChangeResponseSchema, "POST", path(taskId, "/people/role"), request)).change,
     takeTaskOwnership: async (taskId, request) => (await call(TaskPeopleChangeResponseSchema, "POST", path(taskId, "/people/take-ownership"), request)).change,
     auditStatus: () => call(AuditStatusSchema, "GET", "/v1/dev/org/audit/status"),
+    listAgents: async (query) => (await call(z.object({ agents: z.array(AgentSummarySchema) }), "GET", `/v1/app/agents${query.project === undefined ? "" : `?project=${encodeURIComponent(query.project)}`}`)).agents,
+    runAgent: async (agentId, request) => task(await call(DeveloperTaskResponseSchema, "POST", `/v1/app/agents/${encodeURIComponent(agentId)}/runs`, request, true, { busyStep: START_BUSY_STEP })),
+    listApprovals: async () => (await call(z.object({ approvals: z.array(ApprovalSummarySchema) }), "GET", "/v1/app/approvals?status=PENDING")).approvals,
+    getApproval: async (approvalId) => (await call(z.object({ approval: ApprovalSummarySchema }), "GET", `/v1/app/approvals/${encodeURIComponent(approvalId)}`)).approval,
+    // A POST without a body: repeatable() keeps it to one try, so a ticket is minted at most once per call.
+    approvalConfirmLink: (approvalId) => call(z.object({ confirmUrl: z.string(), ticketed: z.boolean() }), "POST", `/v1/app/approvals/${encodeURIComponent(approvalId)}/confirm-link`),
   };
 }

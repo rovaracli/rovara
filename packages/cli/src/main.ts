@@ -76,6 +76,13 @@ import { githubRestApi } from "./init/github-app.js";
 import { processPrompter, readHidden } from "./init/prompts.js";
 import { cleanConnectionSecret, connectionsAdd, connectionsAddText, connectionsCheck, connectionsCheckText, connectionsList, connectionsListText, connectionsRemove, connectionsRemoveText, parseConnectionAdd } from "./developer/connections.js";
 import { INIT_STEP_IDS, type InitStepId } from "./init/install-state.js";
+import {
+  agentsAccountable, agentsAdopt, agentsArchive, agentsCreate, agentsDiff, agentsDraftGet, agentsDraftSet, agentsList, agentsPublish, agentsRollback, agentsRun,
+  agentsShare, agentsShow, agentsUpdateBase, agentsVersions, approvalsConfirmLink, approvalsList, approvalsShow, commentTriggersOptOut, commentTriggersShow,
+  guardrailsSet, guardrailsShow, projectAgentsChange, projectConnectorsList, projectConnectorsRemove, projectConnectorsSet, skillsAdd, skillsList, sourcesAdd,
+  sourcesCheck, sourcesList, sourcesOrder, sourcesRemove, type AppResult,
+} from "./developer/agents.js";
+import { agentsBudget, projectAiSet } from "./developer/spend.js";
 import { parseConnectorsFlag } from "./init/finish-steps.js";
 import { runEnvAdopt, runEnvList, runEnvUse } from "./environments/commands.js";
 import { ssmParameterStore, type ParameterStore } from "./environments/parameter-store.js";
@@ -189,6 +196,8 @@ export interface CliDependencies {
   /** `agentx project add` and the other setup commands (phase 15d2), for tests: never touch AWS,
    * GitHub, Slack or the control plane. */
   setup?: SetupCommandContext;
+  /** The environment `org sources add --key-from-env` reads a provider key from; process.env by default. */
+  processEnv?: Readonly<Record<string, string | undefined>>;
   /** Answers the admin change commands' "Apply this change?" prompt, for tests (spec 025 Q6). */
   confirm?(question: string): Promise<boolean>;
 }
@@ -675,6 +684,202 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const result = await orgCommentTriggers(developerSession(), developerEnv(command));
       services.stdout.write(globals.json ? formatSuccess(jsonSafe({ env: result.env, url: result.url, commentTriggerOptOuts: result.optOuts }), true) : orgCommentTriggersText(result));
     });
+
+  // Plan 3, Task 35a: the agent platform. Each command is a call to the /v1/app routes; a refusal prints the broker's words. Nothing here
+  // decides an approval, a spend request or an opt-out (R66): those are decided by a person on the confirmation page.
+  const printResult = (command: Command, result: AppResult) => {
+    services.stdout.write(globalOptions(command).json ? formatSuccess({ env: result.env, url: result.url, ...result.data }, true) : result.text);
+  };
+  const agents = program.command("agents").description("build, publish, share, run and govern your organization's agents");
+  agents
+    .command("list")
+    .description("list the agents you can see: all, yours, those shared with you, the built-in ones, or a project's")
+    .option("--mine", "only agents you own", false)
+    .option("--shared", "only agents shared with you", false)
+    .option("--builtin", "only the built-in agents", false)
+    .option("--project <name>", "the agents that work on a project")
+    .action(async (options: { mine: boolean; shared: boolean; builtin: boolean; project?: string }, command: Command) => {
+      const scopes = (["mine", "shared", "builtin"] as const).filter((scope) => options[scope]);
+      const project = options.project ?? globalOptions(command).project;
+      if (scopes.length + (project === undefined ? 0 : 1) > 1) throw agentXError("CONFIG_INVALID", "give one of --mine, --shared, --builtin and --project");
+      printResult(command, await agentsList(developerSession(), developerEnv(command), { ...(scopes[0] === undefined ? {} : { scope: scopes[0] }), ...(project === undefined ? {} : { project }) }));
+    });
+  agents
+    .command("show")
+    .description("show an agent: what runs now, whether the draft has changed, its budget")
+    .argument("<agent-id>", "the agent's ID, from agentx agents list")
+    .action(async (agentId: string, _options: unknown, command: Command) => printResult(command, await agentsShow(developerSession(), developerEnv(command), agentId)));
+  agents
+    .command("create")
+    .description("create an agent, yours or a project's, optionally building on another")
+    .option("--name <name>", "the agent's name")
+    .option("--description <text>", "what the agent is for")
+    .option("--extends <agent-id>", "the agent it builds on, such as code-reviewer")
+    .option("--project-owner <project>", "make it the project's agent rather than yours")
+    .option("--accountable <email-or-id>", "with --project-owner: the maintainer who answers for it")
+    .action(async (options: { name?: string; description?: string; extends?: string; projectOwner?: string; accountable?: string }, command: Command) =>
+      printResult(command, await agentsCreate(developerSession(), developerEnv(command), options)));
+  const draft = agents.command("draft").description("an agent's draft: the overlay that is published next");
+  draft
+    .command("get")
+    .description("print the draft's overlay and revision")
+    .argument("<agent-id>", "the agent's ID")
+    .action(async (agentId: string, _options: unknown, command: Command) => printResult(command, await agentsDraftGet(developerSession(), developerEnv(command), agentId)));
+  draft
+    .command("set")
+    .description("save an overlay as the draft; refused if someone changed the draft since it was read")
+    .argument("<agent-id>", "the agent's ID")
+    .option("--file <overlay.json>", "the overlay, as JSON")
+    .action(async (agentId: string, options: { file?: string }, command: Command) => printResult(command, await agentsDraftSet(developerSession(), developerEnv(command), agentId, options.file)));
+  agents
+    .command("publish")
+    .description("publish the draft as the agent's next version; a less safe change waits for a person on the confirmation page")
+    .argument("<agent-id>", "the agent's ID")
+    .option("--note <text>", "what changed, up to 200 characters")
+    .action(async (agentId: string, options: { note?: string }, command: Command) => printResult(command, await agentsPublish(developerSession(), developerEnv(command), agentId, options.note)));
+  agents
+    .command("versions")
+    .description("list an agent's published versions")
+    .argument("<agent-id>", "the agent's ID")
+    .action(async (agentId: string, _options: unknown, command: Command) => printResult(command, await agentsVersions(developerSession(), developerEnv(command), agentId)));
+  agents
+    .command("diff")
+    .description("what differs between two versions of an agent")
+    .argument("<agent-id>", "the agent's ID")
+    .argument("<from>", "a version number, base or draft")
+    .argument("<to>", "a version number or draft")
+    .action(async (agentId: string, from: string, to: string, _options: unknown, command: Command) => printResult(command, await agentsDiff(developerSession(), developerEnv(command), agentId, from, to)));
+  agents
+    .command("rollback")
+    .description("run an earlier published version again")
+    .argument("<agent-id>", "the agent's ID")
+    .argument("<version>", "the version to run")
+    .action(async (agentId: string, version: string, _options: unknown, command: Command) => printResult(command, await agentsRollback(developerSession(), developerEnv(command), agentId, version)));
+  agents
+    .command("update-base")
+    .description("move the draft to the latest version of the agent it builds on")
+    .argument("<agent-id>", "the agent's ID")
+    .action(async (agentId: string, _options: unknown, command: Command) => printResult(command, await agentsUpdateBase(developerSession(), developerEnv(command), agentId)));
+  agents
+    .command("adopt")
+    .description("run a newer version of a built-in agent across your organization (an org owner or admin)")
+    .argument("<builtin-id>", "the built-in agent, such as code-reviewer")
+    .argument("<version>", "the version to adopt")
+    .action(async (builtinId: string, version: string, _options: unknown, command: Command) => printResult(command, await agentsAdopt(developerSession(), developerEnv(command), builtinId, version)));
+  agents
+    .command("share")
+    .description("set who an agent is shared with, from a JSON list of { principal, level }")
+    .argument("<agent-id>", "the agent's ID")
+    .option("--file <shares.json>", "the shares, as a JSON array")
+    .action(async (agentId: string, options: { file?: string }, command: Command) => printResult(command, await agentsShare(developerSession(), developerEnv(command), agentId, options.file)));
+  for (const archive of [true, false]) {
+    agents
+      .command(archive ? "archive" : "unarchive")
+      .description(archive ? "archive an agent: it stops running" : "bring an archived agent back")
+      .argument("<agent-id>", "the agent's ID")
+      .action(async (agentId: string, _options: unknown, command: Command) => printResult(command, await agentsArchive(developerSession(), developerEnv(command), agentId, archive)));
+  }
+  agents
+    .command("accountable")
+    .description("name the person who answers for a project's agent or a built-in one")
+    .argument("<agent-id>", "the agent's ID")
+    .argument("<email-or-id>", "the person's email or developer ID, from agentx org members")
+    .action(async (agentId: string, who: string, _options: unknown, command: Command) => printResult(command, await agentsAccountable(developerSession(), developerEnv(command), agentId, who)));
+  agents
+    .command("budget")
+    .description("set an agent's monthly budget and the most one run may spend, in US dollars (none clears it)")
+    .argument("<agent-id>", "the agent's ID")
+    .option("--monthly <usd|none>", "the agent's monthly budget")
+    .option("--max-per-run <usd|none>", "the most one run may spend")
+    .action(async (agentId: string, options: { monthly?: string; maxPerRun?: string }, command: Command) => printResult(command, await agentsBudget(developerSession(), developerEnv(command), agentId, options)));
+  agents
+    .command("run")
+    .description("start a run of an agent on a project; --version <n> runs a published version, --draft the draft as a test run")
+    .argument("<agent-id>", "the agent's ID")
+    .option("--project <name>", "the project to run it on")
+    .option("--input <text>", "what the agent is asked")
+    .option("--draft", "run the draft, as a test run", false)
+    // `--version <n>` is the program's own flag; executeCli hands it to this command as --run-version.
+    .addOption(new Option("--run-version <n>", "the published version to run").hideHelp())
+    .action(async (agentId: string, options: { project?: string; input?: string; draft: boolean; runVersion?: string }, command: Command) => {
+      const project = options.project ?? globalOptions(command).project;
+      printResult(command, await agentsRun(developerSession(), developerEnv(command), agentId, {
+        draft: options.draft, ...(project === undefined ? {} : { project }), ...(options.input === undefined ? {} : { input: options.input }), ...(options.runVersion === undefined ? {} : { version: options.runVersion }),
+      }));
+    });
+
+  const skills = program.command("skills").description("your organization's skills (SKILL.md files agents can use)");
+  skills
+    .command("add")
+    .description("add a skill from a SKILL.md file")
+    .option("--file <SKILL.md>", "the skill's SKILL.md")
+    .action(async (options: { file?: string }, command: Command) => printResult(command, await skillsAdd(developerSession(), developerEnv(command), options.file)));
+  skills
+    .command("list")
+    .description("list your organization's skills")
+    .action(async (_options: unknown, command: Command) => printResult(command, await skillsList(developerSession(), developerEnv(command))));
+
+  // R66: an approval is read here and decided only by a person on its confirmation page; there is no approve, decline or deny command.
+  const approvals = program.command("approvals").description("what waits for your approval; you approve or decline on each one's confirmation page");
+  approvals
+    .command("list")
+    .description("list the approvals waiting for you")
+    .action(async (_options: unknown, command: Command) => printResult(command, await approvalsList(developerSession(), developerEnv(command))));
+  approvals
+    .command("show")
+    .description("show one approval: what it would do, its full arguments and its confirmation link")
+    .argument("<approval-id>", "the approval's ID, from agentx approvals list")
+    .action(async (approvalId: string, _options: unknown, command: Command) => printResult(command, await approvalsShow(developerSession(), developerEnv(command), approvalId)));
+  approvals
+    .command("open")
+    .description("open an approval's confirmation page in your browser, where you approve or decline it")
+    .argument("<approval-id>", "the approval's ID, from agentx approvals list")
+    .option("--no-browser", "print the link instead of opening a browser")
+    .action(async (approvalId: string, options: { browser: boolean }, command: Command) => {
+      const link = await approvalsConfirmLink(developerSession(), developerEnv(command), approvalId);
+      printResult(command, link);
+      if (options.browser && link.openUrl !== undefined) await (dependencies.login?.openBrowser ?? openSystemBrowser)(link.openUrl).catch(() => undefined);
+    });
+
+  const guardrails = org.command("guardrails").description("your company's agent guardrails");
+  guardrails
+    .command("show")
+    .description("print the guardrails and their revision")
+    .action(async (_options: unknown, command: Command) => printResult(command, await guardrailsShow(developerSession(), developerEnv(command))));
+  guardrails
+    .command("set")
+    .description("replace the guardrails from a JSON file (an org owner or admin); a less safe change waits on the confirmation page")
+    .option("--file <guardrails.json>", "the guardrails, as JSON")
+    .action(async (options: { file?: string }, command: Command) => printResult(command, await guardrailsSet(developerSession(), developerEnv(command), options.file)));
+  const sources = org.command("sources").description("your company's AI sources: where agents' models come from");
+  sources
+    .command("list")
+    .description("list the sources, whether each holds a key, and the order they are tried in")
+    .action(async (_options: unknown, command: Command) => printResult(command, await sourcesList(developerSession(), developerEnv(command))));
+  sources
+    .command("add")
+    .description("add a source from a JSON file (an org owner or admin); its key is read only from an environment variable, for example one asm-exec sets")
+    .option("--file <source.json>", "the source, as JSON")
+    .option("--key-from-env <VAR>", "the environment variable holding the provider key")
+    // Refused when given: a key is never a flag value.
+    .addOption(new Option("--key <value>").hideHelp())
+    .action(async (options: { file?: string; keyFromEnv?: string; key?: string }, command: Command) =>
+      printResult(command, await sourcesAdd(developerSession(), developerEnv(command), options, dependencies.processEnv ?? process.env)));
+  sources
+    .command("remove")
+    .description("remove a source (an org owner or admin)")
+    .argument("<source-id>", "the source's ID")
+    .action(async (sourceId: string, _options: unknown, command: Command) => printResult(command, await sourcesRemove(developerSession(), developerEnv(command), sourceId)));
+  sources
+    .command("order")
+    .description("set the order sources are tried in (an org owner or admin)")
+    .argument("<source-ids...>", "the sources, first to last")
+    .action(async (order: string[], _options: unknown, command: Command) => printResult(command, await sourcesOrder(developerSession(), developerEnv(command), order)));
+  sources
+    .command("check")
+    .description("test a source with its saved key (an org owner or admin)")
+    .argument("<source-id>", "the source's ID")
+    .action(async (sourceId: string, _options: unknown, command: Command) => printResult(command, await sourcesCheck(developerSession(), developerEnv(command), sourceId)));
 
   const githubCommand = program.command("github").description("the GitHub App of a Rovara Cloud install");
   githubCommand
@@ -1540,6 +1745,63 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project, warnings: result.warnings }, true) : projectSettingsText(result));
     });
 
+  // Plan 3, Task 35a: a project's agents, connectors and AI settings.
+  const projectAgents = projectCommand.command("agents").description("the agents that work on a project");
+  for (const add of [true, false]) {
+    projectAgents
+      .command(add ? "add" : "remove")
+      .description(add ? "let an agent work on a project (a maintainer of the project)" : "stop an agent working on a project (a maintainer of the project)")
+      .argument("<project>", "the project's name")
+      .argument("<agent-id>", "the agent's ID")
+      .action(async (project: string, agentId: string, _options: unknown, command: Command) => printResult(command, await projectAgentsChange(developerSession(), developerEnv(command), project, agentId, add)));
+  }
+  const projectConnectors = projectCommand.command("connectors").description("a project's connectors: the organization's connections the project's agents may use (to connect a project to Linear, Jira, Asana or an MCP server, see agentx connector)");
+  projectConnectors
+    .command("list")
+    .description("list a project's connectors, their tools and whether each is connected")
+    .argument("<project>", "the project's name")
+    .action(async (project: string, _options: unknown, command: Command) => printResult(command, await projectConnectorsList(developerSession(), developerEnv(command), project)));
+  projectConnectors
+    .command("set")
+    .description("add or change a connector from a JSON file (a maintainer); a tool newly allowed to write waits on the confirmation page")
+    .argument("<project>", "the project's name")
+    .argument("<name>", "the connector's name")
+    .option("--file <connector.json>", "the connector, as JSON")
+    .action(async (project: string, name: string, options: { file?: string }, command: Command) => printResult(command, await projectConnectorsSet(developerSession(), developerEnv(command), project, name, options.file)));
+  projectConnectors
+    .command("remove")
+    .description("remove a connector from a project (a maintainer)")
+    .argument("<project>", "the project's name")
+    .argument("<name>", "the connector's name")
+    .action(async (project: string, name: string, _options: unknown, command: Command) => printResult(command, await projectConnectorsRemove(developerSession(), developerEnv(command), project, name)));
+  const commentTriggers = projectConnectors.command("comment-triggers").description("the rule that agent comments wait for a person where workflows act on comments (org owners and admins)");
+  commentTriggers
+    .command("show")
+    .description("scan a repository's workflows: the files read and the digest an opt-out names")
+    .argument("<project>", "the project's name")
+    .argument("<repository>", "the repository, owner/name")
+    .action(async (project: string, repository: string, _options: unknown, command: Command) => printResult(command, await commentTriggersShow(developerSession(), developerEnv(command), project, repository)));
+  commentTriggers
+    .command("opt-out")
+    .description("ask to opt the repository out of the rule for the workflows just scanned; an org admin confirms it on the page")
+    .argument("<project>", "the project's name")
+    .argument("<repository>", "the repository, owner/name")
+    .option("--reason <text>", "why agent comments are safe there")
+    .action(async (project: string, repository: string, options: { reason?: string }, command: Command) =>
+      printResult(command, await commentTriggersOptOut(developerSession(), developerEnv(command), project, repository, options.reason)));
+  projectCommand
+    .command("ai")
+    .description("a project's AI settings")
+    .command("set")
+    .description("set a project's AI budget, whether it pays for its runs, and its planning limits (an org owner or admin)")
+    .argument("<project>", "the project's name")
+    .option("--budget <usd|none>", "the project's monthly AI budget")
+    .option("--project-pays <on|off>", "whether runs on the project are charged to it")
+    .option("--planning-quick <usd|none>", "the most a quick plan may spend; none for the default")
+    .option("--planning-full <usd|none>", "the most a full plan may spend; none for the default")
+    .action(async (project: string, options: { budget?: string; projectPays?: string; planningQuick?: string; planningFull?: string }, command: Command) =>
+      printResult(command, await projectAiSet(developerSession(), developerEnv(command), project, options)));
+
   const envCommand = program.command("env").description("AgentX environments in this AWS account and region");
   envCommand
     .command("list")
@@ -1918,9 +2180,30 @@ function codexHomeFromEnvironment(): string | undefined {
   return value === undefined || value === "" ? undefined : value;
 }
 
+/**
+ * `agentx agents run <id> --version <n>`: the program's own --version flag would print the CLI's version wherever it appears, so for that
+ * one command its `--version <n>` (or `--version=<n>`) is handed over as --run-version. Every other --version is left as it is.
+ */
+export function agentRunVersionArgv(argv: readonly string[]): string[] {
+  // The command's words, skipping the program's options and the values they take.
+  const words: number[] = [];
+  for (let index = 0; index < argv.length && words.length < 2; index += 1) {
+    const word = argv[index]!;
+    if (PROGRAM_VALUE_OPTIONS.has(word)) index += 1;
+    else if (!word.startsWith("-")) words.push(index);
+  }
+  if (words.length < 2 || argv[words[0]!] !== "agents" || argv[words[1]!] !== "run") return [...argv];
+  return argv.map((word, index) => {
+    if (index <= words[1]!) return word;
+    if (word === "--version" && argv[index + 1] !== undefined && !argv[index + 1]!.startsWith("-")) return "--run-version";
+    return word.startsWith("--version=") ? `--run-version=${word.slice("--version=".length)}` : word;
+  });
+}
+const PROGRAM_VALUE_OPTIONS = new Set(["--project", "--config-dir", "--deployment-file", "--env"]);
+
 export async function executeCli(argv = process.argv.slice(2), dependencies: CliDependencies = {}): Promise<number> {
   try {
-    await createCliProgram(dependencies).parseAsync(argv, { from: "user" });
+    await createCliProgram(dependencies).parseAsync(agentRunVersionArgv(argv), { from: "user" });
     return 0;
   } catch (error) {
     const json = argv.includes("--json");
