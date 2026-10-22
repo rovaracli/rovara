@@ -7,6 +7,7 @@ import { ProjectDefinitionSchema, type GrantedTool, type OrgId } from "../../pac
 import { classifyWrite } from "../../packages/broker/src/agents/write-class.js";
 import { BUILT_IN_CONNECTOR_TYPES, resolveConnectors, type ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
 import { sentryConnectionCheck, sentryConnectorType } from "../../packages/broker/src/aws/sentry-connector-type.js";
+import { SENTRY_TOOLS } from "../../packages/broker/src/connectors/native/sentry.js";
 import { PROJECT_CONNECTOR_TOOLS } from "../../packages/broker/src/connections/project-connectors.js";
 import { orgCredentialRegistry } from "../../packages/broker/src/connections/registry.js";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
@@ -267,6 +268,25 @@ describe("running the tools", () => {
     expect(outage.content?.[0]?.text).toBe("Sentry answered HTTP 503");
     const limited = await resolved({ api: fakeSentry({ token: TOKEN, status: 429 }) });
     expect((await (await limited.connector.connect!({ endpoint: limited.definition.endpoint, token: TOKEN, tools: [...TOOLS], signal: AbortSignal.timeout(5_000) })).call("list_releases", routing)).content?.[0]?.text).toBe("Sentry is limiting requests; try again later");
+  });
+
+  it("answers a 403 as a refused token, like a 401, and a Sentry that answers 403 to the check the same way", async () => {
+    const r = await resolved({ api: fakeSentry({ token: TOKEN, status: 403 }) });
+    const connection = await r.connector.connect!({ endpoint: r.definition.endpoint, token: TOKEN, tools: [...TOOLS], signal: AbortSignal.timeout(5_000) });
+    expect(textOf(await connection.call("list_issues", { organization: "acme", projectSlug: "web-app", scopeAlias: "web" }))).toBe("Sentry refused the token. Check that it has org:read, project:read and event:read.");
+    const s = await connected();
+    const store = new OrgConnectionStore({ ...s.deps, checkEndpoint: async () => undefined, fetch: routeFetch(fakeSentry({ token: TOKEN, status: 403 }).handler), checks: { sentry: sentryConnectionCheck } });
+    expect(await store.check(ORG_A, CON)).toEqual({ ok: false, message: "Sentry refused the token. Check that it has org:read, project:read and event:read." });
+  });
+
+  it("opens no connection to an endpoint that is not https, and puts the organization and project in a path as one segment each", async () => {
+    const r = await resolved();
+    await expect(r.connector.connect!({ endpoint: new URL("http://us.sentry.io/api/0/"), token: TOKEN, tools: [...TOOLS], signal: AbortSignal.timeout(5_000) })).rejects.toThrow("over https only");
+    const paths: string[] = [];
+    const fetcher = async (target: string | URL) => { paths.push(String(target)); return { status: 200, json: [] }; };
+    const tool = SENTRY_TOOLS.find((entry) => entry.name === "list_issues")!;
+    await tool.run({}, { scope: { organization: "a/b", projectSlug: "c?d", alias: "web" }, credential: { token: TOKEN, bindings: {} }, fetch: fetcher });
+    expect(paths[0]!.startsWith("projects/a%2Fb/c%3Fd/issues/?")).toBe(true);
   });
 
   it("refuses an issue id that is not digits, and an argument the model may not set, without any request", async () => {

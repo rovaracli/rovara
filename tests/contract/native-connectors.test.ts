@@ -81,6 +81,8 @@ describe("nativeConnection", () => {
       expect(textOf(result), JSON.stringify(args)).toBe(`echo: ${path} is not allowed`);
       expect(result.isError).toBe(true);
     }
+    // A required key inside an item is named by its path.
+    expect(textOf(await connection(["echo"]).call("echo", { ...SCOPE_ARGS, items: [{}] }))).toBe("echo: items.0.name is required");
     const missing = await connection(["echo"]).call("echo", { organization: "acme" });
     expect(missing.isError).toBe(true);
     expect(textOf(missing)).toBe("echo: projectSlug is required");
