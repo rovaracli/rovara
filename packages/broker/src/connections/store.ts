@@ -32,6 +32,7 @@ import { commit, type RequestMark } from "../agents/table-writes.js";
 import { isSecretLeaf, orgConnectorSecretName, orgHookSecretName, type OrgSecrets } from "./org-secrets.js";
 import { mcpEndpointGuard, type McpEndpointGuard } from "./pinned-endpoint.js";
 import { noWebRequests, originHeldFetch, vendorHostOf } from "./vendor-hosts.js";
+import { safeVendorFetch } from "../connectors/native/vendor-fetch.js";
 
 type Item = Record<string, unknown>;
 
@@ -508,7 +509,8 @@ export class OrgConnectionStore {
   private async checkFetch(connection: ObservabilityConnection): Promise<{ fetch: typeof fetch } | { refused: CheckResult }> {
     if (connection.type === "grafana") return this.pinnedFetchFor(connection.baseUrl);
     if (connection.type === "cloudwatch") return { fetch: noWebRequests };
-    return { fetch: originHeldFetch(this.input.fetch ?? fetch, vendorHostOf(connection)!) };
+    // Held to the vendor's host and, unless a test injects one, over the same lookup-checked fetch as the tools: an address that is not public is refused when it connects.
+    return { fetch: originHeldFetch(this.input.fetch ?? safeVendorFetch(), vendorHostOf(connection)!) };
   }
 
   private async askObservability(orgId: OrgId, connection: ObservabilityConnection, secret: ConnectionSecret | undefined): Promise<CheckResult & { actorId?: string }> {
