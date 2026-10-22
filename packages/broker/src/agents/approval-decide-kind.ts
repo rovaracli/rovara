@@ -27,7 +27,7 @@ async function whoMayDecide(deps: ApprovalDependencies, record: AnyApprovalRecor
       case "org_admin": return "an organization owner or admin";
       case "agent_publish":
       case "agent_manager": return "the agent's owner, a maintainer of its project, or an organization owner or admin";
-      case "chain_publish": return "the chain's owner, a maintainer of its project, or an organization owner or admin";
+      case "chain_publish": return "someone who manages the chain: its owner, a maintainer who manages its project's agents, or an organization owner or admin";
       case "project_settings": return "a maintainer of this project";
       default: return "the people it was asked of";
     }
@@ -89,6 +89,12 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
     facts.push(fact("Project", subject.project), fact("Repository", subject.repository), fact("Reviewed workflows", subject.files.join("\n")), fact("Digest of what was reviewed", subject.expectedDigest), fact("Reason", subject.reason));
   } else if (subject.kind === "connector_widen") {
     facts.push(fact("Project", subject.project), fact("Connector", subject.name), fact("Project revision it applies to", String(subject.expectedRevision)));
+  }
+  if (subject.kind === "chain_publish" || subject.kind === "chain_rollback" || subject.kind === "chain_share") {
+    // The changes name steps, not the chain; a company has many chains made from one design.
+    const chain = await deps.chains?.get(record.orgId, subject.chainId);
+    if (chain !== undefined) facts.push(fact("Chain", shownText(chain.name, NAME_MAX)));
+    if (subject.kind === "chain_rollback") facts.push(fact("Version", String(subject.version)));
   }
   facts.push(expires);
   return { title: TITLES[subject.kind] ?? "Confirm a change", facts, paragraphs: record.changes };

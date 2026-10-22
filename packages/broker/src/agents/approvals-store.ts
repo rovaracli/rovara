@@ -11,6 +11,7 @@ import { auditApprovalRequested } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
+import type { ChainStore } from "../chains/store.js";
 import { orgRoleOf, type AgentAccessDeps, type AgentCaller, type AgentShare } from "./access.js";
 import type { ServableModels } from "./guardrails.js";
 import { resolveMember, sameMember } from "./lifecycle.js";
@@ -21,6 +22,8 @@ import type { AgentRunHost } from "./run-engine.js";
 
 /** What an agent's routes and the approvals that act on agents need: access checks, the store and where the page lives. */
 export interface ApprovalDependencies extends AgentAccessDeps {
+  /** Plan 4: the chain store, where a chain's change names the chain it is about on the confirmation page. Absent where chains are not set up. */
+  chains?: ChainStore;
   now: () => number;
   /** The cell's origin, where `/v1/app/approve/<id>` is served. */
   confirmOrigin: string;
