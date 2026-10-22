@@ -93,3 +93,4 @@ export * from "./public-suffix.js";
 export * from "./default-allow-domains.js";
 export * from "./egress.js";
 export * from "./refusal-words.js";
+export * from "./chains.js";

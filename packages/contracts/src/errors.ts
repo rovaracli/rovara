@@ -61,6 +61,11 @@ export const AgentXErrorCodeSchema = z.enum([
   "GITHUB_NOT_CONNECTED",
   "GITHUB_INSTALLATION_TAKEN",
   "TOO_MANY_REQUESTS",
+  "CHAIN_REVISION_CONFLICT",
+  "CHAIN_UNAVAILABLE",
+  "CHAIN_BUDGET_REQUIRED",
+  "CHAIN_BUDGET_EXCEEDED",
+  "CHAIN_RUN_CLOSED",
 ]);
 
 export type AgentXErrorCode = z.infer<typeof AgentXErrorCodeSchema>;
@@ -87,7 +92,7 @@ export function errorStatus(code: AgentXErrorCode): number {
   // The sign-in is valid but too old, or the wrong kind, for this change: 403, so a client does not treat it as a sign-in that ended.
   if (code === "REAUTH_REQUIRED" || code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED" || code === "AGENT_NOT_ON_PROJECT" || code === "AGENT_TOOL_NOT_GRANTED" || code === "MODEL_NOT_ALLOWED" || code === "REMOVED_FROM_ORG" || code === "GITHUB_NOT_CONNECTED") return 403;
   if (code === "NOT_FOUND" || code === "PROJECT_NOT_FOUND" || code === "TASK_NOT_FOUND") return 404;
-  if (code === "BUDGET_EXCEEDED" || code === "ORG_BUDGET_EXCEEDED" || code === "MACHINE_TIME_EXCEEDED" || code === "PROJECT_BUDGET_EXCEEDED" || code === "AGENT_BUDGET_EXCEEDED" || code === "TEST_ALLOWANCE_USED") return 402;
+  if (code === "BUDGET_EXCEEDED" || code === "ORG_BUDGET_EXCEEDED" || code === "MACHINE_TIME_EXCEEDED" || code === "PROJECT_BUDGET_EXCEEDED" || code === "AGENT_BUDGET_EXCEEDED" || code === "TEST_ALLOWANCE_USED" || code === "CHAIN_BUDGET_EXCEEDED") return 402;
   if (code === "CONFIG_INVALID" || code === "AUDIT_RANGE_INVALID" || code === "AUDIT_REASON_REQUIRED" || code === "AUDIT_FILTER_TOO_WIDE") return 400;
   if (code === "TOO_MANY_REQUESTS") return 429;
   if (code === "RUNTIME_UNAVAILABLE" || code === "SLACK_UNAVAILABLE" || code === "MODEL_PROXY_UNAVAILABLE" || code === "AUDIT_UNAVAILABLE") return 503;
@@ -100,3 +105,25 @@ export function agentXError(code: AgentXErrorCode, message: string): AgentXError
 
 /** What a refusal to reach a repository through the org's GitHub connection says (GITHUB_NOT_CONNECTED, Plan 2). */
 export const githubNotConnectedMessage = (fullName: string) => `Rovara can't reach ${fullName} through your organization's GitHub connection. Connect it with: agentx github connect`;
+
+// ---- chains (Plan 4): the exact texts of the chain error codes. Chain, step and agent names are the caller's own, never another org's.
+
+/** What CHAIN_REVISION_CONFLICT (409) says. */
+export const CHAIN_REVISION_CONFLICT_MESSAGE = "Someone else changed this chain's draft. Reload it and make your change again.";
+
+/** What CHAIN_RUN_CLOSED (409) says. */
+export const CHAIN_RUN_CLOSED_MESSAGE = "This chain run has already ended.";
+
+/** CHAIN_UNAVAILABLE (409), first text: the chain is archived. */
+export const chainArchivedMessage = (chain: string) => `${chain} is archived, so it can't start new runs.`;
+
+/** CHAIN_UNAVAILABLE (409), second text: a step's pinned agent version can't run now. */
+export const chainStepUnavailableMessage = (chain: string, step: string, agent: string, version: number, reason: string) =>
+  `${chain}'s step "${step}" uses ${agent} version ${version}, which can't run now: ${reason}. Ask ${chain}'s owner to publish a new version.`;
+
+/** What CHAIN_BUDGET_REQUIRED (409) says. */
+export const chainBudgetRequiredMessage = (chain: string) => `${chain} has no monthly budget and run limit, so events and schedules can't start it. Ask its owner to set both.`;
+
+/** What CHAIN_BUDGET_EXCEEDED (402) says; dollars to the cent. */
+export const chainBudgetExceededMessage = (chain: string, spentUsd: number, limitUsd: number) =>
+  `${chain}'s monthly AI budget is used up ($${spentUsd.toFixed(2)} of $${limitUsd.toFixed(2)}). Ask its owner for more.`;

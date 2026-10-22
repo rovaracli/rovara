@@ -3,6 +3,7 @@
 // Each one is prefixed with `orgScoped(orgId, ...)`, and nothing else builds these keys.
 import { canonicalInstant, indexDay } from "./admin.js";
 import type { AgentId, AgentPrincipal, ApprovalId, SkillId } from "./agent.js";
+import type { ChainId, ChainRunId } from "./chains.js";
 import { OrgIdSchema, orgScoped, type OrgId, type OrgKey } from "./org.js";
 import { scopeKey, type BudgetScope } from "./spend.js";
 
@@ -423,4 +424,75 @@ export function agentItemsPk(orgId: OrgId, taskId: string): string {
 /** One item the run created: `<connector>#<value>`, the value as the connector's item path names it. */
 export function agentItemKey(orgId: OrgId, taskId: string, connector: string, value: string): OrgKey {
   return { pk: agentItemsPk(orgId, taskId), sk: `${connector}#${value}` };
+}
+
+// ---- chains (Plan 4 Task 1)
+
+const CHAIN_VERSION_WIDTH = 6;
+const MAX_CHAIN_VERSION = 10 ** CHAIN_VERSION_WIDTH - 1;
+const STEP_SEQ_WIDTH = 4;
+const RUN_EVENT_SEQ_WIDTH = 6;
+
+export type ChainItemSk = "META" | "DRAFT" | `VERSION#${string}` | `SHARE#${string}` | `EVENT#${string}`;
+
+/** One chain's partition: its META, its DRAFT, immutable versions, shares and events. */
+export function chainKey(orgId: OrgId, chainId: ChainId, sk: ChainItemSk): OrgKey {
+  return { pk: orgScoped(orgId, `CHAIN#${chainId}`), sk };
+}
+
+/** The sort key of a published chain version; six digits keep a query on `VERSION#` in version order. */
+export function chainVersionSk(version: number): `VERSION#${string}` {
+  if (!Number.isInteger(version) || version < 1 || version > MAX_CHAIN_VERSION) throw new Error(`a chain version is a whole number from 1 to ${MAX_CHAIN_VERSION}`);
+  return `VERSION#${String(version).padStart(CHAIN_VERSION_WIDTH, "0")}`;
+}
+
+/** The org's chain directory: one item per chain, for listing without reading every partition. */
+export function chainDirectoryKey(orgId: OrgId, chainId: ChainId): OrgKey {
+  return { pk: orgScoped(orgId, "CHAINS"), sk: chainId };
+}
+
+/** The item that makes a chain's name unique in its org, ignoring case and surrounding spaces. */
+export function chainNameKey(orgId: OrgId, name: string): OrgKey {
+  return { pk: orgScoped(orgId, `CHAIN_NAME#${name.trim().toLowerCase()}`), sk: "META" };
+}
+
+export type ChainRunItemSk = "META" | `STEP#${string}` | `EVENT#${string}`;
+
+/** One chain run's partition: its META, one item per step attempt and its event log. */
+export function chainRunKey(orgId: OrgId, runId: ChainRunId, sk: ChainRunItemSk): OrgKey {
+  return { pk: orgScoped(orgId, `CHAIN_RUN#${runId}`), sk };
+}
+
+function paddedSeq(seq: number, width: number, what: string): string {
+  const max = 10 ** width - 1;
+  if (!Number.isInteger(seq) || seq < 0 || seq > max) throw new Error(`${what} is a whole number from 0 to ${max}`);
+  return String(seq).padStart(width, "0");
+}
+
+/** The sort key of a step attempt in a run; four digits keep a query on `STEP#` in order. */
+export function stepSk(seq: number): `STEP#${string}` {
+  return `STEP#${paddedSeq(seq, STEP_SEQ_WIDTH, "a step sequence number")}`;
+}
+
+/** The sort key of a run event; six digits keep a query on `EVENT#` in order. */
+export function runEventSk(seq: number): `EVENT#${string}` {
+  return `EVENT#${paddedSeq(seq, RUN_EVENT_SEQ_WIDTH, "an event sequence number")}`;
+}
+
+/** The index item that lists a chain's runs, newest last; `createdAt` is an instant. */
+export function chainRunsByChainKey(orgId: OrgId, chainId: ChainId, createdAt: string, runId: ChainRunId): OrgKey {
+  return { pk: orgScoped(orgId, `CHAIN_RUNS#${chainId}`), sk: `${canonicalInstant(createdAt)}#${runId}` };
+}
+
+/** The index item that lists a project's chain runs, newest last; `createdAt` is an instant. */
+export function chainRunsByProjectKey(orgId: OrgId, project: string, createdAt: string, runId: ChainRunId): OrgKey {
+  return { pk: orgScoped(orgId, `CHAIN_RUNS_P#${project}`), sk: `${canonicalInstant(createdAt)}#${runId}` };
+}
+
+/**
+ * The global index of chain runs still open, in the order they are next due (ids only: the item names the org and the run, and a reader
+ * re-checks `orgId` on the record it points at). `dueAt` is an instant.
+ */
+export function openChainRunKey(dueAt: string, orgId: OrgId, runId: ChainRunId): OrgKey {
+  return { pk: "OPEN_CHAIN_RUNS", sk: `${canonicalInstant(dueAt)}#${orgId}#${runId}` };
 }
