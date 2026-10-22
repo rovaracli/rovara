@@ -162,12 +162,16 @@ function endpointTarget(connection: OrgConnection): { url: string; noun: string;
 }
 
 /**
- * A check's message as it may be recorded and shown: control and format characters removed (they can hide or rewrite text on a terminal or page), at most
- * `CHECK_MESSAGE_MAX` characters, and none at all when nothing is left. A vendor's reply that a careless check passes on is held to this too.
+ * A check's message as it may be recorded and shown: control, format and line-separator characters removed (they can hide or rewrite text on a terminal or page),
+ * every value of the saved secret replaced with `[redacted]`, at most `CHECK_MESSAGE_MAX` characters, and none at all when nothing is left. A vendor's
+ * reply that a careless check passes on, even one that quotes the token, is held to this too.
  */
-function cleanMessage(message: string | undefined): string | undefined {
+function cleanMessage(message: string | undefined, secret?: ConnectionSecret): string | undefined {
   if (message === undefined) return undefined;
-  const cleaned = Array.from(message.replace(/[\p{Cc}\p{Cf}]/gu, "")).slice(0, CHECK_MESSAGE_MAX).join("").trim();
+  // Cleaned first, so a secret split by a control character is whole again when it is looked for; redacted before the cap, so the cap cannot cut one in half.
+  let cleaned = message.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "");
+  for (const value of Object.values(secret ?? {})) if (typeof value === "string" && value !== "") cleaned = cleaned.split(value).join("[redacted]");
+  cleaned = Array.from(cleaned).slice(0, CHECK_MESSAGE_MAX).join("").trim();
   return cleaned === "" ? undefined : cleaned;
 }
 
@@ -392,6 +396,7 @@ export class OrgConnectionStore {
       throw coded("CONFIG_INVALID", `this deployment cannot check ${target.noun}, so it cannot check ${target.what}`);
     }
     let result: CheckResult & { actorId?: string };
+    let held: ConnectionSecret | undefined;
     if (!connectionTakesSecret(connection.type)) {
       // CloudWatch has no secret: its connector assumes the customer's role.
       result = await this.ask(org, connection, undefined);
@@ -401,9 +406,9 @@ export class OrgConnectionStore {
       const secret = await readConnectionSecret(this.input, org, { connectionId, type: connection.type, ...(versionOf(item) === undefined ? {} : { secretVersion: versionOf(item)! }) });
       result = secret === undefined
         ? { ok: false, message: "the saved secret could not be read; save it again" }
-        : await this.ask(org, connection, secret);
+        : await this.ask(org, connection, (held = secret));
     }
-    const message = cleanMessage(result.message);
+    const message = cleanMessage(result.message, held);
     const answer: CheckResult = message === undefined ? { ok: result.ok } : { ok: result.ok, message };
     await this.record(org, connectionId, revisionOf(item), result, answer, request);
     return answer;
