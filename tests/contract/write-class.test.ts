@@ -895,7 +895,7 @@ describe("fix round 1: C1, a write is safe only when its name says it records so
   });
 
   it("keeps the record verbs safe", () => {
-    const names = ["create_page", "add_row", "new_page", "insert_row", "save_page", "upsert_page", "write_page", "log_event", "note_down", "comment_on", "reply_to_comment", "post_comment", "append_log", "record_event", "annotate_page"];
+    const names = ["create_note", "add_note", "new_document", "insert_note", "save_draft", "upsert_document", "write_note", "log_comment", "note_down", "comment_on", "reply_to_comment", "post_comment", "append_comment", "record_note", "annotate_document"];
     for (const name of names) expect(classOf(mcp(name), { text: "x" }), name).toBe("safe");
   });
 
@@ -1004,7 +1004,7 @@ describe("fix round 1: I4, labels at any depth", () => {
   });
 
   it("resolves label ids nested in a create's input", () => {
-    const create = mcp("create_widget");
+    const create = mcp("create_note");
     expect(classOf(create, { input: { labelIds: ["lbl-deploy"] } })).toBe("consequential");
     expect(classOf(create, { input: { labelIds: ["lbl-bug"] } })).toBe("safe");
     expect(classOf(create, { input: { nested: { addedLabelIds: ["nobody"] } } })).toBe("consequential");
@@ -1013,7 +1013,7 @@ describe("fix round 1: I4, labels at any depth", () => {
 
   it("uses the same ids in the wrapper's lookup", async () => {
     const w = wrapper();
-    const create = grant("linear", "create_widget");
+    const create = grant("linear", "create_note");
     const names = await classifyAgentWrite(w.deps, { ...w.base, tool: create, args: { input: { labelIds: ["lbl-deploy"] } } });
     expect(names.class).toBe("consequential");
     expect((await classifyAgentWrite(w.deps, { ...w.base, tool: create, args: { input: { labelIds: ["lbl-bug"] } } })).class).toBe("safe");
@@ -1159,7 +1159,7 @@ describe("fix round 1: M4, any name word containing merge is a merge", () => {
     expect(classOf(mcp("automerge_pr"), {})).toBe("merge");
     expect(classOf(mcp("enable_automerge"), {}, { overrides: { mcp: { enable_automerge: "safe" } } })).toBe("merge");
     expect(classOf(grant("mcp", "enable_automerge", { access: "read" }), {})).toBe("consequential");
-    expect(classOf(mcp("create_emergency_contact"), { name: "x" })).toBe("safe");
+    expect(classOf(mcp("create_emergency_note"), { name: "x" })).toBe("safe");
   });
 });
 
@@ -1376,7 +1376,7 @@ describe("fix round 2: N4, a merge set by an argument is a merge", () => {
 
   it("makes a method, action or merge method of merge, squash or rebase a merge", () => {
     const tool = mcp("update_pull_request", { itemArguments: ["n"] });
-    for (const [key, value] of [["method", "merge"], ["method", "SQUASH"], ["action", "rebase"], ["mergeMethod", "squash"], ["merge_method", "rebase"], ["Action", "Merge"]]) {
+    for (const [key, value] of [["method", "merge"], ["method", "SQUASH"], ["action", "rebase"], ["mergeMethod", "squash"], ["merge_method", "rebase"], ["Action", "Merge"]] as Array<[string, string]>) {
       expect(classOf(tool, { n: 9, [key]: value }, { ownItems: new Set(["mcp##9"]) }), `${key}=${value}`).toBe("merge");
     }
     expect(classOf(tool, { n: 9, method: "create", labels: ["bug"] }, { ownItems: new Set(["mcp##9"]) })).toBe("safe");
