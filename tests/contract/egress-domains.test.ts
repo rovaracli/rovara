@@ -482,7 +482,7 @@ describe("egress items", () => {
     expect((db.get(egressDomainsKey(TEST_ORG, WEB)) as unknown as EgressDomainsItem).domains).toMatchObject([{ domain: "a.acme.dev", status: "approved" }, { domain: "b.acme.dev", status: "pending" }]);
   });
 
-  it("refuse a save that loses the race twice with IDEMPOTENCY_CONFLICT and change nothing", async () => {
+  it("refuse a save that loses the race twice with CHANGE_STALE and change nothing", async () => {
     const { db, deps, audits } = plain({ cloud: true });
     await putEgressDomains(deps, TEST_ORG, WEB, ["a.acme.dev"], { developerId: "dev-1" });
     const auditsBefore = audits().length;
@@ -497,7 +497,7 @@ describe("egress items", () => {
       return answer;
     } };
     await expect(putEgressDomains({ ...deps, documentClient: racing }, TEST_ORG, WEB, ["a.acme.dev", "b.acme.dev"], { developerId: "dev-1" }))
-      .rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", message: expect.stringContaining("the allowed domains changed while saving; reload and try again") as string });
+      .rejects.toMatchObject({ code: "CHANGE_STALE", message: expect.stringContaining("the allowed domains changed while saving; reload and try again") as string });
     expect(reads).toBe(2);
     expect((db.get(egressDomainsKey(TEST_ORG, WEB)) as unknown as EgressDomainsItem).domains.map((entry) => entry.domain)).toEqual(["a.acme.dev"]);
     expect(audits()).toHaveLength(auditsBefore);

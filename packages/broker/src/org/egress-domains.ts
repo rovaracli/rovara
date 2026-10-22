@@ -92,7 +92,7 @@ async function readItem(deps: Reader, key: OrgKey): Promise<EgressDomainsItem | 
 
 /**
  * Reads the item, plans the change, and writes it with its audit items in one transaction that holds only while the item is as it was read.
- * A refused condition (the item changed) reads again and plans again, once; a second refusal is IDEMPOTENCY_CONFLICT. A cancellation for any
+ * A refused condition (the item changed) reads again and plans again, once; a second refusal is CHANGE_STALE, as for the other concurrent edits (member roles, the org's members). A cancellation for any
  * other reason (a concurrent transaction on the shared sync marker, throttling) is retried quietly and, if it persists, is RUNTIME_UNAVAILABLE:
  * it says nothing about the allowed domains having changed. `updatedAt` always moves forward, so two writes in one millisecond are never taken for one.
  */
@@ -145,7 +145,7 @@ async function mutate<T>(
       if (reason === undefined) throw error;
       if (reason === "changed") {
         changedUnderUs += 1;
-        if (changedUnderUs >= 2) throw agentXError("IDEMPOTENCY_CONFLICT", EGRESS_CONFLICT_MESSAGE);
+        if (changedUnderUs >= 2) throw agentXError("CHANGE_STALE", EGRESS_CONFLICT_MESSAGE);
       }
       // Not about the item (a concurrent transaction on the shared sync marker, throttling): a short, jittered wait makes the retry likelier to hold.
       if (reason === "other" && attempt < MAX_ATTEMPTS - 1) await (deps.sleep ?? defaultSleep)(Math.round(50 * (attempt + 1) * (0.5 + Math.random())));
