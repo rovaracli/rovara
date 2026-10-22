@@ -2051,3 +2051,26 @@ describe("Plan 4 Task 14: datadog and grafana on the project connectors", () => 
     await s.fakeLinear.close();
   });
 });
+
+
+describe("Plan 4 Task 15: pagerduty and vercel on the project connectors", () => {
+  it("lists each type's tools, all reads", () => {
+    expect(PROJECT_CONNECTOR_TOOLS.pagerduty).toEqual(["list_incidents", "get_incident", "list_incident_log_entries", "list_oncalls"]);
+    expect(PROJECT_CONNECTOR_TOOLS.vercel).toEqual(["list_deployments", "get_deployment", "get_deployment_events"]);
+  });
+
+  it("accepts a pagerduty and a vercel connector approving their tools, and refuses an unlisted one with Task 12's text, writing no revision", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const s = await install();
+    const pd = await s.connection({ type: "pagerduty", label: "PagerDuty", access: "read", region: "eu" }, { apiKey: "pd-api-key-0123456789" });
+    const vc = await s.connection({ type: "vercel", label: "Vercel", access: "read" }, { token: "vercel-token-0123456789" });
+    const pagerduty = (tools: unknown[]) => ({ name: "oncall", type: "pagerduty", credentialRef: pd, scopes: [{ alias: "pay", serviceIds: ["PSVC001"] }], tools });
+    const vercel = (tools: unknown[]) => ({ name: "deploys", type: "vercel", credentialRef: vc, scopes: [{ alias: "site", projectId: "prj_web1" }], tools });
+    expect((await s.put(MIA, "oncall", pagerduty([{ name: "resolve_incident", access: "read" }]))).body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.0: resolve_incident is not a pagerduty tool" });
+    expect((await s.put(MIA, "deploys", vercel([{ name: "promote_deployment", access: "read" }]))).body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.0: promote_deployment is not a vercel tool" });
+    expect(s.revisions()).toHaveLength(1);
+    expect((await s.put(MIA, "oncall", pagerduty([{ name: "list_incidents", access: "read" }]))).status).toBe(200);
+    expect((await s.put(MIA, "deploys", vercel([{ name: "list_deployments", access: "read" }]), { expectedRevision: 2 })).status).toBe(200);
+    await s.fakeLinear.close();
+  });
+});
