@@ -99,7 +99,10 @@ export interface OwnedRecord {
   updatedAt: string;
 }
 
-export abstract class OwnedStore<Id extends string, Rec extends OwnedRecord, Version> {
+/** The kinds of event the base writes itself, whichever kind of item it is. */
+export type BaseEventKind = "rolled_back" | "shared";
+
+export abstract class OwnedStore<Id extends string, Rec extends OwnedRecord, Version, EventKind extends string> {
   private eventSequence = 0;
 
   protected constructor(protected readonly input: OwnedStoreInput, protected readonly spec: OwnedKindSpec) {}
@@ -151,14 +154,14 @@ export abstract class OwnedStore<Id extends string, Rec extends OwnedRecord, Ver
    * The one EVENT# item a write leaves, with its sort key and time, which are also the occurrence and the time of the audit events about the
    * same change. The sequence keeps one process's events in order; the random tail keeps two processes' apart.
    */
-  protected newEvent(orgId: OrgId, id: Id, kind: string, by: string, detail: Item = {}): { item: TransactItem; sk: string; at: string } {
+  protected newEvent(orgId: OrgId, id: Id, kind: EventKind | BaseEventKind, by: string, detail: Item = {}): { item: TransactItem; sk: string; at: string } {
     const at = this.iso();
     const tail = `${String(++this.eventSequence).padStart(6, "0")}-${randomBytes(3).toString("hex")}`;
     const sk = `EVENT#${at}#${tail}` as const;
     return { item: this.put(this.spec.key(orgId, id, sk), this.spec.entity.event, { orgId, [this.spec.idField]: id, kind, at, by, ...detail }), sk, at };
   }
 
-  protected event(orgId: OrgId, id: Id, kind: string, by: string, detail: Item = {}): TransactItem {
+  protected event(orgId: OrgId, id: Id, kind: EventKind | BaseEventKind, by: string, detail: Item = {}): TransactItem {
     return this.newEvent(orgId, id, kind, by, detail).item;
   }
 

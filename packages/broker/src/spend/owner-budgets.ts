@@ -19,12 +19,15 @@ export interface OwnerCap {
 export const isOwnerCapRefusal = (error: unknown): string | undefined => (error instanceof Error ? (error as { overOwnerCap?: string }).overOwnerCap : undefined);
 
 /** The refusal of a raise past the cap; `overOwnerCap` names the person whose total it was. */
-export const ownerOverCap = (owner: string) => Object.assign(
-  coded("CONFIG_INVALID", "That would take this person's agent budgets past the limit for one person. An org admin can raise the limit in the spend policy."),
+export const ownerOverCap = (owner: string, budgets: BudgetWords = "agent") => Object.assign(
+  coded("CONFIG_INVALID", `That would take this person's ${budgets} budgets past the limit for one person. An org admin can raise the limit in the spend policy.`),
   { overOwnerCap: owner },
 );
 
-export const totalsMoved = () => coded("AGENT_REVISION_CONFLICT", "Someone else changed this person's agent budgets just now. Reload and make your change again.");
+/** Which budgets a refusal talks about: the agent path says "agent", the chain path (the total holds both kinds) says "agent and chain". */
+export type BudgetWords = "agent" | "agent and chain";
+
+export const totalsMoved = (budgets: BudgetWords = "agent") => coded("AGENT_REVISION_CONFLICT", `Someone else changed this person's ${budgets} budgets just now. Reload and make your change again.`);
 
 /** Adds up the monthly budgets of the items of one kind that count for `owner`; `counts` says whether a subject's raw owner resolves to `owner`. */
 export interface OwnerBudgetSource {

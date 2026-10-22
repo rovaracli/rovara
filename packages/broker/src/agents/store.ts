@@ -205,7 +205,7 @@ function checkAmount(label: string, value: number | null | undefined): void {
   if (typeof value === "number" && (!Number.isFinite(value) || value < 0)) throw coded("CONFIG_INVALID", `${label}: must be a number of dollars, zero or more`);
 }
 
-export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion> {
+export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, AgentEventKind> {
   protected declare readonly input: AgentStoreInput;
   private readonly newId: () => AgentId;
   private readonly builtins: BuiltinSource;

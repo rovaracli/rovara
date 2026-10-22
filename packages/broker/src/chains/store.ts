@@ -111,7 +111,7 @@ const notFound = () => coded("NOT_FOUND", "no chain has that ID");
 const nameTaken = (name: string) => coded("CONFIG_INVALID", `name: another chain in your company is called ${name}`);
 const budgetConflict = () => coded("CHAIN_REVISION_CONFLICT", "Someone else changed this chain's owner, status or budget just now. Reload it and make your change again.");
 const policyMoved = () => coded("CHAIN_REVISION_CONFLICT", "Your company's spend policy changed just now. Reload and make your change again.");
-const totalsChanged = () => coded("CHAIN_REVISION_CONFLICT", totalsMoved().message.replace(/^AGENT_REVISION_CONFLICT: /, ""));
+const totalsChanged = () => coded("CHAIN_REVISION_CONFLICT", totalsMoved("agent and chain").message.replace(/^AGENT_REVISION_CONFLICT: /, ""));
 const agentMoved = () => coded("CHAIN_REVISION_CONFLICT", "An agent this chain uses changed while it was being published. Publish again.");
 
 const CONTROL_OR_FORMAT = /[\p{Cc}\p{Cf}]/u;
@@ -156,7 +156,7 @@ function blankVersions(definition: ChainDefinition | PinnedChainDefinition): str
   });
 }
 
-export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion> {
+export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, ChainEventKind> {
   protected declare readonly input: ChainStoreInput;
   private readonly newId: () => ChainId;
   private readonly agents: AgentStore;
@@ -354,7 +354,7 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion> {
       event.item,
     ];
     // The agent checks follow what is written; one of them failing is an agent that moved, not a draft that did. The audit item is last of all.
-    await this.commit([...written, ...checks, ...audit.items], (failed) => ([...failed].some((index) => index < written.length) ? this.conflict() : agentMoved()), input.request, published);
+    await this.commit([...written, ...checks, ...audit.items], (failed) => ([...failed].some((index) => index >= written.length && index < written.length + checks.length) ? agentMoved() : this.conflict()), input.request, published);
     await flushAuditEvents(this.input, audit.events);
     return published;
   }
@@ -485,7 +485,7 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion> {
       refuse: (failed) => {
         const outcome = totals.classify(failed);
         if (outcome.kind === "policy") return policyMoved();
-        if (outcome.kind === "cap") return ownerOverCap(outcome.owner);
+        if (outcome.kind === "cap") return ownerOverCap(outcome.owner, "agent and chain");
         if (outcome.kind === "totals") return totalsChanged();
         return budgetConflict();
       },
