@@ -295,9 +295,15 @@ describe("default permission boundary", () => {
     expect(allows.find((s) => s.Sid === "Services")!.Action).not.toContain("events:*");
   });
 
-  it("allows only sts:GetCallerIdentity from STS, and AssumeRole with TagSession for the one ConnectorSecretsRole", () => {
+  it("allows only sts:GetCallerIdentity from STS, AssumeRole with TagSession for the one ConnectorSecretsRole, and AssumeRole into other accounts' roles with a Rovara external id", () => {
     const sts = allows.flatMap((s) => s.Action).filter((a) => a.startsWith("sts:"));
-    expect(sts).toEqual(["sts:GetCallerIdentity", "sts:AssumeRole", "sts:TagSession"]);
+    expect(sts).toEqual(["sts:GetCallerIdentity", "sts:AssumeRole", "sts:TagSession", "sts:AssumeRole"]);
+    // Plan 4 Task 16 (and Plan 3's Bedrock sources): a bounded role's own policy may grant this, and the boundary must not cap it away. Another account's role only,
+    // and only with an external id that names a Rovara org: the same two conditions the grants carry.
+    expect(allows.find((s) => s.Sid === "AssumeOrgRoles")).toEqual({
+      Sid: "AssumeOrgRoles", Effect: "Allow", Action: ["sts:AssumeRole"], Resource: "arn:aws:iam::*:role/*",
+      Condition: { StringNotEquals: { "aws:ResourceAccount": "123456789012" }, StringLike: { "sts:ExternalId": "rovara-org_*" } },
+    });
     expect(allows.find((s) => s.Sid === "CallerIdentity")).toEqual({ Sid: "CallerIdentity", Effect: "Allow", Action: ["sts:GetCallerIdentity"], Resource: "*" });
     // Plan 3 (R62): the broker assumes this one role, named exactly; no wildcard, and no other role.
     expect(allows.find((s) => s.Sid === "ConnectorSecretsRole")).toEqual({
@@ -305,7 +311,7 @@ describe("default permission boundary", () => {
       Resource: "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-connector-secrets",
     });
     expect(allows.flatMap((s) => s.Action).filter((a) => a === "*" || a === "sts:*")).toEqual([]);
-    expect(allows.filter((s) => s.Action.some((a) => /^sts:(AssumeRole|TagSession)/.test(a))).map((s) => s.Sid)).toEqual(["ConnectorSecretsRole"]);
+    expect(allows.filter((s) => s.Action.some((a) => /^sts:(AssumeRole|TagSession)/.test(a))).map((s) => s.Sid)).toEqual(["ConnectorSecretsRole", "AssumeOrgRoles"]);
   });
 
   it("never allows iam:* or any user, group, access key, login profile or managed-policy action, except agentx-* managed policies (ruling M2)", () => {

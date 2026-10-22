@@ -203,7 +203,7 @@ describe("connector resolution", () => {
     expect(schemaTypes).toEqual(["github", "linear", "jira", "asana", "mcp", "sentry", "datadog", "cloudwatch", "github-actions", "grafana", "vercel", "pagerduty"]);
     // Plan 4 Task 12 added the last seven to the schema; each of Tasks 13 to 17 registers its types in BUILT_IN_CONNECTOR_TYPES and takes them off this
     // list, so a type is never in both states: the test fails if one is registered and still listed, or is neither.
-    const notBuiltYet = ["cloudwatch", "github-actions"];
+    const notBuiltYet = ["github-actions"];
     for (const type of schemaTypes) {
       expect(Object.hasOwn(BUILT_IN_CONNECTOR_TYPES, type), type).toBe(!notBuiltYet.includes(type));
     }

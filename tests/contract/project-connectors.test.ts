@@ -2053,6 +2053,23 @@ describe("Plan 4 Task 14: datadog and grafana on the project connectors", () => 
 });
 
 
+describe("Plan 4 Task 16: cloudwatch on the project connectors", () => {
+  it("lists the four tools CloudWatch's connector offers, all reads", () => {
+    expect(PROJECT_CONNECTOR_TOOLS.cloudwatch).toEqual(["list_alarms", "get_alarm_history", "get_metric_data", "query_logs"]);
+  });
+
+  it("accepts a cloudwatch connector (a connection with no key) approving its tools, and refuses an unlisted one with Task 12's text, writing no revision", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const s = await install();
+    const cw = await s.connection({ type: "cloudwatch", label: "CloudWatch", access: "read", roleArn: "arn:aws:iam::123456789012:role/rovara-read", regions: ["us-east-1"] }, null);
+    const cloudwatch = (tools: unknown[]) => ({ name: "aws", type: "cloudwatch", credentialRef: cw, scopes: [{ alias: "prod", region: "us-east-1", logGroupPrefixes: ["/aws/lambda/pay"], alarmNamePrefix: "pay-" }], tools });
+    expect((await s.put(MIA, "aws", cloudwatch([{ name: "put_metric_alarm", access: "read" }]))).body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.0: put_metric_alarm is not a cloudwatch tool" });
+    expect(s.revisions()).toHaveLength(1);
+    expect((await s.put(MIA, "aws", cloudwatch([{ name: "list_alarms", access: "read" }, { name: "query_logs", access: "read" }]))).status).toBe(200);
+    await s.fakeLinear.close();
+  });
+});
+
 describe("Plan 4 Task 15: pagerduty and vercel on the project connectors", () => {
   it("lists each type's tools, all reads", () => {
     expect(PROJECT_CONNECTOR_TOOLS.pagerduty).toEqual(["list_incidents", "get_incident", "list_incident_log_entries", "list_oncalls"]);
