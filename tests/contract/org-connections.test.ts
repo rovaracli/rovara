@@ -314,7 +314,8 @@ describe("the role's trust and permissions as the fake enforces them", () => {
 
 describe("OrgConnectionStore", () => {
   const fetchOk = (body: unknown, status = 200) => vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
-  const storeOf = (deps: ReturnType<typeof setup>["deps"], extra: Partial<ConstructorParameters<typeof OrgConnectionStore>[0]> = {}) => new OrgConnectionStore({ ...deps, ...extra });
+  // Task 12b: an MCP endpoint is checked when it is saved, so a store that saves one has an endpoint check (the real one is in endpoint-check.test.ts).
+  const storeOf = (deps: ReturnType<typeof setup>["deps"], extra: Partial<ConstructorParameters<typeof OrgConnectionStore>[0]> = {}) => new OrgConnectionStore({ ...deps, checkEndpoint: async () => undefined, ...extra });
 
   afterEach(() => { vi.restoreAllMocks(); });
 
@@ -541,8 +542,8 @@ describe("OrgConnectionStore", () => {
 
   it("checks an MCP connection only through an injected endpoint check, and refuses without one", async () => {
     const { deps } = setup();
-    const withoutCheck = storeOf(deps);
-    await withoutCheck.put({ orgId: ORG_A, connection: MCP, secret: { token: "mcp-token" }, by: ALICE });
+    await storeOf(deps).put({ orgId: ORG_A, connection: MCP, secret: { token: "mcp-token" }, by: ALICE });
+    const withoutCheck = new OrgConnectionStore(deps);
     expect(await code(withoutCheck.check(ORG_A, CON_A))).toMatchObject({ code: "CONFIG_INVALID" });
 
     const refuse = vi.fn(async () => { throw new Error("endpoint host mcp.acme.dev resolves to 10.1.2.3"); });
@@ -589,7 +590,7 @@ describe("HookSecretStore", () => {
 
 describe("orgCredentialRegistry", () => {
   const savedStore = async (deps: ReturnType<typeof setup>["deps"], connection: OrgConnection, secret: Record<string, string>, orgId = ORG_A) => {
-    const store = new OrgConnectionStore(deps);
+    const store = new OrgConnectionStore({ ...deps, checkEndpoint: async () => undefined });
     await store.put({ orgId, connection, secret, by: ALICE });
   };
 

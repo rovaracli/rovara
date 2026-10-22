@@ -110,6 +110,9 @@ export class OrgSecrets {
       await this.run(org, (client) => client.send(new DeleteSecretCommand({ SecretId: name, RecoveryWindowInDays: recoveryDays })));
     } catch (error) {
       if (errorName(error) === "ResourceNotFoundException") return;
+      // A secret already scheduled for deletion refuses the request as invalid; the only other reason a delete is invalid is a window we
+      // control, so the secret is on its way out and a repeat (a retried removal, a closed org run again) is done.
+      if (errorName(error) === "InvalidRequestException") return;
       throw this.refusal(error);
     }
   }
