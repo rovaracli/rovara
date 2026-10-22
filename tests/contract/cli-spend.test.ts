@@ -16,14 +16,16 @@ describe("agentx agents budget", () => {
     expect(h.stdout()).toContain("$50");
   });
 
-  it("answered 202, prints the broker's message and the request id, and exits 0", async () => {
-    const message = "That takes Maya's agent budgets past the company's cap of $200. An org admin was asked to raise it.";
-    const h = await agentsCli({ [`PUT /v1/app/agents/${AGT}/budget`]: Response.json({ status: "REQUESTED", message, requestId: "spr_cccccccccccccccccccc" }, { status: 202 }) });
+  // Pins a Task 32 shape: at this commit the broker refuses an over-the-cap change with CONFIG_INVALID (its "TASK 32 SEAM" in
+  // packages/broker/src/spend/settings.ts). Task 32 answers 202 { status: "NEEDS_ADMIN_APPROVAL", spendRequestId, message } instead, as here.
+  it("answered 202 NEEDS_ADMIN_APPROVAL (Task 32), prints the broker's message and the spend request's id, and exits 0", async () => {
+    const message = "Maya's agent budgets would total $500 a month, over the $200 limit for one person. I asked an org admin to approve it.";
+    const h = await agentsCli({ [`PUT /v1/app/agents/${AGT}/budget`]: Response.json({ status: "NEEDS_ADMIN_APPROVAL", spendRequestId: "spr_cccccccccccccccccccc", message }, { status: 202 }) });
     expect(await h.run(["agents", "budget", AGT, "--monthly", "500"])).toBe(0);
     expect(h.stdout()).toContain(message);
     expect(h.stdout()).toContain("spr_cccccccccccccccccccc");
     expect(await h.run(["--json", "agents", "budget", AGT, "--monthly", "500"])).toBe(0);
-    expect(JSON.parse(h.out.at(-1)!)).toMatchObject({ ok: true, data: { status: "REQUESTED", message, requestId: "spr_cccccccccccccccccccc" } });
+    expect(JSON.parse(h.out.at(-1)!)).toMatchObject({ ok: true, data: { status: "NEEDS_ADMIN_APPROVAL", message, spendRequestId: "spr_cccccccccccccccccccc" } });
   });
 
   it("prints a refusal as the broker wrote it", async () => {
@@ -58,6 +60,12 @@ describe("agentx project ai set", () => {
     const h = await agentsCli({ "PUT /v1/app/projects/payments/ai": Response.json({ settings: {}, revision: 4, effective: { sourceOrder: [], planningLimitUsd: { QUICK: 1, FULL: 3 } } }) });
     expect(await h.run(["project", "ai", "set", "payments", "--budget", "none", "--project-pays", "off"])).toBe(0);
     expect(h.calls[0]!.body).toEqual({ requestId: expect.stringMatching(UUID) as string, monthlyBudgetUsd: null, projectPays: false });
+  });
+
+  it("resets a planning limit to the default with none (review M11)", async () => {
+    const h = await agentsCli({ "PUT /v1/app/projects/payments/ai": Response.json({ settings: {}, revision: 5, effective: { sourceOrder: [], planningLimitUsd: { QUICK: 1, FULL: 3 } } }) });
+    expect(await h.run(["project", "ai", "set", "payments", "--planning-quick", "none", "--planning-full", "4"])).toBe(0);
+    expect(h.calls[0]!.body).toEqual({ requestId: expect.stringMatching(UUID) as string, planningLimitUsd: { QUICK: null, FULL: 4 } });
   });
 
   it("refuses no setting, or --project-pays other than on or off, before sending", async () => {

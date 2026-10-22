@@ -148,3 +148,40 @@ Every command takes `--json` and calls the `/v1/app/*` routes. A refusal prints 
    - A `processEnv` dependency was added to `CliDependencies` so tests can supply the environment.
 5. **`comment-triggers opt-out` requires `--reason`.** The brief shows it as `[--reason <text>]`, but `CommentTriggerOptOutRequestSchema` requires a non-empty reason. The CLI refuses without one, before sending anything.
 6. **`agents spend` and `org spend` routes exist already.** `GET /v1/app/agents/{id}/spend`, `/v1/app/org/spend` and its ledger are on `53ce7170` (Task 30). They were left for part 2 as instructed.
+
+## Fix round 1
+
+This round answers `review-out/task-35a-review.md` on `review/task-35a-review` (head `cabe3756` reviewed). The tests were written first.
+
+**RED run** (`tests/contract/cli-agents.test.ts`, `cli-spend.test.ts`, `mcp-agent-tools.test.ts`, `--maxWorkers=2`, before any source change): 3 files failed, **17 failed | 49 passed (66)**. The failures were the new tests for I1 (three), M3, M4, M5, M7, M9, M11, M12, M13, M14, M2 (three: the list mints nothing, the new tool, and its description), the R3-4 tool-name list (which now includes `agentx_open_approval`) and M10. The M1 fixture passed before the change too, because `requestedText` already read `spendRequestId`.
+
+**GREEN run:** `npx tsc -b` is clean. ESLint is clean on the changed files. Ten files pass with `--maxWorkers=2`, **254/254**: `cli-agents`, `cli-spend`, `mcp-agent-tools`, `cli-main`, `mcp-admin-session`, `mcp-stdio`, `mcp-tools`, `connections-cli`, `developer-cli` and `comment-triggers`.
+
+### What changed
+
+- **I1 (Important), fixed.**
+  - `clean` in `packages/cli/src/developer/agents.ts` (exported, and used by `spend.ts`) is now `terminalSafe` applied after the `agx[rc]_` token redaction.
+  - `str`, `item`, `waitingText`, the approvals output and the `appRequest` error message all go through it. RLO, `U+009B`, `U+200B`, other Cf and C1 characters, and line separators now print as `[U+XXXX]`.
+  - New tests put RLO, `U+009B` and `U+200B` in an approval's summary, prompt and changes (`approvals list` and `show`), and in a 409 message along with a refresh token. They assert the markers, that no raw character is left, and `[hidden]`.
+- **M1, fixed.** The cli-spend 202 fixture is now `{ status: "NEEDS_ADMIN_APPROVAL", spendRequestId, message }`, with a comment marking it as pinning a Task 32 shape (the broker's "TASK 32 SEAM").
+- **M2, fixed.**
+  - `agentx_list_approvals` returns the approval's bare `confirmUrl` from `getApproval` and mints no ticket.
+  - New tool `agentx_open_approval(approval_id)`: it checks the ID against `ApprovalIdSchema`, then makes one `POST /v1/app/approvals/{id}/confirm-link`. Its description says the link is for the person and must not be fetched or opened by the assistant, since that would spend the single-use ticket.
+  - Tests cover: the list makes no confirm-link call, the new tool calls it once, its description, and an invalid ID sending nothing.
+  - The MCP tool counts in `mcp-tools`, `mcp-stdio` and `mcp-admin-session` went up by one: 29 to 30 developer tools, and 37 to 38 with admin.
+- **M3, fixed.** `approvals open` hands the browser a link only when it is `https:`, has the cell's own origin, and has a path under `/v1/app/approve/`. Any other link is printed with a note and never opened.
+- **M4, fixed.** `org sources add` strips the key from the answer before printing, in both text and `--json`.
+- **M5, fixed.** The "not set" message repeats the variable's name only when it looks like one (`^[A-Z_][A-Z0-9_]{0,63}$`).
+- **M7, fixed.** Every path segment refuses `.` and `..` before anything is sent, in `spend.ts` as well.
+- **M8, fixed** through I1: long text is cut at 500 characters and ends with `...[truncated]`.
+- **M9, fixed.** `agentRunVersionArgv` also rewrites `--version=<n>` after `agents run`.
+- **M10, fixed.** With an agent or an input, instructions over 8,192 bytes are refused with "instructions: with an agent or an input, instructions are at most 8,192 bytes".
+- **M11, fixed.** `--planning-quick` and `--planning-full` take `none`, which sends `null` and resets the limit to the default.
+- **M12, fixed.** `project connectors set` fills in `name` from the argument. A file naming another connector is refused before anything is sent. The existing test's expected body now includes `name`.
+- **M13, fixed.** A 202 `EXECUTING` answer prints "being applied; check it with agentx project connectors list <project>".
+- **M14, fixed.** `draft get` names the agent from its argument.
+- **M15, fixed.** The `kind`, `status`, `project`, `connector` and `tool` fields of `agentx_list_approvals`, and the `status` and `access` fields of `agentx_list_agents`, now go through `plainText`.
+- **M17, fixed.** The descriptions of `project connectors` and the top-level `connector` command now point to each other.
+- **M6 and M16, not changed.** Both are questions for the plan owner:
+  - M6: the CLI reads `--key-from-env` and does not call `asm-exec` itself.
+  - M16: whether R66's "step approvals" excludes native workflow plan gates on agent-backed workflows.

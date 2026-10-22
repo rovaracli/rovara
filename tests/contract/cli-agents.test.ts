@@ -11,7 +11,8 @@ afterEach(cleanHarnessDirs);
 const AGT = "agt_aaaaaaaaaaaaaaaaaaaa";
 const APR = "apr_bbbbbbbbbbbbbbbbbbbb";
 const DEV = "d".repeat(64);
-const CONFIRM = "https://abc123.execute-api.us-west-2.amazonaws.com/v1/app/approve/apr_bbbbbbbbbbbbbbbbbbbb";
+const CELL_URL = "https://abc123.execute-api.us-west-2.amazonaws.com";
+const CONFIRM = `${CELL_URL}/v1/app/approve/apr_bbbbbbbbbbbbbbbbbbbb`;
 const agent = (extra: Record<string, unknown> = {}) => ({
   agentId: AGT, name: "Triage helper", description: "", builtin: false, owner: { kind: "member", developerId: DEV }, latestVersion: 2, currentVersion: 2,
   draftRevision: 4, status: "active", access: "manage", createdBy: DEV, createdAt: "2026-10-22T09:00:00.000Z", updatedAt: "2026-10-22T09:00:00.000Z", ...extra,
@@ -237,7 +238,7 @@ describe("agentx project agents, connectors and comment-triggers", () => {
     expect(await h.run(["project", "connectors", "remove", "payments", "linear"])).toBe(0);
     const writes = h.calls.filter((call) => call.method !== "GET");
     expect(writes.map((call) => call.body)).toEqual([
-      { requestId: expect.stringMatching(UUID) as string, expectedRevision: 9, connector: { type: "linear", credentialRef: "con_aaaaaaaaaaaaaaaaaaaa", tools: [{ name: "create_issue", access: "write" }] } },
+      { requestId: expect.stringMatching(UUID) as string, expectedRevision: 9, connector: { type: "linear", credentialRef: "con_aaaaaaaaaaaaaaaaaaaa", tools: [{ name: "create_issue", access: "write" }], name: "linear" } },
       { requestId: expect.stringMatching(UUID) as string, expectedRevision: 9 },
     ]);
   });
@@ -400,5 +401,129 @@ describe("agentx org comment-triggers, guardrails and sources", () => {
       ["PUT", "/v1/app/org/model-sources-order", { requestId: expect.stringMatching(UUID) as string, order: ["rovara", "src_aaaaaaaa"] }],
       ["POST", "/v1/app/org/model-sources/src_aaaaaaaa/check", undefined],
     ]);
+  });
+});
+
+// Fix round 1 (review I1, M3–M5, M7, M9, M12–M14): text the server wrote is marked, not printed raw; a link is opened only when it is the
+// cell's own confirmation page; IDs and names are checked before anything is sent.
+describe("fix round 1: server text in a terminal (I1)", () => {
+  const RLO = "\u202E";
+  const CSI = "\u009B";
+  const ZWSP = "\u200B";
+  const hostile = `Create a Linear issue ${RLO}eteled${CSI}2J${ZWSP}done`;
+  const pending = { approvalId: APR, kind: "write", status: "PENDING", expiresAt: "2026-10-23T09:00:00.000Z", confirmUrl: CONFIRM, summary: hostile, prompt: hostile, changes: [hostile] };
+  const marked = (text: string) => {
+    expect(text).toContain("[U+202E]");
+    expect(text).toContain("[U+009B]");
+    expect(text).toContain("[U+200B]");
+    expect(text).not.toMatch(/[\u202E\u009B\u200B]/);
+  };
+
+  it("marks RLO, U+009B and U+200B in an approval's summary in approvals list and show", async () => {
+    const h = await agentsCli({
+      "GET /v1/app/approvals?status=PENDING": Response.json({ approvals: [pending] }),
+      [`GET /v1/app/approvals/${APR}`]: Response.json({ approval: pending }),
+    });
+    expect(await h.run(["approvals", "list"])).toBe(0);
+    marked(h.stdout());
+    h.out.length = 0;
+    expect(await h.run(["approvals", "show", APR])).toBe(0);
+    marked(h.stdout());
+  });
+
+  it("marks them in a 409's message on stderr, and still hides a token", async () => {
+    const h = await agentsCli({
+      [`GET /v1/app/agents/${AGT}/draft`]: Response.json({ draft: draft(4) }),
+      [`PUT /v1/app/agents/${AGT}/draft`]: Response.json({ error: { code: "AGENT_REVISION_CONFLICT", message: `${hostile} agxr_${"z".repeat(43)}` } }, { status: 409 }),
+    });
+    const overlay = await h.file("overlay.json", { instructions: "new" });
+    expect(await h.run(["agents", "draft", "set", AGT, "--file", overlay])).toBe(1);
+    marked(h.stderr());
+    expect(h.stderr()).toContain("[hidden]");
+    expect(h.stderr()).not.toContain("agxr_");
+  });
+
+  it("cuts a very long message with a visible marker (M8)", async () => {
+    const h = await agentsCli({ [`GET /v1/app/approvals/${APR}`]: Response.json({ error: { code: "NOT_FOUND", message: "x".repeat(900) } }, { status: 404 }) });
+    expect(await h.run(["approvals", "show", APR])).not.toBe(0);
+    expect(h.stderr()).toContain("...[truncated]");
+  });
+});
+
+describe("fix round 1: smaller findings", () => {
+  it("approvals open opens only an https link to this cell's approval page (M3)", async () => {
+    for (const link of ["file:///etc/passwd", "https://evil.example/v1/app/approve/apr_bbbbbbbbbbbbbbbbbbbb", "-x", `${CELL_URL}/v1/app/other`]) {
+      const h = await agentsCli({ [`POST /v1/app/approvals/${APR}/confirm-link`]: Response.json({ confirmUrl: link, ticketed: true }) });
+      expect(await h.run(["approvals", "open", APR])).toBe(0);
+      expect(h.opened, link).toEqual([]);
+    }
+  });
+
+  it("refuses an ID that is . or .. before sending anything (M7)", async () => {
+    const h = await agentsCli({});
+    expect(await h.run(["approvals", "open", ".."])).not.toBe(0);
+    expect(await h.run(["agents", "archive", "."])).not.toBe(0);
+    expect(await h.run(["project", "agents", "add", "..", AGT])).not.toBe(0);
+    expect(h.calls).toEqual([]);
+  });
+
+  it("agents run --version=2 runs version 2 (M9)", async () => {
+    const task = { taskId: "44444444-4444-4444-8444-444444444444", status: "RUNNING" };
+    const h = await agentsCli({ [`POST /v1/app/agents/${AGT}/runs`]: Response.json({ task }, { status: 202 }) });
+    expect(await h.run(["agents", "run", AGT, "--project", "payments", "--input", "go", "--version=2"])).toBe(0);
+    expect((h.calls[0]!.body as Record<string, unknown>).version).toBe(2);
+  });
+
+  it("draft get names the agent (M14)", async () => {
+    const stored: Record<string, unknown> = draft();
+    delete stored.agentId;
+    const h = await agentsCli({ [`GET /v1/app/agents/${AGT}/draft`]: Response.json({ draft: stored }) });
+    expect(await h.run(["agents", "draft", "get", AGT])).toBe(0);
+    expect(h.stdout()).toContain(`Draft of ${AGT} at revision 4`);
+  });
+
+  it("connectors set fills in the connector's name, and refuses a file naming another (M12)", async () => {
+    const h = await agentsCli({
+      "GET /v1/app/projects/payments/connectors": Response.json({ revision: 9, connectors: [] }),
+      "PUT /v1/app/projects/payments/connectors/linear": Response.json({ revision: 10 }),
+    });
+    const file = await h.file("linear.json", { type: "linear" });
+    expect(await h.run(["project", "connectors", "set", "payments", "linear", "--file", file])).toBe(0);
+    expect((h.calls.at(-1)!.body as { connector: unknown }).connector).toEqual({ type: "linear", name: "linear" });
+    const other = await h.file("other.json", { type: "linear", name: "jira" });
+    const before = h.calls.length;
+    expect(await h.run(["project", "connectors", "set", "payments", "linear", "--file", other])).not.toBe(0);
+    expect(h.calls.length).toBe(before);
+  });
+
+  it("a connector change still being applied is not reported as saved (M13)", async () => {
+    const h = await agentsCli({
+      "GET /v1/app/projects/payments/connectors": Response.json({ revision: 9, connectors: [] }),
+      "PUT /v1/app/projects/payments/connectors/linear": Response.json({ status: "EXECUTING" }, { status: 202 }),
+    });
+    const file = await h.file("linear.json", { type: "linear", name: "linear" });
+    expect(await h.run(["project", "connectors", "set", "payments", "linear", "--file", file])).toBe(0);
+    expect(h.stdout()).not.toContain("Saved");
+    expect(h.stdout()).toContain("being applied");
+  });
+
+  const KEY = "sk-ant-api03-SECRETVALUE0123456789";
+  it("--json never prints a key the server echoed (M4)", async () => {
+    const h = await agentsCli({ "POST /v1/app/org/model-sources": Response.json({ sourceId: "src_aaaaaaaa", apiKey: KEY, message: `saved ${KEY}` }, { status: 201 }) }, { env: { ACME_KEY: KEY } });
+    const file = await h.file("source.json", { kind: "anthropic", label: "Acme" });
+    expect(await h.run(["--json", "org", "sources", "add", "--file", file, "--key-from-env", "ACME_KEY"])).toBe(0);
+    expect(await h.run(["org", "sources", "add", "--file", file, "--key-from-env", "ACME_KEY"])).toBe(0);
+    expect(h.stdout()).not.toContain(KEY);
+  });
+
+  it("does not repeat a --key-from-env value that may be the key itself (M5)", async () => {
+    const pasted = "sk_live_abcdefABCDEF0123456789";
+    const h = await agentsCli({}, { env: {} });
+    const file = await h.file("source.json", { kind: "anthropic", label: "Acme" });
+    expect(await h.run(["org", "sources", "add", "--file", file, "--key-from-env", pasted])).not.toBe(0);
+    expect(h.stdout() + h.stderr()).not.toContain(pasted);
+    expect(await h.run(["org", "sources", "add", "--file", file, "--key-from-env", "ACME_KEY"])).not.toBe(0);
+    expect(h.stderr()).toContain("ACME_KEY");
+    expect(h.calls).toEqual([]);
   });
 });

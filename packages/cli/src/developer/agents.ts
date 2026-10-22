@@ -5,13 +5,17 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { AgentXErrorCodeSchema, CLI_PACKAGE_NAME, agentXError } from "@agentx/contracts";
-import { sanitizeServerText } from "../auth.js";
 import { ReportedFailure, exitCodeForError } from "../output.js";
-import { jsonSafe } from "./audit.js";
+import { jsonSafe, terminalSafe } from "./audit.js";
 import { findMember, orgMembers } from "./org.js";
 import { developerAccessToken, type DeveloperSessionDeps } from "./session.js";
 
-const clean = sanitizeServerText;
+/**
+ * Server text made safe for a terminal line: anything shaped like an AgentX refresh token or authorization code is hidden first, then every
+ * control, format, separator or invisible character (a bidi override, CSI U+009B, a zero-width space) is shown as its `[U+XXXX]` marker and a
+ * very long value is cut with a visible `...[truncated]` (review I1).
+ */
+export const clean = (text: string): string => terminalSafe(text.replace(/agx[rc]_[A-Za-z0-9_-]+/g, "[hidden]"));
 type Body = Record<string, unknown>;
 
 /** What a command prints: its JSON data (with --json) and its text. */
@@ -52,7 +56,11 @@ export async function appRequest(
 }
 
 const result = (answer: { env: string; url: string }, data: Body, text: string): AppResult => ({ env: answer.env, url: answer.url, data: jsonSafe(data) as Body, text });
-const seg = encodeURIComponent;
+/** One path segment from an ID the person typed; `.` and `..` are refused, since a URL would read them as a step up the path (review M7). */
+export const seg = (id: string): string => {
+  if (id === "." || id === "..") throw agentXError("CONFIG_INVALID", "an ID cannot be . or ..");
+  return encodeURIComponent(id);
+};
 const str = (value: unknown, fallback = ""): string => (typeof value === "string" || typeof value === "number" ? clean(String(value)) : fallback);
 const pretty = (value: unknown): string => JSON.stringify(jsonSafe(value), null, 2);
 const list = (value: unknown): Body[] => (Array.isArray(value) ? value.filter((entry): entry is Body => typeof entry === "object" && entry !== null) : []);
@@ -150,11 +158,11 @@ async function draftOf(deps: DeveloperSessionDeps, env: string | undefined, agen
   return { answer, draft, revision: draft.revision };
 }
 
-const draftText = (draft: Body): string => `Draft of ${str(draft.agentId)} at revision ${str(draft.revision)}${draft.extends === undefined ? "" : `, building on ${item(draft.extends)}`}:\n${pretty(draft.overlay ?? {})}\n`;
+const draftText = (agentId: string, draft: Body): string => `Draft of ${clean(agentId)} at revision ${str(draft.revision)}${draft.extends === undefined ? "" : `, building on ${item(draft.extends)}`}:\n${pretty(draft.overlay ?? {})}\n`;
 
 export async function agentsDraftGet(deps: DeveloperSessionDeps, env: string | undefined, agentId: string): Promise<AppResult> {
   const { answer, draft } = await draftOf(deps, env, agentId);
-  return result(answer, { draft }, draftText(draft));
+  return result(answer, { draft }, draftText(agentId, draft));
 }
 
 /** Saves an overlay as the draft, at the revision read just before, so someone else's edit since is a conflict, not lost. */
@@ -270,10 +278,16 @@ export async function projectConnectorsList(deps: DeveloperSessionDeps, env: str
   return result(answer, answer.body, text);
 }
 
+/** Saves a connector from a file; the file's `name` may be left out (it is the argument's), but a file naming another connector is refused. */
 export async function projectConnectorsSet(deps: DeveloperSessionDeps, env: string | undefined, project: string, name: string, file: string | undefined): Promise<AppResult> {
-  const connector = await readJsonFile(file, "--file", "object");
+  const read = await readJsonFile(file, "--file", "object") as Body;
+  if (read.name !== undefined && read.name !== name) throw agentXError("CONFIG_INVALID", `--file: the connector in ${file} is named ${terminalSafe(JSON.stringify(read.name))}, not ${clean(name)}`);
+  const connector = { ...read, name };
   const { revision } = await connectorsOf(deps, env, project);
   const answer = await appRequest(deps, env, `/v1/app/projects/${seg(project)}/connectors/${seg(name)}`, { method: "PUT", body: { requestId: randomUUID(), expectedRevision: revision, connector } });
+  if (answer.body.status === "EXECUTING") {
+    return result(answer, answer.body, `The change to the connector ${clean(name)} on ${clean(project)} is being applied; check it with agentx project connectors list ${clean(project)}.\n`);
+  }
   return result(answer, answer.body, waitingText(answer.body) ?? `Saved the connector ${clean(name)} on ${clean(project)}${answer.body.revision === undefined ? "" : ` (revision ${str(answer.body.revision)})`}.\n`);
 }
 
@@ -364,12 +378,26 @@ export async function approvalsShow(deps: DeveloperSessionDeps, env: string | un
   return result(answer, answer.body, `${lines.join("\n")}\n`);
 }
 
-/** The confirmation page's link for one approval (ticketed for a person who may decide it now). Nothing is decided here. */
-export async function approvalsConfirmLink(deps: DeveloperSessionDeps, env: string | undefined, approvalId: string): Promise<AppResult & { confirmUrl: string }> {
+/** The link as a URL a browser may be handed: https, on the signed-in cell's own origin, under its confirmation pages; otherwise undefined (review M3). */
+function confirmationPage(raw: string, cellUrl: string): string | undefined {
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" && url.origin === new URL(cellUrl).origin && url.pathname.startsWith("/v1/app/approve/") ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The confirmation page's link for one approval (ticketed for a person who may decide it now). Nothing is decided here. `openUrl` is set only
+ * when the link is this cell's own confirmation page; any other link is printed, never handed to a browser.
+ */
+export async function approvalsConfirmLink(deps: DeveloperSessionDeps, env: string | undefined, approvalId: string): Promise<AppResult & { openUrl?: string }> {
   const answer = await appRequest(deps, env, `/v1/app/approvals/${seg(approvalId)}/confirm-link`, { method: "POST" });
   if (typeof answer.body.confirmUrl !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "AgentX answered without the confirmation link; try again");
-  const confirmUrl = clean(answer.body.confirmUrl);
-  return { ...result(answer, answer.body, `Approve or decline it on its page: ${confirmUrl}\n`), confirmUrl };
+  const openUrl = confirmationPage(answer.body.confirmUrl, answer.url);
+  const text = `Approve or decline it on its page: ${clean(answer.body.confirmUrl)}\n${openUrl === undefined ? "That is not this AgentX's confirmation page, so it was not opened.\n" : ""}`;
+  return { ...result(answer, answer.body, text), ...(openUrl === undefined ? {} : { openUrl }) };
 }
 
 // ---- the org's guardrails and AI sources
@@ -410,11 +438,23 @@ export async function sourcesAdd(deps: DeveloperSessionDeps, env: string | undef
   if (input.keyFromEnv !== undefined) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(input.keyFromEnv)) throw agentXError("CONFIG_INVALID", "--key-from-env takes the name of an environment variable");
     apiKey = processEnv[input.keyFromEnv]?.trim();
-    if (apiKey === undefined || apiKey === "") throw agentXError("CONFIG_INVALID", `the environment variable ${input.keyFromEnv} is not set or is empty`);
+    // The name is repeated only when it reads as a variable's name: a key pasted in its place is never printed (review M5).
+    const named = /^[A-Z_][A-Z0-9_]{0,63}$/.test(input.keyFromEnv) ? `the environment variable ${input.keyFromEnv}` : "the environment variable --key-from-env names";
+    if (apiKey === undefined || apiKey === "") throw agentXError("CONFIG_INVALID", `${named} is not set or is empty`);
   }
   const answer = await appRequest(deps, env, SOURCES, { method: "POST", body: { requestId: randomUUID(), source, ...(apiKey === undefined ? {} : { apiKey }) } });
-  const extra = [answer.body.message, answer.body.warning].filter((line): line is string => typeof line === "string").map((line) => `${clean(line)}\n`).join("");
-  return result(answer, answer.body, `Added the AI source ${str(answer.body.sourceId)}. Test it with agentx org sources check ${str(answer.body.sourceId)}.\n${extra}`);
+  // A server that echoed the key would have it printed; it is taken out of the answer first, in text and in --json (review M4).
+  const body = apiKey === undefined ? answer.body : withoutSecret(answer.body, apiKey) as Body;
+  const extra = [body.message, body.warning].filter((line): line is string => typeof line === "string").map((line) => `${clean(line)}\n`).join("");
+  return result(answer, body, `Added the AI source ${str(answer.body.sourceId)}. Test it with agentx org sources check ${str(answer.body.sourceId)}.\n${extra}`);
+}
+
+/** Every string in a value with the secret replaced by [REDACTED]. */
+function withoutSecret(value: unknown, secret: string): unknown {
+  if (typeof value === "string") return value.split(secret).join("[REDACTED]");
+  if (Array.isArray(value)) return value.map((child) => withoutSecret(child, secret));
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, withoutSecret(child, secret)]));
+  return value;
 }
 
 export async function sourcesRemove(deps: DeveloperSessionDeps, env: string | undefined, sourceId: string): Promise<AppResult> {

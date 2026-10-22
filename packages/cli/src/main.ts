@@ -838,7 +838,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .action(async (approvalId: string, options: { browser: boolean }, command: Command) => {
       const link = await approvalsConfirmLink(developerSession(), developerEnv(command), approvalId);
       printResult(command, link);
-      if (options.browser) await (dependencies.login?.openBrowser ?? openSystemBrowser)(link.confirmUrl).catch(() => undefined);
+      if (options.browser && link.openUrl !== undefined) await (dependencies.login?.openBrowser ?? openSystemBrowser)(link.openUrl).catch(() => undefined);
     });
 
   const guardrails = org.command("guardrails").description("your company's agent guardrails");
@@ -1755,7 +1755,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       .argument("<agent-id>", "the agent's ID")
       .action(async (project: string, agentId: string, _options: unknown, command: Command) => printResult(command, await projectAgentsChange(developerSession(), developerEnv(command), project, agentId, add)));
   }
-  const projectConnectors = projectCommand.command("connectors").description("a project's connectors: the organization's connections the project's agents may use");
+  const projectConnectors = projectCommand.command("connectors").description("a project's connectors: the organization's connections the project's agents may use (to connect a project to Linear, Jira, Asana or an MCP server, see agentx connector)");
   projectConnectors
     .command("list")
     .description("list a project's connectors, their tools and whether each is connected")
@@ -1797,8 +1797,8 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .argument("<project>", "the project's name")
     .option("--budget <usd|none>", "the project's monthly AI budget")
     .option("--project-pays <on|off>", "whether runs on the project are charged to it")
-    .option("--planning-quick <usd>", "the most a quick plan may spend")
-    .option("--planning-full <usd>", "the most a full plan may spend")
+    .option("--planning-quick <usd|none>", "the most a quick plan may spend; none for the default")
+    .option("--planning-full <usd|none>", "the most a full plan may spend; none for the default")
     .action(async (project: string, options: { budget?: string; projectPays?: string; planningQuick?: string; planningFull?: string }, command: Command) =>
       printResult(command, await projectAiSet(developerSession(), developerEnv(command), project, options)));
 
@@ -2182,7 +2182,7 @@ function codexHomeFromEnvironment(): string | undefined {
 
 /**
  * `agentx agents run <id> --version <n>`: the program's own --version flag would print the CLI's version wherever it appears, so for that
- * one command its `--version <n>` is handed over as --run-version. Every other --version is left as it is.
+ * one command its `--version <n>` (or `--version=<n>`) is handed over as --run-version. Every other --version is left as it is.
  */
 export function agentRunVersionArgv(argv: readonly string[]): string[] {
   // The command's words, skipping the program's options and the values they take.
@@ -2193,7 +2193,11 @@ export function agentRunVersionArgv(argv: readonly string[]): string[] {
     else if (!word.startsWith("-")) words.push(index);
   }
   if (words.length < 2 || argv[words[0]!] !== "agents" || argv[words[1]!] !== "run") return [...argv];
-  return argv.map((word, index) => (index > words[1]! && word === "--version" && argv[index + 1] !== undefined && !argv[index + 1]!.startsWith("-") ? "--run-version" : word));
+  return argv.map((word, index) => {
+    if (index <= words[1]!) return word;
+    if (word === "--version" && argv[index + 1] !== undefined && !argv[index + 1]!.startsWith("-")) return "--run-version";
+    return word.startsWith("--version=") ? `--run-version=${word.slice("--version=".length)}` : word;
+  });
 }
 const PROGRAM_VALUE_OPTIONS = new Set(["--project", "--config-dir", "--deployment-file", "--env"]);
 

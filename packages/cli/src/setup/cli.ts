@@ -73,7 +73,7 @@ export function registerSetupCommands(program: Command, context: SetupCommandCon
     });
 
   // agentx connector add linear|jira|asana, the words FR-036 uses, and mcp for any other server (spec 055).
-  const connector = program.command("connector").description("connect a project to Linear, Jira, Asana or any MCP server");
+  const connector = program.command("connector").description("connect a project to Linear, Jira, Asana or any MCP server (which of them a project's agents may use: agentx project connectors)");
   const connectorAdd = connector.command("add").description("add a connector to a project");
   withRegion(connectorAdd.command("linear"))
     .description("add Linear to a project: guide, key, test read, team, new revision")

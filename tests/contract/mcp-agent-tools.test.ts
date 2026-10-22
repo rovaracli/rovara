@@ -1,5 +1,5 @@
 // Plan 3 Task 35a: the MCP tools for agents. The start tools pass `agent` and `input` through; `agentx_list_agents` and `agentx_run_agent` reach
-// the agent routes; `agentx_list_approvals` returns each pending approval with its summary, full arguments and confirmation link. No tool decides a
+// the agent routes; `agentx_list_approvals` returns each pending approval with its summary, full arguments and plain confirmation link, and `agentx_open_approval` asks for one approval's ticketed link for the person. No tool decides a
 // write approval, a step or chain-gate approval, a spend request or a comment-trigger opt-out (R3-4): the person decides on the page.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -42,7 +42,7 @@ describe("the agent tools in the list", () => {
   it("has no tool that decides an approval, a spend request or a comment-trigger opt-out (R3-4)", async () => {
     const { tools } = await (await connect({})).listTools();
     const governed = tools.filter((tool) => /approv|spend|opt.?out|comment.?trigger|budget|guardrail/i.test(tool.name));
-    expect(governed.map((tool) => tool.name)).toEqual(["agentx_list_approvals"]);
+    expect(governed.map((tool) => tool.name).sort()).toEqual(["agentx_list_approvals", "agentx_open_approval"]);
     for (const tool of tools) expect(tool.name, tool.name).not.toMatch(/(approve|decline|deny|reject)/);
     // The client the tools are written against has no way to decide one either.
     const client = httpControlPlaneClient({ session: async () => ({ baseUrl: CELL, accessToken: "t", signInCommand: "x" }), fetch: vi.fn<typeof fetch>() });
@@ -96,16 +96,19 @@ describe("agentx_list_agents and agentx_run_agent", () => {
 });
 
 describe("agentx_list_approvals", () => {
-  it("returns each pending approval with its summary, full arguments and the confirmation link, and decides nothing", async () => {
+  it("returns each pending approval with its summary, full arguments and the bare confirmation link, and mints no ticket (review M2)", async () => {
     const args = { title: "Flaky retry test", labels: ["bug"] };
+    const approvalConfirmLink = vi.fn(async () => ({ confirmUrl: `${CONFIRM}?ticket=t1`, ticketed: true }));
     const client: Partial<ControlPlaneClient> = {
       listApprovals: vi.fn(async () => [{ approvalId: APR, kind: "write", status: "PENDING", summary: "Create a Linear issue", confirmUrl: CONFIRM }]),
       getApproval: vi.fn(async () => ({ approvalId: APR, kind: "write", status: "PENDING", summary: "Create a Linear issue", arguments: args, confirmUrl: CONFIRM })),
-      approvalConfirmLink: vi.fn(async () => ({ confirmUrl: `${CONFIRM}?ticket=t1`, ticketed: true })),
+      approvalConfirmLink,
     };
     const result = await (await connect(client)).callTool({ name: "agentx_list_approvals", arguments: {} });
-    expect(structured(result)).toEqual({ approvals: [{ approval_id: APR, kind: "write", status: "PENDING", summary: "Create a Linear issue", arguments: args, confirm_url: `${CONFIRM}?ticket=t1` }] });
-    expect(text(result)).toContain(`${CONFIRM}?ticket=t1`);
+    expect(structured(result)).toEqual({ approvals: [{ approval_id: APR, kind: "write", status: "PENDING", summary: "Create a Linear issue", arguments: args, confirm_url: CONFIRM }] });
+    expect(text(result)).toContain(CONFIRM);
+    expect(text(result)).not.toContain("ticket=");
+    expect(approvalConfirmLink).not.toHaveBeenCalled();
   });
 
   it("reaches the routes: the list, each approval, and the confirm-link POST, never the decide route", async () => {
@@ -135,5 +138,43 @@ describe("agentx_list_approvals", () => {
   it("is in the module's tool definitions with an output schema", () => {
     const definition = DEVELOPER_TOOLS.find((tool) => tool.name === "agentx_list_approvals");
     expect(definition?.outputSchema).toHaveProperty("approvals");
+  });
+});
+
+describe("agentx_open_approval (review M2)", () => {
+  it("asks for one approval's confirmation link, once, and decides nothing", async () => {
+    const approvalConfirmLink = vi.fn(async () => ({ confirmUrl: `${CONFIRM}?ticket=t1`, ticketed: true }));
+    const result = await (await connect({ approvalConfirmLink })).callTool({ name: "agentx_open_approval", arguments: { approval_id: APR } });
+    expect(approvalConfirmLink).toHaveBeenCalledTimes(1);
+    expect(approvalConfirmLink).toHaveBeenCalledWith(APR);
+    expect(structured(result)).toEqual({ approval_id: APR, confirm_url: `${CONFIRM}?ticket=t1` });
+    expect(text(result)).toContain(`${CONFIRM}?ticket=t1`);
+  });
+
+  it("says the link is for the person and must not be fetched by the assistant", async () => {
+    const { tools } = await (await connect({})).listTools();
+    const tool = tools.find((entry) => entry.name === "agentx_open_approval")!;
+    expect(tool.description).toMatch(/for the person/i);
+    expect(tool.description).toMatch(/do not (fetch|open)|must not (be )?(fetch|open)/i);
+    const listing = tools.find((entry) => entry.name === "agentx_list_approvals")!;
+    expect(listing.description).toMatch(/agentx_open_approval/);
+  });
+
+  it("refuses an ID that is not an approval's before sending anything", async () => {
+    const approvalConfirmLink = vi.fn(async () => ({ confirmUrl: CONFIRM, ticketed: false }));
+    const result = await (await connect({ approvalConfirmLink })).callTool({ name: "agentx_open_approval", arguments: { approval_id: ".." } });
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(approvalConfirmLink).not.toHaveBeenCalled();
+  });
+});
+
+describe("the start tools with an agent (review M10)", () => {
+  it("names the instructions' 8,192-byte limit, not the context, when they are too long for an agent", async () => {
+    const startTask = vi.fn(async () => view);
+    const result = await (await connect({ startTask })).callTool({ name: "agentx_start_task", arguments: { project: "payments", instructions: "x".repeat(9_000), agent: { agent_id: AGT } } });
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(text(result)).toContain("8,192");
+    expect(text(result)).toMatch(/instructions/);
+    expect(startTask).not.toHaveBeenCalled();
   });
 });
