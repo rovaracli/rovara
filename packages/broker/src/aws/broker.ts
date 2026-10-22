@@ -361,6 +361,8 @@ import { OrgSecrets, type SecretsClient } from "../connections/org-secrets.js";
 import { orgCredentialRegistry } from "../connections/registry.js";
 import { dnsResolveHost, checkEndpointUrl } from "../connections/endpoint-check.js";
 import { mcpEndpointGuard, type McpEndpointGuard } from "../connections/pinned-endpoint.js";
+import { datadogConnectionCheck } from "./datadog-connector-type.js";
+import { grafanaConnectionCheck } from "./grafana-connector-type.js";
 import { sentryConnectionCheck } from "./sentry-connector-type.js";
 import { OrgConnectionStore, type OrgConnectionDeps, type OrgConnectionStoreInput } from "../connections/store.js";
 import { chatGptHostId } from "../chatgpt/oauth.js";
@@ -912,7 +914,7 @@ function orgConnectionStoreOf(dependencies: AwsBrokerDependencies): OrgConnectio
     checkEndpoint: async (url) => { await checkEndpointUrl(url, dnsResolveHost); },
     // The checks of an MCP endpoint and a Grafana address go over a connection pinned to the addresses checked (the store's default guard is `mcpEndpointGuard()`).
     // Each native type's check is registered as its task lands (Plan 4 Tasks 13 to 17); a test may replace any of them through `connectionChecks.checks`.
-    checks: { sentry: sentryConnectionCheck },
+    checks: { sentry: sentryConnectionCheck, datadog: datadogConnectionCheck, grafana: grafanaConnectionCheck },
     ...dependencies.connectionChecks,
   });
 }

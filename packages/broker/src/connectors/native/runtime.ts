@@ -3,8 +3,8 @@
 // read-only by construction (annotations readOnlyHint true, destructiveHint false), so catalog, approvals, tool grants, the write gate and the ledger run
 // unchanged. Routing values (the Sentry organization, the project) are arguments the engine binds from the connection and the scope and removes from what the
 // model sees; a tool receives them as its scope and can reach nothing else. Every call is validated against the tool's schema first.
-import { agentXError, connectionSecretToken, type ConnectionType, type ObservabilityConnectionType, type OrgConnection, type SecretConnectionType } from "@agentx/contracts";
-import { ToolRefusal, type Binder, ConnectorDefinition, CredentialProvider, IssuedCredential, McpConnection, McpToolResult, ToolApproval, connectMcp } from "@agentx/gateway";
+import { agentXError, connectionSecretToken, type ConnectionSecret, type ConnectionType, type ObservabilityConnectionType, type OrgConnection, type SecretConnectionType } from "@agentx/contracts";
+import { CredentialUnavailable, ToolRefusal, type Binder, type ConnectorDefinition, type CredentialProvider, type IssuedCredential, type McpConnection, type McpToolResult, type ToolApproval, type connectMcp } from "@agentx/gateway";
 import type { z } from "zod";
 import { connectorLedgerKeys } from "../../aws/connector-ledger.js";
 import type { ConnectorScope, ConnectorType } from "../../aws/connector-types.js";
@@ -127,7 +127,7 @@ function truncated(text: string): string {
 export function nativeConnection<Scope>(
   tools: readonly NativeTool<Scope>[],
   approved: readonly string[],
-  ctx: { credential: IssuedCredential; fetch: VendorFetch; routing: NativeRouting<Scope> },
+  ctx: { credential: IssuedCredential; fetch: VendorFetch; routing: NativeRouting<Scope>; /** Further secret values to scrub from anything answered (a credential made of several). */ scrub?: readonly string[] },
 ): McpConnection {
   const offered = tools.filter((tool) => approved.includes(tool.name));
   const routingNames = Object.keys(ctx.routing.properties);
@@ -141,7 +141,7 @@ export function nativeConnection<Scope>(
       annotations: { readOnlyHint: true, destructiveHint: false },
     };
   });
-  const redact = (text: string) => text.split(ctx.credential.token).join("[REDACTED]");
+  const redact = (text: string) => [ctx.credential.token, ...(ctx.scrub ?? [])].filter((value) => value !== "").reduce((current, value) => current.split(value).join("[REDACTED]"), text);
   return {
     tools: listed,
     async call(name, args) {
@@ -210,6 +210,21 @@ export interface NativeConnectorSpec<Config extends NativeConfig, EngineScope ex
   };
   /** Asks the vendor whether the token works; throws `NativeCheckFailed` (a message to show) or `VendorFetchError` (retryable). */
   check(fetch: VendorFetch, connection: Connection, token: string): Promise<void>;
+  /**
+   * For a connection whose secret is more than one value (Datadog's API and application keys): the one credential string the tools receive, made from the whole
+   * secret, and the parts of it to scrub from anything a tool answers. Absent, the credential is the connection's one token.
+   */
+  packSecret?(secret: ConnectionSecret): string;
+  secretParts?(packed: string): readonly string[];
+  /** The headers of the connection check, from the saved secret. Absent: `Authorization: Bearer <token>`. */
+  checkHeaders?(secret: ConnectionSecret): Record<string, string>;
+  /**
+   * The address is one a person typed (Grafana's base URL): every connection goes through the deployment's endpoint guard, which checks the host again and pins the
+   * connection to the addresses it returned. Where the deployment has no guard the connector is not connected.
+   */
+  hostTyped?: boolean;
+  /** Tools a scope cannot use, with the reason shown to the administrator. */
+  unavailableTools?(scope: EngineScope): ReadonlyArray<{ tool: string; reason: string }>;
 }
 
 type Problem = { problem: string };
@@ -252,8 +267,22 @@ export function nativeConnectorType<Config extends NativeConfig, EngineScope ext
       };
       const connect: typeof connectMcp = async (target) => {
         if (target.endpoint.protocol !== "https:") throw new Error("a native connector reaches its vendor over https only");
-        const fetcher = vendorFetcher({ base: target.endpoint, fetch: context.nativeFetch ?? safeVendorFetch() });
-        return nativeConnection(spec.tools, target.tools, { credential: { token: target.token, bindings: {} }, fetch: fetcher, routing: spec.routing });
+        let base: typeof fetch;
+        if (spec.hostTyped === true) {
+          // An address a person typed: checked again now, and the connection pinned to what the check returned. No guard, no connection.
+          if (context.endpointGuard === undefined) throw new CredentialUnavailable("address checks are not configured in this deployment");
+          try {
+            base = await context.endpointGuard(target.endpoint);
+          } catch (error) {
+            throw new CredentialUnavailable(error instanceof Error ? error.message : "the address is not allowed");
+          }
+        } else {
+          base = context.nativeFetch ?? safeVendorFetch();
+        }
+        const fetcher = vendorFetcher({ base: target.endpoint, fetch: base });
+        return nativeConnection(spec.tools, target.tools, {
+          credential: { token: target.token, bindings: {} }, fetch: fetcher, routing: spec.routing, scrub: spec.secretParts?.(target.token) ?? [],
+        });
       };
       return {
         name: stored.name,
@@ -276,8 +305,12 @@ export function nativeConnectorType<Config extends NativeConfig, EngineScope ext
           const fromConnection = spec.routing.fromConnection(loaded.connection);
           const credentials: CredentialProvider<EngineScope> = {
             issue: async (scope, access, actor) => {
+              // The provider checks the connection is usable and pinned to this host; a connection of several values is then read whole.
               const issued = await provider.issue(scope, access, actor);
-              return { ...issued, bindings: { ...issued.bindings, ...fromConnection } };
+              if (spec.packSecret === undefined) return { ...issued, bindings: { ...issued.bindings, ...fromConnection } };
+              const secret = await registry!.connectionSecret?.(ref);
+              if (secret === undefined) throw new CredentialUnavailable(`credential ${ref} could not be read; save the connection's secret again`);
+              return { ...issued, token: spec.packSecret(secret), bindings: { ...issued.bindings, ...fromConnection } };
             },
             ...(provider.invalidate === undefined ? {} : { invalidate: (scope: EngineScope) => provider.invalidate!(scope) }),
           };
@@ -293,6 +326,7 @@ export function nativeConnectorType<Config extends NativeConfig, EngineScope ext
             binder,
             guards: [],
             itemArguments: spec.itemArguments,
+            ...(spec.unavailableTools === undefined ? {} : { unavailableTools: (scope: EngineScope) => spec.unavailableTools!(scope) }),
           };
           return definition;
         },
@@ -311,13 +345,15 @@ export function nativeConnectionCheck<T extends Extract<ObservabilityConnectionT
     vendor: string;
     endpoint(connection: Extract<OrgConnection, { type: T }>): URL;
     check(fetch: VendorFetch, connection: Extract<OrgConnection, { type: T }>, token: string): Promise<void>;
+    checkHeaders?(secret: ConnectionSecret): Record<string, string>;
   },
   type: T,
 ): (input: ConnectionCheckInput<T>) => Promise<CheckResult> {
   return async (input) => {
     if (input.secret === undefined) return { ok: false, message: "the saved secret could not be read; save it again" };
     const token = connectionSecretToken(type, input.secret);
-    const fetcher = vendorFetcher({ base: spec.endpoint(input.connection), fetch: input.fetch, headers: { authorization: `Bearer ${token}` } });
+    const headers = spec.checkHeaders?.(input.secret) ?? { authorization: `Bearer ${token}` };
+    const fetcher = vendorFetcher({ base: spec.endpoint(input.connection), fetch: input.fetch, headers });
     try {
       await spec.check(fetcher, input.connection, token);
       return { ok: true };

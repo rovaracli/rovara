@@ -220,7 +220,7 @@ describe("the address a person typed (Review Focus 6)", () => {
     const withoutGuard = await resolved({ context: { endpointGuard: undefined as never } });
     await expect(discoverTools(withoutGuard.definition, context(withoutGuard.scope), { connect: withoutGuard.connector.connect! })).rejects.toBeInstanceOf(ConnectorNotConnected);
     const nativeSpy = vi.fn(async () => new Response("[]"));
-    const r = await resolved({ context: { nativeFetch: nativeSpy as never } });
+    const r = await resolved({ context: { nativeFetch: nativeSpy } });
     await discoverTools(r.definition, context(r.scope), { connect: r.connector.connect! });
     const connection = await r.connector.connect!({ endpoint: r.definition.endpoint, token: TOKEN, tools: [...TOOLS], signal: AbortSignal.timeout(5_000) });
     await connection.call("list_firing_alerts", { scopeAlias: "pay", folderUids: "fold-pay", datasourceUid: "prom1" });

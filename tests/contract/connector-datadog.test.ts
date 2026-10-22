@@ -3,7 +3,8 @@
 // faked; no test reaches a network.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { discoverTools, executeTool, type ConnectorDefinition, type Ledger } from "@agentx/gateway";
-import { DATADOG_SITES, ProjectDefinitionSchema, type GrantedTool, type OrgId } from "../../packages/contracts/src/index.js";
+import type { DATADOG_SITES} from "../../packages/contracts/src/index.js";
+import { ProjectDefinitionSchema, type GrantedTool, type OrgId } from "../../packages/contracts/src/index.js";
 import { classifyWrite } from "../../packages/broker/src/agents/write-class.js";
 import { BUILT_IN_CONNECTOR_TYPES, resolveConnectors, type ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
 import { datadogConnectionCheck, datadogConnectorType } from "../../packages/broker/src/aws/datadog-connector-type.js";
@@ -76,12 +77,13 @@ const context = (tools = TOOLS, scope: DatadogScope = PAY) => ({
 const ledger: Ledger = { claim: async () => true, get: async () => undefined, finish: async () => undefined };
 const textOf = (result: { content?: Array<{ text?: string | undefined }> | undefined }) => result.content?.map((entry) => entry.text ?? "").join("") ?? "";
 
-async function run(tool: string, args: Record<string, unknown>, options: Parameters<typeof resolved>[0] = {}) {
+async function run(tool: string, args: Record<string, unknown>, options: Parameters<typeof resolved>[0] & { scope?: DatadogScope } = {}) {
   const r = await resolved(options);
-  const discovered = (await discoverTools(r.definition, context(), { connect: r.connector.connect! })).tools.find((entry) => entry.name === tool)!;
+  const scope = options.scope ?? PAY;
+  const discovered = (await discoverTools(r.definition, context(TOOLS, scope), { connect: r.connector.connect! })).tools.find((entry) => entry.name === tool)!;
   const result = await executeTool(
-    { requestId: "11111111-1111-4111-8111-111111111111", scope: "pay", tool, schemaHash: discovered.schemaHash, arguments: args },
-    r.definition, context(), { connect: r.connector.connect!, ledger },
+    { requestId: "11111111-1111-4111-8111-111111111111", scope: scope.alias, tool, schemaHash: discovered.schemaHash, arguments: args },
+    r.definition, context(TOOLS, scope), { connect: r.connector.connect!, ledger },
   );
   return { ...r, result };
 }
@@ -111,7 +113,7 @@ describe("the Datadog connector type", () => {
   it("refuses a Datadog site outside the enum when the connection is saved", async () => {
     const s = setup();
     const store = new OrgConnectionStore({ ...s.deps, checkEndpoint: async () => undefined });
-    const refused = await store.put({ orgId: ORG_A, connection: { connectionId: CON, type: "datadog", label: "Datadog", access: "read", site: "datadoghq.example" } as never, secret: { apiKey: API_KEY, appKey: APP_KEY }, by: ALICE }).then(() => undefined, (error: { code?: string }) => error);
+    const refused = await store.put({ orgId: ORG_A, connection: { connectionId: CON, type: "datadog", label: "Datadog", access: "read", site: "datadoghq.example" }, secret: { apiKey: API_KEY, appKey: APP_KEY }, by: ALICE }).then(() => undefined, (error: { code?: string }) => error);
     expect(refused).toMatchObject({ code: "CONFIG_INVALID" });
     expect(s.db.items.size).toBe(0);
   });
@@ -206,7 +208,7 @@ describe("running the tools", () => {
   });
 
   it("quotes a tag value that has characters a log query reads as syntax", async () => {
-    const { api } = await run("search_logs", { query: "status:error", fromMinutesAgo: 5 }, { config: { scopes: [{ alias: "pay", tags: ["team:core-api", "env:prod"] }] } });
+    const { api } = await run("search_logs", { query: "status:error", fromMinutesAgo: 5 }, { scope: { alias: "pay", tags: ["team:core-api", "env:prod"] }, config: { scopes: [{ alias: "pay", tags: ["team:core-api", "env:prod"] }] } });
     expect((api.requests[0]!.body as { filter: { query: string } }).filter.query).toBe('(team:"core-api" AND env:prod) AND (status:error)');
   });
 

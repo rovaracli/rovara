@@ -7,7 +7,7 @@ import { OrgIdSchema, type CredentialRecord, type CredentialType, type OrgId } f
 import { hostPinProblem, type ConnectorCredentials, type HostPin } from "../aws/credentials.js";
 import { orgConnectorSecretName } from "./org-secrets.js";
 import { vendorHostOf } from "./vendor-hosts.js";
-import { connectionOf, readConnection, readConnectionToken, type OrgConnectionDeps, type OrgConnectionRecord } from "./store.js";
+import { connectionOf, readConnection, readConnectionSecret, readConnectionToken, type OrgConnectionDeps, type OrgConnectionRecord } from "./store.js";
 
 /**
  * A connection is served only when it exists in this org and has a saved secret. A CloudWatch connection never has one (its connector assumes
@@ -55,6 +55,10 @@ export function orgCredentialRegistry(deps: OrgConnectionDeps, orgIdValue: strin
     async connection(ref) {
       const connection = await usable(deps, orgId, ref);
       return connection === undefined ? undefined : connectionOf(connection);
+    },
+    async connectionSecret(ref) {
+      const connection = await usable(deps, orgId, ref);
+      return connection === undefined ? undefined : readConnectionSecret(deps, orgId, connection);
     },
     async typeOf(ref): Promise<CredentialType | undefined> {
       return await usable(deps, orgId, ref) === undefined ? undefined : "static-secret";

@@ -125,6 +125,11 @@ export interface ConnectorDefinition<Scope> {
    * a CredentialUnavailable, reads as not connected). Generic connectors check resolved addresses.
    */
   verifyEndpoint?: () => Promise<void>;
+  /**
+   * Plan 4 Task 14: tools this scope cannot use, each with the reason shown to the administrator (a Grafana scope with no data source cannot run queries). They are
+   * left out of the scope's catalog and listed among the skipped tools, and a call to one is refused as an unavailable tool.
+   */
+  unavailableTools?(scope: Scope): ReadonlyArray<{ tool: string; reason: string }>;
 }
 
 /** The tools a connector's guard covers, and the argument names that address an item (issue #49). */

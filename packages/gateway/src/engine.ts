@@ -24,7 +24,7 @@ export interface SkippedTool { tool: string; reason: string }
 /** Derive schemas from discovery, narrow by admin policy, bind routing outside model arguments, and say why any approved tool is not offered. */
 export function reviewTools<Scope>(
   connection: Pick<McpConnection, "tools">,
-  connector: Pick<ConnectorDefinition<Scope>, "binder">,
+  connector: Pick<ConnectorDefinition<Scope>, "binder" | "unavailableTools">,
   context: ConnectorContext<Scope>,
 ): { tools: CatalogTool[]; skipped: SkippedTool[] } {
   const { tools, skipped } = review(connection, connector, context);
@@ -34,18 +34,21 @@ export function reviewTools<Scope>(
 /** reviewTools, keeping for each offered tool the bound properties a call on it sends. */
 function review<Scope>(
   connection: Pick<McpConnection, "tools">,
-  connector: Pick<ConnectorDefinition<Scope>, "binder">,
+  connector: Pick<ConnectorDefinition<Scope>, "binder" | "unavailableTools">,
   context: ConnectorContext<Scope>,
 ): { tools: Array<{ tool: CatalogTool; bound: string[] }>; skipped: SkippedTool[] } {
   const tools: Array<{ tool: CatalogTool; bound: string[] }> = [];
   const skipped: SkippedTool[] = [];
   const offered = new Set(connection.tools.map((tool) => tool.name));
+  const unavailable = new Map((connector.unavailableTools?.(context.scope) ?? []).map((entry) => [entry.tool, entry.reason]));
   for (const approval of context.policy.tools) {
-    if (!offered.has(approval.name)) skipped.push({ tool: approval.name, reason: "not offered by the vendor" });
+    const reason = unavailable.get(approval.name);
+    if (reason !== undefined) skipped.push({ tool: approval.name, reason });
+    else if (!offered.has(approval.name)) skipped.push({ tool: approval.name, reason: "not offered by the vendor" });
   }
   for (const upstream of connection.tools) {
     const policy = context.policy.tools.find((entry) => entry.name === upstream.name);
-    if (!policy) continue;
+    if (!policy || unavailable.has(upstream.name)) continue;
     if (JSON.stringify(upstream.inputSchema).length > 32_768) { skipped.push({ tool: upstream.name, reason: "schema exceeds 32768 characters" }); continue; }
     const flattened = flattenSchema(upstream.inputSchema);
     if ("unsupported" in flattened) { skipped.push({ tool: upstream.name, reason: flattened.unsupported }); continue; }
@@ -101,7 +104,7 @@ function toolHints(annotations: McpToolAnnotations | undefined): { hints: ToolHi
 
 export function approveTools<Scope>(
   connection: Pick<McpConnection, "tools">,
-  connector: Pick<ConnectorDefinition<Scope>, "binder">,
+  connector: Pick<ConnectorDefinition<Scope>, "binder" | "unavailableTools">,
   context: ConnectorContext<Scope>,
 ): CatalogTool[] {
   return reviewTools(connection, connector, context).tools;

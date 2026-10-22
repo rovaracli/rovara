@@ -5,6 +5,8 @@ import type { GitHubMcpDependencies } from "../github-mcp.js";
 import { GITHUB_LEDGER } from "./connector-ledger.js";
 import { asanaConnectorType } from "./asana-connector-type.js";
 import { mcpConnectorType } from "./connector-presets.js";
+import { datadogConnectorType } from "./datadog-connector-type.js";
+import { grafanaConnectorType } from "./grafana-connector-type.js";
 import { sentryConnectorType } from "./sentry-connector-type.js";
 import type { ConnectorCredentials, HostPin } from "./credentials.js";
 import { jiraConnectorType } from "./jira-connector-type.js";
@@ -110,7 +112,7 @@ export const githubConnectorType: ConnectorType = {
 export const BUILT_IN_CONNECTOR_TYPES: Readonly<Record<string, ConnectorType>> = {
   github: githubConnectorType, linear: linearConnectorType, jira: jiraConnectorType, asana: asanaConnectorType, mcp: mcpConnectorType,
   // Plan 4: the native read-only connectors, as their tasks land.
-  sentry: sentryConnectorType,
+  sentry: sentryConnectorType, datadog: datadogConnectorType, grafana: grafanaConnectorType,
 };
 
 /**

@@ -8,6 +8,7 @@ import {
   type CredentialListEntry,
   type CredentialRecord,
   type CredentialRegistration,
+  type ConnectionSecret,
   type CredentialType,
   type OrgConnection,
 } from "@agentx/contracts";
@@ -238,6 +239,11 @@ export type ConnectorCredentials = Pick<CredentialRegistry, "has" | "registratio
    * a cloud install's per-org registry has it; the install-wide one does not.
    */
   connection?(ref: string): Promise<OrgConnection | undefined>;
+  /**
+   * Plan 4 Task 14: the whole secret of the org connection `ref` names, in its type's shape, for a connector whose credential is more than one value (Datadog's
+   * API and application keys). Read by the version the connection's own save wrote. Only the per-org registry has it; the connector must not log or echo it.
+   */
+  connectionSecret?(ref: string): Promise<ConnectionSecret | undefined>;
 };
 
 /** Registered connector credentials: records name a secret, never hold one. */
