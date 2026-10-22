@@ -1103,7 +1103,7 @@ describe("a change approval is decided the same way", () => {
 
   it("claims it, hands the handler the record with who decided it and how, and ends it APPROVED_DONE", async () => {
     const w = world();
-    const seen: Array<{ decidedBy?: string; status: string; proof?: unknown }> = [];
+    const seen: Array<{ decidedBy?: string | undefined; status: string; proof?: unknown }> = [];
     registerApprovalSubjectHandler("agent_publish", async (_deps, record, decision) => { seen.push({ decidedBy: record.decidedBy, status: record.status, proof: decision?.proof }); });
     const record = await change(w);
     const proof = { kind: "button", via: "slack" } as const;
