@@ -20,6 +20,7 @@ import {
   TaskChannelPeopleResponseSchema,
   TaskPeopleDisplayReadResponseSchema,
   agentXError,
+  LAST_OWNER_MESSAGE,
   MEMBER_GRANT_SK_PREFIX,
   PROJECT_REVISION_SK_PREFIX,
   SLACK_BINDING_SK_PREFIX,
@@ -1760,7 +1761,7 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
   const sole = caller.orgRole === "owner" && (await deps.orgs.listMembers(caller.orgId)).every((member) => member.developerId === caller.developerId);
   // Ruling (Task 4, Minor 6): closing is for cloud orgs. A private install's only org is never closed: a closed org would take every
   // later sign-in with no owner. Its sole owner promotes someone else first.
-  if (sole && deps.cloud !== true) throw agentXError("LAST_OWNER", "You are the only owner. Make someone else an owner first.");
+  if (sole && deps.cloud !== true) throw agentXError("LAST_OWNER", LAST_OWNER_MESSAGE);
   if (sole) {
     await deps.orgs.closeOrg(caller.orgId, {
       archiveProjects: deps.closeOrgHooks?.archiveProjects ?? ((orgId) => archiveOrgProjects(archiveDepsOf(deps), orgId, { developerId: caller.developerId })), clearEgress: deps.closeOrgHooks?.clearEgress ?? ((orgId) => clearOrgEgress(egressDepsOf(deps), orgId)), emails,

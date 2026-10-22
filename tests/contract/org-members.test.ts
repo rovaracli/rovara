@@ -230,7 +230,7 @@ describe("POST /v1/app/org/leave", () => {
     const harness = await org();
     const refused = await leave(harness, OMAR);
     expect(refused.status).toBe(409);
-    expect(errorOf(refused)).toMatchObject({ code: "LAST_OWNER" });
+    expect(errorOf(refused)).toMatchObject({ code: "LAST_OWNER", message: "An organization needs at least one owner. Make someone else an owner first." });
     expect(roleOf(harness, OMAR)).toBe("owner");
     expect(harness.db.get(orgMetaKey(TEST_ORG))?.closedAt).toBeUndefined();
 
@@ -285,7 +285,7 @@ describe("POST /v1/app/org/leave on a private install (ruling, Task 4 Minor 6)",
     harness.db.delete(developerOrgKey(MAYA.developerId));
     const refused = await harness.dev(OMAR, "POST", "/v1/app/org/leave", { requestId: randomUUID() });
     expect(refused.status).toBe(409);
-    expect(errorOf(refused)).toMatchObject({ code: "LAST_OWNER", message: expect.stringContaining("ake someone else an owner first") as string });
+    expect(errorOf(refused)).toMatchObject({ code: "LAST_OWNER", message: "An organization needs at least one owner. Make someone else an owner first." });
     expect(harness.db.get(orgMetaKey(TEST_ORG))?.closedAt).toBeUndefined();
     expect(roleOf(harness, OMAR)).toBe("owner");
     expect(harness.endDeveloperSessions).not.toHaveBeenCalled();

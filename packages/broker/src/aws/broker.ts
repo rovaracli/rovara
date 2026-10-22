@@ -141,6 +141,7 @@ import {
   WorkspaceClosePreflightResultSchema,
   WorkspaceInstanceSchema,
   agentXError,
+  projectNameTakenMessage,
   parseSlackThreadSubject,
   slackThreadSubject,
   slackThreadUrl,
@@ -2196,7 +2197,7 @@ export async function registerProjectFor(
   const orgId = actor.orgId;
   const { definition, runtimeBinding, wantsPreflight, setupApproval } = parseRegistrationInput(value);
   if (options.requireNewName === true && await getItem(dependencies, orgProjectCatalogKey(orgId, definition.name)) !== undefined) {
-    throw agentXError("PROJECT_NAME_TAKEN", `a project named ${definition.name} already exists in this organization; choose another name`);
+    throw agentXError("PROJECT_NAME_TAKEN", projectNameTakenMessage(definition.name));
   }
   let setupRuntimeAdmission: ReturnType<typeof admitProjectSetupRuntime>;
   let setupExecutionCreated = false;
@@ -2386,7 +2387,7 @@ export async function registerProjectFor(
         // the grant (if any), META, the catalog update (if any), then the setup rows.
         const metaIndex = membership === undefined ? 1 : 2;
         if (failed(0) || failed(metaIndex) || (updateCatalog && failed(metaIndex + 1))) {
-          throw agentXError("PROJECT_NAME_TAKEN", `a project named ${definition.name} already exists in this organization; choose another name`);
+          throw agentXError("PROJECT_NAME_TAKEN", projectNameTakenMessage(definition.name));
         }
         // A transaction that only met another in flight says nothing about the name: the caller tries again.
         if (reasons?.some((reason) => reason?.Code === "TransactionConflict")) {
@@ -2398,7 +2399,7 @@ export async function registerProjectFor(
       // catalog before returning duplicate success; otherwise retry only a catalog/history advance.
       const winner = await getItem<RegisteredProjectRecord>(dependencies, key);
       if (winner !== undefined && options.requireNewName === true) {
-        throw agentXError("PROJECT_NAME_TAKEN", `a project named ${definition.name} already exists in this organization; choose another name`);
+        throw agentXError("PROJECT_NAME_TAKEN", projectNameTakenMessage(definition.name));
       }
       if (winner !== undefined) {
         if (!sameJsonContent(winner.definition, definition) || !sameJsonContent(winner.runtimeBinding, runtimeBinding)

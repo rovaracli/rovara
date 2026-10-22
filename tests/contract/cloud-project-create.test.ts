@@ -302,7 +302,7 @@ describe("a project's name in its org", () => {
     const before = h.written().length;
     const again = await h.create(MAYA, { requestId: requestId(2), repository: "acme/web" });
     expect(error(again).code).toBe("PROJECT_NAME_TAKEN");
-    expect(error(again).message).toContain("a project named web already exists in this organization; choose another name");
+    expect(error(again).message).toBe("Your organization already has a project named `web` (it may be archived). Choose another name.");
     const other = await h.create(MAYA, { requestId: requestId(3), repository: "acme/api", name: "web" });
     expect(error(other).code).toBe("PROJECT_NAME_TAKEN");
     expect(h.projectRows()).toHaveLength(1);

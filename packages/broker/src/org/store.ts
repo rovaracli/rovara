@@ -8,6 +8,7 @@ import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteComma
 import {
   MEMBER_GRANT_SK_PREFIX,
   agentXError,
+  LAST_OWNER_MESSAGE,
   developerOrgKey,
   githubInstallationKey,
   memberGrantsPk,
@@ -512,5 +513,4 @@ export class OrgStore {
 
 const coded = (code: AgentXErrorCode, message: string) => agentXError(code, message);
 const alreadyInOrg = () => coded("ALREADY_IN_ORG", "this developer already belongs to an organization");
-const LAST_OWNER_MESSAGE = "An organization needs at least one owner. Make someone else an owner first.";
 const inviteInvalid = () => coded("INVITE_INVALID", "the invite is unknown, expired or already used");

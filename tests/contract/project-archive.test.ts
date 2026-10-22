@@ -19,8 +19,8 @@ type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
 
 const OTHER_ORG: OrgId = "org_bbbbbbbbbbbbbbbbbbbb";
 const PAYMENTS: EgressOwner = { kind: "project", project: "payments" };
-const ARCHIVED_MESSAGE = "`payments` is archived; ask a maintainer to restore it before starting new work.";
-const SETTINGS_ARCHIVED_MESSAGE = "`payments` is archived; restore it before changing its settings.";
+const ARCHIVED_MESSAGE = "Project `payments` is archived. Ask a project maintainer to restore it.";
+const SETTINGS_ARCHIVED_MESSAGE = ARCHIVED_MESSAGE;
 const BINDING = {
   deploymentMode: "ec2-ebs", launchTemplateId: "lt-0123456789abcdef0",
   subnets: [{ availabilityZone: "us-west-2a", subnetId: "subnet-0123456789abcdef0" }], volumeSizeGiB: 20, volumeType: "gp3",
