@@ -394,6 +394,21 @@ describe("replaying a creation", () => {
     expect(error(await h.create(MAYA, { requestId: requestId(2), repository: "acme/web", name: "web-2" })).code).toBe("GITHUB_NOT_CONNECTED");
   });
 
+  it("binds the request to the person who made it (final review M2): another person's use of the id is IDEMPOTENCY_CONFLICT and answers nothing", async () => {
+    const h = await cloudInstall();
+    expect((await h.create(MAYA, { requestId: REQUEST, repository: "acme/web" })).status).toBe(201);
+    const record = h.db.get(projectCreateRequestKey(TEST_ORG, REQUEST)) as Record<string, unknown>;
+    expect(record.by).toBe(MAYA.developerId);
+    // The record names someone else, as if another owner of the org had sent the id first.
+    h.db.set({ ...record, by: "5".repeat(64) });
+    const before = h.written().length;
+    const stolen = await h.create(MAYA, { requestId: REQUEST, repository: "acme/web" });
+    expect(stolen.status).toBe(409);
+    expect(error(stolen).code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(stolen.body.project).toBeUndefined();
+    expect(h.written()).toHaveLength(before);
+  });
+
   it("does not answer a replay to a member: the role is checked first", async () => {
     const h = await cloudInstall();
     expect((await h.create(MAYA, { requestId: REQUEST, repository: "acme/web" })).status).toBe(201);

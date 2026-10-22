@@ -258,6 +258,7 @@ import { healthProbes } from "./health-probes.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
 import { releaseFailedPreparation, slackThreadKey } from "./failed-preparation.js";
 import { closeSetupCheck } from "./setup-check-close.js";
+import { requireSameRequest } from "../org/request-records.js";
 import { releaseFailedCancelWorkspace } from "./failed-cancel-release.js";
 import { assertNoUntrustedRoutingFields, authorizeWorkspace } from "../authorization.js";
 import type { GitHubAppCredentialProvider, GitHubTokenScope } from "../github-app.js";
@@ -718,14 +719,14 @@ async function listEgressPending(dependencies: AwsBrokerDependencies, identity: 
  */
 async function decideEgress(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, decision: "approved" | "rejected", body: unknown): Promise<EgressDecisionResponse & { warning?: string }> {
   if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
-  const parsed: z.ZodSafeParseResult<{ orgId: OrgId; owner: EgressOwner; domain: string; reason?: string }> = decision === "approved"
+  const parsed: z.ZodSafeParseResult<{ requestId: string; orgId: OrgId; owner: EgressOwner; domain: string; reason?: string }> = decision === "approved"
     ? EgressApproveBodySchema.safeParse(body) : EgressRejectBodySchema.safeParse(body);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
   }
-  const { orgId, owner, domain, reason } = parsed.data;
-  const { warning } = await decideEgressDomain(egressDepsOf(dependencies), { orgId, owner, domain, decision, operatorId: identity.subject, ...(reason === undefined ? {} : { reason }) });
+  const { requestId, orgId, owner, domain, reason } = parsed.data;
+  const { warning } = await decideEgressDomain(egressDepsOf(dependencies), { requestId, orgId, owner, domain, decision, operatorId: identity.subject, ...(reason === undefined ? {} : { reason }) });
   return { orgId, owner, domain, status: decision, ...(warning === undefined ? {} : { warning }) };
 }
 
@@ -2472,11 +2473,13 @@ async function replayedProjectCreation(
   orgId: OrgId,
   requestKey: { pk: string; sk: string },
   bodyHash: string,
+  actorId: string,
   nowMs: number,
 ): Promise<CloudProjectCreated | undefined> {
-  const recorded = await getItem<{ bodyHash?: unknown; projectName?: unknown; expiresAt?: unknown }>(dependencies, requestKey);
+  const recorded = await getItem<{ bodyHash?: unknown; projectName?: unknown; expiresAt?: unknown; by?: unknown }>(dependencies, requestKey);
   if (recorded === undefined || typeof recorded.expiresAt !== "number" || recorded.expiresAt < Math.floor(nowMs / 1000) || typeof recorded.projectName !== "string") return undefined;
-  if (recorded.bodyHash !== bodyHash) throw agentXError("IDEMPOTENCY_CONFLICT", "this requestId was already used to create a different project");
+  // The one request-id pattern (final review M2): the record is the caller's, and says the same body. Another person of the org can neither replay it nor learn the project.
+  requireSameRequest(recorded, { by: actorId, bodyHash }, "this requestId was already used to create a different project");
   const made = await getItem<RegisteredProjectRecord>(dependencies, projectRevisionKey(orgId, recorded.projectName, 1));
   return made === undefined ? undefined : cloudProjectAnswer({ project: withoutKeys(made), duplicate: true });
 }
@@ -2495,7 +2498,7 @@ async function createCloudProject(dependencies: AwsBrokerDependencies, caller: D
   const requestKey = projectCreateRequestKey(orgId, input.requestId);
   const bodyHash = projectCreateBodyHash(input);
   const nowMs = Date.now();
-  const replayed = () => replayedProjectCreation(dependencies, orgId, requestKey, bodyHash, nowMs);
+  const replayed = () => replayedProjectCreation(dependencies, orgId, requestKey, bodyHash, caller.developerId, nowMs);
   const earlier = await replayed();
   if (earlier !== undefined) return earlier;
   const defaults = dependencies.cloudProjects;
@@ -2526,7 +2529,7 @@ async function createCloudProject(dependencies: AwsBrokerDependencies, caller: D
         extraItems: [{ Put: {
           TableName: dependencies.tableName,
           // `indexExpiresAt` is the State table's TTL attribute: the record goes when its day is over.
-          Item: { ...requestKey, entityType: "PROJECT_CREATE_REQUEST", bodyHash, projectName: definition.name, createdAt, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: expiresAt },
+          Item: { ...requestKey, entityType: "PROJECT_CREATE_REQUEST", by: caller.developerId, bodyHash, projectName: definition.name, createdAt, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: expiresAt },
           ConditionExpression: "attribute_not_exists(pk) OR expiresAt < :now",
           ExpressionAttributeValues: { ":now": Math.floor(nowMs / 1000) },
         } }],

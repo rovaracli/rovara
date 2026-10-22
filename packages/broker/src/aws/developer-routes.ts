@@ -1746,7 +1746,9 @@ async function removeOrganizationMember(deps: DeveloperRouteDependencies, caller
   return { removed: { developerId, name }, message: STOPS_AFTER_STEP(name) };
 }
 
-const LeaveBodySchema = z.object({ requestId: z.string().uuid() }).strict();
+// No request id (final review M2): a repeated leave finds the person already out of the org and is refused at sign-in, so a stored id could never be
+// replayed. The body is empty, and an id sent with it is refused like any other field this route does not take.
+const LeaveBodySchema = z.object({}).strict();
 
 /**
  * `POST /v1/app/org/leave`. Members and admins leave. An owner leaves when another owner exists; an owner who is the only member

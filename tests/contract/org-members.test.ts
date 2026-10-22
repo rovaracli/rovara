@@ -209,7 +209,7 @@ describe("DELETE /v1/app/org/members/{developerId}", () => {
 });
 
 describe("POST /v1/app/org/leave", () => {
-  const leave = (harness: Harness, who: Developer) => harness.dev(who, "POST", "/v1/app/org/leave", { requestId: randomUUID() });
+  const leave = (harness: Harness, who: Developer) => harness.dev(who, "POST", "/v1/app/org/leave", {});
 
   it("lets a member and an admin leave, without a ban", async () => {
     const harness = await org();
@@ -224,6 +224,16 @@ describe("POST /v1/app/org/leave", () => {
       expect((await harness.dev(who, "GET", "/v1/dev/org")).status).toBe(401);
     }
     expect(harness.endDeveloperSessions).toHaveBeenCalledTimes(2);
+  });
+
+  it("takes no request id (final review M2): a body with one is refused, and the person stays", async () => {
+    const harness = await org();
+    const bea = person(harness, "Bea", "member");
+    const refused = await harness.dev(bea, "POST", "/v1/app/org/leave", { requestId: randomUUID() });
+    expect(refused.status).toBe(400);
+    expect(errorOf(refused)).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(roleOf(harness, bea)).toBe("member");
+    expect((await leave(harness, bea)).status).toBe(200);
   });
 
   it("refuses the only owner leaving while others remain with 409 LAST_OWNER, and lets an owner leave when another owner exists", async () => {
@@ -283,7 +293,7 @@ describe("POST /v1/app/org/leave on a private install (ruling, Task 4 Minor 6)",
     const harness = await org();
     harness.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
     harness.db.delete(developerOrgKey(MAYA.developerId));
-    const refused = await harness.dev(OMAR, "POST", "/v1/app/org/leave", { requestId: randomUUID() });
+    const refused = await harness.dev(OMAR, "POST", "/v1/app/org/leave", {});
     expect(refused.status).toBe(409);
     expect(errorOf(refused)).toMatchObject({ code: "LAST_OWNER", message: "An organization needs at least one owner. Make someone else an owner first." });
     expect(harness.db.get(orgMetaKey(TEST_ORG))?.closedAt).toBeUndefined();

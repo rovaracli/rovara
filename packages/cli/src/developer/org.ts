@@ -85,7 +85,7 @@ export async function orgLeaveQuestion(deps: DeveloperSessionDeps, env: string |
 }
 
 export async function orgLeave(deps: DeveloperSessionDeps, env: string | undefined): Promise<{ env: string; url: string; orgClosed: boolean; message: string }> {
-  const { env: resolved, url, body } = await developerRequest(deps, env, "/v1/app/org/leave", LeaveResponseSchema, { method: "POST", body: { requestId: randomUUID() }, explain: true });
+  const { env: resolved, url, body } = await developerRequest(deps, env, "/v1/app/org/leave", LeaveResponseSchema, { method: "POST", body: {}, explain: true });
   return { env: resolved, url, orgClosed: body.orgClosed, message: body.message };
 }
 

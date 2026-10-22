@@ -117,6 +117,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/org/project-members.ts",
       // Plan 2, Task 22: a project's setup-check request records (replay keys) expire on it after a day.
       "packages/broker/src/org/project-setup-check.ts",
+      // Final review M2: the one request-id pattern's record (archive and restore, staff egress decisions) expires on it after a day.
+      "packages/broker/src/org/request-records.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);
@@ -128,7 +130,7 @@ describe("the health route's grants (A13)", () => {
     expect(brokerUses).toEqual([
       "        slackUserId: user.data, channelId: thread.data.channelId, threadTs: thread.data.threadTs, message, at, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(at) },",
       // Plan 2, Task 16: a project creation request's record, which expires with its day (it holds the same instant as its expiresAt).
-      "          Item: { ...requestKey, entityType: \"PROJECT_CREATE_REQUEST\", bodyHash, projectName: definition.name, createdAt, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: expiresAt },",
+      "          Item: { ...requestKey, entityType: \"PROJECT_CREATE_REQUEST\", by: caller.developerId, bodyHash, projectName: definition.name, createdAt, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: expiresAt },",
       "      [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(operation.createdAt),",
     ]);
     // Task 19: a refused Slack press's private note, delivered within the hour and then dead weight.

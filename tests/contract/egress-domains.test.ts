@@ -345,6 +345,91 @@ describe("the admin routes", () => {
   });
 });
 
+describe("a staff decision's request id (final review M2)", () => {
+  const decisionRecords = (h: Awaited<ReturnType<typeof install>>) => h.db.find((item) => item.pk === "EGRESS_DECISION_REQUEST");
+
+  it("stores the request in the same transaction as the decision, bound to the operator and with an expiry", async () => {
+    const h = await install();
+    await h.put(["a.acme.dev"]);
+    const id = randomUUID();
+    const sent: Array<Array<Record<string, unknown>>> = [];
+    const send = h.db.send.bind(h.db);
+    h.db.send = (async (command: { constructor: { name: string }; input?: { TransactItems?: Array<Record<string, unknown>> } }) => {
+      if (command.constructor.name === "TransactWriteCommand") sent.push(command.input?.TransactItems ?? []);
+      return send(command as never);
+    });
+    expect((await h.decide("approve", "a.acme.dev", { requestId: id })).status).toBe(200);
+    const decided = sent.filter((items) => JSON.stringify(items).includes("EGRESS_DECISION_REQUEST"));
+    expect(decided).toHaveLength(1);
+    expect(decided[0]!.length).toBeLessThanOrEqual(100);
+    expect(JSON.stringify(decided[0])).toContain("\"action\":\"approved\"");
+    expect(decisionRecords(h)).toHaveLength(1);
+    expect(decisionRecords(h)[0]).toMatchObject({ sk: id, by: STAFF.subject });
+    expect(decisionRecords(h)[0]!.indexExpiresAt as number).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  });
+
+  it("leaves no record when the decision fails, and the same id then decides", async () => {
+    const h = await install();
+    await h.put(["a.acme.dev"]);
+    const id = randomUUID();
+    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("EGRESS_DECISION_REQUEST"), error: { name: "InternalServerError" } });
+    expect((await h.decide("approve", "a.acme.dev", { requestId: id })).status).toBeGreaterThanOrEqual(500);
+    expect(decisionRecords(h)).toEqual([]);
+    expect(h.item()!.domains[0]).toMatchObject({ status: "pending" });
+    expect((await h.decide("approve", "a.acme.dev", { requestId: id })).status).toBe(200);
+  });
+
+  it("answers a repeat of the same id with the same outcome and writes nothing, even after the domain was removed and asked for again", async () => {
+    const h = await install();
+    await h.put(["a.acme.dev"]);
+    const id = randomUUID();
+    const first = await h.decide("approve", "a.acme.dev", { requestId: id });
+    expect(first.status).toBe(200);
+    await h.put(["b.acme.dev"]);
+    await h.put(["a.acme.dev", "b.acme.dev"]);
+    expect(h.item()!.domains.find((entry) => entry.domain === "a.acme.dev")).toMatchObject({ status: "pending" });
+    const auditsBefore = h.audits().length;
+    const syncs = h.sync.mock.calls.length;
+    const again = await h.decide("approve", "a.acme.dev", { requestId: id });
+    expect(again).toMatchObject({ status: 200, body: { orgId: TEST_ORG, domain: "a.acme.dev", status: "approved" } });
+    expect(h.item()!.domains.find((entry) => entry.domain === "a.acme.dev")).toMatchObject({ status: "pending" });
+    expect(h.audits()).toHaveLength(auditsBefore);
+    expect(h.sync.mock.calls).toHaveLength(syncs);
+  });
+
+  it("refuses the same id for another decision, another domain, or another operator with IDEMPOTENCY_CONFLICT, and decides nothing", async () => {
+    const h = await install();
+    await h.put(["a.acme.dev", "b.acme.dev"]);
+    const id = randomUUID();
+    expect((await h.decide("approve", "a.acme.dev", { requestId: id })).status).toBe(200);
+    const other = [
+      await h.decide("reject", "a.acme.dev", { requestId: id, reason: "no" }),
+      await h.decide("approve", "b.acme.dev", { requestId: id }),
+      await call(h.handler, { method: "POST", path: "/v1/admin/egress/approve", user: { subject: "staff-2", admin: true }, body: { requestId: id, orgId: TEST_ORG, owner: WEB, domain: "a.acme.dev" } }),
+    ];
+    for (const answer of other) expect(answer).toMatchObject({ status: 409, body: { error: { code: "IDEMPOTENCY_CONFLICT" } } });
+    expect(h.item()!.domains.find((entry) => entry.domain === "b.acme.dev")).toMatchObject({ status: "pending" });
+  });
+
+  it("takes an expired record the State table has not yet deleted as no record", async () => {
+    const h = await install();
+    await h.put(["a.acme.dev"]);
+    const id = randomUUID();
+    h.db.set({ pk: "EGRESS_DECISION_REQUEST", sk: id, entityType: "EGRESS_DECISION_REQUEST", by: "staff-2", bodyHash: "x", indexExpiresAt: Math.floor(Date.now() / 1000) - 10 });
+    expect((await h.decide("approve", "a.acme.dev", { requestId: id })).status).toBe(200);
+    expect(decisionRecords(h)[0]).toMatchObject({ by: STAFF.subject });
+  });
+
+  it("answers two identical requests sent together as one decision and one replay", async () => {
+    const h = await install();
+    await h.put(["a.acme.dev"]);
+    const id = randomUUID();
+    const answers = await Promise.all([h.decide("approve", "a.acme.dev", { requestId: id }), h.decide("approve", "a.acme.dev", { requestId: id })]);
+    expect(answers.map((answer) => answer.status)).toEqual([200, 200]);
+    expect(h.audits().filter((audit) => audit.action === "approved")).toHaveLength(1);
+  });
+});
+
 describe("egress items", () => {
   it("are keyed by owner: a project under PROJECT# and a model source under SOURCE#", async () => {
     const { db, deps } = plain({ cloud: false });
@@ -580,7 +665,7 @@ describe("closing an org", () => {
     seedMembership(h.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
     await h.put(["a.acme.dev"]);
     await putEgressDomains(h.deps, OTHER_ORG, WEB, ["c.beta.dev"], { developerId: "dev-2" });
-    const left = await h.dev(OMAR, "POST", "/v1/app/org/leave", { requestId: randomUUID() });
+    const left = await h.dev(OMAR, "POST", "/v1/app/org/leave", {});
     expect(left.status, JSON.stringify(left.body)).toBe(200);
     expect(h.item()).toBeUndefined();
     expect(h.item(OTHER_ORG)).toBeDefined();

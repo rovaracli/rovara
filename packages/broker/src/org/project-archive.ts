@@ -8,9 +8,10 @@
 // (it changes nothing when the item is already as asked), so a retry is always safe. A half-done restore fails closed: the project is active and
 // its domains stay out of the union until the flip lands. If the process dies between the two, nobody is told to repeat the call; the scheduled egress
 // sync runs `reconcileProjectEgress`, which makes every project's items agree with its META again.
-import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { agentXError, orgProjectCatalogPk, projectMetaKey, type OrgId, type OrgKey } from "@agentx/contracts";
 import { listEgressItems, setEgressOwnerActive, type EgressDomainsDependencies } from "./egress-domains.js";
+import { readRequestRecord, requestRecordPut, requireSameRequest, type RequestTransactItem } from "./request-records.js";
 
 export interface ProjectArchiveDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -73,10 +74,34 @@ export async function restoreProject(deps: ProjectArchiveDependencies, orgId: Or
 const archiveRequestKey = (orgId: OrgId, name: string, requestId: string): OrgKey => ({ pk: projectMetaKey(orgId, name).pk, sk: `ARCHIVE_REQUEST#${requestId}` });
 
 /**
- * One archive or restore request. The first call applies it (`archiveProject` or `restoreProject`) and then stores the request id with its action,
- * so a replay of the same id applies nothing and answers `replayed: true` (a late replay after the opposite action cannot undo it). The same id
- * for the other action is IDEMPOTENCY_CONFLICT. An id is stored only after the call finished, so a call that failed part-way is retried, not replayed.
- * The record has no expiry: archives are rare, and a replay may arrive at any time.
+ * META's change for one request, as a transaction item. It carries no condition of its own: archiving an archived project keeps its first
+ * `archivedAt` and `archivedBy`, and restoring an active one changes nothing, so a request that changes nothing still records its request item.
+ * A project that predates META gets one, as active and created by "unknown".
+ */
+function metaChange(deps: ProjectArchiveDependencies, orgId: OrgId, name: string, change: "archive" | "restore", actor: { developerId: string }, at: string): RequestTransactItem {
+  const make = "entityType = if_not_exists(entityType, :entity), #name = if_not_exists(#name, :name), createdAt = if_not_exists(createdAt, :at), createdBy = if_not_exists(createdBy, :unknown)";
+  return { Update: {
+    TableName: deps.tableName,
+    Key: projectMetaKey(orgId, name),
+    UpdateExpression: change === "archive"
+      ? `SET ${make}, #status = :archived, archivedAt = if_not_exists(archivedAt, :at), archivedBy = if_not_exists(archivedBy, :by)`
+      : `SET ${make}, #status = :active REMOVE archivedAt, archivedBy`,
+    ExpressionAttributeNames: { "#name": "name", "#status": "status" },
+    ExpressionAttributeValues: {
+      ":entity": "PROJECT_META", ":name": name, ":at": at, ":unknown": "unknown",
+      ...(change === "archive" ? { ":archived": "archived", ":by": actor.developerId } : { ":active": "active" }),
+    },
+  } };
+}
+
+const REQUEST_ATTEMPTS = 3;
+
+/**
+ * One archive or restore request, by the one request-id pattern (`request-records`): the META change and the request record are ONE transaction,
+ * the record is the caller's and expires, and a replay of the same id by the same person applies nothing and answers `replayed: true` (a late
+ * replay after the opposite action cannot undo it). The same id by someone else, or for the other action, is IDEMPOTENCY_CONFLICT. The firewall
+ * step follows the commit: if it fails the call fails, the project stays as asked, and the scheduled `reconcileProjectEgress` (or a new request)
+ * finishes it, since a replay of the id writes nothing.
  */
 export async function applyArchiveRequest(
   deps: ProjectArchiveDependencies,
@@ -87,23 +112,27 @@ export async function applyArchiveRequest(
   actor: { developerId: string },
 ): Promise<{ warnings: string[]; replayed: boolean }> {
   const key = archiveRequestKey(orgId, name, requestId);
-  const stored = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: { action?: unknown } };
-  if (stored.Item !== undefined) {
-    if (stored.Item.action !== change) throw agentXError("IDEMPOTENCY_CONFLICT", "that request id was already used for a different action; use a new one");
-    return { warnings: [], replayed: true };
+  for (let attempt = 0; attempt < REQUEST_ATTEMPTS; attempt += 1) {
+    const nowMs = deps.now().getTime();
+    const stored = await readRequestRecord(deps.documentClient, deps.tableName, key, nowMs);
+    if (stored !== undefined) {
+      requireSameRequest(stored, { by: actor.developerId, action: change });
+      return { warnings: [], replayed: true };
+    }
+    try {
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+        metaChange(deps, orgId, name, change, actor, new Date(nowMs).toISOString()),
+        requestRecordPut(deps.tableName, key, "PROJECT_ARCHIVE_REQUEST", { action: change, by: actor.developerId }, nowMs),
+      ] }));
+    } catch (error) {
+      // The same id got in first (read again: it is then a replay), or the item was busy.
+      if (error instanceof Error && error.name === "TransactionCanceledException") continue;
+      throw error;
+    }
+    const { warning } = await setEgressOwnerActive(deps.egress, orgId, { kind: "project", project: name }, change === "restore");
+    return { warnings: warning === undefined ? [] : [warning], replayed: false };
   }
-  const { warnings } = change === "archive" ? await archiveProject(deps, orgId, name, actor) : await restoreProject(deps, orgId, name);
-  try {
-    await deps.documentClient.send(new PutCommand({
-      TableName: deps.tableName,
-      Item: { ...key, entityType: "PROJECT_ARCHIVE_REQUEST", action: change, at: deps.now().toISOString(), by: actor.developerId },
-      ConditionExpression: "attribute_not_exists(pk)",
-    }));
-  } catch (error) {
-    // An identical request stored its record first; both applied the same idempotent change.
-    if (!isConditionFailure(error)) throw error;
-  }
-  return { warnings, replayed: false };
+  throw agentXError("RUNTIME_UNAVAILABLE", "the project could not be changed just now; try again with the same request id");
 }
 
 /**
