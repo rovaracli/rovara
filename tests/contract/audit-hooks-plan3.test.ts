@@ -703,7 +703,7 @@ describe("budget.changed when Rovara rewrites a member's override", () => {
     expect(s.capture.recordedBy("budget.changed")).toHaveLength(1);
   });
 
-  async function mergeWorld(overrides: Record<string, number>) {
+  async function mergeWorld(overrides: Record<string, number>, at = T0) {
     const capture = capturingAuditDeps();
     const db = new FakeDynamoDb();
     capture.attach(db);
@@ -720,7 +720,7 @@ describe("budget.changed when Rovara rewrites a member's override", () => {
     await orgs.addMember({ orgId, developerId: duplicate, role: "member" });
     seedBudget(db, orgId, { memberDefaultMonthlyUsd: 20, memberOverrides: Object.fromEntries(Object.entries(overrides).map(([who, limit]) => [who === "survivor" ? survivor : duplicate, limit])) });
     const merged = await mergeDuplicateMember(
-      { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, signInStore: signIn, now: () => T0, audit: capture.audit },
+      { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, signInStore: signIn, now: () => at, audit: capture.audit },
       { orgId, survivorId: survivor, duplicateId: duplicate, duplicateIdentityKey: duplicate },
     );
     return { capture, db, merged, survivor, duplicate };
@@ -733,6 +733,14 @@ describe("budget.changed when Rovara rewrites a member's override", () => {
       [{ kind: "budget", id: w.duplicate }, { scopeKind: "member", field: "member_monthly_limit", fromCents: 3500, toCents: 2000 }, { kind: "system", id: "rovara" }, [w.duplicate]],
       [{ kind: "budget", id: w.survivor }, { scopeKind: "member", field: "member_monthly_limit", fromCents: 2000, toCents: 3500 }, { kind: "system", id: "rovara" }, [w.survivor]],
     ]);
+  });
+
+  it("gives the same merge at another time other event ids, since the rewrite does not change the settings' updatedAt", async () => {
+    const first = await mergeWorld({ duplicate: 35 });
+    const later = await mergeWorld({ duplicate: 35 }, T0 + 60_000);
+    const ids = (w: typeof first) => w.capture.recordedBy("budget.changed").map((event) => event.eventId);
+    expect(ids(first)).toHaveLength(2);
+    expect(ids(first).filter((id) => ids(later).includes(id))).toEqual([]);
   });
 
   it("records only the duplicate's change when the survivor already has a limit of their own, and nothing when the duplicate had none", async () => {
