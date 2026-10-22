@@ -1222,3 +1222,44 @@ describe("fix round 1: non-text arguments never name content", () => {
     expect(prepareAgentWrite(tool, { body: "cc @alice", path: "@x" }, { allowMentions: false }).args).toEqual({ body: "cc alice", path: "@x" });
   });
 });
+
+describe("fix round 1: pins from the mutation run", () => {
+  it("makes a name that records something and also acts on the world consequential", () => {
+    for (const name of ["create_and_deploy", "update_and_restart", "add_and_run", "save_and_trigger"]) expect(classOf(mcp(name), { target: "x" }), name).toBe("consequential");
+  });
+
+  it("makes a label operation that removes or sets labels consequential on an item the run did not create", () => {
+    expect(classOf(saveIssue(), { id: "ENG-9", labels: [{ remove: "hold" }] })).toBe("consequential");
+    expect(classOf(saveIssue(), { id: "ENG-9", labels: [{ set: ["bug"] }] })).toBe("consequential");
+    expect(classOf(saveIssue(), { id: "ENG-9", labels: [{ add: "bug" }] })).toBe("safe");
+  });
+
+  it("compares the call's repository with the given one without regard to case on both sides", async () => {
+    const w = wrapper();
+    const result = await classifyAgentWrite(w.deps, { ...w.base, repository: "Example/Demo", tool: githubComment(), args: { ...DEMO, body: PLAIN } });
+    expect(result.class).toBe("safe");
+  });
+
+  it("counts an array at a deep item path for bulk", () => {
+    const tool = mcp("update_items", { itemArguments: ["a.b.ids"] });
+    const own = { ownItems: new Set<string>() };
+    expect(classOf(tool, { a: { b: { ids: [1, 2, 3, 4, 5, 6] } }, labels: ["bug"] }, own)).toBe("consequential");
+  });
+
+  it("scans a scope argument that names a free-text field", () => {
+    const tool = mcp("create_note", { itemScopeArguments: ["title"] });
+    expect(classOf(tool, { title: "/deploy production" })).toBe("consequential");
+  });
+
+  it("keeps the destructive signal on a namespaced name hard, so an override cannot lower it", () => {
+    const tool = mcp("repos.close", { itemArguments: ["id"] });
+    expect(classOf(tool, { id: "r", labels: ["bug"] }, { overrides: { mcp: { "repos.close": "safe" } } })).toBe("consequential");
+  });
+
+  it("matches project rules against the tool's name as the connector writes it", () => {
+    const tool = mcp("createComment");
+    expect(classOf(tool, { text: "x" })).toBe("safe");
+    expect(classOf(tool, { text: "x" }, { projectPolicy: policy({ tool: "createComment", connector: "mcp", outcome: "ask" }) })).toBe("consequential");
+    expect(classify(tool, { text: "x" }, { projectPolicy: policy({ tool: "createComment", connector: "mcp", outcome: "deny" }) }).denied).toMatchObject({ rule: 1 });
+  });
+});
