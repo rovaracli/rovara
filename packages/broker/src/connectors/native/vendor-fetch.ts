@@ -63,20 +63,36 @@ function messageOf(error: unknown): string {
   return "the vendor could not be reached";
 }
 
-/** The body as text, or undefined when it is longer than `limit` bytes; stops reading at the cap. */
-async function readCapped(response: Response, limit: number): Promise<string | undefined> {
+/**
+ * The body as text, or undefined when it is longer than `limit` bytes; stops reading at the cap. It also ends with `signal`: the transport stops watching the
+ * signal once the headers have arrived, so a vendor that sends headers and then trickles the body would otherwise hold the call until the platform's own limit.
+ */
+async function readCapped(response: Response, limit: number, signal: AbortSignal): Promise<string | undefined> {
   if (response.body === null) return "";
   const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
   const chunks: Uint8Array[] = [];
   let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > limit) { await reader.cancel().catch(() => undefined); return undefined; }
-    chunks.push(value);
+  let stop: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    stop = () => reject(signal.reason instanceof Error ? signal.reason : new DOMException("This operation was aborted", "AbortError"));
+    if (signal.aborted) stop();
+    else signal.addEventListener("abort", stop, { once: true });
+  });
+  aborted.catch(() => undefined);
+  try {
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), aborted]);
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) return undefined;
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  } finally {
+    if (stop !== undefined) signal.removeEventListener("abort", stop);
+    // Whatever ended the read (the cap, the deadline, a failure), the rest of the body is not wanted.
+    await reader.cancel().catch(() => undefined);
   }
-  return Buffer.concat(chunks).toString("utf8");
 }
 
 /**
@@ -99,13 +115,15 @@ export async function vendorFetch(input: {
   const host = url.hostname.toLowerCase();
   if (url.protocol !== "https:" || !input.allowedHosts.includes(host)) throw new VendorFetchError("the request is not to an allowed vendor address");
   const held = originHeldFetch(input.fetch ?? safeVendorFetch(), host);
+  // One deadline for the whole exchange: connecting, the headers and the body.
+  const signal = AbortSignal.timeout(input.timeoutMs ?? VENDOR_TIMEOUT_MS);
   let response: Response;
   try {
     response = await held(url, {
       method: input.method ?? "GET",
       headers: input.headers ?? {},
       ...(input.body === undefined ? {} : { body: input.body }),
-      signal: AbortSignal.timeout(input.timeoutMs ?? VENDOR_TIMEOUT_MS),
+      signal,
     });
   } catch (error) {
     throw new VendorFetchError(error instanceof TypeError && /anywhere but/u.test(error.message) ? "the request is not to an allowed vendor address" : messageOf(error));
@@ -116,7 +134,7 @@ export async function vendorFetch(input: {
   }
   let text: string | undefined;
   try {
-    text = await readCapped(response, input.maxBytes ?? VENDOR_MAX_BYTES);
+    text = await readCapped(response, input.maxBytes ?? VENDOR_MAX_BYTES, signal);
   } catch (error) {
     throw new VendorFetchError(messageOf(error));
   }
