@@ -1,0 +1,340 @@
+// Plan 4 Task 14: the Datadog connector. It reads monitors, metrics and logs through an org connection's two keys (an API key and an application key) at
+// `https://api.<site>/`, in the broker. Every query is narrowed to the scope's tags, and a monitor is shown only when it carries all of them. The Datadog API is
+// faked; no test reaches a network.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { discoverTools, executeTool, type ConnectorDefinition, type Ledger } from "@agentx/gateway";
+import { DATADOG_SITES, ProjectDefinitionSchema, type GrantedTool, type OrgId } from "../../packages/contracts/src/index.js";
+import { classifyWrite } from "../../packages/broker/src/agents/write-class.js";
+import { BUILT_IN_CONNECTOR_TYPES, resolveConnectors, type ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
+import { datadogConnectionCheck, datadogConnectorType } from "../../packages/broker/src/aws/datadog-connector-type.js";
+import { DATADOG_TOOL_NAMES } from "../../packages/broker/src/connectors/native/datadog.js";
+import { PROJECT_CONNECTOR_TOOLS } from "../../packages/broker/src/connections/project-connectors.js";
+import { orgCredentialRegistry } from "../../packages/broker/src/connections/registry.js";
+import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
+import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
+import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { routeFetch } from "../support/developer-fakes.js";
+import { fakeDatadog } from "../support/fake-vendor-apis.js";
+import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";
+
+const ORG_A = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
+const ENV = "staging";
+const CON = "con_aaaaaaaaaaaaaaaaaaaa";
+const ALICE = "a".repeat(64);
+const API_KEY = "dd-api-key-0123456789abcdef";
+const APP_KEY = "dd-app-key-0123456789abcdef";
+const TOOLS = ["search_monitors", "get_monitor", "query_metrics", "search_logs"] as const;
+const TAGS = ["service:payments", "env:prod"];
+const PAY = { alias: "pay", tags: TAGS };
+const ROUTING = { scopeAlias: "pay", tags: TAGS.join(",") };
+
+// A check or a tool may reach Datadog only through the fetch it is given; the global one fails the test (review A-M3).
+beforeEach(() => { vi.stubGlobal("fetch", () => { throw new Error("test: the global fetch was used; a Datadog check and tool use only the fetch they are given"); }); });
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+function setup() {
+  const fake = new FakeOrgSecrets({ env: ENV, now: () => Date.now() });
+  const db = new FakeDynamoDb();
+  const secrets = new OrgSecrets({ env: ENV, roleArn: FAKE_CONNECTOR_ROLE_ARN, sts: fake.sts, secretsFor: fake.secretsFor, now: () => Date.now() });
+  const deps = { documentClient: db, tableName: "T", env: ENV, secrets, now: () => Date.now() };
+  return { db, deps, registry: orgCredentialRegistry(deps, ORG_A) };
+}
+
+async function connected(site: (typeof DATADOG_SITES)[number] = "datadoghq.eu") {
+  const s = setup();
+  const store = new OrgConnectionStore({ ...s.deps, checkEndpoint: async () => undefined });
+  await store.put({ orgId: ORG_A, connection: { connectionId: CON, type: "datadog", label: "Datadog", access: "read", site }, secret: { apiKey: API_KEY, appKey: APP_KEY }, by: ALICE });
+  return { ...s, store };
+}
+
+const connectorConfig = (over: Record<string, unknown> = {}) => ({
+  name: "metrics", type: "datadog", credentialRef: CON, scopes: [PAY], tools: TOOLS.map((name) => ({ name, access: "read" })), ...over,
+});
+const project = (connectors: unknown[]) => ProjectDefinitionSchema.parse({
+  name: "payments", revision: 1,
+  repositories: [{ name: "demo", url: "https://github.com/example/demo.git", path: "repo/demo", defaultBranch: "main", credentialRef: "github-app" }],
+  setup: [], readiness: [], orchestratorInstructions: "x", integrations: { connectors },
+});
+
+type DatadogScope = { alias: string; tags: string[] };
+
+async function resolved(options: { site?: (typeof DATADOG_SITES)[number]; config?: Record<string, unknown>; api?: ReturnType<typeof fakeDatadog> } = {}) {
+  const s = await connected(options.site);
+  const site = options.site ?? "datadoghq.eu";
+  const api = options.api ?? fakeDatadog({ apiKey: API_KEY, appKey: APP_KEY, hosts: [`api.${site}`] });
+  const fetch = routeFetch(api.handler);
+  const [connector] = resolveConnectors(project([connectorConfig(options.config)]), { credentialRegistry: s.registry, nativeFetch: fetch }, { datadog: datadogConnectorType });
+  const definition = await connector!.definition();
+  if ("notConnected" in definition) throw new Error(`not connected: ${definition.notConnected}`);
+  return { ...s, api, fetch, connector: connector as ResolvedConnector<DatadogScope>, definition: definition as ConnectorDefinition<DatadogScope> };
+}
+
+const context = (tools = TOOLS, scope: DatadogScope = PAY) => ({
+  workspaceId: "ws", ownerKey: "owner", scopeAlias: scope.alias, scope, settingsRevision: 1,
+  policy: { tools: tools.map((name) => ({ name, access: "read" as const })) },
+});
+const ledger: Ledger = { claim: async () => true, get: async () => undefined, finish: async () => undefined };
+const textOf = (result: { content?: Array<{ text?: string | undefined }> | undefined }) => result.content?.map((entry) => entry.text ?? "").join("") ?? "";
+
+async function run(tool: string, args: Record<string, unknown>, options: Parameters<typeof resolved>[0] = {}) {
+  const r = await resolved(options);
+  const discovered = (await discoverTools(r.definition, context(), { connect: r.connector.connect! })).tools.find((entry) => entry.name === tool)!;
+  const result = await executeTool(
+    { requestId: "11111111-1111-4111-8111-111111111111", scope: "pay", tool, schemaHash: discovered.schemaHash, arguments: args },
+    r.definition, context(), { connect: r.connector.connect!, ledger },
+  );
+  return { ...r, result };
+}
+
+describe("the Datadog connector type", () => {
+  it("is built in, named datadog, and resolves its label, vendor, scope noun, scopes and ledger", async () => {
+    expect(BUILT_IN_CONNECTOR_TYPES["datadog"]).toBe(datadogConnectorType);
+    const s = await connected();
+    const [connector] = resolveConnectors(project([connectorConfig()]), { credentialRegistry: s.registry });
+    expect(connector).toMatchObject({
+      name: "metrics", type: "datadog", label: "Datadog", vendor: "Datadog", scopeNoun: "tag scope", attribution: false,
+      ledger: { prefix: "CONNECTOR#metrics#", entityType: "CONNECTOR_INVOCATION" },
+      credential: { ref: CON, accepts: ["static-secret"] },
+      scopes: [{ alias: "pay", scope: { alias: "pay", tags: TAGS } }],
+    });
+  });
+
+  it("lists exactly the four tools a project may approve, and declares no item argument and no label argument", async () => {
+    expect(PROJECT_CONNECTOR_TOOLS.datadog).toEqual([...TOOLS]);
+    expect(DATADOG_TOOL_NAMES).toEqual([...TOOLS]);
+    const { definition } = await resolved();
+    expect(definition.itemArguments).toEqual([]);
+    expect(definition).not.toHaveProperty("labelArgument");
+    expect(definition.guards).toEqual([]);
+  });
+
+  it("refuses a Datadog site outside the enum when the connection is saved", async () => {
+    const s = setup();
+    const store = new OrgConnectionStore({ ...s.deps, checkEndpoint: async () => undefined });
+    const refused = await store.put({ orgId: ORG_A, connection: { connectionId: CON, type: "datadog", label: "Datadog", access: "read", site: "datadoghq.example" } as never, secret: { apiKey: API_KEY, appKey: APP_KEY }, by: ALICE }).then(() => undefined, (error: { code?: string }) => error);
+    expect(refused).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(s.db.items.size).toBe(0);
+  });
+
+  it("serves the site's own API base and pins the keys to that site's host: a token for api.datadoghq.com is refused for api.datadoghq.eu", async () => {
+    for (const site of ["datadoghq.com", "datadoghq.eu", "us3.datadoghq.com", "ap2.datadoghq.com"] as const) {
+      const { definition, registry } = await resolved({ site });
+      expect(definition.endpoint.href).toBe(`https://api.${site}/`);
+      expect((await registry.registration(CON))?.host).toBe(`api.${site}`);
+      const other = site === "datadoghq.eu" ? "api.datadoghq.com" : "api.datadoghq.eu";
+      await expect(registry.provider(CON, { pin: { host: other, required: true } }).issue({}, "read"), site).rejects.toThrow();
+    }
+  });
+
+  it("is not connected when the record is pinned to another site, has no host, or the connection is not Datadog's", async () => {
+    const s = await connected("datadoghq.eu");
+    const of = (registry: unknown) => resolveConnectors(project([connectorConfig()]), { credentialRegistry: registry as never })[0]!;
+    expect(await of(s.registry).configured()).toBe(true);
+    const wrongSite = { ...s.registry, registration: async (ref: string) => ({ ...(await s.registry.registration(ref))!, host: "api.datadoghq.com" }) };
+    expect(await of(wrongSite).definition()).toEqual({ notConnected: `credential ${CON} is pinned to api.datadoghq.com, not api.datadoghq.eu, so AgentX does not send it there` });
+    const unpinned = { ...s.registry, registration: async (ref: string) => { const { host: _host, ...rest } = (await s.registry.registration(ref))!; return rest; } }; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
+    expect(await of(unpinned).definition()).toEqual({ notConnected: `credential ${CON} is not pinned to a host; register it again with --host api.datadoghq.eu` });
+    const other = setup();
+    await new OrgConnectionStore({ ...other.deps, checkEndpoint: async () => undefined }).put({ orgId: ORG_A, connection: { connectionId: CON, type: "vercel", label: "Vercel", access: "read" }, secret: { token: "vercel-token-0123456789" }, by: ALICE });
+    expect(await of(other.registry).definition()).toEqual({ notConnected: `connection ${CON} is not a Datadog connection` });
+  });
+
+  it("issues one credential that carries both keys, read with the connection's own secret version, and nothing but the keys the tools need", async () => {
+    const { definition, registry } = await resolved();
+    const issued = await definition.credentials.issue(PAY, "read");
+    expect(JSON.parse(issued.token)).toEqual({ apiKey: API_KEY, appKey: APP_KEY });
+    expect(issued.bindings).toEqual({});
+    // The registry reads the whole secret by the version the connection's own save wrote.
+    expect(await registry.connectionSecret?.(CON)).toEqual({ apiKey: API_KEY, appKey: APP_KEY });
+  });
+
+  it("treats a malformed stored entry as unusable and never throws", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const stored = { ...project([connectorConfig()]), integrations: { connectors: [connectorConfig({ scopes: [{ alias: "pay" }] })] } } as never;
+    expect(resolveConnectors(stored, { credentialRegistry: setup().registry }, { datadog: datadogConnectorType })).toEqual([]);
+    const reasons = log.mock.calls.map(([line]) => JSON.parse(String(line)) as { event?: string; reason?: string }).filter((line) => line.event === "connector.unusable");
+    expect(reasons[0]?.reason).toBe("invalid datadog connector configuration: scopes");
+  });
+});
+
+describe("what the model is offered", () => {
+  it("marks every tool read with the read-only hints, and shows neither the tags nor the scope alias", async () => {
+    const { definition, connector } = await resolved();
+    const { tools, skipped } = await discoverTools(definition, context(), { connect: connector.connect! });
+    expect(skipped).toEqual([]);
+    expect(tools.map((tool) => tool.name)).toEqual([...TOOLS]);
+    for (const tool of tools) {
+      expect(tool.access, tool.name).toBe("read");
+      expect(tool.hints, tool.name).toEqual({ readOnlyHint: true, destructiveHint: false });
+      expect(tool.inputSchema).toMatchObject({ type: "object", additionalProperties: false });
+      const names = Object.keys(tool.inputSchema["properties"] as object);
+      expect(names).not.toEqual(expect.arrayContaining(["tags"]));
+      expect(names).not.toEqual(expect.arrayContaining(["scopeAlias"]));
+    }
+    const props = (name: string) => (tools.find((tool) => tool.name === name)!.inputSchema as { properties: Record<string, Record<string, unknown>> }).properties;
+    expect(props("search_monitors")["state"]).toMatchObject({ enum: ["Alert", "Warn", "No Data"] });
+    expect(props("get_monitor")["monitorId"]).toMatchObject({ type: "integer", minimum: 1 });
+    expect(props("query_metrics")["query"]).toMatchObject({ type: "string", maxLength: 500 });
+    expect(props("query_metrics")["fromMinutesAgo"]).toMatchObject({ type: "integer", minimum: 5, maximum: 1440 });
+    expect(props("search_logs")["fromMinutesAgo"]).toMatchObject({ minimum: 5, maximum: 1440 });
+    expect(props("search_logs")["limit"]).toMatchObject({ minimum: 1, maximum: 50 });
+  });
+
+  it("is read for Plan 3's write classification", async () => {
+    const { definition, connector } = await resolved();
+    const { tools } = await discoverTools(definition, context(), { connect: connector.connect! });
+    for (const tool of tools) {
+      const granted: GrantedTool = {
+        connector: "metrics", type: "datadog", upstreamName: tool.name, presentedName: `metrics__${tool.name}`, access: tool.access,
+        facts: { connector: "metrics", upstreamName: tool.name, access: tool.access, ...(tool.hints === undefined ? {} : { hints: tool.hints }) },
+      };
+      expect(classifyWrite({ tool: granted, args: { monitorId: 11 }, rules: { alwaysAsk: [] }, autonomy: "run", allowMentions: false, ownItems: new Set<string>() }).class, tool.name).toBe("read");
+    }
+  });
+});
+
+describe("running the tools", () => {
+  it("narrows a log search to the scope's tags, as the plan words it, and sends both keys to the site's host", async () => {
+    const { result, api } = await run("search_logs", { query: "service:billing", fromMinutesAgo: 60, limit: 10 });
+    expect(result.status).toBe("SUCCEEDED");
+    expect(result.text).toContain("charge failed for order 17");
+    expect(api.requests).toHaveLength(1);
+    const request = api.requests[0]!;
+    expect(request).toMatchObject({ method: "POST", apiKey: API_KEY, appKey: APP_KEY });
+    expect(new URL(request.url).origin + new URL(request.url).pathname).toBe("https://api.datadoghq.eu/api/v2/logs/events/search");
+    expect(request.body).toEqual({ filter: { query: "(service:payments AND env:prod) AND (service:billing)", from: "now-60m", to: "now" }, sort: "-timestamp", page: { limit: 10 } });
+  });
+
+  it("quotes a tag value that has characters a log query reads as syntax", async () => {
+    const { api } = await run("search_logs", { query: "status:error", fromMinutesAgo: 5 }, { config: { scopes: [{ alias: "pay", tags: ["team:core-api", "env:prod"] }] } });
+    expect((api.requests[0]!.body as { filter: { query: string } }).filter.query).toBe('(team:"core-api" AND env:prod) AND (status:error)');
+  });
+
+  it("refuses a log query that could close the scope's group or open a quote, making no request", async () => {
+    const r = await resolved();
+    const connection = await r.connector.connect!({ endpoint: r.definition.endpoint, token: await tokenOf(r), tools: [...TOOLS], signal: AbortSignal.timeout(5_000) });
+    for (const query of ["x) OR (y", ")(", "(a", 'a "b', "a\nb", "a\u0000b"]) {
+      await expect(connection.call("search_logs", { ...ROUTING, query, fromMinutesAgo: 5 }), query).rejects.toMatchObject({ name: "ToolRefusal", message: "search_logs: query is not allowed", reason: "policy_denied" });
+    }
+    // Brackets and quotes that balance are fine.
+    await expect(connection.call("search_logs", { ...ROUTING, query: '(a OR b) AND "c (d"', fromMinutesAgo: 5 })).resolves.toMatchObject({});
+    expect(r.api.requests).toHaveLength(1);
+  });
+
+  it("shows a monitor only if it carries every one of the scope's tags", async () => {
+    const own = await run("get_monitor", { monitorId: 11 });
+    expect(own.result.status).toBe("SUCCEEDED");
+    expect(own.result.text).toContain("Payments latency");
+    expect(own.result.text).toContain("Alert");
+    const other = await run("get_monitor", { monitorId: 12 });
+    expect(other.result).toMatchObject({ status: "FAILED", reason: "policy_denied", text: "that monitor is not in pay" });
+    expect(other.result.text).not.toContain("Billing errors");
+    const missing = await run("get_monitor", { monitorId: 99 });
+    expect(missing.result).toMatchObject({ status: "FAILED", reason: "vendor_error", text: "Datadog has no such monitor" });
+  });
+
+  it("searches monitors within the scope's tags and the chosen state, with the model's words in a group of their own", async () => {
+    const { result, api } = await run("search_monitors", { query: "latency", state: "No Data" });
+    expect(result.status).toBe("SUCCEEDED");
+    expect(result.text).toContain("Payments latency");
+    const url = new URL(api.requests[0]!.url);
+    expect(url.pathname).toBe("/api/v1/monitor/search");
+    expect(url.searchParams.get("query")).toBe('tag:"service:payments" tag:"env:prod" status:"no data" (latency)');
+    expect(url.searchParams.get("per_page")).toBe("25");
+  });
+
+  it("narrows a metric query by adding the scope's tags to its filter, and refuses a filter that could widen it", async () => {
+    const queried = async (query: string) => (await run("query_metrics", { query, fromMinutesAgo: 60 }));
+    const plain = await queried("avg:system.cpu.user{host:web1} by {host}");
+    expect(plain.result.status).toBe("SUCCEEDED");
+    const sent = new URL(plain.api.requests[0]!.url);
+    expect(sent.pathname).toBe("/api/v1/query");
+    expect(sent.searchParams.get("query")).toBe("avg:system.cpu.user{host:web1,service:payments,env:prod} by {host}");
+    expect(Number(sent.searchParams.get("to")) - Number(sent.searchParams.get("from"))).toBe(3600);
+    expect(plain.result.text).toContain("payments.latency");
+    expect(plain.result.text).toContain("2.5");
+    expect(new URL((await queried("sum:trace.requests{*}.as_count()")).api.requests[0]!.url).searchParams.get("query")).toBe("sum:trace.requests{service:payments,env:prod}.as_count()");
+    expect(new URL((await queried("max:a.b{!env:dev,region:eu}.rollup(max, 60)")).api.requests[0]!.url).searchParams.get("query")).toBe("max:a.b{!env:dev,region:eu,service:payments,env:prod}.rollup(max, 60)");
+    const r = await resolved();
+    const connection = await r.connector.connect!({ endpoint: r.definition.endpoint, token: await tokenOf(r), tools: [...TOOLS], signal: AbortSignal.timeout(5_000) });
+    for (const query of ["avg:a.b{x:1 OR y:2}", "avg:a.b{(x:1)}", "avg:a.b{x:1},avg:c.d{y:2}", "a.b{x:1}", "avg:a.b{x:1} + avg:c.d{y:2}", "avg:a.b{x:1}\navg:c", "avg:a.b{x:1} by {host}.foo{}", "avg:a b{x:1}", "avg:a.b{x:1,}", "avg:a.b{}"]) {
+      await expect(connection.call("query_metrics", { ...ROUTING, query, fromMinutesAgo: 60 }), query).rejects.toMatchObject({ message: "query_metrics: query is not allowed" });
+    }
+    expect(r.api.requests).toEqual([]);
+  });
+
+  it("scrubs both keys from anything a tool answers with", async () => {
+    const { result } = await run("search_logs", { query: "x", fromMinutesAgo: 5 }, { api: fakeDatadog({ apiKey: API_KEY, appKey: APP_KEY, logMessage: `leaked ${APP_KEY} and ${API_KEY} in a log line` }) });
+    expect(result.status).toBe("SUCCEEDED");
+    expect(result.text).toContain("leaked [REDACTED] and [REDACTED] in a log line");
+    expect(JSON.stringify(result)).not.toContain(APP_KEY);
+    expect(JSON.stringify(result)).not.toContain(API_KEY);
+  });
+
+  it("answers a refused key, a missing monitor and an outage in fixed words, carrying nothing the vendor sent", async () => {
+    const wrong = await run("search_monitors", {}, { api: fakeDatadog({ apiKey: API_KEY, appKey: "dd-some-other-app-key-0123" }) });
+    expect(wrong.result).toMatchObject({ status: "FAILED", reason: "vendor_error", text: "Datadog refused the keys. Check the API key, and that the application key has monitors_read, timeseries_query and logs_read_data." });
+    const down = await run("search_monitors", {}, { api: fakeDatadog({ apiKey: API_KEY, appKey: APP_KEY, status: 503 }) });
+    expect(down.result).toMatchObject({ status: "FAILED", reason: "vendor_error", text: "Datadog answered HTTP 503" });
+    const limited = await run("search_monitors", {}, { api: fakeDatadog({ apiKey: API_KEY, appKey: APP_KEY, status: 429 }) });
+    expect(limited.result.text).toBe("Datadog is limiting requests; try again later");
+    expect(JSON.stringify([wrong.result, down.result, limited.result])).not.toMatch(/fake outage|Forbidden/u);
+  });
+
+  it("goes only to the connection's site host, whatever a tool is asked", async () => {
+    const { api } = await run("search_logs", { query: "x", fromMinutesAgo: 5 });
+    expect(api.requests.map((request) => new URL(request.url).hostname)).toEqual(["api.datadoghq.eu"]);
+    const us = await run("search_logs", { query: "x", fromMinutesAgo: 5 }, { site: "us3.datadoghq.com" });
+    expect(us.api.requests.map((request) => new URL(request.url).hostname)).toEqual(["api.us3.datadoghq.com"]);
+  });
+
+  it("refuses an argument the model may not set without any request", async () => {
+    const r = await resolved();
+    const connection = await r.connector.connect!({ endpoint: r.definition.endpoint, token: await tokenOf(r), tools: [...TOOLS], signal: AbortSignal.timeout(5_000) });
+    expect(textOf(await connection.call("search_logs", { ...ROUTING, query: "x", fromMinutesAgo: 4 }))).toBe("search_logs: fromMinutesAgo is not allowed");
+    expect(textOf(await connection.call("search_logs", { ...ROUTING, query: "x", fromMinutesAgo: 1441 }))).toBe("search_logs: fromMinutesAgo is not allowed");
+    expect(textOf(await connection.call("search_logs", { ...ROUTING, query: "x", fromMinutesAgo: 5, limit: 51 }))).toBe("search_logs: limit is not allowed");
+    expect(textOf(await connection.call("search_logs", { ...ROUTING, query: "x", fromMinutesAgo: 5, indexes: ["*"] }))).toBe("search_logs: indexes is not allowed");
+    expect(textOf(await connection.call("search_monitors", { ...ROUTING, state: "OK" }))).toBe("search_monitors: state is not allowed");
+    expect(textOf(await connection.call("get_monitor", { ...ROUTING, monitorId: "11" }))).toBe("get_monitor: monitorId is not allowed");
+    expect(textOf(await connection.call("query_metrics", { ...ROUTING, query: "x".repeat(501), fromMinutesAgo: 5 }))).toBe("query_metrics: query is not allowed");
+    expect(r.api.requests).toEqual([]);
+  });
+});
+
+/** The packed credential a connect would be given, as the definition issues it. */
+async function tokenOf(r: Awaited<ReturnType<typeof resolved>>): Promise<string> {
+  return (await r.definition.credentials.issue(PAY, "read")).token;
+}
+
+describe("the Datadog connection check", () => {
+  async function checkWith(api: ReturnType<typeof fakeDatadog>, site: (typeof DATADOG_SITES)[number] = "datadoghq.eu") {
+    const s = await connected(site);
+    const store = new OrgConnectionStore({ ...s.deps, checkEndpoint: async () => undefined, fetch: routeFetch(api.handler), checks: { datadog: datadogConnectionCheck } });
+    return { store, api };
+  }
+
+  it("validates the API key and then the application key, at the site's host, with both headers", async () => {
+    const { store, api } = await checkWith(fakeDatadog({ apiKey: API_KEY, appKey: APP_KEY }));
+    expect(await store.check(ORG_A, CON)).toEqual({ ok: true });
+    expect(api.requests.map((request) => new URL(request.url).pathname)).toEqual(["/api/v1/validate", "/api/v1/monitor/search"]);
+    for (const request of api.requests) expect(request).toMatchObject({ apiKey: API_KEY, appKey: APP_KEY, method: "GET" });
+    expect(new URL(api.requests[0]!.url).hostname).toBe("api.datadoghq.eu");
+    expect((await store.get(ORG_A, CON))?.lastCheck).toMatchObject({ ok: true });
+  });
+
+  it("says which key Datadog refused", async () => {
+    const badApi = await checkWith(fakeDatadog({ apiKey: "dd-another-api-key-0123456", appKey: APP_KEY }));
+    expect(await badApi.store.check(ORG_A, CON)).toEqual({ ok: false, message: "Datadog refused the API key. Check that it is an API key for this site." });
+    const badApp = await checkWith(fakeDatadog({ apiKey: API_KEY, appKey: "dd-another-app-key-0123456" }));
+    expect(await badApp.store.check(ORG_A, CON)).toEqual({ ok: false, message: "Datadog accepted the API key but refused the application key. Check that it has monitors_read, timeseries_query and logs_read_data." });
+    expect(JSON.stringify([await badApi.store.get(ORG_A, CON), await badApp.store.get(ORG_A, CON)])).not.toContain(APP_KEY);
+  });
+
+  it("answers an outage as retryable without recording a check", async () => {
+    const { store } = await checkWith(fakeDatadog({ apiKey: API_KEY, appKey: APP_KEY, status: 503 }));
+    const refusal = await store.check(ORG_A, CON).then(() => undefined, (error: { code?: string }) => error);
+    expect(refusal).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect((await store.get(ORG_A, CON))?.lastCheck).toBeUndefined();
+  });
+});

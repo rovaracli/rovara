@@ -2027,3 +2027,27 @@ describe("Plan 4 Task 13: sentry on the project connectors", () => {
     await s.fakeLinear.close();
   });
 });
+
+describe("Plan 4 Task 14: datadog and grafana on the project connectors", () => {
+  it("lists each type's tools, all reads", () => {
+    expect(PROJECT_CONNECTOR_TOOLS.datadog).toEqual(["search_monitors", "get_monitor", "query_metrics", "search_logs"]);
+    expect(PROJECT_CONNECTOR_TOOLS.grafana).toEqual(["list_firing_alerts", "get_alert_rule", "get_dashboard", "query_prometheus"]);
+  });
+
+  it("accepts a datadog and a grafana connector approving their tools, and refuses an unlisted one with Task 12's text, writing no revision", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const s = await install();
+    const dd = await s.connection({ type: "datadog", label: "Datadog", access: "read", site: "datadoghq.eu" }, { apiKey: "dd-api-key-0123456789", appKey: "dd-app-key-0123456789" });
+    const gf = await s.connection({ type: "grafana", label: "Grafana", access: "read", baseUrl: "https://grafana.acme.dev" }, { serviceAccountToken: "glsa_SECRET0123456789" });
+    const datadog = (tools: unknown[]) => ({ name: "metrics", type: "datadog", credentialRef: dd, scopes: [{ alias: "pay", tags: ["service:payments"] }], tools });
+    const grafana = (tools: unknown[]) => ({ name: "dash", type: "grafana", credentialRef: gf, scopes: [{ alias: "all" }], tools });
+    const refusedDd = await s.put(MIA, "metrics", datadog([{ name: "search_logs", access: "read" }, { name: "mute_monitor", access: "read" }]));
+    expect(refusedDd.body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.1: mute_monitor is not a datadog tool" });
+    const refusedGf = await s.put(MIA, "dash", grafana([{ name: "silence_alert", access: "read" }]));
+    expect(refusedGf.body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.0: silence_alert is not a grafana tool" });
+    expect(s.revisions()).toHaveLength(1);
+    expect((await s.put(MIA, "metrics", datadog([{ name: "search_logs", access: "read" }]))).status).toBe(200);
+    expect((await s.put(MIA, "dash", grafana([{ name: "list_firing_alerts", access: "read" }]), { expectedRevision: 2 })).status).toBe(200);
+    await s.fakeLinear.close();
+  });
+});
