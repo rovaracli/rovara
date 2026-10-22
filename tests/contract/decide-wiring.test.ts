@@ -562,6 +562,8 @@ describe("reads and the confirm-link route (fix round 1: I1, I2)", () => {
 
   it("answers the bare link for an approval past its time that the sweep has not ended, and for a decided one, without minting", async () => {
     const w = world();
+    const minted: string[] = [];
+    const spy = withMint(w, async (who, approvalId) => { minted.push(approvalId); return mintConfirmUrl(w.context(), { developerId: who.developerId, orgId: who.orgId }, approvalId); });
     const expired = await w.waitingWrite();
     const decided = await w.waitingWrite({ id: "ENG-13", stateId: "s2" });
     expect((await w.decide(decided, await w.session(BOB, decided))).statusCode).toBe(200);
@@ -569,9 +571,11 @@ describe("reads and the confirm-link route (fix round 1: I1, I2)", () => {
     for (const id of [expired, decided]) {
       const shown = await route(w, caller(BOB), "GET", `/v1/app/approvals/${id}`);
       expect(shown.approval?.confirmUrl, id).toBe(`${CELL}/v1/app/approve/${id}`);
-      const asked = await route(w, caller(BOB), "POST", `/v1/app/approvals/${id}/confirm-link`, withMint(w), {});
+      const asked = await route(w, caller(BOB), "POST", `/v1/app/approvals/${id}/confirm-link`, spy, {});
       expect(asked, id).toEqual({ confirmUrl: `${CELL}/v1/app/approve/${id}`, ticketed: false });
     }
+    // The mint is not even tried for an approval that is no longer open.
+    expect(minted).toEqual([]);
     expect(tickets(w)).toEqual([]);
   });
 
@@ -579,7 +583,10 @@ describe("reads and the confirm-link route (fix round 1: I1, I2)", () => {
     const w = world();
     const id = await w.waitingWrite();
     w.members.grant(ORG_A, "web", ALICE, "viewer");
-    expect(await route(w, caller(ALICE), "POST", `/v1/app/approvals/${id}/confirm-link`, withMint(w), {})).toEqual({ confirmUrl: `${CELL}/v1/app/approve/${id}`, ticketed: false });
+    const minted: string[] = [];
+    const spy = withMint(w, async (_who, approvalId) => { minted.push(approvalId); return "never"; });
+    expect(await route(w, caller(ALICE), "POST", `/v1/app/approvals/${id}/confirm-link`, spy, {})).toEqual({ confirmUrl: `${CELL}/v1/app/approve/${id}`, ticketed: false });
+    expect(minted).toEqual([]);
     w.members.grant(ORG_A, "web", BOB, "viewer");
     await expect(route(w, caller(BOB), "POST", `/v1/app/approvals/${id}/confirm-link`, withMint(w), {})).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(tickets(w)).toEqual([]);
@@ -948,6 +955,16 @@ describe("the broker's decide-inspect event (what the sign-in function asks)", (
     expect((await b.raw("POST", `/v1/app/approve/${id}`, form, new URLSearchParams({ decision: "approve", csrf: csrfTokenFor(cookie) }).toString())).statusCode).toBe(200);
     const decided = await ask(B_DANA.developerId);
     expect(decided.body).toEqual({ status: "decided", by: "Dana", at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) as string });
+  });
+
+  it("answers expired, with the time, for an approval past its time that the sweep has not ended", async () => {
+    const b = await brokerWorld();
+    const id = await b.waiting();
+    const key = approvalKey(TEST_ORG, id);
+    const stored = b.db.get(key.pk, key.sk)!;
+    const expiresAt = new Date(Date.now() - 1000).toISOString();
+    b.db.set({ ...stored, expiresAt });
+    expect(await inspect(b, { kind: "decide-inspect", orgId: TEST_ORG, developerId: B_DANA.developerId, approvalId: id })).toEqual({ status: 200, body: { status: "expired", at: expiresAt } });
   });
 
   it("refuses a malformed request without evaluating anything", async () => {
