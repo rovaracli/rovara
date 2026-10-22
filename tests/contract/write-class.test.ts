@@ -1335,6 +1335,14 @@ describe("fix round 2: N2, any key with label or tag in it is a label path", () 
   });
 });
 
+describe("fix round 2: removing a label from an own item is not a trigger", () => {
+  it("does not scan a remove key as labels being added", () => {
+    const tool = mcp("update_issue", { itemArguments: ["id"] });
+    expect(classOf(tool, { id: "I-1", removeLabels: ["automerge"] }, { ownItems: new Set(["mcp##I-1"]) })).toBe("safe");
+    expect(classOf(tool, { id: "I-1", removedLabelIds: ["lbl-deploy"] }, { ownItems: new Set(["mcp##I-1"]) })).toBe("safe");
+  });
+});
+
 describe("fix round 2: N3, team and project keys", () => {
   it("makes any key with team or project in it consequential", () => {
     for (const key of ["team", "teamIds", "team_ids", "project", "projectIds", "project_ids", "projects", "teamId", "projectId"]) {
