@@ -394,6 +394,10 @@ function connectorArrayChecks(connectors: ReadonlyArray<{ name: string; type: st
   if (connectors.filter((connector) => connector.type === "github").length > 1) {
     context.addIssue({ code: "custom", message: "at most one github connector is supported" });
   }
+  // The same rule for GitHub Actions: it reads through the project's one GitHub App, so a second connector would only duplicate tool prefixes.
+  if (connectors.filter((connector) => connector.type === "github-actions").length > 1) {
+    context.addIssue({ code: "custom", message: "at most one github-actions connector is supported" });
+  }
 }
 
 export const ConnectorsSchema = z.array(ConnectorConfigSchema).min(1).max(MAX_PROJECT_CONNECTORS).superRefine(connectorArrayChecks);
