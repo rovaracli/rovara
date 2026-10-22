@@ -831,7 +831,7 @@ describe("the owner's monthly total", () => {
     // The owner's total is lowered by someone else between the read and the write: a decrease needs the room it takes out.
     ctx.hooks.push(() => { ctx.db.set({ ...ctx.db.get(ownerBudgetKey(ORG_A, ALICE))!, totalUsd: 1 }); });
     expect(await code(ctx.chains.setBudget(ORG_A, chain.chainId, 2, ALICE))).toEqual({
-      code: "CHAIN_REVISION_CONFLICT", message: "Someone else changed this person's agent budgets just now. Reload and make your change again.",
+      code: "CHAIN_REVISION_CONFLICT", message: "Someone else changed this person's agent and chain budgets just now. Reload and make your change again.",
     });
     expect((await ctx.chains.get(ORG_A, chain.chainId))!.monthlyBudgetUsd).toBe(8);
   });
@@ -842,6 +842,8 @@ describe("the owner's monthly total", () => {
     await ctx.chains.setBudget(ORG_A, chain.chainId, 8, ALICE, undefined, { ownerCap: { usd: 10, policyRevision: 0 } });
     const error = await ctx.chains.setBudget(ORG_A, chain.chainId, 12, ALICE, undefined, { ownerCap: { usd: 10, policyRevision: 0 } }).catch((caught: unknown) => caught);
     expect(isOwnerCapRefusal(error)).toBe(ALICE);
+    // The total holds agent and chain budgets, and the words say so.
+    expect((error as Error).message).toBe("CONFIG_INVALID: That would take this person's agent and chain budgets past the limit for one person. An org admin can raise the limit in the spend policy.");
     expect(ctx.total(ALICE)).toBe(8);
     expect((await ctx.chains.get(ORG_A, chain.chainId))!.monthlyBudgetUsd).toBe(8);
   });
@@ -910,6 +912,52 @@ describe("one monthly total for agent and chain budgets", () => {
     expect(() => new AgentStore({ documentClient: other, tableName: "T", now: () => ctx.clock.now, ownerBudgets: ctx.agents.ownerBudgets })).toThrow(/another table/);
     // The same client on a differently named table is another table too.
     expect(() => new ChainStore({ documentClient: ctx.client, tableName: "U", now: () => ctx.clock.now, agents: ctx.agents })).toThrow(/another table/);
+  });
+});
+
+describe("which failed item a publish blames", () => {
+  const faultAt = (ctx: ReturnType<typeof setup>, failing: number, length: number) => {
+    ctx.db.injectFault({
+      command: "TransactWriteCommand",
+      error: { name: "TransactionCanceledException", cancellationReasons: Array.from({ length }, (_unused, index) => ({ Code: index === failing ? "ConditionalCheckFailed" : "None" })) },
+    });
+  };
+
+  it("blames an agent only for a check item; the chain's own items and the audit item are a conflict of the draft", async () => {
+    const ctx = setup({ audit: true });
+    const chain = await ctx.create("Reviewing");
+    const input = await ctx.publishInput(chain.chainId);
+    // Written: version, chain, event (0 to 2); checks: two built-ins' settings and the guardrails (3 to 5); the audit item (6).
+    faultAt(ctx, 6, 7);
+    expect(await code(ctx.chains.publish(input))).toEqual({ code: "CHAIN_REVISION_CONFLICT", message: CONFLICT });
+    faultAt(ctx, 1, 7);
+    expect(await code(ctx.chains.publish(input))).toEqual({ code: "CHAIN_REVISION_CONFLICT", message: CONFLICT });
+    faultAt(ctx, 4, 7);
+    expect(await code(ctx.chains.publish(input))).toEqual({ code: "CHAIN_REVISION_CONFLICT", message: "An agent this chain uses changed while it was being published. Publish again." });
+    faultAt(ctx, 5, 7);
+    expect(await code(ctx.chains.publish(input))).toEqual({ code: "CHAIN_REVISION_CONFLICT", message: "An agent this chain uses changed while it was being published. Publish again." });
+    await expect(ctx.chains.publish(input)).resolves.toMatchObject({ version: 1 });
+  });
+});
+
+describe("event kinds are checked by the compiler", () => {
+  it("rejects a kind the store does not write", () => {
+    // These never run: `tsc` is the test (an unused @ts-expect-error is itself an error).
+    class TypoChains extends ChainStore {
+      typo(): void {
+        // @ts-expect-error "rolledback" is not an event kind of a chain
+        void this.event(ORG_A, "chn_x", "rolledback", "x");
+        void this.event(ORG_A, "chn_x", "rolled_back", "x");
+      }
+    }
+    class TypoAgents extends AgentStore {
+      typo(): void {
+        // @ts-expect-error "publishd" is not an event kind of an agent
+        void this.event(ORG_A, "agt_x", "publishd", "x");
+        void this.event(ORG_A, "agt_x", "published", "x");
+      }
+    }
+    expect([TypoChains, TypoAgents]).toHaveLength(2);
   });
 });
 
