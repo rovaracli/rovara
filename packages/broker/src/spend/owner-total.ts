@@ -60,7 +60,7 @@ export function ownerTotalItems(table: TableInput, orgId: OrgId, before: OwnerSh
     const holdsCap = delta > 0 && capUsd !== undefined;
     if (holdsCap) capped.push(items.length);
     owners.push(owner);
-    items.push(addToCounter(table, ownerBudgetKey(orgId, owner), "totalUsd", delta, holdsCap ? capUsd : undefined));
+    items.push(withVersionBump(addToCounter(table, ownerBudgetKey(orgId, owner), "totalUsd", delta, holdsCap ? capUsd : undefined)));
   };
   if (before !== undefined && after !== undefined && before.owner === after.owner) {
     add(after.owner, cleanUsd(after.usd - before.usd));
@@ -69,4 +69,39 @@ export function ownerTotalItems(table: TableInput, orgId: OrgId, before: OwnerSh
     if (after !== undefined) add(after.owner, cleanUsd(after.usd));
   }
   return { items, owners, capped };
+}
+
+/**
+ * Task 33 (R4-6): every change to an owner's budgets or top-ups moves the owner counter's `version`, so an approval that summed the owner's total at one version
+ * can be made conditional on nothing having changed since. This adds the bump to a counter update (`ADD`).
+ */
+export function withVersionBump(item: TransactItem): TransactItem {
+  const update = item.Update;
+  if (update === undefined) return item;
+  return {
+    Update: {
+      ...update,
+      UpdateExpression: `${update.UpdateExpression ?? ""}, #ownerVersion :ownerVersionStep`,
+      ExpressionAttributeNames: { ...update.ExpressionAttributeNames, "#ownerVersion": "version" },
+      ExpressionAttributeValues: { ...update.ExpressionAttributeValues, ":ownerVersionStep": 1 },
+    },
+  };
+}
+
+/**
+ * The owner counter's version step on its own: conditional on the version being `expected` (an owner's approval that summed the total at it), or on the counter
+ * existing (a change that moves the total anyway). A counter from before versions has none, which reads as 0.
+ */
+export function ownerVersionItem(table: TableInput, orgId: OrgId, owner: string, expected?: number): TransactItem {
+  return {
+    Update: {
+      TableName: table.tableName,
+      Key: ownerBudgetKey(orgId, owner),
+      UpdateExpression: "ADD #version :one",
+      ConditionExpression: expected === undefined ? "attribute_exists(pk)"
+        : expected === 0 ? "attribute_exists(pk) AND (attribute_not_exists(#version) OR #version = :expected)" : "#version = :expected",
+      ExpressionAttributeNames: { "#version": "version" },
+      ExpressionAttributeValues: { ":one": 1, ...(expected === undefined ? {} : { ":expected": expected }) },
+    },
+  };
 }

@@ -100,10 +100,13 @@ export function auditSpendRequestEscalated(input: AuditBuilderBase & SpendReques
 
 /**
  * `occurrence`: the spend request id and the move's number. Rovara moved who a pending spend request is asked of because a member was merged into another
- * (`mode` `merged`) or removed (`removed`); `from` and `to` are the member ids, kept in `related`.
+ * (`mode` `merged`) or removed (`removed`), when `from` and `to` are member ids kept in `related`; or because an owner's total moved under an approval
+ * (`recounted`, Task 33), when `from` and `to` are the routes and nobody is named.
  */
-export function auditSpendRequestRerouted(input: AuditBuilderBase & { spendRequestId: string; kind: string; mode: "merged" | "removed"; from: string; to: string }): AuditEventInput {
-  return build("spend_request.rerouted", { ...input, related: [input.from, input.to, ...(input.related ?? [])] }, { kind: "spend_request", id: input.spendRequestId }, { kind: input.kind, mode: input.mode });
+export function auditSpendRequestRerouted(input: AuditBuilderBase & { spendRequestId: string; kind: string; mode: "merged" | "removed" | "recounted"; from: string; to: string }): AuditEventInput {
+  // A recount moves the request between routes, not between people: no member is named.
+  const related = input.mode === "recounted" ? input.related : [input.from, input.to, ...(input.related ?? [])];
+  return build("spend_request.rerouted", { ...input, ...(related === undefined ? {} : { related }) }, { kind: "spend_request", id: input.spendRequestId }, { kind: input.kind, mode: input.mode });
 }
 
 // Budgets and policy -----------------------------------------------------------------------------------------------------

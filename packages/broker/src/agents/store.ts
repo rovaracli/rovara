@@ -723,6 +723,14 @@ export class AgentStore {
 
   /** The sum of the monthly budgets of the active agents (custom ones, and built-ins with an accountable person) that count for `owner`. */
   private async sumOwnerBudgets(orgId: OrgId, owner: string): Promise<number> {
+    return cleanUsd((await this.ownerAgents(orgId, owner)).reduce((total, agent) => total + agent.monthlyBudgetUsd, 0));
+  }
+
+  /**
+   * Task 33: the active agents (and built-ins it is accountable for) whose monthly budgets count in `owner`'s total, each with that budget. An id that names a
+   * merged duplicate counts for its survivor.
+   */
+  async ownerAgents(orgId: OrgId, owner: string): Promise<Array<{ agentId: AgentId; monthlyBudgetUsd: number }>> {
     const survivors = new Map<string, Promise<string>>();
     const counts = async (subject: BudgetSubject): Promise<boolean> => {
       const raw = budgetOwnerOf(subject);
@@ -731,15 +739,15 @@ export class AgentStore {
       if (found === undefined) { found = this.survivorOf(orgId, raw); survivors.set(raw, found); }
       return (await found) === owner;
     };
-    let total = 0;
+    const found: Array<{ agentId: AgentId; monthlyBudgetUsd: number }> = [];
     for (const agent of await this.list(orgId)) {
-      if (ownerShare(agent) !== undefined && await counts(agent)) total += agent.monthlyBudgetUsd ?? 0;
+      if (ownerShare(agent) !== undefined && await counts(agent)) found.push({ agentId: agent.agentId, monthlyBudgetUsd: agent.monthlyBudgetUsd ?? 0 });
     }
     for (const id of Object.keys(BUILTIN_AGENTS)) {
       const settings = await this.getBuiltinSettings(orgId, id);
-      if (settings !== undefined && ownerShare(settings) !== undefined && await counts(settings)) total += settings.monthlyBudgetUsd ?? 0;
+      if (settings !== undefined && ownerShare(settings) !== undefined && await counts(settings)) found.push({ agentId: id, monthlyBudgetUsd: settings.monthlyBudgetUsd ?? 0 });
     }
-    return cleanUsd(total);
+    return found;
   }
 
   /**
@@ -752,7 +760,7 @@ export class AgentStore {
     try {
       await this.input.documentClient.send(new PutCommand({
         TableName: this.input.tableName,
-        Item: { ...ownerBudgetKey(orgId, owner), entityType: "OWNER_AGENT_BUDGET", totalUsd, builtAt: this.iso() },
+        Item: { ...ownerBudgetKey(orgId, owner), entityType: "OWNER_AGENT_BUDGET", totalUsd, version: 0, builtAt: this.iso() },
         ConditionExpression: NOT_EXISTS,
       }));
     } catch (error) {
@@ -775,10 +783,11 @@ export class AgentStore {
         await this.input.documentClient.send(new UpdateCommand({
           TableName: this.input.tableName,
           Key: ownerBudgetKey(orgId, owner),
-          UpdateExpression: "SET #total = :total, #type = :type, #built = :built",
+          // A rebuild changes the figure an approval summed at, so it moves the version too (Task 33, R4-6).
+          UpdateExpression: "SET #total = :total, #type = :type, #built = :built ADD #version :one",
           ConditionExpression: typeof seen === "number" ? "#total = :seen" : "attribute_not_exists(#total)",
-          ExpressionAttributeNames: { "#total": "totalUsd", "#type": "entityType", "#built": "builtAt" },
-          ExpressionAttributeValues: { ":total": total, ":type": "OWNER_AGENT_BUDGET", ":built": this.iso(), ...(typeof seen === "number" ? { ":seen": seen } : {}) },
+          ExpressionAttributeNames: { "#total": "totalUsd", "#type": "entityType", "#built": "builtAt", "#version": "version" },
+          ExpressionAttributeValues: { ":total": total, ":type": "OWNER_AGENT_BUDGET", ":built": this.iso(), ":one": 1, ...(typeof seen === "number" ? { ":seen": seen } : {}) },
         }));
         return total;
       } catch (error) {

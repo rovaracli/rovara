@@ -26,11 +26,15 @@ const topUp = (t: World, scope: BudgetScope) => (t.db.get(topUpKey(TEST_ORG, mon
 const limitOf = async (t: World, scope: BudgetScope) => (await effectiveLimits({ documentClient: t.db, tableName: "state", cloud: true }, { orgId: TEST_ORG, month: month(), scopes: [scope] })).get(scopeKeyOf(scope));
 const version = (t: World, owner: string) => (t.db.get(ownerBudgetKey(TEST_ORG, owner).pk, "TOTAL") as { version?: number } | undefined)?.version ?? 0;
 
-/** A `month` request for an agent's budget, as a pause of one of its runs asks for it (the system asks). */
-const agentRequest = (t: World, agentId: string, amountUsd: number) => createSpendRequest(t.deps(), {
-  orgId: TEST_ORG, kind: "month", scope: { kind: "agent", agentId: agentId as never }, subject: `MONTH#${month()}#AGENT#${agentId}#system#${randomUUID()}`, amountUsd,
-  reason: "More for this month, please.", requestedBy: { kind: "system" },
-}).then((made) => made.record);
+/** A `month` request for an agent's budget, as a pause of one of its runs asks for it (the system asks): its new limit is the limit now plus the amount. */
+const agentRequest = async (t: World, agentId: string, amountUsd: number) => {
+  const scope: BudgetScope = { kind: "agent", agentId: agentId };
+  const limit = (await limitOf(t, scope))!;
+  return (await createSpendRequest(t.deps(), {
+    orgId: TEST_ORG, kind: "month", scope, subject: `MONTH#${month()}#AGENT#${agentId}#system#${randomUUID()}`, amountUsd, newLimitUsd: limit + amountUsd,
+    reason: "More for this month, please.", requestedBy: { kind: "system" },
+  })).record;
+};
 
 describe("a pause on a month's budget", () => {
   it("a pause on a member's monthly limit lists the task under its scope and asks the admins once, in words naming an admin", async () => {
@@ -179,8 +183,10 @@ describe("an agent's month (MONTH_APPROVERS)", () => {
 
   it("two concurrent owner approvals of $5 top-ups that fit alone but not together: one applies, the other re-routes to the admins and applies nothing", async () => {
     const t = await setup();
-    const first = await t.budgeted(50);
-    const second = await t.budgeted(45);
+    // $95 in all; a $5 top-up on either of the first two fits the $100 cap (and the $50 an agent may have), both together do not.
+    const first = await t.budgeted(40);
+    const second = await t.budgeted(35);
+    await t.budgeted(20);
     const a = await agentRequest(t, first, 5);
     const b = await agentRequest(t, second, 5);
     expect([a.approverRole, b.approverRole]).toEqual(["agent_owner", "agent_owner"]);
@@ -242,8 +248,11 @@ describe("the routes", () => {
 
   it("a project's month may be asked for by someone working in it, an agent's by someone who may use it", async () => {
     const t = await setup();
+    // A project with no monthly budget has nothing to top up (R47); payments gets one first.
+    expect((await t.api(CARL, "POST", "/v1/app/spend-requests", { kind: "month", scope: { kind: "project", project: "payments" }, amountUsd: 20, reason: "No limit yet." })).body).toMatchObject({ error: { code: "CONFIG_INVALID" } });
+    expect((await t.api(ADA, "PUT", "/v1/app/projects/payments/ai", { monthlyBudgetUsd: 100 })).status).toBe(200);
     expect((await t.api(CARL, "POST", "/v1/app/spend-requests", { kind: "month", scope: { kind: "project", project: "payments" }, amountUsd: 20, reason: "Release month." })).status).toBe(201);
-    expect((await t.api(OMAR, "POST", "/v1/app/spend-requests", { kind: "month", scope: { kind: "project", project: "payments" }, amountUsd: 20, reason: "Not mine." })).body).toMatchObject({ error: { code: "PROJECT_ACCESS_DENIED" } });
+    expect((await t.api(OMAR, "POST", "/v1/app/spend-requests", { kind: "month", scope: { kind: "project", project: "payments" }, amountUsd: 20, reason: "Not mine." })).body).toMatchObject({ error: { code: "PROJECT_NOT_FOUND" } });
     const agentId = await t.budgeted(30);
     expect((await t.api(MAYA, "POST", "/v1/app/spend-requests", { kind: "month", scope: { kind: "agent", agentId }, amountUsd: 10, reason: "Busy agent." })).status).toBe(201);
     expect((await t.api(OMAR, "POST", "/v1/app/spend-requests", { kind: "month", scope: { kind: "agent", agentId }, amountUsd: 10, reason: "x" })).status).toBe(404);

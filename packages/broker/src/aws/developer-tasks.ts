@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   SPEND_RESUME_INSTRUCTIONS,
+  scopeKey,
   spendRequestKey,
   spendRequestSlotKey,
   CHANNEL_PRIVACY_NOT_SET_UP,
@@ -2160,11 +2161,15 @@ async function pauseViewOf(deps: DeveloperTaskRouteDependencies, task: Developer
   const pause = task.budgetPause;
   if (pause === undefined || task.orgId === undefined) return {};
   const scope = Object.fromEntries(Object.entries(pause.scope).filter(([, value]) => typeof value === "string")) as Record<string, string>;
-  const kind = pause.scope.kind === "task" ? "run_limit" : pause.scope.kind === "max_per_run" || pause.scope.kind === "planning" ? pause.scope.kind : undefined;
+  // A run's own limit has its task's request; a month's budget has the month's request the pause asked for (Task 33).
+  const month = iso(deps).slice(0, 7);
+  const slotOf: { subject: string; kind: string } | undefined = pause.scope.kind === "task" ? { subject: `TASK#${task.taskId}`, kind: "run_limit" }
+    : pause.scope.kind === "max_per_run" || pause.scope.kind === "planning" ? { subject: `TASK#${task.taskId}`, kind: pause.scope.kind }
+      : pause.scope.kind === "test" ? undefined : { subject: `MONTH#${month}#${scopeKey(pause.scope)}#system`, kind: "month" };
   let spendRequestId: string | undefined;
   let message: string | undefined;
-  if (kind !== undefined) {
-    const slot = await get<{ spendRequestId?: string }>(deps, spendRequestSlotKey(task.orgId, `TASK#${task.taskId}`, kind));
+  if (slotOf !== undefined) {
+    const slot = await get<{ spendRequestId?: string }>(deps, spendRequestSlotKey(task.orgId, slotOf.subject, slotOf.kind));
     const record = slot?.spendRequestId === undefined ? undefined : await get<{ orgId?: string; status?: string; reason?: string }>(deps, spendRequestKey(task.orgId, slot.spendRequestId));
     if (record?.orgId === task.orgId && record.status === "PENDING") {
       spendRequestId = slot!.spendRequestId;
