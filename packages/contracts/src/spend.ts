@@ -41,9 +41,12 @@ export type RunEstimate = z.infer<typeof RunEstimateSchema>;
 
 /** How the words a workflow blocks with begin when approving its plan needs a higher tier to accept the run limit (Task 34). */
 export const RUN_LIMIT_BLOCK_PREFIX = "This plan's run limit is $";
-/** The words the workflow blocks with when the approver may not accept the run limit: who has to approve, and that it has been asked. */
-export const runLimitBlockText = (runLimitUsd: number, needs: "maintainer" | "admin"): string =>
-  `${RUN_LIMIT_BLOCK_PREFIX}${String(runLimitUsd)}, which needs ${needs === "maintainer" ? "a project maintainer's" : "an admin's"} approval. I've asked for it.`;
+/**
+ * The words the workflow blocks with when the approver may not accept the run limit: who has to approve and, only when a request was actually made, that it
+ * has been asked for.
+ */
+export const runLimitBlockText = (runLimitUsd: number, needs: "maintainer" | "admin", asked = true): string =>
+  `${RUN_LIMIT_BLOCK_PREFIX}${String(runLimitUsd)}, which needs ${needs === "maintainer" ? "a project maintainer's" : "an admin's"} approval.${asked ? " I've asked for it." : ""}`;
 
 /** The limit on a workflow task's planning phase, before a plan is approved. */
 export const DEFAULT_PLANNING_LIMIT_USD = { QUICK: 2, FULL: 6 } as const;

@@ -11773,6 +11773,7 @@ async function completedWorkflowItems(
   let recordedReplies: ReturnType<typeof plannerRepliesItem> | undefined;
   /** Plan 3, Task 34: what the coding plan that just reached review is expected to cost, committed with it. */
   let runEstimate: RunEstimate | undefined;
+  let dropStaleEstimate = false;
   let e2eAuthorityChecks: Array<Record<string, unknown>> = [];
   if (operation.workflowMode === "IMPLEMENT" || operation.workflowMode === "CHECKS") {
     const reported = result !== null && typeof result === "object" ? result as Record<string, unknown> : {};
@@ -12133,7 +12134,11 @@ async function completedWorkflowItems(
       evidenceJob = stored.evidenceJob;
       if (stored.inlineEvidence !== undefined) inlineEvidence?.push({ ...stored.inlineEvidence, taskId: task.taskId });
       // The coding plan (not a requirements or design document) carries the estimate its approval will accept as the run limit.
-      if (stored.next.stage === "PLAN_REVIEW" && stored.next.artifacts.at(-1)?.type === "plan") runEstimate = await planRunEstimate(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot });
+      if (stored.next.stage === "PLAN_REVIEW" && stored.next.artifacts.at(-1)?.type === "plan") {
+        runEstimate = await planRunEstimate(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot });
+        // An estimate that could not be made must not leave the earlier plan's in place: the plan-ready line and the approval would use it.
+        dropStaleEstimate = runEstimate === undefined && task.runEstimate !== undefined;
+      }
       if (stored.plannerReplies !== undefined) {
         plannerReplies?.push(stored.plannerReplies);
         recordedReplies = plannerRepliesItem(dependencies.tableName, stored.plannerReplies, now);
@@ -12190,7 +12195,7 @@ async function completedWorkflowItems(
     TableName: dependencies.tableName,
     Key: taskKey(task.taskId),
     // A stored plan quoted the replies fed so far; the next plan's window starts after them.
-    UpdateExpression: `SET workflow = :workflow, updatedAt = :now${planUnreadable === undefined || planUnreadable === null ? "" : ", planUnreadable = :unreadable"}${planUnreadable === null && task.threadNotesFedThrough !== undefined ? ", threadNotesFedFrom = :fedFrom" : ""}${runEstimate === undefined ? "" : ", runEstimate = :runEstimate"}${forget ? " REMOVE planUnreadable" : ""}`,
+    UpdateExpression: `SET workflow = :workflow, updatedAt = :now${planUnreadable === undefined || planUnreadable === null ? "" : ", planUnreadable = :unreadable"}${planUnreadable === null && task.threadNotesFedThrough !== undefined ? ", threadNotesFedFrom = :fedFrom" : ""}${runEstimate === undefined ? "" : ", runEstimate = :runEstimate"}${forget || dropStaleEstimate ? ` REMOVE ${[...(forget ? ["planUnreadable"] : []), ...(dropStaleEstimate ? ["runEstimate"] : [])].join(", ")}` : ""}`,
     ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running${graphCancelCondition}${e2eCancelCondition}`,
     ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
     ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": task.workflow.revision, ":stage": task.workflow.stage, ":running": "RUNNING",

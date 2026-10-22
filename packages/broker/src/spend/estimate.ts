@@ -138,6 +138,8 @@ export interface RunLimitRequest {
   resume: "implement";
   orgId: OrgId;
   taskId: string;
+  /** The decision's request id: a repeat of the same approval is a repeat of the same request (R18). */
+  requestId: string;
   amountUsd: number;
   newLimitUsd: number;
   /** At most 300 characters. */
@@ -190,10 +192,12 @@ export async function acceptRunLimit(
   const { task, approver } = input;
   if (task.orgId === undefined) throw new Error("a task with no org has no run limit to accept");
   const orgId = task.orgId;
-  const runLimitUsd = task.runEstimate?.runLimitUsd ?? (await estimateRun(deps, {
+  const estimated = task.runEstimate?.runLimitUsd ?? (await estimateRun(deps, {
     orgId, project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID, path: estimatePathOf(task),
     ...(task.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: task.maxPerRunUsd }),
   })).runLimitUsd;
+  // A start that asked for a lower run limit keeps it: a request can only lower the limit (H2).
+  const runLimitUsd = task.requestedRunLimitUsd === undefined ? estimated : Math.min(estimated, task.requestedRunLimitUsd);
   const [policy, tier] = await Promise.all([readSpendPolicy(deps, orgId), tierOf(deps, task, approver)]);
   const may = tier === "admin" || (tier === "maintainer" ? runLimitUsd <= policy.adminApprovalThresholdUsd : runLimitUsd <= policy.leadApprovalThresholdUsd);
   if (may) return { accepted: true, runLimitUsd };

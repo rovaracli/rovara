@@ -156,6 +156,7 @@ import {
   capText,
   ROVARA_CODE_AGENT_ID,
   RUN_LIMIT_BLOCK_PREFIX,
+  runLimitBlockText,
   type ProjectRole,
 } from "@agentx/contracts";
 import { z } from "zod";
@@ -1671,7 +1672,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   const keepsBudget = admitted !== undefined || (prepared !== undefined && budgetUsd !== PER_TASK_BUDGET_USD);
   const task: DeveloperTaskRecord = {
     ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: deps.orgId,
-    ...(keepsBudget ? { budgetUsd } : {}), developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
+    ...(keepsBudget ? { budgetUsd } : {}), ...(run?.runLimitUsd === undefined || startLimitUsd === undefined ? {} : { requestedRunLimitUsd: run.runLimitUsd }), developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
     ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
     client, project: request.project, title, workspaceId, ownerKey: identity.ownerKey, conversationId, startingRevision: revision,
     // A workflow task quotes the request in each plan's "why"; every start (Slack and AI tool) comes through here.
@@ -2291,7 +2292,7 @@ export async function decideTaskWorkflow(
   // Plan 3, Task 34: approving the coding plan accepts its run limit (what the plan under review carried, or works out now) when the approver's tier allows it.
   // Else the request is made first (a repeat of it is the same request) and the workflow blocks here with the decision recorded: its Retry coding, after the
   // limit is raised, starts what the approval would have started.
-  const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task) : undefined;
+  const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task, request.requestId) : undefined;
   // The corrected plan's approval ends the E2E correction fence, whether coding starts now or waits for the run limit.
   const correctedPlan = correction !== undefined && request.decision === "APPROVE" && documentType === "plan"
     && currentPlan.sha256 !== correction.artifactSha256 && workflow.candidate?.digest === correction.candidateDigest
@@ -2388,7 +2389,7 @@ type RunLimitOutcome = { accepted: true; runLimitUsd: number; baselineUsd: numbe
  * (a proxy that can't say refuses the approval, as a Continue is). Not accepted: the `run_limit` request is made through Task 32's seam before anything is
  * written, so a workflow is never blocked on a request that was not made; without the seam (until Task 32 is wired) no request is made and the words are the same.
  */
-async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord): Promise<RunLimitOutcome> {
+async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, requestId: string): Promise<RunLimitOutcome> {
   const decision = await acceptRunLimit(
     // The approver's project role is read now: from the project's people where agents are set up, else through the caller's own project access.
     { ...estimateDependencies(deps), projectMembers: deps.agentRuns?.projectMembers ?? { roleOf: async () => (await deps.checkAccess(task.project)).role } },
@@ -2396,20 +2397,22 @@ async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: Deve
   );
   if (decision.accepted) return { accepted: true, runLimitUsd: decision.runLimitUsd, baselineUsd: await capWindowBaseline(deps, task) ?? 0 };
   const ask = deps.agentRuns?.requestRunLimit;
+  let asked = false;
   if (ask !== undefined) {
     try {
-      await ask({
-        kind: "run_limit", resume: "implement", orgId: deps.orgId, taskId: task.taskId, newLimitUsd: decision.runLimitUsd,
+      asked = await ask({
+        kind: "run_limit", resume: "implement", orgId: deps.orgId, taskId: task.taskId, requestId, newLimitUsd: decision.runLimitUsd,
         amountUsd: Math.max(0, cleanUsd(decision.runLimitUsd - (task.budgetUsd ?? 0))), approverRole: decision.approverRole, requestedBy: { kind: "member", developerId: caller.developerId },
         reason: `Approving this plan sets a run limit of $${String(decision.runLimitUsd)}, which needs ${decision.needs === "maintainer" ? "a project maintainer's" : "an admin's"} approval.`,
-      });
+      }) !== undefined;
     } catch (error) {
       if (error instanceof AgentXError) throw error;
       log(deps, { event: "developer.run_limit_request_failed", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
       throw agentXError("RUNTIME_UNAVAILABLE", "the run limit could not be asked for just now; try approving again");
     }
   }
-  return { accepted: false, message: decision.message };
+  // "I've asked for it" only when a request exists.
+  return { accepted: false, message: runLimitBlockText(decision.runLimitUsd, decision.needs, asked) };
 }
 
 /** The claim IDs this task's earlier structured documents dropped (they may not come back), in order; a document that cannot be read is skipped. */
@@ -2930,12 +2933,68 @@ async function queueWorkflowCoding(
   return { task: view };
 }
 
+/** Said to anyone who tries to restart coding on a plan whose run limit nobody has accepted. */
+const RUN_LIMIT_NOT_APPROVED_REFUSAL = "Coding starts once the run limit is approved.";
+
+/** A plan blocked on its run limit (Task 34) is unblocked by the run-limit approval only (`resumeAfterRunLimitApproval`), never by a retry or a send-back. */
+const blockedOnRunLimit = (workflow: WorkflowSnapshot): boolean =>
+  workflow.stage === "IMPLEMENT" && workflow.state === "BLOCKED" && workflow.blockReason?.startsWith(RUN_LIMIT_BLOCK_PREFIX) === true;
+
+/**
+ * Plan 3, Task 34: the run limit of a plan blocked on it was approved (Task 32's `resume: "implement"`). Sets `budgetUsd` to the approved limit and the window
+ * at what the task's keys have spent, and starts coding on the approved plan, in the one transaction that moves the workflow. `requestId` (the spend request's)
+ * makes the coding operation, so a repeat finds the workflow already moved. "STALE": the task is not blocked on a run limit (closed, moved on, or blocked for
+ * another reason), and nothing is written. A proxy that can't say what planning spent refuses (503) before anything is written.
+ */
+export async function resumeAfterRunLimitApproval(
+  deps: DeveloperTaskRouteDependencies, taskId: string, input: { requestId: string; runLimitUsd: number },
+): Promise<"STARTED" | "DUPLICATE" | "STALE"> {
+  if (!Number.isFinite(input.runLimitUsd) || input.runLimitUsd <= 0) throw agentXError("CONFIG_INVALID", "the approved run limit must be more than zero");
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  const workflow = task?.workflow;
+  if (task === undefined || task.orgId !== deps.orgId || task.closedAt !== undefined || workflow === undefined || !blockedOnRunLimit(workflow)) return "STALE";
+  await creatorGuard(deps, task);
+  const dispatchAccess = await systemTaskAccess(deps, task);
+  const workspace = await deps.actions.workspace(task.workspaceId);
+  if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
+  const plan = await approvedCodingPlan(deps, workflow);
+  const workflowDependencies = await approvedWorkflowDependencies(deps, task, dispatchAccess?.peopleRevision);
+  if (workflowDependencies !== undefined && deps.workflowDependenciesEnabled !== true) {
+    throw agentXError("CONFIG_INVALID", "the approved ordered work plan is retained, but this broker is not enabled to start it");
+  }
+  const baselineUsd = await capWindowBaseline(deps, task) ?? 0;
+  const receivedAt = iso(deps);
+  const { blockReason: _blockReason, ...unblocked } = workflow;
+  void _blockReason;
+  const next: WorkflowSnapshot = { ...unblocked, revision: workflow.revision + 1, state: "RUNNING", updatedAt: receivedAt };
+  const prompt = `Implement the human-approved plan below. Follow its ordered steps, run the listed checks, and report results and limitations. ${NO_PUBLISH_NOTE}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}`;
+  const accepted = await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId: input.requestId, conversationId: task.conversationId, prompt }, (operation) => [
+    { Update: {
+      TableName: deps.tableName, Key: taskKey(task.taskId),
+      UpdateExpression: "SET workflow = :workflow, updatedAt = :now, budgetUsd = :runLimit, budgetBaselineUsd = :baseline",
+      ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :implement AND workflow.#state = :blocked AND attribute_not_exists(closedAt)${task.budgetUsd === undefined ? " AND attribute_not_exists(budgetUsd)" : " AND budgetUsd = :seenBudget"}`,
+      ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+      ExpressionAttributeValues: { ":workflow": workflowWithCurrentGraphOperation(next, workflowDependencies === undefined ? undefined : operation.id, workflowDependencies), ":now": receivedAt,
+        ":revision": workflow.revision, ":implement": "IMPLEMENT", ":blocked": "BLOCKED", ":runLimit": input.runLimitUsd, ":baseline": baselineUsd,
+        ...(task.budgetUsd === undefined ? {} : { ":seenBudget": task.budgetUsd }) },
+    } },
+    putNew(turnTable(deps), aiToolTurn({
+      party: partyOfTask(task), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
+      request: "The run limit was approved", response: `Coding started as operation ${operation.id} once the run limit of $${String(input.runLimitUsd)} was approved.`, operationId: operation.id,
+    })),
+    ...(dispatchAccess === undefined ? [] : [accessFence(deps, dispatchAccess)]),
+  ], { sharedTask: task.shared === true, workflowMode: "IMPLEMENT", ...selectedCheckCommands(next), ...taskBaseOption(task, next), ...(next.programStepId === undefined ? {} : { programStepId: next.programStepId }),
+    ...(workflowDependencies === undefined ? {} : { workflowDependencies }) });
+  return accepted.duplicate ? "DUPLICATE" : "STARTED";
+}
+
 /** Task 16: the owner retries coding that stopped (IMPLEMENT/BLOCKED) on the same approved plan. */
 async function retryWorkflowImplementation(
   deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, access: AuthorizedTask, request: z.infer<typeof ContinueDeveloperTaskRequestSchema>,
 ): Promise<{ task: DeveloperTaskView }> {
   const { task } = access;
   const workflow = task.workflow!;
+  if (blockedOnRunLimit(workflow)) throw agentXError("CONFIG_INVALID", RUN_LIMIT_NOT_APPROVED_REFUSAL);
   if (request.expectedRevision !== undefined && request.expectedRevision !== workflow.revision) {
     throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
   }
@@ -2965,6 +3024,7 @@ export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDepen
   const { task } = access;
   const workflow = task.workflow;
   if (workflow === undefined) throw agentXError("NOT_FOUND", "this task does not have a workflow record");
+  if (blockedOnRunLimit(workflow)) throw agentXError("CONFIG_INVALID", RUN_LIMIT_NOT_APPROVED_REFUSAL);
   const prior = workflow.decisions.find((decision) => decision.requestId === request.requestId);
   if (prior !== undefined) {
     if (prior.source !== "SEND_BACK") throw agentXError("IDEMPOTENCY_CONFLICT", "this request ID was already used for another decision on this task; use a new one");
@@ -5558,8 +5618,9 @@ export type ReleaseDeps = {
 
 /**
  * Plan 3, Task 34: a run that merged (a workflow task whose pull requests all merged), passed every step of its own sequence, or completed (an agent-step run)
- * writes what its keys cost, for the next estimate (`recordRunCost`). A run that failed, was cancelled or closed with its plan rejected writes nothing. Never
- * throws: a proxy that can't say is logged, and the next release of the task tries again.
+ * writes what its keys cost, for the next estimate (`recordRunCost`). A run that failed, was cancelled or closed with its plan rejected writes nothing, and a
+ * task with no workflow is never recorded (the TASK estimate stays at its default until that has an end signal and a planned golden change). Never throws: a
+ * proxy that can't say is logged; the next release of the task before it is released tries again, and after that the run's cost is not in the history.
  */
 export async function recordFinishedRunCost(deps: ReleaseDeps, task: DeveloperTaskRecord): Promise<void> {
   if (deps.modelAccess === undefined || task.orgId === undefined || task.runCostRecordedAt !== undefined) return;
@@ -5570,7 +5631,8 @@ export async function recordFinishedRunCost(deps: ReleaseDeps, task: DeveloperTa
   } else {
     const outcome = workflowEndOutcome(task);
     if ((outcome !== "merged" && outcome !== "succeeded") || task.workflow === undefined) return;
-    ended = { path: task.workflow.path, endedAt: new Date().toISOString() };
+    // The workflow's last change is the merge (or the last step); the clock would make the order of two runs depend on when their release ran.
+    ended = { path: task.workflow.path, endedAt: task.workflow.updatedAt };
   }
   try {
     await recordRunCost({ documentClient: deps.documentClient, tableName: deps.tableName, modelAccess: deps.modelAccess }, task, ended);

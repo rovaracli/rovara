@@ -149,6 +149,8 @@ export interface DeveloperTaskRecord {
    * review on an install with a model proxy. Approving the plan accepts `runLimitUsd` (`acceptRunLimit`); the plan-ready message and the task view show it.
    */
   runEstimate?: RunEstimate;
+  /** Plan 3, Task 34: the run limit a start asked for (`runLimitUsd` of `startAgentRun`); approving the plan accepts no more than it. */
+  requestedRunLimitUsd?: number;
   /** Plan 3, Task 34: when the run's cost was written for the estimates (`recordRunCost`), so a run is counted once. */
   runCostRecordedAt?: string;
 }
