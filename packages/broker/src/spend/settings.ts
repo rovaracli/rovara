@@ -331,6 +331,10 @@ export async function checkOwnerBudget(deps: SpendSettingsDependencies, input: {
  * Task 33 fix round 1 (I-1): the cap is on the owner's effective total, base plus this month's top-ups. `effective` reads it (`effectiveOwnerCap` in
  * spend/requests.ts) with the owner counter's version, and the cap handed to the store carries both (`OwnerCap.seen`), so the write is held to the same
  * figure and can't race a top-up. Without it (an install with no top-ups) the counter alone is the total.
+ *
+ * Fix round 2 (N-1): an agent's own top-up for the month goes with it. When the change makes the agent count for a new owner (a move, a new accountable
+ * maintainer, an unarchive), `carriedUsd` (its `readTopUp` now) joins that owner's total with the base, in the test and in `seen.extraUsd`, so the store's
+ * condition (`counter + base ≤ cap − extra`) holds it too.
  */
 export async function ownerBudgetRefusal(
   deps: SpendSettingsDependencies,
@@ -338,8 +342,11 @@ export async function ownerBudgetRefusal(
   before: OwnerShare | undefined,
   after: OwnerShare | undefined,
   effective?: (owner: string) => Promise<{ totalUsd: number; counterUsd: number; version: number }>,
+  carriedUsd = 0,
 ): Promise<{ over: { owner: string; wouldBeUsd: number; capUsd: number } } | { ownerCap: OwnerCap }> {
-  const deltaUsd = after === undefined ? 0 : before?.owner === after.owner ? cleanUsd(after.usd - before.usd) : after.usd;
+  const joins = after !== undefined && before?.owner !== after.owner;
+  const carried = joins ? carriedUsd : 0;
+  const deltaUsd = after === undefined ? 0 : joins ? cleanUsd(after.usd + carried) : cleanUsd(after.usd - before!.usd);
   const owner = after?.owner;
   if (owner === undefined) {
     const { policy, revision } = await readSpendPolicyWithRevision(deps, orgId);
@@ -351,7 +358,7 @@ export async function ownerBudgetRefusal(
     const capUsd = policy.ownerAgentBudgetCapUsd;
     const wouldBeUsd = cleanUsd(read.totalUsd + deltaUsd);
     if (deltaUsd > 0 && wouldBeUsd > capUsd) return { over: { owner, wouldBeUsd, capUsd } };
-    return { ownerCap: { usd: capUsd, policyRevision: revision, seen: { owner, version: read.version, extraUsd: cleanUsd(read.totalUsd - read.counterUsd) } } };
+    return { ownerCap: { usd: capUsd, policyRevision: revision, seen: { owner, version: read.version, extraUsd: cleanUsd(read.totalUsd - read.counterUsd + carried) } } };
   }
   const check = await checkOwnerBudget(deps, { orgId, owner, deltaUsd });
   if (check.ok) return { ownerCap: { usd: check.capUsd, policyRevision: check.policyRevision } };

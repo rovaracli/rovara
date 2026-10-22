@@ -66,6 +66,7 @@ import { addToRoster, checkRosterChange, listRoster, removeFromRoster, roleOnPro
 import type { SkillRecord } from "./skills.js";
 import type { OrgStore } from "../org/store.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
+import { readTopUp } from "../spend/top-ups.js";
 import { routeSpendRequest } from "../spend/routes.js";
 import { effectiveOwnerCap, isSpendRequestRoute, requestOwnerCap, routeSpendRequests, type SpendRequestHost } from "../spend/requests.js";
 import { isConnectionRoute, routeConnectionRequest, type ConnectionRouteDependencies } from "../connections/routes.js";
@@ -717,7 +718,10 @@ async function holdingCap<T>(
 ): Promise<T | StatusReply> {
   const shares = async () => {
     const survivor = async (share: ReturnType<typeof ownerShare>) => (share === undefined ? undefined : { ...share, owner: await resolveSurvivor(deps, caller.orgId, share.owner) });
-    return ownerBudgetRefusal(deps, caller.orgId, await survivor(ownerShare(before)), await survivor(ownerShare(after)), (owner) => effectiveOwnerCap(deps, caller.orgId, owner));
+    const [from, to] = [await survivor(ownerShare(before)), await survivor(ownerShare(after))];
+    // Fix round 2 (N-1): the agent's top-up for the month goes with it to an owner it newly counts for.
+    const carried = to !== undefined && from?.owner !== to.owner ? await readTopUp(deps, caller.orgId, new Date(deps.now()).toISOString().slice(0, 7), { kind: "agent", agentId }) : 0;
+    return ownerBudgetRefusal(deps, caller.orgId, from, to, (owner) => effectiveOwnerCap(deps, caller.orgId, owner), carried);
   };
   const ask = async (over: { owner: string; wouldBeUsd: number; capUsd: number }): Promise<StatusReply> => {
     const newOwner = change.op === "set_owner" ? (change.owner.kind === "member" ? change.owner.developerId : change.accountable?.developerId) : change.op === "set_accountable" ? change.accountable.developerId : undefined;

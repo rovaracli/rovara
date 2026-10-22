@@ -596,3 +596,67 @@ describe("fix round 1 (the Task 33 review)", () => {
     expect(other.body).toMatchObject({ differs: true, spendRequest: { amountUsd: 15 } });
   });
 });
+
+describe("fix round 2 (the Task 32/33 re-check)", () => {
+  const effectiveOf = async (t: World, who: { developerId: string }) => (await ownerEffectiveTotal(t.deps(), { orgId: TEST_ORG, owner: who.developerId, month: month() })).totalUsd;
+  const toBen = { owner: { kind: "member", developerId: BEN.developerId } };
+
+  it("N-1 (N1): moving an agent that carries this month's top-up to an owner near the cap asks an admin; the top-up counts for the new owner", async () => {
+    const t = await setup();
+    await t.budgeted(45, BEN); await t.budgeted(35, BEN);
+    const moving = await t.budgeted(10);
+    const request = await agentRequest(t, moving, 30);
+    expect(request.approverRole).toBe("agent_owner");
+    await t.decide(MAYA, request.spendRequestId);
+    expect(topUp(t, { kind: "agent", agentId: moving })).toBe(30);
+    const moved = await t.api(ADA, "PUT", `/v1/app/agents/${moving}/owner`, toBen);
+    expect(moved.status, JSON.stringify(moved.body)).toBe(202);
+    expect(moved.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL" });
+    expect(t.agentItem(moving)!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
+    expect(await effectiveOf(t, BEN)).toBe(80);
+    // Within the cap with the top-up counted ($80 + $5 + $15 = $100, exactly the cap), the move applies.
+    const small = await t.budgeted(5);
+    await t.decide(MAYA, (await agentRequest(t, small, 15)).spendRequestId);
+    expect((await t.api(ADA, "PUT", `/v1/app/agents/${small}/owner`, toBen)).status).toBe(200);
+    expect(await effectiveOf(t, BEN)).toBe(100);
+  });
+
+  it("N-1 (N1c): the control, a move with no top-up that goes over the cap, asks an admin", async () => {
+    const t = await setup();
+    await t.budgeted(45, BEN); await t.budgeted(35, BEN);
+    const moving = await t.budgeted(25);
+    const moved = await t.api(ADA, "PUT", `/v1/app/agents/${moving}/owner`, toBen);
+    expect(moved.status, JSON.stringify(moved.body)).toBe(202);
+    expect(moved.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL" });
+  });
+
+  it("N-1: unarchiving an agent brings its top-up back into its owner's total, and over the cap asks an admin", async () => {
+    const t = await setup();
+    const archived = await t.budgeted(10);
+    await t.decide(MAYA, (await agentRequest(t, archived, 30)).spendRequestId);
+    expect((await t.api(MAYA, "POST", `/v1/app/agents/${archived}/archive`, {})).status).toBe(200);
+    await t.budgeted(45); await t.budgeted(35);
+    expect(await effectiveOf(t, MAYA)).toBe(80);
+    const back = await t.api(MAYA, "POST", `/v1/app/agents/${archived}/unarchive`, {});
+    expect(back.status, JSON.stringify(back.body)).toBe(202);
+    expect(back.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL" });
+    expect(t.agentItem(archived)!.status).toBe("archived");
+    expect(await effectiveOf(t, MAYA)).toBe(80);
+  });
+
+  it("N-1: set_accountable on a project's agent counts its top-up for the new maintainer, and over the cap asks an admin", async () => {
+    const t = await setup();
+    await t.budgeted(45, BEN); await t.budgeted(35, BEN);
+    t.grantRole(MAYA, "maintainer");
+    const projectAgent = await t.agentOf(undefined, { owner: { kind: "project", project: "payments" }, accountable: MAYA });
+    expect((await t.setBudget(MAYA, projectAgent, { monthlyUsd: 10 })).status).toBe(200);
+    const request = await agentRequest(t, projectAgent, 30);
+    expect(request.approverRole).toBe("agent_owner");
+    await t.decide(MAYA, request.spendRequestId);
+    const moved = await t.api(MAYA, "PUT", `/v1/app/agents/${projectAgent}/accountable`, { accountable: { developerId: BEN.developerId } });
+    expect(moved.status, JSON.stringify(moved.body)).toBe(202);
+    expect(moved.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL" });
+    expect(t.agentItem(projectAgent)!.accountable).toEqual({ developerId: MAYA.developerId });
+    expect(await effectiveOf(t, BEN)).toBe(80);
+  });
+});
