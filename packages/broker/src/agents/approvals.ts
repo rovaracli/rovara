@@ -966,11 +966,13 @@ export async function expireApprovals(deps: ApprovalDependencies, now: number, c
       const record = await getAnyApproval(deps, parts[2] as OrgId, parts[3] as ApprovalId);
       if (record === undefined) { await remove(item); continue; }
       if (record.status === "PENDING") {
-        if (Date.parse(record.expiresAt) > now) continue;
-        const ended = await expireOne(deps, record);
-        if (ended !== undefined) {
-          report.expired += 1;
-          if (hasHandlerPhase(ended) && await tellHandler(deps, ended)) report.handled += 1;
+        // Not yet its time (this item is then the record's own expiry item, early by a clock's difference, or a stale one that the check below drops).
+        if (Date.parse(record.expiresAt) <= now) {
+          const ended = await expireOne(deps, record);
+          if (ended !== undefined) {
+            report.expired += 1;
+            if (hasHandlerPhase(ended) && await tellHandler(deps, ended)) report.handled += 1;
+          }
         }
       } else if (record.status === "EXECUTING") {
         if (record.executingAt !== undefined && Date.parse(record.executingAt) + RETRY_MS <= now) {
@@ -982,9 +984,9 @@ export async function expireApprovals(deps: ApprovalDependencies, now: number, c
       }
       // This item is kept only while it is still what the record is waiting on; a settled record, or one driven past this item's time, drops it.
       const after = await getAnyApproval(deps, parts[2] as OrgId, parts[3] as ApprovalId);
-      const owed = after !== undefined && (after.status === "PENDING"
+      const owed = after !== undefined && ((after.status === "PENDING" && iso(Date.parse(after.expiresAt)) === sk.slice(0, 24))
         || (after.status === "EXECUTING" && after.executingAt !== undefined && iso(Date.parse(after.executingAt) + RETRY_MS) === sk.slice(0, 24))
-        || (hasHandlerPhase(after) && after.handlerDone !== true && after.status !== "EXECUTING"));
+        || (hasHandlerPhase(after) && after.handlerDone !== true && after.status !== "EXECUTING" && after.status !== "PENDING"));
       if (!owed) await remove(item);
     } catch (error) {
       report.failed += 1;
