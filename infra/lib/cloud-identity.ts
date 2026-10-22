@@ -31,6 +31,9 @@ export class CloudIdentity extends Construct {
   /** The pool's OIDC issuer, which the broker and the sign-in function read as DEVELOPER_CLOUD_ISSUER. */
   readonly issuer: string;
   readonly clientId: string;
+  /** The user pool's ID and ARN (Plan 3, Task 21a-presence): the sign-in function creates and reads email-code users in it, on this ARN only. */
+  readonly userPoolId: string;
+  readonly userPoolArn: string;
   /** The Secrets Manager secret holding {"clientSecret": ...}; only the sign-in function may read it. */
   readonly secret: secretsmanager.Secret;
   /** Its name, as DEVELOPER_CLOUD_SECRET_ID carries it. */
@@ -197,6 +200,8 @@ export class CloudIdentity extends Construct {
 
     this.issuer = `https://cognito-idp.${stack.region}.amazonaws.com/${pool.userPoolId}`;
     this.clientId = client.userPoolClientId;
+    this.userPoolId = pool.userPoolId;
+    this.userPoolArn = pool.userPoolArn;
 
     new CfnOutput(stack, "CloudIdentityIssuer", { value: this.issuer });
     new CfnOutput(stack, "CloudIdentityClientId", { value: this.clientId });

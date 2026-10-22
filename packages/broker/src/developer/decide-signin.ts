@@ -13,7 +13,7 @@
 // GitHub is never offered for a decision and never counts as fresh. Nothing here logs or stores a ticket, state, verifier or cookie value.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { AdminCreateUserCommand, AdminGetUserCommand } from "@aws-sdk/client-cognito-identity-provider";
-import { normalizeEmail, type DeveloperSignInMethod, type OrgId } from "@agentx/contracts";
+import { normalizeEmail, type DeveloperSignInMethod } from "@agentx/contracts";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import type { OrgStore } from "../org/store.js";
 import { mayDecide, type DecideInspection, type DecideKinds } from "./decide-kinds.js";
@@ -327,7 +327,7 @@ export function createDecideSignIn(ctx: DecideSignInContext) {
     const cookie = randomBytes(32).toString("base64url");
     const signedInAt = Math.min(Math.floor(ctx.now() / 1000), Math.floor(identity.authTime!));
     await deps.store.putSession(cookie, {
-      orgId: state.orgId as OrgId, developerId: state.developerId, approvalId: state.approvalId, signedInAt, method: "email_code",
+      orgId: state.orgId, developerId: state.developerId, approvalId: state.approvalId, signedInAt, method: "email_code",
       csrfHash: sha256Hex(csrfTokenFor(cookie)), expiresAt: signedInAt + DECIDE_SECONDS,
     });
     ctx.log({ event: "signin.decide_session_started", developerId: state.developerId, approvalId: state.approvalId });

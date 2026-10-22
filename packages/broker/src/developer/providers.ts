@@ -106,7 +106,7 @@ const authTimeOf = (payload: JWTPayload): { authTime: number } | Record<string, 
 
 /** RFC 8176: `amr` is a list of strings; anything else is not a list the decide flow can use. */
 const amrOf = (payload: JWTPayload): { amr: string[] } | Record<string, never> =>
-  Array.isArray(payload.amr) && payload.amr.every((value) => typeof value === "string") ? { amr: payload.amr as string[] } : {};
+  Array.isArray(payload.amr) && payload.amr.every((value) => typeof value === "string") ? { amr: payload.amr } : {};
 
 const verifiedEmail = (payload: JWTPayload): string | undefined =>
   typeof payload.email === "string" && emailVerifiedClaim(payload) ? payload.email : undefined;

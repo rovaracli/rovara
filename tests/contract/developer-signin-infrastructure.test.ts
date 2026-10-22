@@ -613,9 +613,17 @@ describe("the notice of a newly linked sign-in method (Plan 2, Task 8, cloud ins
   it("keeps the cloud template's sign-in table statements the same as a named environment's, and the broker's unchanged", () => {
     const [tableId] = ofType(cloud, "AWS::DynamoDB::Table").find(([logicalId]) => logicalId.startsWith("DeveloperSignInTable"))!;
     const functionActions = statementsOfRole(cloud, "DeveloperSignInFunctionServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(cloud, statement, tableId, SAMPLE_TABLE_ARN)).flatMap(actionsOf).sort();
-    expect(functionActions).toEqual(["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
+    // The named environment's five actions, plus the decide statements (state: Put, Get, Delete; session: Put; tickets and rates: Get, Put, Update).
+    expect(functionActions).toEqual([
+      "dynamodb:DeleteItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:GetItem", "dynamodb:GetItem",
+      "dynamodb:PutItem", "dynamodb:PutItem", "dynamodb:PutItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:UpdateItem",
+    ]);
+    // Plan 3, Task 21a-presence (PF9): one exact list for the broker on a cloud install: the creator check, the reads, the developer-partition
+    // Query, and the decide statements (sessions: Get, Update, Delete; tickets and rates: Put, Update). The statements are pinned one by one below.
     const brokerActions = statementsOfRole(cloud, "BrokerServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(cloud, statement, tableId, SAMPLE_TABLE_ARN)).flatMap(actionsOf).sort();
-    expect(brokerActions).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:Query"]);
+    expect(brokerActions).toEqual([
+      "dynamodb:ConditionCheckItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:UpdateItem",
+    ]);
   });
 
   it("adds none of it to a named environment without the cloud, or to the legacy deployment", () => {
@@ -627,5 +635,84 @@ describe("the notice of a newly linked sign-in method (Plan 2, Task 8, cloud ins
 
   it("puts no em dash in any name or description", () => {
     expect(JSON.stringify(cloud)).not.toContain(String.fromCharCode(0x2014));
+  });
+});
+
+describe("the decide flow's grants and pool (Plan 3, Task 21a-presence, cloud installs)", () => {
+  let cloud: TemplateJson;
+  beforeAll(() => { cloud = controlPlane(buildAgentXApp({ agentxEnv: "staging", agentxCloud: true }), "agentx-staging-control-plane"); }, 300_000);
+  const tableId = () => ofType(cloud, "AWS::DynamoDB::Table").find(([logicalId]) => logicalId.startsWith("DeveloperSignInTable"))![0];
+  const onTable = (role: string) => statementsOfRole(cloud, role).filter((statement) => touches(statement, "dynamodb") && reaches(cloud, statement, tableId(), SAMPLE_TABLE_ARN));
+  const decideStatements = (role: string) => onTable(role).filter((statement) => JSON.stringify(statement.Condition ?? {}).includes("DECIDE_"));
+  const shape = (statement: Statement) => ({ actions: [...actionsOf(statement)].sort(), keys: leadingKeysOf(statement) });
+
+  it("gives DeveloperIdentity exactly the state, session, ticket and rate grants, each narrowed by leading keys", () => {
+    expect(decideStatements("DeveloperSignInFunctionServiceRole").map(shape)).toEqual(expect.arrayContaining([
+      { actions: ["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem"], keys: ["DECIDE_STATE#*"] },
+      { actions: ["dynamodb:PutItem"], keys: ["DECIDE_SESSION#*"] },
+      { actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], keys: ["DECIDE_TICKET#*", "DECIDE_RATE#*"] },
+    ]));
+    expect(decideStatements("DeveloperSignInFunctionServiceRole")).toHaveLength(3);
+  });
+
+  it("gives the broker exactly the session grant and the ticket and rate grant, and nothing wider", () => {
+    expect(decideStatements("BrokerServiceRole").map(shape)).toEqual(expect.arrayContaining([
+      { actions: ["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:UpdateItem"], keys: ["DECIDE_SESSION#*"] },
+      { actions: ["dynamodb:PutItem", "dynamodb:UpdateItem"], keys: ["DECIDE_TICKET#*", "DECIDE_RATE#*"] },
+    ]));
+    expect(decideStatements("BrokerServiceRole")).toHaveLength(2);
+    // The broker's other sign-in table statements are unchanged: reads, the developer-partition Query and the creator check.
+    const others = onTable("BrokerServiceRole").filter((statement) => !decideStatements("BrokerServiceRole").includes(statement));
+    expect(others.flatMap(actionsOf).sort()).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:Query"]);
+  });
+
+  it("lets no other statement or role mention the decide prefixes on the sign-in table", () => {
+    const mentioning = grants(cloud).filter(({ statement }) => JSON.stringify(statement.Condition ?? {}).includes("DECIDE_") && reaches(cloud, statement, tableId(), SAMPLE_TABLE_ARN));
+    expect(mentioning.map(({ role }) => withoutHash(role)).sort()).toEqual([
+      "BrokerServiceRole", "BrokerServiceRole", "DeveloperSignInFunctionServiceRole", "DeveloperSignInFunctionServiceRole", "DeveloperSignInFunctionServiceRole",
+    ]);
+    for (const { statement } of mentioning) {
+      expect(statement.Effect).toBe("Allow");
+      expect(actionsOf(statement).every((action) => /^dynamodb:(GetItem|PutItem|UpdateItem|DeleteItem)$/.test(action))).toBe(true);
+    }
+  });
+
+  it("gives DeveloperIdentity AdminCreateUser and AdminGetUser on the cloud pool's ARN only, and nothing Cognito to the broker", () => {
+    const [poolId] = ofType(cloud, "AWS::Cognito::UserPool")[0]!;
+    const cognito = grants(cloud).filter(({ statement }) => touches(statement, "cognito-idp"));
+    const sameStatement = cognito.filter(({ role }) => withoutHash(role) === "DeveloperSignInFunctionServiceRole");
+    expect(sameStatement).toHaveLength(1);
+    expect(sameStatement[0]!.statement.Effect).toBe("Allow");
+    expect([...actionsOf(sameStatement[0]!.statement)].sort()).toEqual(["cognito-idp:AdminCreateUser", "cognito-idp:AdminGetUser"]);
+    expect(sameStatement[0]!.statement.Resource).toEqual({ "Fn::GetAtt": [poolId, "Arn"] });
+    expect(sameStatement[0]!.statement.Condition).toBeUndefined();
+    expect(cognito.filter(({ role }) => withoutHash(role) === "BrokerServiceRole")).toEqual([]);
+    const variables = (cloud.Resources[functionId(cloud, "DeveloperSignInFunction")]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    expect(variables.DEVELOPER_CLOUD_USER_POOL_ID).toEqual({ Ref: poolId });
+  });
+
+  it("keeps the pool on managed login v2 with a branding for the app client, the email code as a first factor, and the one existing callback URL", () => {
+    const [domainId, domain] = ofType(cloud, "AWS::Cognito::UserPoolDomain")[0]!;
+    expect(domain.Properties.ManagedLoginVersion).toBe(2);
+    const [, client] = ofType(cloud, "AWS::Cognito::UserPoolClient")[0]!;
+    const clientId = ofType(cloud, "AWS::Cognito::UserPoolClient")[0]![0];
+    const brandings = ofType(cloud, "AWS::Cognito::ManagedLoginBranding");
+    expect(brandings).toHaveLength(1);
+    expect(brandings[0]![1].Properties.ClientId).toEqual({ Ref: clientId });
+    expect(JSON.stringify((brandings[0]![1] as unknown as { DependsOn?: unknown }).DependsOn ?? brandings[0]![1])).toContain(domainId);
+    const [, pool] = ofType(cloud, "AWS::Cognito::UserPool")[0]!;
+    expect(pool.Properties.Policies).toMatchObject({ SignInPolicy: { AllowedFirstAuthFactors: ["PASSWORD", "EMAIL_OTP"] } });
+    // The callback is the sign-in server's existing `${issuer}/callback/cloud`; the decide flow adds none.
+    const callbacks = JSON.stringify(client.Properties.CallbackURLs);
+    expect((client.Properties.CallbackURLs as unknown[])).toHaveLength(1);
+    expect(callbacks).toContain("/v1/auth/callback/cloud");
+    expect(client.Properties.SupportedIdentityProviders).toBeDefined();
+  });
+
+  it("adds none of it to a named environment without the cloud, or to the legacy deployment", () => {
+    for (const template of [named, legacy]) {
+      expect(JSON.stringify(template)).not.toContain("DECIDE_");
+      expect(grants(template).filter(({ statement }) => touches(statement, "cognito-idp") && withoutHash(grants(template).find((g) => g.statement === statement)!.role) === "DeveloperSignInFunctionServiceRole")).toEqual([]);
+    }
   });
 });

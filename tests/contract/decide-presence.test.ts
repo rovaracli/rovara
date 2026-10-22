@@ -3,7 +3,7 @@
 // The decide routes themselves (decideApproval, decideSpendRequest, the approval kinds) belong to 21a-wiring; a fake `DecideKind` stands
 // in for them here.
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OrgId } from "@agentx/contracts";
 import {
   APPROVAL_ID_PATTERN,
@@ -20,8 +20,12 @@ import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import type { HttpApiV2Event } from "../../packages/broker/src/aws/lambda.js";
 import type { HttpResult } from "../../packages/broker/src/developer/server.js";
+import { isDecidePagePath, routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";
 import { DECIDE_PKCE_COOKIE, TICKET_EXPIRED_MESSAGE as EXPIRED } from "../../packages/broker/src/developer/decide-session.js";
 import { DECIDE_NOTICE_SENTENCE } from "../../packages/broker/src/developer/identity-notice.js";
+import { createAdminBroker } from "../support/admin-broker.js";
+import { developerTokenVerifier } from "../../packages/broker/src/developer/verify-token.js";
+import type { DeveloperApiConfiguration } from "../../packages/broker/src/aws/developer-routes.js";
 import { API, ISSUER, OIDC_ISSUER, fakeCognito, httpEvent, identityHarness, type FakeCognitoUser, type FakeOidcUser } from "../support/developer-fakes.js";
 
 const T0 = Date.parse("2026-10-21T12:00:00.000Z");
@@ -39,7 +43,7 @@ const refusal = (promise: Promise<unknown>) => promise.then(() => undefined, (er
 }));
 
 /** A fake kind: `open` for the members in `eligible`, forbidden for the rest, not found for any org but ORG; it records what it decided. */
-function fakeKind(eligible: Set<string>, decided: Array<{ target: DecideTarget; decision: string }> = []): DecideKind & { decided: typeof decided; view: ConfirmView; eligible: Set<string>; orgId: OrgId | undefined; closed?: { by: string; at: string } } {
+function fakeKind(eligible: Set<string>, decided: Array<{ target: DecideTarget; decision: string }> = []): DecideKind & { decided: typeof decided; view: ConfirmView; eligible: Set<string>; orgId: OrgId | undefined; closed: { by: string; at: string } | undefined } {
   const view: ConfirmView = { title: "Run a write", facts: [{ label: "Agent", value: "Triage" }] };
   const kind = {
     decided, view, eligible, orgId: ORG as OrgId | undefined, closed: undefined as { by: string; at: string } | undefined,
@@ -304,7 +308,7 @@ async function flow(options: { oidcUsers?: FakeOidcUser[]; cognito?: FakeCognito
     cloud: {}, singleOrg: false, oidcUsers: options.oidcUsers ?? [gina, hugo, ginaCognito],
     ...(options.github === true ? { github: { users: [GH_GINA] } } : {}),
     decide: { kinds: { apr: kind, spr: kind }, cognito },
-    notice: { ses: { send: async (command: unknown) => { sent.push((command as { input: Record<string, unknown> }).input); return {}; } } as never, from: "Rovara <signin@rovara.dev>", cellUrl: "https://rovara.example" },
+    notice: { ses: { send: async (command: unknown) => { sent.push((command as { input: Record<string, unknown> }).input); return {}; } }, from: "Rovara <signin@rovara.dev>", cellUrl: "https://rovara.example" },
   });
   return { h, kind, sent, cognito };
 }
@@ -623,8 +627,8 @@ describe("a member with no Cognito identity (R6-2, R7-2)", () => {
     for (const [owner, sub] of [["linked", ginaCognito.sub], ["recorded", "recorded-sub"]] as const) {
       const f = await flow({ github: true, cognito: [{ email: "gina@x.dev", sub }], oidcUsers: [gina, hugo, ginaCognito, { sub: "recorded-sub", name: "Rec", email: "rec@x.dev", email_verified: true }] });
       await signInOnce(f.h, "github", "77");
-      if (owner === "linked") await f.h.db.set({ pk: `SIGNIN_IDENTITY#${ownerKeyForSubject(OIDC_ISSUER, sub)}`, sk: "META", developerId: HUGO_ID, provider: "cloud", issuer: OIDC_ISSUER, subject: sub, linkedAt: "2026-09-01T00:00:00.000Z", lastSignInAt: "2026-09-01T00:00:00.000Z" });
-      else await f.h.db.set({ pk: `DEVELOPER#${ownerKeyForSubject(OIDC_ISSUER, sub)}`, sk: "META", developerId: ownerKeyForSubject(OIDC_ISSUER, sub), provider: "cloud", issuer: OIDC_ISSUER, subject: sub, displayName: "Rec", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+      if (owner === "linked") f.h.db.set({ pk: `SIGNIN_IDENTITY#${ownerKeyForSubject(OIDC_ISSUER, sub)}`, sk: "META", developerId: HUGO_ID, provider: "cloud", issuer: OIDC_ISSUER, subject: sub, linkedAt: "2026-09-01T00:00:00.000Z", lastSignInAt: "2026-09-01T00:00:00.000Z" });
+      else f.h.db.set({ pk: `DEVELOPER#${ownerKeyForSubject(OIDC_ISSUER, sub)}`, sk: "META", developerId: ownerKeyForSubject(OIDC_ISSUER, sub), provider: "cloud", issuer: OIDC_ISSUER, subject: sub, displayName: "Rec", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
       const started = await startDecide(f.h, GH_ID);
       expect(started.response.statusCode, owner).toBe(403);
       expect(copy(started.response).paragraphs).toContain("Rovara couldn't set up email confirmation for your account. Ask an admin for help.");
@@ -640,5 +644,370 @@ describe("a member with no Cognito identity (R6-2, R7-2)", () => {
     expect(started.response.statusCode).toBe(429);
     expect(copy(started.response).paragraphs).toContain("Too many confirmation attempts. Try again later.");
     expect(f.cognito.calls).toEqual([]);
+  });
+});
+
+describe("GET /v1/auth/decide/identify (R7-1): a link with no ticket names the member with a normal sign-in", () => {
+  const authRequests = (h: Harness) => h.db.find((item) => item.purpose === "decide_identify");
+  /** Opens the identify link for `approvalId`, follows the method page to `method`, and returns the provider URL and the PKCE cookie. */
+  async function identifyAt(h: Harness, method: "cloud" | "github", approvalId = APR_A) {
+    let response = await request(h, `/v1/auth/decide/identify?return=${encodeURIComponent(`/v1/app/approve/${approvalId}`)}`);
+    const pkce = cookieValueOf(response, DECIDE_PKCE_COOKIE);
+    if (response.statusCode === 200) {
+      const link = new RegExp(`href="([^"]*method=${method})"`).exec(response.body)?.[1];
+      if (link === undefined) throw new Error("test setup: no method link");
+      response = await request(h, link.replaceAll("&amp;", "&"), `${DECIDE_PKCE_COOKIE}=${pkce}`);
+    }
+    return { response, pkce: pkce === undefined ? undefined : `${DECIDE_PKCE_COOKIE}=${pkce}`, providerUrl: response.headers.location };
+  }
+
+  it.each([
+    ["an absolute URL", "https://evil.example"],
+    ["a protocol-relative path", "//evil.example"],
+    ["an encoded slash in the id", "/v1/app/approve/%2F%2Fevil"],
+    ["a dot-dot", "/v1/app/approve/../x"],
+    ["a dot-dot after a real id", `/v1/app/approve/${APR_A}/../x`],
+    ["a backslash", `/v1/app/approve\\${APR_A}`],
+    ["another path", "/v1/app/approvals"],
+    ["a suffix", `/v1/app/approve/${APR_A}/extra`],
+    ["a double-encoded path", `%252Fv1%252Fapp%252Fapprove%252F${APR_A}`],
+    ["nothing", ""],
+  ])("refuses %s with 400 and starts nothing", async (_name, value) => {
+    const { h } = await flow();
+    const response = await request(h, `/v1/auth/decide/identify?return=${value === "" ? "" : value.startsWith("%25") ? value : encodeURIComponent(value)}`);
+    expect(response.statusCode).toBe(400);
+    expect(response.headers.location).toBeUndefined();
+    expect(response.cookies).toBeUndefined();
+    expect(authRequests(h)).toEqual([]);
+    const raw = await request(h, `/v1/auth/decide/identify?return=${value}`);
+    expect(raw.statusCode).toBe(400);
+    expect(raw.headers.location).toBeUndefined();
+    expect(authRequests(h)).toEqual([]);
+  });
+
+  it("opens no Cognito user, link or notice, and mints no ticket, until the person has signed in and may decide", async () => {
+    const { h, cognito, sent } = await flow({ github: true, cognito: [] });
+    await signInOnce(h, "github", "77");
+    const links = h.db.find((item) => String(item.pk).startsWith("SIGNIN_IDENTITY#")).length;
+    const opened = await identifyAt(h, "github");
+    expect(opened.response.statusCode).toBe(302);
+    expect(new URL(opened.providerUrl!).origin).toBe("https://github.com");
+    expect(cognito.calls).toEqual([]);
+    expect(sent).toEqual([]);
+    expect(h.db.find((item) => String(item.pk).startsWith("DECIDE_"))).toEqual([]);
+    expect(h.db.find((item) => String(item.pk).startsWith("SIGNIN_IDENTITY#"))).toHaveLength(links);
+    expect(opened.pkce).toMatch(/^__Host-rovara_decide_pkce=[A-Za-z0-9_-]{43}$/);
+  });
+
+  it("GitHub-only approver from Slack: identifies with GitHub (never fresh), gets a ticket for themselves, then the email code, and has a session", async () => {
+    const { h, cognito, sent } = await flow({ github: true, cognito: [], oidcUsers: [ginaCognito] });
+    await signInOnce(h, "github", "77");
+    const opened = await identifyAt(h, "github");
+    const callback = await request(h, h.github.approve(opened.providerUrl!, 77), opened.pkce);
+    expect(callback.statusCode).toBe(302);
+    const location = callback.headers.location!;
+    expect(location).toMatch(/^\/v1\/auth\/decide\/start\?ticket=[A-Za-z0-9_-]{43}$/);
+    // The identify sign-in is not fresh: no session exists yet, and the ticket names the GitHub member.
+    expect(h.db.find((item) => String(item.pk).startsWith("DECIDE_SESSION#"))).toEqual([]);
+    expect(h.db.find((item) => String(item.pk).startsWith("DECIDE_TICKET#"))[0]).toMatchObject({ developerId: GH_ID, approvalId: APR_A, mintedBy: "identified_session" });
+    expect(cognito.calls).toEqual([]);
+    const start = await request(h, location);
+    expect(start.statusCode).toBe(302);
+    expect(new URL(start.headers.location!).searchParams.get("login_hint")).toBe("gina@x.dev");
+    expect(cognito.calls.filter((call) => call.name === "AdminCreateUserCommand")).toHaveLength(1);
+    expect(sent).toHaveLength(1);
+    const pkce = `${DECIDE_PKCE_COOKIE}=${cookieValueOf(start, DECIDE_PKCE_COOKIE)}`;
+    const done = await request(h, h.oidc.approve(start.headers.location!, ginaCognito.sub, { claims: { auth_time: nowSeconds(h) } }), pkce);
+    expect(done.headers.location).toBe(`/v1/app/approve/${APR_A}`);
+    const value = cookieValueOf(done, DECIDE_COOKIE)!;
+    const context: DecideRequestContext = { store: h.decide, now: h.now, cellOrigin: API, kinds: {} };
+    await expect(requireDecideSession(context, post(`/v1/app/approve/${APR_A}`, value, { csrf: csrfTokenFor(value) }, { origin: API }))).resolves.toMatchObject({ developerId: GH_ID, approvalId: APR_A });
+  });
+
+  it("lets a maintainer added after the approval was asked decide it, and refuses one removed since, minting no ticket (R68, identify path)", async () => {
+    // Eligibility is the kind's live answer: the stored candidates are never consulted.
+    const { h, kind } = await flow({ eligible: [] });
+    await signInOnce(h, "cloud", gina.sub);
+    const noTicket = async () => {
+      const opened = await identifyAt(h, "cloud");
+      return request(h, h.oidc.approve(opened.providerUrl!, gina.sub), opened.pkce);
+    };
+    const refused = await noTicket();
+    expect(refused.statusCode).toBe(403);
+    expect(copy(refused).paragraphs).toContain("Only a project maintainer can decide this.");
+    expect(h.db.find((item) => String(item.pk).startsWith("DECIDE_TICKET#"))).toEqual([]);
+    kind.eligible.add(GINA_ID);
+    const allowed = await noTicket();
+    expect(allowed.statusCode).toBe(302);
+    expect(h.db.find((item) => String(item.pk).startsWith("DECIDE_TICKET#"))).toHaveLength(1);
+    kind.eligible.delete(GINA_ID);
+    const removed = await noTicket();
+    expect(removed.statusCode).toBe(403);
+    expect(h.db.find((item) => String(item.pk).startsWith("DECIDE_TICKET#"))).toHaveLength(1);
+  });
+
+  it("says who decided an approval that is already decided, and finds nothing for another org's approval", async () => {
+    const { h, kind } = await flow();
+    await signInOnce(h, "cloud", gina.sub);
+    kind.closed = { by: "Hugo Lim", at: "2026-10-21T11:00:00.000Z" };
+    const decided = await (async () => { const opened = await identifyAt(h, "cloud"); return request(h, h.oidc.approve(opened.providerUrl!, gina.sub), opened.pkce); })();
+    expect(copy(decided).paragraphs).toContain("This was already decided by Hugo Lim at 2026-10-21T11:00:00.000Z.");
+    kind.closed = undefined;
+    kind.orgId = OTHER_ORG;
+    const other = await (async () => { const opened = await identifyAt(h, "cloud"); return request(h, h.oidc.approve(opened.providerUrl!, gina.sub), opened.pkce); })();
+    expect(other.statusCode).toBe(404);
+    expect(h.db.find((item) => String(item.pk).startsWith("DECIDE_TICKET#"))).toEqual([]);
+  });
+
+  it("refuses an identify callback from another browser, a stranger with no account, and an eleventh ticket in an hour", async () => {
+    const { h } = await flow();
+    await signInOnce(h, "cloud", gina.sub);
+    const opened = await identifyAt(h, "cloud");
+    const elsewhere = await request(h, h.oidc.approve(opened.providerUrl!, gina.sub), `${DECIDE_PKCE_COOKIE}=${"v".repeat(43)}`);
+    expect(elsewhere.statusCode).toBe(400);
+    const stranger = { sub: "nobody-1", name: "Nobody", email: "nobody@elsewhere.dev", email_verified: true };
+    const strangerH = (await flow({ oidcUsers: [gina, stranger] })).h;
+    await signInOnce(strangerH, "cloud", gina.sub);
+    const open2 = await identifyAt(strangerH, "cloud");
+    const links = strangerH.db.find((item) => String(item.pk).startsWith("SIGNIN_IDENTITY#")).length;
+    const refused = await request(strangerH, strangerH.oidc.approve(open2.providerUrl!, stranger.sub), open2.pkce);
+    expect(refused.statusCode).toBe(403);
+    expect(strangerH.db.find((item) => String(item.pk).startsWith("SIGNIN_IDENTITY#"))).toHaveLength(links);
+    // The eleventh ticket for one member within an hour.
+    const orgId = await orgOf(h, GINA_ID);
+    for (let index = 0; index < 10; index += 1) await h.decide.mintTicket({ orgId, developerId: GINA_ID, approvalId: `apr_${String(index).padStart(20, "a")}`, mintedBy: "token" });
+    const limited = await (async () => { const o = await identifyAt(h, "cloud"); return request(h, h.oidc.approve(o.providerUrl!, gina.sub), o.pkce); })();
+    expect(limited.statusCode).toBe(429);
+    expect(copy(limited).paragraphs).toContain("Too many confirmation attempts. Try again later.");
+  });
+});
+
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// The confirmation page: GET and POST /v1/app/approve/{id}.
+// ---------------------------------------------------------------------------------------------------------------------------------
+describe("the confirmation page", () => {
+  const page = (s: ReturnType<typeof setup>, input: { method?: string; id?: string; query?: string; cookie?: string; headers?: Record<string, string>; fields?: Record<string, string> }) => {
+    const id = input.id ?? APR_A;
+    const path = `/v1/app/approve/${id}`;
+    const headers: Record<string, string> = {
+      ...(input.cookie === undefined ? {} : { cookie: `${DECIDE_COOKIE}=${input.cookie}` }),
+      ...((input.method ?? "GET") === "POST" ? { origin: CELL, "content-type": "application/x-www-form-urlencoded" } : {}),
+      ...(input.headers ?? {}),
+    };
+    return routeDecidePage(s.context, {
+      method: input.method ?? "GET", path: `${path}${input.query ?? ""}`, headers, requestId: "r",
+      ...(input.fields === undefined ? {} : { body: new URLSearchParams(input.fields).toString() }),
+    }, new URL(`${CELL}${path}${input.query ?? ""}`));
+  };
+  const text = (response: { body: string }) => entities(response.body.replace(/<[^>]*>/g, " "));
+
+  it("claims only its own paths", () => {
+    expect(isDecidePagePath(`/v1/app/approve/${APR_A}`)).toBe(true);
+    expect(isDecidePagePath("/v1/app/approvals")).toBe(false);
+  });
+
+  it("sends a browser with no fresh session to the identify step, and one carrying a ticket to the start, which takes the ticket out of the address bar", async () => {
+    const s = setup();
+    const bare = await page(s, {});
+    expect(bare).toMatchObject({ statusCode: 302, headers: { location: `/v1/auth/decide/identify?return=/v1/app/approve/${APR_A}` } });
+    const ticket = "T".repeat(43);
+    const ticketed = await page(s, { query: `?ticket=${ticket}` });
+    expect(ticketed.headers.location).toBe(`/v1/auth/decide/start?ticket=${ticket}`);
+    expect(ticketed.headers.location).not.toContain(APR_A);
+    // A ticket that is not shaped like one is not forwarded.
+    expect((await page(s, { query: "?ticket=../../x" })).headers.location).toBe(`/v1/auth/decide/identify?return=/v1/app/approve/${APR_A}`);
+    // A session opened for another approval is no session for this one.
+    const other = await sessionFor(s, APR_B);
+    expect((await page(s, { cookie: other })).statusCode).toBe(302);
+  });
+
+  it("shows the call and its arguments as text, in a POST form with the CSRF field, under the page's own headers", async () => {
+    const s = setup();
+    s.kind.view.paragraphs = ["The agent wants to close the issue."];
+    s.kind.view.call = { connector: "github", tool: "issues.update", arguments: { title: "<script>alert(1)</script>", state: "closed", nested: { n: 2 }, bidi: "a\u202Eb" } };
+    s.kind.view.facts = [{ label: "Agent", value: "Triage" }, { label: "Project", value: "web" }];
+    const cookie = await sessionFor(s, APR_A);
+    const response = await page(s, { cookie });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain("<script>");
+    expect(response.body).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(text(response)).toContain("issues.update");
+    expect(text(response)).toContain('"state": "closed"');
+    expect(text(response)).toContain("[U+202E]");
+    expect(text(response)).toContain("The agent wants to close the issue.");
+    expect(response.body).toContain(`<form method="post" action="/v1/app/approve/${APR_A}">`);
+    expect(response.body).toContain(`name="csrf" value="${csrfTokenFor(cookie)}"`);
+    expect(response.body).toContain('name="decision" value="approve"');
+    expect(response.body).toContain('name="decision" value="decline"');
+    const csp = response.headers["content-security-policy"]!;
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("form-action 'self'");
+    expect(csp).not.toContain("form-action 'none'");
+    expect(response.headers["x-frame-options"]).toBe("DENY");
+    // `no-referrer` would make the browser send `Origin: null` on the form post, which the Origin check refuses.
+    expect(response.headers["referrer-policy"]).toBe("same-origin");
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["content-type"]).toBe("text/html; charset=utf-8");
+  });
+
+  it("answers 404 for another org's approval, 403 with who may decide, and who decided an approval already decided", async () => {
+    const s = setup();
+    const cookie = await sessionFor(s, APR_A);
+    s.kind.orgId = OTHER_ORG;
+    expect((await page(s, { cookie })).statusCode).toBe(404);
+    s.kind.orgId = ORG;
+    s.kind.eligible.delete(ALICE);
+    const forbidden = await page(s, { cookie });
+    expect(forbidden.statusCode).toBe(403);
+    expect(text(forbidden)).toContain("Only a project maintainer can decide this.");
+    s.kind.closed = { by: "Hugo Lim", at: "2026-10-21T11:00:00.000Z" };
+    expect(text(await page(s, { cookie }))).toContain("This was already decided by Hugo Lim at 2026-10-21T11:00:00.000Z.");
+  });
+
+  it("refuses a bearer token on either route with REAUTH_REQUIRED and a ticketed confirmUrl (JSON), changing nothing", async () => {
+    const s = setup();
+    const get = await refusal(page(s, { headers: { authorization: "Bearer alice" } }));
+    expect(get).toMatchObject({ code: "REAUTH_REQUIRED", status: 401 });
+    expect(String(get?.details?.confirmUrl)).toContain(`${CELL}/v1/app/approve/${APR_A}?ticket=`);
+    const posted = await refusal(page(s, { method: "POST", headers: { authorization: "Bearer alice" }, fields: { decision: "approve" } }));
+    expect(posted).toMatchObject({ code: "REAUTH_REQUIRED" });
+    expect(s.kind.decided).toEqual([]);
+  });
+
+  it("approves once for a fresh session with the right Origin and CSRF, applies exactly one decision, and spends the session", async () => {
+    const s = setup();
+    const cookie = await sessionFor(s, APR_A, ALICE, 120);
+    const response = await page(s, { method: "POST", cookie, fields: { decision: "approve", csrf: csrfTokenFor(cookie) } });
+    expect(response.statusCode).toBe(200);
+    expect(text(response)).toContain("Approved.");
+    expect(s.kind.decided).toEqual([{ target: { orgId: ORG, developerId: ALICE, approvalId: APR_A }, decision: "approve" }]);
+    expect(s.db.get(`DECIDE_SESSION#${sha(cookie)}`, "META")).toBeUndefined();
+    // The same session can't decide again, or decide anything else.
+    const again = await page(s, { method: "POST", cookie, fields: { decision: "approve", csrf: csrfTokenFor(cookie) } });
+    expect(again.statusCode).toBe(401);
+    expect(s.kind.decided).toHaveLength(1);
+  });
+
+  it("declines through the same checks", async () => {
+    const s = setup();
+    const cookie = await sessionFor(s, APR_A);
+    const response = await page(s, { method: "POST", cookie, fields: { decision: "decline", csrf: csrfTokenFor(cookie) } });
+    expect(text(response)).toContain("Declined.");
+    expect(s.kind.decided.map((entry) => entry.decision)).toEqual(["decline"]);
+  });
+
+  it("refuses a missing or wrong CSRF field, an Origin that is not the cell's, and Origin: null, with the exact words, and changes nothing", async () => {
+    const s = setup();
+    const cookie = await sessionFor(s, APR_A);
+    for (const attempt of [
+      { fields: { decision: "approve" } },
+      { fields: { decision: "approve", csrf: "wrong" } },
+      { fields: { decision: "approve", csrf: csrfTokenFor(cookie) }, headers: { origin: "https://evil.example" } },
+      { fields: { decision: "approve", csrf: csrfTokenFor(cookie) }, headers: { origin: "null" } },
+    ]) {
+      const response = await page(s, { method: "POST", cookie, ...attempt });
+      expect(response.statusCode).toBe(403);
+      expect(text(response)).toContain("This request didn't come from Rovara's page.");
+    }
+    expect(s.kind.decided).toEqual([]);
+    // None of those spent the session.
+    expect((await page(s, { method: "POST", cookie, fields: { decision: "approve", csrf: csrfTokenFor(cookie) } })).statusCode).toBe(200);
+  });
+
+  it("asks again when the session is 11 minutes old, and re-checks eligibility at the moment of the post (R68)", async () => {
+    const s = setup();
+    const old = await sessionFor(s, APR_A, ALICE, 660);
+    const stale = await page(s, { method: "POST", cookie: old, fields: { decision: "approve", csrf: csrfTokenFor(old) } });
+    expect(stale.statusCode).toBe(401);
+    expect(stale.body).toContain(`/v1/auth/decide/identify?return=/v1/app/approve/${APR_A}`);
+    const cookie = await sessionFor(s, APR_A);
+    s.kind.eligible.delete(ALICE);
+    const demoted = await page(s, { method: "POST", cookie, fields: { decision: "approve", csrf: csrfTokenFor(cookie) } });
+    expect(demoted.statusCode).toBe(403);
+    expect(s.kind.decided).toEqual([]);
+  });
+
+  it("shows why a decision could not be applied, in the words it was refused with", async () => {
+    const s = setup();
+    const words = "The draft changed after this was asked. Publish again.";
+    s.kind.decide = async () => { throw Object.assign(new Error(`AGENT_REVISION_CONFLICT: ${words}`), { code: "AGENT_REVISION_CONFLICT", statusCode: 409 }); };
+    // An AgentXError is what a real kind throws; the page passes its words on.
+    const { AgentXError } = await import("@agentx/contracts");
+    s.kind.decide = async () => { throw new AgentXError("AGENT_REVISION_CONFLICT", words, 409); };
+    const cookie = await sessionFor(s, APR_A);
+    const response = await page(s, { method: "POST", cookie, fields: { decision: "approve", csrf: csrfTokenFor(cookie) } });
+    expect(response.statusCode).toBe(409);
+    expect(text(response)).toContain(words);
+  });
+
+  it("refuses a choice that is neither approve nor decline, and an id that is not an approval", async () => {
+    const s = setup();
+    const cookie = await sessionFor(s, APR_A);
+    expect((await page(s, { method: "POST", cookie, fields: { decision: "maybe", csrf: csrfTokenFor(cookie) } })).statusCode).toBe(400);
+    expect(s.kind.decided).toEqual([]);
+    const notFound = await routeDecidePage(s.context, { method: "GET", path: "/v1/app/approve/not-an-id", headers: {}, requestId: "r" }, new URL(`${CELL}/v1/app/approve/not-an-id`));
+    expect(notFound.statusCode).toBe(404);
+    await expect(routeDecidePage(undefined, { method: "GET", path: `/v1/app/approve/${APR_A}`, headers: {}, requestId: "r" }, new URL(`${CELL}/v1/app/approve/${APR_A}`))).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+
+describe("through the broker", () => {
+  afterEach(() => vi.useRealTimers());
+  async function brokerWith(options: { decide: boolean }) {
+    const f = await flow({ eligible: [GINA_ID] });
+    // The broker reads the real clock; the sign-in function's tokens are issued on the harness clock.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(f.h.now());
+    await signInOnce(f.h, "cloud", gina.sub);
+    const code = (await f.h.signIn("cloud", gina.sub)).searchParams.get("code")!;
+    const token = String((await f.h.exchange(code)).body.access_token);
+    const config: DeveloperApiConfiguration = {
+      issuer: ISSUER, env: "staging", methods: { slack: true, oidc: true, cloud: true, github: true }, signInTableName: "signin",
+      channelMembers: async () => ({ ok: true as const, memberOf: [] }),
+      verifyAccessToken: developerTokenVerifier({ issuer: ISSUER, keys: async () => [await f.h.signer.publicJwk()], now: () => Date.now() }),
+    };
+    const { db, handler } = await createAdminBroker({ developer: config, ...(options.decide ? { extra: { decide: { kinds: { apr: f.kind, spr: f.kind } } } } : {}) });
+    for (const source of [f.h.db, f.h.state]) for (const item of source.items.values()) db.set(structuredClone(item));
+    const call = async (method: string, path: string, headers: Record<string, string> = {}, body?: string) => {
+      const response = await handler({ rawPath: path, headers, routeKey: "ANY /v1/app/{proxy+}", ...(body === undefined ? {} : { body }), requestContext: { requestId: "r", http: { method } } }) as { statusCode: number; headers: Record<string, string>; body: string };
+      return response;
+    };
+    return { ...f, decide: f.h.decide, db, call, token };
+  }
+
+  it("answers a bearer token with REAUTH_REQUIRED, 401, and a confirmUrl whose ticket is stored as a hash", async () => {
+    const b = await brokerWith({ decide: true });
+    const response = await b.call("GET", `/v1/app/approve/${APR_A}`, { authorization: `Bearer ${b.token}` });
+    expect(response.statusCode).toBe(401);
+    const error = (JSON.parse(response.body) as { error: { code: string; message: string; confirmUrl: string } }).error;
+    expect(error, response.body).toMatchObject({ code: "REAUTH_REQUIRED" });
+    expect(error.confirmUrl).toMatch(new RegExp(`^${API}/v1/app/approve/${APR_A}\\?ticket=[A-Za-z0-9_-]{43}$`));
+    expect(error.message).toBe(`Decisions are made in your browser. Open ${error.confirmUrl}.`);
+    const ticket = new URL(error.confirmUrl).searchParams.get("ticket")!;
+    expect(b.db.get(`DECIDE_TICKET#${sha(ticket)}`, "META")).toMatchObject({ developerId: GINA_ID, approvalId: APR_A, mintedBy: "token" });
+    expect(JSON.stringify(b.db.find(() => true))).not.toContain(ticket);
+  });
+
+  it("serves the page to a browser with a session, with the page's headers, and sends one without to the identify step", async () => {
+    const b = await brokerWith({ decide: true });
+    const cookie = `cookie-${"x".repeat(40)}`;
+    const signedInAt = seconds(Date.now());
+    await b.decide.putSession(cookie, { orgId: await orgOf(b.h, GINA_ID), developerId: GINA_ID, approvalId: APR_A, signedInAt, method: "email_code", csrfHash: sha(csrfTokenFor(cookie)), expiresAt: signedInAt + 600 });
+    for (const item of b.h.db.items.values()) b.db.set(structuredClone(item));
+    const shown = await b.call("GET", `/v1/app/approve/${APR_A}`, { cookie: `${DECIDE_COOKIE}=${cookie}` });
+    expect(shown.statusCode).toBe(200);
+    expect(shown.headers["content-security-policy"]).toContain("form-action 'self'");
+    expect(shown.headers["x-frame-options"]).toBe("DENY");
+    expect(shown.body).toContain("Run a write");
+    const bare = await b.call("GET", `/v1/app/approve/${APR_A}`);
+    expect(bare.statusCode).toBe(302);
+    expect(bare.headers.location).toBe(`/v1/auth/decide/identify?return=/v1/app/approve/${APR_A}`);
+  });
+
+  it("answers not found where no approval kinds are registered", async () => {
+    const b = await brokerWith({ decide: false });
+    expect((await b.call("GET", `/v1/app/approve/${APR_A}`)).statusCode).toBe(404);
   });
 });

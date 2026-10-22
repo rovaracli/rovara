@@ -103,12 +103,18 @@ export class DecideStore {
     await this.input.documentClient.send(new PutCommand({
       TableName: this.input.tableName, Item: { ...decideTicketKey(value), entityType: "DECIDE_TICKET", ...ticket }, ConditionExpression: "attribute_not_exists(pk)",
     }));
-    const pair = rateKey("PAIR", input.approvalId, input.developerId);
-    const previous = await this.get<{ ticketPk?: string }>(pair);
-    if (previous?.ticketPk !== undefined) {
+    // One unused ticket per (approval, member): the pointer to the live one is swapped in one UpdateItem, which returns the previous one to
+    // mark used. (The broker's grant on these keys is PutItem and UpdateItem only, so nothing here reads.)
+    const swapped = await this.input.documentClient.send(new UpdateCommand({
+      TableName: this.input.tableName, Key: rateKey("PAIR", input.approvalId, input.developerId),
+      UpdateExpression: "SET ticketPk = :ticket, expiresAt = :ttl", ExpressionAttributeValues: { ":ticket": decideTicketKey(value).pk, ":ttl": expiresAt + HOUR },
+      ReturnValues: "ALL_OLD",
+    })) as { Attributes?: { ticketPk?: string } };
+    const previous = swapped.Attributes?.ticketPk;
+    if (previous !== undefined) {
       try {
         await this.input.documentClient.send(new UpdateCommand({
-          TableName: this.input.tableName, Key: { pk: previous.ticketPk, sk: META },
+          TableName: this.input.tableName, Key: { pk: previous, sk: META },
           UpdateExpression: "SET usedAt = :at", ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(usedAt)",
           ExpressionAttributeValues: { ":at": this.iso() },
         }));
@@ -116,9 +122,6 @@ export class DecideStore {
         if (!conditionFailed(error)) throw error;
       }
     }
-    await this.input.documentClient.send(new PutCommand({
-      TableName: this.input.tableName, Item: { ...pair, entityType: "DECIDE_RATE", ticketPk: decideTicketKey(value).pk, expiresAt: expiresAt + HOUR },
-    }));
     return value;
   }
 

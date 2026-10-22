@@ -129,6 +129,8 @@ export class DeveloperSignIn extends Construct {
         DEVELOPER_CLOUD_CLIENT_ID: cloud.clientId,
         DEVELOPER_CLOUD_SECRET_ID: cloud.secretName,
         DEVELOPER_CLOUD_DISPLAY_NAME: cloud.displayName,
+        // Plan 3, Task 21a-presence: the pool the decide flow creates and reads email-code users in (AdminCreateUser, AdminGetUser).
+        DEVELOPER_CLOUD_USER_POOL_ID: cloud.userPoolId,
         // Empty unless the GitHub OAuth app is configured (GitHubClientId); the function then reads its secret by id.
         DEVELOPER_GITHUB_CLIENT_ID: cloud.githubClientId.valueAsString,
         DEVELOPER_GITHUB_SECRET_ID: cloud.githubClientSecretArn.valueAsString,
@@ -240,6 +242,25 @@ export class DeveloperSignIn extends Construct {
       });
       noticeSend.attachToRole(fn.role!);
       (noticeSend.node.defaultChild as iam.CfnPolicy).cfnOptions.condition = cloud.emailFromSes;
+      // Plan 3, Task 21a-presence (R66, R67, R6-2): decisions need a person present. The fresh sign-in's server-side state, the session it
+      // makes, and the decide tickets and rate counters live in this table under their own prefixes (developer/decide-session.ts), each
+      // narrowed by leading keys. The function needs no more than this on them: the state is written, read and spent (Delete); the session
+      // is written only (the broker reads, claims and ends it); tickets and counters are read, written and counted (Put, Update).
+      fn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:DeleteItem"], resources: [table.tableArn],
+        conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DECIDE_STATE#*"] } },
+      }));
+      fn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ["dynamodb:PutItem"], resources: [table.tableArn],
+        conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DECIDE_SESSION#*"] } },
+      }));
+      fn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], resources: [table.tableArn],
+        conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DECIDE_TICKET#*", "DECIDE_RATE#*"] } },
+      }));
+      // A member who has only ever signed in with GitHub gets an email-code user in the cloud pool (R6-2): created, or an existing one read
+      // before it is linked. Those two actions on this pool's ARN, nothing else in Cognito.
+      fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["cognito-idp:AdminCreateUser", "cognito-idp:AdminGetUser"], resources: [cloud.userPoolArn] }));
     }
 
     const integration = new apigwv2.CfnIntegration(this, "Integration", {
@@ -299,6 +320,17 @@ export class DeveloperSignIn extends Construct {
       broker.addEnvironment("ROVARA_WEB_ORIGIN", cloud.webOrigin.valueAsString);
       // Whether GitHub tokens are accepted (developerClaims checks the method is on); the client id is not a secret, the secret stays with the sign-in function.
       broker.addEnvironment("DEVELOPER_GITHUB_CLIENT_ID", cloud.githubClientId.valueAsString);
+      // Plan 3, Task 21a-presence (PF9): the confirmation page's session is read, claimed once (UpdateItem) and ended (DeleteItem) by the
+      // broker; a ticket for a token's member is minted with PutItem, and its counters and "one live ticket" pointer with UpdateItem. Each
+      // statement is narrowed to its own prefixes by leading keys; nothing else on the sign-in table is added.
+      broker.addToRolePolicy(new iam.PolicyStatement({
+        actions: ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"], resources: [table.tableArn],
+        conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DECIDE_SESSION#*"] } },
+      }));
+      broker.addToRolePolicy(new iam.PolicyStatement({
+        actions: ["dynamodb:PutItem", "dynamodb:UpdateItem"], resources: [table.tableArn],
+        conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DECIDE_TICKET#*", "DECIDE_RATE#*"] } },
+      }));
     }
     fn.grantInvoke(broker);
     // Spec 025 25e: EMAIL# is the email index resolveDeveloper reads to name a developer by email. Plan 2, Task 13: SIGNIN_IDENTITY# is

@@ -324,7 +324,10 @@ import { AgentStore, type AgentStoreInput } from "../agents/store.js";
 import { SkillStore, servedSkills } from "../agents/skills.js";
 import { followMerges, type ProjectMembers } from "../agents/access.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
-import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
+import { DecideStore, DecideReauthRequired, type DecideRequestContext } from "../developer/decide-session.js";
+import type { DecideKinds } from "../developer/decide-kinds.js";
+import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
+import { authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import { ADMISSION_REFUSALS, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
@@ -517,6 +520,11 @@ interface AwsBrokerDependencies {
    * broker's State table and sign-in table.
    */
   agents?: { projectMembers: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"] } & Pick<AgentStoreInput, "newId" | "builtins">;
+  /**
+   * Plan 3, Task 21a-presence (R66): the kinds of approval a person can decide on the confirmation page (`apr_` and `spr_`), each saying whether
+   * a member may decide it now, what the page shows, and what deciding does. Absent, the confirmation page answers NOT_FOUND.
+   */
+  decide?: { kinds: DecideKinds };
   /** The install's environment name, which its single org id derives from; defaults to the developer sign-in's, then AGENTX_ENV, then "default". */
   environmentName?: string;
   githubMcp?: GitHubMcpDependencies;
@@ -719,6 +727,20 @@ async function decideEgress(dependencies: AwsBrokerDependencies, identity: Authe
   const { orgId, owner, domain, reason } = parsed.data;
   const { warning } = await decideEgressDomain(egressDepsOf(dependencies), { orgId, owner, domain, decision, operatorId: identity.subject, ...(reason === undefined ? {} : { reason }) });
   return { orgId, owner, domain, status: decision, ...(warning === undefined ? {} : { warning }) };
+}
+
+/** The confirmation page's dependencies; undefined without the kinds of approval or the developer sign-in they need. */
+function decideRequestContext(dependencies: AwsBrokerDependencies): DecideRequestContext | undefined {
+  const { decide, developer } = dependencies;
+  if (decide === undefined || developer === undefined) return undefined;
+  return {
+    store: new DecideStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, now: Date.now }),
+    now: Date.now,
+    // The page is served by the cell, at the origin its access tokens are issued from.
+    cellOrigin: new URL(developer.issuer).origin,
+    kinds: decide.kinds,
+    authenticateBearer: (authorization) => authenticateBearer({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, orgs: orgStoreOf(dependencies) }, authorization),
+  };
 }
 
 /** The agent routes' dependencies, built once per handler; undefined without the project roles or developer sign-in they need. */
@@ -1260,6 +1282,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (event.routeKey === APP_ROUTE_KEY && !url.pathname.startsWith("/v1/app/")) throw agentXError("NOT_FOUND", "route not found");
       // Plan 2, Task 13: the GitHub install flow's callback and the confirm page's form post. No token here: see github-install-web.ts.
       if (isGithubInstallPath(url.pathname)) return await routeGithubInstall(githubConnectionOf(dependencies), request, url);
+      // Plan 3, Task 21a-presence: the confirmation page. A browser's decide cookie, CSRF field and Origin authorize it, never a bearer token.
+      if (isDecidePagePath(url.pathname)) return await routeDecidePage(decideRequestContext(dependencies), request, url);
       if (url.pathname === "/v1/github/webhooks") {
         if (request.method !== "POST") return json({ error: { code: "NOT_FOUND", message: "route not found" } }, request.requestId, 404);
         if (request.body === undefined || dependencies.githubWebhookSecret === undefined) {
@@ -1690,7 +1714,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       );
     } catch (error) {
       if (error instanceof AgentXError) {
-        return json({ error: { code: error.code, message: stripCode(error.message, error.code) } }, request.requestId, error.statusCode);
+        // A decision that needs a person present says where to go (`confirmUrl` for a token, `signInUrl` for a browser): R66.
+        return json({ error: { code: error.code, message: stripCode(error.message, error.code), ...(error instanceof DecideReauthRequired ? error.details : {}) } }, request.requestId, error.statusCode);
       }
       return unexpectedErrorAnswer(error, request.requestId);
     }

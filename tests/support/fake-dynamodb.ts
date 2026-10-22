@@ -204,9 +204,15 @@ export class FakeDynamoDb {
         return this.queryPage(input);
       case "PutCommand":
       case "UpdateCommand":
-      case "DeleteCommand":
+      case "DeleteCommand": {
+        const key = (input.Key ?? input.Item) as { pk: string; sk: string };
+        const before = this.get(key.pk, key.sk);
         this.commit([toAction(command.constructor.name.replace("Command", "") as WriteAction["kind"], input)], "ConditionalCheckFailedException");
+        // ReturnValues: the item as it was (ALL_OLD) or is now (ALL_NEW), which needs only the write's own permission on a real table.
+        if (input.ReturnValues === "ALL_OLD") return before === undefined ? {} : { Attributes: structuredClone(before) };
+        if (input.ReturnValues === "ALL_NEW") { const after = this.get(key.pk, key.sk); return after === undefined ? {} : { Attributes: structuredClone(after) }; }
         return {};
+      }
       case "TransactWriteCommand": {
         const entries = input.TransactItems as Array<Record<string, Record<string, unknown>>>;
         // DynamoDB refuses a transaction that names one item twice, before any condition is evaluated.

@@ -2,6 +2,7 @@
 // The DeveloperIdentity Lambda (spec 025 phase 25a): wires the sign-in server to AWS. The only
 // new role that reads the Slack secret (R2); it never logs a secret, and never repeats a secret's
 // text in an error (a JSON parse error can quote it, so parse errors are replaced).
+import { CognitoIdentityProviderClient } from "@aws-sdk/client-cognito-identity-provider";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
 import { LambdaClient } from "@aws-sdk/client-lambda";
@@ -10,6 +11,7 @@ import { SESv2Client } from "@aws-sdk/client-sesv2";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { createRemoteJWKSet, type JWTVerifyGetKey } from "jose";
 import { singleOrgIdForEnv, type OrgId, type ChannelByNameRequest, type ChannelInfoRequest, type ChannelMembersRequest, type DeveloperSignInMethod, type EndDeveloperSessionsRequest, type SlackAuthCheckRequest, type SlackUserByEmailRequest, type TaskChannelPeopleRequest, type TaskPersonProofRequest, type StartIdentityLinkRequest, type UnlinkIdentityRequest } from "@agentx/contracts";
+import { DecideStore } from "../developer/decide-session.js";
 import { ProviderNotConfiguredError, githubSignInProvider, oidcSignInProvider, slackSignInProvider, type SignInProvider } from "../developer/providers.js";
 import { createDeveloperIdentityHandler, type DeveloperIdentityConfig } from "../developer/server.js";
 import { slackDirectory } from "../developer/slack-directory.js";
@@ -242,10 +244,20 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     from: noticeFrom === "" ? undefined : noticeFrom,
     cellUrl: env.ROVARA_WEB_ORIGIN || new URL(config.issuer).origin,
   };
+  // Plan 3, Task 21a-presence: the decide flow (`/v1/auth/decide/*`) exists on a cloud install that names its pool. Its kinds of approval
+  // (who may decide `apr_` and `spr_` now) are registered by 21a-wiring; until then every approval is "not found", so nothing can be decided.
+  const userPoolId = env.DEVELOPER_CLOUD_USER_POOL_ID ?? "";
+  const decide = config.cloud === undefined || config.cloudSettings === undefined || userPoolId === "" ? undefined : {
+    store: new DecideStore({ documentClient, tableName: required(env, "DEVELOPER_SIGNIN_TABLE_NAME"), now }),
+    kinds: {},
+    cloudIssuer: config.cloudSettings.issuer.replace(/\/+$/, ""),
+    cognito: { client: new CognitoIdentityProviderClient(region), userPoolId },
+  };
   return createDeveloperIdentityHandler({
     config,
     store,
     notice,
+    ...(decide === undefined ? {} : { decide }),
     // A duplicate member of one person (from before identity links) is merged into the member their email names, in one transaction over both tables.
     ...duplicateMerger({
       documentClient, tableName: stateTableName, signInStore: store, now,

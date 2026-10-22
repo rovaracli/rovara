@@ -494,6 +494,15 @@ export async function authenticateDeveloper(deps: DeveloperRouteDependencies, cl
   return authenticateSession(deps, token);
 }
 
+/**
+ * Plan 3, Task 21a-presence: who a bearer token names, for the confirmation machinery (it refuses a token but mints a ticket for its member).
+ * The same checks as every developer route: the token, its live session, the method, and the org membership now.
+ */
+export async function authenticateBearer(deps: DeveloperRouteDependencies, authorization: string): Promise<{ developerId: string; orgId: OrgId }> {
+  const caller = await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(authorization));
+  return { developerId: caller.developerId, orgId: caller.orgId };
+}
+
 /** A session's identity; `orgId` is present when a token named the org it was issued for, which must still be the developer's. */
 async function authenticateSession(deps: DeveloperRouteDependencies, token: { developerId: string; sessionId: string; amr: DeveloperSignInMethod; orgId?: OrgId }): Promise<DeveloperCaller> {
   const session = await getSignIn<Pick<SessionRecord, "developerId" | "amr" | "endsAt" | "revokedAt" | "startedAt" | "slackUserId" | "identityKey">>(deps, `SESSION#${token.sessionId}`);
