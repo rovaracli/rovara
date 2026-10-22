@@ -415,6 +415,20 @@ describe("one transaction, one audit event, one request item", () => {
     expect(s.access.removeSource.mock.calls[0]![1]).not.toBe(id);
   });
 
+  it("keeps every change when several land at once: each is read again after losing the race, none overwrites another", async () => {
+    const s = await setup();
+    const [first, second, third] = await Promise.all([
+      s.write(DANA, "POST", "/v1/app/org/model-sources", { source: anthropic({ label: "A" }), apiKey: KEY }),
+      s.write(OWEN, "POST", "/v1/app/org/model-sources", { source: anthropic({ label: "B" }), apiKey: OTHER_KEY }),
+      s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order: ["personal-chatgpt", "rovara"] }),
+    ]);
+    expect([first.status, second.status, third.status]).toEqual([201, 201, 200]);
+    expect(s.doc()!.sources.map((source) => source.label).sort()).toEqual(["A", "B"]);
+    expect(s.doc()!.order).toEqual(["personal-chatgpt", "rovara"]);
+    expect(s.doc()!.credentials).toHaveLength(2);
+    expect(s.doc()!.revision).toBe(3);
+  });
+
   it("makes the proxy match the record when a write fails with its outcome unknown: a write that did not land is undone, one that did is kept", async () => {
     const s = await setup();
     s.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("MODEL_SOURCES"), error: { name: "InternalServerError" } });
