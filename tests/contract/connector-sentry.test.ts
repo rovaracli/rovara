@@ -246,34 +246,29 @@ describe("running the tools", () => {
     const connection = await r.connector.connect!({ endpoint: r.definition.endpoint, token: TOKEN, tools: [...TOOLS], signal: AbortSignal.timeout(5_000) });
     const routing = { organization: "acme", projectSlug: "web-app", scopeAlias: "web" };
     for (const tool of ["get_issue", "get_latest_event"]) {
-      const result = await connection.call(tool, { ...routing, issueId: "201" });
-      expect(result.isError, tool).toBe(true);
-      expect(result.content?.[0]?.text, tool).toBe("that issue is not in web");
+      await expect(connection.call(tool, { ...routing, issueId: "201" }), tool).rejects.toMatchObject({ name: "ToolRefusal", message: "that issue is not in web", reason: "policy_denied" });
     }
     expect(r.api.requests.map((request) => new URL(request.url).pathname)).not.toContain("/api/0/organizations/acme/issues/201/events/latest/");
-    expect(JSON.stringify(await connection.call("get_issue", { ...routing, issueId: "201" }))).not.toContain("Database connection lost");
+    expect(JSON.stringify(await connection.call("get_issue", { ...routing, issueId: "201" }).catch((error: Error) => error.message))).not.toContain("Database connection lost");
   });
 
   it("answers a missing issue, a refused token and an outage in fixed words that carry nothing the vendor sent", async () => {
     const r = await resolved();
     const connection = await r.connector.connect!({ endpoint: r.definition.endpoint, token: TOKEN, tools: [...TOOLS], signal: AbortSignal.timeout(5_000) });
     const routing = { organization: "acme", projectSlug: "web-app", scopeAlias: "web" };
-    expect((await connection.call("get_issue", { ...routing, issueId: "999" })).content?.[0]?.text).toBe("Sentry has no such project or issue");
+    await expect(connection.call("get_issue", { ...routing, issueId: "999" })).rejects.toMatchObject({ message: "Sentry has no such project or issue", reason: "vendor_error" });
     const bad = await r.connector.connect!({ endpoint: r.definition.endpoint, token: "sntrys_WRONG", tools: [...TOOLS], signal: AbortSignal.timeout(5_000) });
-    const refused = await bad.call("list_issues", routing);
-    expect(refused).toMatchObject({ isError: true });
-    expect(refused.content?.[0]?.text).toBe("Sentry refused the token. Check that it has org:read, project:read and event:read.");
+    await expect(bad.call("list_issues", routing)).rejects.toMatchObject({ message: "Sentry refused the token. Check that it has org:read, project:read and event:read.", reason: "vendor_error" });
     const down = await resolved({ api: fakeSentry({ token: TOKEN, status: 503 }) });
-    const outage = await (await down.connector.connect!({ endpoint: down.definition.endpoint, token: TOKEN, tools: [...TOOLS], signal: AbortSignal.timeout(5_000) })).call("list_releases", routing);
-    expect(outage.content?.[0]?.text).toBe("Sentry answered HTTP 503");
+    await expect((await down.connector.connect!({ endpoint: down.definition.endpoint, token: TOKEN, tools: [...TOOLS], signal: AbortSignal.timeout(5_000) })).call("list_releases", routing)).rejects.toMatchObject({ message: "Sentry answered HTTP 503" });
     const limited = await resolved({ api: fakeSentry({ token: TOKEN, status: 429 }) });
-    expect((await (await limited.connector.connect!({ endpoint: limited.definition.endpoint, token: TOKEN, tools: [...TOOLS], signal: AbortSignal.timeout(5_000) })).call("list_releases", routing)).content?.[0]?.text).toBe("Sentry is limiting requests; try again later");
+    await expect((await limited.connector.connect!({ endpoint: limited.definition.endpoint, token: TOKEN, tools: [...TOOLS], signal: AbortSignal.timeout(5_000) })).call("list_releases", routing)).rejects.toMatchObject({ message: "Sentry is limiting requests; try again later" });
   });
 
   it("answers a 403 as a refused token, like a 401, and a Sentry that answers 403 to the check the same way", async () => {
     const r = await resolved({ api: fakeSentry({ token: TOKEN, status: 403 }) });
     const connection = await r.connector.connect!({ endpoint: r.definition.endpoint, token: TOKEN, tools: [...TOOLS], signal: AbortSignal.timeout(5_000) });
-    expect(textOf(await connection.call("list_issues", { organization: "acme", projectSlug: "web-app", scopeAlias: "web" }))).toBe("Sentry refused the token. Check that it has org:read, project:read and event:read.");
+    await expect(connection.call("list_issues", { organization: "acme", projectSlug: "web-app", scopeAlias: "web" })).rejects.toMatchObject({ message: "Sentry refused the token. Check that it has org:read, project:read and event:read." });
     const s = await connected();
     const store = new OrgConnectionStore({ ...s.deps, checkEndpoint: async () => undefined, fetch: routeFetch(fakeSentry({ token: TOKEN, status: 403 }).handler), checks: { sentry: sentryConnectionCheck } });
     expect(await store.check(ORG_A, CON)).toEqual({ ok: false, message: "Sentry refused the token. Check that it has org:read, project:read and event:read." });
@@ -287,6 +282,20 @@ describe("running the tools", () => {
     const tool = SENTRY_TOOLS.find((entry) => entry.name === "list_issues")!;
     await tool.run({}, { scope: { organization: "a/b", projectSlug: "c?d", alias: "web" }, credential: { token: TOKEN, bindings: {} }, fetch: fetcher });
     expect(paths[0]!.startsWith("projects/a%2Fb/c%3Fd/issues/?")).toBe(true);
+  });
+
+  it("returns the words we wrote to the model when the engine runs a refused call, and keeps the vendor's own words out of it", async () => {
+    const other = await run("get_issue", { issueId: "201" });
+    expect(other.result).toMatchObject({ status: "FAILED", reason: "policy_denied", text: "that issue is not in web" });
+    const missing = await run("get_issue", { issueId: "999" });
+    expect(missing.result).toMatchObject({ status: "FAILED", reason: "vendor_error", text: "Sentry has no such project or issue" });
+    const outage = await run("list_releases", {}, { api: fakeSentry({ token: TOKEN, status: 503 }) });
+    expect(outage.result).toMatchObject({ status: "FAILED", reason: "vendor_error", text: "Sentry answered HTTP 503" });
+    // The fake's own error body ("fake outage") is never repeated, nor is the token.
+    expect(JSON.stringify(outage.result)).not.toContain("fake outage");
+    const refused = await run("list_issues", {}, { api: fakeSentry({ token: "sntrys_SOMETHINGELSE" }) });
+    expect(refused.result).toMatchObject({ status: "FAILED", text: "Sentry refused the token. Check that it has org:read, project:read and event:read." });
+    expect(JSON.stringify([other.result, missing.result, outage.result, refused.result])).not.toMatch(/Invalid token|sntrys_/u);
   });
 
   it("refuses an issue id that is not digits, and an argument the model may not set, without any request", async () => {

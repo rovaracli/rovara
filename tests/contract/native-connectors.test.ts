@@ -2,6 +2,7 @@
 // approved tools, validates every call's arguments against the tool's schema, and answers text of a bounded size. `vendorFetch` is the only way a tool
 // reaches its vendor: one allowed host, https, no redirect, a bounded answer, and no credential in a failure. `safeLookup` refuses a non-public address when
 // the connection is made. No test here reaches a network.
+import { ToolRefusal } from "@agentx/gateway";
 import { describe, expect, it, vi } from "vitest";
 import { NativeToolRefusal, nativeConnection, type NativeTool } from "../../packages/broker/src/connectors/native/runtime.js";
 import { VendorFetchError, safeLookup, safeVendorFetch, vendorFetch, vendorFetcher } from "../../packages/broker/src/connectors/native/vendor-fetch.js";
@@ -105,15 +106,18 @@ describe("nativeConnection", () => {
   });
 
   it("replaces the token with [REDACTED] in anything a tool answers or refuses with", async () => {
-    expect(textOf(await connection(["quoting"]).call("quoting", SCOPE_ARGS))).toBe("the vendor said [REDACTED]");
+    await expect(connection(["quoting"]).call("quoting", SCOPE_ARGS)).rejects.toMatchObject({ message: "the vendor said [REDACTED]" });
     expect(textOf(await connection(["leaking"]).call("leaking", SCOPE_ARGS))).toBe("the vendor echoed [REDACTED] back");
   });
 
   it("answers a tool's refusal as an error with its words, a vendor failure with its fixed words, and anything else without naming what was thrown", async () => {
-    const refused = await connection(["refusing"]).call("refusing", SCOPE_ARGS);
-    expect(refused).toMatchObject({ isError: true });
-    expect(textOf(refused)).toBe("that issue is not in web");
-    expect(textOf(await connection(["failing"]).call("failing", SCOPE_ARGS))).toBe("the vendor could not be reached");
+    // The words we write reach the model: the connection throws a ToolRefusal, which the engine returns as the call's failure (a vendor body never does).
+    const refused = await connection(["refusing"]).call("refusing", SCOPE_ARGS).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(ToolRefusal);
+    expect(refused).toMatchObject({ message: "that issue is not in web", reason: "policy_denied" });
+    const unreachable = await connection(["failing"]).call("failing", SCOPE_ARGS).catch((error: unknown) => error);
+    expect(unreachable).toBeInstanceOf(ToolRefusal);
+    expect(unreachable).toMatchObject({ message: "the vendor could not be reached", reason: "vendor_error" });
     const crashed = await connection(["crashing"]).call("crashing", SCOPE_ARGS);
     expect(crashed.isError).toBe(true);
     expect(textOf(crashed)).toBe("crashing failed");
