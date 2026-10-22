@@ -17,7 +17,7 @@ import {
 } from "@agentx/contracts";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
-import { orgRoleOf, resolveSurvivor, whoNeeds, type AgentCaller } from "../agents/access.js";
+import { checkShares, orgRoleOf, resolveSurvivor, whoNeeds, type AgentCaller } from "../agents/access.js";
 import {
   confirmUrlFor, createPendingChange, registerApprovalSubjectHandler, registerApproverRule,
   type ApprovalDependencies, type ApprovalRecord, type ApproverSpec, type ChainChangeSubject,
@@ -74,6 +74,8 @@ const RollbackBodySchema = z.object({ requestId: RequestIdSchema, version: z.num
 const RequestOnlySchema = z.object({ requestId: RequestIdSchema }).strict();
 const SharesBodySchema = z.object({ requestId: RequestIdSchema, shares: z.array(z.unknown()) }).strict();
 const OwnerBodySchema = z.object({ requestId: RequestIdSchema, owner: AgentOwnerSchema, accountable: DeveloperRefSchema.optional() }).strict();
+
+const SHARE_RANK = { view: 0, use: 1, edit: 2 } as const;
 
 const notFound = () => agentXError("NOT_FOUND", "no chain has that ID");
 const draftConflict = () => agentXError("CHAIN_REVISION_CONFLICT", CHAIN_REVISION_CONFLICT_MESSAGE);
@@ -334,12 +336,23 @@ async function setArchived(deps: ChainRouteDependencies, caller: AgentCaller, ch
   return { chain: chainView(changed, access) };
 }
 
-async function putShares(deps: ChainRouteDependencies, caller: AgentCaller, chainId: string, body: unknown): Promise<Shown> {
+async function putShares(deps: ChainRouteDependencies, caller: AgentCaller, chainId: string, body: unknown): Promise<unknown> {
   const input = parseBody(SharesBodySchema, body);
   const { chain } = await requireChainAccess(accessOf(deps), caller, chainId, "manage");
   const { mark, replay } = await markRequest(deps, caller, "chain-shares", chainId, input);
   if (replay !== undefined) return { shares: replay.result };
-  return { shares: await setChainShares(accessOf(deps), { orgId: chain.orgId, chainId: chain.chainId, shares: input.shares as never, by: caller.developerId, request: mark }) };
+  // Refused now, not when it is confirmed: a change nobody could apply is not worth asking a person about.
+  const shares = await checkShares(accessOf(deps), chain.orgId, caller.developerId, input.shares, "chain");
+  const wanted = shares.find((share) => share.principal.kind === "org");
+  const stored = (await deps.chains.listShares(chain.orgId, chain.chainId)).find((share) => (share.principal as { kind?: unknown } | undefined)?.kind === "org");
+  const widens = wanted !== undefined && (stored === undefined || SHARE_RANK[wanted.level] > (SHARE_RANK[stored.level] ?? -1));
+  if (widens) {
+    // Sharing with everyone, or letting everyone do more, waits for a person on the page, as an agent's does.
+    const can = { view: "see", use: "run", edit: "change" }[wanted.level];
+    const subject: ChainChangeSubject = { kind: "chain_share", chainId: chain.chainId, shares, expectedSharesRevision: chain.sharesRevision ?? 0 };
+    return waitForPerson(deps, caller, chain, input.requestId, subject, [`Shares ${chain.name} with everyone in your company, who can then ${can} it`]);
+  }
+  return { shares: await setChainShares(accessOf(deps), { orgId: chain.orgId, chainId: chain.chainId, shares, by: caller.developerId, request: mark }) };
 }
 
 async function putOwner(deps: ChainRouteDependencies, caller: AgentCaller, chainId: string, body: unknown): Promise<Shown> {
@@ -453,6 +466,14 @@ async function confirmRollback(deps: ChainApprovalDeps, record: ApprovalRecord):
   await deps.chainTriggers?.recheckTriggersForTarget(record.orgId, { kind: "chain", chainId: chain.chainId });
 }
 
+async function confirmShare(deps: ChainApprovalDeps, record: ApprovalRecord): Promise<void> {
+  const by = decider(record);
+  const subject = record.subject as Extract<ChainChangeSubject, { kind: "chain_share" }>;
+  const chain = await liveChain(deps, record, subject.chainId);
+  if ((chain.sharesRevision ?? 0) !== subject.expectedSharesRevision) throw stale("Who this chain is shared with changed after this was asked. Share again.");
+  await setChainShares({ ...deps, store: chainsOf(deps) }, { orgId: record.orgId, chainId: chain.chainId, shares: subject.shares, by });
+}
+
 /** Whoever holds `manage` on the chain now: its owner, an accountable or managing maintainer of the owning project, or an org owner or admin (R68). */
 async function managesChain(deps: ChainApprovalDeps, record: ApprovalRecord, caller: AgentCaller): Promise<boolean> {
   const chainId = (record.kind === "change" ? (record.subject as { chainId?: unknown }).chainId : undefined);
@@ -466,6 +487,7 @@ export function registerChainApprovals(): void {
   registerApproverRule("chain_publish", (deps, record, caller) => managesChain(deps, record as ApprovalRecord, caller));
   registerApprovalSubjectHandler("chain_publish", (deps, record) => confirmPublish(deps, record as ApprovalRecord));
   registerApprovalSubjectHandler("chain_rollback", (deps, record) => confirmRollback(deps, record as ApprovalRecord));
+  registerApprovalSubjectHandler("chain_share", (deps, record) => confirmShare(deps, record as ApprovalRecord));
 }
 
 registerChainApprovals();

@@ -706,7 +706,6 @@ describe("what the routes and the confirmation handlers hold to", () => {
   };
   type Baseline = Awaited<ReturnType<typeof publishedBaseline>>;
   const raised = (usd: number) => variant({}, [], { limits: { maxRunUsd: usd } });
-  const thrown = (attempt: Promise<unknown>) => attempt.then(() => undefined, (error: Error) => error.message);
   const proof = () => ({ kind: "fresh_sign_in" as const, method: "email_code" as const, authTime: new Date().toISOString(), sessionRef: "a".repeat(64) });
   /** Asks for the less-safe publish of a $60 limit and returns the pending record. */
   const askToRaise = async (s: Baseline) => {
@@ -815,7 +814,7 @@ describe("what the routes and the confirmation handlers hold to", () => {
     const s = await publishedBaseline();
     const record = await askToRaise(s);
     expect((await s.putDraft(MAYA, s.chainId, raised(60))).status).toBe(200);
-    expect(await thrown(getApprovalSubjectHandler("chain_publish")!(s.deps, decided(record)))).toBe("CHAIN_REVISION_CONFLICT: The draft changed after this was asked. Publish again.");
+    expect(await thrownMessage(getApprovalSubjectHandler("chain_publish")!(s.deps, decided(record)))).toBe("CHAIN_REVISION_CONFLICT: The draft changed after this was asked. Publish again.");
     expect((await s.state(s.chainId)).currentVersion).toBe(1);
   });
 
@@ -826,7 +825,7 @@ describe("what the routes and the confirmation handlers hold to", () => {
     await s.store.ensureBuiltinSettings(TEST_ORG, "root-cause-analyst");
     s.release.rootCause = 2;
     await s.store.adoptBuiltinVersion({ orgId: TEST_ORG, agentId: "root-cause-analyst", version: 2, expectedPinnedVersion: 1, by: DANA.developerId });
-    expect(await thrown(getApprovalSubjectHandler("chain_publish")!(s.deps, decided(record)))).toBe("CHAIN_REVISION_CONFLICT: The draft changed after this was asked. Publish again.");
+    expect(await thrownMessage(getApprovalSubjectHandler("chain_publish")!(s.deps, decided(record)))).toBe("CHAIN_REVISION_CONFLICT: The draft changed after this was asked. Publish again.");
     expect((await s.state(s.chainId)).currentVersion).toBe(1);
   });
 
@@ -859,14 +858,14 @@ describe("what the routes and the confirmation handlers hold to", () => {
     it("refuses to apply it when the version it rolls back to is not the one that was shown", async () => {
       const s = await askToRollBack();
       const tampered = { ...decided(s.record), subject: { ...s.record.subject, digest: "0".repeat(64) } } as ApprovalRecord;
-      expect(await thrown(getApprovalSubjectHandler("chain_rollback")!(s.deps, tampered))).toBe("CHAIN_REVISION_CONFLICT: That version changed after this was asked. Roll back again.");
+      expect(await thrownMessage(getApprovalSubjectHandler("chain_rollback")!(s.deps, tampered))).toBe("CHAIN_REVISION_CONFLICT: That version changed after this was asked. Roll back again.");
       expect((await s.state(s.chainId)).currentVersion).toBe(2);
     });
 
     it("refuses to apply it when the published version moved since it was asked", async () => {
       const s = await askToRollBack();
       await s.seed(s.chainId, variant({}, [], { limits: { maxRunUsd: 60 } }));
-      expect(await thrown(getApprovalSubjectHandler("chain_rollback")!(s.deps, decided(s.record)))).toBe("CHAIN_REVISION_CONFLICT: The published version changed after this was asked. Roll back again.");
+      expect(await thrownMessage(getApprovalSubjectHandler("chain_rollback")!(s.deps, decided(s.record)))).toBe("CHAIN_REVISION_CONFLICT: The published version changed after this was asked. Roll back again.");
       expect((await s.state(s.chainId)).currentVersion).toBe(3);
     });
   });

@@ -53,6 +53,7 @@ const TITLES: Record<string, string> = {
   guardrails: "Relax the company's agent guardrails",
   chain_publish: "Publish a chain",
   chain_rollback: "Roll a chain back",
+  chain_share: "Share a chain with the whole company",
   connector_widen: "Let a project's connector make changes",
   opt_out: "Let agents comment in a repository whose workflows act on comments",
 };

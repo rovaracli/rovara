@@ -125,5 +125,5 @@ export async function chainsShare(deps: DeveloperSessionDeps, env: string | unde
   const shares = await readJsonFile(file, "--file", "array");
   const answer = await appRequest(deps, env, `/v1/app/chains/${seg(chainId)}/shares`, { method: "PUT", body: { requestId: randomUUID(), shares } });
   const count = list(answer.body.shares).length;
-  return result(answer, answer.body, `${clean(chainId)} is now shared with ${count} ${count === 1 ? "principal" : "principals"}.\n`);
+  return result(answer, answer.body, waitingText(answer.body) ?? `${clean(chainId)} is now shared with ${count} ${count === 1 ? "principal" : "principals"}.\n`);
 }
