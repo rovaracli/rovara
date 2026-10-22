@@ -104,6 +104,12 @@ describe("the Sentry connector type", () => {
     const pinnedElsewhere = { ...s.registry, registration: async (ref: string) => ({ ...(await s.registry.registration(ref))!, host: "evil.example" }) };
     expect(await of(pinnedElsewhere).definition()).toEqual({ notConnected: `credential ${CON} is pinned to evil.example, not us.sentry.io, so AgentX does not send it there` });
     expect(await of(pinnedElsewhere).configured()).toBe(false);
+    // A credential record with no host at all is refused too: the pin is required, not a hint.
+    const unpinned = { ...s.registry, registration: async (ref: string) => { const { host: _host, ...rest } = (await s.registry.registration(ref))!; return rest; } }; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
+    expect(await of(unpinned).definition()).toEqual({ notConnected: `credential ${CON} is not pinned to a host; register it again with --host us.sentry.io` });
+    // And only a static-secret token serves a Sentry connector.
+    const oauth = { ...s.registry, registration: async (ref: string) => ({ ...(await s.registry.registration(ref))!, type: "oauth-client-credentials" as const }) };
+    expect(await of(oauth).definition()).toEqual({ notConnected: `credential ${CON} is oauth-client-credentials; a Sentry connector needs a static-secret token` });
   });
 
   it("serves the region's own API base, and issues the token only for that region's host", async () => {

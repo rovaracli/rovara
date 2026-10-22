@@ -35,7 +35,9 @@ const refusing: NativeTool<Scope> = { name: "refusing", description: "Refuses", 
 const failing: NativeTool<Scope> = { name: "failing", description: "Fails", inputSchema: { type: "object", properties: {}, additionalProperties: false }, run: async () => { throw new VendorFetchError("the vendor could not be reached"); } };
 const crashing: NativeTool<Scope> = { name: "crashing", description: "Crashes", inputSchema: { type: "object", properties: {}, additionalProperties: false }, run: async () => { throw new Error(`boom with ${TOKEN}`); } };
 const structured: NativeTool<Scope> = { name: "structured", description: "Structured", inputSchema: { type: "object", properties: {}, additionalProperties: false }, run: async () => ({ text: "two rows", structured: [{ id: 1 }, { id: 2 }] }) };
-const ALL = [echo, big, refusing, failing, crashing, structured];
+const quoting: NativeTool<Scope> = { name: "quoting", description: "Quotes", inputSchema: { type: "object", properties: {}, additionalProperties: false }, run: async () => { throw new NativeToolRefusal(`the vendor said ${TOKEN}`); } };
+const leaking: NativeTool<Scope> = { name: "leaking", description: "Leaks", inputSchema: { type: "object", properties: {}, additionalProperties: false }, run: async () => ({ text: `the vendor echoed ${TOKEN} back` }) };
+const ALL = [echo, big, refusing, failing, crashing, structured, quoting, leaking];
 const SCOPE_ARGS = { organization: "acme", projectSlug: "web-app" };
 
 function connection(approved: readonly string[], fetch: Parameters<typeof nativeConnection>[2]["fetch"] = vi.fn() as never) {
@@ -98,6 +100,11 @@ describe("nativeConnection", () => {
     const result = await connection(["structured"]).call("structured", SCOPE_ARGS);
     expect(textOf(result)).toBe("two rows");
     expect(result.structuredContent).toEqual([{ id: 1 }, { id: 2 }]);
+  });
+
+  it("replaces the token with [REDACTED] in anything a tool answers or refuses with", async () => {
+    expect(textOf(await connection(["quoting"]).call("quoting", SCOPE_ARGS))).toBe("the vendor said [REDACTED]");
+    expect(textOf(await connection(["leaking"]).call("leaking", SCOPE_ARGS))).toBe("the vendor echoed [REDACTED] back");
   });
 
   it("answers a tool's refusal as an error with its words, a vendor failure with its fixed words, and anything else without naming what was thrown", async () => {

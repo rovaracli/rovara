@@ -73,8 +73,8 @@ describe("pinnedFetch", () => {
 
   it("refuses a URL with a login whether or not it is held to an origin, making no connection (review A-M1)", async () => {
     const request = vi.fn(() => { throw new Error("stop before any network"); });
-    await expect(pinnedFetch([PUBLIC], { request: request as never })("https://user:pw@mcp.acme.dev/mcp")).rejects.toThrow(/login/u);
-    await expect(pinnedFetch([PUBLIC], { request: request as never, origin: "https://mcp.acme.dev" })("https://user:pw@mcp.acme.dev/mcp")).rejects.toThrow();
+    await expect(pinnedFetch([PUBLIC], { request: request })("https://user:pw@mcp.acme.dev/mcp")).rejects.toThrow(/login/u);
+    await expect(pinnedFetch([PUBLIC], { request: request, origin: "https://mcp.acme.dev" })("https://user:pw@mcp.acme.dev/mcp")).rejects.toThrow();
     expect(request).not.toHaveBeenCalled();
   });
 
