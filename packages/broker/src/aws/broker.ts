@@ -932,7 +932,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
       if (decide === undefined) throw agentXError("NOT_FOUND", "that isn't available yet");
       return requireDecideSession(decide, { method: request.method, path: request.path, headers: request.headers, ...(request.body === undefined ? {} : { body: request.body }) });
     };
-    routeDependencies.mintConfirmUrl = (caller, approvalId) => {
+    routeDependencies.mintConfirmUrl = async (caller, approvalId) => {
       const decide = context();
       if (decide === undefined) throw agentXError("NOT_FOUND", "that isn't available yet");
       return mintConfirmUrl(decide, { developerId: caller.developerId, orgId: caller.orgId }, approvalId);
