@@ -710,14 +710,16 @@ describe("a check's fetch (review I1, M7)", () => {
     const seen: Array<{ endpoint: string; fetchImplementation: unknown }> = [];
     const listMcpTools = vi.fn(async (input: { endpoint: URL; fetchImplementation?: unknown }) => { seen.push({ endpoint: input.endpoint.href, fetchImplementation: input.fetchImplementation }); return [{ name: "a" }]; });
     let refuse = false;
+    const guarded: string[] = [];
     const store = storeOf(deps, {
-      endpointGuard: async () => { if (refuse) throw new Error("that address is not allowed"); return pinned; },
+      endpointGuard: async (endpoint) => { guarded.push(endpoint.href); if (refuse) throw new Error("that address is not allowed"); return pinned; },
       fetch: (async () => { throw new Error("the unpinned fetch was used"); }),
       listMcpTools: listMcpTools as never,
     });
     await store.put({ orgId: ORG_A, connection: MCP, secret: { token: "mcp-secret-0123456789" }, by: ALICE });
     expect(await store.check(ORG_A, CON_A)).toEqual({ ok: true, message: "1 tool" });
     expect(seen).toEqual([{ endpoint: "https://mcp.acme.dev/mcp", fetchImplementation: pinned }]);
+    expect(guarded).toEqual(["https://mcp.acme.dev/mcp"]);
     refuse = true;
     listMcpTools.mockClear();
     expect(await store.check(ORG_A, CON_A)).toEqual({ ok: false, message: "that address is not allowed" });
