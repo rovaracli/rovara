@@ -9,10 +9,10 @@
 //
 // Everything here is keyed by the `orgId` it is given: no key is built from a name alone, so another org's project of the same name, and its
 // people, are never reached.
-import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
 import {
-  MEMBER_GRANT_SK_PREFIX, OrgRoleSchema, PROJECT_REVISION_SK_PREFIX, agentXError, memberGrantsPk, orgMemberKey, orgPk, orgProjectCatalogPk, projectMemberKey, projectMetaKey, projectPk,
+  INDEX_EXPIRY_ATTRIBUTE, MEMBER_GRANT_SK_PREFIX, OrgRoleSchema, PROJECT_REVISION_SK_PREFIX, agentXError, memberGrantsPk, orgMemberKey, orgPk, orgProjectCatalogPk, projectMemberKey, projectMetaKey, projectPk,
   type OrgId, type OrgKey, type OrgRole, type ProjectRole,
 } from "@agentx/contracts";
 import { effectiveProjectRole, grantRoleOf, grantedByOf, type GrantedBy } from "../developer/project-roles.js";
@@ -40,7 +40,6 @@ type Send = ProjectMembersDependencies["documentClient"];
 
 const READS_AT_ONCE = 8;
 const MAX_MERGE_HOPS = 5;
-const isConditionFailure = (error: unknown) => error instanceof Error && error.name === "ConditionalCheckFailedException";
 
 async function getItem(deps: { documentClient: Send; tableName: string }, key: OrgKey): Promise<Item | undefined> {
   return ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
@@ -111,7 +110,7 @@ const readGrant = (deps: { documentClient: Send; tableName: string }, orgId: Org
  * The developer a (possibly merged-away) developer id stands for: the end of its `mergedInto` chain, or the id itself. A cycle or a chain
  * longer than MAX_MERGE_HOPS stops where it is.
  */
-async function survivorOf(deps: ProjectMembersDependencies, developerId: string): Promise<string> {
+export async function survivorOf(deps: Pick<ProjectMembersDependencies, "developerRecord">, developerId: string): Promise<string> {
   let current = developerId;
   const seen = new Set<string>([current]);
   for (let hop = 0; hop < MAX_MERGE_HOPS && deps.developerRecord !== undefined; hop += 1) {
@@ -124,7 +123,7 @@ async function survivorOf(deps: ProjectMembersDependencies, developerId: string)
 }
 
 /** The ids whose grants count for a person: the survivor of their merge chain first, then their own id. */
-async function idsFor(deps: ProjectMembersDependencies, developerId: string): Promise<string[]> {
+async function idsFor(deps: Pick<ProjectMembersDependencies, "developerRecord">, developerId: string): Promise<string[]> {
   const survivor = await survivorOf(deps, developerId);
   return survivor === developerId ? [developerId] : [survivor, developerId];
 }
@@ -206,61 +205,45 @@ function newGrantItem(orgId: OrgId, project: string, developerId: string, role: 
 }
 
 /**
- * Gives `developerId` the role in the project. A new person gets a new grant; a person who has one keeps its `grantId`, who added them
- * and when, and gets the new role (an old row that lacks `entityType`, `ownerKey` or `grantId` gains them). The operator's `administrator`
- * row is never overwritten: the key is shared, so a grant would replace it.
+ * The write that gives `developerId` the role in the project, as a transaction item. A new person gets a new grant; a person who has one
+ * keeps its `grantId`, who added them and when, and gets the new role (an old row that lacks `entityType`, `ownerKey` or `grantId` gains
+ * them), conditioned on the role that was read. The operator's `administrator` row is never overwritten: the key is shared, so a grant would
+ * replace it.
  */
-async function writeGrant(deps: ProjectMembersDependencies, input: { orgId: OrgId; project: string; developerId: string; role: ProjectRole; grantedBy: GrantedBy; now: () => Date }): Promise<void> {
+async function grantWrite(deps: ProjectMembersDependencies, input: { orgId: OrgId; project: string; developerId: string; role: ProjectRole; grantedBy: GrantedBy; now: () => Date }): Promise<Item> {
   const { orgId, project, developerId, role } = input;
-  const key = projectMemberKey(orgId, developerId, project);
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const existing = await readGrant(deps, orgId, developerId, project);
-    if (existing !== undefined && existing.role !== "developer" && existing.role !== "viewer") throw agentXError("CONFIG_INVALID", OPERATOR_ROW_MESSAGE(project));
-    try {
-      if (existing === undefined) {
-        await deps.documentClient.send(new PutCommand({
-          TableName: deps.tableName, Item: newGrantItem(orgId, project, developerId, role, input.grantedBy, input.now().toISOString()), ConditionExpression: "attribute_not_exists(pk)",
-        }));
-      } else {
-        await deps.documentClient.send(new UpdateCommand({
-          TableName: deps.tableName, Key: key,
-          UpdateExpression: "SET #role = :role, projectRole = :projectRole, entityType = if_not_exists(entityType, :entity), ownerKey = if_not_exists(ownerKey, :owner), projectName = if_not_exists(projectName, :project), grantId = if_not_exists(grantId, :grantId)",
-          // Only the row that was read: an operator's row that appeared in between is not overwritten.
-          ConditionExpression: "attribute_exists(pk) AND #role = :seen",
-          ExpressionAttributeNames: { "#role": "role" },
-          ExpressionAttributeValues: {
-            ":role": role === "viewer" ? "viewer" : "developer", ":projectRole": role, ":entity": "MEMBERSHIP", ":owner": developerId, ":project": project, ":grantId": randomUUID(), ":seen": existing.role,
-          },
-        }));
-      }
-      return;
-    } catch (error) {
-      if (!isConditionFailure(error)) throw error;
-    }
+  const existing = await readGrant(deps, orgId, developerId, project);
+  if (existing !== undefined && existing.role !== "developer" && existing.role !== "viewer") throw agentXError("CONFIG_INVALID", OPERATOR_ROW_MESSAGE(project));
+  if (existing === undefined) {
+    return { Put: { TableName: deps.tableName, Item: newGrantItem(orgId, project, developerId, role, input.grantedBy, input.now().toISOString()), ConditionExpression: "attribute_not_exists(pk)" } };
   }
-  throw agentXError("CHANGE_STALE", "that person's role was changed by someone else at the same time; try again");
+  return { Update: {
+    TableName: deps.tableName, Key: projectMemberKey(orgId, developerId, project),
+    UpdateExpression: "SET #role = :role, projectRole = :projectRole, entityType = if_not_exists(entityType, :entity), ownerKey = if_not_exists(ownerKey, :owner), projectName = if_not_exists(projectName, :project), grantId = if_not_exists(grantId, :grantId)",
+    // Only the row that was read: an operator's row that appeared in between is not overwritten.
+    ConditionExpression: "attribute_exists(pk) AND #role = :seen",
+    ExpressionAttributeNames: { "#role": "role" },
+    ExpressionAttributeValues: {
+      ":role": role === "viewer" ? "viewer" : "developer", ":projectRole": role, ":entity": "MEMBERSHIP", ":owner": developerId, ":project": project, ":grantId": randomUUID(), ":seen": existing.role,
+    },
+  } };
 }
 
-/** Removes a developer's grant. The operator's `administrator` row is not a project role and stays. Returns whether a grant was removed. */
-async function deleteGrant(deps: ProjectMembersDependencies, orgId: OrgId, project: string, developerId: string): Promise<boolean> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const existing = await readGrant(deps, orgId, developerId, project);
-    if (existing === undefined || (existing.role !== "developer" && existing.role !== "viewer")) return false;
-    try {
-      await deps.documentClient.send(new DeleteCommand({
-        TableName: deps.tableName, Key: projectMemberKey(orgId, developerId, project),
-        ConditionExpression: "attribute_exists(pk) AND #role = :seen", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":seen": existing.role },
-      }));
-      return true;
-    } catch (error) {
-      if (!isConditionFailure(error)) throw error;
-    }
-  }
-  throw agentXError("CHANGE_STALE", "that person's role was changed by someone else at the same time; try again");
+/** The write that removes a developer's grant, or undefined when there is none to remove (the operator's `administrator` row is not a project role and stays). */
+async function revokeWrite(deps: ProjectMembersDependencies, orgId: OrgId, project: string, developerId: string): Promise<Item | undefined> {
+  const existing = await readGrant(deps, orgId, developerId, project);
+  if (existing === undefined || (existing.role !== "developer" && existing.role !== "viewer")) return undefined;
+  return { Delete: {
+    TableName: deps.tableName, Key: projectMemberKey(orgId, developerId, project),
+    ConditionExpression: "attribute_exists(pk) AND #role = :seen", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":seen": existing.role },
+  } };
 }
 
 /** Where a project's member requests are remembered: its own partition, beside META and the revisions, under a prefix nothing else reads. */
 const memberRequestKey = (orgId: OrgId, project: string, requestId: string): OrgKey => ({ pk: projectPk(orgId, project), sk: `MEMBER_REQUEST#${requestId}` });
+
+/** How long a request id is remembered: a day, as the project-creation request is. After that the State table's TTL removes it. */
+const MEMBER_REQUEST_SECONDS = 86_400;
 
 export interface ProjectMemberChangeDependencies extends ProjectMembersDependencies { now: () => Date }
 
@@ -279,18 +262,32 @@ async function replayOf(deps: ProjectMembersDependencies, orgId: OrgId, project:
   return stored.response;
 }
 
-/** Stores the outcome after the change finished (a change that failed is retried, not replayed). An identical request that stored first wins. */
-async function rememberRequest(deps: ProjectMemberChangeDependencies, orgId: OrgId, project: string, requestId: string, record: { action: "put" | "remove"; target: string; role?: ProjectRole; by: string; response: unknown }): Promise<void> {
+/** The request's record, written in the same transaction as the change it belongs to, so a change is never applied without its id being remembered. */
+function requestWrite(deps: ProjectMemberChangeDependencies, orgId: OrgId, project: string, requestId: string, record: { action: "put" | "remove"; target: string; role?: ProjectRole; by: string; response: unknown }): Item {
+  const at = deps.now();
+  return { Put: {
+    TableName: deps.tableName,
+    Item: { ...memberRequestKey(orgId, project, requestId), entityType: "PROJECT_MEMBER_REQUEST", at: at.toISOString(), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(at.getTime() / 1000) + MEMBER_REQUEST_SECONDS, ...record },
+    ConditionExpression: "attribute_not_exists(pk)",
+  } };
+}
+
+/**
+ * Commits a change with its request record. A cancelled transaction means the grant changed under us, or the same request id got in first
+ * (both read again at the top of the next attempt: the second is then a replay). Gives up with CHANGE_STALE after a few attempts.
+ */
+async function commitWithRequest(deps: ProjectMembersDependencies, items: Item[]): Promise<boolean> {
   try {
-    await deps.documentClient.send(new PutCommand({
-      TableName: deps.tableName,
-      Item: { ...memberRequestKey(orgId, project, requestId), entityType: "PROJECT_MEMBER_REQUEST", at: deps.now().toISOString(), ...record },
-      ConditionExpression: "attribute_not_exists(pk)",
-    }));
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+    return true;
   } catch (error) {
-    if (!isConditionFailure(error)) throw error;
+    if (!(error instanceof Error) || error.name !== "TransactionCanceledException") throw error;
+    return false;
   }
 }
+
+const STALE = () => agentXError("CHANGE_STALE", "that person's role was changed by someone else at the same time; try again");
+const MAX_ATTEMPTS = 3;
 
 /**
  * Who a change may name: a member of this org, other than an org owner or admin (their access is their org role; a grant would say nothing
@@ -309,6 +306,7 @@ async function resolveTarget(deps: ProjectMembersDependencies, orgId: OrgId, raw
 /**
  * `PUT /v1/app/projects/{name}/members/{developerId}`, after the route has checked that the caller may manage members. A replay of the same
  * request id answers the stored outcome and applies nothing. `actor` is the person who asked: they are recorded as who added a new member.
+ * The grant and the request record are one transaction.
  */
 export async function setProjectMember(
   deps: ProjectMemberChangeDependencies,
@@ -316,26 +314,33 @@ export async function setProjectMember(
   project: string,
   input: { requestId: string; developerId: string; role: ProjectRole; actor: { developerId: string } },
 ): Promise<{ developerId: string; role: ProjectRole }> {
-  const replayed = await replayOf(deps, orgId, project, input.requestId, { action: "put", target: input.developerId, role: input.role, by: input.actor.developerId });
-  if (replayed !== undefined) return replayed as { developerId: string; role: ProjectRole };
-  const developerId = await resolveTarget(deps, orgId, input.developerId);
-  await writeGrant(deps, { orgId, project, developerId, role: input.role, grantedBy: { developerId: input.actor.developerId }, now: deps.now });
-  const response = { developerId, role: input.role };
-  await rememberRequest(deps, orgId, project, input.requestId, { action: "put", target: input.developerId, role: input.role, by: input.actor.developerId, response });
-  return response;
+  const expected = { action: "put" as const, target: input.developerId, role: input.role, by: input.actor.developerId };
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    const replayed = await replayOf(deps, orgId, project, input.requestId, expected);
+    if (replayed !== undefined) return replayed as { developerId: string; role: ProjectRole };
+    const developerId = await resolveTarget(deps, orgId, input.developerId);
+    const response = { developerId, role: input.role };
+    const grant = await grantWrite(deps, { orgId, project, developerId, role: input.role, grantedBy: { developerId: input.actor.developerId }, now: deps.now });
+    if (await commitWithRequest(deps, [grant, requestWrite(deps, orgId, project, input.requestId, { ...expected, response })])) return response;
+  }
+  throw STALE();
 }
 
-/** `DELETE /v1/app/projects/{name}/members/{developerId}`, after the route's checks. `removed` is false for a person with no grant. */
+/** `DELETE /v1/app/projects/{name}/members/{developerId}`, after the route's checks. `removed` is false for a person with no grant (the request is still recorded). */
 export async function removeProjectMember(
   deps: ProjectMemberChangeDependencies,
   orgId: OrgId,
   project: string,
   input: { requestId: string; developerId: string; actor: { developerId: string } },
 ): Promise<{ developerId: string; removed: boolean }> {
-  const replayed = await replayOf(deps, orgId, project, input.requestId, { action: "remove", target: input.developerId, by: input.actor.developerId });
-  if (replayed !== undefined) return replayed as { developerId: string; removed: boolean };
-  const developerId = await resolveTarget(deps, orgId, input.developerId);
-  const response = { developerId, removed: await deleteGrant(deps, orgId, project, developerId) };
-  await rememberRequest(deps, orgId, project, input.requestId, { action: "remove", target: input.developerId, by: input.actor.developerId, response });
-  return response;
+  const expected = { action: "remove" as const, target: input.developerId, by: input.actor.developerId };
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    const replayed = await replayOf(deps, orgId, project, input.requestId, expected);
+    if (replayed !== undefined) return replayed as { developerId: string; removed: boolean };
+    const developerId = await resolveTarget(deps, orgId, input.developerId);
+    const revoke = await revokeWrite(deps, orgId, project, developerId);
+    const response = { developerId, removed: revoke !== undefined };
+    if (await commitWithRequest(deps, [...(revoke === undefined ? [] : [revoke]), requestWrite(deps, orgId, project, input.requestId, { ...expected, response })])) return response;
+  }
+  throw STALE();
 }

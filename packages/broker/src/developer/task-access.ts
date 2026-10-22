@@ -1,7 +1,7 @@
 // Spec 061 slice 2: who may do what on a task page. Every check goes through resolveTaskAccess and the one role-to-action
 // table below, so roles (slice 3) change only these two places; callers never decide roles themselves.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError } from "@agentx/contracts";
+import { agentXError, projectAllows, type ProjectRole } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { resolveTaskPeopleAccess, type TaskRole } from "./task-people.js";
@@ -83,8 +83,9 @@ export async function resolveTaskAccess(deps: AccessDependencies, caller: Develo
   // An action only owners may take needs no project or channel lookup for anyone else: they read as not found.
   if (action !== undefined && TASK_ACTION_ROLES[action].every((role) => role === "owner")) throw notFound();
   let usesProject = false;
+  let projectRole: ProjectRole | undefined;
   try {
-    await deps.checkAccess(task.project);
+    projectRole = (await deps.checkAccess(task.project)).role;
     usesProject = true;
   } catch (error) {
     log(deps, { event: "developer.task_page_project_access_refused", taskId, errorName: error instanceof Error ? error.name : "unknown" });
@@ -103,9 +104,11 @@ export async function resolveTaskAccess(deps: AccessDependencies, caller: Develo
     if (deps.slackTeamId === undefined || share.teamId !== deps.slackTeamId) throw notFound();
     throw Object.assign(agentXError("TASK_ACCESS_DENIED", "you can't open this task yet"), { owners: [ownerNameForReaders(task.developerName)] });
   }
-  if (legacyPeopleAction || (action !== undefined && (!can("commenter", action)
+  // A project viewer may look at a task in the channel but not take part: only a role that can start tasks comments, suggests or asks.
+  const role: TaskRole = projectRole !== undefined && !projectAllows(projectRole, "start_tasks") ? "viewer" : "commenter";
+  if (legacyPeopleAction || (action !== undefined && (!can(role, action)
     || (action !== "read" && action !== "peopleRead" && !taskOpen(task))))) throw notFound();
-  return { task, role: "commenter", ownerActorIds: legacyOwners };
+  return { task, role, ownerActorIds: legacyOwners };
 }
 
 /**

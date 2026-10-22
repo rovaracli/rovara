@@ -7,11 +7,13 @@ import {
   ProjectMemberChangeResponseSchema, ProjectMembersResponseSchema, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey,
   type OrgId, type OrgRole, type ProjectRole,
 } from "../../packages/contracts/src/index.js";
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { projectMembersOf, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { createProjectMembers, type ProjectMembers } from "../../packages/broker/src/org/project-members.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
@@ -20,6 +22,8 @@ type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
 const brokerModule = async () => await import("../../packages/broker/src/aws/broker.js") as unknown as {
   workflowE2ECreatorAuthorityProof: (...input: unknown[]) => Promise<unknown>;
   registerProjectFor: (...input: unknown[]) => Promise<{ duplicate: boolean }>;
+  requireWorkflowE2ECreatorAuthority: (...input: unknown[]) => Promise<Record<string, unknown>>;
+  requireProjectAuthority: (...input: unknown[]) => Promise<Record<string, unknown>>;
 };
 
 const OTHER_ORG: OrgId = "org_bbbbbbbbbbbbbbbbbbbb";
@@ -144,6 +148,47 @@ describe("a viewer", () => {
     const answer = await members(h, SAM);
     expect(answer.status, JSON.stringify(answer.body)).toBe(200);
     expect(listed(answer).map((member) => member.developerId)).toContain(PRIYA.developerId);
+  });
+});
+
+describe("a thread started in the project's Slack channel uses the person's real project role", () => {
+  const thread = (n: number) => `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.00${String(n).padStart(4, "0")}`;
+  /** A person who signs in with Slack: their developer id is the one their Slack user id makes, so the channel's requester maps to them. */
+  const slackPerson = (h: Harness, slackUserId: string, grant?: ProjectRole | "legacy") => {
+    const developerId = developerIdForSlackUser(slackUserId);
+    seedMembership(h.db, developerId, { orgId: TEST_ORG, role: "member" });
+    if (grant === "legacy") h.db.set({ ...projectMemberKey(TEST_ORG, developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: developerId, projectName: "payments", role: "developer" });
+    else if (grant !== undefined) h.db.set({ ...projectMemberKey(TEST_ORG, developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: developerId, projectName: "payments", grantId: randomUUID(), role: grant === "viewer" ? "viewer" : "developer", projectRole: grant });
+    return developerId;
+  };
+
+  it("refuses a viewer who is in the bound channel, with the viewer message, and creates no workspace", async () => {
+    const h = await team();
+    slackPerson(h, "U0VIEWER01", "viewer");
+    const refused = await ensureWorkspace(h.handler, thread(1), "U0VIEWER01");
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "PROJECT_ACCESS_DENIED", message: expect.stringContaining(VIEWER_MESSAGE) as string });
+    expect(h.db.find((item) => item.entityType === "WORKSPACE")).toHaveLength(0);
+  });
+
+  it("starts a thread for a contributor, a maintainer, an org owner without a grant, and a person who has only the channel", async () => {
+    const h = await team();
+    slackPerson(h, "U0CONTRIB01", "contributor");
+    slackPerson(h, "U0MAINT0001", "maintainer");
+    slackPerson(h, "U0LEGACY001", "legacy");
+    const owner = slackPerson(h, "U0OWNER0001");
+    seedMembership(h.db, owner, { orgId: TEST_ORG, role: "owner" });
+    for (const [n, user] of ["U0CONTRIB01", "U0MAINT0001", "U0LEGACY001", "U0OWNER0001", "U0MAYA001"].entries()) {
+      const answer = await ensureWorkspace(h.handler, thread(10 + n), user);
+      expect(answer.status, `${user}: ${JSON.stringify(answer.body)}`).toBe(200);
+    }
+  });
+
+  it("keeps a viewer's explicit grant over the channel: they are refused although the channel would make them a contributor", async () => {
+    const h = await team();
+    // Maya's Slack user is in the bound channel; give the developer her Slack id derives a viewer grant.
+    slackPerson(h, "U0MAYA001", "viewer");
+    expect((await ensureWorkspace(h.handler, thread(30), "U0MAYA001")).status).toBe(403);
   });
 });
 
@@ -314,6 +359,16 @@ describe("the target of a role change", () => {
     expect(grantOf(h.db, LENA)).toMatchObject({ projectRole: "viewer" });
   });
 
+  it("a stale id of a merged developer removes the survivor's grant (DELETE)", async () => {
+    const h = await team();
+    const duplicate = "7".repeat(64);
+    h.db.set({ pk: `DEVELOPER#${duplicate}`, sk: "META", developerId: duplicate, provider: "oidc", displayName: "Kit (old)", firstSignInAt: "x", lastSignInAt: "x", revoked: false, mergedInto: KIT.developerId, mergedAt: "x" });
+    const answer = await remove(h, PRIYA, duplicate);
+    expect(answer.status, JSON.stringify(answer.body)).toBe(200);
+    expect(dataOf(answer)).toEqual({ developerId: KIT.developerId, removed: true });
+    expect(grantOf(h.db, KIT)).toBeUndefined();
+  });
+
   it("a stale id of a developer merged into another lands on the survivor", async () => {
     const h = await team();
     const duplicate = "7".repeat(64);
@@ -441,6 +496,49 @@ describe("request ids (a replay answers the stored outcome)", () => {
     expect((await put(h, PRIYA, NEO, "viewer", { requestId })).status).toBe(403);
   });
 
+  it("writes the grant and the request record in one transaction, with an expiry on the record", async () => {
+    const h = await team();
+    const requestId = randomUUID();
+    const sent: Array<{ name: string; items: number }> = [];
+    const send = h.db.send.bind(h.db);
+    h.db.send = (async (command: { constructor: { name: string }; input: { TransactItems?: unknown[] } }) => {
+      if (command.constructor.name === "TransactWriteCommand") sent.push({ name: command.constructor.name, items: command.input.TransactItems?.length ?? 0 });
+      return send(command);
+    });
+    expect((await put(h, PRIYA, NEO, "viewer", { requestId })).status).toBe(200);
+    expect((await remove(h, PRIYA, NEO)).status).toBe(200);
+    // A removal of someone with no grant still records its request.
+    expect((await remove(h, PRIYA, NEO)).status).toBe(200);
+    expect(sent).toEqual([{ name: "TransactWriteCommand", items: 2 }, { name: "TransactWriteCommand", items: 2 }, { name: "TransactWriteCommand", items: 1 }]);
+    const stored = h.db.get({ pk: `ORG#${TEST_ORG}#PROJECT#payments`, sk: `MEMBER_REQUEST#${requestId}` });
+    expect(stored).toMatchObject({ entityType: "PROJECT_MEMBER_REQUEST", action: "put", by: PRIYA.developerId, response: { developerId: NEO.developerId, role: "viewer" } });
+    expect(stored!.indexExpiresAt).toBeGreaterThan(Date.now() / 1000 + 80_000);
+  });
+
+  it("a transaction that fails changes neither the grant nor the request record, so the same id applies cleanly afterwards", async () => {
+    const h = await team();
+    const requestId = randomUUID();
+    h.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
+    const failed = await put(h, PRIYA, NEO, "viewer", { requestId });
+    expect(failed.status).toBeGreaterThanOrEqual(500);
+    expect(grantOf(h.db, NEO)).toBeUndefined();
+    expect(h.db.get({ pk: `ORG#${TEST_ORG}#PROJECT#payments`, sk: `MEMBER_REQUEST#${requestId}` })).toBeUndefined();
+    expect((await put(h, PRIYA, NEO, "viewer", { requestId })).status).toBe(200);
+  });
+
+  it("two requests racing on one new person: the grant changed under the second is retried, not lost", async () => {
+    const h = await team();
+    // The first attempt's transaction is cancelled as if the grant had changed; the retry reads it again and succeeds.
+    h.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }, { Code: "None" }] } });
+    expect((await put(h, PRIYA, NEO, "contributor")).status).toBe(200);
+    expect(grantOf(h.db, NEO)).toMatchObject({ projectRole: "contributor" });
+    // A change that keeps being cancelled gives CHANGE_STALE.
+    h.db.injectFault({ command: "TransactWriteCommand", times: 5, error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }, { Code: "None" }] } });
+    const stale = await put(h, PRIYA, NEO, "viewer");
+    expect(stale.body.error).toMatchObject({ code: "CHANGE_STALE" });
+    expect(grantOf(h.db, NEO)).toMatchObject({ projectRole: "contributor" });
+  });
+
   it("a failed change is not stored: the same id can be retried", async () => {
     const h = await team();
     const requestId = randomUUID();
@@ -504,6 +602,18 @@ describe("GET /v1/app/projects/{name}/members", () => {
     const h = await team();
     grantRole(h.db, NEO, "contributor", { by: "system" });
     expect(listed(await members(h, PRIYA)).find((member) => member.developerId === NEO.developerId)).not.toHaveProperty("grantedBy");
+  });
+
+  it("follows who added a person through a merge: a grant made by a developer later merged into another names the survivor", async () => {
+    const h = await team();
+    const duplicate = "7".repeat(64);
+    h.db.set({ pk: `DEVELOPER#${duplicate}`, sk: "META", developerId: duplicate, provider: "oidc", displayName: "Priya (old)", firstSignInAt: "x", lastSignInAt: "x", revoked: false, mergedInto: PRIYA.developerId, mergedAt: "x" });
+    h.db.set({ ...grantOf(h.db, KIT)!, grantedBy: { developerId: duplicate } });
+    expect(listed(await members(h, SAM)).find((member) => member.developerId === KIT.developerId)!.grantedBy).toEqual({ developerId: PRIYA.developerId, name: PRIYA.name });
+    // And whoami: the survivor who made their own grant under the old id still created it.
+    h.db.set({ ...grantOf(h.db, PRIYA)!, grantedBy: { developerId: duplicate } });
+    const projects = (await h.dev(PRIYA, "GET", "/v1/dev/projects")).body.projects as Array<Record<string, unknown>>;
+    expect(projects.find((project) => project.name === "payments")).toMatchObject({ addedBy: { developerId: PRIYA.developerId, name: PRIYA.name } });
   });
 
   it("names a person whose record is gone 'Unknown' rather than failing", async () => {
@@ -636,6 +746,21 @@ describe("the grant item and the E2E direct-membership proof", () => {
     expect(await proof(h, NEO)).toMatchObject({ kind: "direct-membership", grantId: grant.grantId });
   });
 
+  it("a creator lowered to viewer is told TASK_ACCESS_DENIED with the reason on the next E2E round, not that the runtime is unavailable", async () => {
+    const h = await team();
+    const task = { developerId: KIT.developerId, project: "payments", orgId: TEST_ORG, taskId: randomUUID() };
+    const { requireWorkflowE2ECreatorAuthority } = await brokerModule();
+    h.db.set({ ...(h.db.get(`DEVELOPER#${KIT.developerId}`, "META") as Record<string, unknown>), entityType: "DEVELOPER" });
+    expect(await requireWorkflowE2ECreatorAuthority(h.brokerInput, task)).toMatchObject({ kind: "direct-membership", role: "developer" });
+    // A maintainer lowered to contributor keeps going (the same grant id and role).
+    await put(h, PRIYA, KIT, "contributor");
+    expect(await requireWorkflowE2ECreatorAuthority(h.brokerInput, task)).toMatchObject({ kind: "direct-membership" });
+    await put(h, PRIYA, KIT, "viewer");
+    await expect(requireWorkflowE2ECreatorAuthority(h.brokerInput, task)).rejects.toMatchObject({
+      code: "TASK_ACCESS_DENIED", message: expect.stringContaining("the original creator can now only view this task's project and can no longer run its checks") as string,
+    });
+  });
+
   it("a viewer grant is no direct-membership proof (a viewer starts no work)", async () => {
     const h = await team();
     expect(await proof(h, SAM)).toBeUndefined();
@@ -659,6 +784,28 @@ describe("the grant item and the E2E direct-membership proof", () => {
     expect(grantOf(h.db, KIT)).toMatchObject({ projectRole: "contributor", role: "developer", grantedBy: before.grantedBy, grantedAt: before.grantedAt });
     expect((await h.dev(PRIYA, "POST", "/v1/dev/tasks", start())).status).toBe(200);
     expect(grantOf(h.db, PRIYA)).toMatchObject({ projectRole: "maintainer" });
+  });
+});
+
+describe("requireProjectAuthority (the task paths' gate)", () => {
+  it("never counts a viewer's row as authority: it is NOT_FOUND, though a maintainer's, a contributor's, an old and an operator's row are", async () => {
+    const h = await team();
+    const { requireProjectAuthority } = await brokerModule();
+    const authority = (who: Developer) => requireProjectAuthority(h.brokerInput, TEST_ORG, who.developerId, "payments");
+    await expect(authority(SAM)).rejects.toMatchObject({ code: "NOT_FOUND", message: expect.stringContaining("project not found") as string });
+    expect(await authority(PRIYA)).toMatchObject({ kind: "grant" });
+    expect(await authority(KIT)).toMatchObject({ kind: "grant" });
+    grantProject(h.db, NEO);
+    expect(await authority(NEO)).toMatchObject({ kind: "grant" });
+    h.db.set({ ...projectMemberKey(TEST_ORG, ZED.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: ZED.developerId, projectName: "payments", role: "administrator", grantId: randomUUID() });
+    expect(await authority(ZED)).toMatchObject({ kind: "grant" });
+  });
+
+  it("falls to the org role for a viewer who is an org owner or admin", async () => {
+    const h = await team();
+    const { requireProjectAuthority } = await brokerModule();
+    grantRole(h.db, LENA, "viewer");
+    expect(await requireProjectAuthority(h.brokerInput, TEST_ORG, LENA.developerId, "payments")).toMatchObject({ kind: "org-role", role: "admin" });
   });
 });
 
@@ -841,7 +988,8 @@ describe("ProjectMembers", () => {
       const h = await team();
       const duplicate = "7".repeat(64);
       h.db.set({ pk: `DEVELOPER#${duplicate}`, sk: "META", developerId: duplicate, provider: "oidc", displayName: "Neo (old)", firstSignInAt: "x", lastSignInAt: "x", revoked: false, mergedInto: NEO.developerId, mergedAt: "x" });
-      // The survivor holds no grant of their own; the duplicate's stranded one counts for them.
+      // The duplicate holds a stranded grant (a merge moves grants first, so this should not happen). It counts only for a call that names
+      // the duplicate's id, not for the survivor's own id.
       h.db.set({ ...projectMemberKey(TEST_ORG, duplicate, "payments"), entityType: "MEMBERSHIP", ownerKey: duplicate, projectName: "payments", role: "developer", projectRole: "maintainer", grantId: randomUUID() });
       expect(await real(h).roleOf(TEST_ORG, "payments", caller(NEO))).toBeUndefined();
       expect(await real(h).roleOf(TEST_ORG, "payments", { developerId: duplicate, orgRole: "member" })).toBe("maintainer");
@@ -852,6 +1000,23 @@ describe("ProjectMembers", () => {
   });
 
   describe("projectsOf", () => {
+    it("reads the grants of a merged developer's survivor (and the duplicate's own stranded ones) for a call that names the duplicate", async () => {
+      const h = await team();
+      seedProject(h.db, TEST_ORG, "billing");
+      seedProject(h.db, TEST_ORG, "ledger");
+      const duplicate = "7".repeat(64);
+      h.db.set({ pk: `DEVELOPER#${duplicate}`, sk: "META", developerId: duplicate, provider: "oidc", displayName: "Kit (old)", firstSignInAt: "x", lastSignInAt: "x", revoked: false, mergedInto: KIT.developerId, mergedAt: "x" });
+      grantRole(h.db, KIT, "viewer", { project: "billing" });
+      // A stranded grant under the duplicate's id on one project, and one on a project the survivor also holds (the survivor's wins).
+      h.db.set({ ...projectMemberKey(TEST_ORG, duplicate, "ledger"), entityType: "MEMBERSHIP", ownerKey: duplicate, projectName: "ledger", role: "developer", projectRole: "maintainer", grantId: randomUUID() });
+      h.db.set({ ...projectMemberKey(TEST_ORG, duplicate, "billing"), entityType: "MEMBERSHIP", ownerKey: duplicate, projectName: "billing", role: "developer", projectRole: "maintainer", grantId: randomUUID() });
+      expect(await real(h).projectsOf(TEST_ORG, { developerId: duplicate, orgRole: "member" })).toEqual([
+        { project: "billing", role: "viewer" }, { project: "ledger", role: "maintainer" }, { project: "payments", role: "contributor" },
+      ]);
+      // Called with the survivor's own id, the stranded grants do not count.
+      expect(await real(h).projectsOf(TEST_ORG, caller(KIT))).toEqual([{ project: "billing", role: "viewer" }, { project: "payments", role: "contributor" }]);
+    });
+
     it("lists every active project of the org for an owner or admin, as maintainer, and none of another org's", async () => {
       const h = await team();
       seedProject(h.db, TEST_ORG, "billing");

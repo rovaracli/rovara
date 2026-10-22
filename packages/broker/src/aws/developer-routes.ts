@@ -86,7 +86,7 @@ import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } fro
 import { applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
 import { updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
 import { effectiveProjectRole, grantRoleOf, grantedByOf, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
-import { createProjectMembers, listProjectMembers, removeProjectMember, setProjectMember, type ProjectMembers, type ProjectMembersDependencies } from "../org/project-members.js";
+import { createProjectMembers, listProjectMembers, removeProjectMember, setProjectMember, survivorOf, type ProjectMembers, type ProjectMembersDependencies } from "../org/project-members.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
 import { DEFAULT_ROVARA_WEB_ORIGIN, inviteUrl } from "../org/invite-url.js";
 import { parseCreateProjectBody, type CreateProjectInput } from "../org/cloud-projects.js";
@@ -728,12 +728,17 @@ async function listProjects(deps: DeveloperRouteDependencies, caller: DeveloperC
   // Like checkProjectAccess: a caller with no Slack link is never shown channel names.
   const names = caller.slackUserId === undefined ? new Map<string, { name: string; isPrivate: boolean }>() : await channelNames(deps, listed.flatMap(([, entry]) => entry.channels));
   // Who added the caller, for the projects a grant of a person gave them (Task 21): one name lookup per person.
-  const adders = new Map<string, string>();
+  // A person who has since been merged into another is named as the one they became (the grant keeps the id it was made under).
+  const merge = projectMembersDepsOf(deps);
+  const adders = new Map<string, { id: string; name: string }>();
   for (const [name] of listed) {
     const by = orgMaintainer ? undefined : grantedByOf(grantOf.get(name));
-    if (by !== undefined && "developerId" in by) adders.set(by.developerId, "Unknown");
+    if (by !== undefined && "developerId" in by) adders.set(by.developerId, { id: by.developerId, name: "Unknown" });
   }
-  await mapLimit([...adders.keys()], REVISION_READS_AT_ONCE, async (id) => { adders.set(id, await nameOf(deps, id)); });
+  await mapLimit([...adders.keys()], REVISION_READS_AT_ONCE, async (id) => {
+    const survivor = await survivorOf(merge, id);
+    adders.set(id, { id: survivor, name: await nameOf(deps, survivor) });
+  });
   const projects: DeveloperProjectsResponse["projects"] = [];
   for (const [name, entry] of listed) {
     const known = policies.get(name)!;
@@ -744,7 +749,7 @@ async function listProjects(deps: DeveloperRouteDependencies, caller: DeveloperC
     projects.push({
       name, latestRevision: known.revision, access: entry.access, channels: entry.channels.map((channelId) => describeChannel(channelId, names)), tasks: known.policy,
       ...(role === undefined ? {} : { role, roleSource: source }),
-      ...(by === undefined || !("developerId" in by) ? {} : { addedBy: { developerId: by.developerId, name: adders.get(by.developerId) ?? "Unknown" } }),
+      ...(by === undefined || !("developerId" in by) ? {} : { addedBy: { developerId: adders.get(by.developerId)?.id ?? by.developerId, name: adders.get(by.developerId)?.name ?? "Unknown" } }),
     });
   }
   return {
@@ -996,7 +1001,14 @@ const ROLE_ORDER: Record<ProjectRole, number> = { maintainer: 0, contributor: 1,
  */
 async function getProjectMembers(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string): Promise<ProjectMembersResponse> {
   const { name } = await projectRoleForRoute(deps, caller, rawName);
-  const rows = await listProjectMembers(projectMembersDepsOf(deps), caller.orgId, name);
+  const merge = projectMembersDepsOf(deps);
+  // Who added a person is shown as the developer they have since been merged into, if any.
+  const rows = (await listProjectMembers(merge, caller.orgId, name)).map(async (row) => (row.grantedBy !== undefined && "developerId" in row.grantedBy
+    ? { ...row, grantedBy: { developerId: await survivorOf(merge, row.grantedBy.developerId) } } : row));
+  return buildProjectMembersResponse(deps, await Promise.all(rows));
+}
+
+async function buildProjectMembersResponse(deps: DeveloperRouteDependencies, rows: Awaited<ReturnType<typeof listProjectMembers>>): Promise<ProjectMembersResponse> {
   const store = signInStoreOf(deps);
   const cards = new Map<string, { name: string; email?: string }>();
   const ids = [...new Set(rows.flatMap((row) => [row.developerId, ...(row.grantedBy !== undefined && "developerId" in row.grantedBy ? [row.grantedBy.developerId] : [])]))];

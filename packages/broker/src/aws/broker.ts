@@ -204,6 +204,7 @@ import {
   OrgRoleSchema,
   type OrgRole,
   type ProjectRole,
+  projectAllows,
   PROJECT_REVISION_SK_PREFIX,
   orgMemberKey,
   orgProjectCatalogKey,
@@ -308,7 +309,7 @@ import {
   type CallbackClaims, type OperationRecord,
 } from "./cancellation.js";
 import { requireCreatorStillMember, requireWorkspaceCreatorStillMember, type CreatorCheckDependencies } from "../developer/creator-member.js";
-import { requireNewWorkAllowed } from "../developer/project-roles.js";
+import { effectiveProjectRole, grantRoleOf, requireNewWorkAllowed } from "../developer/project-roles.js";
 import { aiToolTurn, completedTurn, developerFooter, E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON, githubWorkflowPullRequestKey, inertName, OUTCOME, partyOfTask, taskKey, taskOwnerKey, taskOwnerSubject, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type GithubWorkflowPullRequestRecord, type StoredEvent } from "../developer/task-records.js";
 import { readWorkspaceLimits } from "../developer/limits.js";
 import { WORKFLOW_DISPATCH_PK, workflowDispatchItem, type WorkflowDispatchRecord, type WorkflowE2EReadinessMarker, AWS_TEMPORARY_MESSAGE, GATED_TASK_PULL_REQUEST_ACTION_REFUSAL, GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, UNEXPECTED_REQUEST_MESSAGE, hashJson, isConditional, isTemporaryAwsError, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, planDocumentInstructions, workerPrompt } from "./broker-shared.js";
@@ -3660,9 +3661,16 @@ async function ensureThreadWorkspace(
 
   // New threads use the latest revision; an existing thread keeps the revision its workspace was prepared with.
   const project = await requireLatestProject(dependencies, requireOrgId(identity.orgId), slack.binding.projectName);
-  // Plan 2, Task 11: a new thread is new work, so an archived project refuses it. A person in the bound channel is a contributor;
-  // threads that already have a workspace were answered above and keep going.
-  await requireNewWorkAllowed(dependencies, requireOrgId(identity.orgId), slack.binding.projectName, "contributor", "task");
+  // Plan 2, Task 11: a new thread is new work, so an archived project refuses it. The requester's role is their real one (Task 21): an
+  // explicit grant (a viewer's included) wins, an org owner or admin maintains, and otherwise the bound channel makes them a contributor.
+  // Threads that already have a workspace were answered above and keep going.
+  const requesterOrg = requireOrgId(identity.orgId);
+  const requesterId = developerIdForSlackUser(slack.requester.userId);
+  const requesterRole = effectiveProjectRole(
+    { developerId: requesterId, orgRole: (await readOrgMember(dependencies, requesterOrg, requesterId))?.role ?? "member" },
+    await getMembership(dependencies, requesterOrg, requesterId, slack.binding.projectName), true,
+  ) ?? "contributor";
+  await requireNewWorkAllowed(dependencies, requesterOrg, slack.binding.projectName, requesterRole, "task");
   // Plan 2, Task 15: a new thread is new work that needs the org's GitHub connection (cloud installs), before any budget or charge.
   const gate = repositoryGateOf(dependencies);
   if (gate !== undefined) await requireRepositoriesConnected(gate, requireOrgId(identity.orgId), project.definition);
@@ -7752,6 +7760,7 @@ async function workflowE2ECurrentAuthorityIsValid(
         developer: dependencies.developer, now: Date.now },
       { orgId, developerId: task.developerId, orgRole: creatorOrgMember?.role ?? "member", ...(creator.slackUserId === undefined ? {} : { slackUserId: creator.slackUserId }) }, task.project);
     } catch { return reject("current-creator-project-access-unavailable"); }
+    if (!projectAllows(creatorAccess.role, "start_tasks")) return reject("current-creator-can-only-view-project");
     const creatorMembershipKey = projectMemberKey(orgId, task.developerId, task.project);
     const creatorMembership = await getItem<Record<string, unknown>>(dependencies, creatorMembershipKey);
     const creatorAuthority = await workflowE2ECreatorAuthorityProof(dependencies, task, creatorMembership, creatorAccess, creatorOrgMember);
@@ -9982,6 +9991,10 @@ export async function requireWorkflowE2ECreatorAuthority(dependencies: AwsBroker
     }
     throw agentXError("RUNTIME_UNAVAILABLE", "the original creator's current project access is unavailable");
   }
+  // A creator lowered to viewer still passes the access check (a viewer sees the project) but takes no part in running work: say so.
+  if (!projectAllows(creatorAccess.role, "start_tasks")) {
+    throw agentXError("TASK_ACCESS_DENIED", "the original creator can now only view this task's project and can no longer run its checks");
+  }
   const creatorMembership = await getItem<Record<string, unknown>>(dependencies, projectMemberKey(orgId, task.developerId, task.project));
   const creatorAuthority = await workflowE2ECreatorAuthorityProof(dependencies, task, creatorMembership, creatorAccess, creatorOrgMember);
   if (creatorAuthority === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the creator has no versioned direct or locally bound channel access proof for this E2E round");
@@ -12093,7 +12106,8 @@ export async function requireProjectAuthority(
   options: { taskCreator?: () => Promise<string | undefined> } = {},
 ): Promise<{ kind: "grant"; membership: MembershipRecord } | { kind: "org-role"; role: "owner" | "admin" }> {
   const membership = await getMembership(dependencies, orgId, ownerKey, projectName);
-  if (membership) return { kind: "grant", membership };
+  // A viewer's row is no authority to work on a project's task paths (Plan 2, Task 21): it falls through to the org role, then NOT_FOUND.
+  if (membership && grantRoleOf(membership) !== "viewer") return { kind: "grant", membership };
   const creator = await options.taskCreator?.();
   const member = await readOrgMember(dependencies, orgId, creator ?? ownerKey);
   if (member?.role === "owner" || member?.role === "admin") return { kind: "org-role", role: member.role };
