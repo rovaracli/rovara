@@ -1765,3 +1765,83 @@ describe("driving write approvals without the driver", () => {
     expect(await decideWriteApproval(w.deps, w.caller(BOB), id as never, { requestId: REQ(1), decision: "APPROVE" })).toEqual({ status: "APPROVED_DONE" });
   });
 });
+
+describe("the wiring fix round", () => {
+  const safeNow = { class: "safe" as const, reason: "the lookup that held it now succeeds", ignoredRules: [] };
+  const readNow = { class: "read" as const, reason: "a read", ignoredRules: [] };
+
+  it("answers from a write approval that already exists, whatever the class is now (F1)", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    for (const classification of [safeNow, readNow]) {
+      const again = await decideWrite(w.deps, w.input({ call: { scope: "eng", schemaHash: SCHEMA, arguments: { id: "ENG-12", stateId: "s1" } }, classification }));
+      expect(again).toMatchObject({ outcome: "wait", approvalId: id });
+    }
+    // Once decided, the same call is not run again either.
+    await w.approve(BOB, id);
+    expect(await decideWrite(w.deps, w.input({ call: { scope: "eng", schemaHash: SCHEMA, arguments: { id: "ENG-12", stateId: "s1" } }, classification: safeNow }))).toMatchObject({ outcome: "refuse" });
+    expect(w.vendor.state.vendorCalls).toHaveLength(1);
+  });
+
+  it("still lets a safe call with no approval run at once", async () => {
+    const w = world();
+    expect(await decideWrite(w.deps, w.input({ classification: safeNow }))).toEqual({ outcome: "run" });
+  });
+
+  it("still refuses what a project rule denies when an approval exists", async () => {
+    const w = world();
+    await w.waiting(1);
+    const denied = { class: "consequential" as const, reason: "x", ignoredRules: [], denied: { rule: 1, reason: "closed" } };
+    expect(await decideWrite(w.deps, w.input({ call: { scope: "eng", schemaHash: SCHEMA, arguments: { id: "ENG-12", stateId: "s1" } }, classification: denied }))).toMatchObject({ outcome: "refuse" });
+  });
+
+  it("re-classifies on the arguments the server binds, not only the stored call (minor 1)", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    const original = w.runtime.regrant;
+    w.runtime.regrant = async (input) => {
+      const regranted = await original(input);
+      if ("refused" in regranted) return regranted;
+      return { ...regranted, classifyArgs: { ...(input.record.arguments as Record<string, unknown>), owner: "acme" }, classify: { ...regranted.classify, projectPolicy: { rules: [{ tool: "save_issue", connector: "linear", whenArguments: ["owner"], outcome: "deny", reason: "closed" }] } } };
+    };
+    await w.approve(BOB, id);
+    expect(await w.record(id)).toMatchObject({ status: "APPROVED_FAILED", failure: "A project rule no longer allows this, so Rovara didn't run it." });
+    expect(w.vendor.state.vendorCalls).toEqual([]);
+  });
+
+  it("ends a retry whose ledger record is in doubt as 'couldn't confirm', not 'didn't run' (minor 2)", async () => {
+    for (const status of ["IN_PROGRESS", "UNKNOWN"] as const) {
+      const w = world();
+      const id = await w.waiting(1);
+      w.vendor.state.neverFinishes = true;
+      await w.approve(BOB, id).catch(() => undefined);
+      w.runtime.recordedResult = async ({ requestId }) => ({ requestId, status, text: "unknown", truncated: false, replayed: false });
+      // The task ended while the outcome was in doubt.
+      w.task({ closedAt: "2026-10-22T09:30:00.000Z" });
+      w.clock.now += 6 * MINUTE;
+      await w.sweep();
+      const ended = await w.write(id);
+      expect(ended.status).toBe("APPROVED_FAILED");
+      expect(ended.failure).toContain("couldn't confirm");
+      expect(ended.failure).not.toContain("didn't run");
+    }
+  });
+
+  it("leaves a stuck write for the next run when too little of the function's time is left to send it (budgets)", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.vendor.state.neverFinishes = true;
+    await w.approve(BOB, id).catch(() => undefined);
+    const calls = w.vendor.state.runs;
+    w.clock.now += 6 * MINUTE;
+    const late = await runApprovalSweep(w.deps, { budgetMs: 100_000, redriveUntil: w.clock.now - 1 });
+    expect(late.redriven).toBe(0);
+    expect(w.vendor.state.runs).toBe(calls);
+    expect(await w.record(id)).toMatchObject({ status: "EXECUTING", attempts: 1 });
+    w.vendor.state.neverFinishes = false;
+    const early = await runApprovalSweep(w.deps, { budgetMs: 100_000, redriveUntil: w.clock.now + 5_000 });
+    expect(early.redriven).toBe(1);
+    expect(await w.record(id)).toMatchObject({ status: "APPROVED_DONE" });
+  });
+});
+

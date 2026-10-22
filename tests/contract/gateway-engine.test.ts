@@ -458,3 +458,32 @@ describe("credentials that are missing or rejected", () => {
     expect(f.connect.mock.calls.map(([options]) => options.token)).toEqual(["key-1", "key-2"]);
   });
 });
+
+describe("a durable call of a tool approved for reading (the approval path)", () => {
+  it("claims and finishes the ledger when told to, so a repeat replays the result and the vendor is asked once", async () => {
+    const f = fixture();
+    const request = f.request("list_items", { state: "open" });
+    const first = await executeTool(request, f.connector, f.context, { connect: f.connect, ledger: f.ledger, durable: true });
+    expect(first).toMatchObject({ status: "SUCCEEDED", replayed: false });
+    expect(f.records.get(request.requestId)?.result.status).toBe("SUCCEEDED");
+    const again = await executeTool(request, f.connector, f.context, { connect: f.connect, ledger: f.ledger, durable: true });
+    expect(again).toMatchObject({ status: "SUCCEEDED", replayed: true });
+    expect(f.call).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers UNKNOWN, not FAILED, when the vendor call breaks, because the vendor may have acted", async () => {
+    const f = fixture();
+    f.call.mockRejectedValueOnce(new Error("connection reset"));
+    const request = f.request("list_items", { state: "open" });
+    expect(await executeTool(request, f.connector, f.context, { connect: f.connect, ledger: f.ledger, durable: true })).toMatchObject({ status: "UNKNOWN" });
+    expect(f.records.get(request.requestId)?.result.status).toBe("UNKNOWN");
+  });
+
+  it("leaves a plain read out of the ledger", async () => {
+    const f = fixture();
+    const request = f.request("list_items", { state: "open" });
+    await executeTool(request, f.connector, f.context, { connect: f.connect, ledger: f.ledger });
+    expect(f.records.size).toBe(0);
+  });
+});
+
