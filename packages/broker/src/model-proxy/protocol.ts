@@ -67,7 +67,7 @@ export const SourceCheckResultSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(false), message: z.string().max(500) }).strict(),
 ]);
 /** Every registered source, at most as many as a thousand orgs of ten sources hold. */
-export const RegisteredSourcesResultSchema = z.array(z.object({ orgId: OrgIdSchema, sourceId: SourceIdSchema }).strict()).max(10_000);
+export const RegisteredSourcesResultSchema = z.array(z.object({ orgId: OrgIdSchema, sourceId: SourceIdSchema, hosts: z.array(z.string().min(1).max(253)).max(20).optional() }).strict()).max(10_000);
 export const MintedKeyResultSchema = z.object({ key: z.string().min(1), expiresAt: z.number().finite() }).strict();
 
 export type ModelAccessResponse =

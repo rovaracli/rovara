@@ -51,8 +51,17 @@ export async function finishRemovals(deps: ModelSourceCleanupDependencies, orgId
  * close can be run again. A registration the record never named is the sweeper's.
  */
 export async function releaseOrgModelSources(deps: ModelSourceCleanupDependencies, orgId: OrgId): Promise<void> {
-  const record = await deps.store.readIfAny(orgId);
-  const ids = new Set([...(record?.sources ?? []).map((source) => source.sourceId), ...(record?.removing ?? []).map((entry) => entry.sourceId)]);
-  for (const sourceId of ids) await releaseSource(deps, orgId, sourceId);
-  await deps.store.deleteRecord(orgId);
+  // The record goes only at the revision whose sources were released: one added or removed meanwhile makes the delete refuse, and the loop releases again.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const record = await deps.store.readIfAny(orgId);
+    const ids = new Set([...(record?.sources ?? []).map((source) => source.sourceId), ...(record?.removing ?? []).map((entry) => entry.sourceId)]);
+    for (const sourceId of ids) await releaseSource(deps, orgId, sourceId);
+    try {
+      await deps.store.deleteRecord(orgId, record?.revision);
+      return;
+    } catch (error) {
+      if (!(error instanceof AgentXError && error.code === "IDEMPOTENCY_CONFLICT")) throw error;
+    }
+  }
+  throw agentXError("RUNTIME_UNAVAILABLE", "the organization's AI sources changed while it was closing; close it again");
 }

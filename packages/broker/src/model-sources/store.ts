@@ -22,7 +22,7 @@ import {
   type OrgId,
   type OrgModelSources,
 } from "@agentx/contracts";
-import { commit, coded, NOT_EXISTS, withoutUndefined, type Item, type RequestMark, type TransactItem } from "../agents/table-writes.js";
+import { commit, coded, failedIndexes, NOT_EXISTS, withoutUndefined, type Item, type RequestMark, type TransactItem } from "../agents/table-writes.js";
 import { auditModelSourceOrderChanged, auditModelSourceRemoved, auditModelSourceSaved, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
@@ -309,15 +309,27 @@ export class ModelSourceStore {
     });
   }
 
-  /** Deletes the org's record and directory item: the org is closed and its sources have been taken out of the proxy. */
-  async deleteRecord(orgId: string): Promise<void> {
+  /**
+   * Deletes the org's record and directory item: the org is closed and the sources the record held at `revision` (undefined: no record) have been taken
+   * out of the proxy. It holds only while the record is still at that revision; a source added or removed meanwhile is IDEMPOTENCY_CONFLICT, and the
+   * caller releases again.
+   */
+  async deleteRecord(orgId: string, revision?: number): Promise<void> {
     const org = parseOrg(orgId);
-    await this.input.documentClient.send(new TransactWriteCommand({
-      TransactItems: [
-        { Delete: { TableName: this.input.tableName, Key: modelSourcesKey(org) } },
-        { Delete: { TableName: this.input.tableName, Key: { pk: MODEL_SOURCES_DIRECTORY_PK, sk: org } } },
-      ],
-    }));
+    const guard = revision === undefined
+      ? { ConditionExpression: NOT_EXISTS }
+      : { ConditionExpression: "#revision = :revision", ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":revision": revision } };
+    try {
+      await this.input.documentClient.send(new TransactWriteCommand({
+        TransactItems: [
+          { Delete: { TableName: this.input.tableName, Key: modelSourcesKey(org), ...guard } },
+          { Delete: { TableName: this.input.tableName, Key: { pk: MODEL_SOURCES_DIRECTORY_PK, sk: org } } },
+        ],
+      }));
+    } catch (error) {
+      if (failedIndexes(error)?.has(0) === true) throw coded("IDEMPOTENCY_CONFLICT", CONFLICT);
+      throw error;
+    }
   }
 
   /** The orgs that have a record, in id order, after `after`: at most `limit`. */

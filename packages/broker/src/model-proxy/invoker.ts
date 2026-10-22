@@ -64,7 +64,7 @@ export class ModelAccessInvoker implements ModelAccess {
     await this.invoke({ op: "removeSource", args: { orgId, sourceId } });
   }
 
-  async listSources(): Promise<Array<{ orgId: OrgId; sourceId: string }>> {
+  async listSources(): Promise<Array<{ orgId: OrgId; sourceId: string; hosts?: string[] | undefined }>> {
     return this.parseResult(await this.invoke({ op: "listSources", args: {} }), RegisteredSourcesResultSchema);
   }
 

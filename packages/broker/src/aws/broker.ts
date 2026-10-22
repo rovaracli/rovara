@@ -344,7 +344,7 @@ import { developerIdForSlackUser } from "./admin-actions.js";
 import { chatGptOwner, chatGptTaskSelection } from "../chatgpt/task-model.js";
 import { readChatGptSettings } from "../chatgpt/settings.js";
 import { ModelSourceStore } from "../model-sources/store.js";
-import { sweepModelSources, type ModelSourceSweepDependencies } from "../model-sources/sweep.js";
+import { MODEL_SOURCE_SWEEP_BUDGET_MS, sweepModelSources, type ModelSourceSweepDependencies } from "../model-sources/sweep.js";
 import type { ModelSourceRouteDependencies } from "../model-sources/routes.js";
 import { answerSlackChatGpt, isSlackChatGptCommandEvent, isSlackChatGptFinishEvent } from "./slack-chatgpt.js";
 import { chatGptConnections, kmsChatGptSealer, type ChatGptConnections } from "../chatgpt/connections.js";
@@ -10331,8 +10331,6 @@ function isSpendSettlementEvent(event: unknown): event is { source: "agentx.spen
 
 /** The broker's function has 30 seconds; a sweep that has not finished by then stops and the next run resumes from where it was. */
 const SPEND_SWEEP_BUDGET_MS = 20_000;
-/** The company AI sources' sweep runs before the spend sweep and leaves it its 20 seconds. */
-const MODEL_SOURCE_SWEEP_BUDGET_MS = 5_000;
 
 /** Task 24b: what the model-source sweep needs, or undefined where the install has no agents or no model proxy (it then has no sources to sweep). */
 function modelSourceSweepOf(dependencies: AwsBrokerDependencies): ModelSourceSweepDependencies | undefined {
