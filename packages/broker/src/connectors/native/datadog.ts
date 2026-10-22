@@ -17,6 +17,9 @@ import { VendorFetchError } from "./vendor-fetch.js";
 export interface DatadogEngineScope { alias: string; tags: string[] }
 export interface DatadogRunScope { alias: string; tags: string[] }
 
+/** The longest `tags` routing value a scope can have: 5 tags (`DatadogScopeSchema`), each at most 64 + 1 + 100 characters (`DatadogTagSchema`), and 4 commas (review M-2). */
+const MAX_TAGS_VALUE = 5 * (64 + 1 + 100) + 4;
+
 export const DATADOG_KEYS_REFUSED = "Datadog refused the keys. Check the API key, and that the application key has monitors_read, timeseries_query and logs_read_data.";
 
 const CLIP = 300;
@@ -65,7 +68,10 @@ async function ddRequest(
 
 /**
  * Whether a search the model wrote can sit inside a group of its own: no control characters, quotes that balance, and brackets that balance outside quotes and
- * never close more than were opened, so it cannot close the group the scope's tags are put around and add terms outside it.
+ * never close more than were opened, so it cannot close the group the scope's tags are put around and add terms outside it. A backslash escapes the character
+ * after it, inside quotes and outside them, because Datadog reads it that way: `\(` and `\"` are plain characters there, so counting them as a bracket or a quote
+ * here would let a query close the group from inside (Task 14 review C-1). A query that ends in a backslash is refused, since it would escape the bracket the
+ * scope puts after it.
  */
 export function isContainedQuery(query: string): boolean {
   if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(query)) return false;
@@ -73,9 +79,11 @@ export function isContainedQuery(query: string): boolean {
   let depth = 0;
   for (let index = 0; index < query.length; index += 1) {
     const char = query[index];
-    if (inQuote) {
-      if (char === "\\") index += 1;
-      else if (char === '"') inQuote = false;
+    if (char === "\\") {
+      if (index + 1 >= query.length) return false;
+      index += 1;
+    } else if (inQuote) {
+      if (char === '"') inQuote = false;
     } else if (char === '"') {
       inQuote = true;
     } else if (char === "(") {
@@ -88,6 +96,13 @@ export function isContainedQuery(query: string): boolean {
   return !inQuote && depth === 0;
 }
 
+/**
+ * Whether what a vendor answered with carries every one of the scope's tags: in its own tag list, or as the `service` or `host` attribute a log has beside
+ * its tags. The vendor's narrowing is not trusted to be the only guard, as `get_monitor` already did not.
+ */
+const carriesEveryTag = (scopeTags: readonly string[], carried: readonly string[]): boolean => scopeTags.every((tag) => carried.includes(tag));
+const stringsOf = (value: unknown): string[] => listOf(value).filter((entry): entry is string => typeof entry === "string");
+
 /** A tag as a log search term: `key:value`, the value quoted when it holds a character the search reads as syntax. */
 const logTerm = (tag: string): string => {
   const [key, ...rest] = tag.split(":");
@@ -95,7 +110,7 @@ const logTerm = (tag: string): string => {
   return /^[A-Za-z0-9_.]+$/u.test(value) ? tag : `${key}:"${value}"`;
 };
 
-const METRIC_QUERY = /^(avg|sum|min|max|count):([A-Za-z0-9_.]+)\{([^{}]*)\}((?: by \{[A-Za-z0-9_.,:/-]+\})?(?:\.[a-z_]+\([^(){}]*\))*)$/u;
+const METRIC_QUERY = /^(avg|sum|min|max|count):([A-Za-z0-9_.]+)\{([^{}]*)\}((?: by \{[A-Za-z0-9_.,:/-]+\})?(?:\.[a-z_]+\([^(){}\\]*\))*)$/u;
 const FILTER_TOKEN = /^!?(?:\*|[A-Za-z0-9_./:-]+)$/u;
 
 /**
@@ -136,7 +151,7 @@ const searchMonitors: NativeTool<DatadogRunScope> = {
       ...(model === "" ? [] : [`(${model})`]),
     ];
     const answer = recordOf(await ddRequest(ctx, "api/v1/monitor/search", { query: { query: terms.join(" "), per_page: "25" } }));
-    const monitors = listOf(answer["monitors"]).filter(isRecord);
+    const monitors = listOf(answer["monitors"]).filter(isRecord).filter((monitor) => carriesEveryTag(ctx.scope.tags, stringsOf(monitor["tags"])));
     const lines = monitors.map((monitor) => `#${clip(monitor["id"], 20)} [${clip(monitor["status"], 20)}] ${clip(monitor["name"])} (${clip(monitor["type"], 40)}) tags: ${listOf(monitor["tags"]).map((tag) => clip(tag, 60)).slice(0, 10).join(", ")}`);
     return { text: monitors.length === 0 ? `No monitors in ${ctx.scope.alias}.` : `${String(monitors.length)} monitor${monitors.length === 1 ? "" : "s"} in ${ctx.scope.alias}:\n${lines.join("\n")}` };
   },
@@ -216,7 +231,11 @@ const searchLogs: NativeTool<DatadogRunScope> = {
       page: { limit },
     };
     const answer = recordOf(await ddRequest(ctx, "api/v2/logs/events/search", { body }));
-    const logs = listOf(answer["data"]).filter(isRecord).slice(0, limit);
+    const logs = listOf(answer["data"]).filter(isRecord).filter((log) => {
+      const attributes = recordOf(log["attributes"]);
+      const attributeTags = (["service", "host"] as const).flatMap((key) => (typeof attributes[key] === "string" ? [`${key}:${attributes[key]}`] : []));
+      return carriesEveryTag(ctx.scope.tags, [...stringsOf(attributes["tags"]), ...attributeTags]);
+    }).slice(0, limit);
     if (logs.length === 0) return { text: `No logs in ${ctx.scope.alias} for that search.` };
     const lines = logs.map((log) => {
       const attributes = recordOf(log["attributes"]);
@@ -247,7 +266,7 @@ export const DATADOG_SPEC: NativeConnectorSpec<DatadogConnectorConfig, DatadogEn
   routing: {
     properties: {
       scopeAlias: { type: "string", minLength: 1, maxLength: 63 },
-      tags: { type: "string", minLength: 1, maxLength: 700 },
+      tags: { type: "string", minLength: 1, maxLength: MAX_TAGS_VALUE },
     },
     scopeOf: (values) => ({ alias: values["scopeAlias"]!, tags: values["tags"]!.split(",") }),
     fromScope: (scope) => ({ scopeAlias: scope.alias, tags: scope.tags.join(",") }),

@@ -54,6 +54,16 @@ export const PagerDutyRegionSchema = z.enum(["us", "eu"]);
 /** The external id Rovara sends when it assumes a CloudWatch connection's role: set by the server from the org, never taken from a body. */
 export const cloudwatchExternalId = (orgId: OrgId): string => `rovara-${orgId}`;
 
+/**
+ * The broker checks a Grafana address again before every call, and `checkEndpointUrl` refuses any port but 443, so an address with another port could be
+ * saved but never used (the connection check could only say Grafana was unreachable). It is refused here instead, with the reason. An explicit `:443` is the
+ * standard port and parses to no port at all.
+ */
+const GRAFANA_PORT_MESSAGE = "baseUrl must use the standard https port (443); Grafana on another port is not supported";
+const standardPort = (value: string): boolean => {
+  try { return new URL(value).port === ""; } catch { return true; } // an address that is not a URL is refused by the URL check beside this one
+};
+
 export const ObservabilityConnectionSchemas = [
   z.object({ ...Common("sentry"), type: z.literal("sentry"), region: SentryRegionSchema, orgSlug: SentryOrgSlugSchema }).strict(),
   z.object({ ...Common("datadog"), type: z.literal("datadog"), site: DatadogSiteSchema }).strict(),
@@ -61,7 +71,7 @@ export const ObservabilityConnectionSchemas = [
     ...Common("cloudwatch"), type: z.literal("cloudwatch"), roleArn: CloudWatchRoleArnSchema,
     regions: z.array(AwsRegionSchema).min(1).max(CLOUDWATCH_MAX_REGIONS).refine((regions) => new Set(regions).size === regions.length, "must not repeat a region"),
   }).strict(),
-  z.object({ ...Common("grafana"), type: z.literal("grafana"), baseUrl: publicHttpsUrlSchema("baseUrl") }).strict(),
+  z.object({ ...Common("grafana"), type: z.literal("grafana"), baseUrl: publicHttpsUrlSchema("baseUrl").refine(standardPort, GRAFANA_PORT_MESSAGE) }).strict(),
   z.object({ ...Common("vercel"), type: z.literal("vercel"), teamId: VercelTeamIdSchema.optional() }).strict(),
   z.object({ ...Common("pagerduty"), type: z.literal("pagerduty"), region: PagerDutyRegionSchema }).strict(),
 ] as const;
