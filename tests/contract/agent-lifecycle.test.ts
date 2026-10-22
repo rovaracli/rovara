@@ -374,6 +374,7 @@ describe("onMembersMerged", () => {
 });
 
 describe("what Rovara's own moves leave in the audit ledger (Audit Task 19)", () => {
+  const targetIdOf = (event: { target: unknown }) => (event.target as { id?: string }).id;
   const merge = { orgId: ORG_A, survivorId: ALICE, duplicateId: OLD_ALICE };
 
   it("records each owner move as the system's own change, naming both people, in the move's own transaction", async () => {
@@ -388,8 +389,8 @@ describe("what Rovara's own moves leave in the audit ledger (Audit Task 19)", ()
     const events = capture.recordedBy("agent.owner_changed");
     expect(events).toHaveLength(2);
     for (const event of events) expect(event).toMatchObject({ orgId: ORG_A, actor: { kind: "system", id: "rovara" } });
-    expect(events.find((event) => event.target.id === agent.agentId)).toMatchObject({ facts: { field: "owner" }, related: expect.arrayContaining([OLD_ALICE, ALICE]) as unknown });
-    expect(events.find((event) => event.target.id === web.agentId)).toMatchObject({ facts: { field: "accountable" }, related: expect.arrayContaining([OLD_ALICE, ALICE]) as unknown });
+    expect(events.find((event) => targetIdOf(event) === agent.agentId)).toMatchObject({ facts: { field: "owner" }, related: expect.arrayContaining([OLD_ALICE, ALICE]) as unknown });
+    expect(events.find((event) => targetIdOf(event) === web.agentId)).toMatchObject({ facts: { field: "accountable" }, related: expect.arrayContaining([OLD_ALICE, ALICE]) as unknown });
   });
 
   it("records nothing for a move that was refused: the audit item is in the same transaction as the change", async () => {
@@ -475,13 +476,13 @@ describe("a move that races another write", () => {
     let raced = false;
     // The moment the move's transaction is about to run, someone else saves the agent's shares (revision 1 -> 5).
     const send = w.db.send.bind(w.db);
-    w.db.send = (async (command: { constructor: { name: string }; input?: { TransactItems?: unknown[] } }) => {
+    w.db.send = async (command) => {
       if (!raced && command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes('"shared"')) {
         raced = true;
         w.db.set({ ...w.db.get(agentKey(ORG_A, agent.agentId, "META"))!, sharesRevision: 5 });
       }
-      return send(command as never);
-    }) as typeof w.db.send;
+      return send(command);
+    };
 
     await w.store.reassignShare({ orgId: ORG_A, agentId: agent.agentId, from: { kind: "member", developerId: OLD_ALICE }, to: { kind: "member", developerId: ALICE }, by: "system", cause: { kind: "member_merged", developerId: OLD_ALICE } });
 
@@ -1027,7 +1028,7 @@ describe("the broker's wiring", () => {
 
     const first = await h.dev(OMAR, "POST", "/v1/app/projects/payments/archive", { requestId });
     expect(first.status, JSON.stringify(first.body)).toBe(200);
-    expect(archivedLines().map((line) => JSON.parse(line))).toEqual([{ component: "broker", event: "agents.project_archived", orgId: TEST_ORG, project: "payments", rosterAgents: 0, projectAgents: 0 }]);
+    expect(archivedLines().map((line) => JSON.parse(line) as unknown)).toEqual([{ component: "broker", event: "agents.project_archived", orgId: TEST_ORG, project: "payments", rosterAgents: 0, projectAgents: 0 }]);
 
     // A replay applies nothing and tells nothing; restoring tells nothing.
     expect((await h.dev(OMAR, "POST", "/v1/app/projects/payments/archive", { requestId })).status).toBe(200);

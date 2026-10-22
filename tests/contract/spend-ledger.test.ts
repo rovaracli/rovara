@@ -1000,7 +1000,7 @@ describe("a key the broker mints", () => {
     const run = await t.sweep();
     expect(run.statusCode).toBe(200);
     // Task 11 added the member-merge drain to the run, ahead of the sweep; it has nothing to do here.
-    expect(JSON.parse(run.body).jobs).toEqual([
+    expect((JSON.parse(run.body) as { jobs: unknown }).jobs).toEqual([
       expect.objectContaining({ name: "drain-member-merges", ok: true }),
       expect.objectContaining({ name: "sweep-spend", ok: true, result: expect.objectContaining({ settled: 1, complete: true }) as unknown }),
     ]);
@@ -1036,7 +1036,7 @@ describe("a key the broker mints", () => {
     const run = await t.sweep();
     expect(run.statusCode).toBe(200);
     // The sweep failing never stops the drain before it, and the drain never hides the sweep's failure.
-    expect(JSON.parse(run.body).jobs).toEqual([
+    expect((JSON.parse(run.body) as { jobs: unknown }).jobs).toEqual([
       expect.objectContaining({ name: "drain-member-merges", ok: true }),
       { name: "sweep-spend", ok: false, error: "InternalServerError" },
     ]);
