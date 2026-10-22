@@ -2,9 +2,13 @@
 // function runs the decide flow (tickets, the fresh sign-in, Cognito), but it holds no grant on approvals, projects or roles, and a second copy of
 // the evaluation in another role would drift from `decideApproval` (R68). So its kinds ask the broker, over a direct invoke:
 //   request  { kind: "decide-inspect", orgId, developerId, approvalId }   (schema-checked on both sides, nothing else accepted)
-//   answer   { status: "open" } | { status: "forbidden", who } | { status: "decided", by, at } | { status: "not_found" }
+//   answer   { status: "open" } | { status: "forbidden", who } | { status: "decided", by, at } | { status: "expired", at } | { status: "not_found" }
 // The answer never carries the approval, its arguments or the page's view. Any invoke error, timeout or answer that does not fit is an error,
 // and the flow fails closed on it (a 503 page, no ticket, no Cognito call). The broker evaluates everything again on the real decision.
+// WHO MAY ASK is enforced by IAM on the caller's side, not by the broker: a direct invoke carries no caller identity, so the broker answers any
+// principal that can invoke it. Only the DeveloperIdentity role is granted `lambda:InvokeFunction` for this purpose (infra/lib/developer-signin.ts);
+// the other roles that can invoke the broker (the Slack ingress and the recovery jobs) are trusted functions that build their own typed events. The
+// answer is one word plus display names, never an approval.
 // The event shape is unreachable from HTTP: an API Gateway event has `requestContext` and `routeKey`, and `isDecideInspectEvent` refuses anything that does.
 import { InvokeCommand } from "@aws-sdk/client-lambda";
 import { OrgIdSchema } from "@agentx/contracts";
@@ -26,6 +30,7 @@ export const DecideInspectAnswerSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("not_found") }).strict(),
   z.object({ status: z.literal("forbidden"), who: Words }).strict(),
   z.object({ status: z.literal("decided"), by: Words, at: Words }).strict(),
+  z.object({ status: z.literal("expired"), at: Words }).strict(),
   z.object({ status: z.literal("open") }).strict(),
 ]);
 export type DecideInspectAnswer = z.infer<typeof DecideInspectAnswerSchema>;
@@ -49,6 +54,7 @@ export async function answerDecideInspect(kinds: DecideKinds, event: unknown): P
     case "open": return { statusCode: 200, body: { status: "open" } };
     case "forbidden": return { statusCode: 200, body: { status: "forbidden", who: inspection.who.slice(0, 200) } };
     case "decided": return { statusCode: 200, body: { status: "decided", by: inspection.by.slice(0, 200), at: inspection.at.slice(0, 200) } };
+    case "expired": return { statusCode: 200, body: { status: "expired", at: inspection.at.slice(0, 200) } };
     default: return { statusCode: 200, body: { status: "not_found" } };
   }
 }

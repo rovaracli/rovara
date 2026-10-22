@@ -12,13 +12,6 @@ const DEV_ROUTE_KEY = "ANY /v1/dev/{proxy+}";
 const APP_ROUTE_KEY = "ANY /v1/app/{proxy+}";
 const FEEDBACK_REVIEW_ROUTE_KEY = "ANY /review/{proxy+}";
 
-/**
- * The broker function's name on a cloud install (Plan 3, Task 21a-wiring, hand-off 1). The sign-in function invokes the broker (`decide-inspect`) and the
- * broker already holds the sign-in function's ARN, so each cannot name the other by reference without a circular dependency: the broker has a fixed
- * name and the sign-in function names it as text, in its environment and in its one `lambda:InvokeFunction` statement.
- */
-export const decideBrokerFunctionName = (env: string) => `agentx-${env}-broker`;
-
 export interface DeveloperSignInParameters {
   slackTeamId: CfnParameter; slack: CfnParameter; oidcIssuer: CfnParameter; oidcClientId: CfnParameter;
   oidcRequiredClaim: CfnParameter; oidcRequiredValues: CfnParameter; oidcDisplayName: CfnParameter;
@@ -88,6 +81,11 @@ export class DeveloperSignIn extends Construct {
     const stack = Stack.of(this);
     const p = props.parameters;
     const issuer = `${props.api.attrApiEndpoint}/v1/auth`;
+    // The broker function's name on a cloud install (Plan 3, Task 21a-wiring, hand-off 1), from the naming's one prefix. The sign-in function invokes the broker
+    // (`decide-inspect`) and the broker already holds the sign-in function's ARN, so each cannot name the other by reference without a circular dependency:
+    // the broker has a fixed name and the sign-in function names it as text, in its environment and in its one `lambda:InvokeFunction` statement.
+    // A function with a custom name cannot be replaced by CloudFormation later: any change that needs a new broker function will fail until the name is changed first.
+    const brokerFunctionName = `${props.naming.resourcePrefix}-broker`;
 
     const table = this.table = new dynamodb.Table(this, "Table", {
       partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
@@ -151,7 +149,7 @@ export class DeveloperSignIn extends Construct {
         DEVELOPER_NOTICE_EMAIL_REGION: Token.asString(Fn.conditionIf(cloud.emailFromSes.logicalId, Fn.select(3, Fn.split(":", Fn.join("", [cloud.emailSourceArn.valueAsString, ":::"]))), "")),
         ROVARA_WEB_ORIGIN: cloud.webOrigin.valueAsString,
         // Plan 3, Task 21a-wiring: who may decide an approval is the broker's question; the decide flow invokes it by this name.
-        DECIDE_INSPECT_FUNCTION_NAME: decideBrokerFunctionName(props.env),
+        DECIDE_INSPECT_FUNCTION_NAME: brokerFunctionName,
       }),
     }, Duration.seconds(15));
     this.signInFunction = fn;
@@ -280,10 +278,10 @@ export class DeveloperSignIn extends Construct {
       }));
       // Plan 3, Task 21a-wiring (hand-off 1): the decide flow asks the broker whether a member may decide an approval (`decide-inspect`, a direct invoke).
       // One statement: that action on the broker function's ARN, built from its fixed name (no qualifier, no wildcard). The broker needs no new grant.
-      (props.broker.node.defaultChild as lambda.CfnFunction).functionName = decideBrokerFunctionName(props.env);
+      (props.broker.node.defaultChild as lambda.CfnFunction).functionName = brokerFunctionName;
       fn.addToRolePolicy(new iam.PolicyStatement({
         actions: ["lambda:InvokeFunction"],
-        resources: [stack.formatArn({ service: "lambda", resource: "function", resourceName: decideBrokerFunctionName(props.env), arnFormat: ArnFormat.COLON_RESOURCE_NAME })],
+        resources: [stack.formatArn({ service: "lambda", resource: "function", resourceName: brokerFunctionName, arnFormat: ArnFormat.COLON_RESOURCE_NAME })],
       }));
       // A member who has only ever signed in with GitHub gets an email-code user in the cloud pool (R6-2): created, or an existing one read
       // before it is linked. Those two actions on this pool's ARN, nothing else in Cognito.

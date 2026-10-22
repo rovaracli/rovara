@@ -18,7 +18,7 @@ import { ownerKeyForSubject } from "../aws/lambda.js";
 import type { OrgStore } from "../org/store.js";
 import { mayDecide, type DecideInspection, type DecideKinds } from "./decide-kinds.js";
 import {
-  APPROVE_RETURN_PATTERN, DECIDE_COOKIE, DECIDE_PKCE_COOKIE, DECIDE_SECONDS, RATE_LIMIT_MESSAGE, TICKET_EXPIRED_MESSAGE, cookieOf, csrfTokenFor, decidedWords,
+  APPROVE_RETURN_PATTERN, DECIDE_COOKIE, DECIDE_PKCE_COOKIE, DECIDE_SECONDS, RATE_LIMIT_MESSAGE, TICKET_EXPIRED_MESSAGE, cookieOf, csrfTokenFor, endedWords,
   type DecideState, type DecideStore,
 } from "./decide-session.js";
 import type { ResolvedSignInDeveloper } from "./identities.js";
@@ -120,7 +120,7 @@ export function createDecideSignIn(ctx: DecideSignInContext) {
   /** What a person hears when the approval cannot be decided by them now. */
   function inspectionPage(inspection: Exclude<DecideInspection, { status: "open" }>, cookies: string[] = []): HttpResult {
     if (inspection.status === "forbidden") return refuse(403, "You can't decide this", [`Only ${inspection.who} can decide this.`], cookies);
-    if (inspection.status === "decided") return refuse(409, "Already decided", [decidedWords(inspection)], cookies);
+    if (inspection.status === "decided" || inspection.status === "expired") return refuse(409, inspection.status === "expired" ? "This request expired" : "Already decided", [endedWords(inspection)], cookies);
     return refuse(404, "Approval not found", ["This approval was not found. Open it again from Rovara."], cookies);
   }
 

@@ -13,7 +13,6 @@ import { decideApproval, getAnyApproval, mayDecideApproval, runOfApproval, shown
 import { WRITE_APPROVER_RULE } from "./write-gate.js";
 
 const NAME_MAX = 80;
-const EXPIRED_BY = "Rovara (it expired)";
 const OPEN_AGAIN = "Open the approval again from Rovara.";
 
 /** Who may decide a record, for "Only <who> can decide this.": words, never an id, and never a list of the people it was first asked of. */
@@ -64,6 +63,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
     return {
       title: "An agent wants to make a change",
       facts: [
+        ...(record.agent === undefined ? [] : [fact("Agent", record.agent.name)]),
         fact("Project", record.project), fact("Run", record.subject.taskId), fact("Step", record.subject.stepId), fact("Run owner", record.owner.name),
         fact("Connector", `${record.connector} (${record.connectorType})`), fact("Kind of action", record.class === "merge" ? "Merge" : "Change"), expires,
       ],
@@ -96,7 +96,7 @@ async function callerOf(deps: ApprovalDependencies, target: DecideTarget, proof?
 }
 
 /** A decision's request id from its session: one session decides one approval, so the same session always names the same request (R18). */
-function requestIdFor(proof: AuditProof, approvalId: string): string {
+export function requestIdFor(proof: AuditProof, approvalId: string): string {
   const hex = createHash("sha256").update(`rovara-page-decision|${proof.kind === "fresh_sign_in" ? proof.sessionRef : ""}|${approvalId}`).digest("hex").slice(0, 32).split("");
   hex[12] = "4";
   hex[16] = "89ab"[Number.parseInt(hex[16]!, 16) % 4]!;
@@ -129,9 +129,10 @@ export function approvalDecideKind(deps: ApprovalDependencies): DecideKind {
     if (record === undefined) return { status: "not_found" };
     // Who may decide is asked first, so a person who may not learns nothing about how it ended.
     if (!await mayDecideApproval(deps, caller, record)) return { status: "forbidden", who: await whoMayDecide(deps, record) };
+    if (record.status === "EXPIRED") return { status: "expired", at: record.expiresAt };
     if (record.status !== "PENDING") return { status: "decided", by: await nameOf(deps, record.decidedBy), at: record.decidedAt ?? record.expiresAt };
     // The sweep ends an approval whose time ran out within minutes; until it does, the page treats it as ended.
-    if (Date.parse(record.expiresAt) <= deps.now()) return { status: "decided", by: EXPIRED_BY, at: record.expiresAt };
+    if (Date.parse(record.expiresAt) <= deps.now()) return { status: "expired", at: record.expiresAt };
     return { status: "open", view: await viewOf(deps, record) };
   }
 

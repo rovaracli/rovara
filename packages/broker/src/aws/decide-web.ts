@@ -6,7 +6,7 @@ import { AgentXError, agentXError } from "@agentx/contracts";
 import { confirmPage, decidedPage, forbiddenPage, notFoundPage, reauthPage, refusedPage, resultPage, type PageResponse } from "../developer/confirm-page.js";
 import { kindPrefixOf, mayDecide, type DecideKind } from "../developer/decide-kinds.js";
 import {
-  APPROVAL_ID_PATTERN, DECIDE_COOKIE, DecideReauthRequired, TICKET_PATTERN, cookieOf, csrfTokenFor, decidedWords, endOfFailure, requireDecideSession, settleSession,
+  APPROVAL_ID_PATTERN, DECIDE_COOKIE, DecideReauthRequired, TICKET_PATTERN, cookieOf, csrfTokenFor, endOfFailure, endedWords, requireDecideSession, settleSession,
   type DecideRequestContext, type DecisionEnd,
 } from "../developer/decide-session.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
@@ -49,7 +49,7 @@ async function showPage(context: DecideRequestContext, request: DecideRequest, a
   const inspection = await mayDecide(context.kinds, target);
   if (inspection.status === "not_found") return notFoundPage();
   if (inspection.status === "forbidden") return forbiddenPage(`Only ${inspection.who} can decide this.`);
-  if (inspection.status === "decided") return decidedPage(decidedWords(inspection));
+  if (inspection.status === "decided" || inspection.status === "expired") return decidedPage(endedWords(inspection), inspection.status);
   const cookie = cookieOf(request.headers, DECIDE_COOKIE)!;
   return confirmPage(inspection.view, { approvalId, csrf: csrfTokenFor(cookie) });
 }
@@ -78,7 +78,7 @@ async function decide(context: DecideRequestContext, request: DecideRequest, app
     const inspection = await mayDecide(context.kinds, target);
     if (kind === undefined || inspection.status === "not_found") return notFoundPage();
     if (inspection.status === "forbidden") return forbiddenPage(`Only ${inspection.who} can decide this.`);
-    if (inspection.status === "decided") return decidedPage(decidedWords(inspection));
+    if (inspection.status === "decided" || inspection.status === "expired") return decidedPage(endedWords(inspection), inspection.status);
     try {
       const outcome = await kind.decide(target, decision, authority.proof);
       end = "decided";

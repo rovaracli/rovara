@@ -29,6 +29,8 @@ export type DecideInspection =
   /** The approval exists but this member may not decide it now; `who` completes "Only <who> can decide this." */
   | { status: "forbidden"; who: string }
   | { status: "decided"; by: string; at: string }
+  /** Its time ran out (the sweep may not have ended it yet): nobody decided it. */
+  | { status: "expired"; at: string }
   | { status: "open"; view: ConfirmView };
 
 /** What the page says once the decision was made (for example "Approved. The change was applied."); a failure to apply is thrown with its reason. */

@@ -350,7 +350,7 @@ export async function mintConfirmUrl(context: Pick<DecideRequestContext, "store"
   const inspection = await mayDecide(context.kinds, { orgId: member.orgId, developerId: member.developerId, approvalId });
   if (inspection.status === "not_found") throw agentXError("NOT_FOUND", "approval not found");
   if (inspection.status === "forbidden") throw agentXError("FORBIDDEN", `Only ${inspection.who} can decide this.`);
-  if (inspection.status === "decided") throw agentXError("APPROVAL_CLOSED", decidedWords(inspection));
+  if (inspection.status === "decided" || inspection.status === "expired") throw agentXError("APPROVAL_CLOSED", endedWords(inspection));
   const ticket = await context.store.mintTicket({ orgId: member.orgId, developerId: member.developerId, approvalId, mintedBy: "token" });
   return confirmUrlWithTicket(context.cellOrigin, approvalId, ticket);
 }
@@ -393,3 +393,7 @@ export async function requireDecideSession(context: DecideRequestContext, reques
 
 /** "This was already decided by <name> at <time>." */
 export const decidedWords = (decided: { by: string; at: string }): string => `This was already decided by ${decided.by} at ${decided.at}.`;
+/** "This request expired at <time>." */
+export const expiredWords = (expired: { at: string }): string => `This request expired at ${expired.at}.`;
+/** What a person hears about an approval that is no longer open: who decided it and when, or that its time ran out. */
+export const endedWords = (ended: { status: "decided"; by: string; at: string } | { status: "expired"; at: string }): string => (ended.status === "decided" ? decidedWords(ended) : expiredWords(ended));

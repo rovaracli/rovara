@@ -119,8 +119,6 @@ export interface WriteGateRuntime {
   recordedResult(input: { orgId: OrgId; workspaceId: string; connector: string; requestId: string }): Promise<ConnectorResult | undefined>;
   /** Whether `caller` can view the task (Task 22 wires the task page's own access check). Without it only an approver or the task's owner sees an approval. */
   canViewTask?(caller: AgentCaller, task: { taskId: string; project: string; developerId: string }): Promise<boolean>;
-  /** The presence guard in front of every decide route (see `DecideGuard`). The broker sets it on `ApprovalDependencies.requireDecide`, which takes precedence. */
-  requireDecide?: DecideGuard;
 }
 
 /** Who is deciding, and what to do with their session afterwards: `finish` once a decision was made, `release` when it was refused (M-d). */
@@ -129,13 +127,13 @@ export interface DecideAuthority {
   developerId: string;
   proof: AuditProof;
   finish(): Promise<void>;
-  release?(): Promise<void>;
+  release(): Promise<void>;
 }
 
 /**
  * Task 21a-wiring: the presence guard (`requireDecideSession`) in front of every decide route. A token is refused with `REAUTH_REQUIRED` and a
  * `confirmUrl` (thrown); a browser session opened for this approval, signed in within 10 minutes, with the cell's Origin and its CSRF field,
- * is returned. Without a guard the decide routes answer 404.
+ * is returned. Without a guard the decide routes answer 404. The broker sets it on `ApprovalDependencies.requireDecide`.
  */
 export type DecideGuard = (request: AdaptedHttpRequest, approvalId: string) => Promise<DecideAuthority>;
 
@@ -144,6 +142,8 @@ export interface DecideWriteInput {
   taskId: string;
   operationId: string;
   stepId: string;
+  /** The agent that is asking, as it is named now: stored on the approval so the page shows what was asked of whom, even if the agent is renamed. */
+  agentId: string;
   agentName: string;
   tool: GrantedTool;
   /** `arguments` are the PREPARED arguments (`prepareAgentWrite`'s): the approval holds exactly what will be sent. */
@@ -300,6 +300,7 @@ export async function decideWrite(deps: ApprovalDependencies, input: DecideWrite
     projectRevision: latest.definition.revision, ...(connector.credentialRef === undefined ? {} : { credentialRef: connector.credentialRef }), scopeDigest,
     arguments: call.arguments, argumentsHash, summary, class: classification.class,
     approvers, status: "PENDING", project: run.project, owner: { developerId: run.owner.developerId, name: ownerName },
+    agent: { agentId: input.agentId, name: shownText(input.agentName, 80) },
     attempts: 0, createdAt, expiresAt: new Date(now + WRITE_APPROVAL_TTL_MS).toISOString(),
   };
   const text = capText(`${shownText(input.agentName, 80)} wants to ${lowerFirst(summary)}. This needs approval from ${ownerName} or a project maintainer.`, DEVELOPER_EVENT_TEXT_MAX).text;

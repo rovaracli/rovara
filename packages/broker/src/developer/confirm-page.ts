@@ -58,7 +58,7 @@ export function confirmPage(view: ConfirmView, input: { approvalId: string; csrf
   return shell(200, view.title, `${paragraphs(view.paragraphs ?? [])}${facts}${view.call === undefined ? "" : callBlock(view.call)}${form}`);
 }
 
-export const decidedPage = (words: string): PageResponse => shell(409, "Already decided", paragraphs([words]));
+export const decidedPage = (words: string, how: "decided" | "expired" = "decided"): PageResponse => shell(409, how === "expired" ? "This request expired" : "Already decided", paragraphs([words]));
 export const forbiddenPage = (words: string): PageResponse => shell(403, "You can't decide this", paragraphs([words]));
 export const notFoundPage = (): PageResponse => shell(404, "Approval not found", paragraphs(["This approval was not found. Open it again from Rovara."]));
 export const resultPage = (title: string, message: string): PageResponse => shell(200, title, paragraphs([message]));

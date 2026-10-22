@@ -37,7 +37,7 @@ export interface ApprovalDependencies extends AgentAccessDeps {
   writeGate?: WriteGateRuntime;
   /** Task 21a-wiring: the presence guard in front of the decide routes (the broker builds it over `requireDecideSession`). Without it, or `writeGate.requireDecide`, they answer 404. */
   requireDecide?: DecideGuard;
-  /** Task 21a-wiring: the confirmation link for a token's member, with a decide ticket minted for them (after the same live check as `mayDecideApproval`); `GET /v1/app/approvals/{id}` shows it. */
+  /** Task 21a-wiring: the confirmation link for a token's member, with a decide ticket minted for them (after the same live check as `mayDecideApproval`); only `POST /v1/app/approvals/{id}/confirm-link` mints, a read never does. */
   mintConfirmUrl?: (caller: AgentCaller, approvalId: string) => Promise<string>;
 }
 
@@ -154,6 +154,8 @@ export interface StepApprovalRecord extends DecidedFields {
 
 /** A consequential or merge call of an agent that waits for a person, holding exactly what will be sent (Task 21). */
 export interface WriteApprovalRecord extends DecidedFields, ApprovalRun {
+  /** The agent that asked, as it was named when the approval was created (the page shows this, not a lookup: the agent may be renamed since). Absent on records made before it was stored. */
+  agent?: { agentId: string; name: string };
   orgId: OrgId;
   approvalId: ApprovalId;
   kind: "write";
@@ -310,6 +312,7 @@ const WriteApprovalRecordSchema = z.object({
   status: StatusSchema,
   project: z.string(),
   owner: RunOwnerSchema,
+  agent: z.object({ agentId: z.string(), name: z.string() }).strict().optional(),
   result: z.object({ status: z.string(), text: z.string(), truncated: z.boolean(), replayed: z.boolean() }).optional(),
   ...DecidedShape,
   createdAt: z.string(),

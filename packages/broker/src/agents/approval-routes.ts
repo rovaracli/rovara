@@ -1,8 +1,8 @@
 // Plan 3 Task 21: the approval routes. `GET /v1/app/approvals?status=PENDING` lists the approvals that name the caller; `GET /v1/app/approvals/{id}` shows
 // one (with the full stored arguments of a write) to an approver or anyone who can view its task, and answers 404 to everyone else; `POST
-// /v1/app/approvals/{id}/decide` decides one of any kind. Deciding is reached only through Task 21a's presence guard (`WriteGateRuntime.requireDecide`):
+// /v1/app/approvals/{id}/decide` decides one of any kind. Deciding is reached only through Task 21a's presence guard (`ApprovalDependencies.requireDecide`):
 // a CLI or MCP token gets REAUTH_REQUIRED with the page link from it, a browser needs a fresh sign-in on the confirmation page. Without the guard wired
-// the decide route does not exist.
+// the decide route does not exist. `POST /v1/app/approvals/{id}/confirm-link` mints the ticketed link for a person who may decide it; a plain read never mints.
 import { z } from "zod";
 import { AgentXError, ApprovalIdSchema, agentXError } from "@agentx/contracts";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
@@ -13,9 +13,10 @@ import {
 } from "./approvals.js";
 import { endOfFailure, settleSession, type DecisionEnd } from "../developer/decide-session.js";
 import { sameMember } from "./lifecycle.js";
+import { requestIdFor } from "./approval-decide-kind.js";
 import { decideWriteApproval } from "./write-gate.js";
 
-const APPROVALS_PATH = /^\/v1\/app\/approvals(?:\/([^/]+)(?:\/(decide))?)?$/;
+const APPROVALS_PATH = /^\/v1\/app\/approvals(?:\/([^/]+)(?:\/(decide|confirm-link))?)?$/;
 // Only PENDING approvals are in a person's list: a record that ended PENDING is taken out of it.
 const STATUSES = ["PENDING"] as const satisfies readonly ApprovalStatus[];
 const StatusQuerySchema = z.enum(STATUSES);
@@ -86,14 +87,15 @@ export async function routeApprovalRequest(deps: ApprovalDependencies, caller: A
   }
   if (action === undefined) {
     if (request.method !== "GET") throw agentXError("NOT_FOUND", "route not found");
-    const record = await readVisible(deps, caller, rawId);
-    return { approval: { ...approvalView(deps, record, true), confirmUrl: await confirmUrlFrom(deps, caller, record) } };
+    // A read shows the bare link and mints nothing: tickets are limited, and a poll must not use them up (review I1).
+    return { approval: approvalView(deps, await readVisible(deps, caller, rawId), true) };
   }
   if (request.method !== "POST") throw agentXError("NOT_FOUND", "route not found");
-  const requireDecide = deps.requireDecide ?? deps.writeGate?.requireDecide;
+  if (action === "confirm-link") return confirmLink(deps, caller, rawId);
+  const requireDecide = deps.requireDecide;
   if (requireDecide === undefined) throw agentXError("NOT_FOUND", "that isn't available yet");
   // The CSRF field belongs to the guard (it checks it against the session), not to the decision: the decision's body takes only its own fields.
-  const { csrf: _csrf, ...body } = jsonBody(request) as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- checked by the guard
+  const { csrf: _csrf, ...given } = jsonBody(request) as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- checked by the guard
   // The guard says who is deciding: a browser session opened for this approval, signed in within the last 10 minutes. A token never gets past it.
   const authority = await requireDecide(request, rawId);
   // What came of the decision decides what happens to the session (M-d): refused before or by the decision, it is given back; made, it is spent;
@@ -103,6 +105,8 @@ export async function routeApprovalRequest(deps: ApprovalDependencies, caller: A
     const orgRole = await orgRoleOf(deps, authority.orgId, authority.developerId);
     if (orgRole === undefined) throw notFound();
     const decider: AgentCaller = { orgId: authority.orgId, developerId: authority.developerId, orgRole, decideProof: authority.proof };
+    // A decision by a fresh sign-in has the request id its session names, as on the page; the client's is not used (a repeat by the same session replays).
+    const body = authority.proof.kind === "fresh_sign_in" ? { ...given, requestId: requestIdFor(authority.proof, rawId) } : given;
     const record = ApprovalIdSchema.safeParse(rawId).success ? await getAnyApproval(deps, decider.orgId, rawId) : undefined;
     if (record === undefined) throw notFound();
     end = "failed";
@@ -113,21 +117,24 @@ export async function routeApprovalRequest(deps: ApprovalDependencies, caller: A
     if (end === "failed") end = endOfFailure(error);
     throw error;
   } finally {
-    await settleSession({ finish: () => authority.finish(), release: () => (authority.release ?? authority.finish).call(authority) }, end);
+    await settleSession(authority, end);
   }
 }
 
 /**
- * The link `GET /v1/app/approvals/{id}` shows: for a person who may decide it now, one carrying a decide ticket minted for them (what the CLI's
- * `approvals show|open` and the MCP tool open); for anyone else, or when the limit on tickets is reached, the bare link, which the page's identify step handles.
+ * `POST /v1/app/approvals/{id}/confirm-link`: the link a person opens to decide, with a decide ticket minted for them when they may decide it now (what the
+ * CLI's `approvals open` and the MCP tool call). Anyone else who can see the approval, an approval that is no longer open (decided, or past its time with the
+ * sweep not yet there), a limit reached or any other error of ours gets the bare link, which the page's identify step handles; `ticketed` says which. A caller
+ * who cannot see the approval at all gets the same 404 as a read. What is not ours (a store outage) is rethrown.
  */
-async function confirmUrlFrom(deps: ApprovalDependencies, caller: AgentCaller, record: AnyApprovalRecord): Promise<string> {
-  const bare = confirmUrlFor(deps, record);
-  if (deps.mintConfirmUrl === undefined || record.status !== "PENDING" || !await mayDecideApproval(deps, caller, record)) return bare;
+async function confirmLink(deps: ApprovalDependencies, caller: AgentCaller, rawId: string): Promise<{ confirmUrl: string; ticketed: boolean }> {
+  const record = await readVisible(deps, caller, rawId);
+  const bare = { confirmUrl: confirmUrlFor(deps, record), ticketed: false };
+  if (deps.mintConfirmUrl === undefined || record.status !== "PENDING" || Date.parse(record.expiresAt) <= deps.now() || !await mayDecideApproval(deps, caller, record)) return bare;
   try {
-    return await deps.mintConfirmUrl(caller, record.approvalId);
+    return { confirmUrl: await deps.mintConfirmUrl(caller, record.approvalId), ticketed: true };
   } catch (error) {
-    if (error instanceof AgentXError && error.code === "TOO_MANY_REQUESTS") return bare;
+    if (error instanceof AgentXError) return bare;
     throw error;
   }
 }
