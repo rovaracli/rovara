@@ -250,6 +250,16 @@ describe("running the tools", () => {
     expect(new URL(two.api.requests.at(-1)!.url).searchParams.getAll("escalation_policy_ids[]")).toEqual(["PEP0001", "PEP0002"]);
   });
 
+  it("shows only the on-calls of the scope's policies when the vendor ignores the filter, and asks for each shared policy once", async () => {
+    const leaky = await run("list_oncalls", {}, { api: fakePagerDuty({ apiKey: API_KEY, ignoreOncallFilter: true }) });
+    expect(leaky.result.text).toContain("Dana Ops");
+    expect(leaky.result.text).not.toContain("Eli Billing");
+    const shared = { alias: "pay2", serviceIds: ["PSVC001", "PSVC003"] };
+    const { api, result } = await run("list_oncalls", {}, { scope: shared, config: { scopes: [shared] } });
+    expect(result.status).toBe("SUCCEEDED");
+    expect(new URL(api.requests.at(-1)!.url).searchParams.getAll("escalation_policy_ids[]")).toEqual(["PEP0001"]);
+  });
+
   it("refuses an incident id that could change the path, making no request", async () => {
     const r = await resolved();
     const connection = await direct(r);
@@ -266,6 +276,8 @@ describe("running the tools", () => {
     expect(wrong.result).toMatchObject({ status: "FAILED", reason: "vendor_error", text: "PagerDuty refused the API key. Check that it is a valid REST API key for this region." });
     const down = await run("list_incidents", {}, { api: fakePagerDuty({ apiKey: API_KEY, status: 503 }) });
     expect(down.result).toMatchObject({ status: "FAILED", reason: "vendor_error", text: "PagerDuty answered HTTP 503" });
+    const forbidden = await run("list_incidents", {}, { api: fakePagerDuty({ apiKey: API_KEY, status: 403 }) });
+    expect(forbidden.result.text).toBe("PagerDuty refused the API key. Check that it is a valid REST API key for this region.");
     const limited = await run("list_incidents", {}, { api: fakePagerDuty({ apiKey: API_KEY, status: 429 }) });
     expect(limited.result.text).toBe("PagerDuty is limiting requests; try again later");
     expect(JSON.stringify([wrong.result, down.result, limited.result])).not.toMatch(/Unauthorized|fake outage|2006/u);

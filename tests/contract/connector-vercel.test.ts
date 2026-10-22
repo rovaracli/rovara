@@ -217,6 +217,9 @@ describe("running the tools", () => {
     expect(own.result.status).toBe("SUCCEEDED");
     expect(own.result.text).toContain("npm run build");
     expect(own.result.text).toContain("Error: boom in build");
+    // Oldest first, though Vercel answers the newest first for direction=backward.
+    expect(own.result.text.indexOf("npm run build")).toBeLessThan(own.result.text.indexOf("compiled with a warning"));
+    expect(own.result.text.indexOf("compiled with a warning")).toBeLessThan(own.result.text.indexOf("Error: boom in build"));
     expect(own.api.requests.map((request) => new URL(request.url).pathname)).toEqual(["/v13/deployments/dpl_web1prod", "/v3/deployments/dpl_web1prod/events"]);
     expect(new URL(own.api.requests[1]!.url).searchParams.get("limit")).toBe("50");
     const other = await run("get_deployment_events", { deploymentId: "dpl_api1prod" });
@@ -262,6 +265,15 @@ describe("the Vercel connection check", () => {
     expect(api.requests[0]).toMatchObject({ method: "GET", authorization: `Bearer ${TOKEN}` });
     expect(new URL(api.requests[0]!.url).origin + new URL(api.requests[0]!.url).pathname).toBe("https://api.vercel.com/v2/user");
     expect((await store.get(ORG_A, CON))?.lastCheck).toMatchObject({ ok: true });
+  });
+
+  it("adds the connection's team id to the check, and none without one", async () => {
+    const team = await checkWith(fakeVercel({ token: TOKEN }), TEAM);
+    expect(await team.store.check(ORG_A, CON)).toEqual({ ok: true });
+    expect(new URL(team.api.requests[0]!.url).searchParams.get("teamId")).toBe(TEAM);
+    const none = await checkWith(fakeVercel({ token: TOKEN }));
+    await none.store.check(ORG_A, CON);
+    expect(new URL(none.api.requests[0]!.url).searchParams.has("teamId")).toBe(false);
   });
 
   it("says Vercel refused the token, and answers an outage as retryable without recording a check", async () => {

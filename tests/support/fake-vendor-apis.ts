@@ -232,6 +232,8 @@ export interface FakePagerDutyOptions {
   status?: number;
   /** The incident list ignores the `service_ids[]` filter, as a misbehaving vendor could. */
   ignoreServiceFilter?: boolean;
+  /** The on-call list ignores the `escalation_policy_ids[]` filter. */
+  ignoreOncallFilter?: boolean;
 }
 
 export interface RecordedPagerDutyRequest { method: string; url: string; authorization: string | undefined; accept: string | undefined }
@@ -242,6 +244,8 @@ export function fakePagerDuty(options: FakePagerDutyOptions): { handler: VendorH
   const services: Record<string, { id: string; summary: string; escalation_policy: { id: string; summary: string } }> = {
     PSVC001: { id: "PSVC001", summary: "Payments", escalation_policy: { id: "PEP0001", summary: "Payments on-call" } },
     PSVC002: { id: "PSVC002", summary: "Billing", escalation_policy: { id: "PEP0002", summary: "Billing on-call" } },
+    // Shares the Payments escalation policy.
+    PSVC003: { id: "PSVC003", summary: "Payments batch", escalation_policy: { id: "PEP0001", summary: "Payments on-call" } },
   };
   const incidents = [
     { id: "PINC001", incident_number: 101, title: "Payments API 5xx", status: "triggered", urgency: "high", service: { id: "PSVC001", summary: "Payments" }, created_at: "2026-10-22T09:00:00Z", html_url: "https://acme.pagerduty.com/incidents/PINC001", assignments: [{ at: "2026-10-22T09:00:05Z", assignee: { id: "PUSER01", summary: "Dana Ops" } }], escalation_policy: { id: "PEP0001", summary: "Payments on-call" } },
@@ -283,7 +287,7 @@ export function fakePagerDuty(options: FakePagerDutyOptions): { handler: VendorH
         { user: { id: "PUSER01", summary: "Dana Ops" }, escalation_policy: { id: "PEP0001", summary: "Payments on-call" }, escalation_level: 1, start: "2026-10-22T00:00:00Z", end: "2026-10-23T00:00:00Z", schedule: { id: "PSCH001", summary: "Payments primary" } },
         { user: { id: "PUSER02", summary: "Eli Billing" }, escalation_policy: { id: "PEP0002", summary: "Billing on-call" }, escalation_level: 1, start: "2026-10-22T00:00:00Z", end: "2026-10-23T00:00:00Z", schedule: { id: "PSCH002", summary: "Billing primary" } },
       ];
-      return json({ oncalls: all.filter((entry) => policies.includes(entry.escalation_policy.id)), limit: 25, offset: 0, more: false });
+      return json({ oncalls: all.filter((entry) => options.ignoreOncallFilter === true || policies.includes(entry.escalation_policy.id)), limit: 25, offset: 0, more: false });
     }
     return json({ error: { message: "Not Found" } }, 404);
   };
@@ -337,7 +341,8 @@ export function fakeVercel(options: FakeVercelOptions): { handler: VendorHandler
         { type: "stdout", created: 1_760_000_002_000, payload: { text: "compiled with a warning", deploymentId: events[1], id: "e2", serial: "2", date: 2 } },
         { type: "stderr", created: 1_760_000_003_000, payload: { text: "Error: boom in build", deploymentId: events[1], id: "e3", serial: "3", date: 3 } },
       ];
-      return json(all.slice(0, limit));
+      // Like Vercel, `direction=backward` answers the newest first.
+      return json((url.searchParams.get("direction") === "backward" ? [...all].reverse() : all).slice(0, limit));
     }
     return json({ error: { code: "not_found", message: "not found" } }, 404);
   };
