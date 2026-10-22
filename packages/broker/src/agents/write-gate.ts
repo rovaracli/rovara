@@ -96,6 +96,8 @@ export interface ApprovedCall {
   ownerKey: string;
   /** The person the run belongs to (the connector call's attribution). */
   requestedBy: string;
+  /** The agent's name as the approver was shown it (the attribution footer names it). */
+  agentName: string;
   /** The project's name for the connector. */
   connector: string;
   /** The project's CURRENT revision, from which the connector context is rebuilt (the record's `projectRevision` is for display). */
@@ -281,15 +283,19 @@ export async function decideWrite(deps: ApprovalDependencies, input: DecideWrite
     ...(found.repository === undefined ? {} : { repository: found.repository }), ...(found.installationId === undefined ? {} : { installationId: found.installationId }),
   });
   if (classification.denied !== undefined) return { outcome: "refuse", reason: REFUSED_BY_RULE_TEXT };
+
+  // An approval already made for this very call (same operation, connector, scope, tool and arguments) answers whatever the class is now: a lookup that failed
+  // the first time, or a rule changed since, can make the same call safe on the next try, and running it then would send it a second time under another request
+  // id when the person approves the first.
+  const argumentsHash = createHash("sha256").update(canonicalJson(call.arguments), "utf8").digest("hex");
+  const approvalId = approvalIdFromSeed(input.orgId, `write|${input.operationId}|${tool.connector}|${call.scope}|${tool.upstreamName}|${argumentsHash}`);
+  const earlier = await getAnyApproval(deps, input.orgId, approvalId);
+  if (earlier?.kind === "write") return answerForExisting(earlier);
   if (classification.class === "read" || classification.class === "safe") return { outcome: "run" };
 
   const approvers = input.approvers ?? { kind: "rule" as const, rule: WRITE_APPROVER_RULE, candidates: await writeApproversFor(deps, { orgId: input.orgId, project: run.project, owner: run.owner }) };
   requireRegisteredApprovers(approvers);
 
-  const argumentsHash = createHash("sha256").update(canonicalJson(call.arguments), "utf8").digest("hex");
-  const approvalId = approvalIdFromSeed(input.orgId, `write|${input.operationId}|${tool.connector}|${call.scope}|${tool.upstreamName}|${argumentsHash}`);
-  const earlier = await getAnyApproval(deps, input.orgId, approvalId);
-  if (earlier?.kind === "write") return answerForExisting(earlier);
 
   // The connector, scope and tool as the project stores them now: what a person is shown is what will be checked again when they approve.
   const latest = await latestRevision(deps, input.orgId, run.project);
@@ -343,6 +349,7 @@ async function taskEnded(deps: ApprovalDependencies, task: DeveloperTaskRecord):
 }
 
 const failed = (failure: string): Execution => ({ outcome: "failed", failure });
+const unconfirmedText = (connector: string): string => `Rovara couldn't confirm that this ran. Check ${connector} before asking again.`;
 const refusalText = (error: AgentXError): string => shownText(error.message.startsWith(`${error.code}: `) ? error.message.slice(error.code.length + 2) : error.message, 300);
 
 /**
@@ -361,6 +368,8 @@ export async function executeWrite(deps: ApprovalDependencies, record: WriteAppr
   if ((record.attempts ?? 0) > 1) {
     const recorded = await gate.recordedResult({ orgId: record.orgId, workspaceId: task.workspaceId, connector: record.connector, requestId });
     if (recorded?.status === "SUCCEEDED") return { outcome: "done", result: { status: recorded.status, text: capText(recorded.text, 16_000).text, truncated: recorded.truncated, replayed: true } };
+    // The ledger holds a claim or an unknown outcome: the vendor may have acted, so "didn't run" would be a guess. Nothing more is sent.
+    if (recorded?.status === "IN_PROGRESS" || recorded?.status === "UNKNOWN") return failed(unconfirmedText(record.connector));
   }
   if (await taskEnded(deps, task)) return failed(TASK_ENDED_TEXT);
   try {
@@ -387,23 +396,25 @@ export async function executeWrite(deps: ApprovalDependencies, record: WriteAppr
 
   const regranted = await gate.regrant({ record, definition: latest.definition });
   if ("refused" in regranted) return failed(shownText(regranted.refused, 300));
-  const found = await githubRepositoryOf(deps, record.orgId, record.project, regranted.tool, record.arguments);
+  // Classified on the arguments the server binds as well (a GitHub call's owner and repo), as the call was when it was asked.
+  const classifyArgs = regranted.classifyArgs ?? record.arguments;
+  const found = await githubRepositoryOf(deps, record.orgId, record.project, regranted.tool, classifyArgs);
   if (found === "refused") return failed(OTHER_REPOSITORY_TEXT);
   const classification = await classifyAgentWrite(gate.classify, {
-    orgId: record.orgId, taskId: record.subject.taskId, project: record.project, tool: regranted.tool, args: record.arguments, ...regranted.classify,
+    orgId: record.orgId, taskId: record.subject.taskId, project: record.project, tool: regranted.tool, args: classifyArgs, ...regranted.classify,
     ...(found.repository === undefined ? {} : { repository: found.repository }), ...(found.installationId === undefined ? {} : { installationId: found.installationId }),
   });
   if (classification.denied !== undefined) return failed(RULE_DENIES_TEXT);
 
   const result = await gate.runConnector({
-    orgId: record.orgId, project: record.project, taskId: task.taskId, workspaceId: task.workspaceId, ownerKey: task.ownerKey, requestedBy: record.owner.developerId,
+    orgId: record.orgId, project: record.project, taskId: task.taskId, workspaceId: task.workspaceId, ownerKey: task.ownerKey, requestedBy: record.owner.developerId, agentName: record.agent?.name ?? "this agent",
     connector: record.connector, definition: latest.definition, runtimeBinding: latest.runtimeBinding,
     request: { requestId, scope: record.scope, tool: record.tool, schemaHash: record.schemaHash, arguments: record.arguments },
   });
   if (result.status === "FAILED") return failed(`The connector didn't run it: ${shownText(result.text, 300)}`);
   if (result.status !== "SUCCEEDED") return { outcome: "unfinished" };
   // A create that ran makes the item the run's own, so a later change to it needs no approval. The create already happened: a lost record only makes a later change ask.
-  await recordOwnItems(gate.classify, { orgId: record.orgId, taskId: task.taskId, tool: regranted.tool, args: regranted.classifyArgs ?? record.arguments, resultText: result.text });
+  await recordOwnItems(gate.classify, { orgId: record.orgId, taskId: task.taskId, tool: regranted.tool, args: classifyArgs, resultText: result.text });
   return { outcome: "done", result: { status: result.status, text: capText(result.text, 16_000).text, truncated: result.truncated, replayed: result.replayed } };
 }
 

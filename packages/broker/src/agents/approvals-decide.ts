@@ -286,7 +286,7 @@ async function redrive(deps: ApprovalDependencies, record: AnyApprovalRecord): P
  * `executingAt` is driven again (after 5 attempts it ends APPROVED_FAILED); a finished one whose handler never heard is told again. EXPIRY NEVER
  * TOUCHES AN EXECUTING RECORD. `cursor` is the sort key to start after; `options.deadline` stops the page before the next item once it has passed.
  */
-export async function expireApprovals(deps: ApprovalDependencies, now: number, cursor?: string, options: { deadline?: number; limit?: number } = {}): Promise<ApprovalSweepReport> {
+export async function expireApprovals(deps: ApprovalDependencies, now: number, cursor?: string, options: { deadline?: number; limit?: number; redriveUntil?: number } = {}): Promise<ApprovalSweepReport> {
   const report: ApprovalSweepReport = { expired: 0, redriven: 0, handled: 0, failed: 0 };
   const until = iso(now);
   const page = await deps.documentClient.send(new QueryCommand({
@@ -327,7 +327,10 @@ export async function expireApprovals(deps: ApprovalDependencies, now: number, c
         }
       } else if (record.status === "EXECUTING") {
         if (record.executingAt !== undefined && Date.parse(record.executingAt) + RETRY_MS <= now) {
-          if (await redrive(deps, record)) report.redriven += 1;
+          // A re-drive can take as long as the connector's timeout: it starts only while that much of the function's time is left, else it waits for the next run.
+          if (options.redriveUntil === undefined || deps.now() <= options.redriveUntil) {
+            if (await redrive(deps, record)) report.redriven += 1;
+          }
         }
       } else if (record.handlerDone !== true && hasHandlerPhase(record) && (record.handlerDueAt === undefined || Date.parse(record.handlerDueAt) <= now)) {
         const leased = await leaseHandler(deps, record);
@@ -366,7 +369,7 @@ async function saveSweepCursor(deps: ApprovalDependencies, cursor: string | unde
  * (`SWEEP_CURSOR#approvals`), so the next run starts there instead of at the head of the index, and a run that reaches the end of the index goes round once
  * from the head to catch what sorted before the cursor. `options.pageSize` is the page's size (100 by default).
  */
-export async function runApprovalSweep(deps: ApprovalDependencies, options: { budgetMs: number; pageSize?: number }): Promise<ApprovalSweepReport & { pages: number; complete: boolean }> {
+export async function runApprovalSweep(deps: ApprovalDependencies, options: { budgetMs: number; pageSize?: number; redriveUntil?: number }): Promise<ApprovalSweepReport & { pages: number; complete: boolean }> {
   const deadline = deps.now() + options.budgetMs;
   const total = { expired: 0, redriven: 0, handled: 0, failed: 0, pages: 0, complete: false };
   const stored = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: SWEEP_CURSOR_KEY, ConsistentRead: true })) as { Item?: { cursor?: unknown } };
@@ -374,7 +377,7 @@ export async function runApprovalSweep(deps: ApprovalDependencies, options: { bu
   let wrapped = cursor === undefined;
   for (;;) {
     if (deps.now() >= deadline) { await saveSweepCursor(deps, cursor); return total; }
-    const page = await expireApprovals(deps, deps.now(), cursor, { deadline, ...(options.pageSize === undefined ? {} : { limit: options.pageSize }) });
+    const page = await expireApprovals(deps, deps.now(), cursor, { deadline, ...(options.pageSize === undefined ? {} : { limit: options.pageSize }), ...(options.redriveUntil === undefined ? {} : { redriveUntil: options.redriveUntil }) });
     total.pages += 1;
     total.expired += page.expired;
     total.redriven += page.redriven;

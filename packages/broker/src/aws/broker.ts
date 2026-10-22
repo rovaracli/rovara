@@ -362,7 +362,7 @@ import { changeBudgets, keyIdOf, mintKeyHealing, type OrgBudgetSettings } from "
 import { admitWork, mintOperationKey, type MintOperationKeyInput } from "../spend/admission.js";
 import { blockOperationKeys, forgetKey, registerKey, type LedgerDependencies } from "../spend/ledger.js";
 import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTask, resolvePayer } from "../spend/payer.js";
-import { SETTLEMENT_BUDGETS_MS, runSettlementJobs, runSpendSweep, type SettlementJob } from "../spend/settlement-job.js";
+import { redriveUntil, runSettlementJobs, runSpendSweep, settlementBudgets, type SettlementJob } from "../spend/settlement-job.js";
 import { runApprovalSweep } from "../agents/approvals.js";
 import { memberRemovalHook, onProjectArchived, runMemberMergeDrain } from "../agents/lifecycle.js";
 import { readProjectAi, readSpendPolicy } from "../spend/settings.js";
@@ -1480,20 +1480,30 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     // Plan 3, Task 30: every 5 minutes, the spend settlement jobs (the sweep of open model keys today; PF13 adds the others to this list).
     if (isSpendSettlementEvent(event)) {
       const ledger = ledgerOf(dependencies);
-      // PF13: one list of independent jobs, each with its own budget (`SETTLEMENT_BUDGETS_MS`, which together stay under 27 seconds of the function's 30). The short
-      // ones go first and the spend sweep, a resumable cursor, takes what its budget allows, so a long sweep can't starve them.
+      // PF13: one list of independent jobs inside one deadline of 27 seconds of the function's 30 (`settlementBudgets`). The short ones go first, each with its cap
+      // or what remains of the deadline if that is less; the spend sweep, a resumable cursor, takes what is left after the audit's share, so a long sweep can't
+      // starve the others and a late job can't push the later ones past the deadline. A job with no time left is skipped and reported so.
+      const startedAt = Date.now();
+      const timed = (name: string, pick: keyof ReturnType<typeof settlementBudgets>, run: (budgetMs: number) => Promise<unknown>): SettlementJob => ({
+        name,
+        run: async () => {
+          const budgetMs = settlementBudgets(Date.now() - startedAt)[pick];
+          return budgetMs <= 0 ? { skipped: "no time left in this run" } : run(budgetMs);
+        },
+      });
       const sources = modelSourceSweepOf(dependencies);
       // Task 26: a backstop for the checks at the mint, where the install routes models at all.
       const keyAudit = routingOf(dependencies) === undefined ? undefined : dependencies.modelAccess?.access;
       const jobs: SettlementJob[] = [
-        ...(agents === undefined ? [] : [{ name: "drain-member-merges", run: () => runMemberMergeDrain(agents, { budgetMs: SETTLEMENT_BUDGETS_MS.drain }) }]),
-        // Task 21: approvals that expired, writes stuck after a claim, and handlers that never heard the outcome.
-        ...(agents === undefined ? [] : [{ name: "expire-approvals", run: () => runApprovalSweep(agents, { budgetMs: SETTLEMENT_BUDGETS_MS.approvals }) }]),
+        ...(agents === undefined ? [] : [timed("drain-member-merges", "drain", (budgetMs) => runMemberMergeDrain(agents, { budgetMs }))]),
+        // Task 21: approvals that expired, writes stuck after a claim, and handlers that never heard the outcome. A stuck write is driven again only while the
+        // function has more than the connector's timeout and a margin left.
+        ...(agents === undefined ? [] : [timed("expire-approvals", "approvals", (budgetMs) => runApprovalSweep(agents, { budgetMs, redriveUntil: redriveUntil(startedAt) }))]),
         // Task 24b: with a small budget of its own, before the spend sweep.
-        ...(sources === undefined ? [] : [{ name: "sweep-model-sources", run: () => sweepModelSources(sources, { budgetMs: SETTLEMENT_BUDGETS_MS.sources }) }]),
-        ...(ledger === undefined ? [] : [{ name: "sweep-spend", run: () => runSpendSweep(ledger, { budgetMs: SETTLEMENT_BUDGETS_MS.spend }) }]),
+        ...(sources === undefined ? [] : [timed("sweep-model-sources", "sources", (budgetMs) => sweepModelSources(sources, { budgetMs }))]),
+        ...(ledger === undefined ? [] : [timed("sweep-spend", "spend", (budgetMs) => runSpendSweep(ledger, { budgetMs }))]),
         // Last: it reads the proxy's keys over several calls and must not take time the sweeps need (Task 26).
-        ...(keyAudit === undefined ? [] : [{ name: "audit-model-keys", run: () => auditModelKeys(keyAudit) }]),
+        ...(keyAudit === undefined ? [] : [timed("audit-model-keys", "audit", (budgetMs) => auditModelKeys(keyAudit, budgetMs))]),
       ];
       if (jobs.length === 0) return json({ skipped: true }, "spend-settlement");
       return json({ jobs: await runSettlementJobs(jobs, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))) }, "spend-settlement");
@@ -5580,6 +5590,8 @@ function writeGateRuntime(dependencies: AwsBrokerDependencies): WriteGateRuntime
       const t = tools();
       const task = await taskOf(call.orgId, call.taskId);
       const workspace = await requireWorkspace(dependencies, call.workspaceId);
+      // The workspace comes from an org-checked task; the org is checked on it too.
+      if (workspace.orgId !== call.orgId) throw agentXError("NOT_FOUND", "no agent task belongs to this approval");
       const definition = call.definition as unknown as ProjectDefinition;
       const connector = t.connectors({ orgId: call.orgId, definition }).find((entry) => entry.name === call.connector);
       // Before anything is sent, the same refusals `callConnector` makes first: these are fine to throw.
@@ -5591,7 +5603,9 @@ function writeGateRuntime(dependencies: AwsBrokerDependencies): WriteGateRuntime
         return await callConnector({
           connector: executing, workspace, context: { orgId: call.orgId, workspaceId: call.workspaceId, ownerKey: call.ownerKey, settingsRevision: definition.revision },
           catalogs: t.catalogs, ledger: t.ledger(call.workspaceId, connector), request: call.request,
-          ...(connector.attribution ? { attribution: attributionOf(task, task.agent?.name ?? "agent") } : {}),
+          // Every approved call is claimed and recorded in the ledger, whatever access the project gave the tool: a retry replays it instead of sending it again.
+          durable: true,
+          ...(connector.attribution ? { attribution: attributionOf(task, call.agentName) } : {}),
         });
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "approval.write_outcome_unknown", approvalRequest: call.request.requestId, errorName: error instanceof Error ? error.name : "unknown" }));
@@ -10704,11 +10718,11 @@ function isSpendSettlementEvent(event: unknown): event is { source: "agentx.spen
 }
 
 /**
- * The audit of the proxy's scoped keys is the last job and gets the least of the function's time (`SETTLEMENT_BUDGETS_MS`); what it did not reach it says,
+ * The audit of the proxy's scoped keys is the last job and gets the least of the function's time (`settlementBudgets`); what it did not reach it says,
  * and when it throws, what it had done (the counts travel in the error's words) is logged, since the report names only the error.
  */
-async function auditModelKeys(access: { auditKeys(options?: { budgetMs?: number }): Promise<{ checked: number; blocked: number; truncated: boolean }> }) {
-  const result = await access.auditKeys({ budgetMs: SETTLEMENT_BUDGETS_MS.audit }).catch((error: unknown) => {
+async function auditModelKeys(access: { auditKeys(options?: { budgetMs?: number }): Promise<{ checked: number; blocked: number; truncated: boolean }> }, budgetMs: number) {
+  const result = await access.auditKeys({ budgetMs }).catch((error: unknown) => {
     console.log(JSON.stringify({ component: "broker", event: "model_keys.audit_failed", errorName: error instanceof Error ? error.name : "unknown", message: error instanceof Error && error.name === "AgentXError" ? error.message.slice(0, 300) : undefined }));
     throw error;
   });

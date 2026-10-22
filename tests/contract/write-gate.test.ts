@@ -653,7 +653,7 @@ describe("a crash after the claim, and the sweep that finishes it", () => {
     expect(w.vendor.state.vendorCalls).toHaveLength(1);
   });
 
-  it("does not take a ledger entry that is not a success for a call that ran", async () => {
+  it("does not take a ledger entry that is not a success for a call that ran, and does not say it did not run", async () => {
     const w = world();
     const id = await w.waiting(1);
     w.vendor.state.neverFinishes = true;
@@ -662,7 +662,7 @@ describe("a crash after the claim, and the sweep that finishes it", () => {
     w.db.set({ pk: `DEVTASK#${TASK}`, sk: "AGENT_RUN", orgId: ORG_A, state: "CANCELLED" });
     w.clock.now += 6 * MINUTE;
     await w.sweep();
-    expect(await w.record(id)).toMatchObject({ status: "APPROVED_FAILED", failure: "The task ended before this was approved, so Rovara didn't run it." });
+    expect(await w.record(id)).toMatchObject({ status: "APPROVED_FAILED", failure: "Rovara couldn't confirm that this ran. Check linear before asking again." });
   });
 
   it("still re-checks a first attempt, whatever the ledger holds", async () => {
@@ -1798,11 +1798,11 @@ describe("the wiring fix round", () => {
   it("re-classifies on the arguments the server binds, not only the stored call (minor 1)", async () => {
     const w = world();
     const id = await w.waiting(1);
-    const original = w.runtime.regrant;
+    const original = w.runtime.regrant.bind(w.runtime);
     w.runtime.regrant = async (input) => {
       const regranted = await original(input);
       if ("refused" in regranted) return regranted;
-      return { ...regranted, classifyArgs: { ...(input.record.arguments as Record<string, unknown>), owner: "acme" }, classify: { ...regranted.classify, projectPolicy: { rules: [{ tool: "save_issue", connector: "linear", whenArguments: ["owner"], outcome: "deny", reason: "closed" }] } } };
+      return { ...regranted, classifyArgs: { ...(input.record.arguments), owner: "acme" }, classify: { ...regranted.classify, projectPolicy: { rules: [{ tool: "save_issue", connector: "linear", whenArguments: ["owner"], outcome: "deny", reason: "closed" }] } } };
     };
     await w.approve(BOB, id);
     expect(await w.record(id)).toMatchObject({ status: "APPROVED_FAILED", failure: "A project rule no longer allows this, so Rovara didn't run it." });

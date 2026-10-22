@@ -1564,12 +1564,14 @@ describe("write approvals through the agent routes", () => {
     // The run dies after the vendor answered, before the approval is marked done.
     w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("APPROVED_DONE"), error: { name: "InternalServerError" } });
     await approve(approvalId).catch(() => undefined);
-    const asked = () => w.linear.calls.filter((entry) => entry.name === "get_issue");
-    expect(asked()).toHaveLength(1);
+    // (The Linear guard asks get_issue itself before the call, so what is counted is what the vendor was asked in all, which must not grow.)
+    const asked = () => w.linear.calls.length;
+    const askedOnce = asked();
+    expect(askedOnce).toBeGreaterThan(0);
     expect(w.db.find((item) => item.pk === `WORKSPACE#${run.workspaceId}` && item.sk === `CONNECTOR#linear#${deriveWriteRequestId(approvalId)}`)).toHaveLength(1);
     tenMinutesLater();
     try { await sweep(); } finally { vi.useRealTimers(); }
-    expect(asked()).toHaveLength(1);
+    expect(asked()).toBe(askedOnce);
     expect(await getAnyApproval(deps, TEST_ORG, approvalId)).toMatchObject({ status: "APPROVED_DONE" });
   });
 
