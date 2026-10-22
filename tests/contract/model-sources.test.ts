@@ -1675,8 +1675,19 @@ describe("the sweeper's remaining cares (round 2)", () => {
       }
       return read(org);
     };
-    await sweepModelSources({ documentClient: s.db, tableName: "state", now: () => T0, store, access: s.access, egress: s.egressDeps() }, { budgetMs: 5_000 });
+    // What the sweeper itself writes to egress items (the change's own writes above go around it).
+    let sweeperWrites = 0;
+    const egress: EgressDomainsDependencies = {
+      ...s.egressDeps(),
+      documentClient: { send: async (command: unknown) => {
+        if ((command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand" && JSON.stringify((command as { input: unknown }).input).includes("EGRESS_DOMAINS")) sweeperWrites += 1;
+        return s.db.send(command as never);
+      } },
+    };
+    await sweepModelSources({ documentClient: s.db, tableName: "state", now: () => T0, store, access: s.access, egress }, { budgetMs: 5_000 });
     expect((await s.egressOf(id))!.domains.map((entry) => [entry.domain, entry.status])).toEqual([["other.example.org", "approved"]]);
+    // It saw the live host in the fresh record and found the item already right: it wrote nothing, so it wiped nothing.
+    expect(sweeperWrites).toBe(0);
   });
 
   it("deletes an org's record only at the revision it released, and releases what was added meanwhile", async () => {
