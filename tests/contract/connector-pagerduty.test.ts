@@ -193,9 +193,16 @@ describe("running the tools", () => {
     expect(Date.now() - since).toBeLessThan(49 * 3_600_000);
     const r = await resolved();
     const connection = await direct(r);
-    for (const extra of [{ service_ids: ["PSVC002"] }, { "service_ids[]": ["PSVC002"] }, { serviceIds: "PSVC002" }]) {
+    for (const extra of [{ service_ids: ["PSVC002"] }, { "service_ids[]": ["PSVC002"] }]) {
       expect(textOf(await connection.call("list_incidents", { ...ROUTING, ...extra }))).toMatch(/is not allowed$/u);
     }
+    expect(r.api.requests).toEqual([]);
+    // Through the engine the routing value itself is the server's: a model that names it is refused before anything runs.
+    const discovered = (await discoverTools(r.definition, context(), { connect: r.connector.connect! })).tools.find((entry) => entry.name === "list_incidents")!;
+    await expect(executeTool(
+      { requestId: "22222222-2222-4222-8222-222222222222", scope: "pay", tool: "list_incidents", schemaHash: discovered.schemaHash, arguments: { serviceIds: "PSVC002" } },
+      r.definition, context(), { connect: r.connector.connect!, ledger },
+    )).rejects.toThrow("routing arguments are server controlled");
     expect(r.api.requests).toEqual([]);
   });
 
