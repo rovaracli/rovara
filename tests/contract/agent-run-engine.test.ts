@@ -1842,7 +1842,7 @@ describe("the run's budgets and the end of a step the broker never heard from", 
     const { failActiveOperation } = await import("../../packages/broker/src/aws/outbox-failure.js");
     await failActiveOperation(t.db, "state", run.workspaceId, "RUNTIME_UNAVAILABLE: workspace compute was lost");
     expect(t.access!.blockKey).not.toHaveBeenCalled();
-    await t.handler({ source: "agentx.workflow-dispatch-recovery" } as never);
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
     expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
     expect(t.access!.blockKey).toHaveBeenCalledWith(keyIdOf(key));
     expect(events).toHaveLength(1);
