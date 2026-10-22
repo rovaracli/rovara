@@ -210,6 +210,9 @@ describe("the /key/list audit", () => {
   it("fails visibly when the list cannot be read, and when a block is refused, rather than reporting a clean audit", async () => {
     const down = litellm({ failOn: (seen) => (seen.path === "/key/list" ? json({ error: "down" }, 503) : undefined) });
     expect((await failure(client(down).auditKeys())).code).toBe("MODEL_PROXY_UNAVAILABLE");
+    // A refusal (not an outage) of the list is no clean audit either.
+    const refusedList = litellm({ failOn: (seen) => (seen.path === "/key/list" ? json({ error: { message: "not allowed" } }, 403) : undefined) });
+    expect((await failure(client(refusedList).auditKeys())).code).toBe("CONFIG_INVALID");
     const stuck = litellm({ failOn: (seen) => (seen.path === "/key/block" ? json({ error: "down" }, 503) : undefined) });
     stuck.keys.push(scoped(["*"]));
     expect((await failure(client(stuck).auditKeys())).code).toBe("MODEL_PROXY_UNAVAILABLE");
