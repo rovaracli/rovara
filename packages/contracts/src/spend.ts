@@ -1,5 +1,7 @@
 // Budget and approval placeholder constants for agents. Other tasks read these before the budget engine that
 // owns them exists, so they live here from the start; the budget tasks add keys, types and functions beside them.
+import { z } from "zod";
+import { ModelSourceIdSchema, type AgentId } from "./agent.js";
 
 /** A run's limit is its estimate's high end times this. */
 export const RUN_LIMIT_MULTIPLIER = 2;
@@ -49,3 +51,78 @@ export const MAX_PENDING_APPROVALS_PER_STEP = 10;
 /** The highest autonomy an org allows its agents until an admin raises it. */
 export const DEFAULT_MAX_AUTONOMY = "prepare" as const;
 export const APPROVAL_EXECUTING_RETRY_MINUTES = 5;
+
+// ---- budget scopes (Task 28)
+
+/**
+ * What a limit applies to: the whole org, one member, one project, one agent, or one member's test runs of draft agents. The visibility
+ * counter `AGENT_USAGE#<agentId>` has no limit and is not a scope. Plan 4 adds `chain`.
+ */
+export type BudgetScope =
+  | { kind: "org" }
+  | { kind: "member"; developerId: string }
+  | { kind: "project"; project: string }
+  | { kind: "agent"; agentId: AgentId }
+  | { kind: "testing"; developerId: string };
+
+/** The name a scope has in a map of limits and in a top-up item's sort key. */
+export function scopeKey(scope: BudgetScope): string {
+  switch (scope.kind) {
+    case "org": return "ORG";
+    case "member": return `MEMBER#${scope.developerId}`;
+    case "project": return `PROJECT#${scope.project}`;
+    case "agent": return `AGENT#${scope.agentId}`;
+    case "testing": return `TESTING#${scope.developerId}`;
+  }
+}
+
+// ---- project AI settings and the org's spend policy (Task 28)
+
+export const PLANNING_LIMIT_MIN_USD = 0.5;
+export const PLANNING_LIMIT_MAX_USD = 50;
+/** The largest monthly amount a setting may carry; the model proxy's protocol refuses more. */
+export const MAX_SPEND_SETTING_USD = 1_000_000;
+
+const Amount = z.number().finite().min(0).max(MAX_SPEND_SETTING_USD);
+const PlanningLimit = z.number().finite().min(PLANNING_LIMIT_MIN_USD).max(PLANNING_LIMIT_MAX_USD);
+
+/** A project's AI settings: its own monthly budget, whether it pays for its tasks, the model sources it prefers and its planning limits. */
+export const ProjectAiSettingsSchema = z.object({
+  monthlyBudgetUsd: Amount.optional(),
+  projectPays: z.boolean(),
+  /** Absent: the project follows the org's order. */
+  sourceOrder: z.array(ModelSourceIdSchema).max(20).superRefine((order, context) => {
+    if (new Set(order).size !== order.length) context.addIssue({ code: "custom", message: "must not repeat a source" });
+  }).optional(),
+  planningLimitUsd: z.object({ QUICK: PlanningLimit.optional(), FULL: PlanningLimit.optional() }).strict().optional(),
+}).strict();
+export type ProjectAiSettings = z.infer<typeof ProjectAiSettingsSchema>;
+
+/** A project that has never set any of its AI settings. */
+export const defaultProjectAiSettings = (): ProjectAiSettings => ({ projectPays: false });
+
+/** The org's rules for who approves spend and how much a person or test may use. */
+export const SpendPolicyFieldsSchema = z.object({
+  leadApprovalThresholdUsd: Amount,
+  adminApprovalThresholdUsd: Amount,
+  runLimitMultiplier: z.number().finite().min(1).max(5),
+  testingAllowanceUsd: Amount,
+  perTestCapUsd: Amount,
+  /** The most one person's agent budgets may total in a month, counted across every agent they own. */
+  ownerAgentBudgetCapUsd: Amount.min(1),
+}).strict();
+export const SpendPolicySchema = SpendPolicyFieldsSchema.superRefine((policy, context) => {
+  if (policy.leadApprovalThresholdUsd > policy.adminApprovalThresholdUsd) {
+    context.addIssue({ code: "custom", path: ["leadApprovalThresholdUsd"], message: "must not be more than adminApprovalThresholdUsd" });
+  }
+});
+export type SpendPolicy = z.infer<typeof SpendPolicySchema>;
+
+export const defaultSpendPolicy = (): SpendPolicy => ({
+  leadApprovalThresholdUsd: LEAD_APPROVAL_THRESHOLD_USD,
+  adminApprovalThresholdUsd: ADMIN_APPROVAL_THRESHOLD_USD,
+  runLimitMultiplier: RUN_LIMIT_MULTIPLIER,
+  testingAllowanceUsd: TESTING_ALLOWANCE_USD,
+  perTestCapUsd: PER_TEST_CAP_USD,
+  ownerAgentBudgetCapUsd: DEFAULT_OWNER_AGENT_BUDGET_CAP_USD,
+});

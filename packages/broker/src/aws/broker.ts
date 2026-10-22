@@ -516,7 +516,7 @@ interface AwsBrokerDependencies {
    * Task 21's `createProjectMembers`). Absent, those routes answer NOT_FOUND. The store, access checks and approvals are built from the
    * broker's State table and sign-in table.
    */
-  agents?: { projectMembers: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"] } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { projectMembers: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"] } & Pick<AgentStoreInput, "newId" | "builtins">;
   /** The install's environment name, which its single org id derives from; defaults to the developer sign-in's, then AGENTX_ENV, then "default". */
   environmentName?: string;
   githubMcp?: GitHubMcpDependencies;
@@ -740,6 +740,9 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies): AgentRoute
     confirmOrigin: new URL(developer.issuer).origin,
     ...(agents.resolveSkill === undefined ? {} : { resolveSkill: agents.resolveSkill }),
     ...(agents.servableModels === undefined ? {} : { servableModels: agents.servableModels }),
+    ...(agents.orgSourceOrder === undefined ? {} : { orgSourceOrder: agents.orgSourceOrder }),
+    // A trial org keeps the placeholder limits (R49) on the budgets the routes set.
+    orgs: orgStoreOf(dependencies),
   };
 }
 

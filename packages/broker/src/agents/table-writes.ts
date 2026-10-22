@@ -102,6 +102,32 @@ export function updateItem(table: TableInput, key: { pk: string; sk: string }, c
   };
 }
 
+/**
+ * An Update that ADDs `delta` to a number attribute (creating the item when it is not there). With `unlessOver` it applies only while the
+ * attribute, once `delta` is added, is at most that, so two writers that together pass a limit can't both apply.
+ */
+export function addToCounter(table: TableInput, key: { pk: string; sk: string }, entityType: string, attribute: string, delta: number, unlessOver?: number): TransactItem {
+  const aliases = new Aliases();
+  const name = aliases.name(attribute);
+  const type = aliases.name("entityType");
+  const amount = aliases.value(delta);
+  const kind = aliases.value(entityType);
+  const condition = unlessOver === undefined
+    ? undefined
+    // A counter that is not there yet starts at zero. The extra millionth keeps float dust from refusing a total that lands exactly on the limit.
+    : `(attribute_not_exists(${name}) AND ${amount} <= ${aliases.value(unlessOver + 0.000001)}) OR ${name} <= ${aliases.value(Number((unlessOver - delta + 0.000001).toFixed(6)))}`;
+  return {
+    Update: {
+      TableName: table.tableName,
+      Key: key,
+      UpdateExpression: `SET ${type} = if_not_exists(${type}, ${kind}) ADD ${name} ${amount}`,
+      ...(condition === undefined ? {} : { ConditionExpression: condition }),
+      ExpressionAttributeNames: aliases.names,
+      ExpressionAttributeValues: aliases.values,
+    },
+  };
+}
+
 /** Sends one transaction; a refused condition becomes the error `refuse` picks from the indexes that failed (or the cancellation itself). */
 export async function transact(table: TableInput, items: TransactItem[], refuse: (failed: Set<number>) => Error | undefined): Promise<void> {
   try {

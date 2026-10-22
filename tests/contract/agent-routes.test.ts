@@ -1065,7 +1065,7 @@ describe("Plan 3's paths and Plan 2's (PF24)", () => {
     for (const path of [
       "/v1/app/agents", "/v1/app/agents/rovara-code/adopt", "/v1/app/skills", "/v1/app/skills/skl_x", "/v1/app/approvals", "/v1/app/approvals/apr_x/decide",
       "/v1/app/spend-requests", "/v1/app/connections", "/v1/app/connections/con_x", "/v1/app/org/agent-guardrails", "/v1/app/org/model-sources", "/v1/app/org/model-sources/src_x",
-      "/v1/app/org/spend", "/v1/app/org/spend/members", "/v1/app/budget", "/v1/app/tasks/abc/continue-as-task",
+      "/v1/app/org/spend", "/v1/app/org/spend/members", "/v1/app/org/spend-policy", "/v1/app/budget", "/v1/app/tasks/abc/continue-as-task",
       "/v1/app/projects/web/agents", "/v1/app/projects/web/agents/agt_x", "/v1/app/projects/web/ai", "/v1/app/projects/web/spend", "/v1/app/projects/web/connectors",
       "/v1/app/projects/web/connectors/github/comment-triggers", "/v1/app/projects/web/connectors/linear",
     ]) expect(isAgentRoute(path), path).toBe(true);
@@ -1078,7 +1078,7 @@ describe("Plan 3's paths and Plan 2's (PF24)", () => {
   it("sends a project's agents, AI, spend and connectors paths to the agent router before Plan 2's project routes", async () => {
     const { call } = await setup();
     for (const path of [
-      "/v1/app/projects/web/ai", "/v1/app/projects/web/spend", "/v1/app/projects/web/connectors",
+      "/v1/app/projects/web/spend", "/v1/app/projects/web/connectors",
       "/v1/app/projects/web/connectors/github/comment-triggers", "/v1/app/budget", "/v1/app/org/spend",
     ]) {
       const reply = await call(MAYA, "GET", path);
@@ -1089,6 +1089,10 @@ describe("Plan 3's paths and Plan 2's (PF24)", () => {
     const roster = await call(MAYA, "GET", "/v1/app/projects/web/agents");
     expect(roster.status).toBe(404);
     expect(errorOf(roster)).toEqual({ code: "PROJECT_NOT_FOUND", message: "project `web` doesn't exist in this AgentX" });
+    // A project's AI settings are Task 28's, and the same holds for them.
+    const ai = await call(MAYA, "GET", "/v1/app/projects/web/ai");
+    expect(ai.status).toBe(404);
+    expect(errorOf(ai).code).toBe("PROJECT_NOT_FOUND");
     // Plan 2's own paths are still its own.
     expect(errorOf(await call(MAYA, "GET", "/v1/app/projects/nope/unknown")).message).toBe("route not found");
     expect((await call(MAYA, "GET", "/v1/app/me")).status).toBe(200);

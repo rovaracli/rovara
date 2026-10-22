@@ -50,6 +50,7 @@ import {
   type Item, type RequestMark, type TransactItem,
 } from "./table-writes.js";
 import { SkillStore } from "./skills.js";
+import { ownerShare, ownerTotalItems, withBudgetFields, type BudgetSubject } from "../spend/owner-total.js";
 
 /** PF28: the most custom layers a recipe can be built from; a built-in base underneath is not counted. */
 export const MAX_CUSTOM_LAYERS = 3;
@@ -174,6 +175,34 @@ function parseOverlay(overlay: unknown): RecipeOverlay {
 function checkProfile(name: string, description: string): void {
   if (name.length === 0 || name.length > AGENT_NAME_MAX) throw coded("CONFIG_INVALID", `name: must be 1 to ${String(AGENT_NAME_MAX)} characters`);
   if (description.length > AGENT_DESCRIPTION_MAX) throw coded("CONFIG_INVALID", `description: must be at most ${String(AGENT_DESCRIPTION_MAX)} characters`);
+}
+
+/** What a write that changes whose total a budget is in can ask of the store (Task 28). */
+export interface BudgetWriteOptions {
+  /**
+   * The most one person's agent budgets may total in a month. When given, a write that raises someone's total applies only while the total
+   * with it is at most this, tested inside the transaction, so two raises that together pass the cap can't both apply. Left out for a
+   * change that is not held to the cap (Rovara's own moves, Task 11).
+   */
+  ownerCapUsd?: number;
+}
+
+const totalsMoved = () => coded("AGENT_REVISION_CONFLICT", "Someone else changed this person's agent budgets just now. Reload and make your change again.");
+
+/**
+ * Pins the fields that decide whose total an agent's budget is in (its status, owner, accountable maintainer and monthly budget) to what
+ * the writer read, so a change worked out from a stale read is refused whole instead of leaving the total wrong.
+ */
+function budgetGuard(subject: BudgetSubject): (aliases: Aliases) => string {
+  return (a) => {
+    const same = (attribute: string, value: unknown) => (value === undefined ? `attribute_not_exists(${a.name(attribute)})` : `${a.name(attribute)} = ${a.value(value)}`);
+    return [
+      ...(subject.status === undefined ? [] : [same("status", subject.status)]),
+      ...(subject.owner === undefined ? [] : [same("owner", subject.owner)]),
+      same("monthlyBudgetUsd", subject.monthlyBudgetUsd),
+      same("accountable", subject.accountable),
+    ].join(" AND ");
+  };
 }
 
 function checkAmount(label: string, value: number | null | undefined): void {
@@ -580,29 +609,36 @@ export class AgentStore {
     return rolled;
   }
 
-  private async setStatus(orgId: OrgId, agentId: AgentId, status: "active" | "archived", by: string, request?: RequestMark): Promise<AgentRecord> {
+  private async setStatus(orgId: OrgId, agentId: AgentId, status: "active" | "archived", by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<AgentRecord> {
     if (isBuiltinAgentId(agentId)) throw coded("CONFIG_INVALID", `${this.builtins.name(agentId)} is built in and can't be archived`);
     const agent = await this.require(orgId, agentId);
     if (agent.status === status) return agent;
     const updatedAt = this.iso();
     const changed: AgentRecord = { ...agent, status, updatedAt };
+    // An archived agent counts for no one; unarchiving puts its budget back in its owner's total, held to the cap when one is given.
+    const totals = ownerTotalItems(this.input, orgId, ownerShare(agent), ownerShare(changed), options.ownerCapUsd);
     await this.commit([
-      this.update(agentKey(orgId, agentId, "META"), { set: { status, updatedAt }, when: (a) => `${a.name("status")} = ${a.value(agent.status)}` }),
+      this.update(agentKey(orgId, agentId, "META"), { set: { status, updatedAt }, when: budgetGuard(agent) }),
+      ...totals.items,
       this.event(orgId, agentId, status === "archived" ? "archived" : "unarchived", by),
-    ], () => conflict(), request, changed);
+    ], (failed) => (totals.capped.some((index) => failed.has(index + 1)) ? totalsMoved() : conflict()), request, changed);
     return changed;
   }
 
-  archive(orgId: OrgId, agentId: AgentId, by: string, request?: RequestMark): Promise<AgentRecord> {
-    return this.setStatus(orgId, agentId, "archived", by, request);
+  archive(orgId: OrgId, agentId: AgentId, by: string, request?: RequestMark, options?: BudgetWriteOptions): Promise<AgentRecord> {
+    return this.setStatus(orgId, agentId, "archived", by, request, options);
   }
 
-  unarchive(orgId: OrgId, agentId: AgentId, by: string, request?: RequestMark): Promise<AgentRecord> {
-    return this.setStatus(orgId, agentId, "active", by, request);
+  unarchive(orgId: OrgId, agentId: AgentId, by: string, request?: RequestMark, options?: BudgetWriteOptions): Promise<AgentRecord> {
+    return this.setStatus(orgId, agentId, "active", by, request, options);
   }
 
-  /** Sets the budget limits; a number sets, `null` clears and a limit left out stays. A built-in's go on the org's settings for it. */
-  async setBudget(orgId: OrgId, agentId: AgentId, budget: { monthlyUsd?: number | null; maxPerRunUsd?: number | null }, by: string): Promise<void> {
+  /**
+   * Sets the budget limits; a number sets, `null` clears and a limit left out stays. A built-in's go on the org's settings for it. The
+   * monthly budget is counted in its owner's total (see `spend/owner-total.ts`) in the same transaction, and only while the agent still
+   * has the status, owner and budget that were read. Returns the agent's record, or the built-in's settings, as written.
+   */
+  async setBudget(orgId: OrgId, agentId: AgentId, budget: { monthlyUsd?: number | null; maxPerRunUsd?: number | null }, by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<AgentRecord | BuiltinSettings> {
     checkAmount("monthlyUsd", budget.monthlyUsd);
     checkAmount("maxPerRunUsd", budget.maxPerRunUsd);
     const updatedAt = this.iso();
@@ -614,25 +650,33 @@ export class AgentStore {
     const remove = [...(budget.monthlyUsd === null ? ["monthlyBudgetUsd"] : []), ...(budget.maxPerRunUsd === null ? ["maxPerRunUsd"] : [])];
     const detail = { monthlyUsd: budget.monthlyUsd ?? undefined, maxPerRunUsd: budget.maxPerRunUsd ?? undefined, cleared: remove };
     let key: OrgKey;
+    let current: AgentRecord | BuiltinSettings;
     if (isBuiltinAgentId(agentId)) {
-      await this.ensureBuiltinSettings(orgId, agentId, by);
+      current = await this.ensureBuiltinSettings(orgId, agentId, by);
       key = builtinSettingsKey(orgId, agentId);
       set["updatedBy"] = by;
     } else {
-      await this.require(orgId, agentId);
+      current = await this.require(orgId, agentId);
       key = agentKey(orgId, agentId, "META");
     }
-    await this.transact([
-      this.update(key, { set, ...(remove.length > 0 ? { remove } : {}) }),
+    const monthlyBudgetUsd = typeof budget.monthlyUsd === "number" ? budget.monthlyUsd : budget.monthlyUsd === null ? undefined : current.monthlyBudgetUsd;
+    const maxPerRunUsd = typeof budget.maxPerRunUsd === "number" ? budget.maxPerRunUsd : budget.maxPerRunUsd === null ? undefined : current.maxPerRunUsd;
+    const { monthlyBudgetUsd: _monthly, maxPerRunUsd: _perRun, ...others } = current; // eslint-disable-line @typescript-eslint/no-unused-vars -- replaced below
+    const written = { ...others, ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }), ...(maxPerRunUsd === undefined ? {} : { maxPerRunUsd }), updatedAt };
+    const totals = ownerTotalItems(this.input, orgId, ownerShare(current), ownerShare(written), options.ownerCapUsd);
+    await this.commit([
+      this.update(key, { set, ...(remove.length > 0 ? { remove } : {}), when: budgetGuard(current) }),
+      ...totals.items,
       this.event(orgId, agentId, "budget_changed", by, withoutUndefined(detail)),
-    ], () => undefined);
+    ], (failed) => (totals.capped.some((index) => failed.has(index + 1)) ? totalsMoved() : conflict()), request, written);
+    return written;
   }
 
   /**
    * Moves a custom agent to another owner. A project's agent needs `accountable`; a member's has none. Who may do this,
    * and whether the new owner's budget total allows it, is the route's check.
    */
-  async setOwner(orgId: OrgId, agentId: AgentId, owner: AgentOwner, by: string, accountable?: { developerId: string }, request?: RequestMark): Promise<AgentRecord> {
+  async setOwner(orgId: OrgId, agentId: AgentId, owner: AgentOwner, by: string, accountable?: { developerId: string }, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<AgentRecord> {
     if (isBuiltinAgentId(agentId)) throw coded("CONFIG_INVALID", `${this.builtins.name(agentId)} is built in and belongs to the whole company`);
     if (owner.kind === "project" && accountable === undefined) throw coded("CONFIG_INVALID", "accountable: a project's agent needs an accountable maintainer");
     if (owner.kind === "member" && accountable !== undefined) throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
@@ -640,14 +684,18 @@ export class AgentStore {
     const updatedAt = this.iso();
     const { accountable: _before, ...rest } = agent; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped when the new owner has none
     const moved: AgentRecord = { ...rest, owner, ...(accountable === undefined ? {} : { accountable }), updatedAt };
+    // The agent's budget leaves the old owner's total and joins the new one's, which the cap holds when one is given.
+    const totals = ownerTotalItems(this.input, orgId, ownerShare(agent), ownerShare(moved), options.ownerCapUsd);
+    const guard = budgetGuard(agent);
     await this.commit([
       this.update(agentKey(orgId, agentId, "META"), {
         set: { owner, accountable, updatedAt },
         ...(accountable === undefined ? { remove: ["accountable"] } : {}),
-        when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)}`,
+        when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${guard(a)}`,
       }),
+      ...totals.items,
       this.event(orgId, agentId, "owner_changed", by, { from: agent.owner, to: owner, ...(accountable === undefined ? {} : { accountable }) }),
-    ], () => conflict(), request, moved);
+    ], (failed) => (totals.capped.some((index) => failed.has(index + 1)) ? totalsMoved() : conflict()), request, moved);
     return moved;
   }
 
@@ -655,22 +703,27 @@ export class AgentStore {
    * Changes the maintainer answerable for a project's agent (or the org's one for a built-in). That the new person holds
    * `manage_agents` on the project is the route's check.
    */
-  async setAccountable(orgId: OrgId, agentId: AgentId, accountable: { developerId: string }, by: string, request?: RequestMark): Promise<void> {
+  async setAccountable(orgId: OrgId, agentId: AgentId, accountable: { developerId: string }, by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<void> {
     const updatedAt = this.iso();
     if (isBuiltinAgentId(agentId)) {
       const before = await this.ensureBuiltinSettings(orgId, agentId, by);
+      const totals = ownerTotalItems(this.input, orgId, ownerShare(before), ownerShare(withBudgetFields(before, { accountable })), options.ownerCapUsd);
       await this.commit([
-        this.update(builtinSettingsKey(orgId, agentId), { set: { accountable, updatedBy: by, updatedAt } }),
+        this.update(builtinSettingsKey(orgId, agentId), { set: { accountable, updatedBy: by, updatedAt }, when: budgetGuard(before) }),
+        ...totals.items,
         this.event(orgId, agentId, "owner_changed", by, { accountable, ...(before.accountable === undefined ? {} : { from: before.accountable }) }),
-      ], () => undefined, request, { accountable });
+      ], (failed) => (totals.capped.some((index) => failed.has(index + 1)) ? totalsMoved() : conflict()), request, { accountable });
       return;
     }
     const agent = await this.require(orgId, agentId);
     if (agent.owner.kind !== "project") throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
+    const totals = ownerTotalItems(this.input, orgId, ownerShare(agent), ownerShare(withBudgetFields(agent, { accountable })), options.ownerCapUsd);
+    const guard = budgetGuard(agent);
     await this.commit([
-      this.update(agentKey(orgId, agentId, "META"), { set: { accountable, updatedAt }, when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)}` }),
+      this.update(agentKey(orgId, agentId, "META"), { set: { accountable, updatedAt }, when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${guard(a)}` }),
+      ...totals.items,
       this.event(orgId, agentId, "owner_changed", by, { accountable, ...(agent.accountable === undefined ? {} : { from: agent.accountable }) }),
-    ], () => conflict(), request, { accountable });
+    ], (failed) => (totals.capped.some((index) => failed.has(index + 1)) ? totalsMoved() : conflict()), request, { accountable });
   }
 
   /**

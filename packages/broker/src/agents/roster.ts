@@ -137,7 +137,7 @@ export async function removeFromRoster(deps: RosterDependencies, input: { orgId:
 // ---- who may see and change a roster
 
 /** The caller's role on the project, from the project's members. Nothing is learned about a project the caller has no role on. */
-async function roleOnProject(deps: RosterDependencies, caller: AgentCaller, project: string): Promise<ProjectRole> {
+export async function roleOnProject(deps: RosterDependencies, caller: AgentCaller, project: string): Promise<ProjectRole> {
   if (!AgentXNameSchema.safeParse(project).success) throw projectNotFound(project);
   const role = await deps.projectMembers.roleOf(caller.orgId, project, { developerId: caller.developerId, orgRole: caller.orgRole });
   if (role === undefined) throw projectNotFound(project);

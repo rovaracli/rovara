@@ -10,14 +10,20 @@ import {
   AgentOwnerSchema,
   AgentXNameSchema,
   BUILTIN_AGENTS,
+  DEFAULT_MEMBER_MONTHLY_BUDGET_USD,
+  DEFAULT_ORG_MONTHLY_BUDGET_USD,
   DEFAULT_RUN_ESTIMATE_USD,
+  ModelSourceIdSchema,
   RUN_LIMIT_MULTIPLIER,
   RecipeOverlaySchema,
   SkillIdSchema,
+  SpendPolicyFieldsSchema,
+  SpendPolicySchema,
   AgentXError,
   agentXError,
   atLeast,
   canonicalJson,
+  defaultModelSourceOrder,
   diffRecipes,
   isBuiltinAgentId,
   projectAllows,
@@ -26,7 +32,9 @@ import {
   type AgentId,
   type AgentOwner,
   type BaseRef,
+  type BuiltinAgentId,
   type OrgId,
+  type ProjectAiSettings,
   type ResolvedRecipe,
 } from "@agentx/contracts";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
@@ -46,12 +54,26 @@ import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolv
 import type { ApprovalDependencies } from "./approvals.js";
 import { readGuardrails, readGuardrailsWithRevision, requireBaseEnabled } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
-import { addToRoster, checkRosterChange, listRoster, removeFromRoster, rosterAgentView, type RosterEntry } from "./roster.js";
+import { addToRoster, checkRosterChange, listRoster, removeFromRoster, roleOnProject, rosterAgentView, type RosterEntry } from "./roster.js";
 import type { SkillRecord } from "./skills.js";
+import type { OrgStore } from "../org/store.js";
+import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
+import {
+  applyProjectAiChange, ownerBudgetRefusal, planningLimit, projectSourceOrder, readProjectAiWithRevision, readSpendPolicyWithRevision,
+  writeProjectAi, writeSpendPolicy, type ProjectAiChange,
+} from "../spend/settings.js";
 import { updateAvailable, type AgentDraft, type AgentRecord, type AgentVersion, type BuiltinSettings, type RequestMark } from "./store.js";
 
 /** What every agent route needs: the store, access, the approvals core and where the confirmation page lives. */
-export type AgentRouteDependencies = ApprovalDependencies;
+export interface AgentRouteDependencies extends ApprovalDependencies {
+  /** Where the org's plan is read (Task 28): a trial org keeps the placeholder limits (R49). Without it no org is a trial. */
+  orgs?: Pick<OrgStore, "getOrg">;
+  /**
+   * The model sources the org tries, in order (Task 26 supplies it). A project's own order may only name sources in it, and a project
+   * with none follows it. Without it the order is Rovara's own AI alone.
+   */
+  orgSourceOrder?: (orgId: OrgId) => Promise<readonly string[]>;
+}
 
 /** The answer for a change waiting on the page. */
 const waiting = (result: Extract<ChangeResult<unknown>, { applied: false }>): StatusReply =>
@@ -65,7 +87,7 @@ const waiting = (result: Extract<ChangeResult<unknown>, { applied: false }>): St
  */
 export function isAgentRoute(pathname: string): boolean {
   return /^\/v1\/app\/(agents|skills|approvals|spend-requests|connections|budget)(\/|$)/.test(pathname)
-    || /^\/v1\/app\/org\/(agent-guardrails|model-sources|spend)(\/|$)/.test(pathname)
+    || /^\/v1\/app\/org\/(agent-guardrails|model-sources|spend|spend-policy)(\/|$)/.test(pathname)
     || /^\/v1\/app\/tasks\/[^/]+\/continue-as-task$/.test(pathname)
     || /^\/v1\/app\/projects\/[^/]+\/(agents|ai|spend|connectors)(\/|$)/.test(pathname);
 }
@@ -103,6 +125,16 @@ const UpdateBaseBodySchema = z.object({ requestId: RequestIdSchema, expectedRevi
 const AdoptBodySchema = z.object({ requestId: RequestIdSchema, version: z.number().int().min(1) }).strict();
 const SkillCreateBodySchema = z.object({ requestId: RequestIdSchema, content: z.string(), name: z.string().optional(), owner: AgentOwnerSchema.optional() }).strict();
 const SkillContentBodySchema = z.object({ requestId: RequestIdSchema, content: z.string(), expectedDigest: Hex64 }).strict();
+const Amount = z.number().finite();
+const ProjectAiBodySchema = z.object({
+  requestId: RequestIdSchema,
+  monthlyBudgetUsd: Amount.nullable().optional(),
+  projectPays: z.boolean().optional(),
+  sourceOrder: z.array(ModelSourceIdSchema).nullable().optional(),
+  planningLimitUsd: z.object({ QUICK: Amount.nullable().optional(), FULL: Amount.nullable().optional() }).strict().optional(),
+}).strict();
+const BudgetBodySchema = z.object({ requestId: RequestIdSchema, monthlyUsd: Amount.nullable().optional(), maxPerRunUsd: Amount.nullable().optional() }).strict();
+const SpendPolicyBodySchema = SpendPolicyFieldsSchema.partial().extend({ requestId: RequestIdSchema }).strict();
 const GuardrailsBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(0), guardrails: AgentGuardrailsSchema }).strict();
 
 function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> {
@@ -431,8 +463,11 @@ async function setArchived(deps: AgentRouteDependencies, caller: AgentCaller, ag
   const { access } = await requireAgentAccess(deps, caller, agentId, "manage");
   const { mark, replay } = await markRequest(deps, caller, archive ? "archive" : "unarchive", agentId, input);
   if (replay !== undefined) return { agent: customView(replay.result as AgentRecord, access) };
-  const agent = archive ? await deps.store.archive(caller.orgId, agentId, caller.developerId, mark) : await deps.store.unarchive(caller.orgId, agentId, caller.developerId, mark);
-  return { agent: customView(agent, access) };
+  if (archive) return { agent: customView(await deps.store.archive(caller.orgId, agentId, caller.developerId, mark), access) };
+  // Unarchiving puts the agent's budget back in its owner's total; an archived agent's budget counted for no one.
+  const current = await deps.store.get(caller.orgId, agentId);
+  const options = current === undefined || current.status !== "archived" ? {} : await requireOwnerRoom(deps, caller, current, withBudgetFields(current, { status: "active" }));
+  return { agent: customView(await deps.store.unarchive(caller.orgId, agentId, caller.developerId, mark, options), access) };
 }
 
 async function getShares(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId): Promise<Shown> {
@@ -460,7 +495,10 @@ async function putOwner(deps: AgentRouteDependencies, caller: AgentCaller, agent
   // Store the owner this returns, not the one asked for: a member who was merged into another is named by the survivor.
   const owner = await requireOwnerAllowed(deps, caller, input.owner, agent.owner);
   const accountable = input.accountable === undefined ? undefined : owner.kind === "project" ? await requireAccountable(deps, caller.orgId, owner.project, input.accountable.developerId) : input.accountable;
-  const updated = await deps.store.setOwner(caller.orgId, agentId, owner, caller.developerId, accountable, mark);
+  // The agent's budget leaves its owner's total and joins the new owner's (the maintainer accountable for a project's agent).
+  const { accountable: _before, ...kept } = agent; // eslint-disable-line @typescript-eslint/no-unused-vars -- the new owner decides it
+  const options = await requireOwnerRoom(deps, caller, agent, { ...kept, owner, ...(accountable === undefined ? {} : { accountable }) });
+  const updated = await deps.store.setOwner(caller.orgId, agentId, owner, caller.developerId, accountable, mark, options);
   return { agent: customView(updated, access) };
 }
 
@@ -481,7 +519,10 @@ async function putAccountable(deps: AgentRouteDependencies, caller: AgentCaller,
   } else {
     throw agentXError("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
   }
-  await deps.store.setAccountable(caller.orgId, agentId, accountable, caller.developerId, mark);
+  // The agent's budget moves from the old accountable maintainer's total to the new one's.
+  const current = "owner" in agent ? agent : await deps.store.ensureBuiltinSettings(caller.orgId, agentId, caller.developerId);
+  const options = await requireOwnerRoom(deps, caller, current, withBudgetFields(current, { accountable }));
+  await deps.store.setAccountable(caller.orgId, agentId, accountable, caller.developerId, mark, options);
   return { accountable };
 }
 
@@ -613,8 +654,115 @@ async function deleteRosterAgent(deps: AgentRouteDependencies, caller: AgentCall
   return { removed: await removeFromRoster(deps, { orgId: caller.orgId, project, agentId, request: mark }) };
 }
 
+// ---- budgets (Task 28)
+
+const isOrgAdmin = (caller: AgentCaller) => caller.orgRole === "owner" || caller.orgRole === "admin";
+
+/** R49: a trial org stays within the placeholder limits until billing exists. Nothing is read of the org unless the amount is over the cap. */
+async function requireWithinTrial(deps: AgentRouteDependencies, orgId: OrgId, label: string, amount: number | null | undefined, capUsd: number, what: string): Promise<void> {
+  if (typeof amount !== "number" || amount <= capUsd) return;
+  if ((await deps.orgs?.getOrg(orgId))?.plan !== "trial") return;
+  throw agentXError("CONFIG_INVALID", `${label}: a trial organization's ${what} is at most $${String(capUsd)} a month; upgrade the plan to raise it`);
+}
+
+async function ownerName(deps: AgentRouteDependencies, developerId: string): Promise<string> {
+  return (await deps.signInStore.getDeveloper(developerId))?.displayName ?? "That person";
+}
+
+/**
+ * Refuses a change that would take someone's agent budgets past `ownerAgentBudgetCapUsd`, and answers the cap to hold the write to.
+ * Task 32 turns the refusal into an `owner_cap` request (see `ownerBudgetRefusal`).
+ */
+async function requireOwnerRoom(deps: AgentRouteDependencies, caller: AgentCaller, before: Parameters<typeof ownerShare>[0], after: Parameters<typeof ownerShare>[0]): Promise<{ ownerCapUsd: number }> {
+  const answer = await ownerBudgetRefusal(deps, caller.orgId, ownerShare(before), ownerShare(after), (developerId) => ownerName(deps, developerId));
+  if ("message" in answer) throw agentXError("CONFIG_INVALID", answer.message);
+  return { ownerCapUsd: answer.capUsd };
+}
+
+async function projectAiView(deps: AgentRouteDependencies, orgId: OrgId, stored: { settings: ProjectAiSettings; revision: number }): Promise<Shown> {
+  const orgOrder = deps.orgSourceOrder === undefined ? defaultModelSourceOrder(false) : await deps.orgSourceOrder(orgId);
+  return {
+    settings: stored.settings,
+    revision: stored.revision,
+    effective: { sourceOrder: projectSourceOrder(stored.settings, orgOrder), planningLimitUsd: { QUICK: planningLimit(stored.settings, "QUICK"), FULL: planningLimit(stored.settings, "FULL") } },
+  };
+}
+
+async function getProjectAi(deps: AgentRouteDependencies, caller: AgentCaller, project: string): Promise<Shown> {
+  await roleOnProject(deps, caller, project);
+  return projectAiView(deps, caller.orgId, await readProjectAiWithRevision(deps, caller.orgId, project));
+}
+
+async function putProjectAiSettings(deps: AgentRouteDependencies, caller: AgentCaller, project: string, body: unknown): Promise<Shown> {
+  if (!isOrgAdmin(caller)) throw agentXError("FORBIDDEN", "Only an org owner or admin can change a project's AI settings.");
+  const input = parseBody(ProjectAiBodySchema, body);
+  const { requestId: _requestId, ...change } = input; // eslint-disable-line @typescript-eslint/no-unused-vars -- the id is the request's, not a setting
+  if (Object.keys(change).length === 0) throw agentXError("CONFIG_INVALID", "body: name at least one of monthlyBudgetUsd, projectPays, sourceOrder and planningLimitUsd");
+  await roleOnProject(deps, caller, project);
+  const { mark, replay } = await markRequest(deps, caller, "project-ai", project, input);
+  if (replay !== undefined) return projectAiView(deps, caller.orgId, replay.result as { settings: ProjectAiSettings; revision: number });
+  const current = await readProjectAiWithRevision(deps, caller.orgId, project);
+  const next = applyProjectAiChange(current.settings, change as ProjectAiChange);
+  await requireWithinTrial(deps, caller.orgId, "monthlyBudgetUsd", next.monthlyBudgetUsd, DEFAULT_ORG_MONTHLY_BUDGET_USD, "project budget");
+  if (next.sourceOrder !== undefined) {
+    const allowed = new Set(deps.orgSourceOrder === undefined ? defaultModelSourceOrder(false) : await deps.orgSourceOrder(caller.orgId));
+    const unknown = next.sourceOrder.find((source) => !allowed.has(source));
+    if (unknown !== undefined) throw agentXError("CONFIG_INVALID", `sourceOrder: ${unknown} is not one of your company's model sources`);
+  }
+  const written = await writeProjectAi(deps, caller.orgId, project, next, caller.developerId, { expectedRevision: current.revision, request: mark });
+  return projectAiView(deps, caller.orgId, written);
+}
+
+async function putAgentBudget(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<Shown> {
+  const input = parseBody(BudgetBodySchema, body);
+  // `manage` on a built-in is held by org owners and admins only.
+  const { agent, access } = await requireAgentAccess(deps, caller, agentId, "manage");
+  const { mark, replay } = await markRequest(deps, caller, "budget", agentId, input);
+  const shown = (written: AgentRecord | BuiltinSettings): Promise<Shown> | Shown => ("owner" in written ? customView(written, access) : view(deps, caller, { agentId: agentId as BuiltinAgentId }, access));
+  if (replay !== undefined) return { agent: await shown(replay.result as AgentRecord | BuiltinSettings) };
+  if (input.monthlyUsd === undefined && input.maxPerRunUsd === undefined) throw agentXError("CONFIG_INVALID", "body: name at least one of monthlyUsd and maxPerRunUsd");
+  // Task 8 stored the guardrails' ceilings; this is where they hold.
+  const guardrails = await readGuardrails(deps, caller.orgId);
+  if (typeof input.monthlyUsd === "number" && input.monthlyUsd > guardrails.maxAgentMonthlyUsd) {
+    throw agentXError("CONFIG_INVALID", `monthlyUsd: your company's guardrails allow at most $${String(guardrails.maxAgentMonthlyUsd)} a month for one agent`);
+  }
+  if (typeof input.maxPerRunUsd === "number" && input.maxPerRunUsd > guardrails.maxPerRunCeilingUsd) {
+    throw agentXError("CONFIG_INVALID", `maxPerRunUsd: your company's guardrails allow at most $${String(guardrails.maxPerRunCeilingUsd)} for one run`);
+  }
+  await requireWithinTrial(deps, caller.orgId, "monthlyUsd", input.monthlyUsd, DEFAULT_MEMBER_MONTHLY_BUDGET_USD, "agent budget");
+  const current: AgentRecord | BuiltinSettings = "owner" in agent ? agent : await deps.store.ensureBuiltinSettings(caller.orgId, agentId, caller.developerId);
+  const monthlyBudgetUsd = typeof input.monthlyUsd === "number" ? input.monthlyUsd : input.monthlyUsd === null ? undefined : current.monthlyBudgetUsd;
+  const options = await requireOwnerRoom(deps, caller, current, withBudgetFields(current, { monthlyBudgetUsd }));
+  const written = await deps.store.setBudget(caller.orgId, agentId, { ...(input.monthlyUsd === undefined ? {} : { monthlyUsd: input.monthlyUsd }), ...(input.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: input.maxPerRunUsd }) }, caller.developerId, mark, options);
+  return { agent: await shown(written) };
+}
+
+const SPEND_POLICY_PATH = "/v1/app/org/spend-policy";
+
+function requireOrgAdmin(caller: AgentCaller): void {
+  if (!isOrgAdmin(caller)) throw agentXError("FORBIDDEN", "Only an org owner or admin can see or change the company's spend policy.");
+}
+
+async function putSpendPolicy(deps: AgentRouteDependencies, caller: AgentCaller, body: unknown): Promise<Shown> {
+  requireOrgAdmin(caller);
+  const input = parseBody(SpendPolicyBodySchema, body);
+  const { requestId: _requestId, ...change } = input; // eslint-disable-line @typescript-eslint/no-unused-vars -- the id is the request's, not a setting
+  if (Object.keys(change).length === 0) throw agentXError("CONFIG_INVALID", "body: name at least one setting of the spend policy");
+  const { mark, replay } = await markRequest(deps, caller, "spend-policy", "", input);
+  if (replay !== undefined) return replay.result as Shown;
+  const current = await readSpendPolicyWithRevision(deps, caller.orgId);
+  const merged = SpendPolicySchema.safeParse({ ...current.policy, ...change });
+  if (!merged.success) {
+    const issue = merged.error.issues[0];
+    throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "is not valid"}`);
+  }
+  await requireWithinTrial(deps, caller.orgId, "ownerAgentBudgetCapUsd", merged.data.ownerAgentBudgetCapUsd, DEFAULT_ORG_MONTHLY_BUDGET_USD, "cap on one person's agent budgets");
+  return { ...await writeSpendPolicy(deps, caller.orgId, merged.data, caller.developerId, { expectedRevision: current.revision, request: mark }) };
+}
+
 // ---- routing
 
+const PROJECT_AI_PATH = /^\/v1\/app\/projects\/([^/]+)\/ai$/;
 const PROJECT_AGENTS_PATH = /^\/v1\/app\/projects\/([^/]+)\/agents(?:\/([^/]+))?$/;
 const SKILL_PATH = /^\/v1\/app\/skills(?:\/([^/]+)(?:\/(content))?)?$/;
 const AGENT_PATH = /^\/v1\/app\/agents(?:\/([^/]+)(?:\/([a-z-]+)(?:\/([0-9]{1,6}))?)?)?$/;
@@ -636,6 +784,22 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
   if (url.pathname === GUARDRAILS_PATH) {
     if (request.method === "GET") return readGuardrailsWithRevision(deps, caller.orgId);
     if (request.method === "PUT") return putGuardrails(deps, caller, jsonBody(request));
+    throw agentXError("NOT_FOUND", "route not found");
+  }
+  if (url.pathname === SPEND_POLICY_PATH) {
+    if (request.method === "GET") {
+      requireOrgAdmin(caller);
+      return readSpendPolicyWithRevision(deps, caller.orgId);
+    }
+    if (request.method === "PUT") return putSpendPolicy(deps, caller, jsonBody(request));
+    throw agentXError("NOT_FOUND", "route not found");
+  }
+  const projectAi = PROJECT_AI_PATH.exec(url.pathname);
+  if (projectAi !== null) {
+    let project: string;
+    try { project = decodeURIComponent(projectAi[1]!); } catch { throw agentXError("PROJECT_NOT_FOUND", "that is not a valid AgentX project name"); }
+    if (request.method === "GET") return getProjectAi(deps, caller, project);
+    if (request.method === "PUT") return putProjectAiSettings(deps, caller, project, jsonBody(request));
     throw agentXError("NOT_FOUND", "route not found");
   }
   const projectAgents = PROJECT_AGENTS_PATH.exec(url.pathname);
@@ -694,6 +858,7 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
     if (sub === "shares" && method === "PUT") return putShares(deps, caller, agentId, body());
     if (sub === "owner" && method === "PUT") return putOwner(deps, caller, agentId, body());
     if (sub === "accountable" && method === "PUT") return putAccountable(deps, caller, agentId, body());
+    if (sub === "budget" && method === "PUT") return putAgentBudget(deps, caller, agentId, body());
     if (sub === "update-base" && method === "POST") return updateBase(deps, caller, agentId, body());
     if (sub === "adopt" && method === "POST") return adopt(deps, caller, agentId, body());
   }

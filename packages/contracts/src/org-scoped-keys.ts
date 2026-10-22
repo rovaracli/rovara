@@ -4,6 +4,7 @@
 import { canonicalInstant, indexDay } from "./admin.js";
 import type { AgentId, AgentPrincipal, ApprovalId, SkillId } from "./agent.js";
 import { OrgIdSchema, orgScoped, type OrgId, type OrgKey } from "./org.js";
+import { scopeKey, type BudgetScope } from "./spend.js";
 
 const REVISION_WIDTH = 12;
 
@@ -72,7 +73,7 @@ export function projectMemberKey(orgId: OrgId, ownerKey: string, project: string
   return { pk: memberGrantsPk(orgId, ownerKey), sk: `PROJECT#${project}` };
 }
 
-export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET" | "BUDGET_SYNCED";
+export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET" | "BUDGET_SYNCED" | "SPEND_POLICY";
 
 export function orgSettingsKey(orgId: OrgId, name: OrgSettingName): OrgKey {
   return { pk: orgScoped(orgId, "SETTINGS"), sk: name };
@@ -277,4 +278,56 @@ export function agentRequestKey(orgId: OrgId, developerId: string, requestId: st
 /** An org's agent guardrails: one item holding the document and its revision. */
 export function agentGuardrailsKey(orgId: OrgId): OrgKey {
   return { pk: orgScoped(orgId, "AGENT_GUARDRAILS"), sk: "META" };
+}
+
+// ---- spend (Plan 3 Task 28): settings, top-ups, counters and the records the budget tasks keep
+
+/** A project's AI settings: its monthly budget, who pays, its source order and planning limits. */
+export function projectAiKey(orgId: OrgId, project: string): OrgKey {
+  return { pk: orgScoped(orgId, `PROJECT_AI#${project}`), sk: "SETTINGS" };
+}
+
+/** What an admin added to one scope's limit for one UTC month (`month` is `YYYY-MM`): an item holding `amountUsd`, changed with ADD. */
+export function topUpKey(orgId: OrgId, month: string, scope: BudgetScope): OrgKey {
+  return { pk: orgScoped(orgId, `TOPUP#${month}`), sk: scopeKey(scope) };
+}
+
+/** A spend counter for one UTC month; `sk` names what is counted (`scopeKey` of its scope, or `AGENT_USAGE#<agentId>`, which has no limit). */
+export function spendCounterKey(orgId: OrgId, month: string, sk: string): OrgKey {
+  return { pk: orgScoped(orgId, `SPEND#${month}`), sk };
+}
+
+/** The once-per-month marker that a budget alert was sent: `scope` is a `scopeKey`, `level` how far along the budget is. */
+export function budgetAlertKey(orgId: OrgId, month: string, scope: string, level: string): OrgKey {
+  return { pk: orgScoped(orgId, `BUDGET_ALERT#${month}`), sk: `${scope}#${level}` };
+}
+
+/** What the broker knows of a key it minted at the model proxy, by the key's id. */
+export function modelKeyKey(orgId: OrgId, keyId: string): OrgKey {
+  return { pk: orgScoped(orgId, `MODEL_KEY#${keyId}`), sk: "META" };
+}
+
+/** A request for more spend, waiting for the person who can approve it. */
+export function spendRequestKey(orgId: OrgId, requestId: string): OrgKey {
+  return { pk: orgScoped(orgId, `SPEND_REQUEST#${requestId}`), sk: "META" };
+}
+
+/** Lists the spend requests still open, oldest first (`createdAt` is an instant). */
+export function openSpendRequestsKey(orgId: OrgId, createdAt: string, requestId: string): OrgKey {
+  return { pk: orgScoped(orgId, "SPEND_REQUESTS#OPEN"), sk: `${canonicalInstant(createdAt)}#${requestId}` };
+}
+
+/** A task paused for a budget; `pauseKey` names what it waits for, so raising that budget finds every task to resume. */
+export function pausedTasksKey(orgId: OrgId, pauseKey: string, taskId: string): OrgKey {
+  return { pk: orgScoped(orgId, `PAUSED_TASKS#${pauseKey}`), sk: taskId };
+}
+
+/** What one finished run cost, listed by project, agent and path for the estimates (`endedAt` is an instant). */
+export function runCostKey(orgId: OrgId, project: string, agentId: AgentId, path: string, endedAt: string, taskId: string): OrgKey {
+  return { pk: orgScoped(orgId, `RUN_COST#${project}#${agentId}#${path}`), sk: `${canonicalInstant(endedAt)}#${taskId}` };
+}
+
+/** The total of the monthly budgets of every active agent one person owns (`totalUsd`, changed with ADD in the same transaction as the agent). */
+export function ownerBudgetKey(orgId: OrgId, developerId: string): OrgKey {
+  return { pk: orgScoped(orgId, `OWNER_AGENT_BUDGET#${developerId}`), sk: "TOTAL" };
 }

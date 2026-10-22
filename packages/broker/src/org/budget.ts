@@ -9,11 +9,12 @@ import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/l
 import { z } from "zod";
 import {
   DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, TASK_BUDGET_EXCEEDED_PREFIX,
-  AgentXError, agentXError, budgetSyncedKey, orgSettingsKey, type OrgId, type OrgKey,
+  AgentXError, agentXError, budgetSyncedKey, orgSettingsKey, type BudgetScope, type OrgId, type OrgKey,
 } from "@agentx/contracts";
 import type { MintKeyInput, MintedKey, ModelAccess, SpendFigures } from "../model-proxy/access.js";
 import type { OrgStore } from "./store.js";
-import { admitMachineTime, admitTrial } from "./trial.js";
+import { readTopUp, withTopUp } from "../spend/top-ups.js";
+import { admitMachineTime, admitTrial, monthOf } from "./trial.js";
 
 export interface OrgBudgetSettings {
   /** Absent: the org has no monthly limit (a private or single-org install until an operator sets one, ruling R47). */
@@ -61,13 +62,13 @@ export const isBudgetAmount = (value: unknown): value is number => typeof value 
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-async function get(deps: BudgetDependencies, key: OrgKey): Promise<Record<string, unknown> | undefined> {
+async function get(deps: Pick<BudgetDependencies, "documentClient" | "tableName">, key: OrgKey): Promise<Record<string, unknown> | undefined> {
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> };
   return response.Item;
 }
 
 /** The org's budget settings; an org that never set any, or a record that does not read, has the defaults. */
-export async function readBudgets(deps: BudgetDependencies, orgId: OrgId): Promise<OrgBudgetSettings> {
+export async function readBudgets(deps: Pick<BudgetDependencies, "documentClient" | "tableName" | "cloud">, orgId: OrgId): Promise<OrgBudgetSettings> {
   const base = defaults(deps.cloud);
   const item = await get(deps, orgSettingsKey(orgId, "BUDGET"));
   if (item === undefined) return base;
@@ -113,6 +114,11 @@ async function mark(deps: BudgetDependencies, key: OrgKey, limitUsd: number): Pr
   await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...key, entityType: "BUDGET_SYNCED", limitUsd } }));
 }
 
+/** A base limit with the month's top-up for its scope (Task 28); a limit that is not set is not read for one. */
+async function monthLimit(deps: Pick<BudgetDependencies, "documentClient" | "tableName">, orgId: OrgId, month: string, scope: BudgetScope, base: number | undefined): Promise<number | undefined> {
+  return base === undefined ? undefined : withTopUp(base, await readTopUp(deps, orgId, month, scope));
+}
+
 /**
  * Tells the proxy the org's limit and each named member's, and marks what it was told so `ensureSynced` skips
  * them until a limit changes. A proxy refusal propagates (MODEL_PROXY_UNAVAILABLE when it cannot be reached).
@@ -123,12 +129,14 @@ export async function syncBudgets(
   developerIds: readonly string[] = [],
 ): Promise<void> {
   const settings = await readBudgets(deps, orgId);
-  await deps.access.upsertOrg(orgId, proxyLimit(settings.orgMonthlyUsd));
-  await mark(deps, budgetSyncedKey(orgId), proxyLimit(settings.orgMonthlyUsd));
+  const month = monthOf((deps.now ?? Date.now)());
+  const orgLimit = proxyLimit(await monthLimit(deps, orgId, month, { kind: "org" }, settings.orgMonthlyUsd));
+  await deps.access.upsertOrg(orgId, orgLimit);
+  await mark(deps, budgetSyncedKey(orgId), orgLimit);
   for (const developerId of new Set(developerIds)) {
     // Proxy users are global by id, so a limit is only ever written for a member of this org: an id of another org, or of nobody, is skipped.
     if ((await deps.orgs.orgForDeveloper(developerId))?.orgId !== orgId) continue;
-    const limit = proxyLimit(memberLimitOf(settings, developerId));
+    const limit = proxyLimit(await monthLimit(deps, orgId, month, { kind: "member", developerId }, memberLimitOf(settings, developerId)));
     await deps.access.upsertMember(orgId, developerId, limit);
     await mark(deps, budgetSyncedKey(orgId, developerId), limit);
   }
@@ -193,13 +201,15 @@ export async function changeBudgets(
 export async function ensureSynced(deps: BudgetDependencies, orgId: OrgId, developerId?: string): Promise<OrgBudgetSettings> {
   const settings = await readBudgets(deps, orgId);
   const synced = async (key: OrgKey, limit: number) => (await get(deps, key))?.limitUsd === limit;
-  const orgLimit = proxyLimit(settings.orgMonthlyUsd);
+  // The limit the proxy enforces is the base plus this month's top-up, so a new month (or a top-up) changes it and is told again.
+  const month = monthOf((deps.now ?? Date.now)());
+  const orgLimit = proxyLimit(await monthLimit(deps, orgId, month, { kind: "org" }, settings.orgMonthlyUsd));
   if (!await synced(budgetSyncedKey(orgId), orgLimit)) {
     await viaProxy(() => deps.access.upsertOrg(orgId, orgLimit));
     await mark(deps, budgetSyncedKey(orgId), orgLimit);
   }
   if (developerId !== undefined) {
-    const limit = proxyLimit(memberLimitOf(settings, developerId));
+    const limit = proxyLimit(await monthLimit(deps, orgId, month, { kind: "member", developerId }, memberLimitOf(settings, developerId)));
     if (!await synced(budgetSyncedKey(orgId, developerId), limit)) {
       await viaProxy(() => deps.access.upsertMember(orgId, developerId, limit));
       await mark(deps, budgetSyncedKey(orgId, developerId), limit);
