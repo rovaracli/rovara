@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
 import { agentXError } from "@agentx/contracts";
 
@@ -35,6 +36,18 @@ export class InMemoryTokenStore implements TokenStore {
 
 const DEFAULT_SECURITY_PATH = "/usr/bin/security";
 
+// Why this override exists: the CLI runs macOS `security` by absolute path, so a planted `security` earlier on PATH can
+// never receive the token. Contract tests that run the built CLI as a subprocess (tests/contract/mcp-stdio.test.ts)
+// still need a stand-in, and they cannot pass a constructor option across a process boundary. So the subprocess may
+// name the stand-in in ROVARA_TEST_SECURITY_PATH. It is honoured only when ROVARA_TEST_MODE is exactly "1" and the path
+// is absolute; otherwise it is ignored and the pinned path is used. A process that can set both variables in the CLI's
+// environment can already run code as the user, so this adds no reach; a stray variable in a real shell does nothing.
+function resolveSecurityPath(env: NodeJS.ProcessEnv): string {
+  const override = env.ROVARA_TEST_SECURITY_PATH;
+  if (env.ROVARA_TEST_MODE === "1" && override !== undefined && isAbsolute(override)) return override;
+  return DEFAULT_SECURITY_PATH;
+}
+
 export class SystemCredentialTokenStore implements TokenStore {
   private readonly securityPath: string;
 
@@ -43,7 +56,7 @@ export class SystemCredentialTokenStore implements TokenStore {
     private readonly service = "dev.agentx.cli",
     options: { securityPath?: string } = {},
   ) {
-    this.securityPath = options.securityPath ?? DEFAULT_SECURITY_PATH;
+    this.securityPath = options.securityPath ?? resolveSecurityPath(process.env);
   }
 
   async get(key: string): Promise<StoredTokens | undefined> {
