@@ -67,6 +67,8 @@ interface Options {
   /** The broker's endpoint checker (Task 12b's `checkEndpointUrl`, bound to a resolver); a test double refuses by throwing. `null`: the broker has none. */
   checkEndpoint?: ((url: string) => Promise<void>) | null;
   principals?: readonly string[];
+  /** Whether Pi's catalog knows a model; default: Pi's own. A test that needs more models than a catalog test names lets any through. */
+  isKnownCatalog?: () => boolean;
   /** `applied` (default): the sync clears the marker, as the real firewall sync does; `down`: it fails and the marker stays dirty. */
   sync?: "applied" | "down";
 }
@@ -94,6 +96,7 @@ async function setup(options: Options = {}) {
           launch: options.launch ?? ALL_KINDS,
           ...(checker === undefined ? {} : { checkEndpoint: async (url: string) => { checked.push(url); await checker(url); } }),
           ...(options.principals === undefined ? {} : { bedrockTrustPrincipals: options.principals }),
+          ...(options.isKnownCatalog === undefined ? {} : { isKnownCatalog: options.isKnownCatalog }),
         },
       },
       ...(options.proxy === false ? {} : { modelAccess: { access, proxyUrl: "https://proxy.example.com" } }),
@@ -301,13 +304,13 @@ describe("adding a source with a key", () => {
     for (const base of [anthropic(), bedrock(), endpoint()]) {
       for (const [name, extra] of extras) {
         const reply = await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: { ...base, ...extra }, ...(base.kind === "anthropic" ? { apiKey: KEY } : {}) });
-        expect([reply.status, errorOf(reply).code], `${String(base.kind)} ${name}`).toEqual([400, "CONFIG_INVALID"]);
+        expect([reply.status, errorOf(reply).code, errorOf(reply).message], `${String(base.kind)} ${name}`).toEqual([400, "CONFIG_INVALID", expect.stringContaining("has a field Rovara doesn't accept") as unknown]);
         expect(errorOf(reply).message).not.toContain("evilFieldName");
         expect(errorOf(reply).message).not.toContain("src_aaaaaaaaaaaaaaaaaaaa");
       }
     }
     const top = await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: anthropic(), apiKey: KEY, sourceId: "src_aaaaaaaaaaaaaaaaaaaa" });
-    expect([top.status, errorOf(top).code]).toEqual([400, "CONFIG_INVALID"]);
+    expect([top.status, errorOf(top).message]).toEqual([400, "body: has a field Rovara doesn't accept"]);
     expect(s.doc()).toBeUndefined();
     expect(s.access.upsertSource).not.toHaveBeenCalled();
   });
@@ -315,14 +318,21 @@ describe("adding a source with a key", () => {
   it("refuses duplicate canonical models, more than 20 models, a model Pi does not know, and an 11th source", async () => {
     const s = await setup();
     const post = (source: Record<string, unknown>) => s.write(DANA, "POST", "/v1/app/org/model-sources", { source, apiKey: KEY });
-    expect((await post(anthropic({ models: [{ catalog: sonnet }, { catalog: sonnet }] }))).status).toBe(400);
+    const duplicate = await post(anthropic({ models: [{ catalog: sonnet }, { catalog: sonnet }] }));
+    expect([duplicate.status, errorOf(duplicate).message]).toEqual([400, "source.models.1: models must be unique"]);
     const many = Array.from({ length: 21 }, (_, index) => ({ catalog: { provider: "anthropic", modelId: `claude-model-${String(index)}` } }));
-    expect((await post(anthropic({ models: many }))).status).toBe(400);
+    const loose = await setup({ isKnownCatalog: () => true });
+    const tooMany = await loose.write(DANA, "POST", "/v1/app/org/model-sources", { source: anthropic({ models: many }), apiKey: KEY });
+    expect([tooMany.status, errorOf(tooMany).message]).toEqual([400, expect.stringMatching(/^source\.models: /) as unknown]);
+    expect((await loose.write(DANA, "POST", "/v1/app/org/model-sources", { source: anthropic({ models: many.slice(0, 20) }), apiKey: KEY })).status).toBe(201);
     const unknown = await post(anthropic({ models: [{ catalog: { provider: "anthropic", modelId: "claude-not-in-pis-catalog-9" } }] }));
-    expect([unknown.status, errorOf(unknown).code]).toEqual([400, "CONFIG_INVALID"]);
+    expect([unknown.status, errorOf(unknown).message]).toEqual([400, "source.models.0.catalog: must be a model in the catalog"]);
     for (let index = 0; index < 10; index += 1) await s.add(DANA, anthropic({ label: `Source ${String(index)}` }));
+    s.access.upsertSource.mockClear();
     const eleventh = await post(anthropic({ label: "One too many" }));
     expect([eleventh.status, errorOf(eleventh).message]).toEqual([400, "an organization can have at most 10 AI sources"]);
+    // Refused before the proxy was asked to register anything.
+    expect(s.access.upsertSource).not.toHaveBeenCalled();
     expect(s.doc()!.sources).toHaveLength(10);
   });
 
@@ -332,10 +342,10 @@ describe("adding a source with a key", () => {
     expect((await post(anthropic({ label: "\u{1F600}".repeat(40) }))).status).toBe(201);
     for (const label of ["\u{1F600}".repeat(65), "line\nbreak", "zero\u200bwidth", "flip\u202etext", "tab\there", "bell\u0007"]) {
       const reply = await post(anthropic({ label }));
-      expect([reply.status, errorOf(reply).code], JSON.stringify(label)).toEqual([400, "CONFIG_INVALID"]);
+      expect([reply.status, errorOf(reply).message], JSON.stringify(label)).toEqual([400, expect.stringMatching(/^source\.label: must (be at most 64 characters|not hold control or invisible characters)$/) as unknown]);
     }
     const name = await post(endpoint({ models: [{ name: "model\u202ename", catalog: sonnet }] }));
-    expect([name.status, errorOf(name).code]).toEqual([400, "CONFIG_INVALID"]);
+    expect([name.status, errorOf(name).message]).toEqual([400, "source.models.0.name: must not hold control or invisible characters"]);
     expect(s.doc()!.sources).toHaveLength(1);
   });
 
@@ -417,12 +427,26 @@ describe("one transaction, one audit event, one request item", () => {
 
   it("keeps every change when several land at once: each is read again after losing the race, none overwrites another", async () => {
     const s = await setup();
+    // The first three writes of the record are held until all three are ready, so each has read the record as it was before any of them.
+    const send = s.db.send.bind(s.db) as (command: unknown) => Promise<unknown>;
+    let ready = 0;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    (s.db as unknown as { send: (command: unknown) => Promise<unknown> }).send = async (command: unknown) => {
+      if ((command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand" && JSON.stringify((command as { input: unknown }).input).includes("MODEL_SOURCES") && ready < 3) {
+        ready += 1;
+        if (ready === 3) open();
+        await gate;
+      }
+      return send(command);
+    };
     const [first, second, third] = await Promise.all([
       s.write(DANA, "POST", "/v1/app/org/model-sources", { source: anthropic({ label: "A" }), apiKey: KEY }),
       s.write(OWEN, "POST", "/v1/app/org/model-sources", { source: anthropic({ label: "B" }), apiKey: OTHER_KEY }),
       s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order: ["personal-chatgpt", "rovara"] }),
     ]);
     expect([first.status, second.status, third.status]).toEqual([201, 201, 200]);
+    expect(ready).toBe(3);
     expect(s.doc()!.sources.map((source) => source.label).sort()).toEqual(["A", "B"]);
     expect(s.doc()!.order).toEqual(["personal-chatgpt", "rovara"]);
     expect(s.doc()!.credentials).toHaveLength(2);
@@ -565,8 +589,10 @@ describe("changing and removing a source", () => {
     expect(rekeyed.status).toBe(200);
     expect(s.access.upsertSource.mock.calls[1]![0]).toMatchObject({ apiKey: OTHER_KEY });
     expect(s.everything()).not.toContain(OTHER_KEY);
+    s.access.upsertSource.mockClear();
     const kind = await s.write(DANA, "PUT", `/v1/app/org/model-sources/${id}`, { source: anthropic({ kind: "openai", models: [{ catalog: { provider: "openai", modelId: "gpt-5" } }] }) });
     expect([kind.status, errorOf(kind).message]).toEqual([400, "source.kind: a source's kind can't change; remove it and add a new one"]);
+    expect(s.access.upsertSource).not.toHaveBeenCalled();
     expect(s.doc()!.revision).toBe(3);
   });
 
@@ -589,9 +615,13 @@ describe("changing and removing a source", () => {
     const s = await setup();
     const id = await s.add(DANA, anthropic());
     const put = (order: unknown) => s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order });
-    for (const bad of [[], ["rovara", "rovara"], ["src_aaaaaaaaaaaaaaaaaaaa"], ["rovara", "not-a-source"], "rovara"]) {
+    const refusals: Array<[unknown, RegExp]> = [
+      [[], /^order: name at least one source$/], [["rovara", "rovara"], /^order must not repeat a source$/], [["src_aaaaaaaaaaaaaaaaaaaa"], /^order names a source the organization does not have$/],
+      [["rovara", "not-a-source"], /^order\.1: /], ["rovara", /^order: /],
+    ];
+    for (const [bad, message] of refusals) {
       const reply = await put(bad);
-      expect([reply.status, errorOf(reply).code], JSON.stringify(bad)).toEqual([400, "CONFIG_INVALID"]);
+      expect([reply.status, errorOf(reply).code, errorOf(reply).message], JSON.stringify(bad)).toEqual([400, "CONFIG_INVALID", expect.stringMatching(message) as unknown]);
     }
     expect(JSON.stringify((await put(["src_aaaaaaaaaaaaaaaaaaaa"])).body)).not.toContain("src_aaaaaaaaaaaaaaaaaaaa");
     const ok = await put([id, "personal-chatgpt", "rovara"]);
@@ -703,7 +733,7 @@ describe("an endpoint source", () => {
   ])("refuses %s on its own, before the broker's checker runs", async (_name, baseUrl) => {
     const s = await setup();
     const reply = await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint({ baseUrl }) });
-    expect([reply.status, errorOf(reply).code]).toEqual([400, "CONFIG_INVALID"]);
+    expect([reply.status, errorOf(reply).code, errorOf(reply).message]).toEqual([400, "CONFIG_INVALID", expect.stringMatching(/^source\.baseUrl: /) as unknown]);
     expect(s.checked).toEqual([]);
     expect(s.doc()).toBeUndefined();
     expect(JSON.stringify(reply.body)).not.toContain("hunter2secret");
@@ -846,7 +876,7 @@ describe("a Bedrock source", () => {
     const s = await setup();
     for (const roleArn of ["arn:aws:iam::123456789012:role/*", "arn:aws:iam::123456789012:user/bob", "arn:aws:iam::*:role/x", "arn:aws:iam::123456789012:root"]) {
       const reply = await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: bedrock({ roleArn }) });
-      expect([reply.status, errorOf(reply).code], roleArn).toEqual([400, "CONFIG_INVALID"]);
+      expect([reply.status, errorOf(reply).code, errorOf(reply).message], roleArn).toEqual([400, "CONFIG_INVALID", expect.stringMatching(/^source\.roleArn: /) as unknown]);
     }
     expect(s.doc()).toBeUndefined();
   });
@@ -915,6 +945,15 @@ describe("the store", () => {
     await expect(store.save({ orgId: TEST_ORG, source: stored, mode: "create", by: "" })).rejects.toThrow("by: say who is making this change");
     await expect(store.setOrder({ orgId: TEST_ORG, order: ["src_zzzzzzzzzzzzzzzzzzzz"], by: DANA.developerId })).rejects.toThrow();
     expect((s.doc()!.sources as unknown[]).length).toBe(1);
+  });
+
+  it("holds an org to ten sources whoever adds them", async () => {
+    const s = await setup();
+    const store = s.store();
+    const source = (index: number) => ({ sourceId: `src_${String(index).repeat(20)}`, kind: "anthropic", label: "L", models: [{ catalog: sonnet }] }) as never;
+    for (let index = 0; index < 10; index += 1) await store.save({ orgId: TEST_ORG, source: source(index), mode: "create", by: DANA.developerId });
+    await expect(store.save({ orgId: TEST_ORG, source: { ...(source(1) as object), sourceId: "src_zzzzzzzzzzzzzzzzzzzz" } as never, mode: "create", by: DANA.developerId })).rejects.toThrow("an organization can have at most 10 AI sources");
+    expect((await store.read(TEST_ORG)).sources).toHaveLength(10);
   });
 
   it("fails closed on a record it cannot read, rather than falling back to the defaults", async () => {

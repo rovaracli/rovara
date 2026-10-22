@@ -224,8 +224,8 @@ export class ModelSourceStore {
       const candidate = OrgModelSourcesSchema.safeParse({ ...contract, order: input.order });
       if (!candidate.success) {
         // The message names the rule that failed, never the id the client sent.
-        const first = candidate.error.issues[0];
-        throw coded("CONFIG_INVALID", `order: ${first?.message ?? "is not valid"}`);
+        const message = candidate.error.issues[0]?.message ?? "is not valid";
+        throw coded("CONFIG_INVALID", message.startsWith("order ") ? message : `order: ${message}`);
       }
       const order = candidate.data.order;
       if (order.length === current.order.length && order.every((id, index) => id === current.order[index])) return { result: { order } };
