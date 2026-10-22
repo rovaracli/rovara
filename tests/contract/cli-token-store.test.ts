@@ -42,6 +42,11 @@ setTimeout(finish, 1500);
   chmodSync(path, 0o755);
 }
 
+// Points the store at the fake `security`; the production default is the absolute /usr/bin/security.
+function fakeStore(service = "dev.rovara.kc-test.unit"): SystemCredentialTokenStore {
+  return new SystemCredentialTokenStore(service, { securityPath: join(fakeDir, "security") });
+}
+
 interface Call {
   tool: string;
   argv: string[];
@@ -121,7 +126,7 @@ describe("SystemCredentialTokenStore.set on macOS", () => {
 
   it("keeps both tokens out of every argv and sends the command on stdin", async () => {
     const tokens: StoredTokens = { accessToken: "SECRET-ACCESS-123", refreshToken: "SECRET-REFRESH-456", expiresAt: 42 };
-    await new SystemCredentialTokenStore("dev.rovara.kc-test.unit").set("acct", tokens);
+    await fakeStore().set("acct", tokens);
 
     const recorded = calls();
     expect(recorded.length).toBeGreaterThan(0);
@@ -137,7 +142,7 @@ describe("SystemCredentialTokenStore.set on macOS", () => {
   });
 
   it("quotes quotes, backslashes, spaces, newlines and non-ASCII so the value reaches security unchanged", async () => {
-    await new SystemCredentialTokenStore("dev.rovara.kc-test.unit").set("acct name", nasty);
+    await fakeStore().set("acct name", nasty);
 
     const write = calls().find((call) => call.stdin.includes("add-generic-password"));
     const lines = (write?.stdin ?? "").split("\n").filter((line) => line.length > 0);
@@ -153,13 +158,13 @@ describe("SystemCredentialTokenStore.set on macOS", () => {
   });
 
   it("refuses a value too long for security's input line instead of letting it truncate", async () => {
-    const store = new SystemCredentialTokenStore("dev.rovara.kc-test.unit");
+    const store = fakeStore();
     await expect(store.set("acct", { accessToken: "x".repeat(4100), expiresAt: 1 })).rejects.toThrow(/too long/i);
     expect(calls()).toEqual([]);
   });
 
   it("accepts a long refresh token that still fits the line", async () => {
-    await new SystemCredentialTokenStore("dev.rovara.kc-test.unit").set("acct", {
+    await fakeStore().set("acct", {
       accessToken: "a".repeat(1500),
       refreshToken: "r".repeat(1500),
       expiresAt: 1,
@@ -168,28 +173,28 @@ describe("SystemCredentialTokenStore.set on macOS", () => {
   });
 
   it("rejects a service or account that would break out of the quoted command", async () => {
-    await expect(new SystemCredentialTokenStore("svc\nexit").set("acct", { accessToken: "t", expiresAt: 1 })).rejects.toThrow();
-    await expect(new SystemCredentialTokenStore("svc").set("acct\n", { accessToken: "t", expiresAt: 1 })).rejects.toThrow();
+    await expect(fakeStore("svc\nexit").set("acct", { accessToken: "t", expiresAt: 1 })).rejects.toThrow();
+    await expect(fakeStore("svc").set("acct\n", { accessToken: "t", expiresAt: 1 })).rejects.toThrow();
     expect(calls()).toEqual([]);
   });
 
   it("fails when security exits non-zero", async () => {
     process.env.FAKE_EXIT = "1";
     process.env.FAKE_STDERR = "security: SecKeychainItemCreateFromContent failed";
-    await expect(new SystemCredentialTokenStore("dev.rovara.kc-test.unit").set("acct", { accessToken: "t", expiresAt: 1 })).rejects.toThrow();
+    await expect(fakeStore().set("acct", { accessToken: "t", expiresAt: 1 })).rejects.toThrow();
   });
 
   it("fails when interactive security reports an error on stderr even if it exits 0", async () => {
     process.env.FAKE_EXIT = "0";
     process.env.FAKE_STDERR = 'security: unknown command "abc"';
-    await expect(new SystemCredentialTokenStore("dev.rovara.kc-test.unit").set("acct", { accessToken: "t", expiresAt: 1 })).rejects.toThrow();
+    await expect(fakeStore().set("acct", { accessToken: "t", expiresAt: 1 })).rejects.toThrow();
   });
 
   it("does not echo the token in the failure message, even when security echoes the rejected command", async () => {
     process.env.FAKE_EXIT = "1";
     // Real `security -i` quotes the text of a command it cannot parse, token included.
     process.env.FAKE_STDERR = 'security: unknown command "SECRET-ACCESS-123"';
-    const error = await new SystemCredentialTokenStore("dev.rovara.kc-test.unit")
+    const error = await fakeStore()
       .set("acct", { accessToken: "SECRET-ACCESS-123", expiresAt: 1 })
       .catch((caught: unknown) => caught as Error);
     expect(error).toBeInstanceOf(Error);
@@ -205,7 +210,7 @@ describe("SystemCredentialTokenStore get and delete on macOS", () => {
 
   it("reads the stored tokens back through find-generic-password", async () => {
     process.env.FAKE_STDOUT = `${JSON.stringify({ accessToken: "a", refreshToken: "r", expiresAt: 5 })}\n`;
-    await expect(new SystemCredentialTokenStore("dev.rovara.kc-test.unit").get("acct")).resolves.toEqual({
+    await expect(fakeStore().get("acct")).resolves.toEqual({
       accessToken: "a",
       refreshToken: "r",
       expiresAt: 5,
@@ -215,17 +220,17 @@ describe("SystemCredentialTokenStore get and delete on macOS", () => {
 
   it.each([44, 1])("treats exit code %s as no token", async (code) => {
     process.env.FAKE_EXIT = String(code);
-    await expect(new SystemCredentialTokenStore("dev.rovara.kc-test.unit").get("acct")).resolves.toBeUndefined();
+    await expect(fakeStore().get("acct")).resolves.toBeUndefined();
   });
 
   it("still rethrows other failures", async () => {
     process.env.FAKE_EXIT = "2";
-    await expect(new SystemCredentialTokenStore("dev.rovara.kc-test.unit").get("acct")).rejects.toThrow();
+    await expect(fakeStore().get("acct")).rejects.toThrow();
   });
 
   it("delete tolerates a missing item", async () => {
     process.env.FAKE_EXIT = "44";
-    await expect(new SystemCredentialTokenStore("dev.rovara.kc-test.unit").delete("acct")).resolves.toBeUndefined();
+    await expect(fakeStore().delete("acct")).resolves.toBeUndefined();
     expect(calls()[0]?.argv).toEqual(["delete-generic-password", "-s", "dev.rovara.kc-test.unit", "-a", "acct"]);
   });
 });
@@ -234,7 +239,7 @@ describe("SystemCredentialTokenStore.set on Linux", () => {
   it("keeps the token on stdin and out of secret-tool's argv", async () => {
     setPlatform("linux");
     installFake("secret-tool");
-    await new SystemCredentialTokenStore("dev.rovara.kc-test.unit").set("acct", {
+    await fakeStore().set("acct", {
       accessToken: "SECRET-ACCESS-123",
       refreshToken: "SECRET-REFRESH-456",
       expiresAt: 42,
@@ -243,6 +248,30 @@ describe("SystemCredentialTokenStore.set on Linux", () => {
     expect(call?.argv.join(" ")).not.toContain("SECRET");
     expect(call?.stdin).toContain("SECRET-ACCESS-123");
     expect(call?.stdin).toContain("SECRET-REFRESH-456");
+  });
+});
+
+// A `security` earlier on PATH (a planted binary) must not be run: the default is the absolute /usr/bin/security.
+// This test only reads a service name that does not exist, so it touches no real item.
+describe.skipIf(realPlatform !== "darwin")("SystemCredentialTokenStore binary pinning on macOS", () => {
+  it("ignores a security placed earlier on PATH when no override is given", async () => {
+    setPlatform("darwin");
+    installFake("security");
+    const store = new SystemCredentialTokenStore(`dev.rovara.kc-test.pin${Math.random().toString(36).slice(2, 12)}`);
+    await expect(store.get("no-such-account")).resolves.toBeUndefined();
+    await store.delete("no-such-account");
+    expect(calls()).toEqual([]);
+  });
+
+  it("uses the injected path for set, get and delete", async () => {
+    setPlatform("darwin");
+    installFake("security");
+    const store = fakeStore();
+    await store.set("acct", { accessToken: "t", expiresAt: 1 });
+    process.env.FAKE_EXIT = "44";
+    await store.get("acct");
+    await store.delete("acct");
+    expect(calls().map((call) => call.argv[0])).toEqual(["-i", "find-generic-password", "delete-generic-password"]);
   });
 });
 
@@ -272,7 +301,7 @@ describe.skipIf(!realKeychain)("SystemCredentialTokenStore on the real macOS Key
     );
     chmodSync(wrapper, 0o755);
 
-    const store = new SystemCredentialTokenStore(service);
+    const store = new SystemCredentialTokenStore(service, { securityPath: wrapper });
     const marker = `PSCHECK${Math.random().toString(36).slice(2, 12)}`;
     const pending = store.set(account, { accessToken: marker, expiresAt: 1 });
     await new Promise((resolve) => setTimeout(resolve, 1000));
