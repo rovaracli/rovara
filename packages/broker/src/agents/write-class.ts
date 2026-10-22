@@ -213,13 +213,24 @@ const isOutwardKey = (key: string): boolean => OUTWARD_EXACT_KEYS.has(key) || OU
 
 const TRACKER_BASE_WORDS: ReadonlySet<string> = new Set([...TRACKER_ITEM_WORDS, "card", "todo", "subtask", "subissue"]);
 const NOT_A_CREATE_WORDS: ReadonlySet<string> = new Set(["comment", "reply", "review"]);
+/**
+ * What a record verb may create and stay safe: the tracker words and their forms, and the things people write down or sort by (a comment, a note, a
+ * label, a tag, a reaction, a draft, a document, a branch, a pull request, a reply). A create of anything else (a payment, a key, a deployment, an
+ * incident) waits, whatever the verb (fix round 2, N1).
+ */
+const RECORD_OBJECT_WORDS: ReadonlySet<string> = new Set([
+  ...TRACKER_BASE_WORDS, "comment", "note", "label", "tag", "reaction", "draft", "document", "doc", "branch", "pull", "pr", "pullrequest", "reply",
+]);
+
+/** A word of `set`, or its plural (`notes`, `stories`). */
+function inWordSet(set: ReadonlySet<string>, word: string): boolean {
+  if (set.has(word)) return true;
+  if (word.endsWith("ies") && set.has(`${word.slice(0, -3)}y`)) return true;
+  return word.endsWith("s") && set.has(word.slice(0, -1));
+}
 
 /** A tracker item word, or its plural (`issues`, `stories`). */
-function isTrackerWord(word: string): boolean {
-  if (TRACKER_BASE_WORDS.has(word)) return true;
-  if (word.endsWith("ies") && TRACKER_BASE_WORDS.has(`${word.slice(0, -3)}y`)) return true;
-  return word.endsWith("s") && TRACKER_BASE_WORDS.has(word.slice(0, -1));
-}
+const isTrackerWord = (word: string): boolean => inWordSet(TRACKER_BASE_WORDS, word);
 
 /**
  * The verbs that make a write a record: a create, a comment, a label, an edit of what the run made. A write is `safe` only when its name has one of
@@ -285,6 +296,30 @@ export function isReadByName(tool: GrantedTool): boolean {
 /** Any word of the name that contains `merge` or `merging` (`merged`, `automerge`) makes a write a merge; `emergency` does not. */
 const isMergeTool = (tool: GrantedTool): boolean => wordsOf(tool.upstreamName).some((word) => /merg(?:e|ing)/u.test(word) && !word.startsWith("emerg"));
 
+const MERGE_METHOD_KEYS: ReadonlySet<string> = new Set(["method", "action", "mergemethod"]);
+const MERGE_METHOD_VALUES: ReadonlySet<string> = new Set(["merge", "squash", "rebase"]);
+
+/**
+ * Whether the arguments merge or arrange to merge: a set key with `merge` or `autocomplete` in its name, `completionOptions` set, or a `method`,
+ * `action` or `mergeMethod` of merge, squash or rebase (fix round 2, N4). `false`, null, empty and an empty object do not count.
+ */
+function mergesByArguments(args: unknown): boolean {
+  const walk = (current: unknown, depth: number): boolean => {
+    if (current === null || typeof current !== "object" || depth > MAX_WALK_DEPTH) return false;
+    if (Array.isArray(current)) return (current as unknown[]).some((entry) => walk(entry, depth + 1));
+    return Object.entries(current).some(([key, entry]) => {
+      const normal = normalisedKey(key);
+      if ((normal.includes("merge") || normal.includes("autocomplete") || normal === "completionoptions") && entry !== false && isSet(entry)) return true;
+      if (MERGE_METHOD_KEYS.has(normal) && typeof entry === "string" && MERGE_METHOD_VALUES.has(entry.trim().toLowerCase())) return true;
+      return walk(entry, depth + 1);
+    });
+  };
+  return walk(args, 0);
+}
+
+/** A write is a merge by its name, or by what it sets. */
+const isMergeCall = (tool: GrantedTool, args: unknown): boolean => isMergeTool(tool) || mergesByArguments(args);
+
 /** A create of a ticket, issue or task: a tracker item name without comment, reply or review, and no existing item named. */
 function isTrackerCreate(tool: GrantedTool, args: Record<string, unknown>): boolean {
   if (tool.access !== "write") return false;
@@ -297,12 +332,14 @@ function isTrackerCreate(tool: GrantedTool, args: Record<string, unknown>): bool
 // Label arguments
 // ---------------------------------------------------------------------------------------------
 
-/** Keys that hold label names, at any depth. */
-const LABEL_NAME_KEYS: ReadonlySet<string> = new Set(["label", "labels", "addlabels", "addedlabels"]);
-/** Keys that hold label ids, at any depth: resolved to names through the connector's label list. */
-const LABEL_ID_KEYS: ReadonlySet<string> = new Set(["labelid", "labelids", "addedlabelids", "addlabelids"]);
-/** Keys that take labels off an item. */
-const LABEL_REMOVAL_KEYS: ReadonlySet<string> = new Set(["removelabel", "removelabels", "removedlabels", "removelabelid", "removelabelids", "removedlabelids"]);
+/** A normalised key with `label` or `tag` in it (`stage` is not one): `labels`, `labelNames`, `tags`, `issueLabelIds`. */
+const isLabelWord = (key: string): boolean => key.includes("label") || /(?:^|[^s])tag/u.test(key);
+/** Keys that take labels off an item: a label key with `remove` or `removed` in it. */
+const isLabelRemovalKey = (key: string): boolean => isLabelWord(key) && key.includes("remove");
+/** Keys that hold label ids, at any depth: a label key that also has `id` in it. They are resolved to names through the connector's label list. */
+const isLabelIdKey = (key: string): boolean => isLabelWord(key) && !key.includes("remove") && key.replace(/label|tag/gu, "").includes("id");
+/** Keys that hold label names, at any depth: a label key that is neither an id nor a removal. */
+const isLabelNameKey = (key: string): boolean => isLabelWord(key) && !key.includes("remove") && !isLabelIdKey(key);
 /** Keys that set a label list whole. */
 const LABEL_SET_KEYS: ReadonlySet<string> = new Set(["labels", "labelids"]);
 const FORBIDDEN_SEGMENTS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
@@ -392,7 +429,7 @@ export function labelIdValues(facts: ToolFacts, args: Record<string, unknown>): 
       return;
     }
     for (const [key, entry] of Object.entries(current)) {
-      if (LABEL_ID_KEYS.has(normalisedKey(key)) && isSet(entry)) take(entry);
+      if (isLabelIdKey(normalisedKey(key)) && isSet(entry)) take(entry);
       else walk(entry, depth + 1);
     }
   };
@@ -416,7 +453,7 @@ export function labelIdValues(facts: ToolFacts, args: Record<string, unknown>): 
 function labelChanges(tool: GrantedTool, facts: ToolFacts, args: Record<string, unknown>): { removes: boolean; replaces: boolean } {
   const replaceDefault = tool.type === "github";
   const replacing = facts.labelsReplace ?? replaceDefault;
-  let removes = findSetKey(args, (key) => LABEL_REMOVAL_KEYS.has(key), new Set()).found;
+  let removes = findSetKey(args, isLabelRemovalKey, new Set()).found;
   let replaces = false;
   const walk = (current: unknown, inLabels: boolean, depth: number): void => {
     if (current === null || typeof current !== "object" || depth > MAX_WALK_DEPTH) return;
@@ -428,7 +465,7 @@ function labelChanges(tool: GrantedTool, facts: ToolFacts, args: Record<string, 
       const normal = normalisedKey(key);
       if (inLabels && (normal === "remove" || normal === "set") && isSet(entry)) removes = true;
       if (replacing && LABEL_SET_KEYS.has(normal) && isSet(entry)) replaces = true;
-      walk(entry, inLabels || LABEL_NAME_KEYS.has(normal) || LABEL_ID_KEYS.has(normal), depth + 1);
+      walk(entry, inLabels || isLabelWord(normal), depth + 1);
     }
   };
   walk(args, false, 0);
@@ -597,8 +634,8 @@ function exemptTopLevel(facts: ToolFacts): Set<string> {
 
 const SAFE_CHANGE_KEY_SET: ReadonlySet<string> = new Set(SAFE_CHANGE_KEYS.map(normalisedKey));
 const CONSEQUENTIAL_KEY_SET: ReadonlySet<string> = new Set(CONSEQUENTIAL_KEYS.map(normalisedKey));
-/** Keys that assign work, ask for a review, or hand something over (fix round 1, I2). */
-const CONSEQUENTIAL_KEY_PARTS = ["assign", "reviewer", "lead", "member", "subscriber", "delegate", "owner"];
+/** Keys that assign work, ask for a review, file work with a team or project, or hand something over (fix round 1, I2; round 2, N3). */
+const CONSEQUENTIAL_KEY_PARTS = ["assign", "reviewer", "lead", "member", "subscriber", "delegate", "owner", "team", "project"];
 const isConsequentialKey = (key: string): boolean => CONSEQUENTIAL_KEY_SET.has(key) || CONSEQUENTIAL_KEY_PARTS.some((part) => key.includes(part));
 
 /** A change is safe on an item this run created, or when everything it sets is a safe key (and it sets one) and takes no label off or replaces the labels. */
@@ -673,6 +710,7 @@ export function classifyWrite(input: ClassifyWriteInput): WriteClassification {
 
   // 2. A merge, then a destructive name or a state change.
   if (isMergeTool(tool)) return finish("merge", "the tool's name says \"merge\"");
+  if (mergesByArguments(args)) return finish("merge", "the call merges, or sets the pull request to merge when it can");
   const causes: Cause[] = [];
   const add = (reason: string, hard: boolean): void => { causes.push({ reason, hard }); };
   if (!plain) add("the arguments are not an object", true);
@@ -683,7 +721,7 @@ export function classifyWrite(input: ClassifyWriteInput): WriteClassification {
 
   // 3. A command in the text, a trigger label, a label id that can't be resolved, or a repository that reacts to comments.
   const skip = skipPathsOf(facts);
-  const labelPaths = unique([...pathsOfKeys(args, (key) => LABEL_NAME_KEYS.has(key)), ...(facts.labelArgument === undefined ? [] : [facts.labelArgument])]);
+  const labelPaths = unique([...pathsOfKeys(args, isLabelNameKey), ...(facts.labelArgument === undefined ? [] : [facts.labelArgument])]);
   const signalOptions = {
     allowMentions: input.allowMentions,
     labelPaths,
@@ -727,6 +765,7 @@ export function classifyWrite(input: ClassifyWriteInput): WriteClassification {
     if (action === "destructive") return destructive === undefined ? { reason: "this action is destructive", hard: true } : undefined;
     if (action === "change") return changeCause(input, facts, args);
     if (action === "create" && isTrackerCreate(tool, args) && !carriesRovaraLabel(facts, args)) return { reason: "it creates a ticket without Rovara's label", hard: true };
+    if (action === "create" && !words.some((word) => inWordSet(RECORD_OBJECT_WORDS, word))) return { reason: "it creates something that is not a comment, note, label or other record", hard: false };
     return undefined;
   };
   const base = classCause(baseAction);
@@ -905,7 +944,7 @@ function callRepository(args: unknown): string | undefined {
 export async function classifyAgentWrite(deps: ClassifyAgentWriteDependencies, input: ClassifyAgentWriteInput): Promise<WriteClassification> {
   const { orgId, taskId, project, repository, installationId, ...rest } = input;
   const { tool, args } = input;
-  if (isReadByName(tool) || (tool.access === "write" && isMergeTool(tool))) return classifyWrite({ ...rest, ownItems: new Set<string>() });
+  if (isReadByName(tool) || (tool.access === "write" && isMergeCall(tool, args))) return classifyWrite({ ...rest, ownItems: new Set<string>() });
 
   let ownItems = new Set<string>();
   try {
