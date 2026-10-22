@@ -24,6 +24,8 @@ export interface TaskPersonCheck {
   identity: TaskPersonIdentity;
   eligible: boolean;
   channelMember: boolean;
+  /** Plan 2, Task 21: the person holds the viewer role in the task's project. They may see the task but take no part in it. */
+  projectViewer?: true;
 }
 
 export type CheckTaskPerson = (task: DeveloperTaskRecord, developerId: string, admission?: TaskPeopleDisplayAdmission) => Promise<TaskPersonCheck>;
@@ -337,6 +339,8 @@ async function currentPeopleForCaller(
 function effectiveRoleFromProof(explicit: PersonEntry | undefined, proof: TaskPersonCheck): TaskRole | null {
   if (explicit?.role === "denied" || !proof.eligible) return null;
   if (explicit?.role === "owner") return proof.channelMember ? "owner" : null;
+  // A project viewer only views, whatever the owner granted and whatever the channel would give them.
+  if (proof.projectViewer === true) return "viewer";
   if (explicit?.role === "commenter" || explicit?.role === "viewer") return explicit.role;
   return proof.channelMember ? "commenter" : null;
 }
@@ -564,7 +568,8 @@ export async function resolveTaskDispatchPeople(
     if (person.role !== "owner") continue;
     try {
       const proof = await checkedFresh(deps, task, person.developerId);
-      if (proof.eligible && proof.channelMember) owners.push(taskOwnerKey(person.developerId, task.taskId));
+      // An owner lowered to a project viewer keeps the task (to view and cancel) but is no authority for new work on it.
+      if (proof.eligible && proof.channelMember && proof.projectViewer !== true) owners.push(taskOwnerKey(person.developerId, task.taskId));
     } catch {
       unknown = true;
     }

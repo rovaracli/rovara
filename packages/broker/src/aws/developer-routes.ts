@@ -1264,6 +1264,7 @@ export function developerTaskRouteDependencies(
           ...(subject.slackUserId === undefined ? {} : { slackUserId: subject.slackUserId }),
         });
         if (result.kind === "allowed") return;
+        if (result.kind === "denied" && result.reason === "project-viewer") return "viewer";
         if (result.kind === "unavailable" || result.kind === "needs-membership") {
           throw agentXError("SLACK_UNAVAILABLE", "task person identity proof is unavailable");
         }

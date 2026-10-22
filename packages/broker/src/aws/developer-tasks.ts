@@ -147,6 +147,7 @@ import {
   workflowFindingProblem,
   capText,
   type ProjectRole,
+  projectAllows,
 } from "@agentx/contracts";
 import { z } from "zod";
 import { channelLabel, decideMode, decideShare, type BoundChannel, type ShareDecision } from "../developer/share.js";
@@ -214,7 +215,7 @@ import {
 } from "../developer/owner-answers.js";
 import type { TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
 import { requireCreatorStillMember } from "../developer/creator-member.js";
-import { requireNewWorkAllowed } from "../developer/project-roles.js";
+import { requireNewWorkAllowed, viewerCannotStartTasksMessage } from "../developer/project-roles.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -1806,12 +1807,28 @@ function capWindowUpdate(baseline: number | undefined): { clause: string; values
   return baseline === undefined ? { clause: "", values: {} } : { clause: ", budgetBaselineUsd = :budgetBaseline", values: { ":budgetBaseline": baseline } };
 }
 
+/**
+ * An owner lowered to a project viewer (Plan 2, Task 21) keeps their tasks to read and cancel, but a viewer starts no work: continue, retry,
+ * review and send-back are refused with the viewer message. Called after the action's own access check, so it never tells someone about a
+ * task they cannot see. A project check that cannot be made leaves the action as it was.
+ */
+async function refuseViewerNewWork(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): Promise<void> {
+  let role: ProjectRole | undefined;
+  try {
+    role = (await deps.checkAccess(task.project)).role;
+  } catch {
+    return;
+  }
+  if (!projectAllows(role, "start_tasks")) throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(task.project));
+}
+
 async function continueTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "continue");
   const access = await authorizeLegacyTaskAction(deps, caller, taskId, "control");
   const { task } = access;
   // Ruling R60, first: before the busy, workspace and model-proxy refusals, so the removal's reason wins.
   await creatorGuard(deps, task);
+  await refuseViewerNewWork(deps, task);
   if (task.workflow !== undefined) throw agentXError("WORKSPACE_BUSY", GATED_TASK_TURN_REFUSAL);
   const turns = turnTable(deps);
   await actionableWorkspace(deps, task);
@@ -2227,6 +2244,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
   const { task } = access;
   // Ruling R60, first: before the E2E branch writes its dispatch row, so the removal's reason wins.
   await creatorGuard(deps, task);
+  await refuseViewerNewWork(deps, task);
   const recoveryHash = hashJson({ action: "committed-source-recovery", taskId, actorId: access.actorId, request });
   const recoveryKey = { pk: `DEVTASK#${taskId}`, sk: `WORKFLOW_SOURCE_RECOVERY#${request.requestId}` };
   const priorRecovery = await get<{ payloadHash: string; actorId: string; operationId: string }>(deps, recoveryKey);
@@ -2703,6 +2721,7 @@ export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDepen
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "workflow-send-back");
   const access = await authorizeTaskAction(deps, caller, taskId, "control");
   const { task } = access;
+  await refuseViewerNewWork(deps, task);
   const workflow = task.workflow;
   if (workflow === undefined) throw agentXError("NOT_FOUND", "this task does not have a workflow record");
   const prior = workflow.decisions.find((decision) => decision.requestId === request.requestId);
@@ -2894,6 +2913,7 @@ async function retryTaskCanvasCloseout(deps: DeveloperTaskRouteDependencies, cal
 async function startTaskWorkflowReview(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "workflow-review");
   const access = await authorizeTaskAction(deps, caller, taskId, "retry");
+  await refuseViewerNewWork(deps, access.task);
   const resumed = await resumeParkedTaskDispatch(deps, caller, access, request);
   if (resumed !== undefined) return resumed;
   const { task } = access;

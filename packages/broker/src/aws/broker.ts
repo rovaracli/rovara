@@ -309,7 +309,7 @@ import {
   type CallbackClaims, type OperationRecord,
 } from "./cancellation.js";
 import { requireCreatorStillMember, requireWorkspaceCreatorStillMember, type CreatorCheckDependencies } from "../developer/creator-member.js";
-import { effectiveProjectRole, grantRoleOf, requireNewWorkAllowed } from "../developer/project-roles.js";
+import { effectiveProjectRole, grantRoleOf, requireNewWorkAllowed, viewerCannotStartTasksMessage } from "../developer/project-roles.js";
 import { aiToolTurn, completedTurn, developerFooter, E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON, githubWorkflowPullRequestKey, inertName, OUTCOME, partyOfTask, taskKey, taskOwnerKey, taskOwnerSubject, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type GithubWorkflowPullRequestRecord, type StoredEvent } from "../developer/task-records.js";
 import { readWorkspaceLimits } from "../developer/limits.js";
 import { WORKFLOW_DISPATCH_PK, workflowDispatchItem, type WorkflowDispatchRecord, type WorkflowE2EReadinessMarker, AWS_TEMPORARY_MESSAGE, GATED_TASK_PULL_REQUEST_ACTION_REFUSAL, GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, UNEXPECTED_REQUEST_MESSAGE, hashJson, isConditional, isTemporaryAwsError, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, planDocumentInstructions, workerPrompt } from "./broker-shared.js";
@@ -2965,6 +2965,21 @@ async function newWorkspacePreparation(
   };
 }
 
+/**
+ * The project role of the Slack person behind a thread request (Plan 2, Task 21): their live org role, their own grant on the bound project
+ * (a viewer's included, which wins) and, failing both, the bound channel they are speaking in, which makes them a contributor.
+ */
+async function slackRequesterRole(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity): Promise<ProjectRole> {
+  const slack = identity.slack;
+  if (slack === undefined) return "contributor";
+  const orgId = requireOrgId(identity.orgId);
+  const developerId = developerIdForSlackUser(slack.requester.userId);
+  return effectiveProjectRole(
+    { developerId, orgRole: (await readOrgMember(dependencies, orgId, developerId))?.role ?? "member" },
+    await getMembership(dependencies, orgId, developerId, slack.binding.projectName), true,
+  ) ?? "contributor";
+}
+
 /** The service routes' caller must be the Slack orchestrator's role. */
 function requireSlackServiceRole(dependencies: AwsBrokerDependencies, request: AdaptedHttpRequest): void {
   const configuration = dependencies.slack;
@@ -3628,6 +3643,10 @@ async function ensureThreadWorkspace(
     }
     return sharedThreadWorkspace(dependencies, identity, identity.sharedTask, input.includeSharedTask === true, include, includeSettingsRevision);
   }
+  // Viewers only view (Plan 2, Task 21): a follow-up in a thread that already has its workspace drives the agent too, so it is refused for
+  // an explicit viewer. Everyone else keeps today's behaviour.
+  const requesterRole = await slackRequesterRole(dependencies, identity);
+  if (requesterRole === "viewer") throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(slack.binding.projectName));
   const threadWorkspace = await getThreadWorkspace(dependencies, identity.ownerKey);
   if (threadWorkspace) {
     if (threadWorkspace.status === "CLOSED" && threadWorkspace.closedAt) {
@@ -3664,13 +3683,7 @@ async function ensureThreadWorkspace(
   // Plan 2, Task 11: a new thread is new work, so an archived project refuses it. The requester's role is their real one (Task 21): an
   // explicit grant (a viewer's included) wins, an org owner or admin maintains, and otherwise the bound channel makes them a contributor.
   // Threads that already have a workspace were answered above and keep going.
-  const requesterOrg = requireOrgId(identity.orgId);
-  const requesterId = developerIdForSlackUser(slack.requester.userId);
-  const requesterRole = effectiveProjectRole(
-    { developerId: requesterId, orgRole: (await readOrgMember(dependencies, requesterOrg, requesterId))?.role ?? "member" },
-    await getMembership(dependencies, requesterOrg, requesterId, slack.binding.projectName), true,
-  ) ?? "contributor";
-  await requireNewWorkAllowed(dependencies, requesterOrg, slack.binding.projectName, requesterRole, "task");
+  await requireNewWorkAllowed(dependencies, requireOrgId(identity.orgId), slack.binding.projectName, requesterRole, "task");
   // Plan 2, Task 15: a new thread is new work that needs the org's GitHub connection (cloud installs), before any budget or charge.
   const gate = repositoryGateOf(dependencies);
   if (gate !== undefined) await requireRepositoriesConnected(gate, requireOrgId(identity.orgId), project.definition);
@@ -5030,6 +5043,10 @@ async function acceptTask(
   assertNoUntrustedRoutingFields(value);
   const request = OperationRequestSchema.parse(value);
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
+  // A Slack person in their own thread (not a teammate in a shared task's thread) who holds the viewer role cannot drive the agent.
+  if (identity.slack !== undefined && identity.sharedTask === undefined && await slackRequesterRole(dependencies, identity) === "viewer") {
+    throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(workspace.projectName));
+  }
   await requireProjectAuthority(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName, { taskCreator: () => workspaceTaskOwner(dependencies, workspace.id) });
   const requestHash = hashJson({ conversationId: request.conversationId, prompt: request.prompt,
     ...(options.workflowReviewNote === undefined ? {} : { workflowReviewNote: options.workflowReviewNote }),
@@ -6172,6 +6189,8 @@ async function slackTaskAccess(
     // A verified Slack message/service call in the task's exact linked thread is the legacy
     // commenter proof. The caller validates that exact thread before using this result.
     if (sidecar !== undefined || action !== "comment" || task.share === undefined) throw error;
+    // A project viewer only views (Plan 2, Task 21): their explicit grant beats the thread fallback. Anyone with no grant keeps it.
+    if (grantRoleOf(await getMembership(dependencies, caller.orgId, caller.developerId, task.project)) === "viewer") throw error;
     return { caller, routeDeps, access: { task, role: "commenter", ownerActorIds: [taskOwnerKey(task.developerId, task.taskId)] } };
   }
 }

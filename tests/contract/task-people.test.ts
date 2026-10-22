@@ -21,6 +21,9 @@ import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { developerTaskRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
+import { resolveTaskAccess } from "../../packages/broker/src/developer/task-access.js";
+import { resolveTaskDispatchPeople } from "../../packages/broker/src/developer/task-people.js";
+import { projectMemberKey } from "../../packages/contracts/src/index.js";
 import { slackDirectory } from "../../packages/broker/src/developer/slack-directory.js";
 import { checkTaskPersonIdentity } from "../../packages/broker/src/developer/task-person-identity.js";
 import type { TaskPeopleDisplayAdmission } from "../../packages/broker/src/developer/task-people-display-budget.js";
@@ -81,6 +84,63 @@ async function peopleBroker() {
   }
   return { h, creator, other, thread, taskId, stored };
 }
+
+describe("a project viewer on a task with a PEOPLE record (Plan 2, Task 21)", () => {
+  /** The route dependencies of a signed-in Slack user (who is in the channel), on a task that has a PEOPLE sidecar and channel access switched on. */
+  async function viewerFixture() {
+    const fixture = await peopleBroker();
+    const viewer = "U0VIEWER99";
+    const caller = actor(developerIdForSlackUser(viewer), viewer, "Vera Viewer");
+    const deps = (who: DeveloperCaller) => developerTaskRouteDependencies({ documentClient: fixture.h.db, tableName: "state", developer: fixture.h.brokerInput.developer, now: Date.now, tasks: fixture.h.actions } as never, who);
+    const grant = (who: DeveloperCaller, role: "viewer" | "developer", projectRole?: string) => fixture.h.db.set({ ...projectMemberKey(TEST_ORG, who.developerId, "payments"), entityType: "MEMBERSHIP",
+      ownerKey: who.developerId, projectName: "payments", grantId: randomUUID(), role, ...(projectRole === undefined ? {} : { projectRole }) });
+    return { ...fixture, viewer, caller, deps, grant };
+  }
+  const refusal = async (promise: Promise<unknown>) => { try { await promise; } catch (error) { return error as { code?: string }; } throw new Error("expected a refusal"); };
+
+  it("with no grant, a channel member keeps the commenter role and its actions (the share design is unchanged)", async () => {
+    const { caller, deps, taskId } = await viewerFixture();
+    await expect(resolveTaskAccess(deps(caller), caller, taskId)).resolves.toMatchObject({ role: "commenter" });
+    await expect(resolveTaskAccess(deps(caller), caller, taskId, "comment")).resolves.toMatchObject({ role: "commenter" });
+  });
+
+  it("an explicit viewer grant beats the channel: the role is viewer, which reads but cannot comment, suggest or ask", async () => {
+    const { caller, deps, taskId, grant } = await viewerFixture();
+    grant(caller, "viewer", "viewer");
+    await expect(resolveTaskAccess(deps(caller), caller, taskId)).resolves.toMatchObject({ role: "viewer" });
+    await expect(resolveTaskAccess(deps(caller), caller, taskId, "read")).resolves.toMatchObject({ role: "viewer" });
+    for (const action of ["comment", "suggest", "ask", "decide"] as const) {
+      expect((await refusal(resolveTaskAccess(deps(caller), caller, taskId, action))).code, action).toBe("TASK_NOT_FOUND");
+    }
+  });
+
+  it("caps an explicit commenter role at viewer for a project viewer, and leaves a contributor's commenter role alone", async () => {
+    const { h, caller, deps, taskId, grant } = await viewerFixture();
+    h.db.set({ pk: `DEVTASK#${taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 2, orphaned: false, people: [
+      { developerId: developerIdForSlackUser("U0EREVIEW2"), slackUserId: "U0EREVIEW2", name: "U0EREVIEW2", role: "owner" },
+      { developerId: caller.developerId, slackUserId: "U0VIEWER99", name: "Vera", role: "commenter" },
+    ] });
+    h.db.set({ pk: `DEVTASK#${taskId}`, sk: `PERSON#${randomUUID()}`, schemaVersion: 1, personId: randomUUID(), developerId: caller.developerId, slackUserId: "U0VIEWER99", name: "Vera", method: "slack", issuer: "https://slack.com", subject: "U0VIEWER99", createdAt: new Date().toISOString() });
+    await expect(resolveTaskAccess(deps(caller), caller, taskId)).resolves.toMatchObject({ role: "commenter" });
+    grant(caller, "developer", "contributor");
+    await expect(resolveTaskAccess(deps(caller), caller, taskId)).resolves.toMatchObject({ role: "commenter" });
+    grant(caller, "viewer", "viewer");
+    await expect(resolveTaskAccess(deps(caller), caller, taskId)).resolves.toMatchObject({ role: "viewer" });
+    expect((await refusal(resolveTaskAccess(deps(caller), caller, taskId, "comment"))).code).toBe("TASK_NOT_FOUND");
+  });
+
+  it("an owner lowered to viewer still reads and keeps the owner role (to cancel) but is no owner for dispatch: new work is parked", async () => {
+    const { h, other, taskId, deps, grant, stored } = await viewerFixture();
+    const owner = actor(developerIdForSlackUser(other), other, other);
+    const task = h.db.get(`DEVTASK#${taskId}`, "META") as unknown as DeveloperTaskRecord;
+    void stored;
+    await expect(resolveTaskDispatchPeople(deps(owner), task)).resolves.toMatchObject({ status: "ALLOWED" });
+    grant(owner, "viewer", "viewer");
+    await expect(resolveTaskAccess(deps(owner), owner, taskId, "close")).resolves.toMatchObject({ role: "owner" });
+    await expect(resolveTaskAccess(deps(owner), owner, taskId, "read")).resolves.toMatchObject({ role: "owner" });
+    await expect(resolveTaskDispatchPeople(deps(owner), task)).resolves.toMatchObject({ status: "OWNERLESS", ownerActorIds: [] });
+  });
+});
 
 describe("People adapter correction acceptance", () => {
   it("projects the verified task Slack thread as the only add-people destination", async () => {

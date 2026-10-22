@@ -247,15 +247,17 @@ const MEMBER_REQUEST_SECONDS = 86_400;
 
 export interface ProjectMemberChangeDependencies extends ProjectMembersDependencies { now: () => Date }
 
-type StoredRequest = { action?: unknown; target?: unknown; role?: unknown; by?: unknown; response?: unknown };
+type StoredRequest = { indexExpiresAt?: unknown; action?: unknown; target?: unknown; role?: unknown; by?: unknown; response?: unknown };
 
 /**
  * The stored outcome of a request id already used on this project, or undefined for a fresh one. A replay must be the same caller, action,
  * person and role; anything else with that id is IDEMPOTENCY_CONFLICT (so one caller can neither read nor replay another's request).
  */
-async function replayOf(deps: ProjectMembersDependencies, orgId: OrgId, project: string, requestId: string, expected: { action: "put" | "remove"; target: string; role?: ProjectRole; by: string }): Promise<unknown> {
+async function replayOf(deps: ProjectMemberChangeDependencies, orgId: OrgId, project: string, requestId: string, expected: { action: "put" | "remove"; target: string; role?: ProjectRole; by: string }): Promise<unknown> {
   const stored = (await getItem(deps, memberRequestKey(orgId, project, requestId))) as StoredRequest | undefined;
   if (stored === undefined) return undefined;
+  // The State table's TTL can lag by a day or two: a record past its expiry is gone, as far as a request id is concerned.
+  if (typeof stored.indexExpiresAt === "number" && stored.indexExpiresAt <= Math.floor(deps.now().getTime() / 1000)) return undefined;
   if (stored.action !== expected.action || stored.target !== expected.target || stored.by !== expected.by || (stored.role ?? undefined) !== (expected.role ?? undefined)) {
     throw agentXError("IDEMPOTENCY_CONFLICT", "that request id was already used for a different change; use a new one");
   }
@@ -268,7 +270,9 @@ function requestWrite(deps: ProjectMemberChangeDependencies, orgId: OrgId, proje
   return { Put: {
     TableName: deps.tableName,
     Item: { ...memberRequestKey(orgId, project, requestId), entityType: "PROJECT_MEMBER_REQUEST", at: at.toISOString(), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(at.getTime() / 1000) + MEMBER_REQUEST_SECONDS, ...record },
-    ConditionExpression: "attribute_not_exists(pk)",
+    // A record that has expired but is not yet deleted by the TTL does not stop the id being used again.
+    ConditionExpression: `attribute_not_exists(pk) OR ${INDEX_EXPIRY_ATTRIBUTE} <= :now`,
+    ExpressionAttributeValues: { ":now": Math.floor(at.getTime() / 1000) },
   } };
 }
 

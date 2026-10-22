@@ -13,7 +13,7 @@ import { projectMembersOf, type DeveloperRouteDependencies } from "../../package
 import { createProjectMembers, type ProjectMembers } from "../../packages/broker/src/org/project-members.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
-import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace } from "../support/slack-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace, serviceCall } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
@@ -184,11 +184,96 @@ describe("a thread started in the project's Slack channel uses the person's real
     }
   });
 
+  it("refuses a viewer's follow-up in an existing thread (and its operations) with the viewer message, while others keep going", async () => {
+    const h = await team();
+    slackPerson(h, "U0VIEWER05", "viewer");
+    slackPerson(h, "U0CONTRIB05", "contributor");
+    const existing = thread(40);
+    const created = await ensureWorkspace(h.handler, existing, "U0MAYA001");
+    expect(created.status).toBe(200);
+    const workspaceId = String(created.body.workspaceId);
+    // The thread's workspace is the same whoever asks; the viewer is refused, and nothing is dispatched for them.
+    const operations = () => h.db.find((item) => item.entityType === "OPERATION").length;
+    const before = operations();
+    const refused = await ensureWorkspace(h.handler, existing, "U0VIEWER05");
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "PROJECT_ACCESS_DENIED", message: expect.stringContaining(VIEWER_MESSAGE) as string });
+    const conversation = await serviceCall(h.handler, existing, "U0MAYA001", "POST", `/v1/service/workspaces/${workspaceId}/conversations`);
+    const prompt = (user: string) => serviceCall(h.handler, existing, user, "POST", `/v1/service/workspaces/${workspaceId}/tasks`, {
+      requestId: randomUUID(), conversationId: (conversation.body.conversation as { id: string }).id, prompt: "do more",
+    });
+    const refusedTask = await prompt("U0VIEWER05");
+    expect(refusedTask.status).toBe(403);
+    expect(refusedTask.body.error).toMatchObject({ code: "PROJECT_ACCESS_DENIED", message: expect.stringContaining(VIEWER_MESSAGE) as string });
+    expect(operations()).toBe(before);
+    // A contributor with a grant, and a person with no grant (the channel), still follow up.
+    expect((await ensureWorkspace(h.handler, existing, "U0CONTRIB05")).status).toBe(200);
+    expect((await ensureWorkspace(h.handler, existing, "U0MAYA001")).status).toBe(200);
+    expect([200, 202, 409]).toContain((await prompt("U0MAYA001")).status);
+  });
+
   it("keeps a viewer's explicit grant over the channel: they are refused although the channel would make them a contributor", async () => {
     const h = await team();
     // Maya's Slack user is in the bound channel; give the developer her Slack id derives a viewer grant.
     slackPerson(h, "U0MAYA001", "viewer");
     expect((await ensureWorkspace(h.handler, thread(30), "U0MAYA001")).status).toBe(403);
+  });
+});
+
+describe("a thread reply on a Slack-started task (the legacy commenter fallback)", () => {
+  async function startedTask() {
+    const h = await team();
+    const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000021" };
+    const started = await h.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
+    const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
+    const note = async (userId: string, n: number) =>
+      (JSON.parse((await h.handler({ source: "agentx.slack-ingress", action: "thread-note", taskId, thread, userId, messageTs: `1695500002.00000${n}`, eventId: `Ev${userId}${n}`, text: "A reply" })).body) as { outcome: string }).outcome;
+    return { h, note };
+  }
+
+  it("is kept for a teammate with no project grant (the share design is unchanged)", async () => {
+    const { note } = await startedTask();
+    expect(await note("U0TEAMMATE1", 1)).toBe("captured");
+  });
+
+  it("is not given to a teammate who holds a viewer grant on the task's project, who may only view", async () => {
+    const { h, note } = await startedTask();
+    const viewerId = developerIdForSlackUser("U0VIEWER02");
+    h.db.set({ ...projectMemberKey(TEST_ORG, viewerId, "payments"), entityType: "MEMBERSHIP", ownerKey: viewerId, projectName: "payments", grantId: randomUUID(), role: "viewer", projectRole: "viewer" });
+    expect(await note("U0VIEWER02", 2)).toBe("refused");
+    expect(h.db.find((item) => String(item.sk).startsWith("NOTE#"))).toHaveLength(0);
+    // The same person with a contributor grant is a teammate again.
+    h.db.set({ ...projectMemberKey(TEST_ORG, viewerId, "payments"), entityType: "MEMBERSHIP", ownerKey: viewerId, projectName: "payments", grantId: randomUUID(), role: "developer", projectRole: "contributor" });
+    expect(await note("U0VIEWER02", 3)).toBe("captured");
+  });
+});
+
+describe("an owner lowered to viewer keeps their tasks to look at and cancel, but starts no new work on them", () => {
+  it("is refused continue, retry, review and send-back with the viewer message, and can still read and cancel", async () => {
+    const h = await team();
+    const plain = String(((await h.dev(KIT, "POST", "/v1/dev/tasks", start())).body.task as { taskId: string }).taskId);
+    const flow = String(((await h.dev(KIT, "POST", "/v1/dev/tasks", { ...start(), workflow: true, workflowPath: "QUICK" })).body.task as { taskId: string }).taskId);
+    await put(h, PRIYA, KIT, "viewer");
+    const body = () => ({ requestId: randomUUID(), instructions: "Go on" });
+    for (const [label, path] of [["continue", `${plain}/continue`], ["retry", `${flow}/workflow/retry`], ["review", `${flow}/workflow/review`], ["send-back", `${flow}/workflow/send-back`]] as const) {
+      const refused = await h.dev(KIT, "POST", `/v1/dev/tasks/${path}`, body());
+      expect(refused.status, label).toBe(403);
+      expect(refused.body.error, label).toMatchObject({ code: "PROJECT_ACCESS_DENIED", message: expect.stringContaining(VIEWER_MESSAGE) as string });
+    }
+    expect((await h.dev(KIT, "GET", `/v1/dev/tasks/${plain}`)).status).toBe(200);
+    expect((await h.dev(KIT, "POST", `/v1/dev/tasks/${plain}/cancel`, { requestId: randomUUID() })).status).toBe(200);
+  });
+
+  it("is not told the viewer message about someone else's task (that reads as not found), and a contributor keeps continuing", async () => {
+    const h = await team();
+    const mine = String(((await h.dev(KIT, "POST", "/v1/dev/tasks", start())).body.task as { taskId: string }).taskId);
+    const record = h.db.get(`DEVTASK#${mine}`, "META") as unknown as { workspaceId: string };
+    const active = () => String((h.db.get(`WORKSPACE#${record.workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
+    await h.finish(record.workspaceId, active(), "SUCCEEDED");
+    await h.finish(record.workspaceId, active(), "SUCCEEDED");
+    const theirs = await h.dev(SAM, "POST", `/v1/dev/tasks/${mine}/continue`, { requestId: randomUUID(), instructions: "Go on" });
+    expect(theirs.body.error).toMatchObject({ code: "TASK_NOT_FOUND" });
+    expect((await h.dev(KIT, "POST", `/v1/dev/tasks/${mine}/continue`, { requestId: randomUUID(), instructions: "Go on" })).status).toBe(200);
   });
 });
 
@@ -537,6 +622,27 @@ describe("request ids (a replay answers the stored outcome)", () => {
     const stale = await put(h, PRIYA, NEO, "viewer");
     expect(stale.body.error).toMatchObject({ code: "CHANGE_STALE" });
     expect(grantOf(h.db, NEO)).toMatchObject({ projectRole: "contributor" });
+  });
+
+  it("an expired record (the State table's TTL can lag) reads as absent: the id is a fresh request", async () => {
+    const h = await team();
+    const requestId = randomUUID();
+    await put(h, PRIYA, NEO, "contributor", { requestId });
+    const key = { pk: `ORG#${TEST_ORG}#PROJECT#payments`, sk: `MEMBER_REQUEST#${requestId}` };
+    // Still live: a different role with the id is a conflict.
+    expect((await put(h, PRIYA, NEO, "viewer", { requestId })).status).toBe(409);
+    h.db.set({ ...h.db.get(key)!, indexExpiresAt: Math.floor(Date.now() / 1000) - 10 });
+    const fresh = await put(h, PRIYA, NEO, "viewer", { requestId });
+    expect(fresh.status, JSON.stringify(fresh.body)).toBe(200);
+    expect(grantOf(h.db, NEO)).toMatchObject({ projectRole: "viewer" });
+    expect(h.db.get(key)).toMatchObject({ role: "viewer", response: { developerId: NEO.developerId, role: "viewer" } });
+    expect(h.db.get(key)!.indexExpiresAt).toBeGreaterThan(Date.now() / 1000 + 80_000);
+    // The same holds for a removal.
+    const removal = randomUUID();
+    await remove(h, PRIYA, NEO, { requestId: removal });
+    h.db.set({ ...h.db.get({ pk: key.pk, sk: `MEMBER_REQUEST#${removal}` })!, indexExpiresAt: 1 });
+    await put(h, PRIYA, NEO, "contributor");
+    expect(dataOf(await remove(h, PRIYA, NEO, { requestId: removal }))).toEqual({ developerId: NEO.developerId, removed: true });
   });
 
   it("a failed change is not stored: the same id can be retried", async () => {
