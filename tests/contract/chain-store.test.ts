@@ -422,6 +422,46 @@ describe("publish, versions and rollback", () => {
     expect(await chains.listVersions(ORG_A, chain.chainId)).toEqual([]);
   });
 
+  it("refuses a malformed digest and a wrong digest with their own words", async () => {
+    const { create, chains, publishInput } = setup();
+    const chain = await create("Investigate");
+    const input = await publishInput(chain.chainId);
+    expect(await code(chains.publish({ ...input, digest: "nope" }))).toEqual({ code: "CONFIG_INVALID", message: "digest: must be a SHA-256 digest of 64 hex characters" });
+    expect(await code(chains.publish({ ...input, digest: "0".repeat(64) }))).toEqual({ code: "CONFIG_INVALID", message: "digest: must be the SHA-256 of the pinned definition" });
+  });
+
+  it("applies only while the current version is the one the caller compared against", async () => {
+    const { create, chains, publishInput, publish, edit } = setup();
+    const chain = await create("Investigate");
+    await expect(chains.publish({ ...(await publishInput(chain.chainId)), expectedCurrentVersion: null })).resolves.toMatchObject({ version: 1 });
+    await edit(chain.chainId);
+    expect(await code(chains.publish({ ...(await publishInput(chain.chainId)), expectedCurrentVersion: null }))).toMatchObject({ code: "CHAIN_REVISION_CONFLICT" });
+    expect(await code(chains.publish({ ...(await publishInput(chain.chainId)), expectedCurrentVersion: 4 }))).toMatchObject({ code: "CHAIN_REVISION_CONFLICT" });
+    await expect(chains.publish({ ...(await publishInput(chain.chainId)), expectedCurrentVersion: 1 })).resolves.toMatchObject({ version: 2 });
+    await edit(chain.chainId, TWO_STEPS, "again");
+    await expect(publish(chain.chainId)).resolves.toMatchObject({ version: 3 });
+  });
+
+  it("refuses a publish when the draft was edited between the read and the write", async () => {
+    const { create, chains, publishInput, edit, hooks } = setup();
+    const chain = await create("Investigate");
+    const input = await publishInput(chain.chainId);
+    hooks.push(async () => { await edit(chain.chainId, TWO_STEPS, "edited meanwhile"); });
+    expect(await code(chains.publish(input))).toEqual({ code: "CHAIN_REVISION_CONFLICT", message: CONFLICT });
+    expect(await chains.listVersions(ORG_A, chain.chainId)).toEqual([]);
+  });
+
+  it("refuses a pinned version the draft did not name", async () => {
+    const ctx = setup();
+    const { agent, publishAgain } = await ctx.customAgent("Helper");
+    await publishAgain();
+    const chain = await ctx.create("Named", { definition: definitionWith(agent.agentId, 1) });
+    const input = await ctx.publishInput(chain.chainId);
+    const other = structuredClone(input.pinned);
+    (other.steps[0] as { agent: { version: number } }).agent.version = 2;
+    expect(await code(ctx.chains.publish({ ...input, pinned: other, digest: chainDigest(other) }))).toEqual({ code: "CONFIG_INVALID", message: "pinned.steps.0.agent.version: the draft names version 1" });
+  });
+
   it("refuses a pinned definition that still holds \"current\"", async () => {
     const { create, chains, publishInput } = setup();
     const chain = await create("Investigate");
@@ -511,6 +551,51 @@ describe("publish checks the agents again, inside the transaction", () => {
     expect(await code(ctx.chains.publish(input))).toMatchObject({ code: "CHAIN_REVISION_CONFLICT" });
     expect(await ctx.chains.listVersions(ORG_A, chain.chainId)).toEqual([]);
     expect(await code(ctx.chains.publish(await ctx.publishInput(chain.chainId)))).toEqual({ code: "AGENT_UNAVAILABLE", message: "Root-cause analyst is turned off in your company. Ask an admin to turn it on." });
+  });
+
+  it("refuses a hand-built pin that names an agent version that does not exist", async () => {
+    const ctx = setup();
+    const { agent } = await ctx.customAgent("Helper");
+    const chain = await ctx.create("Ghost", { definition: definitionWith(agent.agentId, 9) });
+    const draft = (await ctx.chains.getDraft(ORG_A, chain.chainId))!;
+    const pinned = draft.definition as unknown as PinnedChainDefinition;
+    expect(await code(ctx.chains.publish({ orgId: ORG_A, chainId: chain.chainId, expectedDraftRevision: 1, pinned, digest: chainDigest(pinned), by: ALICE }))).toEqual({
+      code: "CHAIN_REVISION_CONFLICT", message: "An agent this chain uses changed while it was being published. Publish again.",
+    });
+  });
+
+  it("refuses a hand-built pin of a built-in that is not what the org runs", async () => {
+    const ctx = setup();
+    ctx.release.codeReviewer = 2;
+    const handBuilt = async (definition: ChainDefinitionInput, version: number) => {
+      const chain = await ctx.create(`Hand ${String(version)} ${String(Math.random())}`, { definition });
+      const draft = (await ctx.chains.getDraft(ORG_A, chain.chainId))!;
+      const pinned = { ...draft.definition, steps: draft.definition.steps.map((step) => (step.kind === "agent" ? { ...step, agent: { ...step.agent, version } } : step)) };
+      return code(ctx.chains.publish({ orgId: ORG_A, chainId: chain.chainId, expectedDraftRevision: 1, pinned, digest: chainDigest(pinned), by: ALICE }));
+    };
+    const current = definitionWith("code-reviewer", "current");
+    const named = definitionWith("code-reviewer", 2);
+    // A release that does not exist.
+    expect(await handBuilt(definitionWith("code-reviewer", 7), 7)).toEqual({ code: "NOT_FOUND", message: "Code reviewer has no version 7" });
+    // No settings yet, so the org runs the newest release (2): "current" pinned to 1 is stale.
+    expect(await handBuilt(current, 1)).toMatchObject({ code: "CHAIN_REVISION_CONFLICT" });
+    // The org pinned release 1: release 2 is not adopted yet, so naming it outright is refused.
+    ctx.db.set({ ...builtinSettingsKey(ORG_A, "code-reviewer"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 1, updatedBy: "x", updatedAt: "2026-10-20T00:00:00.000Z" });
+    expect(await handBuilt(named, 2)).toMatchObject({ code: "CHAIN_REVISION_CONFLICT" });
+    expect(await handBuilt(current, 1)).toBeUndefined();
+  });
+
+  it("refuses a hand-built pin that gives one agent's \"current\" two versions", async () => {
+    const ctx = setup();
+    const { agent, publishAgain } = await ctx.customAgent("Helper");
+    await publishAgain();
+    const step = (id: string, to: string | undefined) => ({ kind: "agent" as const, id, name: id, agent: { agentId: agent.agentId, version: "current" as const }, next: to === undefined ? ({ kind: "end" } as const) : ({ kind: "go", to } as const) });
+    const chain = await ctx.create("Twice", { definition: { start: "a", steps: [step("a", "b"), step("b", undefined)] } });
+    const draft = (await ctx.chains.getDraft(ORG_A, chain.chainId))!;
+    const pinned = { ...draft.definition, steps: draft.definition.steps.map((entry, index) => (entry.kind === "agent" ? { ...entry, agent: { ...entry.agent, version: index + 1 } } : entry)) };
+    expect(await code(ctx.chains.publish({ orgId: ORG_A, chainId: chain.chainId, expectedDraftRevision: 1, pinned, digest: chainDigest(pinned), by: ALICE }))).toEqual({
+      code: "CONFIG_INVALID", message: "pinned: one agent's \"current\" cannot be two versions",
+    });
   });
 
   it("publishes a chain that uses one agent in many steps (one check per agent, not per step)", async () => {
@@ -708,6 +793,29 @@ describe("the owner's monthly total", () => {
     expect((await ctx.chains.get(ORG_A, chain.chainId))!.monthlyBudgetUsd).toBe(8);
   });
 
+  it("archives only a chain whose owner, status and budget are as they were read, even when no total is involved", async () => {
+    const ctx = setup();
+    const chain = await ctx.create("Investigate");
+    ctx.hooks.push(async () => { await ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, DAN); });
+    expect(await code(ctx.chains.archive(ORG_A, chain.chainId, ALICE))).toMatchObject({ code: "CHAIN_REVISION_CONFLICT" });
+    expect(await ctx.chains.get(ORG_A, chain.chainId)).toMatchObject({ status: "active", owner: { kind: "member", developerId: BOB } });
+  });
+
+  it("moves an owner only while nothing else about the chain changed since it was read", async () => {
+    const ctx = setup();
+    const chain = await ctx.create("Investigate");
+    ctx.hooks.push(async () => { ctx.clock.now += 1000; await ctx.chains.updateProfile({ orgId: ORG_A, chainId: chain.chainId, description: "changed meanwhile", by: ALICE }); });
+    expect(await code(ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, DAN))).toMatchObject({ code: "CHAIN_REVISION_CONFLICT" });
+    expect((await ctx.chains.get(ORG_A, chain.chainId))!.owner).toEqual(ALICE_OWNS);
+  });
+
+  it("skips a directory entry whose chain is gone when it lists", async () => {
+    const ctx = setup();
+    const chain = await ctx.create("Investigate");
+    ctx.db.set({ ...chainDirectoryKey(ORG_A, "chn_zzzzzzzzzzzzzzzzzzzz"), entityType: "CHAIN_DIRECTORY", chainId: "chn_zzzzzzzzzzzzzzzzzzzz" });
+    expect((await ctx.chains.list(ORG_A)).map((entry) => entry.chainId)).toEqual([chain.chainId]);
+  });
+
   it("changes nothing when the chain changed since it was read (stale owner, status or budget)", async () => {
     const ctx = setup();
     const chain = await ctx.create("Investigate");
@@ -797,6 +905,36 @@ describe("shares", () => {
     const results = await Promise.all([save(BOB), save(CAROL)]);
     expect(results.filter((result) => result !== undefined)).toEqual([{ code: "CHAIN_REVISION_CONFLICT", message: "Someone else changed who this chain is shared with. Reload it and make your change again." }]);
     expect(await ctx.chains.listShares(ORG_A, chain.chainId)).toHaveLength(1);
+  });
+
+  it("changes at most 48 shares in one save", async () => {
+    const ctx = setup();
+    const chain = await ctx.create("Investigate");
+    const principals = Array.from({ length: 49 }, (_unused, index) => ({ kind: "member" as const, developerId: index.toString(16).padStart(64, "0") }));
+    expect(await code(ctx.chains.replaceShares({ orgId: ORG_A, chainId: chain.chainId, upsert: principals.map((principal) => ({ principal, level: "view" as const })), remove: [], expectedSharesRevision: 0, by: ALICE }))).toEqual({
+      code: "CONFIG_INVALID", message: "shares: change at most 48 people or groups in one save",
+    });
+    expect(await ctx.chains.listShares(ORG_A, chain.chainId)).toEqual([]);
+  });
+
+  it("reports a stored share that is not valid when it saves the set, and writes the new set", async () => {
+    const ctx = setup();
+    const chain = await ctx.create("Investigate");
+    ctx.db.set({ ...chainKey(ORG_A, chain.chainId, "SHARE#ORG"), entityType: "CHAIN_SHARE", principal: { kind: "everyone" }, level: "edit" });
+    const logged: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    const deps = { ...ctx.deps, log: (event: string, fields: Record<string, unknown>) => logged.push({ event, fields }) };
+    await setChainShares(deps, { orgId: ORG_A, chainId: chain.chainId, shares: [{ principal: { kind: "member", developerId: BOB }, level: "view" }], by: ALICE });
+    expect(logged).toMatchObject([{ event: "chain_share_skipped", fields: { chainId: chain.chainId } }]);
+  });
+
+  it("leaves a share alone when it is asked to move it to the same person", async () => {
+    const ctx = setup();
+    const chain = await ctx.create("Investigate");
+    const bob = { kind: "member", developerId: BOB } as const;
+    await setChainShares(ctx.deps, { orgId: ORG_A, chainId: chain.chainId, shares: [{ principal: bob, level: "use" }], by: ALICE });
+    await ctx.chains.reassignShare({ orgId: ORG_A, chainId: chain.chainId, from: bob, to: bob, by: "system", cause: { kind: "member_merged", developerId: BOB } });
+    expect((await ctx.chains.listShares(ORG_A, chain.chainId)).map((entry) => [entry.principal, entry.level])).toEqual([[bob, "use"]]);
+    expect(ctx.db.get(principalChainSharesKey(ORG_A, bob, chain.chainId))).toMatchObject({ level: "use" });
   });
 
   it("refuses another org's chain as not found", async () => {
@@ -929,6 +1067,23 @@ describe("listing and owner rules", () => {
     expect(await names(DAN, "all")).toEqual(["Hidden:manage", "Own:manage", "Shared:manage", "Web:manage"]);
     expect(await names(STRANGER, "all")).toEqual([]);
     expect([own.chainId, hidden.chainId]).toHaveLength(2);
+  });
+
+  it("keeps an owner's own chain out of \"shared\", and a project's list to chains of or shared with that project", async () => {
+    const ctx = setup();
+    const own = await ctx.create("Own");
+    await ctx.create("Web", { owner: WEB_OWNS, accountable: { developerId: BOB }, by: BOB });
+    await setChainShares(ctx.deps, { orgId: ORG_A, chainId: own.chainId, shares: [{ principal: { kind: "member", developerId: ALICE }, level: "edit" }, { principal: { kind: "project", project: "api" }, level: "view" }], by: ALICE });
+    const names = async (who: string, scope: Parameters<typeof listVisibleChains>[2]) => (await listVisibleChains(ctx.deps, caller(who), scope)).map((entry) => entry.name).sort();
+    // Alice owns "Own" and has a share of it: it is hers, not shared with her.
+    expect(await names(ALICE, "shared")).toEqual([]);
+    expect(await names(ALICE, "mine")).toEqual(["Own"]);
+    // An admin sees everything, but a project's list is the chains that project owns or has been given.
+    expect(await names(DAN, { project: "api" })).toEqual(["Own"]);
+    expect(await names(DAN, { project: "web" })).toEqual(["Web"]);
+    // Alice has no role on api, so there is nothing to show her there, though her chain is shared with it.
+    expect(await names(ALICE, { project: "api" })).toEqual([]);
+    expect(await names(FRANK, { project: "api" })).toEqual(["Own"]);
   });
 
   it("applies the agent owner rules to a chain's owner, in a chain's words", async () => {
