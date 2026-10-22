@@ -667,7 +667,7 @@ describe("fix round 2 (the Task 32/33 re-check)", () => {
   const approveWithFailingResumes = async (t: World, scope: BudgetScope) => {
     const deps = t.deps();
     const failing = { ...deps, spendRequests: { ...deps.spendRequests!, resumeTask: async () => { throw new Error("boom"); } } };
-    const request = monthRequests(t).find((record) => record.status === "PENDING" && record.scope !== undefined && scopeKeyOf(record.scope) === scopeKeyOf(scope))!;
+    const request = monthRequests(t).find((record) => record.status === "PENDING" && record.scope !== undefined && scopeKeyOf(record.scope as BudgetScope) === scopeKeyOf(scope))!;
     await decideSpendRequest(failing, t.caller(DEB, "admin"), request.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" });
   };
 
