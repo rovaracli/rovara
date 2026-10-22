@@ -94,8 +94,8 @@ function violation(schema: JsonSchema, value: unknown, path: readonly string[]):
       const properties = isRecord(schema["properties"]) ? schema["properties"] : {};
       const additional = schema["additionalProperties"];
       for (const key of Object.keys(value)) {
-        const declared = properties[key];
-        if (isRecord(declared)) continue;
+        // Own keys only: `__proto__` and `constructor` are never a declared property (review M-2).
+        if (Object.hasOwn(properties, key) && isRecord(properties[key])) continue;
         if (isRecord(additional)) {
           const found = violation(additional, value[key], at(path, key));
           if (found !== undefined) return found;
@@ -109,7 +109,7 @@ function violation(schema: JsonSchema, value: unknown, path: readonly string[]):
         if (found !== undefined) return found;
       }
       for (const key of Array.isArray(schema["required"]) ? schema["required"] as string[] : []) {
-        if (value[key] === undefined) return { path: at(path, key).join("."), kind: "required" };
+        if (!Object.hasOwn(value, key) || value[key] === undefined) return { path: at(path, key).join("."), kind: "required" };
       }
       return undefined;
     }
