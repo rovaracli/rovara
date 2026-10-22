@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { ActionPolicySchema } from "./action-policy.js";
 import { ThreadConnectorSchema } from "./connectors.js";
+import { ModelIdentifierSchema } from "./models.js";
 import { OrgIdSchema } from "./org.js";
 import { AgentXNameSchema } from "./project.js";
 import { WorkspaceStatusSchema } from "./workspace.js";
@@ -70,6 +71,9 @@ export const SlackThreadNoteAnsweredResultSchema = z.object({ outcome: z.literal
 export const SlackModelAccessRequestSchema = z.object({
   orgId: OrgIdSchema.optional(),
   turnId: z.string().min(1).max(200),
+  /** The models the service will call with the key: the orchestrator's own and the gate classifier's. The control plane routes the first and keeps the second on Rovara's catalog. */
+  model: ModelIdentifierSchema.optional(),
+  classifierModel: ModelIdentifierSchema.optional(),
 }).strict();
 export type SlackModelAccessRequest = z.infer<typeof SlackModelAccessRequestSchema>;
 

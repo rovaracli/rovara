@@ -23,6 +23,8 @@ export interface TurnModelAccessInput {
   orgId?: string;
   /** The Slack event's ID: one turn, one reference on the key. */
   turnId: string;
+  /** The models the turn will call with the key: the control plane routes the orchestrator's and keeps the classifier on Rovara's catalog (Task 26). */
+  models?: { orchestrator?: { provider: string; modelId: string }; classifier?: { provider: string; modelId: string } };
   now?: () => number;
 }
 
@@ -47,7 +49,11 @@ export function turnModelAccessSource(input: TurnModelAccessInput): () => Promis
   const now = input.now ?? Date.now;
   const url = `${input.controlPlaneUrl.replace(/\/$/u, "")}/v1/model-access`;
   // The member comes from the signed Slack user header, so only the org (when known) and the turn go in the body.
-  const body = JSON.stringify({ ...(input.orgId === undefined ? {} : { orgId: input.orgId }), turnId: input.turnId });
+  const body = JSON.stringify({
+    ...(input.orgId === undefined ? {} : { orgId: input.orgId }), turnId: input.turnId,
+    ...(input.models?.orchestrator === undefined ? {} : { model: input.models.orchestrator }),
+    ...(input.models?.classifier === undefined ? {} : { classifierModel: input.models.classifier }),
+  });
   let current: TurnModelAccess | undefined;
   let pending: Promise<TurnModelAccess> | undefined;
   return async () => {

@@ -8,6 +8,7 @@ import {
   agentXError,
   unhandledDeploymentMode,
   type CodeBuildGateDefinition,
+  type ModelIdentifier,
   type ModelSelection,
   type Operation,
   type OperationRequester,
@@ -47,6 +48,12 @@ export interface OperationRecord extends Operation {
   settingsRevision?: number;
   /** Plan 3, Task 16: the model a task operation of an agent ran on (the person's ChatGPT plan model when it did), kept for the cross-company check of a later step. */
   model?: ModelSelection;
+  /**
+   * Task 26: where the model this operation runs on comes from, chosen when the operation was built: the source, the proxy alias its key may call, and the model
+   * the route was chosen for (so it can be checked against the live sources again each time the key is asked for). Null: nothing could serve the model (a ChatGPT
+   * plan's backup), so no company AI key is issued. Absent: the operation was built before routing, or on an install that does not route; its key is unscoped.
+   */
+  modelRoute?: { sourceId: string; alias: string; model: ModelIdentifier } | null;
   /** A prepare recorded FAILED because the task's first operation was refused (a model not allowed); its `error` is the refusal's words. */
   startRefused?: true;
   /** #341: the developer whose ChatGPT plan this task runs on; its chatgpt-token callback answers only their token. */

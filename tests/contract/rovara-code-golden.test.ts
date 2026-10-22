@@ -94,6 +94,29 @@ function operationKeyPaths(record: unknown, path = ""): Array<{ path: string; va
   return found;
 }
 
+/**
+ * Plan 3 Task 26: with agents set up every key is scoped to the model its operation runs on (change 2: the key's `models`), and the operation records the route
+ * it was built with (change 5: records gain fields). Rovara's default model is served by Rovara itself under its own catalog id, so the invocation carries no
+ * `modelRoute`. The paths of the `models` on every key the record shows minting, and of the `modelRoute` on every operation that has one.
+ */
+function mintModelPaths(record: unknown, path = ""): Array<{ path: string; value: unknown }> {
+  if (record === null || typeof record !== "object") return [];
+  const here = record as Record<string, unknown>;
+  const found: Array<{ path: string; value: unknown }> = [];
+  if (!Array.isArray(record) && "purpose" in here && "refId" in here && "tags" in here && "models" in here) found.push({ path: `${path}.models`, value: here.models });
+  for (const [key, child] of Object.entries(here)) found.push(...mintModelPaths(child, Array.isArray(record) ? `${path}[${key}]` : path === "" ? key : `${path}.${key}`));
+  return found;
+}
+function operationRoutePaths(record: unknown, path = ""): Array<{ path: string; value: unknown }> {
+  if (record === null || typeof record !== "object") return [];
+  const here = record as Record<string, unknown>;
+  const found: Array<{ path: string; value: unknown }> = [];
+  if (!Array.isArray(record) && here.entityType === "OPERATION" && "modelRoute" in here) found.push({ path: `${path}.modelRoute`, value: here.modelRoute });
+  for (const [key, child] of Object.entries(here)) found.push(...operationRoutePaths(child, Array.isArray(record) ? `${path}[${key}]` : path === "" ? key : `${path}.${key}`));
+  return found;
+}
+const ROVARA_DEFAULT = "us.anthropic.claude-sonnet-4-6";
+
 describe("Rovara Code with agents switched on", () => {
   const STARTS: GoldenScenario[] = [
     "plan-quick", "plan-full-requirements", "plan-review-decision", "implement", "checks", "review", "task-no-workflow", "task-no-workflow-no-proxy", "shared-task", "plan-ready-quick",
@@ -124,7 +147,12 @@ describe("Rovara Code with agents switched on", () => {
         { path: `taskItems[${String(meta)}].startedBy`, expected: { developerId: payer.developerId }, change: 5 },
         ...tagged.map(({ path, value }) => ({ path, expected: value, change: 5 as const })),
         ...operationKeyPaths(record).map(({ path, value }) => ({ path, expected: value, change: 3 as const })),
+        // Task 26, change 2: with the default order (Rovara only) a key may call Rovara's default model and nothing else, and it says so by value.
+        ...mintModelPaths(record).map(({ path }) => ({ path, expected: [ROVARA_DEFAULT], change: 2 as const })),
+        // Change 5: the operation says where its model comes from. The invocation is unchanged: it carries no `modelRoute`.
+        ...operationRoutePaths(record).map(({ path }) => ({ path, expected: { sourceId: "rovara", alias: ROVARA_DEFAULT, model: { provider: "amazon-bedrock", modelId: ROVARA_DEFAULT } }, change: 5 as const })),
       ]);
+      for (const sent of [record.invocation, record.forWorker] as Array<{ payload?: Record<string, unknown> } | null>) expect(sent?.payload ?? {}).not.toHaveProperty("modelRoute");
     }, 120_000);
   }
 });

@@ -4,7 +4,7 @@
 import { vi, type Mock } from "vitest";
 // The package the broker imports, not its source: an error must be an instance of the class the broker tests for.
 import { agentXError, type OrgId } from "@agentx/contracts";
-import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "../../packages/broker/src/model-proxy/access.js";
+import type { KeyAudit, MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "../../packages/broker/src/model-proxy/access.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 
 export interface FakeModelAccess extends ModelAccess {
@@ -17,6 +17,7 @@ export interface FakeModelAccess extends ModelAccess {
   removeSource: Mock<(orgId: OrgId, sourceId: string) => Promise<void>>;
   checkSource: Mock<(orgId: OrgId, sourceId: string) => Promise<SourceCheck>>;
   listSources: Mock<() => Promise<Array<{ orgId: OrgId; sourceId: string }>>>;
+  auditKeys: Mock<() => Promise<KeyAudit>>;
   mintKey: Mock<(input: MintKeyInput) => Promise<MintedKey>>;
   revokeKey: Mock<(key: string) => Promise<void>>;
   blockKey: Mock<(keyId: string) => Promise<void>>;
@@ -77,6 +78,7 @@ export function fakeModelAccess(options: { key?: string; mintFailure?: Error } =
     removeSource: vi.fn(async () => { guard(); }),
     checkSource: vi.fn(async () => { guard(); return { ok: true as const, health: "healthy" as const }; }),
     listSources: vi.fn(async () => { guard(); return []; }),
+    auditKeys: vi.fn(async () => { guard(); return { checked: minted.length, blocked: 0 }; }),
     mintKey: vi.fn(async (input) => {
       guard();
       if (options.mintFailure !== undefined) throw options.mintFailure;

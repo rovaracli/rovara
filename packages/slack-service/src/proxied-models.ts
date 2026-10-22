@@ -16,6 +16,8 @@ export interface ProxiedModelsOptions {
   /** Signs a request as the orchestrator role for this message's thread and member. */
   signedFetchFor: (message: SlackRequestMessage) => typeof fetch;
   classifierModel: { provider: string; modelId: string };
+  /** The model the orchestrator answers with, told to the control plane so it can route it (Task 26). */
+  orchestratorModel?: { provider: string; modelId: string };
   classifierTimeoutMs: number;
   log: ServiceLog;
   createClassifier: typeof createHostedClassifier;
@@ -39,6 +41,7 @@ export function createProxiedModels(options: ProxiedModelsOptions): ProxiedModel
     if (source === undefined) {
       source = turnModelAccessSource({
         controlPlaneUrl: options.controlPlaneUrl, signedFetch: options.signedFetchFor(message), turnId: message.eventId,
+        models: { classifier: options.classifierModel, ...(options.orchestratorModel === undefined ? {} : { orchestrator: options.orchestratorModel }) },
         ...(options.now === undefined ? {} : { now: options.now }),
       });
       sources.set(message.eventId, source);

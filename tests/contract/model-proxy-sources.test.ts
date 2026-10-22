@@ -2,7 +2,7 @@
 // (docs/learnings/model-sources-spike.md), and a fake STS evaluates a role's trust policy, so the Bedrock probe tests prove something.
 import { INFERENCE_PATHS, ModelSourceSchema, sourceAlias, type AgentXError, type ModelSource } from "@agentx/contracts";
 import type * as NodeCrypto from "node:crypto";
-import { randomInt } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 import { describe, expect, it, vi, type Mock } from "vitest";
 import type { ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
 import { ModelProxyClient, type RoleAssumer } from "../../packages/broker/src/model-proxy/client.js";
@@ -54,6 +54,7 @@ function litellm(options: { health?: (id: string) => { healthy: number; unhealth
   const credentials = new Map<string, StoredCredential>();
   const teams = new Map<string, string[] | undefined>();
   const seen: Seen[] = [];
+  const keys: Array<Record<string, unknown>> = [];
   let counter = 0;
   const fetchFake = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
@@ -111,6 +112,20 @@ function litellm(options: { health?: (id: string) => { healthy: number; unhealth
     if (method === "POST" && path === "/team/update") {
       if (Object.hasOwn(entry.body ?? {}, "models")) teams.set(body.team_id, body.models);
       return json({ team_id: body.team_id });
+    }
+    if (method === "GET" && path === "/team/info") {
+      const id = new URLSearchParams(url.search).get("team_id") ?? "";
+      return teams.has(id) ? json({ team_id: id, team_info: { team_id: id, models: teams.get(id) } }) : json({ error: { message: "team not found" } }, 404);
+    }
+    if (method === "POST" && path === "/key/generate") {
+      counter += 1;
+      const key = `sk-virtual-${String(counter)}`;
+      keys.push({ key, token: createHash("sha256").update(key).digest("hex"), models: entry.body!.models, team_id: entry.body!.team_id, allowed_routes: entry.body!.allowed_routes, aliases: {} });
+      return json({ key });
+    }
+    if (method === "GET" && path === "/key/info") {
+      const found = keys.find((candidate) => candidate.token === new URLSearchParams(url.search).get("key"));
+      return found === undefined ? json({ error: { message: "key not found" } }, 404) : json({ info: found });
     }
     if (method === "GET" && path === "/health") {
       const id = new URLSearchParams(url.search).get("model_id") ?? "";
@@ -457,7 +472,7 @@ describe("listSources", () => {
     const never = async () => { throw new Error("not used"); };
     const access: ModelAccess = {
       upsertOrg: never, upsertMember: never, spend: never, orgSpend: never, keySpend: never, mintKey: never, revokeKey: never, blockKey: never,
-      upsertSource: never, removeSource: never, checkSource: never, listSources: vi.fn(async () => entries),
+      upsertSource: never, removeSource: never, checkSource: never, listSources: vi.fn(async () => entries), auditKeys: never,
     };
     const run = createModelAccessHandler({ access, log: () => undefined });
     expect(await run({ op: "listSources", args: {} })).toEqual({ ok: true, result: entries });
@@ -475,11 +490,20 @@ describe("mintKey with sources", () => {
     orgId: ORG as typeof ORG, developerId: "dev-1", purpose: "task" as const, refId: "task-1", maxBudgetUsd: 2.5, ttlSeconds: 3600, models, tags, ...extra,
   });
 
+  /** A proxy whose org team exists, scoped to the catalog as `upsertOrg` leaves it, with the calls so far forgotten. */
+  async function scoped() {
+    const proxy = litellm();
+    await client(proxy).upsertOrg(ORG, 500);
+    proxy.seen.length = 0;
+    return proxy;
+  }
+  const generated = (proxy: ReturnType<typeof litellm>) => proxy.seen.find((entry) => entry.path === "/key/generate")!.body!;
+
   it("sends models, the exact inference routes and every tag as metadata", async () => {
-    const proxy = litellm({ failOn: (seen) => (seen.path === "/key/generate" ? json({ key: "sk-virtual-1" }) : undefined) });
+    const proxy = await scoped();
     const alias = sourceAlias(ORG, SRC, sonnet);
     await client(proxy).mintKey(mint([alias]));
-    const body = proxy.seen[0]!.body!;
+    const body = generated(proxy);
     expect(body.models).toEqual([alias]);
     expect(body.allowed_routes).toEqual(INFERENCE_PATHS.map((entry) => entry.path));
     expect(body.allowed_routes).toEqual(["/v1/messages", "/v1/responses", "/chat/completions"]);
@@ -490,9 +514,9 @@ describe("mintKey with sources", () => {
   });
 
   it("omits the tags a caller left out, and still carries the required ones", async () => {
-    const proxy = litellm({ failOn: () => json({ key: "sk-virtual-2" }) });
+    const proxy = await scoped();
     await client(proxy).mintKey(mint(["us.anthropic.claude-sonnet-4-6"], { tags: { agentId: "agt_1", payerKind: "agent", payerId: "agt_1", source: "rovara", origin: "api" } }));
-    expect(proxy.seen[0]!.body!.metadata).toEqual({ orgId: ORG, developerId: "dev-1", purpose: "task", refId: "task-1", agentId: "agt_1", payerKind: "agent", payerId: "agt_1", source: "rovara", origin: "api" });
+    expect(generated(proxy).metadata).toEqual({ orgId: ORG, developerId: "dev-1", purpose: "task", refId: "task-1", agentId: "agt_1", payerKind: "agent", payerId: "agt_1", source: "rovara", origin: "api" });
   });
 
   it("refuses anything but this org's own aliases and exact catalog ids, sending nothing", async () => {
@@ -520,10 +544,10 @@ describe("mintKey with sources", () => {
   });
 
   it("accepts this org's own aliases and exact catalog ids, together", async () => {
-    const proxy = litellm({ failOn: () => json({ key: "sk-virtual-4" }) });
+    const proxy = await scoped();
     const models = [sourceAlias(ORG, SRC, sonnet), CATALOG[0]!, CATALOG[1]!];
     await client(proxy).mintKey(mint(models));
-    expect(proxy.seen[0]!.body!.models).toEqual(models);
+    expect(generated(proxy).models).toEqual(models);
   });
 
   it("refuses a keyed mint when the catalog is not configured, since it could not tell a catalog id from a stranger's model", async () => {
@@ -642,7 +666,7 @@ describe("the handler and the invoker carry the new operations", () => {
     const upsertSource = vi.fn(async () => undefined);
     const access: ModelAccess = {
       upsertOrg: never, upsertMember: never, spend: never, orgSpend: never, keySpend: never, mintKey: never, revokeKey: never, blockKey: never,
-      upsertSource, removeSource: vi.fn(async () => undefined), checkSource: vi.fn(async () => ({ ok: true as const, health: "healthy" as const })), listSources: never,
+      upsertSource, removeSource: vi.fn(async () => undefined), checkSource: vi.fn(async () => ({ ok: true as const, health: "healthy" as const })), listSources: never, auditKeys: never,
     };
     return { access, upsertSource };
   }

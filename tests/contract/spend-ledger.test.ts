@@ -999,7 +999,7 @@ describe("a key the broker mints", () => {
     t.access.setKeySpent(key, 1.2);
     const run = await t.sweep();
     expect(run.statusCode).toBe(200);
-    expect(JSON.parse(run.body)).toMatchObject({ jobs: [{ name: "sweep-model-sources", ok: true }, { name: "sweep-spend", ok: true, result: { settled: 1, complete: true } }] });
+    expect(JSON.parse(run.body)).toMatchObject({ jobs: [{ name: "sweep-model-sources", ok: true }, { name: "sweep-spend", ok: true, result: { settled: 1, complete: true } }, { name: "audit-model-keys", ok: true }] });
     for (const sk of ["ORG", "PROJECT#payments", `MEMBER#${DEV_MAYA.developerId}`, "SOURCE#rovara", agentUsageCounter("rovara-code")]) near(t.counter(sk)?.spentUsd, 1.2);
     await t.finish(workspaceId, operationId, "SUCCEEDED", {});
     t.access.setKeySpent(key, 1.5);
@@ -1031,7 +1031,7 @@ describe("a key the broker mints", () => {
     t.db.injectFault({ command: "GetCommand", match: (input) => JSON.stringify(input).includes("SPEND_SWEEP"), error: { name: "InternalServerError", message: "secret detail" } });
     const run = await t.sweep();
     expect(run.statusCode).toBe(200);
-    expect(JSON.parse(run.body)).toMatchObject({ jobs: [{ name: "sweep-model-sources", ok: true }, { name: "sweep-spend", ok: false, error: "InternalServerError" }] });
+    expect(JSON.parse(run.body)).toMatchObject({ jobs: [{ name: "sweep-model-sources", ok: true }, { name: "sweep-spend", ok: false, error: "InternalServerError" }, { name: "audit-model-keys", ok: true }] });
     expect(run.body).not.toContain("secret detail");
   });
 });

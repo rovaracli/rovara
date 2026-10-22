@@ -15,6 +15,12 @@ export const CHATGPT_MODEL_PREFERENCE = ["gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-so
  */
 export const CHATGPT_LIMIT_RETRY_MS = 60 * 60_000;
 
+/** Whether a connection can run a task now: connected and working, or at its limit for longer than the retry wait. */
+export function chatGptConnectionUsable(view: { connected: boolean; status?: string | undefined; statusAt?: string | undefined }, now: number): boolean {
+  const limitPassed = view.status === "limit-reached" && view.statusAt !== undefined && Date.parse(view.statusAt) + CHATGPT_LIMIT_RETRY_MS <= now;
+  return view.connected && (view.status === "connected" || limitPassed);
+}
+
 /** The model a task runs on from the plan's allowed list: the preferred one, else the best allowed, among models Pi knows. */
 export function chatGptTaskModel(allowed: readonly string[], preferred?: string): string | undefined {
   const known = allowed.filter((modelId) => catalogModel({ provider: "openai", modelId }) !== undefined);
@@ -49,8 +55,7 @@ export async function chatGptTaskSelection(
     console.log(JSON.stringify({ component: "broker", event: "chatgpt.connection_unreadable", errorName: error instanceof Error ? error.name : "unknown" }));
     return undefined;
   }
-  const limitPassed = view.status === "limit-reached" && view.statusAt !== undefined && Date.parse(view.statusAt) + CHATGPT_LIMIT_RETRY_MS <= now;
-  if (!view.connected || (view.status !== "connected" && !limitPassed)) return undefined;
+  if (!chatGptConnectionUsable(view, now)) return undefined;
   const modelId = chatGptTaskModel(view.models ?? [], orgSources?.chatgptPreferredModel ?? settings.preferredModel);
   return modelId === undefined ? undefined : { developerId: ownerDeveloperId, model: { provider: "openai", modelId } };
 }
