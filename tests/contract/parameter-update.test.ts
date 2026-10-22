@@ -137,4 +137,15 @@ describe("parameter-only stack updates (R6)", () => {
     await expect(updateStackParameters({ cloudFormation: cf, stackName: STACK, roleArn: ROLE, changes: { McpConfirmElicitation: "disabled" }, label: "config", confirm: async () => true, write: () => undefined, sleep: async () => undefined, pollMs: 1 }))
       .rejects.toThrow(`stack ${STACK} has no McpConfirmElicitation parameter; it runs an older AgentX release, so upgrade it with agentx upgrade, then run this again`);
   });
+
+  it("refuses to move the audit ledger's lock profile from production to trial, and allows the other moves (Task 5b)", async () => {
+    const message = "audit ledger: an install in production mode can't go back to trial; its records are locked for 3 years";
+    const production = fakeCloudFormation({ parameters: { CallbackSigningKey: "****", AuditLockProfile: "production" } });
+    await expect(run(production, { AuditLockProfile: "trial" })).rejects.toThrow(message);
+    expect(production.calls.map((call) => call.name)).not.toContain("CreateChangeSetCommand");
+    const trial = fakeCloudFormation({ parameters: { CallbackSigningKey: "****", AuditLockProfile: "trial" } });
+    expect(await run(trial, { AuditLockProfile: "production" })).toEqual({ changed: true });
+    const same = fakeCloudFormation({ parameters: { CallbackSigningKey: "****", AuditLockProfile: "production" } });
+    expect(await run(same, { AuditLockProfile: "production" })).toEqual({ changed: false });
+  });
 });

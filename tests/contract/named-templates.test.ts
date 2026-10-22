@@ -4,6 +4,7 @@ import { buildAgentXApp } from "../../infra/lib/app.js";
 import { normalizedTemplate } from "../support/template-snapshot.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 import { withoutModelProxy } from "../support/model-proxy-template.js";
+import { withoutAuditLedger } from "../support/audit-ledger-template.js";
 
 skipLambdaBundling();
 
@@ -223,14 +224,14 @@ function withoutTaskPeopleControls(template: unknown): unknown {
 // Issue 157 changes the Slack service's code only. These snapshots were recorded from mainline
 // 4a605fd (re-recorded there when mainline merged in), so a named environment's templates must stay
 // as they were, apart from issue 46's dispatch dead-letter alarm, issue 173's reconciler backstop,
-// issue 195's stuck-cancel alarm, and the false-default Task People controls, each checked and taken
-// out above.
+// issue 195's stuck-cancel alarm, the false-default Task People controls and the Audit Ledger's
+// storage, each checked and taken out above.
 describe("named environment templates", () => {
   const stacks = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child));
   for (const stack of stacks) {
     it(`${stack.stackName} is unchanged`, () => {
       const template = normalizedTemplate(stack);
-      expect(stack.stackName === "agentx-staging-control-plane" ? withoutTaskPeopleControls(withoutStuckCancelAlarm(withoutUnwaitedTaskBackstop(withoutDispatchDeadLettersAlarm(withoutModelProxy(template))))) : template).toMatchSnapshot();
+      expect(stack.stackName === "agentx-staging-control-plane" ? withoutAuditLedger(withoutTaskPeopleControls(withoutStuckCancelAlarm(withoutUnwaitedTaskBackstop(withoutDispatchDeadLettersAlarm(withoutModelProxy(template)))))) : template).toMatchSnapshot();
     }, 120_000);
   }
 });

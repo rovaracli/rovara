@@ -114,6 +114,20 @@ describe("service role policy", () => {
     expect(SERVICE_ROLE_SERVICES).not.toContain("sts");
   });
 
+  // Audit Ledger (Task 5, R1-4/R53): the vault key's policy lets the account root administer the key without using it,
+  // and lets only this role schedule deletion, disable it or replace its policy. So this role must be able to create
+  // the key with that policy (CreateKey, PutKeyPolicy: KMS's lockout check), its alias, tags and rotation, to read
+  // it back, and to create the Object Lock bucket, the FIFO queues and the tables, in this one statement.
+  it("covers what the audit ledger's key, Object Lock bucket, queues and tables need, with no new statement", () => {
+    const services = serviceRoleStatements(scope).find((s) => s.Sid === "Services")!;
+    expect(services).toMatchObject({ Effect: "Allow", Resource: "*" });
+    const covers = (action: string) => services.Action.some((pattern) => new RegExp(`^${pattern.replaceAll("*", ".*")}$`).test(action));
+    for (const action of ["kms:CreateKey", "kms:PutKeyPolicy", "kms:CreateAlias", "kms:TagResource", "kms:EnableKeyRotation", "kms:DescribeKey", "kms:GetKeyRotationStatus", "kms:ScheduleKeyDeletion", "kms:DisableKey",
+      "s3:CreateBucket", "s3:PutBucketObjectLockConfiguration", "s3:PutBucketVersioning", "s3:PutBucketPolicy", "s3:PutReplicationConfiguration", "sqs:CreateQueue", "dynamodb:CreateTable", "dynamodb:UpdateContinuousBackups"]) {
+      expect(covers(action), action).toBe(true);
+    }
+  });
+
   it("may create, update, delete and tag only this environment's monthly budget, never by wildcard", () => {
     const budget = serviceRoleStatements(scope).find((s) => s.Sid === "Budget")!;
     expect(budget.Action.sort()).toEqual(["budgets:ListTagsForResource", "budgets:ModifyBudget", "budgets:TagResource", "budgets:UntagResource", "budgets:ViewBudget"]);

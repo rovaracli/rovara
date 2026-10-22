@@ -35,7 +35,11 @@ describe("retained resources in a named environment", () => {
     const expected: Record<string, string[]> = {
       "agentx-staging-access": ["ArtifactBucket AWS::S3::Bucket"],
       "agentx-staging-control-plane": [
-        "Artifacts AWS::S3::Bucket", "DeveloperSignInTable AWS::DynamoDB::Table", "ModelProxySaltKey AWS::SecretsManager::Secret", "SlackSecret AWS::SecretsManager::Secret", "SlackThreadSessions AWS::S3::Bucket",
+        "Artifacts AWS::S3::Bucket",
+        // The Audit Ledger (Task 5 of its plan): the queues and buckets. Its tables, vault key and alias are in the plain Retain list below.
+        "AuditLedgerAuditExportsBucket AWS::S3::Bucket", "AuditLedgerAuditIntakeDeadLetterQueue AWS::SQS::Queue", "AuditLedgerAuditIntakeQueue AWS::SQS::Queue",
+        "AuditLedgerAuditLedgerBucket AWS::S3::Bucket",
+        "DeveloperSignInTable AWS::DynamoDB::Table", "ModelProxySaltKey AWS::SecretsManager::Secret", "SlackSecret AWS::SecretsManager::Secret", "SlackThreadSessions AWS::S3::Bucket",
         "SlackThreads AWS::DynamoDB::Table", "State AWS::DynamoDB::Table", "TurnRecords AWS::DynamoDB::Table",
       ],
       "agentx-staging-foundation": ["VpcFlowLogs AWS::Logs::LogGroup", "WorkspaceKey AWS::KMS::Key"],
@@ -51,9 +55,17 @@ describe("retained resources in a named environment", () => {
     }
   });
 
-  it("retains the Cognito user pool and attempt-specific Slack diagnostic records", () => {
+  it("retains the Cognito user pool, the Audit Ledger tables and attempt-specific Slack diagnostic records", () => {
     const retained = Object.entries(named).flatMap(([stackName, resources]) => kept(resources, "Retain").map((entry) => `${stackName} ${entry}`));
     expect(retained).toEqual([
+      // The Audit Ledger's tables have deletion protection, which would make a rolled-back first create's delete fail
+      // and leave the stack in ROLLBACK_FAILED, so (like the user pool) they keep plain Retain.
+      "agentx-staging-control-plane AuditLedgerAuditKeysTable AWS::DynamoDB::Table",
+      "agentx-staging-control-plane AuditLedgerAuditLedgerTable AWS::DynamoDB::Table",
+      "agentx-staging-control-plane AuditLedgerAuditSealsTable AWS::DynamoDB::Table",
+      // The vault key and alias: the key policy lets nobody ScheduleKeyDeletion or DeleteAlias, so a rollback could not delete them.
+      "agentx-staging-control-plane AuditLedgerAuditVaultKey AWS::KMS::Key",
+      "agentx-staging-control-plane AuditLedgerAuditVaultKeyAlias AWS::KMS::Alias",
       "agentx-staging-identity UserPool AWS::Cognito::UserPool",
       "agentx-staging-slack ActionLogs AWS::Logs::LogGroup",
       "agentx-staging-slack ActionLogsKey AWS::KMS::Key",

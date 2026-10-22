@@ -6,7 +6,7 @@
 // validation: both import the same regex or schema object, so a region, account, identity, models,
 // images or alert-email answer is refused (or accepted) identically wherever it is checked.
 import { z } from "zod";
-import { BOOT_STAGE2_SHA256_PATTERN, MODEL_PROVIDERS, SECRET_ARN_MAX_LENGTH, SECRET_ARN_PATTERN, type KeyedModelProvider } from "@agentx/contracts";
+import { agentXError, BOOT_STAGE2_SHA256_PATTERN, MODEL_PROVIDERS, SECRET_ARN_MAX_LENGTH, SECRET_ARN_PATTERN, type KeyedModelProvider } from "@agentx/contracts";
 
 /** Shared with `runInitExport`'s own `--region`/`--account` validation, so both commands refuse the
  * same malformed values the same way. */
@@ -101,6 +101,35 @@ export const ImagesAnswersSchema = z.object({
  * install answers already stored in SSM or validated fresh at the `agentx init` prompt: both call
  * this schema rather than each keeping their own regex that could quietly drift apart. */
 export const AlertEmailSchema = z.email();
+
+/**
+ * The audit ledger's lock profile (the control plane's AuditLockProfile parameter). `production`: records are locked in
+ * compliance mode for 3 years. `trial`: governance mode for 1 day. An install can move from trial to production and never back.
+ */
+export const AuditLockProfileSchema = z.enum(["production", "trial"]);
+export type AuditLockProfileAnswer = z.infer<typeof AuditLockProfileSchema>;
+
+/**
+ * The profile an install of this name starts with when nobody chooses one: `trial` for staging, test, dev and dev-<suffix> (the names
+ * the infrastructure's auditLockSettings gives a 1 day governance lock), `production` for every other name. Keep this in
+ * step with isTrialEnvironment in infra/lib/audit-settings.ts.
+ */
+export function defaultAuditLockProfile(env: string): AuditLockProfileAnswer {
+  return /^(?:staging|test|dev|dev-.+)$/.test(env) ? "trial" : "production";
+}
+
+/** What the CLI says when a move from production to trial is asked for (the ledger's records are locked for 3 years). */
+export const AUDIT_LOCK_DOWNGRADE_MESSAGE = "audit ledger: an install in production mode can't go back to trial; its records are locked for 3 years";
+
+/**
+ * Refuses a move of the audit ledger's lock profile from production to trial, before CloudFormation runs. This states
+ * the operator's intent early and clearly; it is not the only guard. S3 itself refuses to delete an object version
+ * locked in compliance mode and refuses to shorten or relax that lock, so going back to trial could never loosen the
+ * records already written under production. It would only make new records weaker, which is what this refuses.
+ */
+export function assertAuditLockNotLowered(deployed: string | undefined, requested: string | undefined): void {
+  if (deployed === "production" && requested === "trial") throw agentXError("CONFIG_INVALID", AUDIT_LOCK_DOWNGRADE_MESSAGE);
+}
 
 /** The largest monthly budget, in whole US dollars, that init and `config set` accept. The template
  * itself allows up to 9,999,999; one cap here means the CLI never accepts a budget it later refuses. */

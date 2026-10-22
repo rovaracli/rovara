@@ -5,6 +5,7 @@ import { CreateChangeSetCommand, DeleteChangeSetCommand, DescribeChangeSetComman
 import { agentXError } from "@agentx/contracts";
 import { ADOPTED_STACK_NAMES } from "../environments/adopt.js";
 import { SIGN_IN_SINCE_PARAMETER_NAMES } from "../signin/settings.js";
+import { assertAuditLockNotLowered } from "./answer-schemas.js";
 import type { ChangeSetChange } from "./deployer.js";
 
 export interface ParameterChange { name: string; from: string; to: string }
@@ -67,6 +68,7 @@ export async function updateStackParameters(input: ParameterUpdateInput): Promis
   if (missing.length > 0) {
     throw agentXError("CONFIG_INVALID", `stack ${stackName} was deployed from an AgentX release without developer sign-in (it has no ${missing.join(", ")} parameter); upgrade the environment to a release with developer sign-in, then run this again`);
   }
+  assertAuditLockNotLowered(current.get("AuditLockProfile"), input.changes.AuditLockProfile);
   const parameters = Object.entries(input.changes).filter(([name, to]) => current.get(name) !== to).map(([name, to]) => ({ name, from: current.get(name) ?? "", to }));
   if (parameters.length === 0) return { changed: false };
 

@@ -37,7 +37,7 @@ describe("agentx config list and get", () => {
     expect(rows.find((row) => row.key === "alerts.address")?.value).toBe("none");
     expect(rows.find((row) => row.key === "limits.workspacesPerMember")?.value).toBe("3 (install-time default; the control plane may hold a newer setting)");
     expect(rows.find((row) => row.key === "models.chatgpt.enabled")).toMatchObject({ value: "false unless an admin changed it (the control plane holds the setting)", where: "control-plane setting CHATGPT.enabled" });
-    expect(rows).toHaveLength(14);
+    expect(rows).toHaveLength(15);
   });
 
   it("never shows the alert address itself, only that it is set", async () => {
@@ -95,6 +95,50 @@ describe("agentx config set", () => {
       { ParameterKey: "CallbackSigningKey", UsePreviousValue: true },
     ]));
     expect(store.calls.filter((call) => call.name === lockParameterName(ENV)).map((call) => call.op)).toEqual(["put", "get", "delete"]);
+  });
+
+  describe("audit.lock (the audit ledger's lock profile)", () => {
+    const REFUSAL = "audit ledger: an install in production mode can't go back to trial; its records are locked for 3 years";
+    const controlPlane = (profile: string) => stacks({ "agentx-staging-control-plane": { AuditLockProfile: profile } });
+
+    it("moves trial to production with a one-line statement of what it means, and keeps the install answers in step", async () => {
+      const store = await seeded();
+      await writeInstallAnswers(store, sampleAnswers({ auditLock: "trial" }));
+      const cloudFormation = fakeCloudFormation({ parameters: { AuditLockProfile: "trial", CallbackSigningKey: "****" } });
+      const configured = services({ store, cloudFormation, stacks: controlPlane("trial") });
+      expect(await runConfigSet(configured, ENV, { key: "audit.lock", value: "production", yes: true })).toEqual({ changed: true });
+      const create = cloudFormation.calls.find((call) => call.name === "CreateChangeSetCommand")!.input;
+      expect(create.Parameters).toEqual(expect.arrayContaining([{ ParameterKey: "AuditLockProfile", ParameterValue: "production" }, { ParameterKey: "CallbackSigningKey", UsePreviousValue: true }]));
+      expect(configured.lines).toContain("Records written from now on are locked for 3 years and can't be shortened.");
+      expect(configured.lines.filter((line) => line.includes("locked for 3 years"))).toHaveLength(1);
+      expect((await readInstallAnswers(store, ENV))?.auditLock).toBe("production");
+    });
+
+    it("refuses production to trial with the existing text, before any change set or sign-in record", async () => {
+      const store = await seeded();
+      const cloudFormation = fakeCloudFormation({ parameters: { AuditLockProfile: "production" } });
+      const configured = services({ store, cloudFormation, stacks: controlPlane("production") });
+      await expect(runConfigSet(configured, ENV, { key: "audit.lock", value: "trial", yes: true })).rejects.toThrow(REFUSAL);
+      await expect(runConfigSet(configured, ENV, { key: "audit.lock", value: "trial", yes: true })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      expect(cloudFormation.calls.filter((call) => call.name === "CreateChangeSetCommand")).toEqual([]);
+      expect(lockOps(store)).toEqual([]);
+    });
+
+    it("changes nothing when it is already the value, and refuses a value that is not a profile", async () => {
+      const store = await seeded();
+      const cloudFormation = fakeCloudFormation({ parameters: { AuditLockProfile: "production" } });
+      const configured = services({ store, cloudFormation, stacks: controlPlane("production") });
+      expect(await runConfigSet(configured, ENV, { key: "audit.lock", value: "production", yes: true })).toEqual({ changed: false });
+      await expect(runConfigSet(configured, ENV, { key: "audit.lock", value: "forever", yes: true })).rejects.toThrow("audit.lock must be one of production, trial; nothing changed");
+      expect(cloudFormation.calls).toEqual([]);
+    });
+
+    it("moves trial to production after a no at the prompt: nothing changes", async () => {
+      const store = await seeded();
+      const cloudFormation = fakeCloudFormation({ parameters: { AuditLockProfile: "trial" } });
+      await expect(runConfigSet(services({ store, cloudFormation, stacks: controlPlane("trial"), prompter: scriptedPrompter([false]) }), ENV, { key: "audit.lock", value: "production", yes: false })).rejects.toThrow("not applied; nothing changed");
+      expect(cloudFormation.calls.filter((call) => call.name === "ExecuteChangeSetCommand")).toEqual([]);
+    });
   });
 
   it("changes nothing for an invalid value, before any AWS call", async () => {

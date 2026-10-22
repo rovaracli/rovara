@@ -10,6 +10,7 @@ import type { DeveloperTaskActions } from "../../packages/broker/src/aws/develop
 import type { StreamRecord } from "../../packages/broker/src/developer/notifications.js";
 import type { TaskShare } from "../../packages/broker/src/developer/task-records.js";
 import { developerTokenVerifier } from "../../packages/broker/src/developer/verify-token.js";
+import type { AuditCapture } from "./audit-capture.js";
 import { localSigner } from "./developer-fakes.js";
 import type { FakeDynamoDb, FakeDynamoDbOptions } from "./fake-dynamodb.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, loadSlackBroker, orchestratorPrincipal, registerSlackProject, type Handler } from "./slack-broker.js";
@@ -108,6 +109,8 @@ export async function createDeveloperTaskBroker(options: {
   realism?: FakeDynamoDbOptions["realism"];
   /** "eventual": a read without ConsistentRead may see an item's previous version once after a write. */
   consistency?: FakeDynamoDbOptions["consistency"];
+  /** The Audit Ledger's outbox (`capturingAuditDeps()` or `hangingAuditDeps()`), given to the broker as `audit` and attached to its table. Absent: a legacy install, where every audit function does nothing. */
+  audit?: AuditCapture;
 } = {}): Promise<DeveloperTaskBrokerHarness> {
   const module = await loadSlackBroker() as unknown as { createDeveloperTaskActions: (input: never) => DeveloperTaskActions };
   const channelMembers = vi.fn(options.channelMembers ?? (async (request: ChannelMembersRequest): Promise<ChannelMembersResponse> => ({ ok: true, memberOf: request.slackUserId === MAYA.slackUserId ? request.channelIds.filter((id) => id === SLACK_CHANNEL) : [] })));
@@ -127,8 +130,9 @@ export async function createDeveloperTaskBroker(options: {
     developer, turnRecordsTableName: "turns", slackThreadsTableName: "threads",
     ...(options.realism === undefined ? {} : { realism: options.realism }),
     ...(options.consistency === undefined ? {} : { consistency: options.consistency }),
-    ...(options.brokerExtra === undefined && options.orgResolver === undefined ? {} : { extra: { ...options.brokerExtra, ...(options.orgResolver === undefined ? {} : { orgResolver: options.orgResolver }) } }),
+    ...(options.brokerExtra === undefined && options.orgResolver === undefined && options.audit === undefined ? {} : { extra: { ...options.brokerExtra, ...(options.orgResolver === undefined ? {} : { orgResolver: options.orgResolver }), ...(options.audit === undefined ? {} : { audit: options.audit.audit }) } }),
   });
+  options.audit?.attach(db);
   const actions = module.createDeveloperTaskActions(brokerInput as never);
   // A developer is put in an org the first time they appear, as a sign-in does; the injected resolver says which, and
   // a later change to the membership rows (a removal) is never undone.

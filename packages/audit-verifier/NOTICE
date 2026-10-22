@@ -1,0 +1,9 @@
+Rovara audit verifier
+Copyright 2026 PrepLabs
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It embeds two public time-stamping root certificates, unmodified, as trust anchors:
+DigiCert Trusted Root G4 (DigiCert Inc) and Sectigo Public Time Stamping Root R46
+(Sectigo Limited). Each remains the property of its issuer; they are included only
+so the verifier can check RFC 3161 time-stamp tokens offline.

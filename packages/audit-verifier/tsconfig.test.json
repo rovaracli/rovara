@@ -1,0 +1,13 @@
+{
+  // Compiles the sources and the tests together into .test-build, which `npm test` runs with node --test.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "incremental": false,
+    "rootDir": ".",
+    "outDir": ".test-build"
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

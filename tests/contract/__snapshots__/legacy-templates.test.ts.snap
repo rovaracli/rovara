@@ -8223,7 +8223,7 @@ exports[`legacy production templates > AgentXReleasePipeline is unchanged 1`] = 
                     "Includes": [
                       "environments/**",
                       "infra/**",
-                      "packages/{broker,cli,contracts,gateway,mcp,model-proxy,model-runtime,orchestrator,slack-service,verifier,worker}/**",
+                      "packages/{audit-verifier,broker,cli,contracts,gateway,mcp,model-proxy,model-runtime,orchestrator,slack-service,verifier,worker}/**",
                       "upstream/e2e-0.20.0.tgz",
                       "{package.json,package-lock.json,tsconfig.json,tsconfig.base.json,.dockerignore}",
                     ],

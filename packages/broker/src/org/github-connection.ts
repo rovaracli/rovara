@@ -22,10 +22,13 @@ import {
   type OrgRecord,
   type OrgRole,
 } from "@agentx/contracts";
+import { auditGithubConnected, auditGithubDisconnected, auditGithubInstallationChanged, auditOccurrence } from "../audit/events.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPending, tryAuditEvent } from "../audit/outbox.js";
 import { parseGitHubRepository, type GitHubAppCredentialProviderOptions, type GitHubInstallation, type GitHubInstallationRepository, type GitHubTokenScope } from "../github-app.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import {
-  GITHUB_ISSUER, conditionFailed, consumeState, errorName, exchangeCode, failedIndexes, isOwnerOrAdmin, log, readState, revokeUserToken, sha256Hex, userGet,
+  GITHUB_ISSUER, conditionFailed, consumeState, errorName, exchangeCode, expectedTrialResult, failedIndexes, isOwnerOrAdmin, log, readState, revokeUserToken, sha256Hex, userGet,
   type ConnectStateItem, type GithubConnectApp, type GithubConnectionDependencies, type PendingBinding,
 } from "./github-connect-support.js";
 import { DELIVERY_RETENTION_MS, auditItem, ownerNameOf, recordInstallRequest } from "./github-install-requests.js";
@@ -275,7 +278,8 @@ export async function confirmGithubConnect(
     throw error;
   }
   const { pending } = state;
-  const orgName = (await deps.orgs.getOrg(state.orgId))?.name;
+  const org = await deps.orgs.getOrg(state.orgId);
+  const orgName = org?.name;
   const names = { ...(orgName === undefined ? {} : { orgName }), accountLogin: pending.accountLogin };
   if (form.decision === "cancel") {
     log(deps, { event: "github.connect_cancelled", orgId: state.orgId });
@@ -288,6 +292,13 @@ export async function confirmGithubConnect(
     accountType: pending.accountType, repositorySelection: pending.repositorySelection, installedByGithubUserId: pending.githubUserId,
     boundByDeveloperId: state.developerId, status: pending.status, boundAt: at, updatedAt: at,
   };
+  // The trial's outcome is only known after the bind, so the event says what the unlock will answer, read just before: the account already
+  // started another organization's trial. (A race between this read and the unlock is the one case it can differ from the outcome.)
+  const event = await tryAuditEvent(deps, async () => auditGithubConnected({
+    orgId: state.orgId, actor: { kind: "member", id: state.developerId }, occurredAt: at, occurrence: form.connect,
+    installationId: String(pending.installationId), accountType: pending.accountType, result: await expectedTrialResult(deps, org, pending.githubUserId),
+    details: [{ subject: "org", fields: { accountLogin: pending.accountLogin } }],
+  }));
   try {
     await deps.documentClient.send(new TransactWriteCommand({
       TransactItems: [
@@ -311,6 +322,7 @@ export async function confirmGithubConnect(
           ConditionExpression: "attribute_exists(pk) AND (#role = :owner OR #role = :admin)",
           ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":owner": "owner", ":admin": "admin" },
         } },
+        ...(event === undefined ? [] : auditPending(deps, event)),
       ],
     }));
   } catch (error) {
@@ -328,6 +340,7 @@ export async function confirmGithubConnect(
     return { outcome: "expired", ...names };
   }
   log(deps, { event: "github.connected", orgId: state.orgId, installationId: pending.installationId, accountType: pending.accountType });
+  if (event !== undefined) await flushAuditEvents(deps, [event]);
 
   try {
     await deps.unlockTrial({ orgId: state.orgId, githubUserId: pending.githubUserId });
@@ -388,10 +401,16 @@ export async function disconnectGithubInstallation(
 ): Promise<{ installationId: number; accountLogin: string; message: string }> {
   if (!deps.cloud) throw agentXError("FORBIDDEN", "on this install, GitHub is connected by the administrator during agentx init");
   if (!isOwnerOrAdmin(caller.orgRole)) throw agentXError("FORBIDDEN", "only an owner or admin can disconnect GitHub");
-  const found = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgGithubInstallationKey(caller.orgId, installationId), ConsistentRead: true })) as { Item?: { accountLogin?: unknown } };
+  const found = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgGithubInstallationKey(caller.orgId, installationId), ConsistentRead: true })) as { Item?: { accountLogin?: unknown; accountType?: unknown; boundAt?: unknown } };
   if (found.Item === undefined || typeof found.Item.accountLogin !== "string") throw agentXError("NOT_FOUND", "this organization has no such GitHub installation");
   const account = found.Item.accountLogin;
   const now = deps.now();
+  // One occurrence per binding: the same installation connected again later has another `boundAt`.
+  const event = await tryAuditEvent(deps, () => auditGithubDisconnected({
+    orgId: caller.orgId, actor: { kind: "member", id: caller.developerId }, occurredAt: new Date(now).toISOString(),
+    occurrence: auditOccurrence(String(installationId), typeof found.Item?.boundAt === "string" ? found.Item.boundAt : ""),
+    installationId: String(installationId), accountType: typeof found.Item?.accountType === "string" ? found.Item.accountType : "unknown", details: [{ subject: "org", fields: { accountLogin: account } }],
+  }));
   try {
     await deps.documentClient.send(new TransactWriteCommand({
       TransactItems: [
@@ -399,6 +418,7 @@ export async function disconnectGithubInstallation(
         // The global item may already be gone (a half-finished earlier attempt) but is never another org's.
         { Delete: { TableName: deps.tableName, Key: githubInstallationKey(installationId), ConditionExpression: "attribute_not_exists(pk) OR orgId = :org", ExpressionAttributeValues: { ":org": caller.orgId } } },
         auditItem(deps.tableName, caller.orgId, now, { action: "installation_disconnected", installationId, accountLogin: account, disconnectedBy: caller.developerId }),
+        ...(event === undefined ? [] : auditPending(deps, event)),
       ],
     }));
   } catch (error) {
@@ -406,6 +426,7 @@ export async function disconnectGithubInstallation(
     throw agentXError("NOT_FOUND", "this organization has no such GitHub installation");
   }
   log(deps, { event: "github.installation_disconnected", orgId: caller.orgId, installationId });
+  if (event !== undefined) await flushAuditEvents(deps, [event]);
   return {
     installationId, accountLogin: account,
     message: `Rovara no longer uses ${account}. To remove its access on GitHub too, uninstall the app in ${account}'s GitHub settings.`,
@@ -534,7 +555,7 @@ export type InstallationLifecycleEvent =
  * changes nothing.
  */
 export async function applyInstallationLifecycle(
-  deps: Pick<GithubConnectionDependencies, "documentClient" | "tableName" | "now" | "log">,
+  deps: Pick<GithubConnectionDependencies, "documentClient" | "tableName" | "now" | "log" | "audit">,
   deliveryId: string,
   event: InstallationLifecycleEvent,
 ): Promise<"applied" | "ignored"> {
@@ -579,6 +600,12 @@ export async function applyInstallationLifecycle(
       UpdateExpression: expression, ConditionExpression: `orgId = :org AND #status = :was${eventAt === undefined ? "" : " AND (attribute_not_exists(githubUpdatedAt) OR githubUpdatedAt <= :eventAt)"}`,
       ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ...values, ":org": orgId, ":was": was },
     };
+    // A change of status is recorded (removed, suspended, active again); a change of the repositories the App reaches is not an event of the chain.
+    const nextStatus = next.status;
+    const changed = nextStatus === undefined ? undefined : await tryAuditEvent(deps, () => auditGithubInstallationChanged({
+      orgId, actor: { kind: "github", id: String(event.installationId) }, occurredAt: at, occurrence: deliveryId,
+      installationId: String(event.installationId), status: nextStatus, accountType: String(bound.accountType ?? "unknown"),
+    }));
     const items = (withOrgCopy: boolean) => [
       { Put: {
         TableName: deps.tableName,
@@ -588,6 +615,7 @@ export async function applyInstallationLifecycle(
       { Update: { TableName: deps.tableName, Key: githubInstallationKey(event.installationId), ...globalUpdate } },
       ...(withOrgCopy ? [{ Update: { TableName: deps.tableName, Key: orgGithubInstallationKey(orgId, event.installationId), ...copyUpdate } }] : []),
       auditItem(deps.tableName, orgId, now, { action: next.action, installationId: event.installationId, deliveryId, ...(next.status === undefined ? {} : { status: next.status }), ...(next.repositorySelection === undefined ? {} : { repositorySelection: next.repositorySelection }) }),
+      ...(changed === undefined ? [] : auditPending(deps, changed)),
     ];
     try {
       await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items(true) }));
@@ -606,6 +634,7 @@ export async function applyInstallationLifecycle(
       } else continue;
     }
     log(full, { event: "github.installation_changed", orgId, installationId: event.installationId, change: next.action });
+    if (changed !== undefined) await flushAuditEvents(deps, [changed]);
     return "applied";
   }
   log(full, { event: "github.installation_event_conflict", installationId: event.installationId });

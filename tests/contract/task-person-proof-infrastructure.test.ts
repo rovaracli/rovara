@@ -6,6 +6,7 @@ import { buildAgentXApp } from "../../infra/lib/app.js";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { hasModelProxy, withoutModelProxy } from "../support/model-proxy-template.js";
+import { hasAuditLedger, withoutAuditLedger } from "../support/audit-ledger-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -62,6 +63,8 @@ function parentRemainderDigest(template: TemplateJson): string {
   const remainder = structuredClone(template);
   // The model proxy (Task 10) is no part of the proof-only addition; take it out the way named-templates does.
   if (hasModelProxy(remainder)) withoutModelProxy(remainder);
+  // The Audit Ledger (Task 5) is likewise no part of the proof-only addition.
+  if (hasAuditLedger(remainder)) withoutAuditLedger(remainder);
   delete remainder.Parameters?.TaskPersonProofEnabled;
   // Spec 059's default-OFF runtime graph addition is asserted exactly below; exclude only that
   // named parameter and its corresponding Broker environment reference from the proof-only hash.
@@ -208,14 +211,14 @@ describe("the named TEST proof-only installation gate", () => {
       {
         label: "named",
         template: named,
-        withRoute: "dca11b5b6bbe601f96ad508bc64b7a7b385e9289d9917373f3273122e394af35",
-        withoutRoute: "f519c253f039211d8aef26d454a131293e9051e3d4731999c850ba32a4c3d4dc",
+        withRoute: "54059f911030046bf7d825ad10fc94088dd804946c0747a32bac94e14133e18c",
+        withoutRoute: "25c6064b338048c580275087b60f0019cf1ea52846786abb4bf7afc483dae8fa",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "67b635ea5e49ab57b2538074e496ff04bdf2e140fd88d1f6b984e4b9972c32cd",
-        withoutRoute: "603fe305ceae707114b5c75fb79b8cdf5eec3a8383c3898e896cc0de51452b2e",
+        withRoute: "8c6f6ea3f38842a1bdf0617f995526e8fdb0950d0944b33d66b6391819f9ded5",
+        withoutRoute: "4ae41249b0da470d089992bd98a710a9a7f56603a1a518673df89f629e7401aa",
       },
       {
         label: "legacy",

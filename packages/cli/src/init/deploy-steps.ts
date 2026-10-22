@@ -52,6 +52,7 @@ export function initDeployAnswers(answers: InitAnswers, progress: InstallProgres
     ...(images === undefined ? {} : { images }),
     slackAppPostedMessages: answers.slack.appPostedMessages,
     ...(answers.budget === undefined ? {} : { budget: answers.budget }),
+    ...(answers.auditLock === undefined ? {} : { auditLock: answers.auditLock }),
     ...(answers.cloud === true ? { cloud: true as const } : {}),
     ...(answers.cloudSignIn === undefined ? {} : { cloudSignIn: answers.cloudSignIn }),
   };
@@ -96,6 +97,7 @@ export function deployStep(input: { id: DeployStepId; title: string; after?: (co
       const parts = DEPLOY_STEP_PARTS[input.id].filter((part) => order.includes(part));
       await waitForIdleStacks({ reader: context.stackStatus, stackNames: parts.map((part) => environmentStackName(env, part)), sleep: context.sleep, write: context.write, now: context.now });
       const deployment = await context.deployment();
+      const readParameters = context.stackStatus.parameters?.bind(context.stackStatus);
       // The github-app step stores the app's key in this secret later; the control plane only needs its ARN now.
       const githubSecretArn = parts.includes("control-plane") && progress.current().github === undefined
         ? await context.secrets.reserve(githubAppSecretName(env))
@@ -114,6 +116,8 @@ export function deployStep(input: { id: DeployStepId; title: string; after?: (co
         holder: context.holder,
         parts: [...parts],
         lockHeld: true,
+        // An environment that already exists keeps its audit lock profile, and a move down is refused (the same guard agentx deploy runs).
+        ...(readParameters === undefined ? {} : { deployedParameters: readParameters }),
         ...(deployment.declaredParameters === undefined ? {} : { declaredParameters: deployment.declaredParameters }),
         ...(deployment.ensurePassRole === undefined ? {} : { ensurePassRole: deployment.ensurePassRole }),
         onEvent: (event) => context.write(progressLine(event)),

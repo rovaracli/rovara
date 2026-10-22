@@ -5,9 +5,14 @@ import { CONTEXT_ENV, CONTEXT_OVERFLOW_LOCATION_ENV } from "aws-cdk-lib/cx-api";
 import { beforeAll, describe, expect, it } from "vitest";
 import { ENVIRONMENT_PLACEHOLDER, EnvironmentNameSchema, renderTemplate } from "@agentx/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
+import { evaluate } from "../support/cfn-evaluate.js";
 
 function templates(env: string): Map<string, string> {
-  const assembly = buildAgentXApp({ agentxEnv: env, agentxSynthesizer: "legacy" }).synth();
+  // A published template is the placeholder environment's, with the name replaced. The audit ledger's Object Lock
+  // default depends on the name (governance for staging, test and dev*, compliance for the rest), which a text
+  // replacement cannot follow, so the published template always carries the safe default: compliance, 1,096 days.
+  // Pinning it for the direct synth keeps this test about what it checks, the fidelity of the name replacement.
+  const assembly = buildAgentXApp({ agentxEnv: env, agentxSynthesizer: "legacy", agentxAuditLockMode: "COMPLIANCE", agentxAuditRetentionDays: 1096 }).synth();
   const byPart = new Map<string, string>();
   for (const stack of assembly.stacks) {
     const part = stack.stackName.replace(`agentx-${env}-`, "");
@@ -77,6 +82,22 @@ describe("templates for any environment", () => {
       expect(renderTemplate(text, env), part).toBe(direct.get(part));
     }
   }, 600_000);
+
+  it("a published template offers the audit lock profile and defaults to production, for any name it is rendered for (Task 5b)", () => {
+    for (const env of ["staging", "dev-2", "acme"]) {
+      const template = JSON.parse(renderTemplate(placeholderTemplates.get("control-plane")!, env)) as {
+        Parameters: Record<string, { Default?: string; AllowedValues?: string[] }>;
+        Conditions: Record<string, unknown>;
+        Resources: Record<string, { Type: string; Properties: Record<string, unknown> }>;
+      };
+      expect(template.Parameters.AuditLockProfile).toMatchObject({ Default: "production", AllowedValues: ["production", "trial"] });
+      const [, bucket] = Object.entries(template.Resources).find(([id, resource]) => resource.Type === "AWS::S3::Bucket" && id.startsWith("AuditLedgerAuditLedgerBucket"))!;
+      const lock = (profile?: string) => evaluate(bucket.Properties.ObjectLockConfiguration, { parameters: { AuditLockProfile: profile ?? template.Parameters.AuditLockProfile!.Default! }, conditions: template.Conditions });
+      expect(lock()).toStrictEqual({ ObjectLockEnabled: "Enabled", Rule: { DefaultRetention: { Mode: "COMPLIANCE", Days: 1096 } } });
+      expect(lock("production")).toStrictEqual({ ObjectLockEnabled: "Enabled", Rule: { DefaultRetention: { Mode: "COMPLIANCE", Days: 1096 } } });
+      expect(lock("trial")).toStrictEqual({ ObjectLockEnabled: "Enabled", Rule: { DefaultRetention: { Mode: "GOVERNANCE", Days: 1 } } });
+    }
+  });
 
   it("refuses an invalid environment and refuses output that still holds the placeholder", () => {
     expect(() => renderTemplate("x", "Bad")).toThrow(/environment name/);

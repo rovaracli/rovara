@@ -1,0 +1,41 @@
+{
+  "name": "@rovara/audit-verifier",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Offline verifier for Rovara audit ledger exports. Node built-ins only.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PrepLabsAI/rovara-audit-verifier.git"
+  },
+  "engines": {
+    "node": ">=22.19.0 <23"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "rovara-audit-verify": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "tsc -p tsconfig.test.json && node --test \".test-build/test/*.spec.js\"",
+    "check:public": "node scripts/check-public.mjs .",
+    "prepack": "tsc -b --clean && tsc -b && node scripts/check-public.mjs . --built"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.3",
+    "typescript": "5.9.3"
+  }
+}

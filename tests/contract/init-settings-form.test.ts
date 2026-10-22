@@ -16,7 +16,7 @@ describe("the settings form", () => {
     expect(fields.filter((field) => field.section !== "advanced").map((field) => field.name)).toEqual(["email", "githubAccount", "installName", "appName"]);
     expect(fields.filter((field) => field.section === "advanced").map((field) => field.name)).toEqual([
       "engine", "identity", "signin", "modelProvider", "orchestratorModel", "classifierModel", "workerModel",
-      "permissionBoundary", "operatorPrincipal", "budget", "budgetScope", "appPostedMessages", "alertKind", "alertEmail",
+      "permissionBoundary", "operatorPrincipal", "budget", "budgetScope", "auditLock", "appPostedMessages", "alertKind", "alertEmail",
     ]);
     expect(fields.find((field) => field.name === "installName")?.defaultValue).toBe("production");
     expect(fields.map((field) => field.name)).toEqual(Object.values(SETTINGS_FIELD));
