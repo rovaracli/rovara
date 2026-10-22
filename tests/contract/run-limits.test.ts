@@ -82,6 +82,18 @@ describe("estimateRun", () => {
     expect(await estimateOf(db, "FULL")).toEqual({ lowUsd: 1.5, highUsd: 1.5, runLimitUsd: 3, stopAtUsd: 3, basis: "history", samples: 5 });
   });
 
+  it("rounds up, never to the nearest", async () => {
+    const db = new FakeDynamoDb();
+    seedCosts(db, "FULL", [1.1, 1.1, 1.1, 1.1, 1.1]);
+    expect(await estimateOf(db, "FULL")).toMatchObject({ lowUsd: 1.5, highUsd: 1.5, runLimitUsd: 3 });
+  });
+
+  it("never expects a run to cost nothing", async () => {
+    const db = new FakeDynamoDb();
+    seedCosts(db, "FULL", [0, 0, 0, 0, 0]);
+    expect(await estimateOf(db, "FULL")).toMatchObject({ lowUsd: 0.5, highUsd: 0.5, runLimitUsd: 1 });
+  });
+
   it("does not round a cost that is already a multiple of fifty cents up again", async () => {
     const db = new FakeDynamoDb();
     seedCosts(db, "FULL", [2, 2, 2, 2.5, 2.5]);
@@ -275,6 +287,14 @@ describe("the plan-ready message", () => {
     const text = textOf(estimate({ stopAtUsd: 3 }), "Ticket looker");
     expect(text).toContain("Estimated cost: about $2–$4. Run limit: $8.\nTicket looker's max per run is $3, so this run will stop at $3, before its run limit.");
     expect(textOf(estimate())).not.toContain("max per run");
+  });
+
+  it("says nothing of cost on a requirements or design document, whose approval accepts no run limit", () => {
+    const early = WorkflowSnapshotSchema.parse({ ...createWorkflowSnapshot({ taskId, ownerId: "a".repeat(64), now, path: "FULL" }), revision: 3, stage: "PLAN_REVIEW", state: "WAITING",
+      artifacts: [{ ...plan, id: "requirements-v1", type: "requirements" as const }] });
+    const text = workflowMessage({ taskId, workflow: early, runEstimate: estimate(), agentName: "Rovara Code" })?.text ?? "";
+    expect(text).toContain("is ready for your approval");
+    expect(text).not.toContain("Estimated cost");
   });
 
   it("says nothing of cost when the task has no estimate, and leaves the rest of the message as it was", () => {
