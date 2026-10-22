@@ -2,15 +2,17 @@
 // whole document and a revision; every change is one transaction that writes the new document (only while it is still at the revision that was
 // read), the request item that makes the change repeatable (R18), and the change's audit item. The key itself is never here: it goes to the model
 // proxy's own credential store (ModelAccess.upsertSource) and `credentials` only says which sources have one.
-import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentXError,
+  CLI_COMMAND_NAME,
   INDEX_EXPIRY_ATTRIBUTE,
   ModelSourceIdSchema,
   ModelSourceSchema,
   OrgIdSchema,
   OrgModelSourcesSchema,
   agentRequestKey,
+  canonicalJson,
   customSourceLimitProblem,
   defaultModelSourceOrder,
   modelSourceOrgProblem,
@@ -36,16 +38,30 @@ export interface ModelSourceStoreInput {
   audit?: AuditRuntime;
 }
 
-/** The record as stored: the org's sources, which of them hold a key, and the revision the next change must name (0 while the org has no record). */
+/** A source whose record entry is gone but whose proxy registration and egress request may not be: the removal's cleanup is owed until it clears. */
+export interface RemovalTombstone {
+  sourceId: string;
+  kind: string;
+}
+
+/** The record as stored: the org's sources, which of them hold a key, removals whose cleanup is owed, and the revision the next change must name (0 while the org has no record). */
 export interface StoredModelSources extends OrgModelSources {
   credentials: string[];
+  removing: RemovalTombstone[];
   revision: number;
 }
+
+/** One small item per org that has a record, so the sweeper can walk the orgs without scanning the table. */
+export const MODEL_SOURCES_DIRECTORY_PK = "MODEL_SOURCES_ORGS";
+/** A removal whose cleanup keeps failing is not allowed to pile up without end in the record. */
+const MAX_TOMBSTONES = 50;
 
 /** How many times a change reads the record again after another change landed first. */
 const ATTEMPTS = 3;
 const MISSING = "no AI source has that ID";
 const CONFLICT = "your company's AI sources changed while saving; reload and try again";
+const CHATGPT_OFF = `order: Sign in with ChatGPT is turned off in this Rovara; ask an admin to turn it on with: ${CLI_COMMAND_NAME} config set models.chatgpt.enabled true`;
+const SOURCE_CHANGED = "this source changed since it was read; reload and try again";
 const UNREADABLE = "your company's AI sources can't be read; ask a Rovara admin to look at them";
 
 /** The conflict a transaction's condition raised: the document changed since it was read. */
@@ -82,28 +98,35 @@ export class ModelSourceStore {
    * never the defaults, because the defaults would quietly undo what an admin set.
    */
   async read(orgId: string): Promise<StoredModelSources> {
+    return (await this.readIfAny(orgId)) ?? { sources: [], order: defaultModelSourceOrder(await this.input.chatgptSwitch()), credentials: [], removing: [], revision: 0 };
+  }
+
+  /** The org's record, or undefined when it has none (nothing is made up: the sweeper and the org close need to tell the two apart). */
+  async readIfAny(orgId: string): Promise<StoredModelSources | undefined> {
     const org = parseOrg(orgId);
     const response = await this.input.documentClient.send(new GetCommand({ TableName: this.input.tableName, Key: modelSourcesKey(org), ConsistentRead: true })) as { Item?: Item };
     const item = response.Item;
-    if (item === undefined) return { sources: [], order: defaultModelSourceOrder(await this.input.chatgptSwitch()), credentials: [], revision: 0 };
+    if (item === undefined) return undefined;
     const document = OrgModelSourcesSchema.safeParse({
       sources: item.sources, order: item.order,
       ...(item.assistantModel === undefined ? {} : { assistantModel: item.assistantModel }),
       ...(item.chatgptPreferredModel === undefined ? {} : { chatgptPreferredModel: item.chatgptPreferredModel }),
     });
     const credentials = Array.isArray(item.credentials) ? item.credentials : undefined;
+    const removing = item.removing === undefined ? [] : item.removing;
+    const tombstones = Array.isArray(removing) && removing.every((entry) => typeof entry === "object" && entry !== null && typeof (entry as Item).sourceId === "string" && typeof (entry as Item).kind === "string") ? removing as RemovalTombstone[] : undefined;
     const known = new Set<string>(document.success ? document.data.sources.map((source) => source.sourceId) : []);
-    if (!document.success || credentials === undefined || !credentials.every((id) => typeof id === "string" && known.has(id)) || typeof item.revision !== "number" || !Number.isInteger(item.revision) || item.revision < 1) {
+    if (!document.success || credentials === undefined || !credentials.every((id) => typeof id === "string" && known.has(id)) || tombstones === undefined || typeof item.revision !== "number" || !Number.isInteger(item.revision) || item.revision < 1) {
       // A path and a code only: a value could be a label or a host.
       console.error(JSON.stringify({ component: "broker", level: "error", event: "model_sources_invalid", orgId: org, problem: document.success ? "shape" : document.error.issues[0]?.path.join(".") ?? "document" }));
       throw coded("CONFIG_INVALID", UNREADABLE);
     }
-    return { ...document.data, credentials: credentials as string[], revision: item.revision };
+    return { ...document.data, credentials: credentials as string[], removing: tombstones.map(({ sourceId, kind }) => ({ sourceId, kind })), revision: item.revision };
   }
 
   /** The record without its bookkeeping: what ChatGPT's task selection and the router read. */
   async orgSources(orgId: string): Promise<OrgModelSources> {
-    const { credentials: _credentials, revision: _revision, ...sources } = await this.read(orgId); // eslint-disable-line @typescript-eslint/no-unused-vars -- bookkeeping, not part of the document
+    const { credentials: _credentials, removing: _removing, revision: _revision, ...sources } = await this.read(orgId); // eslint-disable-line @typescript-eslint/no-unused-vars -- bookkeeping, not part of the document
     return sources;
   }
 
@@ -143,7 +166,9 @@ export class ModelSourceStore {
         ? { ConditionCheck: { TableName: this.input.tableName, Key: key, ...guard } }
         : { Put: { TableName: this.input.tableName, Item: documentItem(orgId, planned.next, revision, by, at), ...guard } };
       try {
-        await commit(this.input, [document, ...events.flatMap((event) => auditPending(this.input, event))], (failed) => (failed.has(0) ? new RevisionConflict() : undefined), request, planned.result);
+        // The directory item rides with every change of the record, so the sweeper finds an org with a record and a crash cannot leave one without the other.
+        const directory: TransactItem[] = planned.next === undefined ? [] : [{ Put: { TableName: this.input.tableName, Item: { pk: MODEL_SOURCES_DIRECTORY_PK, sk: orgId, entityType: "MODEL_SOURCES_ORG", updatedAt: at } } }];
+        await commit(this.input, [document, ...directory, ...events.flatMap((event) => auditPending(this.input, event))], (failed) => (failed.has(0) ? new RevisionConflict() : undefined), request, planned.result);
       } catch (error) {
         // A lost race on the record, or on the request's own item (the same request arriving twice at once): read again, which finds the request's outcome.
         if (error instanceof RevisionConflict || (request !== undefined && error instanceof AgentXError && error.code === "IDEMPOTENCY_CONFLICT")) continue;
@@ -161,7 +186,14 @@ export class ModelSourceStore {
    * there, so a change that lost a race with a removal does not bring the source back). `keyStored` says this write stored a key with the proxy; without
    * it, whatever key the source had stays. A new source is not in the order until an admin puts it there.
    */
-  async save(input: { orgId: string; source: ModelSource; mode: "create" | "update"; keyStored?: boolean | undefined; by: string; request?: RequestMark | undefined }): Promise<{ sourceId: string }> {
+  async save(input: {
+    orgId: string; source: ModelSource; mode: "create" | "update"; keyStored?: boolean | undefined; by: string; request?: RequestMark | undefined;
+    /**
+     * What the caller checked its change against. A change is refused as a conflict, never planned again, when the record has moved (`revision`) or the source
+     * is no longer the one that was read (`source`): a key and a host that were checked together stay together.
+     */
+    expect?: { revision: number } | { source: ModelSource } | undefined;
+  }): Promise<{ sourceId: string }> {
     const orgId = parseOrg(input.orgId);
     const parsed = ModelSourceSchema.safeParse(input.source);
     if (!parsed.success) {
@@ -174,6 +206,8 @@ export class ModelSourceStore {
     const { result } = await this.mutate(orgId, input.by, input.request, (current): Plan<{ sourceId: string }> => {
       const existing = current.sources.find((candidate) => candidate.sourceId === source.sourceId);
       if (input.mode === "update" && existing === undefined) throw coded("NOT_FOUND", MISSING);
+      if (input.expect !== undefined && "revision" in input.expect && current.revision !== input.expect.revision) throw coded("IDEMPOTENCY_CONFLICT", CONFLICT);
+      if (input.expect !== undefined && "source" in input.expect && canonicalJson(existing) !== canonicalJson(input.expect.source)) throw coded("IDEMPOTENCY_CONFLICT", SOURCE_CHANGED);
       if (input.mode === "create" && existing !== undefined) throw coded("CONFIG_INVALID", "source: that source already exists");
       if (existing !== undefined && existing.kind !== source.kind) throw coded("CONFIG_INVALID", "source.kind: a source's kind can't change; remove it and add a new one");
       if (existing === undefined) {
@@ -203,8 +237,13 @@ export class ModelSourceStore {
       const order = current.order.filter((id) => id !== existing.sourceId);
       if (order.length === 0) throw coded("CONFIG_INVALID", "order: put another source in the order before removing the last one");
       const orderChanged = order.length !== current.order.length;
+      if (current.removing.length >= MAX_TOMBSTONES) throw coded("RUNTIME_UNAVAILABLE", "earlier removals haven't finished; try again in a few minutes");
       return {
-        next: { ...kept(current), sources: current.sources.filter((candidate) => candidate.sourceId !== existing.sourceId), credentials: current.credentials.filter((id) => id !== existing.sourceId), order },
+        // The tombstone commits with the removal: whatever dies after it, the cleanup is owed in the record and the next write, read or sweep finishes it.
+        next: {
+          ...kept(current), sources: current.sources.filter((candidate) => candidate.sourceId !== existing.sourceId), credentials: current.credentials.filter((id) => id !== existing.sourceId), order,
+          removing: [...current.removing.filter((entry) => entry.sourceId !== existing.sourceId), { sourceId: existing.sourceId, kind: existing.kind }],
+        },
         events: (revision, at) => [
           auditModelSourceRemoved({ orgId, actor: auditActorOf(input.by), occurredAt: at, occurrence: auditOccurrence(String(revision)), sourceId: existing.sourceId, sourceKind: existing.kind }),
           ...(orderChanged ? [auditModelSourceOrderChanged({ orgId, actor: auditActorOf(input.by), occurredAt: at, occurrence: auditOccurrence(String(revision)), count: order.length })] : []),
@@ -218,9 +257,13 @@ export class ModelSourceStore {
   /** Sets the order sources are tried in. It names at least one source, none twice, and only `rovara`, `personal-chatgpt` and sources the org has. */
   async setOrder(input: { orgId: string; order: readonly string[]; by: string; request?: RequestMark | undefined }): Promise<{ order: string[] }> {
     const orgId = parseOrg(input.orgId);
+    const adding = input.order.includes("personal-chatgpt");
+    // The install-wide switch is a hard off: ChatGPT cannot be put into an order while it is off. An order that already has it may be changed around it.
+    const switchOn = adding ? await this.input.chatgptSwitch() : true;
     const { result } = await this.mutate(orgId, input.by, input.request, (current): Plan<{ order: string[] }> => {
       if (input.order.length === 0) throw coded("CONFIG_INVALID", "order: name at least one source");
-      const { credentials: _credentials, ...contract } = kept(current); // eslint-disable-line @typescript-eslint/no-unused-vars -- bookkeeping, not part of the contract
+      if (adding && !switchOn && !current.order.includes("personal-chatgpt")) throw coded("CONFIG_INVALID", CHATGPT_OFF);
+      const { credentials: _credentials, removing: _removing, ...contract } = kept(current); // eslint-disable-line @typescript-eslint/no-unused-vars -- bookkeeping, not part of the contract
       const candidate = OrgModelSourcesSchema.safeParse({ ...contract, order: input.order });
       if (!candidate.success) {
         // The message names the rule that failed, never the id the client sent.
@@ -237,12 +280,65 @@ export class ModelSourceStore {
     });
     return result;
   }
+
+  /** Clears a removal's tombstone once its cleanup is done. A tombstone that is already gone is not an error: two cleanups may finish the same removal. */
+  async finishRemoval(input: { orgId: string; sourceId: string }): Promise<void> {
+    const orgId = parseOrg(input.orgId);
+    await this.mutate(orgId, "system", undefined, (current): Plan<undefined> => {
+      if (!current.removing.some((entry) => entry.sourceId === input.sourceId)) return { result: undefined };
+      return { next: { ...kept(current), removing: current.removing.filter((entry) => entry.sourceId !== input.sourceId) }, result: undefined };
+    });
+  }
+
+  /**
+   * Says a source has no key any more, because the proxy's was dropped (a host move that failed to save must not leave the new key beside the old host).
+   * A source that is not there, or has no key, is left alone.
+   */
+  async dropCredential(input: { orgId: string; sourceId: string; by: string }): Promise<void> {
+    const orgId = parseOrg(input.orgId);
+    await this.mutate(orgId, input.by, undefined, (current): Plan<undefined> => {
+      const existing = current.sources.find((candidate) => candidate.sourceId === input.sourceId);
+      if (existing === undefined || !current.credentials.includes(input.sourceId)) return { result: undefined };
+      return {
+        next: { ...kept(current), credentials: current.credentials.filter((id) => id !== input.sourceId) },
+        events: (revision, at) => [auditModelSourceSaved({
+          orgId, actor: auditActorOf(input.by), occurredAt: at, occurrence: auditOccurrence(String(revision)), sourceId: existing.sourceId, sourceKind: existing.kind, change: "updated",
+        })],
+        result: undefined,
+      };
+    });
+  }
+
+  /** Deletes the org's record and directory item: the org is closed and its sources have been taken out of the proxy. */
+  async deleteRecord(orgId: string): Promise<void> {
+    const org = parseOrg(orgId);
+    await this.input.documentClient.send(new TransactWriteCommand({
+      TransactItems: [
+        { Delete: { TableName: this.input.tableName, Key: modelSourcesKey(org) } },
+        { Delete: { TableName: this.input.tableName, Key: { pk: MODEL_SOURCES_DIRECTORY_PK, sk: org } } },
+      ],
+    }));
+  }
+
+  /** The orgs that have a record, in id order, after `after`: at most `limit`. */
+  async listOrgs(after: string | undefined, limit: number): Promise<OrgId[]> {
+    const page = await this.input.documentClient.send(new QueryCommand({
+      TableName: this.input.tableName, ConsistentRead: true, Limit: limit,
+      KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": MODEL_SOURCES_DIRECTORY_PK },
+      // A start key need not be an item: the read resumes after it.
+      ...(after === undefined ? {} : { ExclusiveStartKey: { pk: MODEL_SOURCES_DIRECTORY_PK, sk: after } }),
+    })) as { Items?: Array<{ sk?: unknown }> };
+    return (page.Items ?? []).flatMap((item) => {
+      const parsed = OrgIdSchema.safeParse(item.sk);
+      return parsed.success ? [parsed.data] : [];
+    });
+  }
 }
 
 /** The part of a record a change keeps unless it changes it. */
 function kept(current: StoredModelSources): Omit<StoredModelSources, "revision"> {
   return {
-    sources: current.sources, order: current.order, credentials: current.credentials,
+    sources: current.sources, order: current.order, credentials: current.credentials, removing: current.removing,
     ...(current.assistantModel === undefined ? {} : { assistantModel: current.assistantModel }),
     ...(current.chatgptPreferredModel === undefined ? {} : { chatgptPreferredModel: current.chatgptPreferredModel }),
   };

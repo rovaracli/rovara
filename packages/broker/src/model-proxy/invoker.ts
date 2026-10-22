@@ -6,7 +6,7 @@ import { InvokeCommand, type InvokeCommandOutput } from "@aws-sdk/client-lambda"
 import { AgentXErrorCodeSchema, agentXError, type AgentXError, type OrgId } from "@agentx/contracts";
 import { z } from "zod";
 import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "./access.js";
-import { KeySpendResultSchema, MintedKeyResultSchema, SourceCheckResultSchema, SpendFiguresSchema, SpendResultSchema, type ModelAccessRequest } from "./protocol.js";
+import { KeySpendResultSchema, MintedKeyResultSchema, RegisteredSourcesResultSchema, SourceCheckResultSchema, SpendFiguresSchema, SpendResultSchema, type ModelAccessRequest } from "./protocol.js";
 
 const DEFAULT_TIMEOUT_MS = 25_000;
 
@@ -62,6 +62,10 @@ export class ModelAccessInvoker implements ModelAccess {
 
   async removeSource(orgId: OrgId, sourceId: string): Promise<void> {
     await this.invoke({ op: "removeSource", args: { orgId, sourceId } });
+  }
+
+  async listSources(): Promise<Array<{ orgId: OrgId; sourceId: string }>> {
+    return this.parseResult(await this.invoke({ op: "listSources", args: {} }), RegisteredSourcesResultSchema);
   }
 
   async checkSource(orgId: OrgId, sourceId: string): Promise<SourceCheck> {

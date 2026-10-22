@@ -23,6 +23,11 @@ import { fakeModelAccess } from "../support/fake-model-access.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { releaseOrgModelSources } from "../../packages/broker/src/model-sources/release.js";
+import { sweepModelSources } from "../../packages/broker/src/model-sources/sweep.js";
+import { OrgStore } from "../../packages/broker/src/org/store.js";
+import { listEgressItems, putEgressDomains } from "../../packages/broker/src/org/egress-domains.js";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "../../packages/contracts/src/org.js";
 import { createBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall, SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { chatGptConnections, type ChatGptSealer } from "../../packages/broker/src/chatgpt/connections.js";
 import type { ChatGptConnectionView } from "../../packages/contracts/src/index.js";
@@ -135,7 +140,7 @@ async function setup(options: Options = {}) {
     expect(reply.status, JSON.stringify(reply.body)).toBe(200);
     return { ...reply.body, sources: reply.body.sources as SourceView[], order: reply.body.order as string[] };
   };
-  const doc = (org: OrgId = TEST_ORG) => h.db.get(modelSourcesKey(org)) as { revision: number; sources: Array<Record<string, unknown>>; order: string[]; credentials: string[] } | undefined;
+  const doc = (org: OrgId = TEST_ORG) => h.db.get(modelSourcesKey(org)) as { revision: number; sources: Array<Record<string, unknown>>; order: string[]; credentials: string[]; removing: Array<{ sourceId: string; kind: string }> } | undefined;
   const everything = () => JSON.stringify(h.db.find(() => true));
   const egressDeps = (): EgressDomainsDependencies => ({ documentClient: h.db, tableName: "state", cloud: options.cloud === true, now: () => new Date(), sync });
   const transactions = (): Tx[] => {
@@ -151,7 +156,8 @@ async function setup(options: Options = {}) {
   const decide = (sourceId: string, decision: "approved" | "rejected", reason?: string) =>
     decideEgressDomain(egressDeps(), { orgId: TEST_ORG, owner: { kind: "model-source", sourceId }, domain: HOST, decision, operatorId: "operator-1", ...(reason === undefined ? {} : { reason }) });
   const egressOf = (sourceId: string, org: OrgId = TEST_ORG) => readEgressDomains(egressDeps(), org, { kind: "model-source", sourceId });
-  return { ...h, access, audit, members, checked, call, write, add, list, doc, everything, egressDeps, transactions, store, enroll, decide, egressOf, setSync: (mode: "applied" | "down") => { syncMode = mode; } };
+  const switchOn = () => h.db.set({ ...CHATGPT_SETTINGS_KEY, entityType: "SETTING", enabled: true, preferredModel: "gpt-6.1-sol" });
+  return { ...h, access, audit, members, checked, switchOn, call, write, add, list, doc, everything, egressDeps, transactions, store, enroll, decide, egressOf, setSync: (mode: "applied" | "down") => { syncMode = mode; } };
 }
 
 const errorOf = (reply: Reply) => reply.body.error as { code: string; message: string };
@@ -397,7 +403,8 @@ describe("one transaction, one audit event, one request item", () => {
     expect((await s.write(DANA, "PUT", `/v1/app/org/model-sources/${id}`, { source: anthropic({ label: "Renamed" }) })).status).toBe(200);
     expect((await s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order: [id, "rovara", other] })).status).toBe(200);
     expect((await s.write(DANA, "DELETE", `/v1/app/org/model-sources/${other}`)).status).toBe(200);
-    const docTransactions = seen.filter((transaction) => writesDoc(transaction));
+    // The removal's cleanup then clears its tombstone in a write of its own, which is no request and has no event.
+    const docTransactions = seen.filter((transaction) => writesDoc(transaction) && writesRequest(transaction));
     expect(docTransactions).toHaveLength(3);
     for (const transaction of docTransactions) expect(writesRequest(transaction)).toBe(true);
     expect(auditIn(docTransactions[0]!).map((event) => [event.action, event.facts])).toEqual([["model_source.saved", { kind: "anthropic", change: "updated" }]]);
@@ -427,6 +434,9 @@ describe("one transaction, one audit event, one request item", () => {
 
   it("keeps every change when several land at once: each is read again after losing the race, none overwrites another", async () => {
     const s = await setup();
+    // The org has a record first, so the order below is a change; the install-wide switch is on, so ChatGPT may be added to it.
+    await s.add(DANA, anthropic({ label: "Seed" }));
+    s.switchOn();
     // The first three writes of the record are held until all three are ready, so each has read the record as it was before any of them.
     const send = s.db.send.bind(s.db) as (command: unknown) => Promise<unknown>;
     let ready = 0;
@@ -447,10 +457,10 @@ describe("one transaction, one audit event, one request item", () => {
     ]);
     expect([first.status, second.status, third.status]).toEqual([201, 201, 200]);
     expect(ready).toBe(3);
-    expect(s.doc()!.sources.map((source) => source.label).sort()).toEqual(["A", "B"]);
+    expect(s.doc()!.sources.map((source) => source.label).sort()).toEqual(["A", "B", "Seed"]);
     expect(s.doc()!.order).toEqual(["personal-chatgpt", "rovara"]);
-    expect(s.doc()!.credentials).toHaveLength(2);
-    expect(s.doc()!.revision).toBe(3);
+    expect(s.doc()!.credentials).toHaveLength(3);
+    expect(s.doc()!.revision).toBe(4);
   });
 
   it("makes the proxy match the record when a write fails with its outcome unknown: a write that did not land is undone, one that did is kept", async () => {
@@ -559,7 +569,9 @@ describe("repeating a request (R18)", () => {
     expect(s.doc()!.sources).toEqual([]);
     const retried = await s.call(DANA, "DELETE", `/v1/app/org/model-sources/${id}`, { requestId });
     expect(retried.status).toBe(200);
-    expect(s.access.removeSource).toHaveBeenCalledTimes(2);
+    expect(s.access.removeSource.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(s.doc()!.sources).toEqual([]);
+    expect(s.doc()!.removing).toEqual([]);
   });
 
   it("records the request item of an order change that changes nothing, and answers its repeat from it", async () => {
@@ -614,6 +626,7 @@ describe("changing and removing a source", () => {
   it("orders the sources: it names at least one, none twice, and only sources the org has", async () => {
     const s = await setup();
     const id = await s.add(DANA, anthropic());
+    s.switchOn();
     const put = (order: unknown) => s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order });
     const refusals: Array<[unknown, RegExp]> = [
       [[], /^order: name at least one source$/], [["rovara", "rovara"], /^order must not repeat a source$/], [["src_aaaaaaaaaaaaaaaaaaaa"], /^order names a source the organization does not have$/],
@@ -662,12 +675,14 @@ describe("another org", () => {
 
   it("does not take the order of one org to enable ChatGPT for another", async () => {
     const s = await setup();
+    await s.add(DANA, anthropic());
+    s.switchOn();
     expect((await s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order: ["personal-chatgpt", "rovara"] })).status).toBe(200);
     const store = s.store();
     expect((await store.orgSources(TEST_ORG)).order).toEqual(["personal-chatgpt", "rovara"]);
     expect((await store.orgSources(ORG_B)).order).toEqual(["rovara"]);
     const view = vi.fn(async () => ({ connected: true, status: "connected" as const, models: ["gpt-6.1-sol"] }));
-    const connections = { settings: async () => ({ enabled: false, preferredModel: "gpt-6.1-sol" }), view } as unknown as ChatGptConnections;
+    const connections = { settings: async () => ({ enabled: true, preferredModel: "gpt-6.1-sol" }), view } as unknown as ChatGptConnections;
     expect(await chatGptTaskSelection(connections, "dev-1", Date.now(), await store.orgSources(TEST_ORG))).toEqual({ developerId: "dev-1", model: { provider: "openai", modelId: "gpt-6.1-sol" } });
     view.mockClear();
     expect(await chatGptTaskSelection(connections, "dev-1", Date.now(), await store.orgSources(ORG_B))).toBeUndefined();
@@ -697,12 +712,15 @@ describe("what ChatGPT does with an org's sources", () => {
   };
   const sources = (order: string[], extra: Record<string, unknown> = {}) => ({ sources: [], order, ...extra }) as never;
 
-  it("is on exactly when the org's order has personal-chatgpt, whatever the install-wide switch says", async () => {
-    const off = connections(true);
-    expect(await chatGptTaskSelection(off.connections, "dev-1", Date.now(), sources(["rovara"]))).toBeUndefined();
-    expect(off.view).not.toHaveBeenCalled();
-    const on = connections(false);
-    expect(await chatGptTaskSelection(on.connections, "dev-1", Date.now(), sources(["personal-chatgpt", "rovara"]))).toEqual({ developerId: "dev-1", model: { provider: "openai", modelId: "gpt-6.1-sol" } });
+  it("is on only when the install-wide switch is on AND the org's order has personal-chatgpt: the switch stays a hard off", async () => {
+    const orderWithout = connections(true);
+    expect(await chatGptTaskSelection(orderWithout.connections, "dev-1", Date.now(), sources(["rovara"]))).toBeUndefined();
+    expect(orderWithout.view).not.toHaveBeenCalled();
+    const switchOff = connections(false);
+    expect(await chatGptTaskSelection(switchOff.connections, "dev-1", Date.now(), sources(["personal-chatgpt", "rovara"]))).toBeUndefined();
+    expect(switchOff.view).not.toHaveBeenCalled();
+    const both = connections(true);
+    expect(await chatGptTaskSelection(both.connections, "dev-1", Date.now(), sources(["personal-chatgpt", "rovara"]))).toEqual({ developerId: "dev-1", model: { provider: "openai", modelId: "gpt-6.1-sol" } });
   });
 
   it("prefers the org's own model over the install's, and leaves the install-wide switch in charge without a proxy", async () => {
@@ -730,6 +748,8 @@ describe("an endpoint source", () => {
     ["plain http", "http://llm.example.com/v1"], ["an IP literal", "https://10.0.0.5/v1"], ["an IPv6 literal", "https://[::1]/v1"], ["localhost", "https://localhost/v1"],
     ["an internal name", "https://proxy.internal/v1"], ["a .local name", "https://printer.local/v1"], ["user info", "https://user:hunter2secret@llm.example.com/v1"],
     ["another port", "https://llm.example.com:4001/v1"], ["the metadata address", "https://169.254.169.254/latest"],
+    ["a wildcard host", "https://*.example.com/v1"], ["a wildcard inside a label", "https://a*b.example.com/v1"], ["an underscore in the host", "https://my_host.example.com/v1"],
+    ["a query", "https://llm.example.com/v1?key=sk-abc"], ["an empty query", "https://llm.example.com/v1?"], ["a fragment", "https://llm.example.com/v1#token"],
   ])("refuses %s on its own, before the broker's checker runs", async (_name, baseUrl) => {
     const s = await setup();
     const reply = await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint({ baseUrl }) });
@@ -737,6 +757,7 @@ describe("an endpoint source", () => {
     expect(s.checked).toEqual([]);
     expect(s.doc()).toBeUndefined();
     expect(JSON.stringify(reply.body)).not.toContain("hunter2secret");
+    expect(JSON.stringify(reply.body)).not.toContain("sk-abc");
   });
 
   it("is unavailable where the broker has no endpoint checker", async () => {
@@ -1023,7 +1044,9 @@ describe("what a task does with the org's order", () => {
   });
 
   it("runs on the plan when the org's order has personal-chatgpt, and on the default when the org's sources cannot be read", async () => {
-    expect((await task((db) => plant(db, ["personal-chatgpt", "rovara"]), { installSwitch: false })).chatgpt).toEqual({ model: { provider: "openai", modelId: "gpt-6.1-sol" } });
+    expect((await task((db) => plant(db, ["personal-chatgpt", "rovara"]))).chatgpt).toEqual({ model: { provider: "openai", modelId: "gpt-6.1-sol" } });
+    // The install-wide switch is a hard off: an order that kept personal-chatgpt from when the switch was on no longer runs tasks on a plan.
+    expect(await task((db) => plant(db, ["personal-chatgpt", "rovara"]), { installSwitch: false })).not.toHaveProperty("chatgpt");
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const payload = await task((db) => { db.set({ ...modelSourcesKey(TEST_ORG), entityType: "ORG_MODEL_SOURCES", revision: 1, sources: "garbage", order: ["rovara"], credentials: [] }); });
@@ -1045,7 +1068,374 @@ describe("what a task does with the org's order", () => {
     const withOrgs = chatGptConnections({ ...base, orgSources: async (org) => orgs[org]! });
     expect(await withOrgs.settings(TEST_ORG)).toEqual({ enabled: false, preferredModel: "gpt-5.5" });
     expect(await withOrgs.settings(ORG_B)).toEqual({ enabled: true, preferredModel: "gpt-6.1-sol" });
+    // With the install-wide switch off, no org's order turns it on.
+    db.set({ ...CHATGPT_SETTINGS_KEY, entityType: "SETTING", enabled: false, preferredModel: "gpt-5.5" });
+    expect(await withOrgs.settings(ORG_B)).toEqual({ enabled: false, preferredModel: "gpt-6.1-sol" });
+    db.set({ ...CHATGPT_SETTINGS_KEY, entityType: "SETTING", enabled: true, preferredModel: "gpt-5.5" });
     expect(await withOrgs.settings()).toEqual({ enabled: true, preferredModel: "gpt-5.5" });
     expect(await chatGptConnections(base).settings(TEST_ORG)).toEqual({ enabled: true, preferredModel: "gpt-5.5" });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Fix round 1 (review of 24b)
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** What the model proxy holds for each endpoint source, kept the way it keeps it: a key stays until a new one is sent or the source is removed. */
+function trackProxy(s: Awaited<ReturnType<typeof setup>>) {
+  const proxy = new Map<string, { host: string; key: string | undefined }>();
+  s.access.upsertSource.mockImplementation(async ({ source, apiKey }) => {
+    if (source.kind === "endpoint") proxy.set(source.sourceId, { host: new URL(source.baseUrl).hostname, key: apiKey ?? proxy.get(source.sourceId)?.key });
+  });
+  s.access.removeSource.mockImplementation(async (_org, id) => { proxy.delete(id); });
+  return proxy;
+}
+
+/** Holds the first `count` writes of the record until all of them are ready, so each has read the record as it was before any of them. */
+function holdRecordWrites(db: FakeDynamoDb, count: number): void {
+  const send = db.send.bind(db) as (command: unknown) => Promise<unknown>;
+  let ready = 0;
+  let open!: () => void;
+  const gate = new Promise<void>((resolve) => { open = resolve; });
+  (db as unknown as { send: (command: unknown) => Promise<unknown> }).send = async (command: unknown) => {
+    if ((command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand" && JSON.stringify((command as { input: unknown }).input).includes("MODEL_SOURCES") && ready < count) {
+      ready += 1;
+      if (ready === count) open();
+      await gate;
+    }
+    return send(command);
+  };
+}
+
+const conflicts = { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }, { Code: "None" }, { Code: "None" }] };
+const touchesRecord = (input: Record<string, unknown>) => JSON.stringify(input).includes("MODEL_SOURCES");
+
+describe("a change is conditional on what the route checked (I1)", () => {
+  const OTHER_HOST = "other.example.org";
+  const moved = () => endpoint({ baseUrl: `https://${OTHER_HOST}/v1` });
+
+  it("never leaves a key at a host it was not saved for when a host move and another change land at once", async () => {
+    const s = await setup({ cloud: false });
+    const proxy = trackProxy(s);
+    const created = await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint(), apiKey: KEY });
+    const id = created.body.sourceId as string;
+    holdRecordWrites(s.db, 2);
+    const [move, rename] = await Promise.all([
+      s.write(DANA, "PUT", `/v1/app/org/model-sources/${id}`, { source: moved(), apiKey: OTHER_KEY }),
+      s.write(OWEN, "PUT", `/v1/app/org/model-sources/${id}`, { source: endpoint({ label: "Renamed" }) }),
+    ]);
+    // One change applied and the other was refused as stale, whichever got there first.
+    expect([move.status, rename.status].sort()).toEqual([200, 409]);
+    const recordHost = new URL((s.doc()!.sources[0] as { baseUrl: string }).baseUrl).hostname;
+    const held = proxy.get(id);
+    expect(held, "the source is still registered").toBeDefined();
+    // The invariant: the proxy holds a key only for the host the record names, and the record says so.
+    if (held!.key !== undefined) expect(held!.host).toBe(recordHost);
+    expect(s.doc()!.credentials.includes(id)).toBe(held!.key !== undefined);
+    expect(s.everything()).not.toContain(OTHER_KEY);
+  });
+
+  it("drops the key from the proxy when a host move fails to save, and the record says the source has none", async () => {
+    const s = await setup({ cloud: false });
+    const proxy = trackProxy(s);
+    const id = (await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint(), apiKey: KEY })).body.sourceId as string;
+    expect(proxy.get(id)).toEqual({ host: HOST, key: KEY });
+    s.db.injectFault({ command: "TransactWriteCommand", match: touchesRecord, times: 3, error: conflicts });
+    const failed = await s.write(DANA, "PUT", `/v1/app/org/model-sources/${id}`, { source: moved(), apiKey: OTHER_KEY });
+    expect([failed.status, errorOf(failed).code]).toEqual([409, "IDEMPOTENCY_CONFLICT"]);
+    // The record still names the old host; the proxy has the old host and no key at all, never the new key beside the old host.
+    expect(new URL((s.doc()!.sources[0] as { baseUrl: string }).baseUrl).hostname).toBe(HOST);
+    expect(proxy.get(id)).toEqual({ host: HOST, key: undefined });
+    expect(s.access.removeSource).toHaveBeenCalledWith(TEST_ORG, id);
+    expect(s.doc()!.credentials).toEqual([]);
+    expect((await s.list()).sources[0]!.hasCredential).toBe(false);
+    expect(s.everything()).not.toContain(OTHER_KEY);
+  });
+
+  it("refuses a change that was checked against a record that has moved, instead of planning it again", async () => {
+    const s = await setup({ cloud: false });
+    const id = (await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint(), apiKey: KEY })).body.sourceId as string;
+    const stale = (await s.store().read(TEST_ORG)).revision;
+    expect((await s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order: ["rovara", id] })).status).toBe(200);
+    const source = (await s.store().read(TEST_ORG)).sources[0]!;
+    await expect(s.store().save({ orgId: TEST_ORG, source: { ...source, label: "Stale" }, mode: "update", expect: { revision: stale }, by: DANA.developerId })).rejects.toThrow("changed while saving");
+    await expect(s.store().save({ orgId: TEST_ORG, source: { ...source, label: "Fresh" }, mode: "update", expect: { revision: stale + 1 }, by: DANA.developerId })).resolves.toEqual({ sourceId: id });
+  });
+});
+
+describe("a Bedrock check only marks the role it probed (I2)", () => {
+  const OTHER_ROLE = "arn:aws:iam::123456789012:role/rovara/other-access";
+
+  it("does not mark a role tested, or register it, when the source changed while it was probed", async () => {
+    const s = await setup();
+    const id = await s.add(DANA, bedrock());
+    s.access.checkSource.mockImplementationOnce(async () => {
+      expect((await s.write(OWEN, "PUT", `/v1/app/org/model-sources/${id}`, { source: bedrock({ roleArn: OTHER_ROLE }) })).status).toBe(200);
+      return { ok: true as const, health: "healthy" as const };
+    });
+    const calls = s.access.upsertSource.mock.calls.length;
+    const check = await s.call(DANA, "POST", `/v1/app/org/model-sources/${id}/check`);
+    expect([check.status, check.body]).toEqual([200, { ok: false, message: "this source changed while it was being tested; run the check again" }]);
+    expect(s.doc()!.sources[0]).toMatchObject({ roleArn: OTHER_ROLE, tested: false });
+    // Only the change's own registration happened; the probed role was not registered again.
+    expect(s.access.upsertSource.mock.calls.length).toBe(calls + 1);
+    expect(s.access.upsertSource.mock.calls.at(-1)![0].source).toMatchObject({ roleArn: OTHER_ROLE, tested: false });
+  });
+
+  it("does not register an already tested role again when the source changed while it was probed", async () => {
+    const s = await setup();
+    const id = await s.add(DANA, bedrock());
+    expect((await s.call(DANA, "POST", `/v1/app/org/model-sources/${id}/check`)).body).toEqual({ ok: true });
+    s.access.checkSource.mockImplementationOnce(async () => {
+      expect((await s.write(OWEN, "PUT", `/v1/app/org/model-sources/${id}`, { source: bedrock({ roleArn: OTHER_ROLE }) })).status).toBe(200);
+      return { ok: true as const, health: "healthy" as const };
+    });
+    const calls = s.access.upsertSource.mock.calls.length;
+    const check = await s.call(DANA, "POST", `/v1/app/org/model-sources/${id}/check`);
+    expect(check.body).toEqual({ ok: false, message: "this source changed while it was being tested; run the check again" });
+    expect(s.access.upsertSource.mock.calls.length).toBe(calls + 1);
+    expect(s.access.upsertSource.mock.calls.at(-1)![0].source).toMatchObject({ roleArn: OTHER_ROLE, tested: false });
+  });
+});
+
+describe("removals that did not finish (I5)", () => {
+  const unavailable = () => agentXError("MODEL_PROXY_UNAVAILABLE", "model proxy is unreachable");
+
+  async function unfinishedRemoval(options: Options = { cloud: false }) {
+    const s = await setup(options);
+    const id = (await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint(), apiKey: KEY })).body.sourceId as string;
+    s.access.removeSource.mockRejectedValueOnce(unavailable());
+    const failed = await s.write(DANA, "DELETE", `/v1/app/org/model-sources/${id}`);
+    expect([failed.status, errorOf(failed).code]).toEqual([503, "MODEL_PROXY_UNAVAILABLE"]);
+    return { s, id };
+  }
+
+  it("writes a tombstone in the removal's own transaction", async () => {
+    const { s, id } = await unfinishedRemoval();
+    expect(s.doc()).toMatchObject({ sources: [], removing: [{ sourceId: id, kind: "endpoint" }] });
+  });
+
+  it("finishes the cleanup on the next write, whatever its request id, and clears the tombstone", async () => {
+    const { s, id } = await unfinishedRemoval();
+    s.access.removeSource.mockClear();
+    expect((await s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order: ["rovara"] })).status).toBe(200);
+    expect(s.access.removeSource).toHaveBeenCalledWith(TEST_ORG, id);
+    expect(s.doc()!.removing).toEqual([]);
+  });
+
+  it("finishes it when a member reads the list, and says nothing of it", async () => {
+    const { s, id } = await unfinishedRemoval();
+    s.access.removeSource.mockClear();
+    const listed = await s.call(EVE, "GET", "/v1/app/org/model-sources");
+    expect(listed.status).toBe(200);
+    expect(JSON.stringify(listed.body)).not.toContain("removing");
+    expect(s.access.removeSource).toHaveBeenCalledWith(TEST_ORG, id);
+    expect(s.doc()!.removing).toEqual([]);
+  });
+
+  it("releases the host from the union even when the removal died before the egress release", async () => {
+    const s = await setup({ cloud: false });
+    const id = (await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint() })).body.sourceId as string;
+    s.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
+    expect((await s.write(DANA, "DELETE", `/v1/app/org/model-sources/${id}`)).status).toBeGreaterThanOrEqual(500);
+    expect(await approvedUnion(s.egressDeps())).toEqual([HOST]);
+    await s.call(EVE, "GET", "/v1/app/org/model-sources");
+    expect(await approvedUnion(s.egressDeps())).toEqual([]);
+    expect(s.doc()!.removing).toEqual([]);
+  });
+
+  it("keeps a failing cleanup from failing the read or the write that tried it", async () => {
+    const { s } = await unfinishedRemoval();
+    s.access.removeSource.mockRejectedValue(unavailable());
+    expect((await s.call(EVE, "GET", "/v1/app/org/model-sources")).status).toBe(200);
+    expect((await s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order: ["rovara"] })).status).toBe(200);
+    expect(s.doc()!.removing).toHaveLength(1);
+  });
+});
+
+describe("the sweeper", () => {
+  const STRAY = "src_zzzzzzzzzzzzzzzzzzzz";
+  const STRAY_B = "src_yyyyyyyyyyyyyyyyyyyy";
+  const T0 = Date.parse("2026-10-22T10:00:00.000Z");
+  const minutes = (n: number) => n * 60_000;
+
+  function sweeper(s: Awaited<ReturnType<typeof setup>>, clock: { t: number }) {
+    return () => sweepModelSources({
+      documentClient: s.db, tableName: "state", now: () => clock.t, store: s.store(), access: s.access, egress: s.egressDeps(),
+    }, { budgetMs: 5_000 });
+  }
+
+  it("finishes a removal that nobody repeated: the tombstone's host leaves the union and the proxy forgets the source", async () => {
+    const s = await setup({ cloud: false });
+    const id = (await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint(), apiKey: KEY })).body.sourceId as string;
+    // The removal dies at the egress release, before the proxy is asked anything.
+    s.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
+    await s.write(DANA, "DELETE", `/v1/app/org/model-sources/${id}`);
+    expect(await approvedUnion(s.egressDeps())).toEqual([HOST]);
+    s.access.removeSource.mockClear();
+    const report = await sweeper(s, { t: T0 })();
+    expect(report.complete).toBe(true);
+    expect(s.access.removeSource).toHaveBeenCalledWith(TEST_ORG, id);
+    expect(await approvedUnion(s.egressDeps())).toEqual([]);
+    expect(s.doc()!.removing).toEqual([]);
+  });
+
+  it("releases an egress owner whose source the record does not have, and leaves a live source's host alone", async () => {
+    const s = await setup({ cloud: false });
+    const live = (await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint({ baseUrl: "https://live.example.com/v1" }) })).body.sourceId as string;
+    await putEgressDomains(s.egressDeps(), TEST_ORG, { kind: "model-source", sourceId: STRAY }, [HOST], { developerId: DANA.developerId });
+    await putEgressDomains(s.egressDeps(), ORG_B, { kind: "model-source", sourceId: STRAY_B }, ["b.example.com"], { developerId: BEA.developerId });
+    expect(await approvedUnion(s.egressDeps())).toEqual(["b.example.com", HOST, "live.example.com"].sort());
+    await sweeper(s, { t: T0 })();
+    expect(await approvedUnion(s.egressDeps())).toEqual(["live.example.com"]);
+    expect((await s.egressOf(live))!.domains.map((entry) => entry.domain)).toEqual(["live.example.com"]);
+    expect((await listEgressItems(s.egressDeps())).filter((item) => item.owner.kind === "model-source" && item.domains.length > 0).map((item) => item.owner)).toEqual([{ kind: "model-source", sourceId: live }]);
+  });
+
+  it("drops the old host a crashed host change left approved (M2)", async () => {
+    const s = await setup({ cloud: false });
+    const id = (await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint() })).body.sourceId as string;
+    // The record commits the new host, and the egress request after it dies.
+    s.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
+    expect((await s.write(DANA, "PUT", `/v1/app/org/model-sources/${id}`, { source: endpoint({ baseUrl: "https://other.example.org/v1" }) })).status).toBeGreaterThanOrEqual(500);
+    expect(await approvedUnion(s.egressDeps())).toEqual([HOST]);
+    await sweeper(s, { t: T0 })();
+    expect(await approvedUnion(s.egressDeps())).toEqual([]);
+  });
+
+  it("removes a registration no record names only after seeing it twice, ten minutes apart, so an add in flight is not undone", async () => {
+    const s = await setup();
+    const live = await s.add(DANA, anthropic());
+    const registered = [{ orgId: TEST_ORG, sourceId: live }, { orgId: TEST_ORG, sourceId: STRAY }, { orgId: ORG_B, sourceId: STRAY_B }];
+    s.access.listSources.mockImplementation(async () => registered);
+    const clock = { t: T0 };
+    const sweep = sweeper(s, clock);
+    s.access.removeSource.mockClear();
+    await sweep();
+    clock.t = T0 + minutes(5);
+    await sweep();
+    expect(s.access.removeSource).not.toHaveBeenCalled();
+    clock.t = T0 + minutes(11);
+    await sweep();
+    expect(s.access.removeSource.mock.calls.map(([org, id]) => `${org}/${id}`).sort()).toEqual([`${ORG_B}/${STRAY_B}`, `${TEST_ORG}/${STRAY}`].sort());
+  });
+
+  it("forgets a stray that a record names by the next sighting", async () => {
+    const s = await setup();
+    s.access.listSources.mockImplementation(async () => [{ orgId: TEST_ORG, sourceId: STRAY }]);
+    const clock = { t: T0 };
+    const sweep = sweeper(s, clock);
+    await sweep();
+    // The add that registered it commits its record.
+    const source = { sourceId: STRAY, kind: "anthropic", label: "Late", models: [{ catalog: sonnet }] } as never;
+    await s.store().save({ orgId: TEST_ORG, source, mode: "create", keyStored: true, by: DANA.developerId });
+    clock.t = T0 + minutes(11);
+    s.access.removeSource.mockClear();
+    await sweep();
+    clock.t = T0 + minutes(25);
+    await sweep();
+    expect(s.access.removeSource).not.toHaveBeenCalled();
+  });
+
+  it("stops at its time budget and carries on from where it stopped", async () => {
+    const s = await setup({ cloud: false });
+    const a = (await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint() })).body.sourceId as string;
+    const b = (await s.write(BEA, "POST", "/v1/app/org/model-sources", { source: endpoint({ baseUrl: "https://b.example.com/v1" }) })).body.sourceId as string;
+    const clock = { t: T0 };
+    // Each removal is slow: the clock moves two seconds.
+    s.access.removeSource.mockImplementation(async () => { clock.t += 2_000; });
+    s.access.removeSource.mockRejectedValueOnce(agentXError("MODEL_PROXY_UNAVAILABLE", "x"));
+    await s.write(DANA, "DELETE", `/v1/app/org/model-sources/${a}`);
+    s.access.removeSource.mockRejectedValueOnce(agentXError("MODEL_PROXY_UNAVAILABLE", "x"));
+    await s.write(BEA, "DELETE", `/v1/app/org/model-sources/${b}`);
+    s.access.removeSource.mockClear();
+    const first = await sweepModelSources({ documentClient: s.db, tableName: "state", now: () => clock.t, store: s.store(), access: s.access, egress: s.egressDeps() }, { budgetMs: 1_500 });
+    expect(first.complete).toBe(false);
+    expect(s.access.removeSource).toHaveBeenCalledTimes(1);
+    const second = await sweepModelSources({ documentClient: s.db, tableName: "state", now: () => clock.t, store: s.store(), access: s.access, egress: s.egressDeps() }, { budgetMs: 1_500 });
+    expect(s.access.removeSource).toHaveBeenCalledTimes(2);
+    expect(second.complete).toBe(true);
+    expect(s.doc()!.removing).toEqual([]);
+    expect(s.doc(ORG_B)!.removing).toEqual([]);
+  });
+});
+
+describe("a check after a crash during a host change (M4)", () => {
+  it("releases the old host and asks for the new one", async () => {
+    const s = await setup({ cloud: true });
+    const id = (await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint() })).body.sourceId as string;
+    await s.decide(id, "approved");
+    s.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
+    const crashed = await s.write(DANA, "PUT", `/v1/app/org/model-sources/${id}`, { source: endpoint({ baseUrl: "https://other.example.org/v1" }), apiKey: OTHER_KEY });
+    expect(crashed.status).toBeGreaterThanOrEqual(500);
+    // The record names the new host; the egress item still lists the old, approved one.
+    expect((await s.list()).sources[0]!.hostStatus).toBe("not_requested");
+    expect((await s.egressOf(id))!.domains.map((entry) => [entry.domain, entry.status])).toEqual([[HOST, "approved"]]);
+    const check = await s.call(DANA, "POST", `/v1/app/org/model-sources/${id}/check`);
+    expect(check.body).toEqual({ ok: false, message: "other.example.org is waiting for Rovara to approve it" });
+    expect((await s.egressOf(id))!.domains.map((entry) => [entry.domain, entry.status])).toEqual([["other.example.org", "pending"]]);
+    expect(await approvedUnion(s.egressDeps())).toEqual([]);
+  });
+});
+
+describe("closing an org (I5)", () => {
+  it("removes every source from the proxy, finishes its tombstones and deletes the record, after its egress is cleared", async () => {
+    const db = new (await import("../support/fake-dynamodb.js")).FakeDynamoDb();
+    const access = fakeModelAccess();
+    const at = Date.parse("2026-10-22T10:00:00.000Z");
+    db.set({ ...orgMetaKey(TEST_ORG), entityType: "ORG", orgId: TEST_ORG, name: "Acme", createdAt: "2026-10-01T00:00:00.000Z", createdBy: "dev-owner", plan: "team" });
+    db.set({ ...orgMemberKey(TEST_ORG, "dev-owner"), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: "dev-owner", role: "owner", joinedAt: "2026-10-01T00:00:00.000Z" });
+    db.set({ ...developerOrgKey("dev-owner"), entityType: "DEVELOPER_ORG", orgId: TEST_ORG, role: "owner", joinedAt: "2026-10-01T00:00:00.000Z" });
+    const store = new ModelSourceStore({ documentClient: db, tableName: "state", now: () => at, chatgptSwitch: async () => false });
+    const egress: EgressDomainsDependencies = { documentClient: db, tableName: "state", cloud: false, now: () => new Date(at), sync: async () => ({ ok: true }) };
+    const source = (index: number) => ({ sourceId: `src_${String(index).repeat(20)}`, kind: "endpoint", label: "L", baseUrl: `https://h${String(index)}.example.com/v1`, api: "openai-completions", models: [{ name: "m", catalog: sonnet }] }) as never;
+    await store.save({ orgId: TEST_ORG, source: source(1), mode: "create", keyStored: true, by: "dev-owner" });
+    await store.save({ orgId: TEST_ORG, source: source(2), mode: "create", by: "dev-owner" });
+    await store.remove({ orgId: TEST_ORG, sourceId: `src_${"2".repeat(20)}`, by: "dev-owner" });
+    await putEgressDomains(egress, TEST_ORG, { kind: "model-source", sourceId: `src_${"1".repeat(20)}` }, ["h1.example.com"], { developerId: "dev-owner" });
+    expect((db.get(modelSourcesKey(TEST_ORG)) as { removing: unknown[] }).removing).toHaveLength(1);
+
+    const order: string[] = [];
+    const orgs = new OrgStore({ documentClient: db, tableName: "state", now: () => at });
+    await orgs.closeOrg(TEST_ORG, {
+      archiveProjects: async () => undefined,
+      clearEgress: async () => { order.push("egress"); },
+      releaseModelSources: async (org) => { order.push("sources"); await releaseOrgModelSources({ store, access, egress }, org); },
+    });
+    expect(order).toEqual(["egress", "sources"]);
+    expect(access.removeSource.mock.calls.map(([, id]) => id).sort()).toEqual([`src_${"1".repeat(20)}`, `src_${"2".repeat(20)}`]);
+    expect(db.get(modelSourcesKey(TEST_ORG))).toBeUndefined();
+    expect(await approvedUnion(egress)).toEqual([]);
+  });
+
+  it("is wired into leaving as the last owner: the route's close removes the org's sources", async () => {
+    const s = await setup({ cloud: true });
+    const id = await s.add(BEA, anthropic());
+    // Bea is org B's only admin; make her its only member and owner.
+    seedMembership(s.db, BEA.developerId, { orgId: ORG_B, role: "owner" });
+    s.db.delete(orgMemberKey(ORG_B, OMAR.developerId));
+    s.db.delete(developerOrgKey(OMAR.developerId));
+    s.access.removeSource.mockClear();
+    const left = await s.call(BEA, "POST", "/v1/app/org/leave", { requestId: randomUUID() });
+    expect(left.status, JSON.stringify(left.body)).toBe(200);
+    expect(s.access.removeSource).toHaveBeenCalledWith(ORG_B, id);
+    expect(s.doc(ORG_B)).toBeUndefined();
+  });
+});
+
+describe("turning ChatGPT into an order the install allows (I6)", () => {
+  it("refuses to add personal-chatgpt to the order while the install-wide switch is off, and lets an order that already has it stay", async () => {
+    const s = await setup();
+    const id = await s.add(DANA, anthropic());
+    const refused = await s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order: ["personal-chatgpt", "rovara", id] });
+    expect([refused.status, errorOf(refused).code, errorOf(refused).message]).toEqual([400, "CONFIG_INVALID", expect.stringContaining("Sign in with ChatGPT is turned off") as unknown]);
+    expect(s.doc()!.order).toEqual(["rovara"]);
+    s.switchOn();
+    expect((await s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order: ["personal-chatgpt", "rovara", id] })).status).toBe(200);
+    // The operator turns ChatGPT off later: the order may be reordered with it in, only adding it is refused.
+    s.db.set({ ...CHATGPT_SETTINGS_KEY, entityType: "SETTING", enabled: false, preferredModel: "gpt-6.1-sol" });
+    expect((await s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order: ["rovara", "personal-chatgpt", id] })).status).toBe(200);
+    expect((await s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order: ["rovara", id] })).status).toBe(200);
+    expect((await s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order: ["rovara", "personal-chatgpt", id] })).status).toBe(400);
   });
 });

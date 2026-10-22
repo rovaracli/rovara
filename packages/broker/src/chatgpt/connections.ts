@@ -79,8 +79,8 @@ export interface ChatGptConnections {
   /** A running task's owner's current access token, refreshed when needed (#341). */
   accessToken(developerId: string): Promise<ChatGptAccessToken>;
   /**
-   * #343: the install's switch and preferred model. With an org (and a model proxy), the org's own: enabled exactly when its source order has
-   * `personal-chatgpt`, preferring its own model when it set one.
+   * #343: the install's switch and preferred model. With an org (and a model proxy), the org's own: enabled when the install-wide switch is on AND the
+   * org's source order has `personal-chatgpt`, preferring the org's own model when it set one.
    */
   settings(orgId?: OrgId): Promise<ChatGptSettings>;
   /** #343: what `rovara doctor` shows: the settings, how many people are connected, and whether OpenAI is reachable. */
@@ -118,7 +118,8 @@ export function chatGptConnections(deps: ChatGptConnectionsDependencies): ChatGp
     const installWide = await installSettings();
     if (orgId === undefined || deps.orgSources === undefined) return installWide;
     const org = await deps.orgSources(orgId);
-    return { enabled: org.order.includes("personal-chatgpt"), preferredModel: org.chatgptPreferredModel ?? installWide.preferredModel };
+    // Both: the install-wide switch is a hard off, and the org's order must have ChatGPT in it.
+    return { enabled: installWide.enabled && org.order.includes("personal-chatgpt"), preferredModel: org.chatgptPreferredModel ?? installWide.preferredModel };
   };
   /** The index follows a connection's status; one without an index item (made before it) is left alone. */
   const indexStatus = async (developerId: string, status: ChatGptConnectionStatus) => {

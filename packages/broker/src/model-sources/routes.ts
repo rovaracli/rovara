@@ -52,6 +52,7 @@ import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
+import { finishRemovals, releaseSource, viaProxy } from "./release.js";
 import type { ModelSourceStore, StoredModelSources } from "./store.js";
 
 /** What the routes need beyond the agent routes' own dependencies. Absent on an install with no model proxy: every route then says so. */
@@ -83,7 +84,7 @@ const ORDER_PATH = "/v1/app/org/model-sources-order";
 const ITEM_PATH = /^\/v1\/app\/org\/model-sources\/([^/]+)(?:\/(check))?$/;
 const MISSING = "no AI source has that ID";
 const ADMIN_ONLY = "Only an org owner or admin can change the company's AI sources.";
-const UNAVAILABLE = "the model proxy couldn't take this change just now; try again";
+const CHECK_RACED = "this source changed while it was being tested; run the check again";
 
 // ---- bodies
 
@@ -139,27 +140,25 @@ function requireAdmin(caller: AgentCaller): void {
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", ADMIN_ONLY);
 }
 
-/** What the proxy says, with its own error kept and anything else (whose text could hold a key) replaced. */
-async function viaProxy<T>(run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (error) {
-    if (error instanceof AgentXError) throw error;
-    throw agentXError("MODEL_PROXY_UNAVAILABLE", UNAVAILABLE);
-  }
-}
-
 // ---- endpoints
 
-/** The host of an endpoint's base URL once it is a plain public https host, or the refusal. Task 12b's checker does the same and also resolves the name; this is the check at this boundary. */
+/** A plain DNS name: letters, digits and hyphens in dot-separated labels, two or more of them. No wildcard, underscore or other shape `new URL` lets through. */
+const PLAIN_DNS_NAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
+
+/**
+ * The host of an endpoint's base URL once it is a plain public https host, or the refusal. Task 12b's checker does the same and also resolves the name; this
+ * is the check at this boundary. A base URL is shown to every member, so it carries no query or fragment (a key could ride in one).
+ */
 function endpointHost(baseUrl: string): { host: string } | { problem: string } {
   let url: URL;
   try { url = new URL(baseUrl); } catch { return { problem: "source.baseUrl: is not a URL" }; }
   if (url.protocol !== "https:") return { problem: "source.baseUrl: must start with https://" };
   if (url.username !== "" || url.password !== "") return { problem: "source.baseUrl: must not hold a user name or password" };
   if (url.port !== "" && url.port !== "443") return { problem: "source.baseUrl: must use port 443" };
+  // `url.search` is empty for a bare `?`, so the text is looked at too.
+  if (url.search !== "" || url.hash !== "" || baseUrl.includes("?") || baseUrl.includes("#")) return { problem: "source.baseUrl: must not have a query or a fragment" };
   const host = url.hostname;
-  if (!isAllowedDomain(host) || /(^|\.)(localhost|internal|local)$/.test(host)) return { problem: "source.baseUrl: the host must be a public domain name such as llm.acme.dev" };
+  if (!PLAIN_DNS_NAME.test(host) || !isAllowedDomain(host) || /(^|\.)(localhost|internal|local)$/.test(host)) return { problem: "source.baseUrl: the host must be a public domain name such as llm.acme.dev" };
   return { host };
 }
 
@@ -199,7 +198,12 @@ function viewOf(deps: Deps, orgId: OrgId, stored: StoredModelSources, source: So
 }
 
 async function listSources(deps: Deps, caller: AgentCaller): Promise<unknown> {
-  const stored = await deps.modelSources.store.read(caller.orgId);
+  let stored = await deps.modelSources.store.read(caller.orgId);
+  if (stored.removing.length > 0) {
+    // A read by anyone finishes what an earlier removal left; it is Rovara's own work, so no person is named for it.
+    await finishOwedRemovals(deps, caller);
+    stored = await deps.modelSources.store.read(caller.orgId);
+  }
   const sources = await Promise.all(stored.sources.map(async (source) => {
     const host = hostOf(source);
     const status = host === undefined ? undefined : hostStatusOf(await readEgressDomains(deps.modelSources.egress, caller.orgId, { kind: "model-source", sourceId: source.sourceId }), host);
@@ -276,19 +280,40 @@ async function answerFor(deps: Deps, caller: AgentCaller, sourceId: string, sour
  * After a record write that failed, makes the proxy match the record as it is now: a source the record has is registered as the record says (a key
  * cannot be read back, so it stays as the proxy holds it), one it lacks is removed. The record is the truth even when the failure said nothing about
  * whether the write landed. Best effort: the same request again, or a check, finishes what this could not.
+ *
+ * `dropKey`: the change moved an endpoint to another host and sent a key for it, and did not save. The proxy may now hold that key beside the old host,
+ * and it cannot be told which. The source is removed (which deletes its credential) and registered again with no key, and the record says it has none.
+ * A key is never kept at a host it was not saved for; the admin sends it again.
  */
-async function reconcileRegistration(deps: Deps, caller: AgentCaller, sourceId: string): Promise<void> {
+async function reconcileRegistration(deps: Deps, caller: AgentCaller, sourceId: string, options: { dropKey?: boolean } = {}): Promise<void> {
   try {
     const found = (await deps.modelSources.store.read(caller.orgId)).sources.find((candidate) => candidate.sourceId === sourceId);
-    if (found === undefined) await deps.modelSources.access.removeSource(caller.orgId, sourceId);
-    else await deps.modelSources.access.upsertSource({ orgId: caller.orgId, source: found });
+    if (found === undefined) {
+      await deps.modelSources.access.removeSource(caller.orgId, sourceId);
+    } else if (options.dropKey === true) {
+      await deps.modelSources.access.removeSource(caller.orgId, sourceId);
+      await deps.modelSources.access.upsertSource({ orgId: caller.orgId, source: found });
+      await deps.modelSources.store.dropCredential({ orgId: caller.orgId, sourceId, by: caller.developerId });
+    } else {
+      await deps.modelSources.access.upsertSource({ orgId: caller.orgId, source: found });
+    }
   } catch {
     // Nothing more can be done here, and what failed is not worth repeating: it could hold a key.
   }
 }
 
+/** Finishes the cleanup of removals that died part-way (their tombstones are in the record). It never fails the request that tried it: the next one, or the sweeper, tries again. */
+async function finishOwedRemovals(deps: Deps, caller: AgentCaller, actor?: { developerId: string }): Promise<void> {
+  try {
+    await finishRemovals(deps.modelSources, caller.orgId, actor);
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "model_sources.removal_unfinished", orgId: caller.orgId, errorName: error instanceof Error ? error.name : "unknown" }));
+  }
+}
+
 async function addSource(deps: Deps, caller: AgentCaller, body: unknown): Promise<StatusReply> {
   requireAdmin(caller);
+  await finishOwedRemovals(deps, caller, caller);
   const { requestId, source: raw, apiKey } = parseBody(WriteBodySchema, body);
   const { mark, replay } = await markRequest(deps, caller, "model-source-create", "", requestId, { source: raw, hasKey: apiKey !== undefined });
   const sourceId = newSourceId(caller, requestId);
@@ -318,6 +343,7 @@ async function addSource(deps: Deps, caller: AgentCaller, body: unknown): Promis
 
 async function changeSource(deps: Deps, caller: AgentCaller, rawId: string, body: unknown): Promise<Record<string, unknown>> {
   requireAdmin(caller);
+  await finishOwedRemovals(deps, caller, caller);
   const { requestId, source: raw, apiKey } = parseBody(WriteBodySchema, body);
   const { mark, replay } = await markRequest(deps, caller, "model-source-change", rawId, requestId, { source: raw, hasKey: apiKey !== undefined });
   const before = await deps.modelSources.store.read(caller.orgId);
@@ -329,43 +355,42 @@ async function changeSource(deps: Deps, caller: AgentCaller, rawId: string, body
   const input = checkInput(deps, raw, apiKey);
   if (input.kind !== previous.kind) throw agentXError("CONFIG_INVALID", "source.kind: a source's kind can't change; remove it and add a new one");
   const host = await checkEndpointInput(deps, input);
-  // A saved key goes only to the host it was saved for.
-  if (host !== undefined && apiKey === undefined && before.credentials.includes(previous.sourceId) && hostOf(previous) !== host) {
+  const hostChanged = host !== undefined && hostOf(previous) !== host;
+  // A saved key goes only to the host it was saved for. This is checked on `before`, and the save below holds only while the record is still at `before`.
+  if (host !== undefined && apiKey === undefined && before.credentials.includes(previous.sourceId) && hostChanged) {
     throw agentXError("CONFIG_INVALID", "source.baseUrl: the saved key would be sent to a different host; send the new key with it");
   }
   const source = stored(caller, input, previous.sourceId, previous);
   await viaProxy(() => deps.modelSources.access.upsertSource({ orgId: caller.orgId, source, ...(apiKey === undefined ? {} : { apiKey }) }));
   try {
-    await deps.modelSources.store.save({ orgId: caller.orgId, source, mode: "update", keyStored: apiKey !== undefined, by: caller.developerId, request: mark });
+    await deps.modelSources.store.save({ orgId: caller.orgId, source, mode: "update", keyStored: apiKey !== undefined, by: caller.developerId, request: mark, expect: { revision: before.revision } });
   } catch (error) {
-    await reconcileRegistration(deps, caller, previous.sourceId);
+    await reconcileRegistration(deps, caller, previous.sourceId, { dropKey: hostChanged && apiKey !== undefined });
     throw error;
   }
   return host === undefined ? { sourceId: previous.sourceId } : { sourceId: previous.sourceId, ...await requestHost(deps, caller, previous.sourceId, host) };
 }
 
-/** Releases an endpoint's host and removes the source's models and key from the proxy. Each step can be repeated. */
-async function cleanUp(deps: Deps, caller: AgentCaller, sourceId: string, kind: string): Promise<void> {
-  if (kind === "endpoint") await putEgressDomains(deps.modelSources.egress, caller.orgId, { kind: "model-source", sourceId }, [], { developerId: caller.developerId });
-  await viaProxy(() => deps.modelSources.access.removeSource(caller.orgId, sourceId));
-}
-
 async function removeSource(deps: Deps, caller: AgentCaller, rawId: string, body: unknown): Promise<Record<string, unknown>> {
   requireAdmin(caller);
+  await finishOwedRemovals(deps, caller, caller);
   const { requestId } = parseBody(RequestOnlySchema, body);
   const { mark, replay } = await markRequest(deps, caller, "model-source-remove", rawId, requestId, {});
   if (replay !== undefined) {
     const done = replay.result as { sourceId: string; kind: string };
-    await cleanUp(deps, caller, done.sourceId, done.kind);
+    await releaseSource(deps.modelSources, caller.orgId, done.sourceId, caller);
+    await deps.modelSources.store.finishRemoval({ orgId: caller.orgId, sourceId: done.sourceId });
     return { sourceId: done.sourceId, removed: true };
   }
   const removed = await deps.modelSources.store.remove({ orgId: caller.orgId, sourceId: rawId, by: caller.developerId, request: mark });
-  await cleanUp(deps, caller, removed.sourceId, removed.kind);
+  await releaseSource(deps.modelSources, caller.orgId, removed.sourceId, caller);
+  await deps.modelSources.store.finishRemoval({ orgId: caller.orgId, sourceId: removed.sourceId });
   return { sourceId: removed.sourceId, removed: true };
 }
 
 async function putOrder(deps: Deps, caller: AgentCaller, body: unknown): Promise<Record<string, unknown>> {
   requireAdmin(caller);
+  await finishOwedRemovals(deps, caller, caller);
   const { requestId, order } = parseBody(OrderBodySchema, body);
   const { mark, replay } = await markRequest(deps, caller, "model-source-order", "", requestId, { order });
   if (replay !== undefined) return replay.result as Record<string, unknown>;
@@ -403,8 +428,18 @@ async function checkSource(deps: Deps, caller: AgentCaller, rawId: string): Prom
   if (!answer.ok) return { ok: false, message: answer.message };
   if (source.kind === "bedrock") {
     // The probe passed: the role is tested, and the proxy serves its models from now on. Both steps can be repeated, so a check also finishes a failed earlier one.
+    // It is the role that was probed that is marked, and registered: if the source is no longer the one that was read, nothing is saved or registered.
     const tested = { ...source, tested: true };
-    if (!source.tested) await deps.modelSources.store.save({ orgId: caller.orgId, source: tested, mode: "update", by: caller.developerId });
+    try {
+      if (!source.tested) {
+        await deps.modelSources.store.save({ orgId: caller.orgId, source: tested, mode: "update", by: caller.developerId, expect: { source } });
+      } else if (canonicalJson((await deps.modelSources.store.read(caller.orgId)).sources.find((candidate) => candidate.sourceId === source.sourceId)) !== canonicalJson(source)) {
+        return { ok: false, message: CHECK_RACED };
+      }
+    } catch (error) {
+      if (error instanceof AgentXError && error.code === "IDEMPOTENCY_CONFLICT") return { ok: false, message: CHECK_RACED };
+      throw error;
+    }
     await viaProxy(() => deps.modelSources.access.upsertSource({ orgId: caller.orgId, source: tested }));
   }
   return { ok: true };

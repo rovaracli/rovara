@@ -74,6 +74,11 @@ export interface ModelAccess {
   upsertSource(input: UpsertSourceInput): Promise<void>;
   /** Removes the source's models and key from the proxy, and its aliases from the org's team. Removing a source the proxy does not know is a no-op. */
   removeSource(orgId: OrgId, sourceId: string): Promise<void>;
+  /**
+   * Every company source the proxy holds a model or a credential for, by org and source id. The sweeper compares it with the records, so a registration
+   * whose record write never landed (or whose removal never finished) is found. Credentials without models count: a registration that stopped half-way.
+   */
+  listSources(): Promise<Array<{ orgId: OrgId; sourceId: string }>>;
   /** Tests a source: for Bedrock the trust-policy probe first, then a health call per alias. A source the proxy does not know is NOT_FOUND. */
   checkSource(orgId: OrgId, sourceId: string): Promise<SourceCheck>;
   mintKey(input: MintKeyInput): Promise<MintedKey>;

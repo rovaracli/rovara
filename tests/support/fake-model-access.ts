@@ -16,6 +16,7 @@ export interface FakeModelAccess extends ModelAccess {
   upsertSource: Mock<(input: UpsertSourceInput) => Promise<void>>;
   removeSource: Mock<(orgId: OrgId, sourceId: string) => Promise<void>>;
   checkSource: Mock<(orgId: OrgId, sourceId: string) => Promise<SourceCheck>>;
+  listSources: Mock<() => Promise<Array<{ orgId: OrgId; sourceId: string }>>>;
   mintKey: Mock<(input: MintKeyInput) => Promise<MintedKey>>;
   revokeKey: Mock<(key: string) => Promise<void>>;
   blockKey: Mock<(keyId: string) => Promise<void>>;
@@ -75,6 +76,7 @@ export function fakeModelAccess(options: { key?: string; mintFailure?: Error } =
     upsertSource: vi.fn(async () => { guard(); }),
     removeSource: vi.fn(async () => { guard(); }),
     checkSource: vi.fn(async () => { guard(); return { ok: true as const, health: "healthy" as const }; }),
+    listSources: vi.fn(async () => { guard(); return []; }),
     mintKey: vi.fn(async (input) => {
       guard();
       if (options.mintFailure !== undefined) throw options.mintFailure;

@@ -23,6 +23,7 @@ function fakeAccess(overrides: Partial<ModelAccess> = {}): ModelAccess & { calls
     upsertSource: record("upsertSource", undefined),
     removeSource: record("removeSource", undefined),
     checkSource: record("checkSource", { ok: true, health: "healthy" }),
+    listSources: record("listSources", []),
     mintKey: record("mintKey", { key: VIRTUAL, expiresAt: 1234 }),
     revokeKey: record("revokeKey", undefined),
     blockKey: record("blockKey", undefined),

@@ -52,6 +52,7 @@ export const ModelAccessRequestSchema = z.discriminatedUnion("op", [
     args: z.object({ orgId: OrgIdSchema, source: ModelSourceSchema, apiKey: z.string().min(1).max(4096).optional() }).strict(),
   }).strict(),
   z.object({ op: z.literal("removeSource"), args: z.object({ orgId: OrgIdSchema, sourceId: SourceIdSchema }).strict() }).strict(),
+  z.object({ op: z.literal("listSources"), args: z.object({}).strict() }).strict(),
   z.object({ op: z.literal("checkSource"), args: z.object({ orgId: OrgIdSchema, sourceId: SourceIdSchema }).strict() }).strict(),
   z.object({ op: z.literal("revokeKey"), args: z.object({ key: z.string().min(1).max(512) }).strict() }).strict(),
   z.object({ op: z.literal("blockKey"), args: z.object({ keyId: KeyIdSchema }).strict() }).strict(),
@@ -65,6 +66,8 @@ export const SourceCheckResultSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(true), health: z.enum(["healthy", "unknown"]) }).strict(),
   z.object({ ok: z.literal(false), message: z.string().max(500) }).strict(),
 ]);
+/** Every registered source, at most as many as a thousand orgs of ten sources hold. */
+export const RegisteredSourcesResultSchema = z.array(z.object({ orgId: OrgIdSchema, sourceId: SourceIdSchema }).strict()).max(10_000);
 export const MintedKeyResultSchema = z.object({ key: z.string().min(1), expiresAt: z.number().finite() }).strict();
 
 export type ModelAccessResponse =

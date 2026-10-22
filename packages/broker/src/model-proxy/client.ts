@@ -265,6 +265,22 @@ export class ModelProxyClient implements ModelAccess {
     if (removed.status !== 200 && removed.status !== 404) throw refusal(removed);
   }
 
+  async listSources(): Promise<Array<{ orgId: OrgId; sourceId: string }>> {
+    const master = await this.master();
+    const found = new Map<string, { orgId: OrgId; sourceId: string }>();
+    const note = (name: unknown): void => {
+      // Both a model alias and a credential are named `<orgId>.<sourceId>` first.
+      const match = typeof name === "string" ? /^(org_[0-9a-z]{20})\.(src_[0-9a-z]{20})(?:\.|$)/u.exec(name) : null;
+      if (match !== null) found.set(`${match[1]!}/${match[2]!}`, { orgId: match[1] as OrgId, sourceId: match[2]! });
+    };
+    for (const entry of await this.listModels(master)) if (entry.org !== undefined) note(entry.name);
+    const credentials = await this.request("GET", "/credentials", master, undefined);
+    if (credentials.status !== 200) throw refusal(credentials);
+    const listed = isRecord(credentials.body) && Array.isArray(credentials.body.credentials) ? credentials.body.credentials : [];
+    for (const entry of listed) if (isRecord(entry)) note(entry.credential_name);
+    return [...found.values()];
+  }
+
   async checkSource(orgId: OrgId, sourceId: string): Promise<SourceCheck> {
     const master = await this.master();
     const prefix = sourceAliasPrefix(orgId, sourceId);

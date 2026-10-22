@@ -26,8 +26,8 @@ export function chatGptTaskModel(allowed: readonly string[], preferred?: string)
  * The task's ChatGPT model when its owner has a working connection, or undefined when the task runs on the install's
  * default as before: no owner, no connection, a revoked one, a plan at its limit, or a connection that cannot be read.
  *
- * With `orgSources` (an install that runs the model proxy), the org decides: ChatGPT is on exactly when its order has `personal-chatgpt`, and it
- * may prefer a model of its own. Without it the install-wide switch decides, as before.
+ * ChatGPT needs the install-wide switch on. With `orgSources` (an install that runs the model proxy) the org's order must also have `personal-chatgpt`,
+ * and the org may prefer a model of its own; without it the switch alone decides, as before.
  */
 export async function chatGptTaskSelection(
   connections: ChatGptConnections | undefined,
@@ -41,7 +41,8 @@ export async function chatGptTaskSelection(
   try {
     // #343: with the admin's switch off, every task runs on the default; connections are kept for when it is on.
     settings = await connections.settings();
-    if (!(orgSources === undefined ? settings.enabled : orgSources.order.includes("personal-chatgpt"))) return undefined;
+    // The install-wide switch is a hard off for the whole install; with a model proxy the org's order must also have ChatGPT.
+    if (!settings.enabled || (orgSources !== undefined && !orgSources.order.includes("personal-chatgpt"))) return undefined;
     view = await connections.view(ownerDeveloperId);
   } catch (error) {
     // A task never fails because its owner's connection could not be read; it runs on the default.

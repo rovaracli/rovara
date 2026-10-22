@@ -437,6 +437,36 @@ describe("removeSource", () => {
   });
 });
 
+describe("listSources", () => {
+  it("lists every org and source the proxy holds a model or a credential for, once each, and nothing else", async () => {
+    const proxy = litellm();
+    await client(proxy).upsertSource({ orgId: ORG, source: anthropicSource(), apiKey: VENDOR_KEY });
+    await client(proxy).upsertSource({ orgId: OTHER_ORG, source: anthropicSource([haiku], SRC_TWO), apiKey: VENDOR_KEY });
+    // A credential whose models never registered (the registration stopped half-way), and a model of the proxy's own that no org owns.
+    proxy.credentials.set(`${ORG}.src_stopped0123456789abc`, { credential_name: `${ORG}.src_stopped0123456789abc`, credential_values: {}, credential_info: {} });
+    proxy.credentials.set("unrelated-credential", { credential_name: "unrelated-credential", credential_values: {}, credential_info: {} });
+    proxy.models.push({ id: "own", model_name: "us.anthropic.claude-sonnet-4-6", litellm_params: {}, model_info: {} });
+    const listed = await client(proxy).listSources();
+    expect(listed.map((entry) => `${entry.orgId}/${entry.sourceId}`).sort()).toEqual([`${ORG}/${SRC}`, `${ORG}/src_stopped0123456789abc`, `${OTHER_ORG}/${SRC_TWO}`].sort());
+  });
+
+  it("is a request of its own for the handler and the invoker, and the handler refuses an argument", async () => {
+    const entries = [{ orgId: ORG, sourceId: SRC }];
+    const never = async () => { throw new Error("not used"); };
+    const access: ModelAccess = {
+      upsertOrg: never, upsertMember: never, spend: never, orgSpend: never, keySpend: never, mintKey: never, revokeKey: never, blockKey: never,
+      upsertSource: never, removeSource: never, checkSource: never, listSources: vi.fn(async () => entries),
+    };
+    const run = createModelAccessHandler({ access, log: () => undefined });
+    expect(await run({ op: "listSources", args: {} })).toEqual({ ok: true, result: entries });
+    expect(await run({ op: "listSources", args: { orgId: ORG } })).toMatchObject({ ok: false });
+    const lambda = { send: vi.fn(async () => ({ Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: entries })) })) };
+    expect(await new ModelAccessInvoker({ functionName: "fn", lambda: lambda as never }).listSources()).toEqual(entries);
+    lambda.send.mockImplementationOnce(async () => ({ Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: [{ orgId: "nope", sourceId: SRC }] })) }));
+    await expect(new ModelAccessInvoker({ functionName: "fn", lambda: lambda as never }).listSources()).rejects.toThrow("unexpected result");
+  });
+});
+
 describe("mintKey with sources", () => {
   const tags = { taskId: "task-1", operationId: "op-1", stepId: "build", agentId: "agt_1", project: "web", payerKind: "member" as const, payerId: "dev-1", source: SRC, origin: "slack" };
   const mint = (models: string[], extra: Partial<Parameters<ModelAccess["mintKey"]>[0]> = {}) => ({
@@ -610,7 +640,7 @@ describe("the handler and the invoker carry the new operations", () => {
     const upsertSource = vi.fn(async () => undefined);
     const access: ModelAccess = {
       upsertOrg: never, upsertMember: never, spend: never, orgSpend: never, keySpend: never, mintKey: never, revokeKey: never, blockKey: never,
-      upsertSource, removeSource: vi.fn(async () => undefined), checkSource: vi.fn(async () => ({ ok: true as const, health: "healthy" as const })),
+      upsertSource, removeSource: vi.fn(async () => undefined), checkSource: vi.fn(async () => ({ ok: true as const, health: "healthy" as const })), listSources: never,
     };
     return { access, upsertSource };
   }

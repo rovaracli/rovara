@@ -344,6 +344,7 @@ import { developerIdForSlackUser } from "./admin-actions.js";
 import { chatGptOwner, chatGptTaskSelection } from "../chatgpt/task-model.js";
 import { readChatGptSettings } from "../chatgpt/settings.js";
 import { ModelSourceStore } from "../model-sources/store.js";
+import { sweepModelSources, type ModelSourceSweepDependencies } from "../model-sources/sweep.js";
 import type { ModelSourceRouteDependencies } from "../model-sources/routes.js";
 import { answerSlackChatGpt, isSlackChatGptCommandEvent, isSlackChatGptFinishEvent } from "./slack-chatgpt.js";
 import { chatGptConnections, kmsChatGptSealer, type ChatGptConnections } from "../chatgpt/connections.js";
@@ -1333,9 +1334,14 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     // Plan 3, Task 30: every 5 minutes, the spend settlement jobs (the sweep of open model keys today; PF13 adds the others to this list).
     if (isSpendSettlementEvent(event)) {
       const ledger = ledgerOf(dependencies);
-      if (ledger === undefined) return json({ skipped: true }, "spend-settlement");
+      const sources = modelSourceSweepOf(dependencies);
+      if (ledger === undefined && sources === undefined) return json({ skipped: true }, "spend-settlement");
       const jobs = await runSettlementJobs(
-        [{ name: "sweep-spend", run: () => runSpendSweep(ledger, { budgetMs: SPEND_SWEEP_BUDGET_MS }) }],
+        [
+          // Before the spend sweep, with a small budget of its own: the function has 30 seconds and the spend sweep takes up to 20 of them.
+          ...(sources === undefined ? [] : [{ name: "sweep-model-sources", run: () => sweepModelSources(sources, { budgetMs: MODEL_SOURCE_SWEEP_BUDGET_MS }) }]),
+          ...(ledger === undefined ? [] : [{ name: "sweep-spend", run: () => runSpendSweep(ledger, { budgetMs: SPEND_SWEEP_BUDGET_MS }) }]),
+        ],
         (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
       );
       return json({ jobs }, "spend-settlement");
@@ -10325,6 +10331,18 @@ function isSpendSettlementEvent(event: unknown): event is { source: "agentx.spen
 
 /** The broker's function has 30 seconds; a sweep that has not finished by then stops and the next run resumes from where it was. */
 const SPEND_SWEEP_BUDGET_MS = 20_000;
+/** The company AI sources' sweep runs before the spend sweep and leaves it its 20 seconds. */
+const MODEL_SOURCE_SWEEP_BUDGET_MS = 5_000;
+
+/** Task 24b: what the model-source sweep needs, or undefined where the install has no agents or no model proxy (it then has no sources to sweep). */
+function modelSourceSweepOf(dependencies: AwsBrokerDependencies): ModelSourceSweepDependencies | undefined {
+  if (dependencies.agents === undefined || dependencies.modelAccess === undefined) return undefined;
+  return {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+    store: modelSourceStoreOf(dependencies), access: dependencies.modelAccess.access, egress: egressDepsOf(dependencies),
+    log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
+  };
+}
 
 /** Task 30: what the spend ledger needs, or undefined where the install has no agents or no model proxy (it then keeps no ledger). */
 function ledgerOf(dependencies: AwsBrokerDependencies): LedgerDependencies | undefined {
