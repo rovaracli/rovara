@@ -123,8 +123,8 @@ describe("the event catalog", () => {
   it("lists the actions exactly, in order", () => {
     expect([...AUDIT_ACTIONS]).toEqual([
       "approval.decided", "approval.expired", "approval.requested", "approval.rerouted", "write.executed", "spend_request.created", "spend_request.decided",
-      "spend_request.expired", "spend_request.escalated", "spend_request.rerouted", "budget.changed", "spend_policy.changed", "pull_request.opened", "pull_request.merged",
-      "member.joined", "member.role_changed", "member.removed", "member.left", "org.closed", "project_member.changed",
+      "spend_request.expired", "spend_request.escalated", "spend_request.rerouted", "spend_request.resume_dropped", "budget.changed", "spend_policy.changed", "pull_request.opened",
+      "pull_request.merged", "member.joined", "member.role_changed", "member.removed", "member.left", "org.closed", "project_member.changed",
       "project_member.removed", "identity.linked", "identity.unlinked", "agent.owner_changed", "chain.owner_changed",
       "connection.saved", "connection.removed", "project_connector.changed", "guardrails.changed",
       "comment_trigger_opt_out.applied", "comment_trigger_opt_out.lapsed", "egress_domain.decided", "agent.published",
@@ -162,6 +162,7 @@ describe("the event catalog", () => {
     expect(AUDIT_FACT_KEYS["approval.requested"]).toEqual(["kind", "subjectKind", "class", "connectorType", "tool", "argumentsHash"]);
     expect(AUDIT_FACT_KEYS["approval.rerouted"]).toEqual(["kind", "mode"]);
     expect(AUDIT_FACT_KEYS["spend_request.rerouted"]).toEqual(["kind", "mode"]);
+    expect(AUDIT_FACT_KEYS["spend_request.resume_dropped"]).toEqual(["kind", "cause"]);
     expect(AUDIT_FACT_KEYS["write.executed"]).toEqual(["connectorType", "tool", "status", "argumentsHash"]);
     for (const action of ["spend_request.created", "spend_request.decided", "spend_request.expired", "spend_request.escalated"] as const) {
       expect(AUDIT_FACT_KEYS[action]).toEqual(["kind", "scopeKind", "amountCents", "newLimitCents", "decision"]);

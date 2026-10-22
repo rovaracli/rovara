@@ -22,7 +22,7 @@ import { checkTime, registerMemberMover, registerOwnerCapConfirmation, type Life
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { failedIndexes, readRequest, requestMarkItem, type RequestMark, type TransactItem } from "../agents/table-writes.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
-import { auditSpendRequestCreated, auditSpendRequestDecided, auditSpendRequestEscalated, auditSpendRequestExpired, auditSpendRequestRerouted, auditOccurrence } from "../audit/events.js";
+import { auditSpendRequestCreated, auditSpendRequestDecided, auditSpendRequestEscalated, auditSpendRequestExpired, auditSpendRequestRerouted, auditSpendRequestResumeDropped, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf, centsOf, decisionProofOf } from "../audit/plan3-hooks.js";
@@ -1219,6 +1219,8 @@ async function reroute(deps: SpendRequestDependencies, record: SpendRequestRecor
 /** What a held start's task says when its approval could not dispatch it at once. */
 const HELD_START_WAITING = "The budget was approved, but this run couldn't start yet. Rovara will keep trying.";
 const HELD_STARTS = "HELD_SPEND_STARTS";
+/** The most of a settlement run the held-start retries may take (they get at most a quarter of it). */
+const HELD_STARTS_BUDGET_MS = 500;
 /**
  * A run held at its start whose approval committed: kept until the run is dispatched, the task closes, or the request's time would have run out. A month's
  * approval keeps one per task it un-paused here too (`resume: "month"`), until that task went on.
@@ -1231,6 +1233,28 @@ async function clearHeldStart(deps: SpendRequestDependencies, key: { pk: string;
   if (!giveUp && task?.budgetPause?.firstDispatch !== undefined && task.closedAt === undefined) return false;
   await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Delete: { TableName: deps.tableName, Key: key } }] }));
   return true;
+}
+
+/** The refusals of a resume that no later try can change: the task's creator was removed (R60), or its owner can no longer act in the org. */
+const MEMBER_LEFT_CODES = new Set(["TASK_ACCESS_DENIED", "FORBIDDEN"]);
+const memberLeft = (error: unknown): boolean => MEMBER_LEFT_CODES.has(String((error as { code?: unknown } | undefined)?.code));
+
+/** Drops a month resume that can never go on (fix round 2, minor 1), audited as the system's `spend_request.resume_dropped` in the same transaction. */
+async function dropMonthResume(deps: SpendRequestDependencies, key: { pk: string; sk: string }, orgId: OrgId, taskId: string, spendRequestId: string): Promise<void> {
+  const events = await audited(deps, () => [auditSpendRequestResumeDropped({
+    orgId, actor: auditActorOf("system"), occurredAt: iso(deps.now()), occurrence: key.sk, spendRequestId, taskId, kind: "month", cause: "member_left",
+  })]);
+  try {
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+      { Delete: { TableName: deps.tableName, Key: key, ConditionExpression: "attribute_exists(pk)" } }, ...events.flatMap((event) => auditPending(deps, event)),
+    ] }));
+  } catch (error) {
+    // Another sweep dropped it, or the task went on, first.
+    if (failedIndexes(error)?.has(0) === true) return;
+    throw error;
+  }
+  await flushAuditEvents(deps, events);
+  logLine(deps, "spend_request.month_resume_dropped", { spendRequestId, taskId });
 }
 
 /** Dispatches again every held start whose approval could not, oldest first, until `deadline`. Answers how many were dispatched, and whether all were seen. */
@@ -1263,7 +1287,8 @@ async function retryHeldStarts(deps: SpendRequestDependencies, deadline: number)
           await host.resumeTask({ orgId, taskId, spendRequestId, resetRunWindow: false, firstDispatch: false });
           if (await clearHeldStart(deps, key, orgId, taskId, true)) dispatched += 1;
         } catch (error) {
-          logLine(deps, "spend_request.month_resume_failed", { spendRequestId, taskId, error: errorName(error) });
+          if (memberLeft(error)) await dropMonthResume(deps, key, orgId as OrgId, taskId, spendRequestId).catch(() => undefined);
+          else logLine(deps, "spend_request.month_resume_failed", { spendRequestId, taskId, error: errorName(error) });
         }
         continue;
       }
@@ -1293,14 +1318,17 @@ async function retryHeldStarts(deps: SpendRequestDependencies, deadline: number)
  * the same transaction. Stops at `budgetMs` (logged, `complete: false`) or at the first request not yet due.
  */
 export async function escalateOwnerRequests(deps: SpendRequestDependencies, options: { budgetMs: number }): Promise<{ escalated: number; expired: number; heldStarts: number; complete: boolean }> {
-  const deadline = deps.now() + options.budgetMs;
-  const held = await retryHeldStarts(deps, deadline);
+  const started = deps.now();
+  const deadline = started + options.budgetMs;
+  // The retries have their own small share of the run (fix round 2, minor 1): a long or slow list of them can't starve expiry and escalation.
+  const held = await retryHeldStarts(deps, started + Math.min(HELD_STARTS_BUDGET_MS, options.budgetMs / 4));
   const result = { escalated: 0, expired: 0, heldStarts: held.dispatched, complete: false };
   const incomplete = () => {
     logLine(deps, "spend_request.sweep_incomplete", { escalated: result.escalated, expired: result.expired, heldStarts: result.heldStarts });
     return result;
   };
-  if (!held.complete) return incomplete();
+  // The run is complete only when the retries were too; what they left is tried again first on the next run.
+  const finished = () => (held.complete ? result : incomplete());
   const now = deps.now();
   let start: Record<string, unknown> | undefined;
   for (;;) {
@@ -1313,8 +1341,8 @@ export async function escalateOwnerRequests(deps: SpendRequestDependencies, opti
       // In due order: once a request is not due yet, neither is any later one.
       const due = typeof item["dueAt"] === "string" ? Date.parse(item["dueAt"]) : Date.parse(String(item["sk"]).split("#")[0] ?? "");
       if (due > now) {
-        result.complete = true;
-        return result;
+        result.complete = held.complete;
+        return finished();
       }
       const orgId = item["orgId"];
       const id = item["spendRequestId"];
@@ -1339,8 +1367,8 @@ export async function escalateOwnerRequests(deps: SpendRequestDependencies, opti
     }
     start = page.LastEvaluatedKey;
     if (start === undefined) {
-      result.complete = true;
-      return result;
+      result.complete = held.complete;
+      return finished();
     }
   }
 }

@@ -15,6 +15,8 @@ import {
   SPEND_RESUME_INSTRUCTIONS, orgSettingsKey, ownerBudgetKey, pausedTasksKey, suggestedMonthTopUpUsd, topUpKey,
   type BudgetScope, type SpendRequestRecord,
 } from "@agentx/contracts";
+import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
+import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -658,5 +660,51 @@ describe("fix round 2 (the Task 32/33 re-check)", () => {
     expect(moved.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL" });
     expect(t.agentItem(projectAgent)!.accountable).toEqual({ developerId: MAYA.developerId });
     expect(await effectiveOf(t, BEN)).toBe(80);
+  });
+
+  const resumeItems = (t: World) => t.db.find((item) => item.pk === "HELD_SPEND_STARTS");
+  /** Approves the open month request on `scope` while every resume fails, so each paused task is left with a due month resume. */
+  const approveWithFailingResumes = async (t: World, scope: BudgetScope) => {
+    const deps = t.deps();
+    const failing = { ...deps, spendRequests: { ...deps.spendRequests!, resumeTask: async () => { throw new Error("boom"); } } };
+    const request = monthRequests(t).find((record) => record.status === "PENDING" && record.scope !== undefined && scopeKeyOf(record.scope) === scopeKeyOf(scope))!;
+    await decideSpendRequest(failing, t.caller(DEB, "admin"), request.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" });
+  };
+
+  it("Minor 1: a month resume whose task's creator left is dropped, audited, and not tried on every sweep", async () => {
+    const t = await setup();
+    const CARL_SCOPE: BudgetScope = { kind: "member", developerId: CARL.developerId };
+    const task = await t.plainTask(CARL);
+    await t.pauseAndEnd(task, CARL_SCOPE);
+    await approveWithFailingResumes(t, CARL_SCOPE);
+    expect(resumeItems(t).map((item) => item.taskId)).toEqual([task.taskId]);
+    await t.db.send(new DeleteCommand({ TableName: "state", Key: orgMemberKey(TEST_ORG, CARL.developerId) }));
+    t.db.set({ ...orgRemovedKey(TEST_ORG, CARL.developerId), entityType: "ORG_REMOVED", removedAt: "2026-10-21T00:00:00.000Z" });
+    const capture = capturingAuditDeps({ db: t.db });
+    const swept = await escalateOwnerRequests({ ...t.deps(), audit: capture.audit }, { budgetMs: 5_000 });
+    expect(swept).toMatchObject({ heldStarts: 0, complete: true });
+    expect(resumeItems(t)).toEqual([]);
+    expect(capture.recordedBy("spend_request.resume_dropped")).toEqual([
+      expect.objectContaining({ actor: expect.objectContaining({ kind: "system" }), target: { kind: "task", id: task.taskId }, facts: { kind: "month", cause: "member_left" } }),
+    ]);
+  });
+
+  it("Minor 1: the retries have their own small budget, so a slow list of them can't starve expiry", async () => {
+    const t = await setup();
+    for (let i = 0; i < 3; i += 1) await t.pauseAndEnd(await t.plainTask(), MEMBER);
+    await approveWithFailingResumes(t, MEMBER);
+    expect(resumeItems(t)).toHaveLength(3);
+    const old = await createSpendRequest(t.deps(() => Date.now() - 6 * 86_400_000), {
+      orgId: TEST_ORG, kind: "month", scope: { kind: "member", developerId: BEN.developerId }, subject: `MONTH#${month()}#MEMBER#${BEN.developerId}#${BEN.developerId}`,
+      amountUsd: 10, newLimitUsd: 39, reason: "Mine.", requestedBy: { kind: "member", developerId: BEN.developerId }, requestedFor: { developerId: BEN.developerId },
+    });
+    let clock = Date.parse(old.record.expiresAt) + 1_000;
+    const deps = t.deps(() => clock);
+    // Each retry takes 2 s of a 5 s sweep.
+    const slow = { ...deps, spendRequests: { ...deps.spendRequests!, resumeTask: async () => { clock += 2_000; throw new Error("still down"); } } };
+    const swept = await escalateOwnerRequests(slow, { budgetMs: 5_000 });
+    expect(swept).toMatchObject({ expired: 1, heldStarts: 0, complete: false });
+    expect(monthRequests(t).find((record) => record.spendRequestId === old.record.spendRequestId)!.status).toBe("EXPIRED");
+    expect(resumeItems(t)).toHaveLength(3);
   });
 });

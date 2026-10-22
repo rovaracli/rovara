@@ -109,6 +109,14 @@ export function auditSpendRequestRerouted(input: AuditBuilderBase & { spendReque
   return build("spend_request.rerouted", { ...input, ...(related === undefined ? {} : { related }) }, { kind: "spend_request", id: input.spendRequestId }, { kind: input.kind, mode: input.mode });
 }
 
+/**
+ * `occurrence`: the due resume's sort key. Rovara dropped a month resume it could not make (Task 33 fix round 2): the task's creator or owner left the org
+ * (`cause` `member_left`), so the task can't go on and the settlement run stops trying. The target is the task; the spend request is in `related`.
+ */
+export function auditSpendRequestResumeDropped(input: AuditBuilderBase & { spendRequestId: string; taskId: string; kind: string; cause: string }): AuditEventInput {
+  return build("spend_request.resume_dropped", { ...input, related: [input.spendRequestId, ...(input.related ?? [])] }, { kind: "task", id: input.taskId }, { kind: input.kind, cause: input.cause });
+}
+
 // Budgets and policy -----------------------------------------------------------------------------------------------------
 
 /**
