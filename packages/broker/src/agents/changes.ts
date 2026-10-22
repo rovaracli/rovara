@@ -275,7 +275,7 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   await requireWithinGuardrails(deps, record.orgId, draftRecipe);
   await deps.store.publish({
     orgId: record.orgId, agentId: subject.agentId, expectedDraftRevision: subject.draftRevision, digest: subject.digest, by, expectedCurrentVersion: subject.expectedCurrentVersion ?? null,
-    skillDigests: skillDigestsOf(draftRecipe),
+    skillDigests: skillDigestsOf(draftRecipe), safety: "less_safe",
     ...(subject.note === undefined ? {} : { note: subject.note }),
   });
 }
@@ -314,7 +314,7 @@ async function confirmGuardrails(deps: ApprovalDependencies, record: ApprovalRec
   const subject = record.subject as Extract<AgentChangeSubject, { kind: "guardrails" }>;
   const current = await readGuardrailsWithRevision(deps, record.orgId);
   if (current.revision !== subject.expectedRevision) throw stale("The company's agent guardrails changed after this was asked. Ask again.");
-  await writeGuardrails(deps, record.orgId, subject.next, by, { expectedRevision: subject.expectedRevision });
+  await writeGuardrails(deps, record.orgId, subject.next, by, { expectedRevision: subject.expectedRevision, widened: true });
 }
 
 /** The owner, an accountable or managing maintainer of the owning project, or an org owner or admin: whoever holds `manage` on the agent now (R68). */

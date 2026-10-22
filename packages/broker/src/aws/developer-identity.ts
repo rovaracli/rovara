@@ -278,6 +278,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     // A duplicate member of one person (from before identity links) is merged into the member their email names, in one transaction over both tables.
     ...duplicateMerger({
       documentClient, tableName: stateTableName, signInStore: store, now,
+      ...(audit === undefined ? {} : { audit }),
       ...(modelAccess === undefined ? {} : { orgSpentUsd: async (orgId: OrgId) => (await modelAccess.orgSpend(orgId)).spentUsd }),
     }),
     // Orgs and membership live in the State table, beside the records they scope; the sign-in table holds identities only.

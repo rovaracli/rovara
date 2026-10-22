@@ -1,5 +1,5 @@
 // Pure builders for every audited action. Each takes the action's facts plus the `occurrence` that makes this occurrence
-// unique (what to pass is pinned per builder below and in the plan's Task 6 table; Task 18 amended the table for role changes, project members and egress decisions, which add their target to the client's request id), and returns an AuditEventInput whose
+// unique (what to pass is pinned per builder below and in the plan's Task 6 table; Task 18 amended the table for role changes, project members and egress decisions, which add their target to the client's request id; Task 19 amended it for the writes that commit once per revision, which use the revision), and returns an AuditEventInput whose
 // id is `auditEventId(action, occurrence, ...parts)`: a retry of one occurrence gets the same id, a later occurrence with
 // the same facts gets a different one. Personal data (names, emails, logins, repository and project names, domains,
 // reasons) goes only in `details`, or in a name-keyed target `{ kind, name }`, which the appender pseudonymizes.
@@ -16,7 +16,13 @@ export interface AuditBuilderBase {
   details?: AuditDetailPart[];
 }
 
-/** One occurrence value from several: `JSON.stringify(parts)`, so ("a|b", "c") and ("a", "b|c") stay different and no part can hold a newline. */
+/**
+ * Invariant for the revision-based occurrences (guardrails, a project's AI settings, the spend policy): such a document is never deleted and recreated
+ * outside an org close, because its revision would start again at 1 and an event of the new document would get the id of an old one, which the
+ * appender would drop as a duplicate. A path that resets one of them must carry something else in the occurrence (a generation, or the time).
+ *
+ * One occurrence value from several: `JSON.stringify(parts)`, so ("a|b", "c") and ("a", "b|c") stay different and no part can hold a newline.
+ */
 export function auditOccurrence(...parts: string[]): string {
   return JSON.stringify(parts);
 }
@@ -78,15 +84,17 @@ export function auditSpendRequestExpired(input: AuditBuilderBase & SpendRequestF
 
 /**
  * `occurrence`: the request's `requestId`; for Plan 1's `writeBudgets`, `auditOccurrence(at, updatedBy, field, target id)` (one
- * write can change several limits, and each needs its own id); on a store path, the store's `EVENT#` sort key. `target` is the
- * budget's scope (`{ kind: "budget", id }`, or a name for a project). A limit that was not set (or is removed) has no figure
+ * write can change several limits, and each needs its own id); on a store path, the store's `EVENT#` sort key with the field
+ * (`AgentStore.setBudget`: one write can move two limits); for a project's AI settings, `auditOccurrence(project, new revision, field)`;
+ * when Rovara moves a member's own limit (a member's removal, a merge), `auditOccurrence("override_removed" | "override_merged", ..., updatedAt, limit)`.
+ * `target` is the budget's scope (`{ kind: "budget", id }`, or a name for a project). A limit that was not set (or is removed) has no figure
  * on that side: `fromCents` or `toCents` is left out.
  */
 export function auditBudgetChanged(input: AuditBuilderBase & { target: AuditTarget; scopeKind: string; field: string; fromCents?: number; toCents?: number }): AuditEventInput {
   return build("budget.changed", input, input.target, { scopeKind: input.scopeKind, field: input.field, fromCents: input.fromCents, toCents: input.toCents });
 }
 
-/** `occurrence`: as `auditBudgetChanged`. `from` and `to` are integers (cents, or hundredths for the multiplier). */
+/** `occurrence`: `auditOccurrence(new revision, field)`: the policy commits once per revision, and one write can move several figures. `from` and `to` are integers (cents, or hundredths for the multiplier). */
 export function auditSpendPolicyChanged(input: AuditBuilderBase & { field: string; from: number; to: number }): AuditEventInput {
   return build("spend_policy.changed", input, { kind: "spend_policy", id: input.orgId }, { field: input.field, from: input.from, to: input.to });
 }
@@ -184,12 +192,12 @@ export function auditBuiltinAdopted(input: AuditBuilderBase & { agentId: string;
 
 // Connections, connectors, guardrails ------------------------------------------------------------------------------------
 
-/** `occurrence`: the request's `requestId`. */
+/** `occurrence`: `auditOccurrence(requestId, connectionId)` when the save has a request id, else `auditOccurrence(connectionId, time of the save)`. */
 export function auditConnectionSaved(input: AuditBuilderBase & { connectionId: string; connectorType: string }): AuditEventInput {
   return build("connection.saved", input, { kind: "connection", id: input.connectionId }, { connectorType: input.connectorType });
 }
 
-/** `occurrence`: the request's `requestId`. */
+/** `occurrence`: as `auditConnectionSaved`. */
 export function auditConnectionRemoved(input: AuditBuilderBase & { connectionId: string; connectorType: string }): AuditEventInput {
   return build("connection.removed", input, { kind: "connection", id: input.connectionId }, { connectorType: input.connectorType });
 }
@@ -199,7 +207,10 @@ export function auditProjectConnectorChanged(input: AuditBuilderBase & { connect
   return build("project_connector.changed", input, { kind: "connector", id: input.connectorId }, { connectorType: input.connectorType, revision: input.revision, change: input.change });
 }
 
-/** `occurrence`: the request's `requestId`, or the approval id when confirmed on the page. */
+/**
+ * `occurrence`: `auditOccurrence(new revision)`. The guardrails are one document that commits once per revision, whether a person's request or a confirmation on
+ * the page wrote it, so the revision is the occurrence in both cases (Task 19 amended the table's request id or approval id).
+ */
 export function auditGuardrailsChanged(input: AuditBuilderBase & { guardrailsId: string; revision: number; widened: boolean }): AuditEventInput {
   return build("guardrails.changed", input, { kind: "guardrails", id: input.guardrailsId }, { revision: input.revision, widened: input.widened });
 }

@@ -77,7 +77,7 @@ async function decide(context: DecideRequestContext, request: DecideRequest, app
     if (inspection.status === "forbidden") return forbiddenPage(`Only ${inspection.who} can decide this.`);
     if (inspection.status === "decided") return decidedPage(decidedWords(inspection));
     try {
-      const outcome = await kind.decide(target, decision);
+      const outcome = await kind.decide(target, decision, authority.proof);
       return resultPage(decision === "approve" ? "Approved" : "Declined", outcome.message);
     } catch (error) {
       if (error instanceof AgentXError) return refusedPage(error.statusCode >= 500 ? 503 : 409, "Nothing was changed", wordsOf(error));

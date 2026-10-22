@@ -392,7 +392,7 @@ describe("OrgConnectionStore", () => {
     expect(await store.get(ORG_A, CON_B)).toBeUndefined();
     expect((await store.list(ORG_A)).map((entry) => entry.connectionId)).toEqual([CON_A]);
     expect((await store.list(ORG_B)).map((entry) => entry.connectionId)).toEqual([CON_B]);
-    expect(await code(store.remove({ orgId: ORG_B, connectionId: CON_A }))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await code(store.remove({ orgId: ORG_B, connectionId: CON_A, by: ALICE }))).toMatchObject({ code: "NOT_FOUND" });
     expect(await code(store.check(ORG_B, CON_A))).toMatchObject({ code: "NOT_FOUND" });
     expect(await store.get(ORG_A, "not-an-id")).toBeUndefined();
   });
@@ -401,7 +401,7 @@ describe("OrgConnectionStore", () => {
     const { deps, fake, db, clock } = setup();
     const store = storeOf(deps);
     await store.put({ orgId: ORG_A, connection: LINEAR, secret: { apiKey: LINEAR_KEY }, by: ALICE });
-    await store.remove({ orgId: ORG_A, connectionId: CON_A });
+    await store.remove({ orgId: ORG_A, connectionId: CON_A, by: ALICE });
     expect(fake.stored(orgConnectorSecretName(ENV, ORG_A, CON_A))?.deleteAt).toBe(clock.now + 7 * 86_400_000);
     expect(await store.get(ORG_A, CON_A)).toBeUndefined();
     expect(await store.list(ORG_A)).toEqual([]);
@@ -412,7 +412,7 @@ describe("OrgConnectionStore", () => {
     const { deps, fake } = setup();
     const store = storeOf(deps);
     await store.put({ orgId: ORG_A, connection: LINEAR, by: ALICE });
-    await store.remove({ orgId: ORG_A, connectionId: CON_A });
+    await store.remove({ orgId: ORG_A, connectionId: CON_A, by: ALICE });
     expect(fake.calls).toEqual([]);
   });
 
