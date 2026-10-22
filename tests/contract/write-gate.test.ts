@@ -5,13 +5,13 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  agentXError, approvalKey, approverIndexKey, orgMemberKey, orgProjectCatalogKey, orgRemovedKey, projectMetaKey, projectRevisionKey,
+  INDEX_EXPIRY_ATTRIBUTE, agentXError, approvalKey, approverIndexKey, orgMemberKey, orgProjectCatalogKey, orgRemovedKey, projectMetaKey, projectRevisionKey,
   type ActionPolicy, type ConnectorResult, type GrantedTool, type OrgId, type OrgRole, type ToolFacts,
 } from "@agentx/contracts";
 import { describeAction } from "../../packages/contracts/src/action-class.js";
 import type { AgentCaller } from "../../packages/broker/src/agents/access.js";
 import {
-  createPendingChange, createStepApproval, decideApproval, expireApprovals, getAnyApproval, listApprovalsFor, registerApprovalSubjectHandler, registerApproverRule,
+  createPendingChange, createStepApproval, decideApproval, expireApprovals, getAnyApproval, listApprovalsFor, runApprovalSweep, registerApprovalSubjectHandler, registerApproverRule,
   type AnyApprovalRecord, type ApprovalDependencies, type StepApprovalRecord, type WriteApprovalRecord,
 } from "../../packages/broker/src/agents/approvals.js";
 import { routeApprovalRequest } from "../../packages/broker/src/agents/approval-routes.js";
@@ -851,7 +851,7 @@ describe("a merged member", () => {
 
     registerApproverRule("by_ids", async () => false);
     const step = await createStepApproval(w.deps, {
-      orgId: ORG_A, subject: { kind: "agent_run", taskId: TASK, stepId: "gate" }, prompt: "Go on?", approvers: { kind: "ids", ids: [OLD_ALICE] }, project: "web",
+      orgId: ORG_A, subject: { kind: "agent_run", taskId: TASK, stepId: "gate" }, prompt: "Go on?", approvers: { kind: "ids", ids: [OLD_ALICE] }, project: "web", owner: { developerId: OLD_ALICE, name: "Alice" },
     });
     expect((await decideApproval(w.deps, w.caller(ALICE), step.approvalId, { requestId: REQ(8), decision: "APPROVE" })).status).toBe("APPROVED");
   });
@@ -860,7 +860,7 @@ describe("a merged member", () => {
     const w = world();
     const write = await w.waiting(1, { run: { project: "web", owner: { developerId: OLD_ALICE, name: "Alice" } }, approvers: { kind: "rule", rule: "write_approver", candidates: [OLD_ALICE, BOB] } });
     registerApproverRule("t_rule", async () => true);
-    const step = await createStepApproval(w.deps, { orgId: ORG_A, subject: { kind: "agent_run", taskId: TASK, stepId: "gate" }, prompt: "Go?", approvers: { kind: "ids", ids: [OLD_ALICE, CARA] } });
+    const step = await createStepApproval(w.deps, { orgId: ORG_A, subject: { kind: "agent_run", taskId: TASK, stepId: "gate" }, prompt: "Go?", approvers: { kind: "ids", ids: [OLD_ALICE, CARA] }, project: "web", owner: { developerId: OLD_ALICE, name: "Alice" } });
     w.db.set({ pk: `DEVELOPER#${OLD_ALICE}`, sk: "META", developerId: OLD_ALICE, mergedInto: ALICE });
     w.db.delete(orgMemberKey(ORG_A, OLD_ALICE));
     const lifecycle = { ...w.deps, log: w.deps.log! };
@@ -901,11 +901,14 @@ describe("a merged member", () => {
     expect((moved.approvers as unknown as { candidates: string[] }).candidates).not.toContain(BOB);
     expect(w.db.get(approverIndexKey(ORG_A, BOB, id as never))).toBeUndefined();
     const owned = world();
-    const mine = await owned.waiting(1);
+    const mine = await owned.waiting(1, { approvers: { kind: "rule", rule: WRITE_APPROVER_RULE, candidates: [ALICE, BOB] } });
     owned.db.set({ ...orgMemberKey(ORG_A, DANA), entityType: "ORG_MEMBER", orgId: ORG_A, developerId: DANA, role: "owner", joinedAt: "2026-10-01T00:00:00.000Z" });
     owned.db.delete(orgMemberKey(ORG_A, ALICE));
     await onMemberRemoved({ ...owned.deps, log: owned.deps.log! }, { orgId: ORG_A, developerId: ALICE, by: DANA });
     expect((await owned.write(mine)).owner.developerId).toBe(DANA);
+    // The removed run owner is re-routed to the successor in the candidates too, and the successor is listed.
+    expect(((await owned.write(mine)).approvers as unknown as { candidates: string[] }).candidates.sort()).toEqual([BOB, DANA].sort());
+    expect(owned.db.get(approverIndexKey(ORG_A, DANA, mine as never))).toBeDefined();
   });
 
   it("stops between items when its time has run out, leaving the rest for the next run", async () => {
@@ -999,11 +1002,11 @@ describe("what is checked before anything is stored", () => {
     expect(await code(w.ask(1))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
   });
 
-  it("makes the record, the open item, the event and up to 90 approver items in one transaction", async () => {
+  it("makes the record, the open item, the event and up to 88 approver items in one transaction", async () => {
     const w = world();
     const many = Array.from({ length: 120 }, (_, index) => index.toString(16).padStart(64, "0"));
     const id = await w.waiting(1, { approvers: { kind: "rule", rule: WRITE_APPROVER_RULE, candidates: many } });
-    expect(w.db.find((item) => item.entityType === "APPROVER_INDEX")).toHaveLength(90);
+    expect(w.db.find((item) => item.entityType === "APPROVER_INDEX")).toHaveLength(88);
     expect(((await w.write(id)).approvers as unknown as { candidates: string[] }).candidates).toHaveLength(120);
     const transactions = w.db.commandNames().filter((name) => name === "TransactWriteCommand");
     expect(transactions.length).toBeGreaterThan(0);
@@ -1200,7 +1203,7 @@ describe("races and leftovers the guards are for", () => {
   it("lets only one of two sweeps reach the vendor for a stuck record", async () => {
     const w = world();
     // Without the ledger probe a retry goes through the connector path, where the request id replays the recorded result.
-    delete w.runtime.recordedResult;
+    w.runtime.recordedResult = async () => undefined;
     const id = await w.waiting(1);
     w.vendor.state.crashesAfterVendor = 1;
     await w.approve(BOB, id).catch(() => undefined);
@@ -1245,25 +1248,6 @@ describe("races and leftovers the guards are for", () => {
     await w.approve(BOB, id);
     expect(await w.record(id)).toMatchObject({ handlerDone: true });
     expect(w.open()).toEqual([]);
-  });
-
-  it("leaves a lease on telling the handler alone while it is younger than the retry time", async () => {
-    const w = world();
-    let calls = 0;
-    registerApprovalSubjectHandler("agent_run", async () => { calls += 1; throw new Error("down"); });
-    const id = await w.waiting(1);
-    await w.approve(BOB, id);
-    expect(calls).toBe(1);
-    w.clock.now += 6 * MINUTE;
-    await w.sweep();
-    expect(calls).toBe(2);
-    w.clock.now += MINUTE;
-    await w.sweep();
-    expect(calls).toBe(2);
-    w.clock.now += 5 * MINUTE;
-    await w.sweep();
-    expect(calls).toBe(3);
-    expect((await w.record(id)).handlerDone).toBe(false);
   });
 
   it("leaves nothing in the open index once a stuck record has been completed by the sweep", async () => {
@@ -1342,6 +1326,298 @@ describe("races and leftovers the guards are for", () => {
     w.task({ orgId: ORG_B });
     await w.approve(BOB, id);
     expect(await w.record(id)).toMatchObject({ status: "APPROVED_FAILED", failure: "The task ended before this was approved, so Rovara didn't run it." });
+  });
+});
+
+describe("fix round 1: what a finished approval leaves behind", () => {
+  const approverItems = (w: World, id: string) => w.db.find((item) => item.entityType === "APPROVER_INDEX" && item.approvalId === id);
+
+  it("I1: deletes every approver item in the transaction that ends PENDING (approve, decline, expire), and keeps the others'", async () => {
+    const w = world();
+    const [a, b, c, keep] = [await w.waiting(1), await w.waiting(2), await w.waiting(3), await w.waiting(4)];
+    expect(approverItems(w, a)).toHaveLength(3);
+    await w.approve(BOB, a);
+    expect(approverItems(w, a)).toEqual([]);
+    await w.decline(BOB, b);
+    expect(approverItems(w, b)).toEqual([]);
+    // Only the first three expire.
+    const stored = w.db.get(approvalKey(ORG_A, keep as never))!;
+    w.db.set({ ...stored, expiresAt: "2026-10-30T09:00:00.000Z" });
+    w.clock.now = Date.parse("2026-10-29T09:30:00.000Z");
+    await w.sweep();
+    expect(approverItems(w, c)).toEqual([]);
+    expect(approverItems(w, keep)).toHaveLength(3);
+  });
+
+  it("I1: does the same for a step approval, and for an approval that fails", async () => {
+    const w = world();
+    registerApproverRule("t_step", async () => true);
+    const step = await createStepApproval(w.deps, { orgId: ORG_A, subject: { kind: "agent_run", taskId: TASK, stepId: "gate" }, prompt: "Go?", approvers: { kind: "rule", rule: "t_step", candidates: [ALICE, BOB] } });
+    expect(approverItems(w, step.approvalId)).toHaveLength(2);
+    await decideApproval(w.deps, w.caller(BOB), step.approvalId, { requestId: REQ(1), decision: "APPROVE" });
+    expect(approverItems(w, step.approvalId)).toEqual([]);
+    const failing = await w.waiting(1);
+    w.live.grantRefusal = "No.";
+    await w.approve(BOB, failing);
+    expect(approverItems(w, failing)).toEqual([]);
+  });
+
+  it("I1: gives the approver items the index TTL, a day after the approval would have expired, and the step counter too", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    const expires = Math.floor(Date.parse((await w.write(id)).expiresAt) / 1000);
+    for (const item of approverItems(w, id)) expect(item[INDEX_EXPIRY_ATTRIBUTE]).toBe(expires + 86_400);
+    const counter = w.db.find((item) => String(item.pk).includes("STEP_APPROVALS"))[0]!;
+    expect(counter[INDEX_EXPIRY_ATTRIBUTE]).toBe(expires + 86_400);
+  });
+
+  it("I1: still lists a new pending approval after many were decided", async () => {
+    const w = world();
+    for (let n = 1; n <= 30; n += 1) await w.decline(BOB, await w.waiting(n, { operationId: `4444444${String(n).padStart(1, "0")}-4444-4444-8444-444444444444`.slice(0, 36) }), REQ(100 + n));
+    const fresh = await w.waiting(99);
+    expect((await listApprovalsFor(w.deps, w.caller(BOB), "PENDING")).map((record) => record.approvalId)).toEqual([fresh]);
+    expect(w.db.find((item) => item.entityType === "APPROVER_INDEX")).toHaveLength(3);
+  });
+
+  it("I2: moves a failing handler's due item forward with backoff, and gives up after eight tries", async () => {
+    const w = world();
+    let calls = 0;
+    registerApprovalSubjectHandler("agent_run", async () => { calls += 1; throw new Error("down"); });
+    const id = await w.waiting(1);
+    await w.approve(BOB, id);
+    expect(calls).toBe(1);
+    expect(w.open().map((item) => item.sk)).toEqual([expect.stringContaining("2026-10-22T09:05:00.000Z")]);
+    // Not yet due: nothing is called.
+    w.clock.now += 3 * MINUTE;
+    await w.sweep();
+    expect(calls).toBe(1);
+    const expected = [10, 20, 40, 80, 160, 320, 360];
+    for (let call = 2; call <= 8; call += 1) {
+      w.clock.now = Date.parse((await w.write(id)).handlerDueAt!) + 1000;
+      const before = w.clock.now;
+      await w.sweep();
+      expect(calls, `call ${String(call)}`).toBe(call);
+      if (call < 8) {
+        const due = Date.parse((await w.write(id)).handlerDueAt!);
+        // The next try waits twice as long as the last (doubling, capped at six hours); the item moved with it.
+        expect(Math.round((due - before) / MINUTE), `delay after call ${String(call)}`).toBe(expected[call - 2]);
+        expect(w.open().map((item) => item.sk)).toEqual([expect.stringContaining(new Date(due).toISOString())]);
+      }
+    }
+    expect(await w.record(id)).toMatchObject({ status: "APPROVED_DONE", handlerDone: true });
+    expect(w.logs.map((entry) => entry.event)).toContain("approval.handler_gave_up");
+    expect(w.open()).toEqual([]);
+    w.clock.now += 2 * DAY;
+    await w.sweep();
+    expect(calls).toBe(8);
+  });
+
+  it("I2: a failing handler no longer holds the head of the index: a later expiry is still reached", async () => {
+    const w = world();
+    registerApprovalSubjectHandler("agent_run", async () => { throw new Error("down"); });
+    for (let n = 1; n <= 12; n += 1) await w.approve(BOB, await w.waiting(n, { operationId: `5555555${String(n % 10)}-5555-4555-8555-555555555555` }), REQ(200 + n));
+    const late = await w.waiting(50, { operationId: "66666666-6666-4666-8666-666666666666" });
+    const stored = w.db.get(approvalKey(ORG_A, late as never))!;
+    w.db.set({ ...stored, expiresAt: "2026-10-22T09:30:00.000Z" });
+    w.db.set({ pk: "OPEN_APPROVALS", sk: `2026-10-22T09:30:00.000Z#${ORG_A}#${late}`, orgId: ORG_A, approvalId: late });
+    w.clock.now += 6 * MINUTE;
+    await w.sweep();
+    // Every failing one moved out past the late one's time.
+    const times = w.open().map((item) => String(item.sk).slice(0, 24)).sort();
+    expect(times[0]).toBe("2026-10-22T09:30:00.000Z");
+    w.clock.now = Date.parse("2026-10-22T09:31:00.000Z");
+    await w.sweep();
+    expect((await w.record(late)).status).toBe("EXPIRED");
+  });
+
+  it("I2: saves where a sweep that ran out of time stopped, starts there next time, and clears it at the end of the index", async () => {
+    const w = world();
+    const ids: string[] = [];
+    for (let n = 1; n <= 4; n += 1) ids.push(await w.waiting(n));
+    w.clock.now += 8 * DAY;
+    const base = w.clock.now;
+    let reads = 0;
+    w.deps.now = () => base + (reads++) * 40;
+    const starts: Array<unknown> = [];
+    const send = w.db.send.bind(w.db);
+    w.db.send = async (command) => {
+      const input = (command as { input?: { ExclusiveStartKey?: { pk?: string; sk?: string }; ExpressionAttributeValues?: Record<string, unknown> } }).input;
+      if (input?.ExpressionAttributeValues?.[":pk"] === "OPEN_APPROVALS") starts.push(input.ExclusiveStartKey?.sk);
+      return send(command);
+    };
+    const first = await runApprovalSweep(w.deps, { budgetMs: 600, pageSize: 1 });
+    expect(first.complete).toBe(false);
+    const saved = w.db.get({ pk: "SWEEP_CURSOR#approvals", sk: "META" });
+    expect(saved).toBeDefined();
+    const remaining = async () => (await Promise.all(ids.map((id) => w.record(id)))).filter((record) => record.status === "PENDING").length;
+    const left = await remaining();
+    expect(left).toBeGreaterThan(0);
+    expect(left).toBeLessThan(4);
+    starts.length = 0;
+    for (let run = 0; run < 8 && (await remaining()) > 0; run += 1) await runApprovalSweep(w.deps, { budgetMs: 600, pageSize: 1 });
+    // The next run began at the saved cursor, not at the head of the index.
+    expect(starts[0]).toBe((saved as { cursor?: string }).cursor);
+    expect(await remaining()).toBe(0);
+    w.deps.now = () => base + 10_000_000;
+    await runApprovalSweep(w.deps, { budgetMs: 100_000 });
+    expect(w.db.get({ pk: "SWEEP_CURSOR#approvals", sk: "META" })).toBeUndefined();
+  });
+
+  it("I3: writes an approval.requested audit item with the record, the index items and the event, and none for a repeat", async () => {
+    const w = world({ audit: true });
+    w.audit!.queueDown();
+    const id = await w.waiting(1);
+    await w.waiting(1);
+    const pending = w.audit!.pending();
+    expect(pending.map((event) => event.action)).toEqual(["approval.requested"]);
+    expect(pending[0]).toMatchObject({ actor: { kind: "system" }, related: [ALICE], target: { kind: "approval", id }, facts: { kind: "write", subjectKind: "agent_run", class: "consequential", connectorType: "linear", tool: "save_issue", argumentsHash: (await w.write(id)).argumentsHash } });
+    registerApproverRule("t_step", async () => true);
+    await createStepApproval(w.deps, { orgId: ORG_A, subject: { kind: "agent_run", taskId: TASK, stepId: "gate" }, prompt: "Go?", approvers: { kind: "rule", rule: "t_step", candidates: [ALICE] } });
+    expect(w.audit!.pending().filter((event) => event.action === "approval.requested").map((event) => event.facts)).toEqual([expect.objectContaining({ kind: "write" }), { kind: "step", subjectKind: "agent_run" }]);
+  });
+
+  it("I3: leaves no audit item when the creating transaction fails, and stays under 100 items with the most candidates", async () => {
+    const w = world({ audit: true });
+    w.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" }, times: 1 });
+    await expect(w.ask(1)).rejects.toThrow();
+    expect(w.audit!.pending()).toEqual([]);
+    const many = Array.from({ length: 200 }, (_, index) => index.toString(16).padStart(64, "0"));
+    const sizes: number[] = [];
+    const send = w.db.send.bind(w.db);
+    w.db.send = async (command) => {
+      const items = (command as { input?: { TransactItems?: unknown[] } }).input?.TransactItems;
+      if (items !== undefined) sizes.push(items.length);
+      return send(command);
+    };
+    const id = await w.waiting(2, { approvers: { kind: "rule", rule: WRITE_APPROVER_RULE, candidates: many } });
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(100);
+    // The decision that follows, which deletes the approver items, fits too.
+    await w.decline(BOB, id).catch(() => undefined);
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(100);
+  });
+
+  it("M-f: logs when the candidates are cut to the cap", async () => {
+    const w = world();
+    const many = Array.from({ length: 120 }, (_, index) => index.toString(16).padStart(64, "0"));
+    await w.waiting(1, { approvers: { kind: "rule", rule: WRITE_APPROVER_RULE, candidates: many } });
+    expect(w.logs.filter((entry) => entry.event === "approval.candidates_capped")).toMatchObject([{ fields: { orgId: ORG_A, listed: 88, named: 121 } }]);
+  });
+});
+
+describe("fix round 1: the movers' audit trail", () => {
+  it("I4: audits a merge as approval.rerouted in the same transaction as the move, and stamps the record", async () => {
+    const w = world({ audit: true });
+    const id = await w.waiting(1, { run: { project: "web", owner: { developerId: OLD_ALICE, name: "Alice" } }, approvers: { kind: "rule", rule: WRITE_APPROVER_RULE, candidates: [OLD_ALICE, BOB] } });
+    w.db.set({ pk: `DEVELOPER#${OLD_ALICE}`, sk: "META", developerId: OLD_ALICE, mergedInto: ALICE });
+    w.db.delete(orgMemberKey(ORG_A, OLD_ALICE));
+    w.audit!.queueDown();
+    w.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" }, times: 1 });
+    await expect(onMembersMerged({ ...w.deps, log: w.deps.log! }, { orgId: ORG_A, survivorId: ALICE, duplicateId: OLD_ALICE })).rejects.toThrow();
+    expect(w.audit!.pending().filter((event) => event.action === "approval.rerouted")).toEqual([]);
+    expect(await w.write(id)).toMatchObject({ owner: { developerId: OLD_ALICE } });
+    await onMembersMerged({ ...w.deps, log: w.deps.log! }, { orgId: ORG_A, survivorId: ALICE, duplicateId: OLD_ALICE });
+    const events = w.audit!.pending().filter((event) => event.action === "approval.rerouted");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ actor: { kind: "system" }, target: { kind: "approval", id }, related: [OLD_ALICE, ALICE], facts: { kind: "write", mode: "merged" } });
+    const moved = await w.write(id) as WriteApprovalRecord & { movedBy?: string; movedAt?: string };
+    expect(moved).toMatchObject({ movedBy: "system", movedAt: "2026-10-22T09:00:00.000Z" });
+    // Repeating audits nothing more.
+    await onMembersMerged({ ...w.deps, log: w.deps.log! }, { orgId: ORG_A, survivorId: ALICE, duplicateId: OLD_ALICE });
+    expect(w.audit!.pending().filter((event) => event.action === "approval.rerouted")).toHaveLength(1);
+  });
+
+  it("I4: audits a removal's re-route with the mode removed and the successor", async () => {
+    const w = world({ audit: true });
+    const HANK = hex("8");
+    w.db.set({ ...orgMemberKey(ORG_A, HANK), entityType: "ORG_MEMBER", orgId: ORG_A, developerId: HANK, role: "owner", joinedAt: "2026-09-01T00:00:00.000Z" });
+    const id = await w.waiting(1);
+    w.db.delete(orgMemberKey(ORG_A, BOB));
+    w.audit!.queueDown();
+    await onMemberRemoved({ ...w.deps, log: w.deps.log! }, { orgId: ORG_A, developerId: BOB, by: HANK });
+    expect(w.audit!.pending().filter((event) => event.action === "approval.rerouted")).toMatchObject([{ target: { id }, related: [BOB, HANK], facts: { kind: "write", mode: "removed" } }]);
+  });
+
+  it("I4: audits nothing when only a stale index item moves", async () => {
+    const w = world({ audit: true });
+    const id = await w.waiting(1);
+    w.db.set({ ...approverIndexKey(ORG_A, OLD_ALICE, id as never), entityType: "APPROVER_INDEX", approvalId: id, expiresAt: (await w.write(id)).expiresAt });
+    w.db.set({ pk: `DEVELOPER#${OLD_ALICE}`, sk: "META", developerId: OLD_ALICE, mergedInto: ALICE });
+    w.audit!.queueDown();
+    await onMembersMerged({ ...w.deps, log: w.deps.log! }, { orgId: ORG_A, survivorId: ALICE, duplicateId: OLD_ALICE });
+    expect(w.audit!.pending().filter((event) => event.action === "approval.rerouted")).toEqual([]);
+    expect(w.db.get(approverIndexKey(ORG_A, OLD_ALICE, id as never))).toBeUndefined();
+  });
+
+  it("M-c: lists the run owner too, so the mover finds an approval that names them only as the owner", async () => {
+    const w = world();
+    const id = await w.waiting(1, { run: { project: "web", owner: { developerId: OLD_ALICE, name: "Alice" } }, approvers: { kind: "rule", rule: WRITE_APPROVER_RULE, candidates: [BOB] } });
+    expect(w.db.get(approverIndexKey(ORG_A, OLD_ALICE, id as never))).toBeDefined();
+    w.db.set({ pk: `DEVELOPER#${OLD_ALICE}`, sk: "META", developerId: OLD_ALICE, mergedInto: ALICE });
+    w.db.delete(orgMemberKey(ORG_A, OLD_ALICE));
+    await onMembersMerged({ ...w.deps, log: w.deps.log! }, { orgId: ORG_A, survivorId: ALICE, duplicateId: OLD_ALICE });
+    expect((await w.write(id)).owner.developerId).toBe(ALICE);
+    expect(w.db.get(approverIndexKey(ORG_A, ALICE, id as never))).toBeDefined();
+    expect(w.db.get(approverIndexKey(ORG_A, OLD_ALICE, id as never))).toBeUndefined();
+  });
+});
+
+describe("fix round 1: fail closed and who sees what", () => {
+  it("I5: refuses a listed id when the run can't be determined, whatever role they hold", async () => {
+    const w = world();
+    registerApproverRule("t_x", async () => true);
+    w.db.set({ ...taskKey(TASK), entityType: "DEVELOPER_TASK", taskId: TASK, orgId: ORG_B, developerId: XAVI, developerName: "Xavi", project: "web", workspaceId: WORKSPACE, ownerKey: "k" });
+    // A stored step approval that names ids and has no project or owner, on a task of another org.
+    const step = await createStepApproval(w.deps, { orgId: ORG_A, subject: { kind: "agent_run", taskId: TASK, stepId: "gate" }, prompt: "Go?", approvers: { kind: "rule", rule: "t_x", candidates: [ERIN] }, project: "web", owner: { developerId: ALICE, name: "Alice" } });
+    const stored = w.db.get(approvalKey(ORG_A, step.approvalId))!;
+    const { project: _project, owner: _owner, ...bare } = stored;
+    w.db.set({ ...bare, approvers: { kind: "ids", ids: [ERIN] } });
+    expect(await code(decideApproval(w.deps, w.caller(ERIN), step.approvalId, { requestId: REQ(1), decision: "APPROVE" }))).toMatchObject({ code: "FORBIDDEN" });
+    expect((await w.record(step.approvalId)).status).toBe("PENDING");
+  });
+
+  it("I5: a step with an id list must say its project and owner; one with a rule need not", async () => {
+    const w = world();
+    registerApproverRule("t_x", async () => true);
+    const subject = { kind: "agent_run", taskId: TASK, stepId: "gate" } as const;
+    expect(await code(createStepApproval(w.deps, { orgId: ORG_A, subject, prompt: "Go?", approvers: { kind: "ids", ids: [BOB] } }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(createStepApproval(w.deps, { orgId: ORG_A, subject, prompt: "Go?", approvers: { kind: "ids", ids: [BOB] }, project: "web" }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect((await createStepApproval(w.deps, { orgId: ORG_A, subject, prompt: "Go?", approvers: { kind: "ids", ids: [BOB] }, project: "web", owner: { developerId: ALICE, name: "Alice" } })).kind).toBe("step");
+    expect((await createStepApproval(w.deps, { orgId: ORG_A, subject: { ...subject, stepId: "gate2" }, prompt: "Go?", approvers: { kind: "rule", rule: "t_x", candidates: [] } })).kind).toBe("step");
+  });
+
+  it("M-a: a call on another scope is another approval", async () => {
+    const w = world();
+    w.revision(2, linearConnector({ scopes: [{ alias: "eng", teamId: TEAM }, { alias: "ops", teamId: OTHER_TEAM }] }));
+    const call = (scope: string) => ({ scope, schemaHash: SCHEMA, arguments: { id: "ENG-12", stateId: "s1" } });
+    const a = await w.waiting(1, { call: call("eng") });
+    const b = await w.waiting(1, { call: call("ops") });
+    expect(b).not.toBe(a);
+    expect((await w.write(b)).scope).toBe("ops");
+  });
+
+  it("M-b: shows the arguments to a candidate only while they may decide or can view the task", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.runtime.canViewTask = async () => false;
+    const request = (who: AgentCaller) => routeApprovalRequest(w.deps, who, { method: "GET", path: `/v1/app/approvals/${id}`, headers: {}, requestId: "r", query: {} } as never, new URL(`https://cell.example.com/v1/app/approvals/${id}`));
+    expect(((await request(w.caller(BOB))) as { approval: Record<string, unknown> }).approval["arguments"]).toBeDefined();
+    // Bob is still named in the candidates, and is a contributor now.
+    w.members.grant(ORG_A, "web", BOB, "contributor");
+    expect(await code(request(w.caller(BOB)))).toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("M-e: keeps the open item of a record that is there but can't be read, and drops one whose record is gone", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.db.set({ ...w.db.get(approvalKey(ORG_A, id as never))!, status: "WEIRD" });
+    w.clock.now += 8 * DAY;
+    const report = await w.sweep();
+    expect(report.failed).toBe(1);
+    expect(w.open()).toHaveLength(1);
+    expect(w.logs.map((entry) => entry.event)).toContain("approval.record_unreadable");
+    w.db.delete(approvalKey(ORG_A, id as never));
+    await w.sweep();
+    expect(w.open()).toEqual([]);
   });
 });
 

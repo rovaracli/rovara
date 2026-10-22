@@ -671,6 +671,8 @@ describe("I4: the builders", () => {
   const cases: Array<[string, (occurrence: string) => AuditEventInput]> = [
     ["auditApprovalDecided", (occurrence) => builders.auditApprovalDecided({ ...base, occurrence, details, approvalId: "apr_1", kind: "write", decision: "approved", subjectKind: "write", class: "A" })],
     ["auditApprovalExpired", (occurrence) => builders.auditApprovalExpired({ ...base, occurrence, details, approvalId: "apr_1", kind: "write", subjectKind: "write" })],
+    ["auditApprovalRequested", (occurrence) => builders.auditApprovalRequested({ ...base, occurrence, details, approvalId: "apr_1", kind: "write", subjectKind: "agent_run", class: "consequential", connectorType: "linear", tool: "create_issue", argumentsHash: "a".repeat(64) })],
+    ["auditApprovalRerouted", (occurrence) => builders.auditApprovalRerouted({ ...base, occurrence, details, approvalId: "apr_1", kind: "write", mode: "merged", from: "dev_1", to: "dev_2" })],
     ["auditWriteExecuted", (occurrence) => builders.auditWriteExecuted({ ...base, occurrence, details, approvalId: "apr_1", connectorType: "linear", tool: "create_issue", status: "APPROVED_DONE", argumentsHash: "a".repeat(64) })],
     ["auditSpendRequestCreated", (occurrence) => builders.auditSpendRequestCreated({ ...base, occurrence, details, spendRequestId: "spr_1", kind: "raise", scopeKind: "member", amountCents: 500 })],
     ["auditSpendRequestDecided", (occurrence) => builders.auditSpendRequestDecided({ ...base, occurrence, details, spendRequestId: "spr_1", kind: "raise", scopeKind: "member", amountCents: 500, decision: "approved" })],
