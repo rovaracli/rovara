@@ -51,6 +51,7 @@ import {
   type AgentCaller,
   type AgentScope,
 } from "./access.js";
+import { isApprovalRoute, routeApprovalRequest } from "./approval-routes.js";
 import { COMMENT_TRIGGERS_PATH, routeCommentTriggers } from "./comment-trigger-routes.js";
 import { listOptOutViews, registerCommentTriggerApprovals } from "./comment-trigger-optouts.js";
 import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, updateGuardrails, type ChangeResult } from "./changes.js";
@@ -835,6 +836,8 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
   // Task 30: the spend reads (`/v1/app/budget`, the org's spend and ledger, a project's and an agent's), before the agent paths they would otherwise match.
   const spend = await routeSpendRequest(deps, caller, request, url);
   if (spend !== undefined) return spend;
+  // Task 21: the approvals (`/v1/app/approvals*`).
+  if (isApprovalRoute(url.pathname)) return routeApprovalRequest(deps, caller, request, url);
   if (isConnectionRoute(url.pathname)) {
     if (deps.connections === undefined) throw agentXError("NOT_FOUND", "connections are not set up in this deployment");
     return routeConnectionRequest({ store: deps.connections, documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller, request, url);

@@ -805,6 +805,18 @@ describe("drainMemberMerges", () => {
     expect(w.logs.filter((entry) => entry.event === "owner_cap.exceeded_by_move")).toMatchObject([{ fields: { owner: ALICE, totalUsd: 130, capUsd: 100, reason: "member_merged" } }]);
   });
 
+  it("looks at the cap of a person an earlier run of a merge gave things to, and remembers them with the survivor (Task 11 follow-up 1)", async () => {
+    const w = agentWorld();
+    await w.memberAgent(BOB, "Bob's first", 70);
+    await w.memberAgent(BOB, "Bob's second", 60);
+    w.merged(OLD_ALICE, ALICE);
+    const remembered: string[][] = [];
+    await onMembersMerged(w.deps, { orgId: ORG_A, survivorId: ALICE, duplicateId: OLD_ALICE }, { carried: [BOB], remember: async (recipients) => { remembered.push([...recipients]); } });
+    // This run moved nothing; the person an earlier run moved things to is still looked at.
+    expect(w.logs.filter((entry) => entry.event === "owner_cap.exceeded_by_move")).toMatchObject([{ fields: { owner: BOB, totalUsd: 130, reason: "member_merged" } }]);
+    expect(remembered).toEqual([[BOB]]);
+  });
+
   it("looks at the survivor's cap on a run that moves nothing at all (M1)", async () => {
     const w = agentWorld();
     await w.memberAgent(ALICE, "Alice's first", 70);
@@ -1119,6 +1131,9 @@ describe("OrgStore.removeMember with the lifecycle hook", () => {
     expect(moved).toBeLessThan(6);
     expect(markersOf(w.db)).toHaveLength(1);
     expect(logs.mock.calls.map(([line]) => String(line)).join("\n")).toContain("member_removal.hook_failed");
+    // Running out of the request's time is expected (the marker leaves the rest to the sweep): a warning, not an error (Task 11 follow-up 3).
+    const hookLines = logs.mock.calls.flatMap(([line]) => { try { return [JSON.parse(String(line)) as { event?: string; level?: string; error?: string }]; } catch { return []; } }).filter((entry) => entry.event === "member_removal.hook_failed");
+    expect(hookLines).toMatchObject([{ level: "warn", error: "LifecycleDeadline" }]);
     logs.mockRestore();
 
     // The sweep has no such bound and finishes the rest.
@@ -1200,10 +1215,12 @@ describe("the broker's wiring", () => {
     expect(h.markers()).toHaveLength(1);
     expect((await h.store.get(TEST_ORG, agent.agentId))!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
     expect(logs.mock.calls.map(([line]) => String(line))).toEqual(expect.arrayContaining([expect.stringContaining("member_removal.hook_failed")]));
+    // A failure that is not the time bound stays an error.
+    expect(logs.mock.calls.flatMap(([line]) => { try { return [JSON.parse(String(line)) as { event?: string; level?: string }]; } catch { return []; } }).filter((entry) => entry.event === "member_removal.hook_failed")).toMatchObject([{ level: "error" }]);
 
     const sweep = await h.handler({ source: "agentx.spend-settlement" });
     logs.mockRestore();
-    expect(JSON.parse(sweep.body)).toMatchObject({ jobs: [{ name: "drain-member-merges", ok: true, result: { processed: 1, rejected: 0, failed: 0, complete: true } }] });
+    expect(JSON.parse(sweep.body)).toMatchObject({ jobs: [{ name: "drain-member-merges", ok: true, result: { processed: 1, rejected: 0, failed: 0, complete: true } }, { name: "expire-approvals", ok: true }] });
     expect((await h.store.get(TEST_ORG, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OMAR.developerId });
     expect(h.markers()).toEqual([]);
   });
@@ -1230,7 +1247,7 @@ describe("the broker's wiring", () => {
     const sweep = await h.handler({ source: "agentx.spend-settlement" });
 
     expect(sweep.statusCode).toBe(200);
-    expect(JSON.parse(sweep.body)).toMatchObject({ jobs: [{ name: "drain-member-merges", ok: true, result: { processed: 1, rejected: 0, failed: 0 } }] });
+    expect(JSON.parse(sweep.body)).toMatchObject({ jobs: [{ name: "drain-member-merges", ok: true, result: { processed: 1, rejected: 0, failed: 0 } }, { name: "expire-approvals", ok: true }] });
     expect((await h.store.get(TEST_ORG, owned.agentId))!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
     expect((await h.store.get(TEST_ORG, agent.agentId))!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
     expect(h.markers()).toEqual([]);

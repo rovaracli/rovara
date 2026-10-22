@@ -443,7 +443,9 @@ export class OrgStore {
       await hook.onRemoved({ orgId, developerId, by, marker });
       await this.input.documentClient.send(new DeleteCommand({ TableName: this.input.tableName, Key: marker }));
     } catch (error) {
-      console.log(JSON.stringify({ component: "broker", level: "error", event: "member_removal.hook_failed", orgId, error: errorName(error) ?? "unknown" }));
+      // Running out of the request's time is expected: the removal's marker leaves the rest to the sweep, so it is not an error.
+      const level = errorName(error) === "LifecycleDeadline" ? "warn" : "error";
+      console.log(JSON.stringify({ component: "broker", level, event: "member_removal.hook_failed", orgId, error: errorName(error) ?? "unknown" }));
     }
   }
 

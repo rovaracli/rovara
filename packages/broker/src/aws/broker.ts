@@ -356,6 +356,7 @@ import { admitWork, mintOperationKey, type MintOperationKeyInput } from "../spen
 import { blockOperationKeys, forgetKey, registerKey, type LedgerDependencies } from "../spend/ledger.js";
 import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTask, resolvePayer } from "../spend/payer.js";
 import { runSettlementJobs, runSpendSweep, type SettlementJob } from "../spend/settlement-job.js";
+import { runApprovalSweep } from "../agents/approvals.js";
 import { memberRemovalHook, onProjectArchived, runMemberMergeDrain } from "../agents/lifecycle.js";
 import { readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
@@ -1378,6 +1379,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       const startedAt = Date.now();
       const jobs: SettlementJob[] = [
         ...(agents === undefined ? [] : [{ name: "drain-member-merges", run: () => runMemberMergeDrain(agents, { budgetMs: MEMBER_DRAIN_BUDGET_MS }) }]),
+        // Task 21: approvals that expired, writes stuck after a claim, and handlers that never heard the outcome.
+        ...(agents === undefined ? [] : [{ name: "expire-approvals", run: () => runApprovalSweep(agents, { budgetMs: APPROVAL_SWEEP_BUDGET_MS }) }]),
         ...(ledger === undefined ? [] : [{ name: "sweep-spend", run: () => runSpendSweep(ledger, { budgetMs: Math.max(0, SPEND_SWEEP_BUDGET_MS - (Date.now() - startedAt)) }) }]),
       ];
       if (jobs.length === 0) return json({ skipped: true }, "spend-settlement");
@@ -10361,6 +10364,7 @@ function isSpendSettlementEvent(event: unknown): event is { source: "agentx.spen
 const SPEND_SWEEP_BUDGET_MS = 20_000;
 /** The member-merge drain's share of that budget (Task 11): the queue is short and each marker is a few reads, so the rest is the spend sweep's. */
 const MEMBER_DRAIN_BUDGET_MS = 5_000;
+const APPROVAL_SWEEP_BUDGET_MS = 4_000;
 
 /** Task 30: what the spend ledger needs, or undefined where the install has no agents or no model proxy (it then keeps no ledger). */
 function ledgerOf(dependencies: AwsBrokerDependencies): LedgerDependencies | undefined {

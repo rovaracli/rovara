@@ -93,7 +93,7 @@ const backoffMs = (attempts: number) => Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS
 class LifecycleDeadline extends Error {
   override readonly name = "LifecycleDeadline";
 }
-function checkTime(deps: LifecycleDeps): void {
+export function checkTime(deps: Pick<LifecycleDeps, "deadline" | "now">): void {
   if (deps.deadline !== undefined && deps.now() >= deps.deadline) throw new LifecycleDeadline("the time for these moves has run out");
 }
 

@@ -176,7 +176,7 @@ function world(options: { audit?: boolean } = {}) {
   };
   const approve = (who: string, approvalId: string, requestId = REQ(900), orgRole: OrgRole = "member") => decideApproval(deps, caller(who, orgRole), approvalId, { requestId, decision: "APPROVE" });
   const decline = (who: string, approvalId: string, requestId = REQ(901)) => decideApproval(deps, caller(who), approvalId, { requestId, decision: "DECLINE" });
-  const record = async (approvalId: string): Promise<AnyApprovalRecord> => (await getAnyApproval(deps, ORG_A, approvalId as never))!;
+  const record = async (approvalId: string): Promise<AnyApprovalRecord> => (await getAnyApproval(deps, ORG_A, approvalId))!;
   const write = async (approvalId: string) => (await record(approvalId)) as WriteApprovalRecord;
   const sweep = (cursor?: string) => expireApprovals(deps, clock.now, cursor);
   const events = () => db.find((item) => String(item.sk).startsWith("EVENT#") && item.pk === `DEVTASK#${TASK}`);
@@ -218,7 +218,7 @@ describe("decideWrite", () => {
     })]);
     expect(w.open()).toHaveLength(1);
     // The owner and the maintainers are listed as candidates: Alice, Bob and the org admin Dana (a maintainer by role), not Cara or Erin.
-    const approvers = (record.approvers as { candidates: string[] }).candidates;
+    const approvers = (record.approvers as unknown as { candidates: string[] }).candidates;
     expect([...approvers].sort()).toEqual([ALICE, BOB, DANA].sort());
     for (const who of approvers) expect(w.db.get(approverIndexKey(ORG_A, who, approvalId as never))).toBeDefined();
     expect(w.vendor.state.vendorCalls).toEqual([]);
@@ -329,10 +329,10 @@ describe("approving a write", () => {
   });
 
   it("is the same request id on every attempt and a valid UUID", () => {
-    const first = deriveWriteRequestId("apr_aaaaaaaaaaaaaaaaaaaa" as never);
+    const first = deriveWriteRequestId("apr_aaaaaaaaaaaaaaaaaaaa");
     expect(first).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-    expect(deriveWriteRequestId("apr_aaaaaaaaaaaaaaaaaaaa" as never)).toBe(first);
-    expect(deriveWriteRequestId("apr_bbbbbbbbbbbbbbbbbbbb" as never)).not.toBe(first);
+    expect(deriveWriteRequestId("apr_aaaaaaaaaaaaaaaaaaaa")).toBe(first);
+    expect(deriveWriteRequestId("apr_bbbbbbbbbbbbbbbbbbbb")).not.toBe(first);
   });
 
   it("lets a project maintainer and an org admin approve, and refuses a contributor with the exact words", async () => {
@@ -437,7 +437,7 @@ describe("the re-checks at approval time", () => {
     w.db.delete(orgMemberKey(ORG_A, ALICE));
     w.db.set({ ...orgRemovedKey(ORG_A, ALICE), entityType: "ORG_REMOVED", orgId: ORG_A, developerId: ALICE });
     expect(await w.approve(BOB, id)).toEqual({ status: "APPROVED_FAILED" });
-    const record = await failedWith(w);
+    const record = await failedWith(w, id);
     expect(record.failure).toContain("Alice is no longer a member");
     expect(w.db.get(taskKey(TASK))).toMatchObject({ outcome: "creator_removed" });
   });
@@ -749,7 +749,7 @@ describe("who may decide, read live", () => {
   it("refuses a decision when the record names a rule nobody registered", async () => {
     const w = world();
     const id = await w.waiting(1);
-    const stored = w.db.get(approvalKey(ORG_A, id as never))!;
+    const stored = w.db.get(approvalKey(ORG_A, id))!;
     w.db.set({ ...stored, approvers: { kind: "rule", rule: "gone", candidates: [BOB] } });
     expect(await code(w.approve(BOB, id))).toMatchObject({ code: "FORBIDDEN" });
     expect(w.vendor.state.runs).toBe(0);
@@ -807,11 +807,11 @@ describe("a merged member", () => {
     await onMembersMerged(lifecycle, { orgId: ORG_A, survivorId: ALICE, duplicateId: OLD_ALICE });
     const moved = await w.write(write);
     expect(moved.owner.developerId).toBe(ALICE);
-    expect((moved.approvers as { candidates: string[] }).candidates.sort()).toEqual([ALICE, BOB].sort());
+    expect((moved.approvers as unknown as { candidates: string[] }).candidates.sort()).toEqual([ALICE, BOB].sort());
     expect(w.db.get(approverIndexKey(ORG_A, OLD_ALICE, write as never))).toBeUndefined();
     expect(w.db.get(approverIndexKey(ORG_A, ALICE, write as never))).toBeDefined();
     const movedStep = (await w.record(step.approvalId)) as StepApprovalRecord;
-    expect((movedStep.approvers as { ids: string[] }).ids.sort()).toEqual([ALICE, CARA].sort());
+    expect((movedStep.approvers as unknown as { ids: string[] }).ids.sort()).toEqual([ALICE, CARA].sort());
     expect(w.db.get(approverIndexKey(ORG_A, ALICE, step.approvalId))).toBeDefined();
     // Repeating changes nothing.
     const snapshot = structuredClone([...w.db.items.entries()]);
@@ -838,7 +838,7 @@ describe("a merged member", () => {
     w.db.delete(orgMemberKey(ORG_A, BOB));
     await onMemberRemoved({ ...w.deps, log: w.deps.log! }, { orgId: ORG_A, developerId: BOB, by: DANA });
     const moved = await w.write(id);
-    expect((moved.approvers as { candidates: string[] }).candidates).not.toContain(BOB);
+    expect((moved.approvers as unknown as { candidates: string[] }).candidates).not.toContain(BOB);
     expect(w.db.get(approverIndexKey(ORG_A, BOB, id as never))).toBeUndefined();
     const owned = world();
     const mine = await owned.waiting(1);

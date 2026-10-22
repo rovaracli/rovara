@@ -999,9 +999,10 @@ describe("a key the broker mints", () => {
     t.access.setKeySpent(key, 1.2);
     const run = await t.sweep();
     expect(run.statusCode).toBe(200);
-    // Task 11 added the member-merge drain to the run, ahead of the sweep; it has nothing to do here.
+    // Task 11 added the member-merge drain to the run, ahead of the sweep, and Task 21 the approvals' sweep after it; neither has anything to do here.
     expect((JSON.parse(run.body) as { jobs: unknown }).jobs).toEqual([
       expect.objectContaining({ name: "drain-member-merges", ok: true }),
+      expect.objectContaining({ name: "expire-approvals", ok: true }),
       expect.objectContaining({ name: "sweep-spend", ok: true, result: expect.objectContaining({ settled: 1, complete: true }) as unknown }),
     ]);
     for (const sk of ["ORG", "PROJECT#payments", `MEMBER#${DEV_MAYA.developerId}`, "SOURCE#rovara", agentUsageCounter("rovara-code")]) near(t.counter(sk)?.spentUsd, 1.2);
@@ -1038,6 +1039,7 @@ describe("a key the broker mints", () => {
     // The sweep failing never stops the drain before it, and the drain never hides the sweep's failure.
     expect((JSON.parse(run.body) as { jobs: unknown }).jobs).toEqual([
       expect.objectContaining({ name: "drain-member-merges", ok: true }),
+      expect.objectContaining({ name: "expire-approvals", ok: true }),
       { name: "sweep-spend", ok: false, error: "InternalServerError" },
     ]);
     expect(run.body).not.toContain("secret detail");
