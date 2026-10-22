@@ -12,6 +12,7 @@
 // AWS documentation confirmed on 2026-10-22: AssumeRole's ExternalId, Policy (session policy, packed size under 2,048 characters) and DurationSeconds (docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html);
 // DescribeAlarms (AlarmNamePrefix, AlarmTypes, StateValue, MaxRecords), DescribeAlarmHistory, GetMetricData (CloudWatch API reference); DescribeLogGroups
 // (logGroupNamePrefix), StartQuery (logGroupNames up to 50, queryString up to 10,000), GetQueryResults and StopQuery (CloudWatch Logs API reference).
+import { randomInt } from "node:crypto";
 import { DescribeAlarmHistoryCommand, DescribeAlarmsCommand, GetMetricDataCommand } from "@aws-sdk/client-cloudwatch";
 import { DescribeLogGroupsCommand, GetQueryResultsCommand, StartQueryCommand, StopQueryCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { GetCallerIdentityCommand, type AssumeRoleCommandInput } from "@aws-sdk/client-sts";
@@ -41,6 +42,8 @@ export interface CloudWatchAws {
   clientsFor(credentials: AssumedAwsCredentials, region: string): { sts: AwsSender; monitoring: AwsSender; logs: AwsSender };
   now(): number;
   sleep(ms: number): Promise<void>;
+  /** Random lower-case letters and digits for the check's wrong external id; a test supplies its own. */
+  random?(): string;
 }
 
 // ---- the session
@@ -63,6 +66,7 @@ export class CloudWatchAccessError extends Error {
   constructor(message: string, readonly retryable: boolean) { super(message); this.name = "CloudWatchAccessError"; }
 }
 
+const randomBase36 = (): string => Array.from({ length: 20 }, () => randomInt(36).toString(36)).join("");
 const errorName = (error: unknown): string => (error instanceof Error ? error.name : "");
 const DENIED = new Set(["AccessDenied", "AccessDeniedException", "UnauthorizedOperation", "UnauthorizedException"]);
 const THROTTLED = new Set(["Throttling", "ThrottlingException", "TooManyRequestsException", "RequestLimitExceeded", "LimitExceededException"]);
@@ -73,13 +77,17 @@ const NOT_FOUND = new Set(["ResourceNotFoundException", "ResourceNotFound"]);
  * A role in the deployment's own account is refused before AWS is asked.
  */
 export async function assumeCustomerRole(aws: CloudWatchAws, input: { orgId: OrgId; connection: CloudWatchConnection }): Promise<AssumedAwsCredentials> {
-  const { orgId, connection } = input;
+  return assumeWith(aws, input.connection, cloudwatchExternalId(input.orgId));
+}
+
+/** One AssumeRole for the connection's role with the given external id: the caller org's own, or the check's wrong one. */
+async function assumeWith(aws: CloudWatchAws, connection: CloudWatchConnection, externalId: string): Promise<AssumedAwsCredentials> {
   if (aws.ownAccountId !== undefined && cloudwatchRoleAccount(connection.roleArn) === aws.ownAccountId) throw new CloudWatchAccessError(OWN_ACCOUNT_ROLE, false);
   try {
     return await aws.assumeRole({
       RoleArn: connection.roleArn,
       RoleSessionName: `rovara-${connection.connectionId}`,
-      ExternalId: cloudwatchExternalId(orgId),
+      ExternalId: externalId,
       DurationSeconds: 900,
       Policy: cloudwatchSessionPolicy(),
     });
@@ -125,6 +133,18 @@ export async function checkCloudWatch(aws: CloudWatchAws, input: { orgId: OrgId;
     if (error instanceof CloudWatchAccessError && !error.retryable) return { ok: false, message: error.message };
     throw unreachable();
   }
+  // The role must refuse any other external id. A trust policy with no external id condition, or one that matches by prefix, would let another org that learns
+  // the role's ARN read this account through Rovara (the Bedrock probe does the same, `model-proxy/client.ts`). The second session is never used.
+  const expected = cloudwatchExternalId(input.orgId);
+  let accepted: boolean;
+  try {
+    await assumeWith(aws, input.connection, `rovara-org_${(aws.random ?? randomBase36)()}`);
+    accepted = true;
+  } catch (error) {
+    if (!(error instanceof CloudWatchAccessError) || error.retryable) throw unreachable();
+    accepted = false;
+  }
+  if (accepted) return { ok: false, message: `this role's trust policy must require the external id ${expected}` };
   const clients = aws.clientsFor(credentials, input.connection.regions[0]!);
   try {
     await clients.sts.send(new GetCallerIdentityCommand({}));
@@ -340,7 +360,9 @@ const QUERY_WAIT_MS = 20_000;
 const QUERY_POLL_MS = 1_000;
 const MAX_ROWS = 100;
 /** `SOURCE` (as a command, at the start or after a pipe or a new line) names log groups of the query's own: the scope's are the only ones allowed. */
-const SOURCE_COMMAND = /(^|[|\n])\s*source\b/iu;
+const SOURCE_COMMAND = /(^|[|\n\r\u0085\u2028\u2029])\s*source\b/iu;
+/** `SOURCE logGroups(` anywhere in the query, whatever comes before it and whatever separates the two words (review M-1). */
+const SOURCE_LOG_GROUPS = /\bsource[\s\p{Cc}\p{Cf}]*loggroups[\s\p{Cc}\p{Cf}]*\(/iu;
 const TERMINAL_FAILURES = new Set(["Failed", "Cancelled", "Timeout", "Unknown"]);
 
 const queryLogs: NativeTool<CloudWatchRunScope> = {
@@ -357,7 +379,7 @@ const queryLogs: NativeTool<CloudWatchRunScope> = {
   },
   async run(args, ctx) {
     const query = String(args["query"]);
-    if (SOURCE_COMMAND.test(query)) throw new NativeToolRefusal("a query may not name its own log groups (SOURCE); the scope's log groups are used");
+    if (SOURCE_COMMAND.test(query) || SOURCE_LOG_GROUPS.test(query)) throw new NativeToolRefusal("a query may not name its own log groups (SOURCE); the scope's log groups are used");
     const prefixes = ctx.scope.logGroupPrefixes;
     if (prefixes.length === 0) throw new NativeToolRefusal("this scope names no log group prefixes, so it has no log search");
     // The groups are those AWS lists for each prefix, and each is checked against the prefixes again.

@@ -193,7 +193,11 @@ describe("assuming the customer's role (confused deputy)", () => {
     const connection = (await r.store.get(ORG_A, CON))!;
     await check({ orgId: ORG_A, connection: connection as never, secret: undefined, fetch: fetch });
     expect(r.fake.assumed.length).toBeGreaterThanOrEqual(2);
-    for (const call of r.fake.assumed) expect(call.ExternalId).toBe(`rovara-${ORG_A}`);
+    // The check's own second attempt, with a wrong id on purpose (review I-1), is the one call that does not carry the caller's id.
+    const wrong = r.fake.assumed.filter((call) => call.ExternalId !== `rovara-${ORG_A}`);
+    expect(wrong).toHaveLength(1);
+    expect(wrong[0]).toBe(r.fake.assumed.at(-1));
+    for (const call of r.fake.assumed.slice(0, -1)) expect(call.ExternalId).toBe(`rovara-${ORG_A}`);
     // The fake's role requires its id: one asked without it, or with another org's, is refused.
     await expect(r.fake.aws.assumeRole({ RoleArn: CUSTOMER_ROLE, RoleSessionName: "x" })).rejects.toMatchObject({ name: "AccessDenied" });
     await expect(r.fake.aws.assumeRole({ RoleArn: CUSTOMER_ROLE, RoleSessionName: "x", ExternalId: `rovara-${ORG_B}` })).rejects.toMatchObject({ name: "AccessDenied" });
@@ -555,6 +559,12 @@ describe("query_logs", () => {
       ["source after U+0085", { query: "# c\u0085SOURCE logGroups(namePrefix: ['/ecs/other']) | fields @message", fromMinutesAgo: 30 }],
       ["source in the middle of a line", { query: "x SOURCE logGroups(namePrefix: ['/ecs/other'])", fromMinutesAgo: 30 }],
       ["source and logGroups split by a line break", { query: "fields @message | SOURCE\r\n\u2028logGroups (namePrefix: ['/ecs/other'])", fromMinutesAgo: 30 }],
+      ["source command after each line break, whatever follows", { query: "# c\rSOURCE '/ecs/other'", fromMinutesAgo: 30 }],
+      ["source command after U+2028, whatever follows", { query: "# c\u2028SOURCE '/ecs/other'", fromMinutesAgo: 30 }],
+      ["source command after U+2029, whatever follows", { query: "# c\u2029SOURCE '/ecs/other'", fromMinutesAgo: 30 }],
+      ["source command after U+0085, whatever follows", { query: "# c\u0085SOURCE '/ecs/other'", fromMinutesAgo: 30 }],
+      ["a zero-width character between the words", { query: "fields @message | x source\u200blogGroups(namePrefix: ['/ecs/other'])", fromMinutesAgo: 30 }],
+      ["a control character between the words", { query: "x source\u0001logGroups(namePrefix: ['/ecs/other'])", fromMinutesAgo: 30 }],
       ["mixed case", { query: "x SoUrCe LOGGROUPS(namePrefix: ['/ecs/other'])", fromMinutesAgo: 30 }],
     ];
     for (const [label, args] of cases) {
@@ -565,7 +575,7 @@ describe("query_logs", () => {
     // The word in an ordinary filter is fine.
     const fine = await run("query_logs", { query: "fields @message | filter @message like /source/", fromMinutesAgo: 30 }, { aws: { logGroups: GROUPS } });
     expect(fine.result.status).toBe("SUCCEEDED");
-    for (const query of ["fields @source | filter @message like /source/", "fields @message | filter @message like /source logGroups/", "stats count(*) by source"]) {
+    for (const query of ["fields @source | filter @message like /source/", "fields @message | filter @message like /source logGroups/", "stats count(*) by source", "filter @message like /resource logGroups(/", "filter @message like /source logGroups/"]) {
       const ok = await run("query_logs", { query, fromMinutesAgo: 30 }, { aws: { logGroups: GROUPS } });
       expect(ok.result.status, query).toBe("SUCCEEDED");
     }
