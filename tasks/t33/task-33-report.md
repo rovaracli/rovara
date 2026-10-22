@@ -239,3 +239,50 @@ The script is `scratchpad/t33/mutate.py`. It names this worktree and branch, ref
 - **A Continue (Task 32) doesn't withdraw a month's system request** (it lives in a `MONTH#` slot). Its later approval just drops the item for that task, as the review judged acceptable.
 - **An admin's agent top-up still bumps the version without a condition** (Concern 4). Two admin approvals racing on one agent can each pass the live guardrail check. The clamp still holds the money, so this is left as it is.
 - **Task 37 staging:** add an owner's budget raise refused after a top-up (I-1), and a month request made on the 30th expiring at midnight UTC (M-3).
+
+# Fix round 2
+
+Source: `origin/review/task-32-33-recheck-1:review-out/task-32-33-recheck-1.md`. Every first-round finding was RESOLVED there; this round fixes the new Important finding (N-1) and both minors. Tests came first, and each RED run is recorded below.
+
+## RED (before the fix)
+All runs are in `tests/contract/spend-requests-month.test.ts`, under `describe("fix round 2 …")`, with `--maxWorkers=2`.
+- **N-1:** 3 failed and 1 passed. The owner move, the unarchive and the `set_accountable` variants each got **200** instead of 202. The no-top-up control (N1c) already got 202.
+- **Minor 1:** 2 failed.
+  - The month resume item of a removed creator was still there after the sweep (`month_resume_failed`, AgentXError).
+  - The slow-retry sweep answered `expired: 0`: the retries had used the whole budget.
+- **Minor 2:** 2 failed. Both racing admin approvals applied, for a custom agent and for a built-in one. The top-up reached $30, past the $50 guardrail on a $30 base.
+
+## Fixes
+- **N-1** (`agents/routes.ts` `holdingCap`, `spend/settings.ts` `ownerBudgetRefusal`):
+  - When the change makes the agent count for a new owner (an owner move, a new accountable maintainer, an unarchive), `holdingCap` reads the agent's `readTopUp` for the current month.
+  - `ownerBudgetRefusal` (new `carriedUsd` argument) adds it to that owner's `deltaUsd` and to `seen.extraUsd`. The store's condition `counter + base ≤ cap − extra` therefore holds it too.
+  - When the owner stays the same, nothing is carried.
+- **Minor 1** (`spend/requests.ts`):
+  - A month resume refused with `TASK_ACCESS_DENIED` (the creator was removed, R60) or `FORBIDDEN` (the owner can't act in the org) is deleted. The delete is in one transaction with a new system audit event, `spend_request.resume_dropped`:
+    - target: the task;
+    - `related`: the spend request;
+    - facts: `kind`, `cause: "member_left"`.
+  - The new action is added to `AUDIT_ACTIONS` and `AUDIT_FACT_KEYS`, and `audit-contracts.test.ts` is updated to match.
+  - `retryHeldStarts` now has its own deadline: `min(500 ms, budgetMs / 4)` from the start of the run. Expiry and escalation always run after it.
+  - If the retries didn't finish, the run reports `complete: false` (logged as `sweep_incomplete`), and the next run starts with them.
+- **Minor 2** (`decideMonth`), on the admin path of an agent top-up (no owner read carried):
+  - The owner counter's version is read before the limit, and the write is conditioned on it.
+  - The top-up `Update` is conditioned on the amount the guardrail check added up (`amountUsd = :seen`; when nothing was seen, absent or ≤ 0).
+  - A built-in agent has no counter, so only the top-up condition applies to it.
+  - If either condition fails, the approval is refused with `AGENT_REVISION_CONFLICT` and the request stays PENDING. Deciding it again checks the live limit, so the test's second $15 gets CONFIG_INVALID and $5 applies.
+  - The owner path is unchanged (it re-routes on a version change).
+
+## GREEN
+- `npx tsc -b`: clean.
+- `npm run typecheck:all`: clean (stricter check: 0 errors, baseline 0).
+- `spend-requests-month`, `spend-requests-run`, `budget-settings`, `budgets` (`--maxWorkers=2`, from the repo root): **4 files, 262 passed.**
+  - `spend-requests-month` has 47 tests (39 before, plus 8 new).
+- Neighbouring suites: `agent-routes`, `spend-ledger`, `audit-contracts` and `audit-hooks-plan2` ran together, **4 files, 256 passed**.
+
+## Left as they are
+- **N-1 race:** a top-up approved for the moving agent by its old owner, between the move's read and its write, is not covered by the new owner's version condition. The old owner's approval is held to the old owner's version, and the move bumps that version without being conditioned on it.
+- **Minor 2, built-in base:** a built-in agent's base raised during an admin's top-up decision isn't conditioned on. The guardrail clamp still holds the money.
+- **Held-start gaps** (both are as before):
+  - A held start (`firstDispatch`) whose creator left is not dropped early. It still gives up when its time runs out.
+  - Retries that keep failing at the head of the list still use up the retry share before later items.
+- The earlier note above, "an admin's agent top-up still bumps the version without a condition" (Concern 4), is resolved by Minor 2.
