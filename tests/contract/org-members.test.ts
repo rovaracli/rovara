@@ -315,6 +315,22 @@ describe("OrgStore.closeOrg and removeMember", () => {
     expect(db.get(orgEmailKey("owner@example.com"))).toBeUndefined();
   });
 
+  it("clears the org's connections after its egress and before it closes the org, and stops the close, ready to run again, when that fails", async () => {
+    const { db, store } = setup();
+    const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
+    const order: string[] = [];
+    const hooks = {
+      archiveProjects: async () => { order.push("archive"); },
+      clearEgress: async () => { order.push("egress"); },
+    };
+    await expect(store.closeOrg(orgId, { ...hooks, clearConnections: async () => { order.push("connections-fail"); throw new Error("secrets are down"); } })).rejects.toThrow("secrets are down");
+    expect(db.get(orgMetaKey(orgId))?.closedAt).toBeUndefined();
+    expect(db.get(orgMemberKey(orgId, "owner"))).toBeDefined();
+    await store.closeOrg(orgId, { ...hooks, clearConnections: async (cleared) => { order.push(`connections:${cleared}:${String(db.get(orgMetaKey(orgId))?.closedAt)}`); } });
+    expect(order).toEqual(["archive", "egress", "connections-fail", "archive", "egress", `connections:${orgId}:undefined`]);
+    expect(db.get(orgMetaKey(orgId))?.closedAt).toBe("2026-10-21T00:00:00.000Z");
+  });
+
   it("refuses to close an org that has other members with LAST_OWNER, and changes nothing", async () => {
     const { db, store } = setup();
     const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });

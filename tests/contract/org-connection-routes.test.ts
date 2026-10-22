@@ -7,7 +7,7 @@ import { connectionKey } from "../../packages/contracts/src/connections.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
 import { OrgSecrets, orgConnectorSecretName } from "../../packages/broker/src/connections/org-secrets.js";
-import { OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
@@ -35,7 +35,7 @@ interface Body { connection: Shown; connections: Shown[]; ok: boolean; message?:
 type Reply = { status: number; body: Body };
 const errorOf = (reply: Reply) => reply.body.error;
 
-async function setup(options: { addresses?: () => string[]; fetch?: typeof fetch; tools?: () => unknown[] } = {}) {
+async function setup(options: { addresses?: () => string[]; fetch?: typeof fetch; tools?: () => unknown[]; people?: Array<[Developer, OrgRole, OrgId?]>; cloud?: boolean } = {}) {
   const fake = new FakeOrgSecrets({ env: ENV, now: Date.now });
   const secrets = new OrgSecrets({ env: ENV, roleArn: FAKE_CONNECTOR_ROLE_ARN, sts: fake.sts, secretsFor: fake.secretsFor, now: Date.now });
   const audit = capturingAuditDeps();
@@ -46,6 +46,7 @@ async function setup(options: { addresses?: () => string[]; fetch?: typeof fetch
   const h = await createDeveloperTaskBroker({
     orgResolver, register: false, audit,
     brokerExtra: {
+      ...(options.cloud === true ? { cloud: true } : {}),
       agents: { projectMembers: new FakeProjectMembers() },
       orgConnections: { documentClient: { send: (command: unknown) => holder.db!.send(command) }, tableName: "state", env: ENV, secrets, now: Date.now },
       connectionChecks: { checkEndpoint, listMcpTools, fetch: fetchImplementation },
@@ -58,10 +59,7 @@ async function setup(options: { addresses?: () => string[]; fetch?: typeof fetch
     await h.orgOf(who);
     seedMembership(h.db, who.developerId, { orgId, role });
   };
-  await enroll(DANA, "admin");
-  await enroll(OWEN, "owner");
-  await enroll(MAX, "member");
-  await enroll(OMAR, "admin", ORG_B);
+  for (const [who, role, orgId] of options.people ?? [[DANA, "admin"], [OWEN, "owner"], [MAX, "member"], [OMAR, "admin", ORG_B]]) await enroll(who, role, orgId);
   const call = async (who: Developer, method: string, path: string, body?: Record<string, unknown>, requestId: string = randomUUID()): Promise<Reply> => {
     const reply = await h.dev(who, method, path, body === undefined ? undefined : { requestId, ...body });
     const { requestId: _requestId, ...rest } = reply.body; // eslint-disable-line @typescript-eslint/no-unused-vars -- the envelope's id is not part of an answer
@@ -324,6 +322,23 @@ describe("an MCP connection's endpoint", () => {
     expect(refused.body.ok).toBe(false);
     expect(refused.body.message).toContain("not a public address");
     expect(listMcpTools).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("closing an org", () => {
+  it("schedules the deletion of each connection's secret when the last owner leaves, and takes only that org's", async () => {
+    const { create, call, fake, h } = await setup({ cloud: true, people: [[MAYA, "owner"], [OMAR, "owner", ORG_B]] });
+    const ids = [(await create(MAYA, LINEAR, { apiKey: "k1" })).body.connection.connectionId, (await create(MAYA, MCP, { token: "t1" })).body.connection.connectionId];
+    const theirs = (await create(OMAR, LINEAR, { apiKey: "k-other" })).body.connection.connectionId;
+    const left = await call(MAYA, "POST", "/v1/app/org/leave", {});
+    expect(left.status, JSON.stringify(left.body)).toBe(200);
+    expect(left.body).toMatchObject({ orgClosed: true });
+    for (const id of ids) {
+      expect(fake.stored(orgConnectorSecretName(ENV, TEST_ORG, id))!.deleteAt, id).toBeGreaterThan(START);
+      expect(h.db.get(connectionKey(TEST_ORG, id))).toBeUndefined();
+    }
+    expect(fake.stored(orgConnectorSecretName(ENV, ORG_B, theirs))!.deleteAt).toBeUndefined();
+    expect(h.db.get(connectionKey(ORG_B, theirs))).toBeDefined();
   });
 });
 
