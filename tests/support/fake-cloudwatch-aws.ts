@@ -20,9 +20,11 @@ export interface FakeCloudWatchOptions {
   roles?: Record<string, { externalId: string }>;
   ownAccountId?: string | undefined;
   alarms?: readonly FakeAlarm[];
-  /** DescribeAlarms answers every alarm whatever prefix was asked, as a misbehaving service could. */
+  /** DescribeAlarms answers every alarm whatever prefix or state was asked, as a misbehaving service could. */
   leakAlarms?: boolean;
   history?: readonly FakeHistoryItem[];
+  /** DescribeAlarmHistory answers every alarm's history whatever alarm name was asked. */
+  leakHistory?: boolean;
   series?: readonly FakeSeries[];
   logGroups?: readonly string[];
   /** DescribeLogGroups answers every group whatever prefix was asked. */
@@ -69,7 +71,7 @@ export function fakeCloudWatchAws(options: FakeCloudWatchOptions = {}) {
         case "DescribeAlarmsCommand": {
           const prefix = typeof input["AlarmNamePrefix"] === "string" ? input["AlarmNamePrefix"] : undefined;
           const state = input["StateValue"];
-          const chosen = alarms.filter((alarm) => (options.leakAlarms === true || prefix === undefined || alarm.name.startsWith(prefix)) && (state === undefined || alarm.state === state));
+          const chosen = alarms.filter((alarm) => (options.leakAlarms === true || prefix === undefined || alarm.name.startsWith(prefix)) && (options.leakAlarms === true || state === undefined || alarm.state === state));
           const max = typeof input["MaxRecords"] === "number" ? input["MaxRecords"] : chosen.length;
           return {
             MetricAlarms: chosen.slice(0, max).map((alarm, index) => ({
@@ -81,7 +83,7 @@ export function fakeCloudWatchAws(options: FakeCloudWatchOptions = {}) {
           };
         }
         case "DescribeAlarmHistoryCommand": {
-          const items = (options.history ?? []).filter((item) => item.alarm === input["AlarmName"]);
+          const items = (options.history ?? []).filter((item) => options.leakHistory === true || item.alarm === input["AlarmName"]);
           return { AlarmHistoryItems: items.map((item) => ({ AlarmName: item.alarm, HistoryItemType: item.type, HistorySummary: item.summary, Timestamp: new Date(item.at) })) };
         }
         case "GetMetricDataCommand": {

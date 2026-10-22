@@ -1,6 +1,7 @@
 // Plan 4 Task 16: the AWS CloudWatch connector. Rovara assumes the customer's role (never holds a key), with the external id of the CALLER's org, and reads
 // alarms, metrics and Logs Insights through a session that a policy of its own holds to nine read actions. Every test runs against a fake AWS
 // (tests/support/fake-cloudwatch-aws.ts); no test reaches AWS, and the global fetch fails the test if anything uses it.
+import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { discoverTools, executeTool, type ConnectorDefinition, type Ledger } from "@agentx/gateway";
 import { ProjectDefinitionSchema, type GrantedTool, type OrgId } from "../../packages/contracts/src/index.js";
@@ -9,6 +10,7 @@ import { BUILT_IN_CONNECTOR_TYPES, resolveConnectors, type ResolvedConnector } f
 import { awsCloudWatchAccess, cloudwatchConnectionCheck, cloudwatchConnectorType } from "../../packages/broker/src/aws/cloudwatch-connector-type.js";
 import {
   CLOUDWATCH_SESSION_ACTIONS,
+  CLOUDWATCH_TOOLS,
   CLOUDWATCH_TOOL_NAMES,
   cloudwatchTrustPolicy,
   type CloudWatchAws,
@@ -23,6 +25,9 @@ import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";
 import { CUSTOMER_ACCOUNT, CUSTOMER_ROLE, OWN_ACCOUNT, START_MS, awsError, fakeCloudWatchAws, type FakeCloudWatchOptions } from "../support/fake-cloudwatch-aws.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
+import { createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const ORG_A = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
 const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
@@ -321,6 +326,14 @@ describe("list_alarms", () => {
     expect(text).not.toContain("other-team-alarm");
   });
 
+  it("keeps only the alarms in the asked state, even if AWS answers alarms in other states", async () => {
+    const r = await run("list_alarms", { state: "OK" }, { aws: { alarms: ALARMS, leakAlarms: true } });
+    expect(r.fake.callsOf("DescribeAlarmsCommand")[0]!.input["StateValue"]).toBe("OK");
+    const text = textOf(r.result);
+    expect(text).toContain("pay-errors");
+    for (const other of ["pay-latency", "pay-queue", "other-team-alarm"]) expect(text, other).not.toContain(other);
+  });
+
   it("filters by state, and a scope with no prefix reads the region's alarms with no prefix sent", async () => {
     const stateful = await run("list_alarms", { state: "OK" }, { aws: { alarms: ALARMS } });
     expect(stateful.fake.callsOf("DescribeAlarmsCommand")[0]!.input["StateValue"]).toBe("OK");
@@ -359,6 +372,16 @@ describe("get_alarm_history", () => {
     const short = await run("get_alarm_history", { alarmName: "pay-latency", hoursAgo: 3 }, { aws: { history: HISTORY } });
     const shortCall = short.fake.callsOf("DescribeAlarmHistoryCommand")[0]!;
     expect((shortCall.input["EndDate"] as Date).getTime() - (shortCall.input["StartDate"] as Date).getTime()).toBe(3 * 3_600_000);
+  });
+
+  it("shows only the history of the alarm asked for, even if AWS answers the history of others", async () => {
+    const others = [...HISTORY, { alarm: "pay-errors", type: "StateUpdate", summary: "Alarm updated from ALARM to OK", at: "2026-10-22T09:00:00.000Z" }, { alarm: "other-team-alarm", type: "StateUpdate", summary: "another team's change", at: "2026-10-22T08:00:00.000Z" }];
+    const r = await run("get_alarm_history", { alarmName: "pay-latency" }, { aws: { history: others, leakHistory: true } });
+    const text = textOf(r.result);
+    expect(text).toContain("1 history item for pay-latency");
+    expect(text).toContain("Alarm updated from OK to ALARM");
+    expect(text).not.toContain("ALARM to OK");
+    expect(text).not.toContain("another team's change");
   });
 
   it("refuses an alarm outside the prefix before AWS is called, and one that merely contains the prefix", async () => {
@@ -425,6 +448,34 @@ describe("get_metric_data", () => {
   });
 });
 
+describe("get_metric_data, checks the tool makes itself", () => {
+  const query = (dimensions: Record<string, string>) => ({ namespace: "AWS/Lambda", metricName: "Errors", dimensions, stat: "Sum" });
+
+  it("refuses a dimension name with a character a dimension cannot hold, or longer than 255, before AWS is called, and accepts every character it may hold", async () => {
+    for (const name of ["bad name", "a\"b", "x;y", "d$", "a".repeat(256), ""]) {
+      const r = await run("get_metric_data", { queries: [query({ [name]: "v" })], fromMinutesAgo: 60, periodSeconds: 60 });
+      expect(r.result.status, JSON.stringify(name)).toBe("FAILED");
+      expect(textOf(r.result), JSON.stringify(name)).toBe("a dimension name may hold only letters, digits and _ . : / @ # = + -");
+      expect(r.fake.calls, JSON.stringify(name)).toEqual([]);
+    }
+    const allowed = "AZaz09_.:/@#=+-";
+    const ok = await run("get_metric_data", { queries: [query({ [allowed]: "v", ["a".repeat(255)]: "w" })], fromMinutesAgo: 60, periodSeconds: 60 });
+    expect(ok.result.status).toBe("SUCCEEDED");
+    const sent = (ok.fake.callsOf("GetMetricDataCommand")[0]!.input["MetricDataQueries"] as Array<{ MetricStat: { Metric: { Dimensions: Array<{ Name: string }> } } }>)[0]!.MetricStat.Metric.Dimensions;
+    expect(sent.map((dimension) => dimension.Name)).toEqual([allowed, "a".repeat(255)]);
+  });
+
+  it("offers a period of 60 to 3600 seconds in its schema, so no multiple of 60 above 3600 is ever sent", async () => {
+    const { definition, connector } = await ready();
+    const { tools } = await discoverTools(definition, context(connector), { connect: connector.connect! });
+    const period = (tools.find((tool) => tool.name === "get_metric_data")!.inputSchema["properties"] as Record<string, Record<string, unknown>>)["periodSeconds"]!;
+    expect(period).toMatchObject({ type: "integer", minimum: 60, maximum: 3600 });
+    const r = await run("get_metric_data", { queries: [{ namespace: "AWS/Lambda", metricName: "Errors", stat: "Sum" }], fromMinutesAgo: 60, periodSeconds: 3660 });
+    expect(r.result.status).toBe("FAILED");
+    expect(r.fake.calls).toEqual([]);
+  });
+});
+
 describe("query_logs", () => {
   const GROUPS = ["/aws/lambda/pay-handler", "/aws/lambda/pay-worker", "/ecs/pay-web", "/aws/lambda/billing", "/ecs/other"];
 
@@ -436,6 +487,9 @@ describe("query_logs", () => {
     expect([...(start[0]!.input["logGroupNames"] as string[])].sort()).toEqual(["/aws/lambda/pay-handler", "/aws/lambda/pay-worker", "/ecs/pay-web"]);
     expect(start[0]!.input["queryString"]).toBe("fields @timestamp, @message | filter @message like /ERROR/ | limit 20");
     expect((start[0]!.input["endTime"] as number) - (start[0]!.input["startTime"] as number)).toBe(30 * 60);
+    // Rows are capped at 100 on AWS's side as well as ours.
+    expect(start[0]!.input["limit"]).toBe(100);
+    expect(r.fake.callsOf("DescribeLogGroupsCommand").map((call) => call.input["limit"])).toEqual([50, 50]);
     expect(start[0]!.region).toBe("us-east-1");
     // The listing asked for each prefix.
     expect(r.fake.callsOf("DescribeLogGroupsCommand").map((call) => call.input["logGroupNamePrefix"])).toEqual(["/aws/lambda/pay", "/ecs/pay"]);
@@ -509,6 +563,19 @@ describe("query_logs", () => {
     const r = await run("query_logs", { query: "fields @message", fromMinutesAgo: 30 }, { aws: { logGroups: GROUPS } }, "bare").catch((error: Error) => ({ error }));
     // The tool is not in the scope's catalog, so there is nothing to discover and run.
     expect(r).toHaveProperty("error");
+  });
+});
+
+describe("query_logs, checks the tool makes itself", () => {
+  it("refuses a scope with no log group prefixes before AWS is asked, even when the engine would have offered it", async () => {
+    const fake = fakeCloudWatchAws({ logGroups: ["/ecs/other", "/aws/lambda/pay-handler"], leakLogGroups: true });
+    const credentials = { accessKeyId: "ASIADIRECT", secretAccessKey: "secret", sessionToken: "token", expiration: new Date(START_MS + 900_000) };
+    const clients = fake.aws.clientsFor(credentials, "eu-west-1");
+    const queryLogs = CLOUDWATCH_TOOLS.find((tool) => tool.name === "query_logs")!;
+    const scope = { alias: "bare", region: "eu-west-1", logGroupPrefixes: [], alarmNamePrefix: "", aws: { monitoring: clients.monitoring, logs: clients.logs, now: fake.aws.now, sleep: fake.aws.sleep } };
+    await expect(queryLogs.run({ query: "fields @message", fromMinutesAgo: 30 }, { scope, credential: { token: "t", bindings: {} }, fetch: (() => { throw new Error("no fetch"); }) as never }))
+      .rejects.toMatchObject({ name: "NativeToolRefusal", message: "this scope names no log group prefixes, so it has no log search" });
+    expect(fake.calls).toEqual([]);
   });
 });
 
@@ -654,6 +721,22 @@ describe("saving a CloudWatch connection", () => {
   });
 });
 
+describe("the org's connection registry", () => {
+  it("serves a connection that takes no secret, and one that takes a secret only once it has one; another org's is never served", async () => {
+    const s = await connected();
+    const VERCEL = { connectionId: "con_dddddddddddddddddddd", type: "vercel", label: "Vercel", access: "read" } as const;
+    await s.store.put({ orgId: ORG_A, connection: VERCEL, by: ALICE });
+    // A connection that takes a secret and has none is not served; the settings of a connector whose key was never saved are not a credential's.
+    expect(await s.registry.connection!(VERCEL.connectionId)).toBeUndefined();
+    expect(await s.registry.connection!(CON)).toMatchObject({ connectionId: CON, type: "cloudwatch", roleArn: CUSTOMER_ROLE });
+    await s.store.put({ orgId: ORG_A, connection: VERCEL, secret: { token: "vercel-token-0123456789" }, by: ALICE });
+    expect(await s.registry.connection!(VERCEL.connectionId)).toMatchObject({ connectionId: VERCEL.connectionId, type: "vercel" });
+    const other = orgCredentialRegistry(s.deps, ORG_B);
+    expect(await other.connection!(CON)).toBeUndefined();
+    expect(await other.connection!(VERCEL.connectionId)).toBeUndefined();
+  });
+});
+
 describe("the setup a customer pastes", () => {
   const admin = { developerId: ALICE, orgId: ORG_A, orgRole: "admin" } as const;
   const request = (method: string, path: string) => ({ method, path, headers: {}, requestId: "req-1" });
@@ -713,5 +796,41 @@ describe("the connector context", () => {
     expect(broker.connectorTypeContext({}, undefined, noToken).orgId).toBeUndefined();
     expect(broker.connectorTypeContext({}, ORG_A, noToken).cloudwatchAws).toBeUndefined();
     expect(CUSTOMER_ACCOUNT).not.toBe(OWN_ACCOUNT);
+  });
+});
+
+describe("the deployed broker's connection check", () => {
+  const person = (digit: string, name: string): Developer => ({ developerId: digit.repeat(64), name, provider: "oidc", sessionId: `s-${name.toLowerCase()}` });
+  const DANA = person("1", "Dana");
+
+  it("runs the CloudWatch check when the broker is given AWS access: a check from the route assumes the role with the org's external id, and says when the role is refused", async () => {
+    const fake = new FakeOrgSecrets({ env: ENV, now: Date.now });
+    const secrets = new OrgSecrets({ env: ENV, roleArn: FAKE_CONNECTOR_ROLE_ARN, sts: fake.sts, secretsFor: fake.secretsFor, now: Date.now });
+    const aws = fakeCloudWatchAws({ roles: ROLES(TEST_ORG), alarms: [{ name: "pay-a", state: "OK" }] });
+    const holder: { db?: { send(command: unknown): Promise<unknown> } } = {};
+    const h = await createDeveloperTaskBroker({
+      register: false, audit: capturingAuditDeps(),
+      brokerExtra: {
+        agents: {},
+        orgConnections: { documentClient: { send: (command: unknown) => holder.db!.send(command) }, tableName: "state", env: ENV, secrets, now: Date.now, ownAccountId: OWN_ACCOUNT },
+        cloudwatchConnector: aws.aws,
+      },
+    });
+    holder.db = h.db;
+    h.db.set({ pk: `SESSION#${DANA.sessionId}`, sk: "META", sessionId: DANA.sessionId, developerId: DANA.developerId, amr: DANA.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
+    h.db.set({ pk: `DEVELOPER#${DANA.developerId}`, sk: "META", developerId: DANA.developerId, provider: DANA.provider, displayName: DANA.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    await h.orgOf(DANA);
+    seedMembership(h.db, DANA.developerId, { orgId: TEST_ORG, role: "admin" });
+    const call = async (method: string, path: string, body?: Record<string, unknown>) => {
+      const reply = await h.dev(DANA, method, path, body === undefined ? undefined : { requestId: randomUUID(), ...body });
+      return { status: reply.status, body: reply.body as Record<string, unknown> };
+    };
+    const created = await call("POST", "/v1/app/connections", { connection: { type: "cloudwatch", label: "AWS prod", access: "read", roleArn: CUSTOMER_ROLE, regions: ["us-east-1"] } });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const id = (created.body["connection"] as { connectionId: string }).connectionId;
+    const checked = await call("POST", `/v1/app/connections/${id}/check`, {});
+    expect(checked.body, JSON.stringify(checked.body)).toMatchObject({ ok: true });
+    expect(aws.assumed.map((input) => input.ExternalId)).toEqual([cloudwatchExternalId(TEST_ORG)]);
+    expect(aws.names()).toEqual(["GetCallerIdentityCommand", "DescribeAlarmsCommand"]);
   });
 });
