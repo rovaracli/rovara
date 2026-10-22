@@ -177,6 +177,15 @@ describe("GET /v1/app/projects/{p}/connectors/github/comment-triggers", () => {
     expect((await w.digest())[0]!.digest).not.toBe(before);
   });
 
+  it("carries a short fixed hint when the scan failed closed for a reason it knows (round 3)", async () => {
+    const w = await world({ files: { [WORKFLOW]: workflow("issue_comment", "cd secret-dir && ./x.sh") } });
+    const reply = await w.review();
+    expect(reply.body.repositories).toEqual([{ repository: REPOSITORY, triggers: true, failedClosed: true, digest: "0".repeat(64), files: [], hint: "use working-directory instead of cd" }]);
+    expect(JSON.stringify(reply.body)).not.toContain("secret-dir");
+    const open = await world();
+    expect(((await open.review()).body.repositories as Array<Record<string, unknown>>)[0]).not.toHaveProperty("hint");
+  });
+
   it("shows a scan that could not be read as failed closed, with nothing to review", async () => {
     const w = await world();
     w.setDown(true);

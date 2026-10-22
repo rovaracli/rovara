@@ -99,8 +99,8 @@ describe("bot configs", () => {
     expect(await scan({ ".mergify.yml": "{{{ not yaml" })).toMatchObject({ triggers: true, failedClosed: false });
   });
 
-  it("lists a bot config beside a workflow that does not trigger", async () => {
-    expect(await scan({ [WORKFLOW]: workflow("push"), "bors.toml": "status = []" })).toMatchObject({ triggers: true, files: ["bors.toml"] });
+  it("lists a bot config beside a workflow that does not trigger, which is read too (round 3, B1)", async () => {
+    expect(await scan({ [WORKFLOW]: workflow("push"), "bors.toml": "status = []" })).toMatchObject({ triggers: true, files: [WORKFLOW, "bors.toml"].sort() });
   });
 });
 
@@ -191,8 +191,8 @@ describe("what a triggering workflow reaches", () => {
     expect((await scan({ ...base })).digest).toBe(first.digest);
   });
 
-  it("ignores a path in a run line that is not a file of the repository", async () => {
-    const result = await scan({ [WORKFLOW]: trigger("./scripts/missing.sh && bash /etc/profile && bash ~/own.sh && curl https://example.com/x.sh") });
+  it("ignores a path in a run line that is outside the repository", async () => {
+    const result = await scan({ [WORKFLOW]: trigger("bash /etc/profile && bash ~/own.sh && curl https://example.com/x.sh") });
     expect(result).toMatchObject({ failedClosed: false, files: [WORKFLOW] });
   });
 
@@ -237,11 +237,11 @@ describe("what a triggering workflow reaches", () => {
     expect((await scan(files)).files).toEqual([WORKFLOW, "action.yml", "root.sh"].sort());
   });
 
-  it("reads what only a non-triggering workflow reaches as nothing", async () => {
+  it("reads every workflow when the repository triggers, and what they reach (round 3, B1)", async () => {
     const files = { [WORKFLOW]: workflow("push", "./scripts/x.sh"), "scripts/x.sh": "echo", "bors.toml": "x" };
     const result = await scan(files);
-    expect(result.files).toEqual(["bors.toml"]);
-    expect(result.fileShas).toEqual({ "bors.toml": blobSha("x") });
+    expect(result.files).toEqual([WORKFLOW, "bors.toml", "scripts/x.sh"].sort());
+    expect(result.fileShas["bors.toml"]).toBe(blobSha("x"));
   });
 
   it("lists a remote action with its ref but does not hash it, so a different ref leaves the digest alone", async () => {
@@ -905,6 +905,249 @@ describe("merge keys (round 2, item 8)", () => {
 describe("what the scan says it covers (round 2, item 10)", () => {
   it("has one fixed note the page can show", async () => {
     const { COMMENT_TRIGGER_COVERAGE_NOTE } = await import("@agentx/contracts");
-    expect(COMMENT_TRIGGER_COVERAGE_NOTE).toBe("Rovara reads the workflows, the scripts they name, local actions and the workflow_run workflows that follow them. It can't see code fetched at run time, a command run by bare name or found on the PATH, or modules a script imports; where it can't tell which file runs, it asks a person.");
+    expect(COMMENT_TRIGGER_COVERAGE_NOTE).toBe("Rovara reads every workflow of the repository, the scripts and manifests they name, local actions and the shell scripts those run in turn. It can't see code fetched or built at run time, a command run by bare name or found on the PATH, files a Python or JavaScript script imports, a Docker build context, or tool configuration such as tox.ini; where it can't tell which file runs, it asks a person.");
+  });
+});
+
+// ---- Fix round 3 (re-check 2: B1 to B9, and the hint)
+
+/** A workflow whose one step runs the given lines as a block. */
+const block = (...lines: string[]) => workflowWith(`    steps:\n      - run: |\n${lines.map((line) => `          ${line}`).join("\n")}\n`);
+const TOOLS_X = { "tools/x.sh": "x", "scripts/x.sh": "x" };
+
+describe("every workflow is read when the repository triggers (round 3, B1)", () => {
+  const DEPLOY = ".github/workflows/deploy.yml";
+  const dispatch = (on: string) => `name: Deploy\non: ${on}\njobs:\n  j:\n    runs-on: x\n    steps:\n      - run: ./deploy.sh\n`;
+
+  it.each<[string]>([["workflow_dispatch"], ["repository_dispatch"], ["push"], ["{ schedule: [{ cron: '0 0 * * *' }] }"]])("hashes a %s workflow and what it reaches", async (on) => {
+    const files = { [WORKFLOW]: workflow("issue_comment", "gh workflow run deploy.yml"), [DEPLOY]: dispatch(on), "deploy.sh": "one" };
+    const result = await scan(files);
+    expect(result.files).toEqual([WORKFLOW, DEPLOY, "deploy.sh"].sort());
+    expect((await scan({ ...files, "deploy.sh": "two" })).digest).not.toBe(result.digest);
+    expect((await scan({ ...files, [DEPLOY]: `${dispatch(on)}# edited\n` })).digest).not.toBe(result.digest);
+  });
+
+  it("reads none of them when nothing triggers", async () => {
+    expect(await scan({ [DEPLOY]: dispatch("workflow_dispatch"), "deploy.sh": "x" })).toMatchObject({ triggers: false, files: [] });
+  });
+});
+
+describe("the word after a wrapper is a command (round 3, B2)", () => {
+  it.each<[string]>([
+    ["env ${{ vars.CMD }}"], ["env FOO=1 -i ${{ vars.CMD }}"], ["env -u HOME $CMD"], ["sudo ${{ vars.CMD }}"], ["sudo -u root -E $CMD"], ["exec ${{ vars.CMD }}"], ["eval \"${{ vars.CMD }}\""],
+    ["timeout 60 ${{ vars.CMD }}"], ["timeout -k 5 60 $CMD"], ["nohup $CMD"], ["nice -n 5 $CMD"], ["time ${{ vars.CMD }}"], ["command $CMD"], ["xargs -n1 $CMD"], ["stdbuf -oL $CMD"],
+    ["env sudo timeout 5 $CMD"],
+  ])("fails closed for %s", async (run) => {
+    expect(await scan({ [WORKFLOW]: block(run) })).toMatchObject(closedScan);
+  });
+
+  it.each<[string, string]>([
+    ["env FOO=1 ./scripts/x.sh", "scripts/x.sh"], ["timeout 60 ./scripts/x.sh", "scripts/x.sh"], ["sudo -E ./scripts/x.sh", "scripts/x.sh"], ["nohup bash scripts/x.sh", "scripts/x.sh"],
+    ["time ./scripts/x.sh", "scripts/x.sh"], ["exec scripts/x.sh", "scripts/x.sh"], ["xargs -n1 ./scripts/x.sh", "scripts/x.sh"], ["nice -n 5 ./scripts/x.sh", "scripts/x.sh"],
+  ])("hashes the file after a wrapper: %s", async (run, path) => {
+    const files = { [WORKFLOW]: block(run), [path]: "one" };
+    expect((await scan(files)).files).toContain(path);
+    expect((await scan({ ...files, [path]: "two" })).digest).not.toBe((await scan(files)).digest);
+  });
+
+  it("leaves a wrapper of a bare command alone", async () => {
+    for (const run of ["timeout 60 npm test", "env CI=1 make test", "time git status", "xargs -n1 echo", "xargs rm -f", "sudo apt-get update", "nohup sleep 1"]) {
+      expect(await scan({ [WORKFLOW]: block(run), "package.json": "{}", Makefile: "t:" }), run).toMatchObject({ failedClosed: false });
+    }
+  });
+});
+
+describe("a folder or file chosen by a tool flag (round 3, B3)", () => {
+  it.each<[string, string]>([
+    ["make -C tools deploy", "tools/Makefile"], ["make --directory=tools deploy", "tools/Makefile"], ["make --directory tools deploy", "tools/Makefile"], ["make -Ctools deploy", "tools/Makefile"],
+    ["make -f ci.mk deploy", "ci.mk"], ["make --file ci.mk", "ci.mk"], ["make --file=ci.mk", "ci.mk"], ["gmake -C tools -f ci.mk", "tools/ci.mk"],
+    ["npm --prefix tools run deploy", "tools/package.json"], ["npm --prefix=tools test", "tools/package.json"], ["pnpm -C tools install", "tools/package.json"], ["pnpm --dir tools run x", "tools/package.json"],
+    ["yarn --cwd tools build", "tools/package.json"],
+  ])("hashes what %s reads (%s)", async (run, hashed) => {
+    const files = { [WORKFLOW]: block(run), "tools/Makefile": "a", "ci.mk": "b", "tools/ci.mk": "c", "tools/package.json": "{}", Makefile: "r", "package.json": "{}" };
+    const result = await scan(files);
+    expect(result.files).toContain(hashed);
+    expect((await scan({ ...files, [hashed]: "changed" })).digest).not.toBe(result.digest);
+  });
+
+  it.each<[string]>([
+    ["make -C $DIR"], ["make -C ${{ matrix.dir }} all"], ["make -C ../x"], ["make -f $MK"], ["npm --prefix ${{ inputs.p }} test"], ["pnpm -C ../up i"], ["yarn --cwd $D build"], ["make -C"], ["npm --prefix"],
+  ])("fails closed for %s", async (run) => {
+    expect(await scan({ [WORKFLOW]: block(run) })).toMatchObject(closedScan);
+  });
+
+  it("ignores a folder outside the repository and the same tools without those flags", async () => {
+    expect(await scan({ [WORKFLOW]: block("make -C /opt/build all", "npm -g install x") })).toMatchObject({ failedClosed: false });
+  });
+});
+
+describe("a directory change that is not spelled cd (round 3, B4)", () => {
+  it.each<[string]>([
+    ["env -C tools ./x.sh"], ["env --chdir=tools ./x.sh"], ["env --chdir tools ./x.sh"], ["git -C tools submodule foreach ./x.sh"], ["git -C tools status"], ["sudo -D tools ./x.sh"],
+    ["\\cd tools"], ["c''d tools"], ["c\"\"d tools"], ["\\pushd tools"], ["ec''ho hi"],
+  ])("fails closed for %s", async (run) => {
+    expect(await scan({ [WORKFLOW]: block(run), ...TOOLS_X })).toMatchObject(closedScan);
+  });
+
+  it("leaves a git command without -C and a quoted string alone", async () => {
+    expect(await scan({ [WORKFLOW]: block("git status", "git log -n 1", "echo \"say it\" 'ok'") })).toMatchObject({ failedClosed: false });
+  });
+});
+
+describe("files found or listed at run time (round 3, B5)", () => {
+  it.each<[string]>([
+    ["find tools -name '*.sh' -exec bash {} \;"], ["find . -execdir ./x {} +"], ["find tools -ok bash {} \;"], ["run-parts tools/ci"], ["find tools -name x.sh | xargs -n1 bash"], ["xargs -a jobs.txt bash"],
+    ["echo a | xargs"], ["ls | xargs -n1 sh"], ["xargs -I{} python {}"],
+  ])("fails closed for %s", async (run) => {
+    expect(await scan({ [WORKFLOW]: block(run), ...TOOLS_X })).toMatchObject(closedScan);
+  });
+
+  it("leaves find without an exec, and xargs of a bare command, alone", async () => {
+    expect(await scan({ [WORKFLOW]: block("find . -name '*.orig' -delete", "git ls-files | xargs wc -l", "find tools -type f | xargs rm") })).toMatchObject({ failedClosed: false });
+  });
+});
+
+describe("a script that runs what its caller passes (round 3, B6)", () => {
+  const caller = (call: string) => block(call);
+
+  it("reads the caller's arguments as candidate files, whatever they look like", async () => {
+    const files = { [WORKFLOW]: caller("./a.sh deploy"), "a.sh": "#!/bin/bash\nbash \"$1\"\n", deploy: "echo one" };
+    const result = await scan(files);
+    expect(result.files).toEqual([WORKFLOW, "a.sh", "deploy"].sort());
+    expect((await scan({ ...files, deploy: "echo two" })).digest).not.toBe(result.digest);
+  });
+
+  it.each<[string, string, string]>([
+    ["./a.sh tools/deploy extra", "bash $@", "tools/deploy"],
+    ["bash a.sh run ci", "exec $*", "run"],
+    ["./a.sh --flag deploy", "source \"${1}\"", "deploy"],
+  ])("reads %s for a script using the parameters", async (call, body, path) => {
+    const files = { [WORKFLOW]: caller(call), "a.sh": `#!/bin/bash\n${body}\n`, [path]: "one", ci: "ci", extra: "e" };
+    expect((await scan(files)).files).toContain(path);
+  });
+
+  it("passes the arguments on through a chain of scripts", async () => {
+    const files = { [WORKFLOW]: caller("./a.sh deploy"), "a.sh": "#!/bin/bash\n./b.sh \"$@\"\n", "b.sh": "#!/bin/bash\nbash \"$1\"\n", deploy: "one" };
+    expect((await scan(files)).files).toEqual([WORKFLOW, "a.sh", "b.sh", "deploy"].sort());
+  });
+
+  it("fails closed when the arguments can't be read: an expression, or a script reached some other way", async () => {
+    expect(await scan({ [WORKFLOW]: caller("./a.sh \"$TARGET\""), "a.sh": "#!/bin/bash\nbash \"$1\"\n" })).toMatchObject(closedScan);
+    expect(await scan({ [WORKFLOW]: caller("./a.sh ${{ matrix.t }}"), "a.sh": "#!/bin/bash\nbash \"$1\"\n" })).toMatchObject(closedScan);
+    expect(await scan({ [WORKFLOW]: workflowWith(steps("- run: echo hi"), "env:\n  BASH_ENV: ./a.sh\n"), "a.sh": "bash \"$1\"\n" })).toMatchObject(closedScan);
+  });
+
+  it("is not triggered by a script that only mentions a parameter as an argument", async () => {
+    const files = { [WORKFLOW]: caller("./a.sh deploy"), "a.sh": "#!/bin/bash\necho \"got $1\"\n", deploy: "x" };
+    expect((await scan(files)).files).toEqual([WORKFLOW, "a.sh"].sort());
+  });
+
+  it("ignores an argument that is not a file", async () => {
+    expect(await scan({ [WORKFLOW]: caller("./a.sh production --fast"), "a.sh": "#!/bin/bash\nbash \"$1\"\n" })).toMatchObject({ failedClosed: false });
+  });
+});
+
+describe("environment variables that load files (round 3, B7)", () => {
+  const env = (name: string, value: string) => workflowWith(steps("- run: npm test"), `env:\n  ${name}: ${JSON.stringify(value)}\n`);
+  const FILES = { "hook.js": "one", "pre.py": "p", "lib.so": "l", "x.rb": "r", "ph.pl": "q", "package.json": "{}" };
+
+  it.each<[string, string, string]>([
+    ["NODE_OPTIONS", "--require ./hook.js", "hook.js"], ["NODE_OPTIONS", "-r ./hook.js --max-old-space-size=4096", "hook.js"], ["NODE_OPTIONS", "--import ./hook.js", "hook.js"], ["NODE_OPTIONS", "--require=./hook.js", "hook.js"],
+    ["PYTHONSTARTUP", "./pre.py", "pre.py"], ["LD_PRELOAD", "./lib.so", "lib.so"], ["RUBYOPT", "-r ./x.rb", "x.rb"], ["RUBYOPT", "-I ./x.rb", "x.rb"], ["PERL5OPT", "-I ./ph.pl", "ph.pl"],
+  ])("hashes the file %s=%s names, in an env map", async (name, value, path) => {
+    const files = { [WORKFLOW]: env(name, value), ...FILES };
+    const result = await scan(files);
+    expect(result.files).toContain(path);
+    expect((await scan({ ...files, [path]: "changed" })).digest).not.toBe(result.digest);
+  });
+
+  it("reads them in a GITHUB_ENV line and in an assignment in a run line", async () => {
+    for (const line of ["echo \"NODE_OPTIONS=--require ./hook.js\" >> $GITHUB_ENV", "NODE_OPTIONS='--require ./hook.js' npm test", "export NODE_OPTIONS=\"-r ./hook.js\""]) {
+      expect((await scan({ [WORKFLOW]: block(line), ...FILES })).files, line).toContain("hook.js");
+    }
+  });
+
+  it("fails closed for a value it can't resolve, and leaves other node options alone", async () => {
+    expect(await scan({ [WORKFLOW]: env("NODE_OPTIONS", "--require ${{ matrix.hook }}"), ...FILES })).toMatchObject(closedScan);
+    expect(await scan({ [WORKFLOW]: env("PYTHONSTARTUP", "$HOME/.pythonrc"), ...FILES })).toMatchObject(closedScan);
+    expect(await scan({ [WORKFLOW]: env("LD_PRELOAD", "../lib.so"), ...FILES })).toMatchObject(closedScan);
+    expect(await scan({ [WORKFLOW]: env("NODE_OPTIONS", "--max-old-space-size=4096"), ...FILES })).toMatchObject({ failedClosed: false });
+  });
+});
+
+describe("things that are not there, and submodules (round 3, B8)", () => {
+  it("fails closed for a local action with no action file", async () => {
+    expect(await scan({ [WORKFLOW]: workflowWith(steps("- uses: ./.github/actions/nowhere")) })).toMatchObject(closedScan);
+    expect(await scan({ [WORKFLOW]: workflowWith(steps("- uses: ./.github/actions/ok")), ".github/actions/ok/action.yaml": "runs:\n  using: composite\n  steps: []\n" })).toMatchObject({ failedClosed: false });
+  });
+
+  it("fails closed for a named file or workflow that answers 404, and ignores one that is built at run time or is only a word", async () => {
+    expect(await scan({ [WORKFLOW]: block("./scripts/missing.sh") })).toMatchObject(closedScan);
+    expect(await scan({ [WORKFLOW]: block("bash scripts/missing.sh") })).toMatchObject(closedScan);
+    expect(await scan({ [WORKFLOW]: block("python missing.py") })).toMatchObject(closedScan);
+    expect(await scan({ [WORKFLOW]: workflowWith("    uses: ./.github/workflows/missing.yml\n") })).toMatchObject(closedScan);
+    for (const run of ["./node_modules/.bin/jest", "bash -c \"echo hi\"", "node --version", "python -c \"print(1)\"", "./.venv/bin/pytest"]) {
+      expect(await scan({ [WORKFLOW]: block(run) }), run).toMatchObject({ failedClosed: false });
+    }
+  });
+
+  it("is satisfied by the working-directory variant of a name, and by the plain one", async () => {
+    expect(await scan({ [WORKFLOW]: workflowWith(steps("- working-directory: app\n        run: ./build.sh")), "app/build.sh": "x" })).toMatchObject({ failedClosed: false });
+    expect(await scan({ [WORKFLOW]: workflowWith(steps("- working-directory: app\n        run: ./build.sh")), "build.sh": "x" })).toMatchObject({ failedClosed: false });
+    expect(await scan({ [WORKFLOW]: workflowWith(steps("- working-directory: app\n        run: ./build.sh")) })).toMatchObject(closedScan);
+  });
+
+  it("hashes .gitmodules and fails closed for a file under a submodule", async () => {
+    const modules = "[submodule \"ci\"]\n\tpath = vendor/ci\n\turl = https://example.com/ci.git\n";
+    const clean = await scan({ [WORKFLOW]: block("./scripts/x.sh"), ".gitmodules": modules, "scripts/x.sh": "x" });
+    expect(clean.files).toContain(".gitmodules");
+    expect((await scan({ [WORKFLOW]: block("./scripts/x.sh"), ".gitmodules": `${modules}# edit\n`, "scripts/x.sh": "x" })).digest).not.toBe(clean.digest);
+    expect(await scan({ [WORKFLOW]: block("./vendor/ci/deploy.sh"), ".gitmodules": modules })).toMatchObject(closedScan);
+    expect(await scan({ [WORKFLOW]: workflowWith(steps("- uses: ./vendor/ci/action")), ".gitmodules": modules })).toMatchObject(closedScan);
+    expect(await scan({ [WORKFLOW]: block("bash vendor/ci/x"), ".gitmodules": modules })).toMatchObject(closedScan);
+    expect(await scan({ [WORKFLOW]: block("./vendor/other/deploy.sh"), ".gitmodules": modules, "vendor/other/deploy.sh": "x" })).toMatchObject({ failedClosed: false });
+  });
+});
+
+describe("python -m (round 3, B9)", () => {
+  it.each<[string]>([["python -m pytest"], ["python3 -m tools.deploy"], ["python -mtools"], ["env python -m tools"], ["sudo python3 -m tools.run x"]])("fails closed for %s", async (run) => {
+    expect(await scan({ [WORKFLOW]: block(run) })).toMatchObject(closedScan);
+  });
+
+  it.each<[string]>([["python -m pip install x"], ["python3 -m venv .venv"], ["python -m json.tool x.json"], ["python3 -m http.server 8000"], ["python -mpip list"], ["python -m ensurepip"]])("leaves %s alone", async (run) => {
+    expect(await scan({ [WORKFLOW]: block(run) })).toMatchObject({ failedClosed: false });
+  });
+
+  it("fails closed for shell: python -m and leaves shell: python alone", async () => {
+    expect(await scan({ [WORKFLOW]: workflowWith(steps("- shell: python -m tools {0}\n        run: echo hi")) })).toMatchObject(closedScan);
+    expect(await scan({ [WORKFLOW]: workflowWith(steps("- shell: python -m pip {0}\n        run: echo hi")) })).toMatchObject({ failedClosed: false });
+    expect(await scan({ [WORKFLOW]: workflowWith(steps("- shell: python\n        run: echo hi")) })).toMatchObject({ failedClosed: false });
+  });
+});
+
+describe("what a scan that failed closed says (round 3, hint)", () => {
+  it.each<[string, string, string]>([
+    ["a cd", "cd tools && ./x.sh", "use working-directory instead of cd"],
+    ["a variable path", "bash $SCRIPT", "name scripts by a fixed path, not by an expression or a variable"],
+    ["a parent folder", "bash ../x.sh", "keep paths inside the repository: no .., glob or brace expansion"],
+    ["make -C with a variable", "make -C $D", "use working-directory instead of -C, --prefix, --cwd or --chdir"],
+    ["env -C", "env -C tools ./x.sh", "use working-directory instead of -C, --prefix, --cwd or --chdir"],
+    ["find -exec", "find . -exec bash {} \;", "name each script in the run block instead of finding or piping them"],
+    ["a missing file", "./nowhere.sh", "name only files that exist in the repository"],
+    ["python -m", "python -m tools", "run Python scripts by path instead of python -m"],
+  ])("gives one fixed hint for %s", async (_name, run, hint) => {
+    const result = await scan({ [WORKFLOW]: block(run) });
+    expect(result).toMatchObject({ failedClosed: true, hint });
+  });
+
+  it("gives none when it has nothing specific to say, and none for a scan that did not fail", async () => {
+    expect((await scan({ [WORKFLOW]: block("echo hi") })).hint).toBeUndefined();
+    expect(await scan({ [WORKFLOW]: "on: [unclosed" })).not.toHaveProperty("hint");
+  });
+
+  it("never puts text from the repository in it", async () => {
+    const result = await scan({ [WORKFLOW]: block("cd secret-folder-name && ./secret-script.sh") });
+    expect(result.hint).toBe("use working-directory instead of cd");
+    expect(JSON.stringify(result)).not.toContain("secret");
   });
 });
