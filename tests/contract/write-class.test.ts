@@ -1242,7 +1242,8 @@ describe("fix round 1: pins from the mutation run", () => {
 
   it("counts an array at a deep item path for bulk", () => {
     const tool = mcp("update_items", { itemArguments: ["a.b.ids"] });
-    const own = { ownItems: new Set<string>() };
+    const own = { ownItems: new Set(["mcp##[1,2,3,4,5,6]", "mcp##[1,2,3]"]) };
+    expect(classOf(tool, { a: { b: { ids: [1, 2, 3] } }, labels: ["bug"] }, own)).toBe("safe");
     expect(classOf(tool, { a: { b: { ids: [1, 2, 3, 4, 5, 6] } }, labels: ["bug"] }, own)).toBe("consequential");
   });
 
