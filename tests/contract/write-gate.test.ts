@@ -119,6 +119,7 @@ function world(options: { audit?: boolean } = {}) {
       const tool = TOOLS.find((candidate) => candidate.upstreamName === record.tool)!;
       return { tool, classify: { ...CLASSIFY, ...(live.policy === undefined ? {} : { projectPolicy: live.policy }) } };
     },
+    recordedResult: async ({ requestId }) => vendor.ledger.get(requestId),
     requireRunAuthority: async ({ ownerKey, project }) => {
       live.authorityChecks.push({ ownerKey, project });
       if (live.authorityRefusal) throw agentXError("NOT_FOUND", "project not found");
@@ -602,7 +603,8 @@ describe("a crash after the claim, and the sweep that finishes it", () => {
     const before = w.db.commandNames().length;
     w.clock.now += 10 * MINUTE;
     await w.sweep();
-    expect(w.vendor.state.runs).toBe(2);
+    // The retry found the call in the ledger and reported it; it did not go back to the connector path.
+    expect(w.vendor.state.runs).toBe(1);
     expect(w.db.commandNames().slice(before).filter((name) => ["UpdateCommand", "PutCommand", "TransactWriteCommand"].includes(name))).toEqual([]);
     expect(w.handled).toHaveLength(1);
   });
@@ -636,6 +638,28 @@ describe("a crash after the claim, and the sweep that finishes it", () => {
     await w.sweep();
     expect(w.handled).toEqual([{ kind: "write", status: "APPROVED_FAILED", approvalId: id }]);
     expect(w.vendor.state.runs).toBe(5);
+  });
+
+  it("reports a call the ledger already recorded as done on a retry, even if the task was cancelled since", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.vendor.state.crashesAfterVendor = 1;
+    await w.approve(BOB, id).catch(() => undefined);
+    w.db.set({ pk: `DEVTASK#${TASK}`, sk: "AGENT_RUN", orgId: ORG_A, state: "CANCELLED" });
+    w.clock.now += 6 * MINUTE;
+    await w.sweep();
+    expect(await w.record(id)).toMatchObject({ status: "APPROVED_DONE", result: { status: "SUCCEEDED", replayed: true } });
+    expect(w.vendor.state.runs).toBe(1);
+    expect(w.vendor.state.vendorCalls).toHaveLength(1);
+  });
+
+  it("still re-checks a first attempt, whatever the ledger holds", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.vendor.ledger.set(deriveWriteRequestId(id), { requestId: deriveWriteRequestId(id), status: "SUCCEEDED", text: "{}", truncated: false, replayed: false });
+    w.db.set({ pk: `DEVTASK#${TASK}`, sk: "AGENT_RUN", orgId: ORG_A, state: "CANCELLED" });
+    await w.approve(BOB, id);
+    expect((await w.record(id)).status).toBe("APPROVED_FAILED");
   });
 
   it("ends a record that already used its attempts without driving it again", async () => {
@@ -1163,6 +1187,8 @@ describe("races and leftovers the guards are for", () => {
 
   it("lets only one of two sweeps reach the vendor for a stuck record", async () => {
     const w = world();
+    // Without the ledger probe a retry goes through the connector path, where the request id replays the recorded result.
+    delete w.runtime.recordedResult;
     const id = await w.waiting(1);
     w.vendor.state.crashesAfterVendor = 1;
     await w.approve(BOB, id).catch(() => undefined);
