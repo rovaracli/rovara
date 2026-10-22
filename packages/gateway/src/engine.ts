@@ -114,6 +114,11 @@ export interface EngineOptions {
   attribution?: string;
   /** Called when a write is sent unsigned because the signed arguments failed the upstream schema. */
   onAttributionDropped?: (tool: string) => void;
+  /**
+   * Treat the call as a write for the ledger whatever the policy says: claim before the vendor is asked, record the result after, and answer UNKNOWN when the
+   * vendor call breaks. A call that a person approved to run (an approval of a tool the project approved for reading) is sent with this, so a retry replays it.
+   */
+  durable?: boolean;
 }
 
 /**
@@ -247,8 +252,10 @@ export async function executeTool<Scope>(
     throw agentXError("FORBIDDEN", `${label} routing arguments are server controlled`);
   }
   const write = policy.access === "write";
-  const durable = write || context.requestedBy !== undefined;
-  const pending = publicResult(request, "IN_PROGRESS", write
+  // A call told to be durable is held to a write's standard of evidence (it may have acted), though its footer and token follow the policy's access.
+  const mayAct = write || options.durable === true;
+  const durable = mayAct || context.requestedBy !== undefined;
+  const pending = publicResult(request, "IN_PROGRESS", mayAct
     ? `This write is running or its outcome is unknown. Inspect ${label} before issuing a new write; do not automatically retry.`
     : "This read is running or its result has not been recorded.");
   let record: Invocation = {
@@ -302,7 +309,7 @@ export async function executeTool<Scope>(
     const args = dropped ? unsigned : signed;
     for (const guard of connector.guards) await guard.check({ tool: request.tool, arguments: modelArgs, bound, scope: context.scope, connection });
     signal.throwIfAborted();
-    writeAttempted = write;
+    writeAttempted = mayAct;
     if (dropped) options.onAttributionDropped?.(request.tool);
     const result = await connection.call(request.tool, args);
     if (result.isError) throw new Error("MCP tool reported an error");
@@ -322,7 +329,7 @@ export async function executeTool<Scope>(
     record = { ...record, updatedAt: new Date().toISOString(), result: response };
     try { await options.ledger.finish(record); }
     catch {
-      return publicResult(request, write ? "UNKNOWN" : "FAILED", write
+      return publicResult(request, mayAct ? "UNKNOWN" : "FAILED", mayAct
         ? `Could not persist the ${label} write outcome. Inspect ${label}; retry only with the same request ID to recover its record.`
         : `Could not persist the ${label} read outcome.`);
     }

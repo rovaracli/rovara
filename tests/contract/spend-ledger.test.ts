@@ -1374,12 +1374,47 @@ describe("the spend settlement schedule", () => {
 });
 
 describe("the scheduled run's time", () => {
-  it("keeps every job's budget, taken together, under the function's 30 seconds with a margin (Task 26 re-check m2)", async () => {
-    const { SETTLEMENT_BUDGETS_MS, SETTLEMENT_TOTAL_LIMIT_MS } = await import("../../packages/broker/src/spend/settlement-job.js");
-    expect(Object.values(SETTLEMENT_BUDGETS_MS).reduce((total, budget) => total + budget, 0)).toBeLessThanOrEqual(SETTLEMENT_TOTAL_LIMIT_MS);
-    expect(SETTLEMENT_TOTAL_LIMIT_MS).toBeLessThanOrEqual(27_000);
-    expect(SETTLEMENT_BUDGETS_MS.audit).toBe(4_000);
-    // Task 26's sources and audit budgets are kept; the drain (Task 11) and the approvals' sweep (Task 21) are taken out of the spend sweep's 18 seconds.
-    expect(SETTLEMENT_BUDGETS_MS).toStrictEqual({ drain: 5_000, approvals: 4_000, sources: 5_000, spend: 9_000, audit: 4_000 });
+  it("gives the short jobs their caps, the spend sweep what is left, and the audit what it needs, all inside one deadline of 27 seconds", async () => {
+    const { SETTLEMENT_BUDGETS_MS, SETTLEMENT_TOTAL_LIMIT_MS, settlementBudgets } = await import("../../packages/broker/src/spend/settlement-job.js");
+    expect(SETTLEMENT_TOTAL_LIMIT_MS).toBe(27_000);
+    // The caps of Tasks 11, 21, 24b and 26.
+    expect(SETTLEMENT_BUDGETS_MS).toStrictEqual({ drain: 5_000, approvals: 4_000, sources: 5_000, audit: 4_000 });
+    expect(settlementBudgets(0)).toStrictEqual({ drain: 5_000, approvals: 4_000, sources: 5_000, spend: 23_000, audit: 4_000 });
+    // Each later job gets what remains: spend keeps the audit's reserve, and nothing is ever negative or past the deadline.
+    expect(settlementBudgets(2_000)).toMatchObject({ spend: 21_000, audit: 4_000 });
+    expect(settlementBudgets(12_000)).toMatchObject({ drain: 5_000, spend: 11_000, audit: 4_000 });
+    expect(settlementBudgets(24_000)).toStrictEqual({ drain: 3_000, approvals: 3_000, sources: 3_000, spend: 0, audit: 3_000 });
+    expect(settlementBudgets(26_500)).toMatchObject({ drain: 500, spend: 0, audit: 500 });
+    expect(settlementBudgets(40_000)).toStrictEqual({ drain: 0, approvals: 0, sources: 0, spend: 0, audit: 0 });
+    // Run one after another, each taking all it is given, the jobs end at the deadline and not after it.
+    let elapsed = 0;
+    for (const name of ["drain", "approvals", "sources", "spend", "audit"] as const) elapsed += settlementBudgets(elapsed)[name];
+    expect(elapsed).toBeLessThanOrEqual(SETTLEMENT_TOTAL_LIMIT_MS);
+  });
+
+  it("starts a stuck write's re-drive only while more than the connector timeout and a margin remain", async () => {
+    const { SETTLEMENT_TOTAL_LIMIT_MS, REDRIVE_MIN_REMAINING_MS, redriveUntil } = await import("../../packages/broker/src/spend/settlement-job.js");
+    expect(REDRIVE_MIN_REMAINING_MS).toBe(22_000);
+    expect(redriveUntil(1_000)).toBe(1_000 + SETTLEMENT_TOTAL_LIMIT_MS - REDRIVE_MIN_REMAINING_MS);
+  });
+
+  it("skips a job that has no time left, and reports that it was skipped, without running it (the 'timed' job)", async () => {
+    const { timedSettlementJob } = await import("../../packages/broker/src/spend/settlement-job.js");
+    let now = 1_000;
+    const ran: number[] = [];
+    const job = (pick: "drain" | "spend" | "audit") => timedSettlementJob({ name: pick, pick, startedAt: 1_000, now: () => now, run: async (budgetMs) => { ran.push(budgetMs); return { done: true }; } });
+    expect(await job("spend").run()).toEqual({ done: true });
+    expect(ran).toEqual([23_000]);
+    now = 1_000 + 25_000;
+    expect(await job("audit").run()).toEqual({ done: true });
+    expect(ran).toEqual([23_000, 2_000]);
+    // Nothing is left: spend gets nothing at 23 s, and everything is over at 27 s.
+    now = 1_000 + 24_000;
+    expect(await job("spend").run()).toEqual({ skipped: "no time left in this run" });
+    now = 1_000 + 27_000;
+    expect(await job("drain").run()).toEqual({ skipped: "no time left in this run" });
+    expect(await job("audit").run()).toEqual({ skipped: "no time left in this run" });
+    expect(ran).toEqual([23_000, 2_000]);
   });
 });
+

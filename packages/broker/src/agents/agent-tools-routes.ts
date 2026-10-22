@@ -31,14 +31,15 @@ import {
   type ResolvedRecipe,
   type WorkspaceInstance,
 } from "@agentx/contracts";
-import { agentGitHubGuard, githubConnector, type CatalogCache, type Ledger } from "@agentx/gateway";
+import { agentGitHubGuard, githubConnector, requestFingerprint, type CatalogCache, type Invocation, type Ledger } from "@agentx/gateway";
 import { callConnector, discoverConnector, type ConnectorContextBase, type ScopeDiscovery } from "../aws/connector-routes.js";
 import type { ResolvedConnector } from "../aws/connector-types.js";
 import { inertName } from "../developer/task-records.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { parseGitHubRepository, type AgentGitHubScope, type AgentRepositoryLabel, type AgentTokenOptions } from "../github-app.js";
 import { githubAgentToolPermissions, type GitHubAgentTokenPermissions } from "./github-agent-tools.js";
-import type { ApprovalDependencies } from "./approvals-store.js";
+import type { ApprovalDependencies, TransactItem } from "./approvals-store.js";
+import type { answerForHeldCall} from "./write-gate.js";
 import { decideWrite, type ClassifyContext, type Regranted } from "./write-gate.js";
 import { githubLabelLister, type LabelLister } from "./label-names.js";
 import type { RunCache } from "./run-cache.js";
@@ -73,7 +74,9 @@ export interface AgentToolsRun {
 export type AgentWriteDecision =
   | { decision: "run" }
   | { decision: "wait"; text: string; approvalId?: string }
-  | { decision: "refuse"; code: AgentXErrorCode; message: string };
+  | { decision: "refuse"; code: AgentXErrorCode; message: string }
+  /** The request id was already claimed while the gate decided: nothing was made, and the call replays what the claim holds. */
+  | { decision: "replay" };
 
 /** Everything the gate may need. `args` is exactly what will be sent if it says `run`; `classifyInput` is what classification reads (it also holds the values the server binds). */
 export interface AgentWriteGateInput {
@@ -98,6 +101,8 @@ export interface AgentWriteGateInput {
   classifyInput: ClassifyAgentWriteInput;
   /** `classifyAgentWrite` on `classifyInput`, with the lookups it needs, read now. */
   classify(): Promise<WriteClassification>;
+  /** A conditional ledger put that claims the call's request id for `approvalId`, for the transaction that makes the approval. Absent where the install has no such ledger. */
+  claimRequest?(approvalId: string): TransactItem;
 }
 export type AgentWriteGate = (input: AgentWriteGateInput) => Promise<AgentWriteDecision>;
 
@@ -131,9 +136,10 @@ export function approvalsWriteGate(deps: ApprovalDependencies): AgentWriteGate {
     const decided = await decideWrite(deps, {
       orgId: input.orgId, taskId: input.taskId, operationId: input.operationId, stepId: input.stepId, agentId: input.agent.id, agentName: input.agent.name,
       tool: input.tool, call: { scope: input.scope, schemaHash: input.schemaHash, arguments: input.args }, classify: context, classification,
-      run: { project: input.project, owner: input.owner },
+      run: { project: input.project, owner: input.owner }, ...(input.claimRequest === undefined ? {} : { claimRequest: (approvalId: string) => input.claimRequest!(approvalId) }),
     });
     if (decided.outcome === "run") return { decision: "run" };
+    if (decided.outcome === "replay") return { decision: "replay" };
     if (decided.outcome === "wait") return { decision: "wait", text: decided.answer.text, approvalId: decided.approvalId };
     return { decision: "refuse", code: "FORBIDDEN", message: decided.reason };
   };
@@ -141,6 +147,7 @@ export function approvalsWriteGate(deps: ApprovalDependencies): AgentWriteGate {
 
 const GateDecisionSchema = z.discriminatedUnion("decision", [
   z.object({ decision: z.literal("run") }).strict(),
+  z.object({ decision: z.literal("replay") }).strict(),
   z.object({ decision: z.literal("wait"), text: z.string().min(1).max(2_000), approvalId: z.string().min(1).max(64).optional() }).strict(),
   z.object({ decision: z.literal("refuse"), code: AgentXErrorCodeSchema, message: z.string().min(1).max(2_000) }).strict(),
 ]);
@@ -179,6 +186,10 @@ export interface AgentToolsDependencies {
   /** A read-only view of a repository's default branch, for the comment-trigger rule. Absent: a GitHub write can't be checked, so it waits. */
   repositoryReader?: ClassifyAgentWriteDependencies["repositoryReader"];
   runCache(scope: { orgId: OrgId; taskId: string }): RunCache;
+  /** The ledger item that holds a call for approval (see `claimRequest`); absent where approvals are not set up. */
+  holdItem?(input: { workspaceId: string; connector: ResolvedConnector; record: Invocation; approvalId: string }): TransactItem;
+  /** What the approval a held call waits on says now (see `answerForHeldCall`); absent where approvals are not set up. */
+  heldCall?(orgId: OrgId, approvalId: string): ReturnType<typeof answerForHeldCall>;
   /** Extra or replacement label listers by connector type; the connector's own are built in. */
   labelListers?(run: AgentToolsRun): Readonly<Record<string, LabelLister>>;
   gate: AgentWriteGate;
@@ -481,6 +492,53 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
   };
   const classifyDeps = classifyDependenciesOf(deps, labelListersFor(deps, run, frame));
   let classification: Promise<WriteClassification> | undefined;
+
+  const ledger = deps.ledger(run.workspace.id, connector);
+  const toolRequest = { requestId: request.requestId, scope: request.scope, tool: request.tool, schemaHash: request.schemaHash, arguments: prepared.args };
+  const executing = connector.type === "github" ? agentGitHubConnector(connector, deps, { orgId, tool: request.tool }) : connector;
+  /** The call through the connector call path, with the connector's ledger: a repeated request id replays what the ledger holds, and nothing is sent twice. */
+  const callThrough = (options: { durable?: boolean } = {}) => callConnector({
+    connector: executing, workspace: run.workspace, context: frame.context, catalogs: deps.catalogs, ledger, request: toolRequest,
+    ...(options.durable === true ? { durable: true } : {}),
+    ...(connector.attribution ? { attribution: attributionOf(task, frame.agentName) } : {}),
+  });
+
+  /**
+   * A request id the ledger already holds is a call that ran (or was held) before: it is answered from the ledger, with the owner, workspace and fingerprint
+   * checks the engine makes, and never asked of the gate. Otherwise a retry of a call that already ran could be held now (a lookup failing closed, a rule
+   * changed) and sent a second time, under another request id, when a person approves it.
+   */
+  const replayOfRecorded = async (): Promise<{ result: ConnectorResult | WaitingResult; approvalId?: string } | undefined> => {
+    const recorded = await ledger.get(request.requestId);
+    if (recorded === undefined) return undefined;
+    const held = (recorded as Invocation & { approvalId?: unknown }).approvalId;
+    // The checks the engine makes on a recorded request id: the same owner and workspace, nobody on whose behalf it was asked (an agent has no requester), and
+    // the same call. A different tool or different arguments under the id is a conflict, and nothing is sent.
+    if (recorded.ownerKey !== frame.context.ownerKey || recorded.workspaceId !== run.workspace.id || recorded.requestedBy !== undefined) throw agentXError("NOT_FOUND", "MCP invocation not found");
+    if (recorded.fingerprint !== requestFingerprint(toolRequest)) throw agentXError("IDEMPOTENCY_CONFLICT", "MCP request ID already used with different inputs");
+    // An ordinary record is answered from the record itself, never by calling the connector: the engine reads the ledger only for a durable call, so a call of a
+    // tool approved for reading would be sent again, with no gate and no approval.
+    if (typeof held !== "string") return { result: { ...recorded.result, replayed: true } };
+    // A call held for a person: the approval answers (waiting, its result once it ran, or decided).
+    const answer = await deps.heldCall?.(orgId, held);
+    if (answer === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the approval this call waits on can't be read");
+    if (answer.kind === "wait") return { result: { requestId: request.requestId, status: "WAITING_FOR_APPROVAL", text: answer.text, truncated: false, replayed: true }, approvalId: held };
+    if (answer.kind === "result") return { result: { requestId: request.requestId, status: "SUCCEEDED", text: answer.result.text, truncated: answer.result.truncated, replayed: true } };
+    throw agentXError("FORBIDDEN", answer.text);
+  };
+  const replayed = await replayOfRecorded();
+  if (replayed !== undefined) return replayed;
+
+  const holdRecord = (): Invocation => {
+    const at = new Date(deps.now()).toISOString();
+    return {
+      requestId: request.requestId, workspaceId: run.workspace.id, ownerKey: frame.context.ownerKey, repository: request.scope, tool: request.tool,
+      fingerprint: requestFingerprint(toolRequest), createdAt: at, updatedAt: at,
+      result: { requestId: request.requestId, status: "IN_PROGRESS", text: "This call is waiting for a person to approve it.", truncated: false, replayed: false },
+      ...(frame.context.settingsRevision === undefined ? {} : { settingsRevision: frame.context.settingsRevision }),
+    };
+  };
+  const holdItem = deps.holdItem?.bind(deps);
   const decision = GateDecisionSchema.safeParse(await deps.gate({
     orgId, taskId: task.taskId, operationId: run.operation.id, project: task.project, agent: { id: frame.agentId, name: frame.agentName },
     stepId: frame.stepId, owner: { developerId: task.developerId, name: task.developerName },
@@ -489,9 +547,16 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
     recipe: { autonomy: frame.recipe.autonomy, approvals: frame.recipe.approvals, allowMentions: frame.recipe.allowMentions },
     classifyInput,
     classify: () => (classification ??= classifyAgentWrite(classifyDeps, classifyInput)),
+    ...(holdItem === undefined ? {} : { claimRequest: (approvalId: string) => holdItem({ workspaceId: run.workspace.id, connector, record: holdRecord(), approvalId }) }),
   }));
   if (!decision.success) throw new Error("the write gate answered something unexpected");
   if (decision.data.decision === "refuse") throw agentXError(decision.data.code, decision.data.message);
+  if (decision.data.decision === "replay") {
+    // The id was claimed while the gate decided (by a run that got there first, or another hold): answer from that claim.
+    const again = await replayOfRecorded();
+    if (again === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the request id was claimed but its record can't be read");
+    return again;
+  }
   if (decision.data.decision === "wait") {
     return {
       // Not "IN_PROGRESS": the model is told what is happening and that it must not send the call again (a person decides it; the outcome comes back to the run).
@@ -500,13 +565,10 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
     };
   }
 
-  // Run: through the connector call path, with the connector's ledger, so a repeated request id replays instead of sending twice.
-  const executing = connector.type === "github" ? agentGitHubConnector(connector, deps, { orgId, tool: request.tool }) : connector;
-  const result = await callConnector({
-    connector: executing, workspace: run.workspace, context: frame.context, catalogs: deps.catalogs, ledger: deps.ledger(run.workspace.id, connector),
-    request: { requestId: request.requestId, scope: request.scope, tool: request.tool, schemaHash: request.schemaHash, arguments: prepared.args },
-    ...(connector.attribution ? { attribution: attributionOf(task, frame.agentName) } : {}),
-  });
+  // Run: through the connector call path. Whatever is not a plain read is claimed in the ledger when it runs, whatever access the project gave the tool, so a
+  // call that could be held for a person (and a hold that races this run) finds the request id taken.
+  const klass = classification === undefined ? undefined : (await classification).class;
+  const result = await callThrough(klass === "read" ? {} : { durable: true });
   // What a create made is the run's own to change afterwards. The create already happened, so a record that fails never fails the call.
   if (result.status === "SUCCEEDED" && !result.replayed) {
     await recordOwnItems({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, { orgId, taskId: task.taskId, tool: classifyTool, args: classifyArgs, resultText: result.text });

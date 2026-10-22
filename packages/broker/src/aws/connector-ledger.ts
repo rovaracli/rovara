@@ -46,6 +46,14 @@ export class DynamoConnectorLedger implements Ledger {
     }));
   }
 
+  /**
+   * The ledger item of a call that is held for a person's approval, as a conditional put for a transaction: it claims the request id (the put fails if the id is
+   * taken) and names the approval, so a repeat of the id answers the approval and a racing run finds the id claimed.
+   */
+  holdItem(record: Invocation, approvalId: string): { Put: { TableName: string; Item: Record<string, unknown>; ConditionExpression: string } } {
+    return { Put: { TableName: this.tableName, Item: { ...this.item(record), approvalId }, ConditionExpression: "attribute_not_exists(pk)" } };
+  }
+
   private item(record: Invocation) {
     return { ...this.key(record.requestId), entityType: this.keys.entityType, connector: this.connector, ...record };
   }

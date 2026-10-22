@@ -1354,8 +1354,8 @@ describe("write approvals through the agent routes", () => {
   /** Another person's issue: changing it is consequential, so it waits for a person. */
   const CHANGE = { id: "CHA-1", title: "Rename it" };
 
-  async function approvalWorld(recipe: Partial<ResolvedRecipe> = {}) {
-    const w = await world();
+  async function approvalWorld(recipe: Partial<ResolvedRecipe> = {}, options: WorldOptions = {}) {
+    const w = await world(options);
     const seen: Array<Parameters<AgentWriteGate>[0]> = [];
     // The broker's own gate (Task 21's decideWrite), observed.
     w.configure((base) => ({ ...base, gate: async (input) => { seen.push(input); return base.gate(input); } }));
@@ -1521,4 +1521,250 @@ describe("write approvals through the agent routes", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]!.arguments).toMatchObject({ owner: "example", repo: "demo", method: "update", issue_number: 7, title: "Rename it" });
   });
+
+  // ---- the wiring fix round
+
+  /** Sets (or clears) the project's action policy on its registered revision. */
+  const setPolicy = (w: Awaited<ReturnType<typeof world>>, rules: unknown[] | undefined) => {
+    const key = projectRevisionKey(TEST_ORG, "payments", 1);
+    const record = w.db.get(key) as { definition: Record<string, unknown> };
+    const { actionPolicy: _dropped, ...definition } = record.definition; // eslint-disable-line @typescript-eslint/no-unused-vars -- the old policy is replaced
+    w.db.set({ ...record, definition: { ...definition, ...(rules === undefined ? {} : { actionPolicy: { rules } }) } });
+  };
+  const ASK_COMMENT = { tool: "save_comment", connector: "linear", outcome: "ask", reason: "comments are looked at" };
+  const COMMENT = { issueId: "CHA-1", body: "Looks like a duplicate of CHA-9" };
+  /** Lets the next sweep find a record driven ten minutes ago. */
+  const tenMinutesLater = () => vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 10 * 60_000 });
+
+  it("answers a repeat of a held call from the approval even when the call now classifies as safe, and sends it once (F1)", async () => {
+    const { w, run, approve } = await approvalWorld();
+    setPolicy(w, [ASK_COMMENT]);
+    const held = await w.linearCall(run.capability, "save_comment", COMMENT);
+    expect(held.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL" });
+    const approvalId = String(held.body.approvalId);
+    // The same held call sent again with another request id is the same approval.
+    const second = await w.linearCall(run.capability, "save_comment", COMMENT);
+    expect(second.body.approvalId).toBe(approvalId);
+    // The rule is lifted: the call now classifies as safe, but the approval exists, so it still waits.
+    setPolicy(w, undefined);
+    const third = await w.linearCall(run.capability, "save_comment", COMMENT);
+    expect(third.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL" });
+    expect(third.body.approvalId).toBe(approvalId);
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toEqual([]);
+    expect((await approve(approvalId)).status).toBe("APPROVED_DONE");
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(1);
+  });
+
+  it("sends a held read-access tool once even when the run dies after the vendor answered (F2)", async () => {
+    const { w, run, deps, approve, sweep } = await approvalWorld();
+    setPolicy(w, [{ tool: "get_issue", connector: "linear", outcome: "ask", reason: "reads of issues are looked at" }]);
+    const held = await w.linearCall(run.capability, "get_issue", { id: "CHA-1" });
+    expect(held.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL" });
+    const approvalId = String(held.body.approvalId);
+    // The run dies after the vendor answered, before the approval is marked done.
+    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("APPROVED_DONE"), error: { name: "InternalServerError" } });
+    await approve(approvalId).catch(() => undefined);
+    // (The Linear guard asks get_issue itself before the call, so what is counted is what the vendor was asked in all, which must not grow.)
+    const asked = () => w.linear.calls.length;
+    const askedOnce = asked();
+    expect(askedOnce).toBeGreaterThan(0);
+    expect(w.db.find((item) => item.pk === `WORKSPACE#${run.workspaceId}` && item.sk === `CONNECTOR#linear#${deriveWriteRequestId(approvalId)}`)).toHaveLength(1);
+    tenMinutesLater();
+    try { await sweep(); } finally { vi.useRealTimers(); }
+    expect(asked()).toBe(askedOnce);
+    expect(await getAnyApproval(deps, TEST_ORG, approvalId)).toMatchObject({ status: "APPROVED_DONE" });
+  });
+
+  it("sends an approved write once when the run dies after the vendor answered, and the sweep replays it from the ledger", async () => {
+    const { w, run, deps, approve, saves, sweep } = await approvalWorld();
+    const held = await w.linearCall(run.capability, "save_issue", CHANGE);
+    const approvalId = String(held.body.approvalId);
+    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("APPROVED_DONE"), error: { name: "InternalServerError" } });
+    await approve(approvalId).catch(() => undefined);
+    expect(saves()).toHaveLength(1);
+    tenMinutesLater();
+    try { await sweep(); } finally { vi.useRealTimers(); }
+    expect(saves()).toHaveLength(1);
+    expect(await getAnyApproval(deps, TEST_ORG, approvalId)).toMatchObject({ status: "APPROVED_DONE", result: { status: "SUCCEEDED", replayed: true } });
+  });
+
+  it("refuses to send an approved call through a workspace of another org (minor 3)", async () => {
+    const { w, run, deps, approve, saves } = await approvalWorld();
+    const held = await w.linearCall(run.capability, "save_issue", CHANGE);
+    const approvalId = String(held.body.approvalId);
+    const workspace = w.db.get(`WORKSPACE#${run.workspaceId}`, "META") as Record<string, unknown>;
+    w.db.set({ ...workspace, orgId: "org_zzzzzzzzzzzzzzzzzzzz" });
+    await approve(approvalId).catch(() => undefined);
+    expect(saves()).toEqual([]);
+    expect(await getAnyApproval(deps, TEST_ORG, approvalId)).toMatchObject({ status: "APPROVED_FAILED" });
+  });
+
+  it("names the agent the approver saw in the footer of an approved write (minor 4)", async () => {
+    const { w, run, approve } = await approvalWorld();
+    setPolicy(w, [ASK_COMMENT]);
+    const held = await w.linearCall(run.capability, "save_comment", COMMENT);
+    const approvalId = String(held.body.approvalId);
+    const task = w.db.get(`DEVTASK#${run.taskId}`, "META") as { agent: Record<string, unknown> };
+    w.db.set({ ...task, agent: { ...task.agent, name: "renamed-bot" } });
+    expect((await approve(approvalId)).status).toBe("APPROVED_DONE");
+    const sent = w.linear.calls.find((entry) => entry.name === "save_comment")!;
+    expect(bodyOf(sent)).toContain("via Rovara agent `triage-bot`");
+    expect(bodyOf(sent)).not.toContain("renamed-bot");
+  });
+
+  // ---- wiring fix round 2 (N1)
+
+  it("replays a call that already ran when it is sent again with the same request id, even if it would be held now, and sends it once", async () => {
+    const { w, run } = await approvalWorld();
+    const requestId = randomUUID();
+    const first = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(first.body.result).toMatchObject({ status: "SUCCEEDED" });
+    setPolicy(w, [ASK_COMMENT]);
+    const again = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body.result).toMatchObject({ status: "SUCCEEDED", replayed: true });
+    expect(again.body.approvalId).toBeUndefined();
+    expect(w.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(1);
+    // The same request id with other arguments is still a conflict, as for any call.
+    const changed = await w.linearCall(run.capability, "save_comment", { ...COMMENT, body: "Another body" }, { requestId });
+    expect(changed.status).toBeGreaterThanOrEqual(400);
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(1);
+  });
+
+  it("holds a call and claims its request id with the approval, so a repeat of the id answers the approval, and after the approval its result", async () => {
+    const { w, run, approve } = await approvalWorld();
+    setPolicy(w, [ASK_COMMENT]);
+    const requestId = randomUUID();
+    const held = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    const approvalId = String(held.body.approvalId);
+    expect(held.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL" });
+    // The rule is lifted; the repeat of the same id is answered from the approval, not run.
+    setPolicy(w, undefined);
+    const repeat = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(repeat.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL" });
+    expect(repeat.body.approvalId).toBe(approvalId);
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toEqual([]);
+    expect((await approve(approvalId)).status).toBe("APPROVED_DONE");
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(1);
+    const after = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(after.body.result).toMatchObject({ status: "SUCCEEDED", replayed: true });
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(1);
+  });
+
+  it("never both holds and runs two calls with the same request id that race: the one that claims the id wins and the other replays it", async () => {
+    const { w, run } = await approvalWorld();
+    setPolicy(w, [ASK_COMMENT]);
+    // The first call classifies as consequential, then is slow to reach the gate; meanwhile the rule is lifted and the second call, the same id, runs.
+    let release: () => void = () => undefined;
+    const slow = new Promise<void>((resolve) => { release = resolve; });
+    let first = true;
+    w.configure((base) => ({
+      ...base,
+      gate: async (input) => {
+        const classification = await input.classify();
+        if (first) { first = false; await slow; }
+        expect(classification.class).toBeDefined();
+        return base.gate(input);
+      },
+    }));
+    const requestId = randomUUID();
+    const a = w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    await vi.waitFor(() => expect(first).toBe(false));
+    setPolicy(w, undefined);
+    const b = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(b.body.result).toMatchObject({ status: "SUCCEEDED" });
+    release();
+    const resolved = await a;
+    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
+    expect(resolved.body.result).toMatchObject({ status: "SUCCEEDED", replayed: true });
+    expect(resolved.body.approvalId).toBeUndefined();
+    expect(w.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(1);
+  });
+
+  // ---- wiring fix round 3 (N2)
+
+  /** Changes the access the project approved a Linear tool for, on its registered revision. */
+  const setAccess = (w: Awaited<ReturnType<typeof world>>, tool: string, access: "read" | "write") => {
+    const key = projectRevisionKey(TEST_ORG, "payments", 1);
+    const record = w.db.get(key) as { definition: { integrations: { connectors: Array<{ name: string; tools: Array<{ name: string; access: string }> }> } } };
+    const connectors = record.definition.integrations.connectors.map((entry) => (entry.name === "linear" ? { ...entry, tools: entry.tools.map((approved) => (approved.name === tool ? { ...approved, access } : approved)) } : entry));
+    w.db.set({ ...record, definition: { ...record.definition, integrations: { ...record.definition.integrations, connectors } } });
+  };
+
+  it("never sends a read-approved, write-named tool under a request id that holds another call's record: a conflict, then one approved send in all (P2)", async () => {
+    const { w, run, approve } = await approvalWorld();
+    setAccess(w, "save_comment", "read");
+    const requestId = randomUUID();
+    // An earlier ordinary write leaves a ledger record under the id.
+    const made = await w.linearCall(run.capability, "save_issue", { title: "Found a bug" }, { requestId });
+    expect(made.body.result).toMatchObject({ status: "SUCCEEDED" });
+    const comments = () => w.linear.calls.filter((entry) => entry.name === "save_comment");
+    // Control: with a fresh id the same call is held (its name says it writes, and the project approved it only for reading).
+    const held = await w.linearCall(run.capability, "save_comment", COMMENT);
+    expect(held.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL" });
+    // The reused id is another call: refused as a conflict, and nothing is sent.
+    const reused = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(reused.status).toBeGreaterThanOrEqual(400);
+    expect(errorOf(reused).code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(comments()).toEqual([]);
+    expect((await approve(String(held.body.approvalId))).status).toBe("APPROVED_DONE");
+    expect(comments()).toHaveLength(1);
+  });
+
+  it("answers a reused request id on another tool as a conflict and sends nothing (P1)", async () => {
+    const { w, run } = await approvalWorld();
+    const requestId = randomUUID();
+    expect((await w.linearCall(run.capability, "save_comment", COMMENT, { requestId })).body.result).toMatchObject({ status: "SUCCEEDED" });
+    setPolicy(w, [{ tool: "get_issue", connector: "linear", outcome: "ask", reason: "reads of issues are looked at" }]);
+    const sent = w.linear.calls.length;
+    const reused = await w.linearCall(run.capability, "get_issue", { id: "CHA-1" }, { requestId });
+    expect(reused.status).toBeGreaterThanOrEqual(400);
+    expect(errorOf(reused).code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(w.linear.calls.length).toBe(sent);
+  });
+
+  it("answers a repeat of an ordinary record from the record, not by sending, whatever the tool's access", async () => {
+    const { w, run } = await approvalWorld();
+    setAccess(w, "save_comment", "read");
+    // The gate lets this read-approved, write-named call run (as it would for an install whose gate says so): it is claimed in the ledger because its class is not a read.
+    w.configure((base) => ({ ...base, gate: async (input) => { await input.classify(); return { decision: "run" }; } }));
+    const requestId = randomUUID();
+    const first = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(first.body.result).toMatchObject({ status: "SUCCEEDED", replayed: false });
+    const sent = w.linear.calls.filter((entry) => entry.name === "save_comment").length;
+    const again = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(again.body.result).toMatchObject({ status: "SUCCEEDED", replayed: true });
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(sent);
+  });
+
+  it("never both runs and holds a read-approved call that races a hold with the same request id", async () => {
+    const { w, run } = await approvalWorld();
+    setAccess(w, "save_comment", "read");
+    let release: () => void = () => undefined;
+    const slow = new Promise<void>((resolve) => { release = resolve; });
+    let first = true;
+    // The first call is held (the broker's own gate) but is slow to reach it; the second, the same id, is let through by a gate that runs it.
+    w.configure((base) => ({
+      ...base,
+      gate: async (input) => {
+        await input.classify();
+        if (first) { first = false; await slow; return base.gate(input); }
+        return { decision: "run" };
+      },
+    }));
+    const requestId = randomUUID();
+    const a = w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    await vi.waitFor(() => expect(first).toBe(false));
+    const b = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(b.body.result).toMatchObject({ status: "SUCCEEDED" });
+    release();
+    const resolved = await a;
+    expect(resolved.body.result).toMatchObject({ status: "SUCCEEDED", replayed: true });
+    expect(resolved.body.approvalId).toBeUndefined();
+    expect(w.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(1);
+  });
 });
+

@@ -5,13 +5,51 @@ import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { sweepSpend, type LedgerDependencies } from "./ledger.js";
 
 /**
- * What each timed job of the scheduled run may take. The broker's function has 30 seconds; the budgets together stay under 27, so a job that ends a little
- * late (a page of work finishing, a call returning) still leaves the function its margin. The short jobs go first, the spend sweep takes what is left of the
- * 27 and resumes from its cursor on the next run, and the key audit is last and has the least. The member-merge drain (Task 11) has 5 seconds and the approvals'
- * sweep (Task 21) 4, both taken out of what the spend sweep had before they joined (18 seconds).
+ * What each timed job of the scheduled run may take at most. The broker's function has 30 seconds and the whole run keeps to 27 (`SETTLEMENT_TOTAL_LIMIT_MS`), so a
+ * job that ends a little late (a page of work finishing, a call returning) still leaves the function its margin. The short jobs have a cap each; the spend
+ * sweep, which resumes from its cursor, takes what is left (see `settlementBudgets`), and the key audit is last and has the least.
  */
-export const SETTLEMENT_BUDGETS_MS = { drain: 5_000, approvals: 4_000, sources: 5_000, spend: 9_000, audit: 4_000 } as const;
+export const SETTLEMENT_BUDGETS_MS = { drain: 5_000, approvals: 4_000, sources: 5_000, audit: 4_000 } as const;
 export const SETTLEMENT_TOTAL_LIMIT_MS = 27_000;
+
+/**
+ * Every job's budget given how much of the run has gone: its cap, or what remains of the one deadline if that is less. The spend sweep keeps the audit's share
+ * back and takes the rest. Nothing is ever negative, and no job is given time past the deadline.
+ */
+export function settlementBudgets(elapsedMs: number): { drain: number; approvals: number; sources: number; spend: number; audit: number } {
+  const left = Math.max(0, SETTLEMENT_TOTAL_LIMIT_MS - elapsedMs);
+  const capped = (cap: number) => Math.min(cap, left);
+  return {
+    drain: capped(SETTLEMENT_BUDGETS_MS.drain), approvals: capped(SETTLEMENT_BUDGETS_MS.approvals), sources: capped(SETTLEMENT_BUDGETS_MS.sources),
+    spend: Math.max(0, left - SETTLEMENT_BUDGETS_MS.audit), audit: capped(SETTLEMENT_BUDGETS_MS.audit),
+  };
+}
+
+/** A stuck write is driven again only while more than the connector's own timeout (20 seconds) and a margin remain. */
+export const REDRIVE_MIN_REMAINING_MS = 22_000;
+
+/** The latest time (epoch ms) at which a run that started at `startedAt` may start driving a stuck write again. */
+export const redriveUntil = (startedAt: number): number => startedAt + SETTLEMENT_TOTAL_LIMIT_MS - REDRIVE_MIN_REMAINING_MS;
+
+/**
+ * One job of the run with its budget read when it STARTS (`settlementBudgets` at the time it begins): a job with nothing left is not run and says so, so a late
+ * job never takes time past the deadline and the report shows what was skipped.
+ */
+export function timedSettlementJob(input: {
+  name: string;
+  pick: keyof ReturnType<typeof settlementBudgets>;
+  startedAt: number;
+  now: () => number;
+  run: (budgetMs: number) => Promise<unknown>;
+}): SettlementJob {
+  return {
+    name: input.name,
+    run: async () => {
+      const budgetMs = settlementBudgets(input.now() - input.startedAt)[input.pick];
+      return budgetMs <= 0 ? { skipped: "no time left in this run" } : input.run(budgetMs);
+    },
+  };
+}
 
 export interface SettlementJob {
   name: string;

@@ -557,8 +557,8 @@ export function requireRegisteredApprovers(approvers: ApproverSpec): void {
  */
 async function createRecord(
   deps: CreateDependencies,
-  input: { record: NewRecord; counter?: { taskId: string; stepId: string; max: number }; extraItems?: TransactItem[] },
-): Promise<"created" | "exists" | "full"> {
+  input: { record: NewRecord; counter?: { taskId: string; stepId: string; max: number }; extraItems?: TransactItem[]; claimIndex?: number },
+): Promise<"created" | "exists" | "full" | "claimed"> {
   const { record } = input;
   const listed = listedFor(record);
   const named = new Set(namedPeople(record.approvers));
@@ -594,6 +594,8 @@ async function createRecord(
     if (errorNameOf(error) !== "TransactionCanceledException") throw error;
     const reasons = (error as { CancellationReasons?: Array<{ Code?: string } | undefined> }).CancellationReasons;
     if (reasons?.[offset]?.Code === "ConditionalCheckFailed") return "exists";
+    // The extra item at `claimIndex` is a conditional claim of something else (the call's request id): it was already taken, and nothing was made.
+    if (input.claimIndex !== undefined && reasons?.[offset + 2 + listed.length + input.claimIndex]?.Code === "ConditionalCheckFailed") return "claimed";
     if (offset === 1 && reasons?.[0]?.Code === "ConditionalCheckFailed") return "full";
     throw error;
   }
@@ -607,8 +609,9 @@ export async function createWriteApprovalRecord(
   record: WriteApprovalRecord,
   extraItems: TransactItem[],
   max: number,
-): Promise<"created" | "exists" | "full"> {
-  return createRecord(deps, { record, counter: { taskId: record.subject.taskId, stepId: record.subject.stepId, max }, extraItems });
+  claimIndex?: number,
+): Promise<"created" | "exists" | "full" | "claimed"> {
+  return createRecord(deps, { record, counter: { taskId: record.subject.taskId, stepId: record.subject.stepId, max }, extraItems, ...(claimIndex === undefined ? {} : { claimIndex }) });
 }
 
 /**

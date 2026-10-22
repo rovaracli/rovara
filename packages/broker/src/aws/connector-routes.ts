@@ -134,8 +134,10 @@ export async function callConnector(input: {
   attribution?: string;
   ledger: Ledger;
   catalogs: CatalogCache<ScopeDiscovery>;
+  /** The call is sent as a write is for the ledger (claimed, recorded, UNKNOWN when in doubt) whatever the tool's access: an approved call uses it. */
+  durable?: boolean;
 }): Promise<ConnectorResult> {
-  const { connector, request, workspace, context, attribution, ledger, catalogs } = input;
+  const { connector, request, workspace, context, attribution, ledger, catalogs, durable } = input;
   const revision = context.settingsRevision;
   // A malformed request (unknown scope or unapproved tool) is refused the same way whether or not
   // the connector is connected in this deployment.
@@ -161,6 +163,7 @@ export async function callConnector(input: {
       onAttributionDropped: attributionDroppedLog(workspace.projectName, revision, connector.name, scope.alias, request.requestId),
       onDefinitionChanged: () => catalogs.delete(connectorCatalogKey(context.orgId, workspace.projectName, revision, connector.name, scope.alias)),
       ledger,
+      ...(durable === true ? { durable: true } : {}),
     },
   );
 }
