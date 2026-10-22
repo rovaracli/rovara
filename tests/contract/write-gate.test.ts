@@ -1464,6 +1464,34 @@ describe("fix round 1: what a finished approval leaves behind", () => {
     expect(w.db.get({ pk: "SWEEP_CURSOR#approvals", sk: "META" })).toBeUndefined();
   });
 
+  it("I2: does not call a handler for a stale due item that is earlier than the record's own backed-off time", async () => {
+    const w = world();
+    let calls = 0;
+    registerApprovalSubjectHandler("agent_run", async () => { calls += 1; throw new Error("down"); });
+    const id = await w.waiting(1);
+    await w.approve(BOB, id);
+    w.clock.now += 6 * MINUTE;
+    await w.sweep();
+    expect(calls).toBe(2);
+    // An old item left from before (due at once) while the record waits 10 minutes more.
+    w.db.set({ pk: "OPEN_APPROVALS", sk: `2026-10-22T09:00:00.000Z#${ORG_A}#${id}`, orgId: ORG_A, approvalId: id });
+    await w.sweep();
+    expect(calls).toBe(2);
+    expect(w.open().map((item) => item.sk)).toEqual([expect.stringContaining((await w.write(id)).handlerDueAt!)]);
+  });
+
+  it("I2: goes round from the head of the index after a saved cursor, so what sorted before it is not left", async () => {
+    const w = world();
+    const ids = [await w.waiting(1), await w.waiting(2), await w.waiting(3)];
+    w.clock.now += 8 * DAY;
+    const last = w.open().map((item) => String(item.sk)).sort().at(-1)!;
+    w.db.set({ pk: "SWEEP_CURSOR#approvals", sk: "META", entityType: "SWEEP_CURSOR", cursor: last, at: "2026-10-22T09:00:00.000Z" });
+    const run = await runApprovalSweep(w.deps, { budgetMs: 100_000 });
+    expect(run.complete).toBe(true);
+    for (const id of ids) expect((await w.record(id)).status).toBe("EXPIRED");
+    expect(w.db.get({ pk: "SWEEP_CURSOR#approvals", sk: "META" })).toBeUndefined();
+  });
+
   it("I3: writes an approval.requested audit item with the record, the index items and the event, and none for a repeat", async () => {
     const w = world({ audit: true });
     w.audit!.queueDown();
