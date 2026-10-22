@@ -5,11 +5,13 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ActionPolicy, AgentConnectorType, GrantedTool, OrgId, ToolFacts } from "@agentx/contracts";
 import {
+  READ_NAME_EXCEPTIONS,
   WRITE_CLASS_OVERRIDES,
   classifyAgentWrite,
   classifyWrite,
   isReadByName,
   loadOwnItems,
+  nonTextFactProblems,
   prepareAgentWrite,
   recordOwnItems,
   type ClassifyWriteInput,
@@ -863,5 +865,354 @@ describe("the memory-only run cache still works with the wrapper's lookups", () 
     const w = wrapper();
     const deps = { ...w.deps, runCache: () => memoryRunCache() };
     expect((await classifyAgentWrite(deps, { ...w.base, tool: githubComment(), args: { body: PLAIN } })).class).toBe("safe");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Fix round 1 (review task-20b-review.md): every probe of the review's tables, and the controller's rulings
+// ---------------------------------------------------------------------------------------------
+
+/** GitHub's tools: the repository is the scope of an item number. */
+const ghScope = ["owner", "repo"];
+const gh = (name: string, over: GrantOptions = {}) => grant("github", name, { itemScopeArguments: ghScope, ...over });
+const OWN_GH = new Set(["github#o/r#42"]);
+const REPO = { owner: "o", repo: "r" };
+
+describe("fix round 1: C1, a write is safe only when its name says it records something", () => {
+  it("makes every write with a verb outside the record verbs consequential, whatever its item arguments", () => {
+    const names = [
+      "drop_table", "truncate_table", "terminate_instance", "wipe_disk", "erase_device", "uninstall_app", "ban_user", "rerun_workflow", "redeploy_service",
+      "unpublish_page", "scale_deployment", "invoke_lambda", "launch_instance", "exec_command", "bash", "sql", "share_file", "upload_file",
+    ];
+    for (const name of names) {
+      expect(classOf(mcp(name), { target: "x" }), name).toBe("consequential");
+      expect(classOf(mcp(name, { itemArguments: undefined }), { target: "x" }), `${name} undeclared`).toBe("consequential");
+    }
+  });
+
+  it("keeps the record verbs safe", () => {
+    const names = ["create_page", "add_row", "new_page", "insert_row", "save_page", "upsert_page", "write_page", "log_event", "note_down", "comment_on", "reply_to_comment", "post_comment", "append_log", "record_event", "annotate_page"];
+    for (const name of names) expect(classOf(mcp(name), { text: "x" }), name).toBe("safe");
+  });
+
+  it("is a soft cause: a code override may lower it", () => {
+    expect(classOf(mcp("drop_table"), { target: "x" }, { overrides: { mcp: { drop_table: "safe" } } })).toBe("safe");
+    // But not when something else hard also raised the call.
+    expect(classOf(mcp("drop_table"), { target: "x", assigneeId: "u" }, { overrides: { mcp: { drop_table: "safe" } } })).toBe("consequential");
+  });
+
+  it("does not make a reply or a post a record unless it is a comment", () => {
+    expect(classOf(mcp("reply_email"), { text: "x" })).toBe("consequential");
+    expect(classOf(mcp("post_message"), { text: "x" })).toBe("consequential");
+    expect(classOf(mcp("post_comment"), { text: "x" })).toBe("safe");
+  });
+});
+
+describe("fix round 1: C2 and M3, names split on every character that is not a letter or digit, after NFKC", () => {
+  it("finds a merge in a namespaced name, and in a fullwidth one", () => {
+    const own = { ownItems: new Set(["github#o/r#9"]) };
+    expect(classOf(gh("pulls.merge", { itemArguments: ["pull_number"] }), { ...REPO, pull_number: 9, commit_title: "x" }, own)).toBe("merge");
+    for (const name of ["pulls/merge", "pulls:merge", "pulls merge", "ｍｅｒｇｅ_pr", "pulls.ｍｅｒｇｅ", "squashMergePR"]) expect(classOf(mcp(name), {}), name).toBe("merge");
+  });
+
+  it("finds outward words and destructive words in namespaced names", () => {
+    for (const name of ["email.send", "sms/send", "chat:post", "messages.send", "mail.send"]) expect(classOf(mcp(name), { text: "x" }), name).toBe("consequential");
+    expect(classOf(mcp("repos.delete"), { id: "r" })).toBe("consequential");
+  });
+
+  it("does not make a namespaced read a write, and keeps a read-approved write word consequential", () => {
+    expect(classOf(grant("mcp", "repos.delete", { access: "read" }), { id: "r" })).toBe("consequential");
+    expect(classOf(grant("mcp", "repos.pulls.merge", { access: "read" }), {})).toBe("consequential");
+    expect(classOf(grant("mcp", "repos.list", { access: "read" }), {})).toBe("read");
+    expect(classOf(grant("mcp", "ｌｉｓｔ_issues", { access: "read" }), {})).toBe("read");
+    expect(classOf(grant("mcp", "ｄｅｌｅｔｅ_issue", { access: "read" }), {})).toBe("consequential");
+  });
+
+  it("finds a destructive name in the destructive signal too", () => {
+    expect(classOf(mcp("repos.close", { itemArguments: ["id"] }), { id: "r", labels: ["bug"] })).toBe("consequential");
+  });
+});
+
+describe("fix round 1: I1, outward keys and words by containment", () => {
+  it("makes a create carrying a recipient-like key consequential", () => {
+    for (const key of ["emailAddress", "recipientEmail", "toAddress", "phoneNumber", "webhookUrl", "callbackUrl", "channel", "channelId", "shareWith", "to", "cc"]) {
+      expect(classOf(mcp("create_note"), { text: "x", [key]: "attacker@example.com" }), key).toBe("consequential");
+    }
+    expect(classOf(mcp("create_note"), { text: "x", meta: { notify_email: "a@b.com" } })).toBe("consequential");
+    expect(classOf(mcp("create_note"), { text: "x", title: "t" })).toBe("safe");
+  });
+
+  it("makes more outward names consequential", () => {
+    for (const name of ["share_file", "forward_message", "mail_user", "dm_user", "chat_send", "tweet_status", "broadcast_update", "create_share", "add_forward", "create_dm", "create_tweet", "create_broadcast", "create_mail", "create_chat"]) {
+      expect(classOf(mcp(name), { text: "x" }), name).toBe("consequential");
+    }
+  });
+});
+
+describe("fix round 1: I2, keys that assign work, request a review or hand something over", () => {
+  it("makes a labelled tracker create carrying one consequential", () => {
+    const create = saveIssue();
+    for (const key of ["assignee_ids", "assigneeIds", "reviewer_ids", "team_reviewers", "assignedTo", "assignee_gid", "reviewer", "leadId", "memberIds", "subscriberIds", "delegateTo", "ownerEmail", "ownership"]) {
+      expect(classOf(create, { title: "t", labels: ["bug", "rovara"], [key]: ["5"] }), key).toBe("consequential");
+    }
+    expect(classOf(create, { title: "t", labels: ["bug", "rovara"] })).toBe("safe");
+  });
+
+  it("makes them consequential on an item the run created too, but not a declared scope argument", () => {
+    const own = { ownItems: new Set(["linear##ENG-1"]) };
+    expect(classOf(saveIssue(), { id: "ENG-1", title: "t", team_reviewers: ["a"] }, own)).toBe("consequential");
+    expect(classOf(gh("add_issue_comment", { itemArguments: [] }), { ...REPO, issue_number: 1, body: PLAIN })).toBe("safe");
+    expect(classOf(grant("github", "add_issue_comment", { itemArguments: [] }), { ...REPO, issue_number: 1, body: PLAIN })).toBe("consequential");
+  });
+});
+
+describe("fix round 1: I3, tracker creates by plural, compound and more words", () => {
+  const names = ["create_issues", "create_tasks", "batch_create_tickets", "create_subtask", "create_subissue", "create_card", "add_todo", "create_stories", "create_bugs", "create_epics", "create_story"];
+  it("makes each consequential without the label and safe with it", () => {
+    for (const name of names) {
+      const tool = mcp(name, { labelArgument: "labels" });
+      expect(classOf(tool, { title: "t" }), name).toBe("consequential");
+      expect(classOf(tool, { title: "t", labels: ["rovara"] }), `${name} labelled`).toBe("safe");
+      expect(prepareAgentWrite(tool, { title: "t" }, { allowMentions: false }).args, `${name} prepared`).toEqual({ title: "t", labels: ["rovara"] });
+    }
+  });
+});
+
+describe("fix round 1: I4, labels at any depth", () => {
+  const ownJira = { ownItems: new Set(["jira##PROJ-1"]) };
+  const edit = (over: GrantOptions = {}) => grant("jira", "edit_issue", { itemArguments: ["issueKey"], ...over });
+
+  it("scans labels nested in fields and in Jira update operations", () => {
+    expect(classOf(edit(), { issueKey: "PROJ-1", fields: { labels: ["deploy"] } }, ownJira)).toBe("consequential");
+    expect(classOf(edit(), { issueKey: "PROJ-1", fields: { labels: ["bug"] } }, ownJira)).toBe("safe");
+    expect(classOf(edit({ labelArgument: "fields.labels" }), { issueKey: "PROJ-1", update: { labels: [{ add: "automerge" }] } }, ownJira)).toBe("consequential");
+    expect(classOf(edit(), { issueKey: "PROJ-1", update: { labels: [{ add: "bug" }] } }, ownJira)).toBe("safe");
+  });
+
+  it("scans a singular label and resolves a singular label id", () => {
+    const addLabel = grant("linear", "add_issue_label", { itemArguments: ["issueId"] });
+    const own = { ownItems: new Set(["linear##ENG-1"]) };
+    expect(classOf(addLabel, { issueId: "ENG-1", label: "automerge" }, own)).toBe("consequential");
+    expect(classOf(addLabel, { issueId: "ENG-1", label: "bug" }, own)).toBe("safe");
+    expect(classOf(addLabel, { issueId: "ENG-1", labelId: "lbl-deploy" }, own)).toBe("consequential");
+    expect(classOf(addLabel, { issueId: "ENG-1", labelId: "lbl-bug" }, own)).toBe("safe");
+    expect(classOf(addLabel, { issueId: "ENG-1", labelId: "nobody" }, own)).toBe("consequential");
+  });
+
+  it("resolves label ids nested in a create's input", () => {
+    const create = mcp("create_widget");
+    expect(classOf(create, { input: { labelIds: ["lbl-deploy"] } })).toBe("consequential");
+    expect(classOf(create, { input: { labelIds: ["lbl-bug"] } })).toBe("safe");
+    expect(classOf(create, { input: { nested: { addedLabelIds: ["nobody"] } } })).toBe("consequential");
+    expect(classOf(create, { items: [{ addLabelIds: ["lbl-auto"] }] })).toBe("consequential");
+  });
+
+  it("uses the same ids in the wrapper's lookup", async () => {
+    const w = wrapper();
+    const create = grant("linear", "create_widget");
+    const names = await classifyAgentWrite(w.deps, { ...w.base, tool: create, args: { input: { labelIds: ["lbl-deploy"] } } });
+    expect(names.class).toBe("consequential");
+    expect((await classifyAgentWrite(w.deps, { ...w.base, tool: create, args: { input: { labelIds: ["lbl-bug"] } } })).class).toBe("safe");
+  });
+});
+
+describe("fix round 1: I5, removing labels or replacing the label set", () => {
+  it("makes removing a label from an item the run did not create consequential", () => {
+    const tool = gh("issue_write", { itemArguments: ["issue_number"] });
+    expect(classOf(tool, { ...REPO, issue_number: 7, removeLabels: ["do-not-merge"] })).toBe("consequential");
+    expect(classOf(tool, { ...REPO, issue_number: 7, removedLabelIds: ["lbl-bug"] })).toBe("consequential");
+    expect(classOf(saveIssue(), { id: "ENG-9", removedLabelIds: ["lbl-bug"] })).toBe("consequential");
+    expect(classOf(grant("jira", "edit_issue", { itemArguments: ["issueKey"] }), { issueKey: "P-1", update: { labels: [{ remove: "hold" }] } })).toBe("consequential");
+    expect(classOf(grant("jira", "edit_issue", { itemArguments: ["issueKey"] }), { issueKey: "P-1", update: { labels: [{ set: ["bug"] }] } })).toBe("consequential");
+  });
+
+  it("makes replacing GitHub's whole label set consequential, and adding a label safe", () => {
+    const tool = gh("issue_write", { itemArguments: ["issue_number"] });
+    expect(classOf(tool, { ...REPO, issue_number: 7, labels: ["bug"] })).toBe("consequential");
+    expect(classOf(tool, { ...REPO, issue_number: 7, addLabels: ["bug"] }, { labelNames: LABELS })).toBe("safe");
+  });
+
+  it("replaces a label set only where the tool says it replaces", () => {
+    expect(classOf(saveIssue(), { id: "ENG-9", labelIds: ["lbl-bug"] })).toBe("safe");
+    expect(classOf(saveIssue({ labelsReplace: true }), { id: "ENG-9", labelIds: ["lbl-bug"] })).toBe("consequential");
+    expect(classOf(saveIssue({ labelsReplace: true }), { id: "ENG-9", labels: ["bug"] })).toBe("consequential");
+    expect(classOf(gh("issue_write", { itemArguments: ["issue_number"], labelsReplace: false }), { ...REPO, issue_number: 7, labels: ["bug"] })).toBe("safe");
+  });
+
+  it("allows both on an item the run created", () => {
+    const tool = gh("issue_write", { itemArguments: ["issue_number"] });
+    expect(classOf(tool, { ...REPO, issue_number: 42, labels: ["bug"] }, { ownItems: OWN_GH })).toBe("safe");
+    expect(classOf(tool, { ...REPO, issue_number: 42, removeLabels: ["wip"] }, { ownItems: OWN_GH })).toBe("safe");
+  });
+});
+
+describe("fix round 1: I6, own items are scoped by the repository", () => {
+  const tool = gh("issue_write", { itemArguments: ["issue_number"] });
+
+  it("treats the same number in another repository as someone else's", () => {
+    expect(classOf(tool, { ...REPO, issue_number: 42, title: "ok" }, { ownItems: OWN_GH })).toBe("safe");
+    expect(classOf(tool, { owner: "o", repo: "OTHER", issue_number: 42, title: "pwned", body: "x" }, { ownItems: OWN_GH })).toBe("consequential");
+    expect(classOf(tool, { owner: "x", repo: "r", issue_number: 42, title: "t" }, { ownItems: OWN_GH })).toBe("consequential");
+    expect(classOf(tool, { owner: "O", repo: "R", issue_number: 42, title: "ok" }, { ownItems: OWN_GH })).toBe("safe");
+  });
+
+  it("gives a GitHub tool that declares no scope no own-item exemption", () => {
+    const unscoped = grant("github", "issue_write", { itemArguments: ["issue_number"] });
+    expect(classOf(unscoped, { issue_number: 42, title: "t" }, { ownItems: new Set(["github##42", "github#o/r#42"]) })).toBe("consequential");
+  });
+
+  it("needs every scope argument in the call", () => {
+    expect(classOf(tool, { owner: "o", issue_number: 42, title: "t" }, { ownItems: OWN_GH })).toBe("consequential");
+  });
+
+  it("records items under connector, scope and value, and finds them again", async () => {
+    const w = wrapper();
+    const create = gh("issue_write", { itemArguments: ["issue_number"], resultItemArguments: ["number"], labelArgument: "labels" });
+    const created = { ...REPO, title: "t", labels: ["bug", "rovara"] };
+    expect(await recordOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1", tool: create, args: created, resultText: JSON.stringify({ number: 42 }) })).toEqual({ recorded: 1, failed: false });
+    expect(await loadOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1" })).toEqual(new Set(["github#o/r#42"]));
+    const edit = await classifyAgentWrite(w.deps, { ...w.base, repository: "o/r", tool: create, args: { ...REPO, issue_number: 42, title: "new" } });
+    expect(edit.class).toBe("safe");
+    const other = await classifyAgentWrite(w.deps, { ...w.base, repository: "o/r2", tool: create, args: { owner: "o", repo: "r2", issue_number: 42, title: "new" } });
+    expect(other.class).toBe("consequential");
+  });
+
+  it("records nothing when the create's scope arguments are missing, and keys a scope-free connector with an empty scope", async () => {
+    const w = wrapper();
+    const create = gh("issue_write", { itemArguments: ["issue_number"], resultItemArguments: ["number"] });
+    expect(await recordOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1", tool: create, args: { title: "t" }, resultText: JSON.stringify({ number: 1 }) })).toEqual({ recorded: 0, failed: false });
+    await recordOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1", tool: saveIssue({ resultItemArguments: ["identifier"] }), args: { title: "t" }, resultText: JSON.stringify({ identifier: "ENG-12" }) });
+    expect(await loadOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1" })).toEqual(new Set(["linear##ENG-12"]));
+  });
+});
+
+describe("fix round 1: I7, the repository of a GitHub call is the call's own", () => {
+  const comment = gh("add_issue_comment", { itemArguments: [] });
+  const run = (args: Record<string, unknown>, repository = "example/demo") => {
+    const w = wrapper();
+    return classifyAgentWrite(w.deps, { ...w.base, repository, tool: comment, args }).then((result) => ({ result, reads: w.reads }));
+  };
+
+  it("makes a call to another repository, or one with no repository arguments, consequential without scanning", async () => {
+    const other = await run({ owner: "example", repo: "other", issue_number: 1, body: PLAIN });
+    expect(other.result.class).toBe("consequential");
+    expect(other.reads).not.toHaveBeenCalled();
+    const missing = await run({ issue_number: 1, body: PLAIN });
+    expect(missing.result.class).toBe("consequential");
+    expect((await run({ owner: "example", issue_number: 1, body: PLAIN })).result.class).toBe("consequential");
+    expect((await run({ owner: 5, repo: "demo", issue_number: 1, body: PLAIN })).result.class).toBe("consequential");
+  });
+
+  it("matches the repository without regard to case", async () => {
+    const same = await run({ owner: "Example", repo: "DEMO", issue_number: 1, body: PLAIN });
+    expect(same.result.class).toBe("safe");
+    expect(same.reads).toHaveBeenCalled();
+  });
+});
+
+describe("fix round 1: I8, only item and scope arguments are exempt from the safe-change check", () => {
+  it("treats an enum non-text argument as content of the change", () => {
+    const tool = mcp("update_doc", { itemArguments: ["docId"], nonTextArguments: ["sharing"] });
+    expect(classOf(tool, { docId: "d", labels: ["x"], sharing: "public" })).toBe("consequential");
+    expect(classOf(tool, { docId: "d", labels: ["x"] })).toBe("safe");
+    const scoped = mcp("update_doc", { itemArguments: ["docId"], itemScopeArguments: ["workspace"] });
+    expect(classOf(scoped, { docId: "d", workspace: "w", labels: ["x"] })).toBe("safe");
+  });
+});
+
+describe("fix round 1: M1, an exact ask rule or always-ask entry makes a read wait", () => {
+  const read = grant("linear", "list_issues", { access: "read" });
+
+  it("honours an admin ask rule that names the read tool exactly", () => {
+    const exact = classify(read, {}, { projectPolicy: policy({ tool: "list_issues", connector: "linear", outcome: "ask" }) });
+    expect(exact.class).toBe("consequential");
+    expect(exact.ignoredRules).toEqual([]);
+    const presented = classify(read, {}, { projectPolicy: policy({ tool: "linear__list_issues", outcome: "ask" }) });
+    expect(presented.class).toBe("consequential");
+  });
+
+  it("honours an always-ask entry that names it exactly", () => {
+    expect(classOf(read, {}, { rules: { alwaysAsk: ["list_issues"] } })).toBe("consequential");
+    expect(classOf(read, {}, { rules: { alwaysAsk: ["linear__list_issues"] } })).toBe("consequential");
+  });
+
+  it("still lets a wildcard, a raising treatAs and suggest autonomy pass a read", () => {
+    const wildcard = classify(read, {}, { projectPolicy: policy({ tool: "list_*", connector: "linear", outcome: "ask" }), rules: { alwaysAsk: ["list_*", "*"] }, autonomy: "suggest" });
+    expect(wildcard.class).toBe("read");
+    expect(wildcard.ignoredRules).toEqual([1]);
+    expect(classOf(read, {}, { projectPolicy: policy({ tool: "list_issues", connector: "linear", treatAs: "destructive" }) })).toBe("read");
+  });
+
+  it("still refuses on an exact deny", () => {
+    const denied = classify(read, {}, { projectPolicy: policy({ tool: "list_issues", connector: "linear", outcome: "deny" }) });
+    expect(denied.denied).toMatchObject({ rule: 1 });
+  });
+});
+
+describe("fix round 1: M4, any name word containing merge is a merge", () => {
+  it("makes enable_automerge a merge for a write, and consequential for a read", () => {
+    expect(classOf(mcp("enable_automerge"), {})).toBe("merge");
+    expect(classOf(mcp("automerge_pr"), {})).toBe("merge");
+    expect(classOf(mcp("enable_automerge"), {}, { overrides: { mcp: { enable_automerge: "safe" } } })).toBe("merge");
+    expect(classOf(grant("mcp", "enable_automerge", { access: "read" }), {})).toBe("consequential");
+  });
+});
+
+describe("fix round 1: M5, comma lists and item-path values count for bulk", () => {
+  it("counts a comma list in a declared item argument", () => {
+    const tool = mcp("update_items", { itemArguments: ["ids"] });
+    const own = { ownItems: new Set(["mcp##1", "mcp##2", "mcp##3", "mcp##4", "mcp##5", "mcp##6", "mcp##7", "mcp##8"]) };
+    expect(classOf(tool, { ids: "1,2,3,4,5", labels: ["bug"] })).toBe("safe");
+    expect(classOf(tool, { ids: "1,2,3,4,5,6", labels: ["bug"] })).toBe("consequential");
+    expect(classOf(tool, { ids: "1, 2, 3, 4, 5, 6,7,8", labels: ["bug"] }, own)).toBe("consequential");
+  });
+
+  it("counts the values at an item path across an array of objects", () => {
+    const tool = mcp("update_items", { itemArguments: ["a.b.items[].id"] });
+    const items = (count: number) => ({ a: { b: { items: Array.from({ length: count }, (_, index) => ({ id: String(index) })) } }, labels: ["bug"] });
+    expect(classOf(tool, items(5))).toBe("safe");
+    expect(classOf(tool, items(6))).toBe("consequential");
+  });
+});
+
+describe("fix round 1: the read-name exceptions", () => {
+  it("lists a few code-owned names that stay reads", () => {
+    expect(Object.keys(READ_NAME_EXCEPTIONS).sort()).toEqual(["jira", "mcp"]);
+    for (const names of Object.values(READ_NAME_EXCEPTIONS)) expect(names).toContain("get_transitions");
+  });
+
+  it("makes get_transitions a read for Jira and MCP, in any spelling of the name", () => {
+    for (const name of ["get_transitions", "list_transitions", "getTransitionsForJiraIssue", "getIssueTransitions", "get.transitions"]) {
+      expect(classOf(grant("jira", name, { access: "read" }), { issueKey: "P-1" }), `jira ${name}`).toBe("read");
+      expect(classOf(grant("mcp", name, { access: "read" }), { issueKey: "P-1" }), `mcp ${name}`).toBe("read");
+    }
+  });
+
+  it("covers only the listed names, only for the listed connector types, and only a read-approved tool", () => {
+    expect(classOf(grant("github", "get_transitions", { access: "read" }), {})).toBe("consequential");
+    expect(classOf(grant("jira", "get_transitions_and_apply", { access: "read" }), {})).toBe("consequential");
+    expect(classOf(grant("jira", "transition_issue", { access: "read" }), {})).toBe("consequential");
+    expect(classOf(grant("jira", "get_transitions", { access: "write" }), {})).not.toBe("read");
+    expect(classOf(grant("jira", "get_transitions", { access: "read", hints: { readOnlyHint: false } }), {})).toBe("consequential");
+    expect(isReadByName(grant("jira", "get_transitions", { access: "read" }))).toBe(true);
+    expect(isReadByName(grant("github", "get_transitions", { access: "read" }))).toBe(false);
+  });
+});
+
+describe("fix round 1: non-text arguments never name content", () => {
+  it("reports a fact that names title, body, text, description, comment, message or summary", () => {
+    for (const name of ["title", "body", "text", "description", "comment", "message", "summary", "fields.description", "input.Body", "Title"]) {
+      expect(nonTextFactProblems({ connector: "x", upstreamName: "y", access: "write", nonTextArguments: [name] }), name).toHaveLength(1);
+      expect(nonTextFactProblems({ connector: "x", upstreamName: "y", access: "write", itemScopeArguments: [name] }), `scope ${name}`).toHaveLength(1);
+    }
+    expect(nonTextFactProblems({ connector: "x", upstreamName: "y", access: "write", nonTextArguments: ["owner", "repo", "path", "sharing"], itemScopeArguments: ["owner", "repo"] })).toEqual([]);
+    expect(nonTextFactProblems({ connector: "x", upstreamName: "y", access: "write" })).toEqual([]);
+  });
+
+  it("makes the classifier scan such an argument anyway", () => {
+    const tool = mcp("create_note", { nonTextArguments: ["body", "path"] });
+    expect(classOf(tool, { body: "/deploy production" })).toBe("consequential");
+    expect(classOf(tool, { body: "plain", path: "/usr/bin" })).toBe("safe");
+    expect(prepareAgentWrite(tool, { body: "cc @alice", path: "@x" }, { allowMentions: false }).args).toEqual({ body: "cc alice", path: "@x" });
   });
 });
