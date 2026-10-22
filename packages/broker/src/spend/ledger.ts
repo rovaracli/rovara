@@ -397,23 +397,21 @@ export async function abandonKey(deps: LedgerDependencies, orgId: OrgId, keyId: 
 }
 
 /**
- * Takes a task's earlier keys out of the way of its next one (Task 31's I1): each open, reserved key is blocked at the proxy and settled, then finalized at once,
- * which releases its unspent hold, unless its operation is `currentOperationId` (the one minting now). A key of the operation that is still running may have
- * requests in flight, so it keeps the 120-second window every ended key gets (`finalizeAfter`) and the sweep finalizes it (Task 31 re-check M-1). A finalize
- * that loses both of its tries (a settle kept moving the figure) also gets the window, instead of holding until the key expires (M-2). Answers how many were
- * finalized at once.
+ * Takes a task's earlier keys out of the way of its next one (Task 31's I1): each open, reserved key is blocked at the proxy, settled and finalized at once,
+ * which releases its unspent hold, so the run's next key does not compete with its own earlier holds. This skips the 120-second window an ended key gets,
+ * and that is safe (Task 31 re-check M-1, documented rather than changed): a request the proxy admitted before the block still runs, but a finalized key keeps
+ * settling for `FINALIZED_SETTLE_WINDOW_MS`, so what it spends is still counted on every scope; it is only not held. A scope can be overshot by what such
+ * requests spend, bounded by the key's own cap and corrected at the next settle. Keeping the window for a key of the running operation would instead hold its
+ * cap beside the next key's, the early end I1 fixed. A finalize that loses both of its tries (a settle kept moving the figure) gets the window, so the sweep
+ * finalizes it, instead of holding until the key expires (M-2). Answers how many were finalized at once.
  */
-export async function supersedeKeys(deps: LedgerDependencies, orgId: OrgId, keyIds: readonly string[], options: { currentOperationId?: string | undefined } = {}): Promise<number> {
+export async function supersedeKeys(deps: LedgerDependencies, orgId: OrgId, keyIds: readonly string[]): Promise<number> {
   let finalized = 0;
   for (const keyId of new Set(keyIds)) {
     const record = await readRecord(deps, orgId, keyId);
     if (record === undefined || record.finalized || !record.reserved) continue;
     await deps.access.blockKey(keyId);
     await settleKey(deps, orgId, keyId);
-    if (options.currentOperationId !== undefined && record.tags.operationId === options.currentOperationId) {
-      await startFinalizeClock(deps, orgId, keyId);
-      continue;
-    }
     if (await finalizeKey(deps, orgId, keyId)) finalized += 1;
     else await startFinalizeClock(deps, orgId, keyId);
   }

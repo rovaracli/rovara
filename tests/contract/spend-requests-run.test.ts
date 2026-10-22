@@ -14,11 +14,11 @@ import type { AgentRouteDependencies } from "../../packages/broker/src/agents/ro
 import {
   createSpendRequest, decideSpendRequest, escalateOwnerRequests, getSpendRequest, spendApprovers, spendDecideKind,
 } from "../../packages/broker/src/spend/requests.js";
-import { settlementBudgets, SETTLEMENT_BUDGETS_MS } from "../../packages/broker/src/spend/settlement-job.js";
+import { runSpendSweep, settlementBudgets, SETTLEMENT_BUDGETS_MS } from "../../packages/broker/src/spend/settlement-job.js";
 import { supersedeKeys, finalizeKey } from "../../packages/broker/src/spend/ledger.js";
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor } from "../../packages/broker/src/developer/decide-session.js";
 import {
-  BUDGET_EXHAUSTED_FAILURE_MESSAGE, DEFAULT_AGENT_GUARDRAILS, FINALIZE_DELAY_MS, agentGuardrailsKey, OWNER_ANSWER_HOURS, SPEND_RESUME_INSTRUCTIONS, WORKFLOW_BLOCK_REASONS, TRIAL_LIMITS_R49,
+  BUDGET_EXHAUSTED_FAILURE_MESSAGE, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, OWNER_ANSWER_HOURS, SPEND_RESUME_INSTRUCTIONS, WORKFLOW_BLOCK_REASONS, TRIAL_LIMITS_R49,
   modelKeyKey, openSpendRequestsKey, orgMemberKey, ownerBudgetKey, spendCounterKey, spendRequestKey, suggestedTopUpUsd,
   type AgentId, type OrgId, type PauseScope, type SpendRequestRecord,
 } from "@agentx/contracts";
@@ -815,7 +815,7 @@ describe("the confirmation page and the routes", () => {
       version: "2.0", rawPath: `/v1/app/approve/${id}`, rawQueryString: "",
       headers: { cookie: `${DECIDE_COOKIE}=${cookie}`, ...(method === "POST" ? { origin: CELL, "content-type": "application/x-www-form-urlencoded" } : {}) },
       ...(body === undefined ? {} : { body }), requestContext: { requestId: randomUUID(), http: { method } },
-    }) as { statusCode: number; body: string };
+    });
     const shown = await raw("GET");
     expect(shown.statusCode, shown.body).toBe(200);
     for (const expected of ["Maya Chen", "$7", "$21", "payments"]) expect(shown.body, expected).toContain(expected);
@@ -877,7 +877,7 @@ describe("the settlement run", () => {
 
   it("the broker's settlement event runs escalate-owner-requests after the approvals and before the sweep", async () => {
     const t = await setup();
-    const reply = await t.handler({ source: "agentx.spend-settlement" } as never) as { body: string };
+    const reply = await t.handler({ source: "agentx.spend-settlement" }) as { body: string };
     const names = (JSON.parse(reply.body) as { jobs: Array<{ name: string }> }).jobs.map((job) => job.name);
     expect(names.indexOf("escalate-owner-requests")).toBeGreaterThan(names.indexOf("expire-approvals"));
     expect(names.indexOf("escalate-owner-requests")).toBeLessThan(names.indexOf("sweep-spend"));
@@ -896,17 +896,16 @@ describe("Task 31's carried fixes: superseding a task's earlier keys", () => {
     return { ...t, task, ask, keyId, ledger, record: () => t.db.get(modelKeyKey(TEST_ORG, keyId).pk, "META") as Record<string, unknown> & { finalized: boolean; finalizeAfter?: number } };
   }
 
-  it("M-1: a key of the operation that is still running is blocked and given the in-flight window, not finalized at once", async () => {
+  it("M-1 (documented): a superseded key of the running operation is finalized at once, and what it spends afterwards is still settled on its scopes", async () => {
     const w = await ledgerWorld();
-    await supersedeKeys(w.ledger as never, TEST_ORG, [w.keyId], { currentOperationId: w.task.operationId });
-    expect(w.record()).toMatchObject({ finalized: false });
-    expect(w.record().finalizeAfter).toBeGreaterThanOrEqual(Date.now() + FINALIZE_DELAY_MS - 5_000);
-  });
-
-  it("finalizes at once a key of an operation that has ended", async () => {
-    const w = await ledgerWorld();
-    await supersedeKeys(w.ledger as never, TEST_ORG, [w.keyId], { currentOperationId: randomUUID() });
+    await supersedeKeys(w.ledger, TEST_ORG, [w.keyId]);
     expect(w.record()).toMatchObject({ finalized: true });
+    const counter = () => (w.db.get(spendCounterKey(TEST_ORG, month(), `MEMBER#${MAYA.developerId}`).pk, `MEMBER#${MAYA.developerId}`) as { spentUsd?: number } | undefined)?.spentUsd ?? 0;
+    const before = counter();
+    // A request the proxy admitted before the block finishes and spends.
+    w.access.setKeySpent(w.access.mintedKeys()[0]!, 3);
+    await runSpendSweep(w.ledger, { budgetMs: 5_000 });
+    expect(counter()).toBeCloseTo(before + 3, 6);
   });
 
   it("M-2: a key whose finalize lost every try gets its window instead of holding until it expires", async () => {
@@ -917,9 +916,9 @@ describe("Task 31's carried fixes: superseding a task's earlier keys", () => {
         tries += 1;
         throw Object.assign(new Error("lost"), { name: "TransactionCanceledException", CancellationReasons: [{ Code: "ConditionalCheckFailed" }] });
       }
-      return w.db.send(command as never);
+      return w.db.send(command);
     } } };
-    await supersedeKeys(racing as never, TEST_ORG, [w.keyId], { currentOperationId: randomUUID() });
+    await supersedeKeys(racing, TEST_ORG, [w.keyId]);
     expect(tries).toBeGreaterThan(0);
     expect(w.record().finalized).toBe(false);
     expect(w.record().finalizeAfter).toBeDefined();

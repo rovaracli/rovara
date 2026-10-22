@@ -1668,7 +1668,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       ...(prepared.chain === undefined ? {} : { chain: prepared.chain }),
       ...(prepared.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: prepared.maxPerRunUsd }),
       // The pull requests the held preparation checks out are kept with the pause: its dispatch is built again when the run limit is raised (Task 32).
-      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, at: receivedAt, firstDispatch: { operationId: preparation.operationId, ...(prepared!.checkout.length === 0 ? {} : { checkout: [...prepared!.checkout] }) } } } : {}),
+      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, at: receivedAt, firstDispatch: { operationId: preparation.operationId, ...(prepared.checkout.length === 0 ? {} : { checkout: [...prepared.checkout] }) } } } : {}),
     }),
   };
   const index: DeveloperTaskIndexRecord = {
@@ -2162,8 +2162,8 @@ async function pauseViewOf(deps: DeveloperTaskRouteDependencies, task: Developer
   let spendRequestId: string | undefined;
   let message: string | undefined;
   if (kind !== undefined) {
-    const slot = await get<{ spendRequestId?: string }>(deps, spendRequestSlotKey(task.orgId as OrgId, `TASK#${task.taskId}`, kind));
-    const record = slot?.spendRequestId === undefined ? undefined : await get<{ orgId?: string; status?: string; reason?: string }>(deps, spendRequestKey(task.orgId as OrgId, slot.spendRequestId));
+    const slot = await get<{ spendRequestId?: string }>(deps, spendRequestSlotKey(task.orgId, `TASK#${task.taskId}`, kind));
+    const record = slot?.spendRequestId === undefined ? undefined : await get<{ orgId?: string; status?: string; reason?: string }>(deps, spendRequestKey(task.orgId, slot.spendRequestId));
     if (record?.orgId === task.orgId && record.status === "PENDING") {
       spendRequestId = slot!.spendRequestId;
       message = record.reason;
@@ -2173,7 +2173,7 @@ async function pauseViewOf(deps: DeveloperTaskRouteDependencies, task: Developer
     paused: { reason: "budget", scope, ...(spendRequestId === undefined ? {} : { spendRequestId }), ...(message === undefined ? {} : { message: capText(message, 300).text }) },
   };
   if (pause.scope.kind === "test") {
-    const capUsd = (await readSpendPolicy(deps, task.orgId as OrgId)).perTestCapUsd;
+    const capUsd = (await readSpendPolicy(deps, task.orgId)).perTestCapUsd;
     out.testOffer = { capUsd };
     out.paused = { ...out.paused!, message: `This test reached its $${String(Number(capUsd.toFixed(2)))} cap. Continue it as a normal task? It will then count against your monthly limit and ${task.project}'s budget.` };
   }

@@ -339,11 +339,10 @@ export async function mintOperationKey(deps: MintOperationDependencies, input: M
   const ledger = input.scopes !== undefined && input.tags !== undefined ? deps.ledger : undefined;
   const tags = input.tags === undefined ? undefined : input.route?.sourceId === undefined ? input.tags : { ...input.tags, source: input.route.sourceId };
   // The task's earlier keys hold their caps until they are finalized, which can be minutes after their operation ended (or an hour when nobody blocked them): the
-  // next key would compete with its own task's holds for room. They are blocked and counted first, and those of ended operations are released at once, so an
-  // ended operation's cap is not counted beside the new key's. A blocked key can still answer for a few seconds on other proxy replicas and a stream it
-  // admitted keeps going; that spend lands as late spend. A key of the operation minting now keeps its in-flight window. A proxy that cannot block one refuses
-  // the mint (retryable); nothing is lost, the steps repeat.
-  if (ledger !== undefined && input.keepEarlierKeys !== true) await supersedeKeys(ledger, input.orgId, input.taskKeyIds, { currentOperationId: input.tags?.operationId });
+  // next key would compete with its own task's holds for room. They are blocked, counted and released first, so their caps are not counted beside the new
+  // key's. A blocked key can still answer for a few seconds on other proxy replicas, and a stream it admitted keeps going: that spend is settled later as late
+  // spend (see `supersedeKeys`). A proxy that cannot block one refuses the mint (retryable); nothing is lost, the steps repeat.
+  if (ledger !== undefined && input.keepEarlierKeys !== true) await supersedeKeys(ledger, input.orgId, input.taskKeyIds);
   for (let attempt = 0; ; attempt += 1) {
     const month = monthOf(now(deps));
     const { capUsd, levels } = await planCap(deps, input, scopes, names, month);

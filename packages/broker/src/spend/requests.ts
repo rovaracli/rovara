@@ -35,7 +35,7 @@ export interface SpendRequestHost {
   /** A test run that reached its cap goes on as a normal task of its owner (`POST /v1/app/tasks/{id}/continue-as-task`). */
   continueAsTask?(caller: AgentCaller, taskId: string, body: unknown): Promise<unknown>;
   /** What a task's model keys have spent so far, in dollars (the proxy's figure); how a pause that was never written is worked out from the end. */
-  taskSpentUsd?(keyIds: readonly string[]): Promise<number>;
+  taskSpentUsd?: (keyIds: readonly string[]) => Promise<number>;
 }
 
 export type SpendRequestDependencies = AgentRouteDependencies;
@@ -71,7 +71,7 @@ const notFound = () => agentXError("NOT_FOUND", "spend request not found");
 const closed = (record: Pick<SpendRequestRecord, "status">) =>
   agentXError("APPROVAL_CLOSED", record.status === "EXPIRED" ? "This request expired, so nobody can decide it now." : "This request was already decided.");
 
-// eslint-disable-next-line no-control-regex
+ 
 const CONTROL = /[\p{Cc}\p{Cf}]/gu;
 /** A reason as it is stored: control and format characters spaced out, at most `SPEND_REQUEST_REASON_MAX` code points. */
 function cleanReason(text: string): string {
@@ -169,7 +169,7 @@ async function maintainersOrAdmins(deps: SpendRequestDependencies, orgId: OrgId,
 /** Who owns an agent, as approvers: the member owner, the owning project's maintainers (whichever project it is shared to), org admins for a built-in. */
 async function agentOwners(deps: SpendRequestDependencies, orgId: OrgId, agentId: string): Promise<SpendApprovers> {
   if (isBuiltinAgentId(agentId)) return admins(deps, orgId);
-  const agent = await deps.store.get(orgId, agentId as never);
+  const agent = await deps.store.get(orgId, agentId);
   if (agent === undefined) return admins(deps, orgId);
   if (agent.owner.kind === "member") return { role: "agent_owner", ids: [agent.owner.developerId], who: `${await nameOf(deps, agent.owner.developerId)}, the agent's owner` };
   return maintainersOrAdmins(deps, orgId, agent.owner.project, "agent_owner");
@@ -315,7 +315,7 @@ export async function createSpendRequest(deps: SpendRequestDependencies, input: 
     const draft: SpendRequestRecord = {
       orgId: input.orgId, spendRequestId: newPrefixedId("spr"), kind: input.kind,
       ...(input.scope === undefined ? {} : { scope: input.scope }), ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
-      ...(input.agentId === undefined ? {} : { agentId: input.agentId as SpendRequestRecord["agentId"] & string }),
+      ...(input.agentId === undefined ? {} : { agentId: input.agentId }),
       ...(input.newOwner === undefined ? {} : { newOwner: input.newOwner }),
       amountUsd: cleanUsd(input.amountUsd), ...(input.newLimitUsd === undefined ? {} : { newLimitUsd: cleanUsd(input.newLimitUsd) }),
       reason: "", requestedBy: input.requestedBy, approverRole: "org_admin", approverIds: [], status: "PENDING",
@@ -400,7 +400,7 @@ async function derivedPause(deps: SpendRequestDependencies, task: DeveloperTaskR
 export async function requestForPausedTask(deps: SpendRequestDependencies, taskId: string, refusal: { workflowMode?: string } = {}): Promise<SpendRequestRecord | undefined> {
   let task = await getItem(deps, taskKey(taskId)) as DeveloperTaskRecord | undefined;
   if (task?.orgId === undefined) return undefined;
-  const orgId = task.orgId as OrgId;
+  const orgId = task.orgId;
   if (task.budgetPause === undefined) {
     const scope = await derivedPause(deps, task, refusal);
     if (scope === undefined) return undefined;
@@ -474,7 +474,7 @@ export async function requestOwnerCap(deps: SpendRequestDependencies, input: {
 }): Promise<{ record: SpendRequestRecord; message: string }> {
   const reason = ownerCapSentence(await nameOf(deps, input.owner), input.wouldBeUsd, input.capUsd);
   const made = await createSpendRequest(deps, {
-    orgId: input.orgId, kind: "owner_cap", scope: { kind: "agent", agentId: input.agentId as never }, agentId: input.agentId,
+    orgId: input.orgId, kind: "owner_cap", scope: { kind: "agent", agentId: input.agentId }, agentId: input.agentId,
     ...(input.newOwner === undefined ? {} : { newOwner: { developerId: input.newOwner } }),
     amountUsd: cleanUsd(input.wouldBeUsd - input.capUsd), ...(input.newLimitUsd === undefined ? {} : { newLimitUsd: input.newLimitUsd }),
     reason, requestedBy: { kind: "member", developerId: input.requestedBy }, change: input.change,
@@ -609,7 +609,7 @@ async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendReques
   }
   switch (change.op) {
     case "set_budget": await deps.store.setBudget(record.orgId, agentId, change.budget, by, undefined, options); return;
-    case "set_owner": await deps.store.setOwner(record.orgId, agentId, change.owner as never, by, change.accountable, undefined, options); return;
+    case "set_owner": await deps.store.setOwner(record.orgId, agentId, change.owner, by, change.accountable, undefined, options); return;
     case "set_accountable": await deps.store.setAccountable(record.orgId, agentId, change.accountable, by, undefined, options); return;
     case "unarchive": await deps.store.unarchive(record.orgId, agentId, by, undefined, options); return;
   }
@@ -734,7 +734,7 @@ export async function escalateOwnerRequests(deps: SpendRequestDependencies, opti
       const orgId = item["orgId"];
       const id = item["spendRequestId"];
       if (typeof orgId !== "string" || typeof id !== "string") continue;
-      const record = await getSpendRequest(deps, orgId as OrgId, id);
+      const record = await getSpendRequest(deps, orgId, id);
       if (record === undefined || record.status !== "PENDING") {
         // A request that ended keeps no place in the due list.
         await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Delete: { TableName: deps.tableName, Key: { pk: String(item["pk"]), sk: String(item["sk"]) } } }] })).catch(() => undefined);
