@@ -5,7 +5,6 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { decideSpendRequest, escalateOwnerRequests, getSpendRequest } from "../../packages/broker/src/spend/requests.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
 import { runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { SPEND_REQUEST_TTL_DAYS } from "../../packages/contracts/src/spend.js";
 import { AgentRunStateSchema } from "../../packages/contracts/src/agent-run.js";
@@ -20,7 +19,7 @@ const BLOCKED_WORDS = "This plan's run limit is $20, which needs a project maint
 function seedHistory(w: World): void {
   for (let index = 0; index < 5; index += 1) {
     const endedAt = new Date(Date.parse("2026-10-01T00:00:00.000Z") + index * 3_600_000).toISOString();
-    w.db.set({ ...runCostKey(TEST_ORG as OrgId, "payments", "rovara-code", "QUICK", endedAt, `task-quick-${String(index)}`), entityType: "RUN_COST", orgId: TEST_ORG, project: "payments", agentId: "rovara-code", path: "QUICK", taskId: `task-quick-${String(index)}`, endedAt, costUsd: 10 });
+    w.db.set({ ...runCostKey(TEST_ORG, "payments", "rovara-code", "QUICK", endedAt, `task-quick-${String(index)}`), entityType: "RUN_COST", orgId: TEST_ORG, project: "payments", agentId: "rovara-code", path: "QUICK", taskId: `task-quick-${String(index)}`, endedAt, costUsd: 10 });
   }
 }
 
@@ -112,7 +111,7 @@ describe("a plan blocked on its run limit, through the real spend request", () =
     const id = requestsOfTask()[0]!.spendRequestId;
     const later = Date.now() + (SPEND_REQUEST_TTL_DAYS + 1) * 86_400_000;
     expect(await escalateOwnerRequests(w.deps(() => later), { budgetMs: 5_000 })).toMatchObject({ expired: 1 });
-    expect((await getSpendRequest(w.deps(), TEST_ORG as OrgId, id))!.status).toBe("EXPIRED");
+    expect((await getSpendRequest(w.deps(), TEST_ORG, id))!.status).toBe("EXPIRED");
     await expect(decideSpendRequest(w.deps(() => later), w.caller(BEN), id, { requestId: randomUUID(), decision: "APPROVE" })).rejects.toMatchObject({ code: "APPROVAL_CLOSED" });
     stillBlocked(w, taskId);
     expect(implementations()).toEqual([]);

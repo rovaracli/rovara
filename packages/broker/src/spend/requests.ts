@@ -1346,7 +1346,7 @@ async function retryHeldStarts(deps: SpendRequestDependencies, deadline: number)
           await host.resumeTask({ orgId, taskId, spendRequestId, resetRunWindow: false, firstDispatch: false });
           if (await clearHeldStart(deps, key, orgId, taskId, true)) dispatched += 1;
         } catch (error) {
-          if (memberLeft(error)) await dropMonthResume(deps, key, orgId as OrgId, taskId, spendRequestId).catch(() => undefined);
+          if (memberLeft(error)) await dropMonthResume(deps, key, orgId, taskId, spendRequestId).catch(() => undefined);
           else logLine(deps, "spend_request.month_resume_failed", { spendRequestId, taskId, error: errorName(error) });
         }
         continue;
