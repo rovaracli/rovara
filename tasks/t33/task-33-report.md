@@ -121,3 +121,121 @@ The script is `scratchpad/t33/mutate.py`. It names this worktree and branch, ref
 3. **The paused-task item is written just before the request**, not in its transaction (so a pause that finds an open request still lists its task). An item can briefly exist with no request; the next approval or expiry of the scope clears it.
 4. **An admin's approval of an agent top-up** bumps the owner version without a condition (an admin's decision is not held to the cap). This is by design, but it means an owner's concurrent approval re-routes.
 5. **Moving the test world to `tests/support/spend-world.ts`** touched Task 32's test file (imports only).
+
+---
+
+# Fix round 1
+
+**Status: DONE.** Every finding in `review-out/task-33-review.md` (1 Critical, 5 Important, 11 Minor) is fixed, and each probe P1 to P7 is now a test.
+
+- **Where:** branch `feat/agents-33`. Built in a cloud session (Node 22.22.0, `npm ci --engine-strict=false`).
+- **What was not touched:** no AWS, no secrets, no installs (the lockfile is unchanged), and no golden fixtures.
+
+## Commits (all end with the Opus 5.5 Co-Authored-By line)
+| Commit | What it does |
+|---|---|
+| `a56c579` | Merge `origin/feat/agents-32` (Task 32 fix round 1: `7c20568`, `a971a6b`, `2fbae3b`) |
+| `e31f991` | test: the failing tests (RED): P1 to P7 and the minors |
+| `71b41b9` | fix(broker): the fixes |
+
+## Step 1: the merge
+- **Text conflicts:** `requests.ts` (imports, `decideSpendRequest`, and the block after `decideMonth`) and `spend-requests-run.test.ts` (imports, and the inline test world).
+- **`requests.ts`:**
+  - `decideSpendRequest` keeps Task 32's `closedTask` and `refused` paths, then routes `month` to `decideMonth`.
+  - `decideMonth`, `agentBudgetOwner` and `reroute` sit before Task 32's held-start section.
+  - `expireOne` keeps Task 32's `because` argument.
+- **The test world:** Task 32's new `shareWith` helper moved into `tests/support/spend-world.ts`. The run test keeps its imports from the shared world, plus Task 32's `capturingAuditDeps`.
+- **One type fix in the merge:** `forgetPausedTasks` takes the narrower deps type that `expireOne` has.
+- **Checks on the merge commit:** `tsc -b` and `typecheck:all` are clean. `spend-requests-run` and `spend-requests-month` pass (98 tests) before any fix.
+
+## RED evidence
+- **Command:** `npx vitest run tests/contract/spend-requests-month.test.ts --maxWorkers=2` on `e31f991`.
+- **Result:** 18 failed, 21 passed. The 21 are the earlier tests; each of the 18 new ones fails on its own assertion, with no setup errors:
+  - P1: no `rerouted`.
+  - P2: the raise answered 200.
+  - P3 and the prune test: the items were gone.
+  - P4: routed to `agent_owner`.
+  - The sole-owner test: FORBIDDEN.
+  - P6: still `agent_owner`.
+  - P7: no resume item.
+  - P5: an item was left.
+  - M-2: the pause was removed.
+  - M-3, M-4: wrong expiry, no `spendRequestId`.
+  - M-7: the scope was stored as the duplicate.
+  - M-8: `newLimitUsd` was shown.
+  - M-9: no re-route.
+  - M-10: no `differs`.
+  - The I-1 race: the write applied.
+
+## What changed
+- **C-1, one read per decision:**
+  - `mayDecideNow` answers the `SpendApprovers` it read, and `decideMonth` takes them; it no longer calls `spendApprovers` again.
+  - When that read routed to the agent's owner (`approvers.owner` is set), the version item is conditional on its `version`. A route to `agent_owner` without the owner's figures fails closed.
+  - A failed condition re-routes as before.
+  - **P1 test:** a third agent's $15 raise lands just after the authorising read. The request ends PENDING, `rerouted: true`, `org_admin`, with a top-up of 0, and the `spend_request.rerouted` audit with mode `recounted` is flushed (M-5).
+  - **One change from the probe:** the probe raised on the *second* `ownerAgents` call. With one read per decision there is no second call before the write, so the test raises just after the first read (the authorising one). The old code fails this test.
+- **I-1, the cap is on the effective total:**
+  - **Ruling taken:** the cap covers base plus this month's top-ups, the figure Task 33 routes on.
+  - `holdingCap` (agent routes) passes `effectiveOwnerCap` (requests.ts) to `ownerBudgetRefusal`. That reads `ownerEffectiveTotal`: the total, the counter's base and the counter's `version`, all from one read of the counter item.
+  - An over-cap change gets Task 28/32's 202 `NEEDS_ADMIN_APPROVAL` answer.
+  - Otherwise the store gets `OwnerCap.seen`. `ownerTotalItems` holds the owner's raise to the cap less the top-ups, **and** to the counter's `version` (`atVersion`), so a top-up approved after the read fails the write.
+  - On that refusal, `holdingCap` reads again: if the change is now over the cap it asks an admin, and if only the version moved it writes once more.
+  - Rovara's own moves (`noteOwnerCap`) still check the counter alone. Doc comments were updated in owner-total.ts, store.ts (`OwnerCap`), settings.ts and routes.ts.
+  - **P2 test:** the $15 raise answers 202 and the budget is unchanged, while a $10 raise still answers 200.
+  - **Race test:** a top-up approved between the route's read and the store's write makes the write refuse.
+- **I-2, expiry keeps the items:**
+  - `forgetPausedTasks` is replaced by `prunePausedTasks`, which deletes only the items whose task is gone, closed, or no longer paused on that scope.
+  - P3 is a regression test, the old expiry test now expects the item to stay, and a new test covers the prune.
+- **I-3 and M-11, month requests carry `requestedFor`:**
+  - A member's own request is for the asker (the survivor). A pause's request is for the task's starter (`startedBy`, else the owner).
+  - `starterMayDecide` treats `month` like `max_per_run`: never, unless the person is the org's only owner or admin. `withoutStarter` then routes to the others, falling back to the org's other owners and admins.
+  - `mayDecideNow`'s "the asker" branch uses the same rule for `month`.
+  - **Tests:**
+    - P4: routed to `org_admin` [Ada, Deb]; Maya is FORBIDDEN and Deb approves.
+    - The sole owner approves their own member month.
+    - A pause's request is FORBIDDEN to its starter (Deb), and Ada approves it.
+  - Month requests still don't escalate; with this routing nothing is left to escalate to.
+- **I-4, the live limit:**
+  - `unclampedAgentLimit` is the agent's base plus this month's top-up, before the clamp. `agentMonth` routes to the admins when that plus the amount is over `maxAgentMonthlyUsd`.
+  - `decideMonth` refuses (CONFIG_INVALID, the request stays PENDING) any agent approval whose new limit is over the guardrail, whoever decides.
+  - **P6 test:** the second $15 goes to the admins, Maya is FORBIDDEN, and Deb is refused. A $5 approval (exactly $50) is the owner's again and applies.
+- **I-5, retried resumes:**
+  - The transaction that removes a pause also writes a due item (`HELD_SPEND_STARTS`, `resume: "month"`, Task 32's held-start list), and the item is deleted after a successful resume.
+  - `retryHeldStarts` handles these items: it resumes the task again, or drops the item once the task is gone, closed or paused again, or after 7 days.
+  - **P7 test:** the failed task has an item, the next settlement run resumes it (`heldStarts: 1`), and the item is gone.
+- **Minors:**
+  - **M-1:** the paused-task item is written after the no-limit check, and still before the open-request lookup (the order the review asked to keep).
+  - **M-2:** the pause removal is conditional on the listed `pausedAt`. The item's delete is also conditional on it, so a listing a new pause wrote is kept.
+  - **M-3:**
+    - A month request expires after 7 days or at the end of its UTC month, whichever comes first.
+    - The task view looks for the request by the pause's month first, then the current month.
+  - **M-4:** the task view also looks in the slots of the task's starter and owner, not only `system`.
+  - **M-5:** the re-route audit is asserted in the P1 test.
+  - **M-6:** a test closes the task between the approval's read and its write: the task is neither unpaused nor resumed, and no resume item is left.
+  - **M-7:** a member or testing scope is stored as its survivor.
+  - **M-8:**
+    - `spendRequestView` takes the viewer: an org-scope request leaves out `newLimitUsd` for anyone not an owner or admin. This applies to the POST answer, the list and GET.
+    - On an install where the org has no monthly limit, a non-admin's org-scope ask gets "you can't ask for more of that budget".
+  - **M-9:** an owner's approval carries a ConditionCheck on the spend policy revision that `agentMonth` read. A failure re-routes (test: an admin lowers the cap to $85 mid-decision).
+  - **M-10:** asking again with a different amount or reason answers 200 with `differs: true`.
+  - `spendRequestView` also hides the stored `topUpMonth`.
+
+## GREEN, tests and counts
+- **`spend-requests-month.test.ts`:** 39 passed (21 earlier + 18 new).
+- **`spend-requests-run.test.ts`:** 78 passed (Task 32's fix round included).
+- **Related suites:** 20 files, 1,124 passed. These are the 18 files listed above plus `agent-routes` and `audit-hooks-plan3` (the agent budget route and the spend policy route are touched).
+- **`npx tsc -b`:** clean.
+- **`npm run typecheck:all`:** clean (stricter check 0, baseline 0).
+- **eslint:** clean on every changed file. It needed `NODE_OPTIONS=--max-old-space-size=6144` here; the default heap ran out.
+- **Quick mutants:** each was killed by one new test, and the sources were restored from a copy:
+  - no version condition on Task 28's raise;
+  - the policy ConditionCheck not treated as a race;
+  - no month-resume retry;
+  - `month` dropped from `starterMayDecide`.
+  - The review's survivors M3, M4 and M5 are now covered by the M-5, M-6 and M-3 tests.
+
+## Notes and left as they are
+- **A pause's request** is for the starter of the first task that paused on the scope. Starters of later tasks paused on the same scope are not excluded (one request per month and scope).
+- **A Continue (Task 32) doesn't withdraw a month's system request** (it lives in a `MONTH#` slot). Its later approval just drops the item for that task, as the review judged acceptable.
+- **An admin's agent top-up still bumps the version without a condition** (Concern 4). Two admin approvals racing on one agent can each pass the live guardrail check. The clamp still holds the money, so this is left as it is.
+- **Task 37 staging:** add an owner's budget raise refused after a top-up (I-1), and a month request made on the 30th expiring at midnight UTC (M-3).
