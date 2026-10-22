@@ -231,4 +231,16 @@ describe("FakeDynamoDb ReturnValues", () => {
     }
     expect(db.get("ITEM#1", "META")?.n).toBe(3);
   });
+
+  it("refuses ALL_NEW on a Put and a Delete, as DynamoDB does, and still answers ALL_OLD there", async () => {
+    const db = new FakeDynamoDb();
+    await db.send(new PutCommand({ TableName: TABLE, Item: { pk: "ITEM#1", sk: "META", n: 1 } }));
+    expect(await validationError(db.send(new PutCommand({ TableName: TABLE, Item: { pk: "ITEM#1", sk: "META", n: 2 }, ReturnValues: "ALL_NEW" })))).toContain("ALL_NEW");
+    expect(await validationError(db.send(new DeleteCommand({ TableName: TABLE, Key: { pk: "ITEM#1", sk: "META" }, ReturnValues: "ALL_NEW" })))).toContain("ALL_NEW");
+    expect(db.get("ITEM#1", "META")?.n).toBe(1);
+    const replaced = await db.send(new PutCommand({ TableName: TABLE, Item: { pk: "ITEM#1", sk: "META", n: 2 }, ReturnValues: "ALL_OLD" })) as { Attributes?: { n: number } };
+    expect(replaced.Attributes?.n).toBe(1);
+    const deleted = await db.send(new DeleteCommand({ TableName: TABLE, Key: { pk: "ITEM#1", sk: "META" }, ReturnValues: "ALL_OLD" })) as { Attributes?: { n: number } };
+    expect(deleted.Attributes?.n).toBe(2);
+  });
 });

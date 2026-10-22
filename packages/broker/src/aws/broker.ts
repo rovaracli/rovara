@@ -2165,16 +2165,16 @@ async function authorizeGitHubConnector(dependencies: AwsBrokerDependencies, ide
  * (`orgId`), and none when it has no org or no org connections are configured: it never falls back to credentials that
  * belong to the whole install.
  *
- * Plan 2, Task 15: `scope` says whose work a GitHub token the connectors mint is for; it is asked only when one is minted. Without it the
- * scope is `orgId`'s (`githubScope`), so a cloud caller whose org is unknown mints nothing.
+ * Plan 2, Task 15: `scope` says whose work a GitHub token the connectors mint is for; it is asked only when one is minted. It is required, so
+ * every caller names the scope its token is for and none inherits one by default.
  */
-export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "githubMcp" | "credentialRegistry" | "orgConnections" | "cloud">, orgId?: OrgId, scope?: () => Promise<GitHubTokenScope>): ConnectorTypeContext {
+export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "githubMcp" | "credentialRegistry" | "orgConnections" | "cloud">, orgId: OrgId | undefined, scope: () => Promise<GitHubTokenScope>): ConnectorTypeContext {
   let credentialRegistry: ConnectorCredentials | undefined = dependencies.credentialRegistry;
   if (dependencies.cloud === true) {
     credentialRegistry = dependencies.orgConnections !== undefined && orgId !== undefined ? orgCredentialRegistry(dependencies.orgConnections, orgId) : undefined;
   }
   return {
-    ...(dependencies.githubMcp ? { githubMcp: githubMcpFor(dependencies.githubMcp, scope ?? (async () => githubScope(dependencies, orgId))) } : {}),
+    ...(dependencies.githubMcp ? { githubMcp: githubMcpFor(dependencies.githubMcp, scope) } : {}),
     ...(credentialRegistry ? { credentialRegistry } : {}),
   };
 }

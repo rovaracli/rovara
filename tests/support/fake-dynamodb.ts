@@ -213,6 +213,10 @@ export class FakeDynamoDb {
         if (returnValues !== undefined && !["NONE", "ALL_OLD", "ALL_NEW"].includes(returnValues)) {
           throw Object.assign(new Error(`FakeDynamoDb does not model ReturnValues ${returnValues}`), { name: "ValidationException", $metadata: {} });
         }
+        // DynamoDB answers ALL_NEW only for an update: a Put or a Delete takes NONE or ALL_OLD.
+        if (returnValues === "ALL_NEW" && command.constructor.name !== "UpdateCommand") {
+          throw Object.assign(new Error(`1 validation error detected: Value 'ALL_NEW' at 'returnValues' failed to satisfy constraint: Member must satisfy enum value set: [NONE, ALL_OLD] (${command.constructor.name.replace("Command", "")})`), { name: "ValidationException", $metadata: {} });
+        }
         const before = this.get(key.pk, key.sk);
         this.commit([toAction(command.constructor.name.replace("Command", "") as WriteAction["kind"], input)], "ConditionalCheckFailedException");
         // ReturnValues: the item as it was (ALL_OLD) or is now (ALL_NEW), which needs only the write's own permission on a real table.

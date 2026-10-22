@@ -665,8 +665,11 @@ describe("orgCredentialRegistry", () => {
 });
 
 describe("connectorTypeContext", () => {
-  type Context = { credentialRegistry?: { registration(ref: string): Promise<unknown>; typeOf(ref: string): Promise<unknown> } };
-  let contextOf: (dependencies: Record<string, unknown>, orgId?: OrgId) => Context;
+  type Context = {
+    credentialRegistry?: { registration(ref: string): Promise<unknown>; typeOf(ref: string): Promise<unknown> };
+    githubMcp?: { credentials(repository: unknown, access: unknown): Promise<unknown> };
+  };
+  let contextOf: (dependencies: Record<string, unknown>, orgId: OrgId | undefined, scope: () => Promise<unknown>) => Context;
 
   beforeAll(async () => {
     await loadSlackBroker();
@@ -674,30 +677,40 @@ describe("connectorTypeContext", () => {
     contextOf = broker.connectorTypeContext;
   });
 
+  const noToken = () => Promise.reject(new Error("no token is minted when only the registry is read"));
   const installWide = { registration: async () => ({ ref: "install" }), typeOf: async () => "static-secret", provider: () => ({}) };
 
   it("keeps the install-wide registry on a private install, whatever the org", () => {
     const { deps } = setup();
-    expect(contextOf({ credentialRegistry: installWide, orgConnections: deps }, ORG_A).credentialRegistry).toBe(installWide);
-    expect(contextOf({ credentialRegistry: installWide }).credentialRegistry).toBe(installWide);
-    expect(contextOf({}).credentialRegistry).toBeUndefined();
+    expect(contextOf({ credentialRegistry: installWide, orgConnections: deps }, ORG_A, noToken).credentialRegistry).toBe(installWide);
+    expect(contextOf({ credentialRegistry: installWide }, undefined, noToken).credentialRegistry).toBe(installWide);
+    expect(contextOf({}, undefined, noToken).credentialRegistry).toBeUndefined();
   });
 
   it("serves a cloud org only its own connections, never the install-wide registry", async () => {
     const { deps } = setup();
     await new OrgConnectionStore(deps).put({ orgId: ORG_A, connection: LINEAR, secret: { apiKey: LINEAR_KEY }, by: ALICE });
     const cloud = { cloud: true, credentialRegistry: installWide, orgConnections: deps };
-    const forA = contextOf(cloud, ORG_A).credentialRegistry!;
+    const forA = contextOf(cloud, ORG_A, noToken).credentialRegistry!;
     expect(await forA.typeOf(CON_A)).toBe("static-secret");
     expect(await forA.registration("install")).toBeUndefined();
-    const forB = contextOf(cloud, ORG_B).credentialRegistry!;
+    const forB = contextOf(cloud, ORG_B, noToken).credentialRegistry!;
     expect(await forB.typeOf(CON_A)).toBeUndefined();
     expect(await forB.registration(CON_A)).toBeUndefined();
   });
 
+  it("mints a GitHub token only under the scope the caller named, whatever org the registry is for", async () => {
+    const minted: unknown[] = [];
+    const githubMcp = { credentials: async (_repository: unknown, _access: unknown, scope: unknown) => { minted.push(scope); return "token"; } };
+    const context = contextOf({ cloud: true, githubMcp }, ORG_A, async () => ({ orgId: ORG_B }));
+    expect(minted).toEqual([]);
+    await context.githubMcp!.credentials({ owner: "o", name: "r" }, "read");
+    expect(minted).toEqual([{ orgId: ORG_B }]);
+  });
+
   it("gives a cloud caller with no org, or a cloud install with no org connections, no registry", () => {
     const { deps } = setup();
-    expect(contextOf({ cloud: true, credentialRegistry: installWide, orgConnections: deps }).credentialRegistry).toBeUndefined();
-    expect(contextOf({ cloud: true, credentialRegistry: installWide }, ORG_A).credentialRegistry).toBeUndefined();
+    expect(contextOf({ cloud: true, credentialRegistry: installWide, orgConnections: deps }, undefined, noToken).credentialRegistry).toBeUndefined();
+    expect(contextOf({ cloud: true, credentialRegistry: installWide }, ORG_A, noToken).credentialRegistry).toBeUndefined();
   });
 });
