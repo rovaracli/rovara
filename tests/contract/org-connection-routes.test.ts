@@ -6,6 +6,7 @@ import { agentRequestKey } from "../../packages/contracts/src/org-scoped-keys.js
 import { connectionKey } from "../../packages/contracts/src/connections.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
+import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets, orgConnectorSecretName } from "../../packages/broker/src/connections/org-secrets.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
@@ -35,7 +36,7 @@ interface Body { connection: Shown; connections: Shown[]; ok: boolean; message?:
 type Reply = { status: number; body: Body };
 const errorOf = (reply: Reply) => reply.body.error;
 
-async function setup(options: { addresses?: () => string[]; fetch?: typeof fetch; tools?: () => unknown[]; people?: Array<[Developer, OrgRole, OrgId?]>; cloud?: boolean } = {}) {
+async function setup(options: { addresses?: () => string[]; fetch?: typeof fetch; tools?: () => unknown[]; people?: Array<[Developer, OrgRole, OrgId?]>; cloud?: boolean; agents?: boolean } = {}) {
   const fake = new FakeOrgSecrets({ env: ENV, now: Date.now });
   const secrets = new OrgSecrets({ env: ENV, roleArn: FAKE_CONNECTOR_ROLE_ARN, sts: fake.sts, secretsFor: fake.secretsFor, now: Date.now });
   const audit = capturingAuditDeps();
@@ -47,7 +48,7 @@ async function setup(options: { addresses?: () => string[]; fetch?: typeof fetch
     orgResolver, register: false, audit,
     brokerExtra: {
       ...(options.cloud === true ? { cloud: true } : {}),
-      agents: { projectMembers: new FakeProjectMembers() },
+      ...(options.agents === false ? {} : { agents: { projectMembers: new FakeProjectMembers() } }),
       orgConnections: { documentClient: { send: (command: unknown) => holder.db!.send(command) }, tableName: "state", env: ENV, secrets, now: Date.now },
       connectionChecks: { checkEndpoint, listMcpTools, fetch: fetchImplementation },
     },
@@ -67,7 +68,7 @@ async function setup(options: { addresses?: () => string[]; fetch?: typeof fetch
   };
   const create = async (who: Developer, connection: Record<string, unknown>, secret?: Record<string, unknown>, requestId?: string) =>
     call(who, "POST", "/v1/app/connections", { connection, ...(secret === undefined ? {} : { secret }) }, requestId);
-  return { h, fake, audit, call, create, checkEndpoint, listMcpTools, fetchImplementation };
+  return { h, fake, audit, call, create, checkEndpoint, listMcpTools, fetchImplementation, secrets };
 }
 
 const LINEAR = { type: "linear", label: "Team Linear", access: "read" };
@@ -350,6 +351,56 @@ describe("closing an org", () => {
     }
     expect(fake.stored(orgConnectorSecretName(ENV, ORG_B, theirs))!.deleteAt).toBeUndefined();
     expect(h.db.get(connectionKey(ORG_B, theirs))).toBeDefined();
+  });
+});
+
+describe("closing an org when the agent routes are not set up", () => {
+  it("still schedules the deletion of the connection secrets, because the connections do not depend on the agents", async () => {
+    const { call, fake, h, secrets } = await setup({ cloud: true, agents: false, people: [[MAYA, "owner"]] });
+    const store = new OrgConnectionStore({ documentClient: h.db, tableName: "state", env: ENV, secrets, now: Date.now });
+    const id = "con_aaaaaaaaaaaaaaaaaaaa";
+    await store.put({ orgId: TEST_ORG, connection: { connectionId: id, type: "linear", label: "L", access: "read" }, secret: { apiKey: "k1" }, by: MAYA.developerId });
+    expect((await call(MAYA, "GET", "/v1/app/connections")).status).toBe(404); // the routes need the agents' dependencies
+    const left = await call(MAYA, "POST", "/v1/app/org/leave", {});
+    expect(left.status, JSON.stringify(left.body)).toBe(200);
+    expect(fake.stored(orgConnectorSecretName(ENV, TEST_ORG, id))!.deleteAt).toBeGreaterThan(START);
+    expect(h.db.get(connectionKey(TEST_ORG, id))).toBeUndefined();
+  });
+});
+
+describe("a lookup that fails while a connection is checked", () => {
+  it("answers a retryable 503, records no check and no request item, and the same request id runs the check once the lookup works", async () => {
+    let failing = false;
+    const { create, call, h } = await setup({ addresses: () => { if (failing) throw new Error("ETIMEOUT"); return ["52.1.2.3"]; } });
+    const id = (await create(DANA, MCP, { token: "t1" })).body.connection.connectionId;
+    failing = true;
+    const requestId = randomUUID();
+    const failed = await call(DANA, "POST", `/v1/app/connections/${id}/check`, {}, requestId);
+    expect(failed.status).toBe(503);
+    expect(errorOf(failed).code).toBe("RUNTIME_UNAVAILABLE");
+    expect((await call(DANA, "GET", `/v1/app/connections/${id}`)).body.connection.lastCheck).toBeUndefined();
+    expect(h.db.get(agentRequestKey(TEST_ORG, DANA.developerId, requestId))).toBeUndefined();
+    failing = false;
+    expect((await call(DANA, "POST", `/v1/app/connections/${id}/check`, {}, requestId)).body).toEqual({ ok: true, message: "2 tools" });
+  });
+});
+
+describe("a secret never reaches the logs when a request fails", () => {
+  it("keeps the secret out of every log line and response when an unexpected error ends the request", async () => {
+    const lines: string[] = [];
+    const spies = (["log", "error", "warn", "info", "debug"] as const).map((method) => vi.spyOn(console, method).mockImplementation((...parts: unknown[]) => { lines.push(parts.map(String).join(" ")); }));
+    const { h, create } = await setup();
+    const real = h.db.send.bind(h.db);
+    vi.spyOn(h.db, "send").mockImplementation(((command: { constructor: { name: string } }) => {
+      if (command.constructor.name === "TransactWriteCommand") return Promise.reject(new Error("the table failed"));
+      return real(command as never);
+    }));
+    const failed = await create(DANA, LINEAR, { apiKey: LINEAR_KEY });
+    spies.forEach((spy) => spy.mockRestore());
+    expect(failed.status).toBeGreaterThanOrEqual(400);
+    expect(JSON.stringify(failed.body)).not.toContain(LINEAR_KEY);
+    expect(lines.join("\n")).toContain("request.unexpected_error");
+    expect(lines.join("\n")).not.toContain(LINEAR_KEY);
   });
 });
 

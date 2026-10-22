@@ -658,7 +658,9 @@ describe("orgCredentialRegistry", () => {
   it("does not leak a token into the error when the stored secret is malformed", async () => {
     const { deps, fake } = setup();
     await savedStore(deps, LINEAR, { apiKey: LINEAR_KEY });
-    fake.stored(orgConnectorSecretName(ENV, ORG_A, CON_A))!.value = `{"apiToken":"${LINEAR_KEY}"}`;
+    // The connection reads the version its save wrote, so the stored version is the one corrupted.
+    const stored = fake.stored(orgConnectorSecretName(ENV, ORG_A, CON_A))!;
+    stored.history.at(-1)!.value = `{"apiToken":"${LINEAR_KEY}"}`;
     const failure = await code(orgCredentialRegistry(deps, ORG_A).provider(CON_A).issue({}, "read"));
     expect(failure?.name).toBe("CredentialUnavailable");
     expect(failure?.message).not.toContain(LINEAR_KEY);

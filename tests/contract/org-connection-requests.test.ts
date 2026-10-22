@@ -8,6 +8,8 @@ import type { OrgId } from "../../packages/contracts/src/org.js";
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
 import { OrgSecrets, orgConnectorSecretName, orgHookSecretName } from "../../packages/broker/src/connections/org-secrets.js";
 import { HookSecretStore, OrgConnectionStore, clearOrgConnections, connectionActorIds } from "../../packages/broker/src/connections/store.js";
+import { orgCredentialRegistry } from "../../packages/broker/src/connections/registry.js";
+import { DescribeSecretCommand, DeleteSecretCommand } from "@aws-sdk/client-secrets-manager";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";
 
@@ -206,5 +208,161 @@ describe("OrgSecrets.scheduleDelete", () => {
     await secrets.put(ORG_A, orgConnectorSecretName(ENV, ORG_A, CON_A), "v");
     await secrets.scheduleDelete(ORG_A, orgConnectorSecretName(ENV, ORG_A, CON_A));
     await expect(secrets.scheduleDelete(ORG_A, orgConnectorSecretName(ENV, ORG_A, CON_A))).resolves.toBeUndefined();
+  });
+});
+
+const deferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+};
+
+describe("the secret a connection uses is the version its winning save wrote", () => {
+  it("never uses the token of a save that lost the race, even when that save wrote its secret last", async () => {
+    const { deps, secrets, allow, db } = setup();
+    await new OrgConnectionStore({ ...deps, checkEndpoint: allow }).put({ orgId: ORG_A, connection: MCP, secret: { token: "t-old" }, by: ALICE });
+    // Admin B moves the connection to vendor B with vendor B's token; admin A, who read the same record, sends vendor A's new token. B writes
+    // its secret first, A writes its secret second (so A's is the newest version), and then B commits and A is refused.
+    const gate = (wrote: () => void, release: Promise<void>) => ({
+      read: secrets.read.bind(secrets),
+      scheduleDelete: secrets.scheduleDelete.bind(secrets),
+      put: async (orgId: string, name: string, value: string) => {
+        const version = await secrets.put(orgId, name, value);
+        wrote();
+        await release;
+        return version;
+      },
+    });
+    const bWrote = deferred(); const bRelease = deferred(); const aWrote = deferred(); const aRelease = deferred();
+    const storeB = new OrgConnectionStore({ ...deps, secrets: gate(bWrote.resolve, bRelease.promise), checkEndpoint: allow });
+    const storeA = new OrgConnectionStore({ ...deps, secrets: gate(aWrote.resolve, aRelease.promise), checkEndpoint: allow });
+    const saveB = storeB.put({ orgId: ORG_A, connection: { ...MCP, endpoint: "https://mcp.vendor-b.dev/mcp" }, secret: { token: "t-B" }, by: ALICE });
+    await bWrote.promise;
+    const saveA = storeA.put({ orgId: ORG_A, connection: MCP, secret: { token: "t-A" }, by: ALICE });
+    const refusedA = code(saveA);
+    await aWrote.promise;
+    bRelease.resolve();
+    await saveB;
+    aRelease.resolve();
+    expect((await refusedA)?.code).toBe("CHANGE_STALE");
+    // The record says vendor B; every use of the secret reads B's version, never the newer one A wrote.
+    const tokens: string[] = [];
+    const checker = new OrgConnectionStore({ ...deps, checkEndpoint: allow, listMcpTools: (async (request: { token: string }) => { tokens.push(request.token); return []; }) });
+    expect((await checker.check(ORG_A, CON_A)).ok).toBe(true);
+    const issued = await orgCredentialRegistry(deps, ORG_A).provider(CON_A).issue({}, "read");
+    expect(tokens).toEqual(["t-B"]);
+    expect(issued.token).toBe("t-B");
+    expect(db.get(connectionKey(ORG_A, CON_A))?.endpoint).toBe("https://mcp.vendor-b.dev/mcp");
+  });
+
+  it("keeps the version on the record out of every read", async () => {
+    const { store, db } = setup();
+    await store.put({ orgId: ORG_A, connection: LINEAR, secret: { apiKey: "k1" }, by: ALICE });
+    const stored = db.get(connectionKey(ORG_A, CON_A));
+    expect(typeof stored?.secretVersion).toBe("string");
+    expect(JSON.stringify([await store.get(ORG_A, CON_A), await store.list(ORG_A)])).not.toContain(String(stored?.secretVersion));
+  });
+
+  it("keeps the saved version when only the settings change, and takes the new one with a new secret", async () => {
+    const { store, db } = setup();
+    await store.put({ orgId: ORG_A, connection: LINEAR, secret: { apiKey: "k1" }, by: ALICE });
+    const first = db.get(connectionKey(ORG_A, CON_A))?.secretVersion;
+    await store.put({ orgId: ORG_A, connection: { ...LINEAR, label: "Renamed" }, by: ALICE });
+    expect(db.get(connectionKey(ORG_A, CON_A))?.secretVersion).toBe(first);
+    await store.put({ orgId: ORG_A, connection: LINEAR, secret: { apiKey: "k2" }, by: ALICE });
+    expect(db.get(connectionKey(ORG_A, CON_A))?.secretVersion).not.toBe(first);
+  });
+});
+
+describe("a create is new", () => {
+  it("refuses an id that exists, before any secret is written, and when asked to create it never takes the update path", async () => {
+    const { store, fake } = setup();
+    await store.put({ orgId: ORG_A, connection: LINEAR, secret: { apiKey: "k1" }, by: ALICE });
+    const writes = fake.calls.length;
+    const refused = await code(store.put({ orgId: ORG_A, connection: { ...LINEAR, label: "Other" }, secret: { apiKey: "k2" }, by: ALICE, requireNew: true }));
+    expect(refused?.code).toBe("CONFIG_INVALID");
+    expect(fake.calls.length).toBe(writes);
+    expect((await store.get(ORG_A, CON_A))?.label).toBe("Linear");
+  });
+
+  it("is refused in the transaction when the connection appeared after it was read", async () => {
+    const { deps, db } = setup();
+    let raced = false;
+    const other = new OrgConnectionStore(deps);
+    const store = new OrgConnectionStore({ ...deps, documentClient: { send: async (command: unknown) => {
+      if ((command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand" && !raced) {
+        raced = true;
+        await other.put({ orgId: ORG_A, connection: LINEAR, by: "b".repeat(64) });
+      }
+      return db.send(command as never);
+    } } });
+    expect((await code(store.put({ orgId: ORG_A, connection: { ...LINEAR, label: "Mine" }, by: ALICE, requireNew: true })))?.code).toBe("CHANGE_STALE");
+    expect((await other.get(ORG_A, CON_A))?.label).toBe("Linear");
+  });
+});
+
+describe("a lookup that fails during a check is not a result", () => {
+  it("propagates a retryable error, records no check and no request item, and a retry with the same request id runs the check", async () => {
+    const { deps, db } = setup();
+    let failing = false;
+    const tools = vi.fn(async () => [{ name: "a" }]);
+    const store = new OrgConnectionStore({ ...deps, listMcpTools: tools as never, checkEndpoint: async (url) => { await checkEndpointUrl(url, async () => { if (failing) throw new Error("ETIMEOUT"); return ["52.1.2.3"]; }); } });
+    await store.put({ orgId: ORG_A, connection: MCP, secret: { token: "t" }, by: ALICE });
+    failing = true;
+    const failed = await code(store.check(ORG_A, CON_A, request(R1)));
+    expect(failed?.code).toBe("RUNTIME_UNAVAILABLE");
+    expect((await store.get(ORG_A, CON_A))?.lastCheck).toBeUndefined();
+    expect(db.get(agentRequestKey(ORG_A, ALICE, R1))).toBeUndefined();
+    failing = false;
+    expect(await store.check(ORG_A, CON_A, request(R1))).toEqual({ ok: true, message: "1 tool" });
+  });
+});
+
+describe("OrgSecrets versions", () => {
+  it("returns the version a write made and reads a named version even after a newer one is current", async () => {
+    const { secrets } = setup();
+    const name = orgConnectorSecretName(ENV, ORG_A, CON_A);
+    const v1 = await secrets.put(ORG_A, name, "one");
+    const v2 = await secrets.put(ORG_A, name, "two");
+    expect(v1).toEqual(expect.any(String));
+    expect(v2).not.toBe(v1);
+    expect(await secrets.read(ORG_A, name)).toBe("two");
+    expect(await secrets.read(ORG_A, name, v1)).toBe("one");
+    expect(await secrets.read(ORG_A, name, "00000000-0000-4000-8000-ffffffffffff")).toBeUndefined();
+  });
+});
+
+describe("OrgSecrets.scheduleDelete, when Secrets Manager says the request is invalid", () => {
+  const name = orgConnectorSecretName(ENV, ORG_A, CON_A);
+  /** A session whose DeleteSecret is refused as invalid, with DescribeSecret answering as given. */
+  function refusingDelete(describe: () => Promise<{ DeletedDate?: Date }>) {
+    const { fake, clock } = setup();
+    const secrets = new OrgSecrets({
+      env: ENV, roleArn: FAKE_CONNECTOR_ROLE_ARN, sts: fake.sts, now: () => clock.now,
+      secretsFor: (credentials) => {
+        const real = fake.secretsFor(credentials);
+        return { send: async (command) => {
+          if (command instanceof DeleteSecretCommand) throw Object.assign(new Error("invalid"), { name: "InvalidRequestException" });
+          if (command instanceof DescribeSecretCommand) return describe();
+          return real.send(command);
+        } };
+      },
+    });
+    return { secrets, fake };
+  }
+
+  it("is done when the secret has a deletion date", async () => {
+    const { secrets } = refusingDelete(async () => ({ DeletedDate: new Date(START) }));
+    await expect(secrets.scheduleDelete(ORG_A, name)).resolves.toBeUndefined();
+  });
+
+  it("is refused, naming only the class, when the secret has no deletion date, so a live secret is never reported cleared", async () => {
+    const { secrets } = refusingDelete(async () => ({}));
+    expect(await code(secrets.scheduleDelete(ORG_A, name))).toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("InvalidRequestException") as string });
+  });
+
+  it("is refused, failing closed, when the secret cannot be described either", async () => {
+    const { secrets } = refusingDelete(async () => { throw Object.assign(new Error("denied"), { name: "AccessDeniedException" }); });
+    expect((await code(secrets.scheduleDelete(ORG_A, name)))?.code).toBe("RUNTIME_UNAVAILABLE");
   });
 });

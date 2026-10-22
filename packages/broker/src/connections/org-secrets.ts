@@ -4,7 +4,7 @@
 // through a ConnectorSecretsRole session that AssumeRole tagged with the org, and the role's policy lets that session
 // reach only its own org's secrets. This class checks the org id and the secret name before any AWS call, so a
 // key-building mistake is refused here as well as by IAM. A value is never logged and never put in an error.
-import { CreateSecretCommand, DeleteSecretCommand, GetSecretValueCommand, PutSecretValueCommand } from "@aws-sdk/client-secrets-manager";
+import { CreateSecretCommand, DeleteSecretCommand, DescribeSecretCommand, GetSecretValueCommand, PutSecretValueCommand } from "@aws-sdk/client-secrets-manager";
 import { AssumeRoleCommand, type AssumeRoleCommandOutput } from "@aws-sdk/client-sts";
 import { OrgIdSchema, agentXError, type OrgId } from "@agentx/contracts";
 
@@ -35,11 +35,11 @@ export interface AssumedCredentials {
   expiration: Date;
 }
 
-export type SecretsCommand = GetSecretValueCommand | PutSecretValueCommand | CreateSecretCommand | DeleteSecretCommand;
+export type SecretsCommand = GetSecretValueCommand | PutSecretValueCommand | CreateSecretCommand | DeleteSecretCommand | DescribeSecretCommand;
 
 /** The Secrets Manager calls the broker makes with a session: nothing else, in particular never TagResource or UntagResource. */
 export interface SecretsClient {
-  send(command: SecretsCommand): Promise<{ SecretString?: string; ARN?: string }>;
+  send(command: SecretsCommand): Promise<{ SecretString?: string; ARN?: string; VersionId?: string; DeletedDate?: Date }>;
 }
 
 export interface StsClient {
@@ -73,11 +73,14 @@ export class OrgSecrets {
     this.now = input.now ?? Date.now;
   }
 
-  /** The secret's value, or undefined when Secrets Manager cannot find it. */
-  async read(orgId: string, name: string): Promise<string | undefined> {
+  /**
+   * The secret's value, or undefined when Secrets Manager cannot find it. With `versionId` it reads exactly that version, which stays
+   * readable after a newer one is current: a connection reads the version its own save wrote, never one a refused save wrote later.
+   */
+  async read(orgId: string, name: string, versionId?: string): Promise<string | undefined> {
     const org = this.admit(orgId, name);
     try {
-      const response = await this.run(org, (client) => client.send(new GetSecretValueCommand({ SecretId: name })));
+      const response = await this.run(org, (client) => client.send(new GetSecretValueCommand({ SecretId: name, ...(versionId === undefined ? {} : { VersionId: versionId }) })));
       return response.SecretString;
     } catch (error) {
       if (errorName(error) === "ResourceNotFoundException") return undefined;
@@ -87,17 +90,21 @@ export class OrgSecrets {
 
   /**
    * Creates the secret with the tag `rovara:org=<orgId>` (Secrets Manager also authorizes that as TagResource), or when it
-   * exists stores a new version. It never calls TagResource or UntagResource itself.
+   * exists stores a new version. It never calls TagResource or UntagResource itself. It returns the id of the version it wrote, which the
+   * caller records and later reads by (`read` with `versionId`), so what is used is what its own save wrote and nothing a concurrent save wrote.
    */
-  async put(orgId: string, name: string, value: string): Promise<void> {
+  async put(orgId: string, name: string, value: string): Promise<string> {
     const org = this.admit(orgId, name);
     try {
+      let response: { VersionId?: string };
       try {
-        await this.run(org, (client) => client.send(new CreateSecretCommand({ Name: name, SecretString: value, Tags: [{ Key: ORG_TAG_KEY, Value: org }] })));
+        response = await this.run(org, (client) => client.send(new CreateSecretCommand({ Name: name, SecretString: value, Tags: [{ Key: ORG_TAG_KEY, Value: org }] })));
       } catch (error) {
         if (errorName(error) !== "ResourceExistsException") throw error;
-        await this.run(org, (client) => client.send(new PutSecretValueCommand({ SecretId: name, SecretString: value })));
+        response = await this.run(org, (client) => client.send(new PutSecretValueCommand({ SecretId: name, SecretString: value })));
       }
+      if (response.VersionId === undefined || response.VersionId === "") throw agentXError("RUNTIME_UNAVAILABLE", "the connector secret store did not say which version it saved");
+      return response.VersionId;
     } catch (error) {
       throw this.refusal(error);
     }
@@ -110,10 +117,20 @@ export class OrgSecrets {
       await this.run(org, (client) => client.send(new DeleteSecretCommand({ SecretId: name, RecoveryWindowInDays: recoveryDays })));
     } catch (error) {
       if (errorName(error) === "ResourceNotFoundException") return;
-      // A secret already scheduled for deletion refuses the request as invalid; the only other reason a delete is invalid is a window we
-      // control, so the secret is on its way out and a repeat (a retried removal, a closed org run again) is done.
-      if (errorName(error) === "InvalidRequestException") return;
+      // A secret already scheduled for deletion refuses a second delete as invalid, but the exception has other causes, so it is believed only
+      // when the secret itself says it is scheduled (DeletedDate): a repeat of a removal, or a closed org run again, is then done. Anything else fails closed.
+      if (errorName(error) === "InvalidRequestException" && await this.isScheduledForDeletion(org, name)) return;
       throw this.refusal(error);
+    }
+  }
+
+  private async isScheduledForDeletion(org: OrgId, name: string): Promise<boolean> {
+    try {
+      const described = await this.run(org, (client) => client.send(new DescribeSecretCommand({ SecretId: name })));
+      return described.DeletedDate !== undefined;
+    } catch (error) {
+      // Gone altogether is as good as scheduled; a failure to ask is no answer, and the delete's own refusal stands.
+      return errorName(error) === "ResourceNotFoundException";
     }
   }
 

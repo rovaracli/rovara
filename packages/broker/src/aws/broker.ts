@@ -824,6 +824,22 @@ function decideRequestContext(dependencies: AwsBrokerDependencies): DecideReques
 }
 
 /** The agent routes' dependencies, built once per handler; undefined without the project roles or developer sign-in they need. */
+/**
+ * The org connection store (Plan 3 Task 12b), on the broker's own table and audit outbox. An MCP endpoint is checked at save and before every
+ * check, with the real resolver unless a test replaces it. Undefined where no connection secrets role is configured.
+ */
+function orgConnectionStoreOf(dependencies: AwsBrokerDependencies): OrgConnectionStore | undefined {
+  if (dependencies.orgConnections === undefined) return undefined;
+  return new OrgConnectionStore({
+    ...dependencies.orgConnections,
+    documentClient: dependencies.documentClient,
+    tableName: dependencies.tableName,
+    ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
+    checkEndpoint: async (url) => { await checkEndpointUrl(url, dnsResolveHost); },
+    ...dependencies.connectionChecks,
+  });
+}
+
 function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions): AgentRouteDependencies | undefined {
   const { agents, developer } = dependencies;
   if (agents === undefined || developer === undefined) return undefined;
@@ -832,6 +848,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
   });
   const signInStore = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, now: Date.now });
+  const connections = orgConnectionStoreOf(dependencies);
   return {
     store: new AgentStore({
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
@@ -865,16 +882,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     // The spend routes show the placeholder limits a cloud org starts with (R47).
     ...(dependencies.cloud === true ? { cloud: true } : {}),
     // Task 12b: the org's connections, on the broker's own table and audit outbox. An MCP endpoint is checked at save and before every call.
-    ...(dependencies.orgConnections === undefined ? {} : {
-      connections: new OrgConnectionStore({
-        ...dependencies.orgConnections,
-        documentClient: dependencies.documentClient,
-        tableName: dependencies.tableName,
-        ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
-        checkEndpoint: async (url) => { await checkEndpointUrl(url, dnsResolveHost); },
-        ...dependencies.connectionChecks,
-      }),
-    }),
+    ...(connections === undefined ? {} : { connections }),
   };
 }
 
@@ -1702,6 +1710,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // verifies the developer token, then checks the method and session (FR-009).
       if (url.pathname.startsWith("/v1/dev/") || url.pathname.startsWith("/v1/app/")) {
         if (!dependencies.developer) throw agentXError("NOT_FOUND", "developer sign-in is not set up in this deployment");
+        const orgConnections = orgConnectionStoreOf(dependencies);
         const answer = await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),
@@ -1715,6 +1724,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
           ...githubConnectRoute(dependencies),
           ...(agents === undefined ? {} : { agents }),
+          // Closing an org clears its connections whether or not the agent routes are set up (Task 12b).
+          ...(orgConnections === undefined ? {} : { orgConnections }),
           ...repositoriesGateRoute(dependencies),
           projectSettings: {
             registerRevision: async (actor, input) => { await registerProjectFor(dependencies, actor, input, { creatorMembership: "none" }); },
@@ -13164,7 +13175,7 @@ const orgConnections: OrgConnectionDeps | undefined = connectorSecretsRoleArn ==
     sts: new STSClient(awsClientConfiguration),
     secretsFor: (credentials): SecretsClient => {
       const client = new SecretsManagerClient({ ...awsClientConfiguration, credentials });
-      return { send: (command) => client.send(command as never) as Promise<{ SecretString?: string; ARN?: string }> };
+      return { send: (command) => client.send(command as never) as Promise<{ SecretString?: string; ARN?: string; VersionId?: string; DeletedDate?: Date }> };
     },
   }),
 };

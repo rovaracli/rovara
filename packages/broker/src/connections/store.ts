@@ -37,6 +37,9 @@ export interface OrgConnectionDeps {
   now: () => number;
 }
 
+/** The id of the secret version a connection's own save wrote (kept on the record, never shown); a connection reads exactly that version. */
+const VERSION_FIELD = "secretVersion";
+
 export interface ConnectionCheckRecord {
   ok: boolean;
   at: string;
@@ -98,7 +101,7 @@ function secretHost(connection: OrgConnection): string | undefined {
 
 function strip(item: Item): Item {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the keys
-  const { pk: _pk, sk: _sk, entityType: _type, actorId: _actor, revision: _revision, ...rest } = item;
+  const { pk: _pk, sk: _sk, entityType: _type, actorId: _actor, revision: _revision, secretVersion: _version, ...rest } = item;
   return rest;
 }
 
@@ -177,6 +180,8 @@ export class OrgConnectionStore {
     request?: RequestMark;
     /** Change only a connection that exists: a route's PUT never makes up an id. */
     requireExisting?: boolean;
+    /** Create only: an id that exists is refused, and the write itself is conditional on there being none (a create never overwrites). */
+    requireNew?: boolean;
   }): Promise<OrgConnectionRecord> {
     const orgId = parseOrg(input.orgId);
     requireActor(input.by);
@@ -201,13 +206,15 @@ export class OrgConnectionStore {
     }
     const existing = await readItem(this.input, orgId, connection.connectionId);
     if (existing === undefined && input.requireExisting === true) throw coded("NOT_FOUND", "no connection has that ID");
+    if (existing !== undefined && input.requireNew === true) throw coded("CONFIG_INVALID", "requestId: this request ID was already used; send a new one");
     if (existing !== undefined && existing.type !== connection.type) throw coded("CONFIG_INVALID", "connection.type: a connection's type cannot change; remove it and add a new one");
     const movedHost = existing !== undefined && secretHost(OrgConnectionSchema.parse(pick(existing))) !== secretHost(connection);
     if (movedHost && secretJson === undefined && existing.hasSecret === true) {
       throw coded("CONFIG_INVALID", "connection: the saved secret would be sent to a different host; give the new secret with it");
     }
-    // The secret first: a failed write leaves the record as it was.
-    if (secretJson !== undefined) await this.input.secrets.put(orgId, orgConnectorSecretName(this.input.env, orgId, connection.connectionId), secretJson);
+    // The secret first, as a new version whose id the record keeps, written by the same conditional commit that decides which save won. A save
+    // that loses leaves its version in Secrets Manager but nothing refers to it, so it is never read, whatever order the writes landed in.
+    const secretVersion = secretJson === undefined ? undefined : await this.input.secrets.put(orgId, orgConnectorSecretName(this.input.env, orgId, connection.connectionId), secretJson);
     const at = this.iso();
     // A new secret may belong to another vendor account, so what the last check learned is dropped with the old one.
     const keepsAccount = existing !== undefined && !movedHost && secretJson === undefined;
@@ -217,6 +224,7 @@ export class OrgConnectionStore {
       orgId,
       ...connection,
       hasSecret: secretJson !== undefined || existing?.hasSecret === true,
+      ...(secretVersion !== undefined ? { [VERSION_FIELD]: secretVersion } : typeof existing?.[VERSION_FIELD] === "string" ? { [VERSION_FIELD]: existing[VERSION_FIELD] } : {}),
       ...(keepsAccount && existing.lastCheck !== undefined ? { lastCheck: existing.lastCheck } : {}),
       ...(keepsAccount && typeof existing.actorId === "string" ? { actorId: existing.actorId } : {}),
       revision: (revisionOf(existing) ?? 0) + 1,
@@ -301,7 +309,7 @@ export class OrgConnectionStore {
     if (item.hasSecret !== true) {
       result = { ok: false, message: "no secret has been saved for this connection yet" };
     } else {
-      const raw = await this.input.secrets.read(org, orgConnectorSecretName(this.input.env, org, connectionId));
+      const raw = await this.input.secrets.read(org, orgConnectorSecretName(this.input.env, org, connectionId), versionOf(item));
       const secret = raw === undefined ? undefined : parseSecret(connection.type, raw);
       result = secret === undefined
         ? { ok: false, message: "the saved secret could not be read; save it again" }
@@ -376,6 +384,8 @@ export class OrgConnectionStore {
     try {
       await this.input.checkEndpoint!(connection.endpoint);
     } catch (error) {
+      // A lookup that failed says nothing about the endpoint: it is retryable, so it is neither recorded as a failed check nor remembered as one.
+      if ((error as { code?: unknown } | null)?.code === "RUNTIME_UNAVAILABLE") throw error;
       return { ok: false, message: error instanceof Error ? error.message : "the endpoint is not allowed" };
     }
     try {
@@ -418,9 +428,12 @@ async function readCapped(response: Response, limit: number): Promise<string | u
 /** The connection's settings out of a stored item. */
 function pick(item: Item): unknown {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the bookkeeping fields
-  const { pk: _pk, sk: _sk, entityType: _type, orgId: _org, hasSecret: _has, actorId: _actor, lastCheck: _check, revision: _revision, createdBy: _by, createdAt: _at, updatedBy: _ub, updatedAt: _ua, ...settings } = item;
+  const { pk: _pk, sk: _sk, entityType: _type, orgId: _org, hasSecret: _has, actorId: _actor, lastCheck: _check, revision: _revision, secretVersion: _version, createdBy: _by, createdAt: _at, updatedBy: _ub, updatedAt: _ua, ...settings } = item;
   return settings;
 }
+
+/** The secret version a record names (undefined for a record that predates versions: the current one is read). */
+const versionOf = (item: Item): string | undefined => (typeof item[VERSION_FIELD] === "string" ? item[VERSION_FIELD] : undefined);
 
 /** A stored secret, or undefined when it is not the shape its type takes. */
 function parseSecret(type: ConnectionType, raw: string): ConnectionSecret | undefined {
@@ -431,14 +444,14 @@ function parseSecret(type: ConnectionType, raw: string): ConnectionSecret | unde
 }
 
 /** Reads a connection's stored secret as its one value, for the credential registry. */
-export async function readConnectionToken(deps: OrgConnectionDeps, orgId: OrgId, connection: { connectionId: string; type: ConnectionType }): Promise<string | undefined> {
-  const raw = await deps.secrets.read(orgId, orgConnectorSecretName(deps.env, orgId, connection.connectionId));
+export async function readConnectionToken(deps: OrgConnectionDeps, orgId: OrgId, connection: { connectionId: string; type: ConnectionType; secretVersion?: string }): Promise<string | undefined> {
+  const raw = await deps.secrets.read(orgId, orgConnectorSecretName(deps.env, orgId, connection.connectionId), connection.secretVersion);
   const secret = raw === undefined ? undefined : parseSecret(connection.type, raw);
   return secret === undefined ? undefined : connectionSecretToken(connection.type, secret);
 }
 
 /** Reads one connection for the credential registry, with the fields the store keeps back from members. */
-export async function readConnection(deps: OrgConnectionDeps, orgId: OrgId, connectionId: string): Promise<(OrgConnectionRecord & { actorId?: string }) | undefined> {
+export async function readConnection(deps: OrgConnectionDeps, orgId: OrgId, connectionId: string): Promise<(OrgConnectionRecord & { actorId?: string; secretVersion?: string }) | undefined> {
   const item = await readItem(deps, orgId, connectionId);
   return item === undefined ? undefined : (item as unknown as OrgConnectionRecord);
 }

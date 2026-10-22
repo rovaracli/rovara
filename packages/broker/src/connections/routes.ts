@@ -129,11 +129,11 @@ async function createConnection(deps: ConnectionRouteDependencies, caller: Agent
   const { mark, replay } = await markRequest(deps, caller, "create", "", input);
   if (replay !== undefined) return new StatusReply(201, { connection: view(replay.result as OrgConnectionRecord) });
   const connection = withId(input.connection, connectionId, false);
-  // The id comes from the request id, so a connection already there means a request id used again after its memory expired.
-  if (await deps.store.get(caller.orgId, connectionId) !== undefined) throw agentXError("CONFIG_INVALID", "requestId: this request ID was already used; send a new one");
+  // The id comes from the request id, so a connection already there means a request id used again after its memory expired: `requireNew` refuses it,
+  // and the write itself is conditional on there being none.
   const saved = await deps.store.put({
     orgId: caller.orgId, connection, ...(input.secret === undefined ? {} : { secret: input.secret }),
-    by: caller.developerId, requestId: input.requestId, request: mark,
+    by: caller.developerId, requestId: input.requestId, request: mark, requireNew: true,
   });
   return new StatusReply(201, { connection: view(saved) });
 }
