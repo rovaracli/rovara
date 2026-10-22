@@ -100,8 +100,8 @@ async function setup(options: { widen?: boolean } = {}) {
   // Beside the broker's own stores: the same table, so a test can seed a published version without going through the routes.
   const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now, builtins });
   const chains = new ChainStore({ documentClient: h.db, tableName: "state", now: Date.now, agents: store });
-  const deps: ApprovalDependencies & { chains: ChainStore } = {
-    store, chains, projectMembers: members, documentClient: h.db, tableName: "state", now: Date.now, confirmOrigin: "https://cell.example.com",
+  const deps: ApprovalDependencies & { chains: ChainStore; chainTriggers: ChainTriggerHooks } = {
+    store, chains, chainTriggers, projectMembers: members, documentClient: h.db, tableName: "state", now: Date.now, confirmOrigin: "https://cell.example.com",
     signInStore: new DeveloperSignInStore({ documentClient: h.db, tableName: "signin", now: Date.now }),
   };
   const unwrapped = async (reply: Promise<Reply>): Promise<Reply> => {
@@ -110,8 +110,8 @@ async function setup(options: { widen?: boolean } = {}) {
   };
   const call = (who: Developer, method: string, path: string, body?: Record<string, unknown>): Promise<Reply> =>
     unwrapped(h.dev(who, method, path, body === undefined ? undefined : { requestId: randomUUID(), ...body }));
-  const create = async (who: Developer, definition: ChainDefinitionInput | undefined = INVESTIGATE_THEN_FIX, extra: Record<string, unknown> = {}) => {
-    const created = await call(who, "POST", "/v1/app/chains", { name: `Chain ${randomUUID().slice(0, 8)}`, ...(definition === undefined ? {} : { definition }), ...extra });
+  const create = async (who: Developer, definition: ChainDefinitionInput | null = INVESTIGATE_THEN_FIX, extra: Record<string, unknown> = {}) => {
+    const created = await call(who, "POST", "/v1/app/chains", { name: `Chain ${randomUUID().slice(0, 8)}`, ...(definition === null ? {} : { definition }), ...extra });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     return (created.body.chain as { chainId: string }).chainId;
   };
@@ -194,7 +194,7 @@ describe("create, draft, publish, show and rollback", () => {
 
   it("makes a starter design when the body has none, and takes an owner and accountable like an agent's", async () => {
     const { call, create, chains } = await setup();
-    const chainId = await create(MAYA, undefined);
+    const chainId = await create(MAYA, null);
     expect((await chains.getDraft(TEST_ORG, chainId))!.definition).toEqual(ChainDefinitionSchema.parse(STARTER_CHAIN_DEFINITION));
     expect((await call(MAYA, "GET", `/v1/app/chains/${chainId}/draft`)).body).toMatchObject({ problems: [] });
     // A project's chain: the caller must maintain the project, and its accountable maintainer must too.
@@ -492,6 +492,7 @@ describe("a publish or rollback that makes something less safe", () => {
     for (const widen of [true, false]) {
       const s = await publishedBaseline(INVESTIGATE_THEN_FIX, { widen });
       // Release 2 comes out and the org adopts it: the draft's "current" pins it now.
+      await s.store.ensureBuiltinSettings(TEST_ORG, "root-cause-analyst");
       s.release.rootCause = 2;
       await s.store.adoptBuiltinVersion({ orgId: TEST_ORG, agentId: "root-cause-analyst", version: 2, expectedPinnedVersion: 1, by: DANA.developerId });
       await s.putDraft(MAYA, s.chainId, variant({ investigate: { name: "Find the cause, again" } }));
@@ -611,8 +612,8 @@ describe("a publish or rollback that makes something less safe", () => {
     const again = await s.publish(MAYA, s.chainId);
     expect(again.status).toBe(202);
     await s.seed(s.chainId, variant({ investigate: { name: "landed meanwhile" } }));
-    const [, second] = s.approvals();
-    expect(failure(await handler(s.deps, { ...second!, decidedBy: DANA.developerId }).then(() => undefined, (thrown: Error) => thrown))).toBe("CHAIN_REVISION_CONFLICT: The published version changed after this was asked. Publish again.");
+    const second = s.approvals().sort((left, right) => (right.subject as { draftRevision: number }).draftRevision - (left.subject as { draftRevision: number }).draftRevision)[0]!;
+    expect(failure(await handler(s.deps, { ...second, decidedBy: DANA.developerId }).then(() => undefined, (thrown: Error) => thrown))).toBe("CHAIN_REVISION_CONFLICT: The published version changed after this was asked. Publish again.");
     expect((await s.state(s.chainId)).currentVersion).toBe(2);
   });
 
@@ -643,7 +644,7 @@ describe("a publish or rollback that makes something less safe", () => {
       steps: INVESTIGATE_THEN_FIX.steps.filter((step) => step.id !== "approve_fix").map((step) => (step.id === "investigate"
         ? { ...step, next: { kind: "branch", default: "no_fix", choices: [{ id: "fix", description: "The cause is in our code and a code change fixes it", to: "fix" }, { id: "no_fix", description: "Not a code problem", to: "$end" }] } } as Step
         : step)),
-    } as ChainDefinitionInput;
+    };
     await s.seed(chainId, withoutGate);
     await s.seed(chainId, INVESTIGATE_THEN_FIX);
     const asked = await s.call(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 });
@@ -674,8 +675,9 @@ describe("a publish or rollback that makes something less safe", () => {
     const s = await setup();
     const helper = await s.customAgent("Helper");
     const chainId = await s.create(MAYA, { start: "a", steps: [{ kind: "agent", id: "a", name: "Do", agent: { agentId: helper, version: "current" }, next: { kind: "end" } }] });
-    await s.seed(chainId, { start: "a", steps: [{ kind: "agent", id: "a", name: "Do", agent: { agentId: helper, version: "current" }, next: { kind: "end" } }] });
-    await s.seed(chainId, variant());
+    const onHelper = (instructions?: string): ChainDefinitionInput => ({ start: "a", steps: [{ kind: "agent", id: "a", name: "Do", agent: { agentId: helper, version: "current" }, ...(instructions === undefined ? {} : { instructions }), next: { kind: "end" } }] });
+    await s.seed(chainId, onHelper());
+    await s.seed(chainId, onHelper("Say what you did."));
     await s.store.archive(TEST_ORG, helper, MAYA.developerId);
     const refused = await s.call(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 });
     expect(refused.status).toBe(409);

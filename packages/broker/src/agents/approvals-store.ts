@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentGuardrailsSchema, AgentIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId } from "@agentx/contracts";
+import { AgentGuardrailsSchema, AgentIdSchema, ChainIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId } from "@agentx/contracts";
 import type { ProjectConnectorDependencies } from "../connections/project-connectors.js";
 import { WRITE_APPROVAL_TTL_MS } from "./approval-ttl.js";
 import { auditApprovalRequested } from "../audit/events.js";
@@ -83,7 +83,13 @@ export interface OptOutChangeSubject { kind: "opt_out"; project: string; reposit
 
 /** The kinds of change that are not about an agent itself: connector widenings (Task 13) and comment-trigger opt-outs (Task 14b). */
 export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject;
-export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject;
+
+/** Plan 4 Task 4: a chain's publish or rollback that makes something less safe, bound to the draft revision and digest (or the version) that was shown. */
+export type ChainChangeSubject =
+  | { kind: "chain_publish"; chainId: string; draftRevision: number; digest: string; expectedCurrentVersion?: number; note?: string }
+  | { kind: "chain_rollback"; chainId: string; version: number; digest: string; expectedCurrentVersion: number };
+
+export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject;
 
 export interface ChangeApprovalRecord extends DecidedFields {
   orgId: OrgId;
@@ -252,6 +258,8 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
     shares: z.array(z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]) }).strict()),
   }).strict(),
   z.object({ kind: z.literal("guardrails"), next: AgentGuardrailsSchema, expectedRevision: z.number().int().min(0) }).strict(),
+  z.object({ kind: z.literal("chain_publish"), chainId: ChainIdSchema, draftRevision: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int().optional(), note: z.string().optional() }).strict(),
+  z.object({ kind: z.literal("chain_rollback"), chainId: ChainIdSchema, version: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int() }).strict(),
   z.object({ kind: z.literal("connector_widen"), project: z.string(), name: z.string(), expectedRevision: z.number().int().min(1), connector: ConnectorConfigSchema }).strict(),
   z.object({
     kind: z.literal("opt_out"), project: z.string(), repository: z.string(), expectedDigest: Hex64, files: z.array(z.string()), reason: z.string(),

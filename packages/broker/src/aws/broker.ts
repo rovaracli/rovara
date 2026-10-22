@@ -378,6 +378,8 @@ import { AgentStore, type AgentStoreInput } from "../agents/store.js";
 import { SkillStore, servedSkills } from "../agents/skills.js";
 import { followMerges, type ProjectMembers } from "../agents/access.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
+import { ChainStore } from "../chains/store.js";
+import type { ChainTriggerHooks } from "../chains/routes.js";
 import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
 import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
 import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.js";
@@ -597,7 +599,7 @@ interface AwsBrokerDependencies {
    * The store, access checks and approvals are built from the broker's State table and sign-in table. `projectMembers` (who holds which role
    * on a project) is Plan 2 Task 21's `createProjectMembers` over those same tables unless a test hands in a stand-in (PF6).
    */
-  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; chainTriggers?: ChainTriggerHooks; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
    * Plan 3, Task 21a (R66): present, the decisions are made on the confirmation page (`/v1/app/approve/{id}`), the decide routes send a token
    * there, and the sign-in function may ask `decide-inspect`. Absent, the page answers NOT_FOUND and nothing can be decided. The `apr_` kind (write,
@@ -922,8 +924,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
   const signInStore = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, now: Date.now });
   const connections = orgConnectionStoreOf(dependencies);
   const routing = routingOf(dependencies);
-  const routeDependencies: AgentRouteDependencies = {
-    store: new AgentStore({
+  const agentStore = new AgentStore({
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
       // A merged duplicate's agents count in the survivor's total of agent budgets (Task 28).
       resolveOwner: (_orgId, developerId) => followMerges(signInStore, developerId),
@@ -931,7 +932,15 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
       ...(agents.builtins === undefined ? {} : { builtins: agents.builtins }),
       // Publishes, rollbacks, owner and budget changes and the guardrails record their events in their own transactions (Audit Task 19).
       ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
+    });
+  const routeDependencies: AgentRouteDependencies = {
+    store: agentStore,
+    // Plan 4 Task 4: chains are versioned, owned and shared beside agents, on the same store so the owner's monthly total holds both kinds of budget.
+    chains: new ChainStore({
+      documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, agents: agentStore,
+      ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
     }),
+    ...(agents.chainTriggers === undefined ? {} : { chainTriggers: agents.chainTriggers }),
     projectMembers,
     documentClient: dependencies.documentClient,
     tableName: dependencies.tableName,

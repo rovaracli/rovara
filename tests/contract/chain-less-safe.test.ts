@@ -27,9 +27,9 @@ function variant(changes: Record<string, Partial<Step> | Step>, extra: Step[] = 
   return pinned({ ...INVESTIGATE_THEN_FIX, ...tweak, steps: [...steps, ...extra] });
 }
 const changes = (next: PinnedChainDefinition, find = lookups()) => chainLessSafeChanges(pinned(), next, find);
-const FIX_DIRECT = { kind: "branch", default: "no_fix", choices: [{ id: "fix", description: "The cause is in our code and a code change fixes it", to: "fix" }, { id: "no_fix", description: "Not a code problem, or not enough evidence", to: "$end" }] } as const;
+const FIX_DIRECT: Extract<Step, { kind: "agent" }>["next"] = { kind: "branch", default: "no_fix", choices: [{ id: "fix", description: "The cause is in our code and a code change fixes it", to: "fix" }, { id: "no_fix", description: "Not a code problem, or not enough evidence", to: "$end" }] };
 /** The example without its gate: the investigation hands straight to the fix. */
-const withoutGate = (): PinnedChainDefinition => pinned({ ...INVESTIGATE_THEN_FIX, steps: INVESTIGATE_THEN_FIX.steps.filter((step) => step.id !== "approve_fix").map((step) => (step.id === "investigate" ? { ...step, next: FIX_DIRECT } as Step : step)) });
+const withoutGate = (): PinnedChainDefinition => pinned({ ...INVESTIGATE_THEN_FIX, steps: INVESTIGATE_THEN_FIX.steps.filter((step) => step.id !== "approve_fix").map((step) => (step.id === "investigate" ? { ...step, next: FIX_DIRECT } : step)) });
 /** The same design with one agent step pinned to another version. */
 function repinned(stepId: string, version: number): PinnedChainDefinition {
   const base = pinned();
@@ -43,11 +43,11 @@ describe("chainLessSafeChanges", () => {
   });
 
   it("calls edits that take nothing away safe: instructions, a lower run limit, narrower approvers, a lower retry count", async () => {
-    expect(await changes(variant({ fix: { instructions: "Fix it, and say what you changed." } as Partial<Step> }))).toEqual([]);
+    expect(await changes(variant({ fix: { instructions: "Fix it, and say what you changed." } }))).toEqual([]);
     expect(await changes(variant({}, [], { limits: { maxRunUsd: 10 } }))).toEqual([]);
-    expect(await changes(variant({ approve_fix: { approvers: [{ kind: "project_maintainers" }] } as Partial<Step> }))).toEqual([]);
-    expect(await changes(variant({ approve_fix: { approvers: [{ kind: "starter" }] } as Partial<Step> }))).toEqual([]);
-    expect(await changes(variant({ fix: { retries: 0, timeoutMinutes: 30 } as Partial<Step> }))).toEqual([]);
+    expect(await changes(variant({ approve_fix: { approvers: [{ kind: "project_maintainers" }] } }))).toEqual([]);
+    expect(await changes(variant({ approve_fix: { approvers: [{ kind: "starter" }] } }))).toEqual([]);
+    expect(await changes(variant({ fix: { retries: 0, timeoutMinutes: 30 } }))).toEqual([]);
     // Naming a run limit where there was none is lower, not higher.
     const unlimited = { ...INVESTIGATE_THEN_FIX, limits: {} };
     expect(await chainLessSafeChanges(pinned(unlimited), pinned(), lookups())).toEqual([]);
@@ -59,25 +59,25 @@ describe("chainLessSafeChanges", () => {
     });
 
     it("lengthens a gate's wait, counting an unset wait as 72 hours", async () => {
-      expect(await changes(variant({ approve_fix: { timeoutHours: 168 } as Partial<Step> }))).toEqual(["approve_fix may now wait 168 hours"]);
-      expect(await changes(variant({ approve_fix: { timeoutHours: 72 } as Partial<Step> }))).toEqual([]);
-      expect(await changes(variant({ approve_fix: { timeoutHours: 24 } as Partial<Step> }))).toEqual([]);
+      expect(await changes(variant({ approve_fix: { timeoutHours: 168 } }))).toEqual(["approve_fix may now wait 168 hours"]);
+      expect(await changes(variant({ approve_fix: { timeoutHours: 72 } }))).toEqual([]);
+      expect(await changes(variant({ approve_fix: { timeoutHours: 24 } }))).toEqual([]);
     });
 
     it("lets a rejection carry on where it used to stop the run", async () => {
-      expect(await changes(variant({ approve_fix: { onReject: { to: "fix" } } as Partial<Step> }))).toEqual(["a rejection at approve_fix now carries on to fix"]);
+      expect(await changes(variant({ approve_fix: { onReject: { to: "fix" } } }))).toEqual(["a rejection at approve_fix now carries on to fix"]);
       // Moving a rejection between steps, or to the end, is not new.
-      const before = variant({ approve_fix: { onReject: { to: "review" } } as Partial<Step> });
-      expect(await chainLessSafeChanges(before, variant({ approve_fix: { onReject: { to: "fix" } } as Partial<Step> }), lookups())).toEqual([]);
+      const before = variant({ approve_fix: { onReject: { to: "review" } } });
+      expect(await chainLessSafeChanges(before, variant({ approve_fix: { onReject: { to: "fix" } } }), lookups())).toEqual([]);
       expect(await chainLessSafeChanges(before, pinned(), lookups())).toEqual([]);
     });
 
     it("widens who may decide a gate: a kind added, or more named people", async () => {
-      expect(await changes(variant({ approve_fix: { approvers: [{ kind: "starter" }, { kind: "project_maintainers" }, { kind: "chain_owner" }] } as Partial<Step> }))).toEqual(["approve_fix can now be decided by the chain's owner"]);
-      expect(await changes(variant({ approve_fix: { approvers: [{ kind: "starter" }, { kind: "project_maintainers" }, { kind: "members", developerIds: ["a".repeat(64)] }] } as Partial<Step> }))).toEqual(["approve_fix can now be decided by named people"]);
+      expect(await changes(variant({ approve_fix: { approvers: [{ kind: "starter" }, { kind: "project_maintainers" }, { kind: "chain_owner" }] } }))).toEqual(["approve_fix can now be decided by the chain's owner"]);
+      expect(await changes(variant({ approve_fix: { approvers: [{ kind: "starter" }, { kind: "project_maintainers" }, { kind: "members", developerIds: ["a".repeat(64)] }] } }))).toEqual(["approve_fix can now be decided by named people"]);
       // Replacing the starter with a wider rule is a kind added.
-      expect(await changes(variant({ approve_fix: { approvers: [{ kind: "project_maintainers" }, { kind: "chain_owner" }] } as Partial<Step> }))).toEqual(["approve_fix can now be decided by the chain's owner"]);
-      const named = (ids: string[]) => variant({ approve_fix: { approvers: [{ kind: "members", developerIds: ids }] } as Partial<Step> });
+      expect(await changes(variant({ approve_fix: { approvers: [{ kind: "project_maintainers" }, { kind: "chain_owner" }] } }))).toEqual(["approve_fix can now be decided by the chain's owner"]);
+      const named = (ids: string[]) => variant({ approve_fix: { approvers: [{ kind: "members", developerIds: ids }] } });
       expect(await chainLessSafeChanges(named(["a".repeat(64)]), named(["a".repeat(64), "b".repeat(64)]), lookups())).toEqual(["approve_fix can now be decided by more named people"]);
       expect(await chainLessSafeChanges(named(["a".repeat(64), "b".repeat(64)]), named(["b".repeat(64)]), lookups())).toEqual([]);
       expect(await chainLessSafeChanges(named(["a".repeat(64)]), named(["b".repeat(64)]), lookups())).toEqual(["approve_fix can now be decided by more named people"]);
@@ -105,7 +105,7 @@ describe("chainLessSafeChanges", () => {
   describe("loops", () => {
     // review sends the run back to fix, which hands on to review again.
     const loop = (bound: number | undefined, extra: Partial<Step> = {}): PinnedChainDefinition => variant({
-      review: { next: { kind: "branch", choices: [{ id: "again", description: "The change needs work", to: "fix", ...(bound === undefined ? {} : { maxTraversals: bound }) }, { id: "done", description: "Good to go", to: "$end" }] }, ...extra } as Partial<Step>,
+      review: { next: { kind: "branch", choices: [{ id: "again", description: "The change needs work", to: "fix", ...(bound === undefined ? {} : { maxTraversals: bound }) }, { id: "done", description: "Good to go", to: "$end" }] }, ...extra },
     });
 
     it("raises the bound of a loop edge", async () => {
@@ -120,14 +120,14 @@ describe("chainLessSafeChanges", () => {
     });
 
     it("counts the bound on a gate's edges too", async () => {
-      const withBound = (bound: number) => variant({ approve_fix: { onApprove: { to: "fix", maxTraversals: bound } } as Partial<Step> });
+      const withBound = (bound: number) => variant({ approve_fix: { onApprove: { to: "fix", maxTraversals: bound } } });
       expect(await chainLessSafeChanges(withBound(1), withBound(3), lookups())).toEqual(["approve_fix may now go back to fix up to 3 times, up from 1"]);
     });
   });
 
   describe("reaching a step without passing a gate", () => {
     const skipping = variant({
-      investigate: { next: { kind: "branch", default: "no_fix", choices: [{ id: "fix", description: "The cause is in our code and a code change fixes it", to: "approve_fix" }, { id: "no_fix", description: "Not a code problem", to: "$end" }, { id: "quick", description: "Obvious fix", to: "fix" }] } } as Partial<Step>,
+      investigate: { next: { kind: "branch", default: "no_fix", choices: [{ id: "fix", description: "The cause is in our code and a code change fixes it", to: "approve_fix" }, { id: "no_fix", description: "Not a code problem", to: "$end" }, { id: "quick", description: "Obvious fix", to: "fix" }] } },
     });
 
     it("names a step a new edge reaches around a gate", async () => {
@@ -144,13 +144,13 @@ describe("chainLessSafeChanges", () => {
     const deploy: Step = { kind: "agent", id: "deploy", name: "Deploy", agent: { agentId: "code-reviewer", version: "current" }, next: { kind: "end" } };
 
     it("adds a step that has no counterpart, naming the agent and its version", async () => {
-      const next = variant({ review: { next: { kind: "go", to: "deploy" } } as Partial<Step> }, [deploy]);
+      const next = variant({ review: { next: { kind: "go", to: "deploy" } } }, [deploy]);
       expect(await changes(next)).toEqual(["adds step deploy (Code reviewer version 1)"]);
     });
 
     it("calls a different agent less safe, and never asks what its recipe would add", async () => {
       const find = lookups(["should not be asked"]);
-      const next = variant({ review: { agent: { agentId: "agt_00000000000000000001", version: "current" } } as Partial<Step> });
+      const next = variant({ review: { agent: { agentId: "agt_00000000000000000001", version: "current" } } });
       expect(await changes(next, find)).toEqual(["review now uses Helper version 1 instead of Code reviewer version 1"]);
       expect(find.asked).toEqual([]);
     });
@@ -172,23 +172,23 @@ describe("chainLessSafeChanges", () => {
     });
 
     it("raises retries and timeouts, counting an unset retry as 0 and an unset timeout as 120 minutes", async () => {
-      expect(await changes(variant({ fix: { retries: 2 } as Partial<Step> }))).toEqual(["fix may now retry 2 times"]);
-      expect(await changes(variant({ fix: { timeoutMinutes: 600 } as Partial<Step> }))).toEqual(["fix may now run 600 minutes"]);
-      expect(await changes(variant({ fix: { retries: 0, timeoutMinutes: 120 } as Partial<Step> }))).toEqual([]);
-      expect(await changes(variant({ fix: { retries: 1, timeoutMinutes: 200 } as Partial<Step> }))).toEqual(["fix may now retry 1 times", "fix may now run 200 minutes"]);
-      const before = variant({ fix: { retries: 2, timeoutMinutes: 600 } as Partial<Step> });
+      expect(await changes(variant({ fix: { retries: 2 } }))).toEqual(["fix may now retry 2 times"]);
+      expect(await changes(variant({ fix: { timeoutMinutes: 600 } }))).toEqual(["fix may now run 600 minutes"]);
+      expect(await changes(variant({ fix: { retries: 0, timeoutMinutes: 120 } }))).toEqual([]);
+      expect(await changes(variant({ fix: { retries: 1, timeoutMinutes: 200 } }))).toEqual(["fix may now retry 1 times", "fix may now run 200 minutes"]);
+      const before = variant({ fix: { retries: 2, timeoutMinutes: 600 } });
       expect(await chainLessSafeChanges(before, pinned(), lookups())).toEqual([]);
     });
 
     it("widens what a step receives from the previous report to every report", async () => {
-      expect(await changes(variant({ fix: { handoff: "all" } as Partial<Step> }))).toEqual(["fix now receives every earlier report"]);
-      expect(await changes(variant({ fix: { handoff: "previous" } as Partial<Step> }))).toEqual([]);
-      expect(await chainLessSafeChanges(variant({ fix: { handoff: "all" } as Partial<Step> }), pinned(), lookups())).toEqual([]);
+      expect(await changes(variant({ fix: { handoff: "all" } }))).toEqual(["fix now receives every earlier report"]);
+      expect(await changes(variant({ fix: { handoff: "previous" } }))).toEqual([]);
+      expect(await chainLessSafeChanges(variant({ fix: { handoff: "all" } }), pinned(), lookups())).toEqual([]);
     });
   });
 
   it("lists every change, each in its own words", async () => {
-    const next = variant({ fix: { retries: 2, handoff: "all" } as Partial<Step> }, [], { limits: { maxRunUsd: 60 } });
+    const next = variant({ fix: { retries: 2, handoff: "all" } }, [], { limits: { maxRunUsd: 60 } });
     expect(await changes(next)).toEqual(["raises the most one run may cost, from $30 to $60", "fix may now retry 2 times", "fix now receives every earlier report"]);
   });
 });

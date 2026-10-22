@@ -18,7 +18,8 @@ export interface ChainLessSafeLookups {
 type Step = PinnedChainDefinition["steps"][number];
 type Gate = Extract<Step, { kind: "gate" }>;
 type AgentStep = Extract<Step, { kind: "agent" }>;
-interface Graph { start: string; steps: ReadonlyArray<Step> }
+/** A design as far as its edges go: published or draft (the pinned version of an agent does not matter here). */
+interface Graph { start: string; steps: ReadonlyArray<Gate | { kind: "agent"; id: string; next: AgentStep["next"] }> }
 
 interface Edge { step: string; slot: string; to: string; bound: number | undefined }
 

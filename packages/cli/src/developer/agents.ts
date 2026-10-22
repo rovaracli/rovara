@@ -55,16 +55,16 @@ export async function appRequest(
   return { env: session.env, url: session.entry.url, status: response.status, body: value as Body };
 }
 
-const result = (answer: { env: string; url: string }, data: Body, text: string): AppResult => ({ env: answer.env, url: answer.url, data: jsonSafe(data) as Body, text });
+export const result = (answer: { env: string; url: string }, data: Body, text: string): AppResult => ({ env: answer.env, url: answer.url, data: jsonSafe(data) as Body, text });
 /** One path segment from an ID the person typed; `.` and `..` are refused, since a URL would read them as a step up the path (review M7). */
 export const seg = (id: string): string => {
   if (id === "." || id === "..") throw agentXError("CONFIG_INVALID", "an ID cannot be . or ..");
   return encodeURIComponent(id);
 };
-const str = (value: unknown, fallback = ""): string => (typeof value === "string" || typeof value === "number" ? clean(String(value)) : fallback);
-const pretty = (value: unknown): string => JSON.stringify(jsonSafe(value), null, 2);
-const list = (value: unknown): Body[] => (Array.isArray(value) ? value.filter((entry): entry is Body => typeof entry === "object" && entry !== null) : []);
-const item = (value: unknown): string => (typeof value === "string" ? clean(value) : clean(JSON.stringify(value)));
+export const str = (value: unknown, fallback = ""): string => (typeof value === "string" || typeof value === "number" ? clean(String(value)) : fallback);
+export const pretty = (value: unknown): string => JSON.stringify(jsonSafe(value), null, 2);
+export const list = (value: unknown): Body[] => (Array.isArray(value) ? value.filter((entry): entry is Body => typeof entry === "object" && entry !== null) : []);
+export const item = (value: unknown): string => (typeof value === "string" ? clean(value) : clean(JSON.stringify(value)));
 
 /** A JSON file the person wrote: an object, or (for shares) an array. Read before anything is sent. */
 export async function readJsonFile(path: string | undefined, flag: string, shape: "object" | "array"): Promise<unknown> {
@@ -126,7 +126,7 @@ export async function agentsShow(deps: DeveloperSessionDeps, env: string | undef
 }
 
 /** The org member an email or developer ID names, as the `{ developerId }` the routes take. */
-async function developerRef(deps: DeveloperSessionDeps, env: string | undefined, who: string): Promise<{ developerId: string; name: string }> {
+export async function developerRef(deps: DeveloperSessionDeps, env: string | undefined, who: string): Promise<{ developerId: string; name: string }> {
   const member = findMember((await orgMembers(deps, env)).members, who);
   return { developerId: member.developerId, name: member.name };
 }
@@ -197,7 +197,7 @@ export async function agentsDiff(deps: DeveloperSessionDeps, env: string | undef
   return result(answer, answer.body, `${lines.join("\n")}\n`);
 }
 
-const positive = (raw: string, what: string): number => {
+export const positive = (raw: string, what: string): number => {
   if (!/^[1-9][0-9]{0,5}$/.test(raw)) throw agentXError("CONFIG_INVALID", `${what} must be a version number, such as 2`);
   return Number(raw);
 };

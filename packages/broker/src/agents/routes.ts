@@ -62,6 +62,8 @@ import type { PullRequestHeadReader } from "./runs.js";
 import { addToRoster, checkRosterChange, listRoster, removeFromRoster, roleOnProject, rosterAgentView, type RosterEntry } from "./roster.js";
 import type { SkillRecord } from "./skills.js";
 import type { OrgStore } from "../org/store.js";
+import type { ChainTriggerHooks } from "../chains/routes.js";
+import type { ChainStore } from "../chains/store.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
 import { routeSpendRequest } from "../spend/routes.js";
 import { isConnectionRoute, routeConnectionRequest, type ConnectionRouteDependencies } from "../connections/routes.js";
@@ -75,6 +77,10 @@ import { isOwnerCapRefusal, updateAvailable, type AgentDraft, type AgentRecord, 
 
 /** What every agent route needs: the store, access, the approvals core and where the confirmation page lives. */
 export interface AgentRouteDependencies extends ApprovalDependencies {
+  /** Plan 4 Task 4: the chain store, built on this agent store (so a person's agent and chain budgets are one total). Absent where chains are not set up: their routes then answer 404. */
+  chains?: ChainStore;
+  /** Plan 4 Tasks 18 and 20: what the chain routes ask of the trigger code. Absent until it exists: a chain then has no triggers. */
+  chainTriggers?: ChainTriggerHooks;
   /** Where the org's plan is read (Task 28): a trial org keeps the placeholder limits (R49). Without it no org is a trial. */
   orgs?: Pick<OrgStore, "getOrg">;
   /** Whether the install is a cloud one, whose orgs start with the placeholder monthly limits (R47); the spend routes show limits accordingly. */
@@ -176,7 +182,7 @@ const RunBodySchema = z.object({
 }).strict();
 const GuardrailsBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(0), guardrails: AgentGuardrailsSchema }).strict();
 
-function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> {
+export function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> {
   const parsed = schema.safeParse(body);
   if (parsed.success) return parsed.data;
   const issue = parsed.error.issues[0];
@@ -391,7 +397,7 @@ function fingerprintOf(route: string, agentId: string, body: { requestId: string
  * writes the mark in the same transaction as the change, so a request that changed something is answered from it, and a refused or
  * waiting one (an approval has its own replay) leaves none. Called after the access checks: a repeat tells nobody who lost access anything.
  */
-async function markRequest(deps: AgentRouteDependencies, caller: AgentCaller, route: string, agentId: string, body: { requestId: string }): Promise<{ mark: RequestMark; replay?: { result: unknown } }> {
+export async function markRequest(deps: Pick<ApprovalDependencies, "store">, caller: AgentCaller, route: string, agentId: string, body: { requestId: string }): Promise<{ mark: RequestMark; replay?: { result: unknown } }> {
   const mark: RequestMark = { orgId: caller.orgId, developerId: caller.developerId, requestId: body.requestId, fingerprint: fingerprintOf(route, agentId, body) };
   const earlier = await deps.store.getRequest(caller.orgId, caller.developerId, body.requestId);
   if (earlier === undefined) return { mark };
@@ -820,7 +826,7 @@ const PROJECT_AGENTS_PATH = /^\/v1\/app\/projects\/([^/]+)\/agents(?:\/([^/]+))?
 const SKILL_PATH = /^\/v1\/app\/skills(?:\/([^/]+)(?:\/(content))?)?$/;
 const AGENT_PATH = /^\/v1\/app\/agents(?:\/([^/]+)(?:\/([a-z-]+)(?:\/([0-9]{1,6}))?)?)?$/;
 
-function jsonBody(request: AdaptedHttpRequest): unknown {
+export function jsonBody(request: AdaptedHttpRequest): unknown {
   if (request.body === undefined || request.body === "") return {};
   try {
     return JSON.parse(request.body) as unknown;

@@ -115,6 +115,7 @@ import {
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
+import { isChainRoute, routeChainRequest } from "../chains/routes.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { createFeedbackReviewWeb } from "./feedback-review-web.js";
@@ -1497,6 +1498,11 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isAgentRoute(url.pathname)) {
     if (deps.agents === undefined) throw agentXError("NOT_FOUND", "agents are not set up in this deployment");
     return routeAgentRequest({ ...deps.agents, startRun: (_agentCaller, input) => startAppRun(deps, caller, input) }, caller, request, url);
+  }
+  // Plan 4's chains (`/v1/app/chains*`, `/v1/app/chain-runs*`), beside Plan 3's agents.
+  if (isChainRoute(url.pathname)) {
+    if (deps.agents?.chains === undefined) throw agentXError("NOT_FOUND", "chains are not set up in this deployment");
+    return routeChainRequest({ ...deps.agents, chains: deps.agents.chains }, caller, request, url);
   }
   if (request.method === "GET" && url.pathname === "/v1/app/me") return getAppMe(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);

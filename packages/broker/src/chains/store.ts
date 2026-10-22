@@ -112,6 +112,7 @@ const nameTaken = (name: string) => coded("CONFIG_INVALID", `name: another chain
 const budgetConflict = () => coded("CHAIN_REVISION_CONFLICT", "Someone else changed this chain's owner, status or budget just now. Reload it and make your change again.");
 const policyMoved = () => coded("CHAIN_REVISION_CONFLICT", "Your company's spend policy changed just now. Reload and make your change again.");
 const totalsChanged = () => coded("CHAIN_REVISION_CONFLICT", totalsMoved("agent and chain").message.replace(/^AGENT_REVISION_CONFLICT: /, ""));
+const ROLLBACK_MOVED = "An agent this chain uses changed while it was being rolled back. Roll back again.";
 const agentMoved = () => coded("CHAIN_REVISION_CONFLICT", "An agent this chain uses changed while it was being published. Publish again.");
 
 const CONTROL_OR_FORMAT = /[\p{Cc}\p{Cf}]/u;
@@ -381,7 +382,7 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
    * The condition checks that make the pins of a publish hold at the moment it commits, one per item (a transaction cannot touch an item
    * twice), and the refusal of a built-in the org has turned off. Throws before anything is written when a pin is plainly wrong.
    */
-  private async pinChecks(orgId: OrgId, draft: ChainDefinition, pinned: PinnedChainDefinition, guardrailsRevision: number): Promise<TransactItem[]> {
+  private async pinChecks(orgId: OrgId, draft: ChainDefinition, pinned: PinnedChainDefinition, guardrailsRevision: number, moved: () => Error = agentMoved): Promise<TransactItem[]> {
     interface Wanted { current: Set<number>; named: Set<number> }
     const custom = new Map<string, Wanted>();
     const builtins = new Map<string, Wanted>();
@@ -418,12 +419,12 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
           if (version > latest) throw coded("NOT_FOUND", `${name} has no version ${String(version)}`);
         }
         const [current] = wanted.current;
-        if (current !== undefined && current !== orgPin) throw agentMoved();
-        for (const version of wanted.named) if (version > orgPin) throw agentMoved();
+        if (current !== undefined && current !== orgPin) throw moved();
+        for (const version of wanted.named) if (version > orgPin) throw moved();
         items.push(this.builtinCheck(orgId, agentId, current, wanted.named));
       }
       // The guardrails changed after the validation read them, so what it found may no longer hold.
-      if (guardrails.revision !== guardrailsRevision) throw agentMoved();
+      if (guardrails.revision !== guardrailsRevision) throw moved();
     }
     // Every publish commits at the guardrails the validation read (their forbidden models and limits judged each agent's recipe).
     items.push({
@@ -602,11 +603,17 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
 
   /**
    * Makes an earlier published version the current one. Later versions stay, and the next publish still numbers after them.
-   * It applies only while the current version is still `expectedCurrentVersion`.
+   * It applies only while the current version is still `expectedCurrentVersion`, and, like a publish, only while each agent the version pins is
+   * still there and active (a custom agent), still allowed and not above the org's pin (a built-in), and the guardrails are as they were read.
    */
-  rollback(input: { orgId: OrgId; chainId: ChainId; version: number; expectedCurrentVersion: number; by: string; request?: RequestMark }): Promise<ChainRecord> {
+  async rollback(input: { orgId: OrgId; chainId: ChainId; version: number; expectedCurrentVersion: number; by: string; request?: RequestMark }): Promise<ChainRecord> {
     const { chainId, ...rest } = input;
-    return this.rollbackItem({ ...rest, id: chainId });
+    const target = await this.getVersion(input.orgId, chainId, input.version);
+    if (target === undefined) return this.rollbackItem({ ...rest, id: chainId });
+    const moved = () => coded("CHAIN_REVISION_CONFLICT", ROLLBACK_MOVED);
+    const guardrails = await readGuardrailsWithRevision(this.input, input.orgId);
+    const items = await this.pinChecks(input.orgId, target.definition, target.definition, guardrails.revision, moved);
+    return this.rollbackItem({ ...rest, id: chainId, checks: { items, refused: moved } });
   }
 
   /** Changes the share set; see `OwnedStore.replaceItemShares`. Who may share, and that the principals exist, are the caller's checks (access.ts). */

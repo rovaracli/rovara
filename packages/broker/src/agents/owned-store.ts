@@ -222,7 +222,11 @@ export abstract class OwnedStore<Id extends string, Rec extends OwnedRecord, Ver
    * Makes an earlier published version the current one. Later versions stay, and the next publish still numbers after them.
    * It applies only while the current version is still `expectedCurrentVersion`, so a publish that landed since can't be undone unseen.
    */
-  protected async rollbackItem(input: { orgId: OrgId; id: Id; version: number; expectedCurrentVersion: number; by: string; request?: RequestMark }): Promise<Rec> {
+  protected async rollbackItem(input: {
+    orgId: OrgId; id: Id; version: number; expectedCurrentVersion: number; by: string; request?: RequestMark;
+    /** Condition checks that must hold when the write commits (a chain's agents), and what a failed one means; the item's own conditions give the draft conflict. */
+    checks?: { items: TransactItem[]; refused: () => Error };
+  }): Promise<Rec> {
     const item = await this.require(input.orgId, input.id);
     if (await this.getVersion(input.orgId, input.id, input.version) === undefined) throw coded("NOT_FOUND", `${item.name} has no version ${String(input.version)}`);
     const updatedAt = this.iso();
@@ -238,8 +242,9 @@ export abstract class OwnedStore<Id extends string, Rec extends OwnedRecord, Ver
         when: (a) => `${a.name("currentVersion")} = ${a.value(input.expectedCurrentVersion)}`,
       }),
       event.item,
+      ...(input.checks?.items ?? []),
       ...audit.items,
-    ], () => this.conflict(), input.request, rolled);
+    ], (failed) => (input.checks !== undefined && [...failed].some((index) => index >= 2 && index < 2 + input.checks!.items.length) ? input.checks.refused() : this.conflict()), input.request, rolled);
     await flushAuditEvents(this.input, audit.events);
     return rolled;
   }

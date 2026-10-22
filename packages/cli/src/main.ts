@@ -82,6 +82,7 @@ import {
   guardrailsSet, guardrailsShow, projectAgentsChange, projectConnectorsList, projectConnectorsRemove, projectConnectorsSet, skillsAdd, skillsList, sourcesAdd,
   sourcesCheck, sourcesList, sourcesOrder, sourcesRemove, type AppResult,
 } from "./developer/agents.js";
+import { chainsArchive, chainsCreate, chainsDraftGet, chainsDraftSet, chainsList, chainsPublish, chainsRollback, chainsShare, chainsShow, chainsVersions } from "./developer/chains.js";
 import { agentsBudget, projectAiSet } from "./developer/spend.js";
 import { parseConnectorsFlag } from "./init/finish-steps.js";
 import { runEnvAdopt, runEnvList, runEnvUse } from "./environments/commands.js";
@@ -690,6 +691,76 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   const printResult = (command: Command, result: AppResult) => {
     services.stdout.write(globalOptions(command).json ? formatSuccess({ env: result.env, url: result.url, ...result.data }, true) : result.text);
   };
+  const chains = program.command("chains").description("design, publish, share and roll back chains of agents and approval gates");
+  chains
+    .command("list")
+    .description("list the chains you can see: all, yours, those shared with you, or a project's")
+    .option("--mine", "only chains you own", false)
+    .option("--shared", "only chains shared with you", false)
+    .option("--project <name>", "the chains of a project")
+    .action(async (options: { mine: boolean; shared: boolean; project?: string }, command: Command) => {
+      const scopes = (["mine", "shared"] as const).filter((scope) => options[scope]);
+      const project = options.project ?? globalOptions(command).project;
+      if (scopes.length + (project === undefined ? 0 : 1) > 1) throw agentXError("CONFIG_INVALID", "give one of --mine, --shared and --project");
+      printResult(command, await chainsList(developerSession(), developerEnv(command), { ...(scopes[0] === undefined ? {} : { scope: scopes[0] }), ...(project === undefined ? {} : { project }) }));
+    });
+  chains
+    .command("show")
+    .description("show a chain: what runs now and its steps")
+    .argument("<chain-id>", "the chain's ID, from agentx chains list")
+    .action(async (chainId: string, _options: unknown, command: Command) => printResult(command, await chainsShow(developerSession(), developerEnv(command), chainId)));
+  chains
+    .command("create")
+    .description("create a chain, yours or a project's, from a design file (or a one-step starter)")
+    .option("--name <name>", "the chain's name")
+    .option("--description <text>", "what the chain is for")
+    .option("--file <definition.json>", "the design, as JSON")
+    .option("--project-owner <project>", "make it the project's chain rather than yours")
+    .option("--accountable <email-or-id>", "with --project-owner: the maintainer who answers for it")
+    .action(async (options: { name?: string; description?: string; file?: string; projectOwner?: string; accountable?: string }, command: Command) =>
+      printResult(command, await chainsCreate(developerSession(), developerEnv(command), options)));
+  const chainDraft = chains.command("draft").description("a chain's draft: the design that is published next");
+  chainDraft
+    .command("get")
+    .description("print the draft's design, its revision and the problems that stop it being published")
+    .argument("<chain-id>", "the chain's ID")
+    .action(async (chainId: string, _options: unknown, command: Command) => printResult(command, await chainsDraftGet(developerSession(), developerEnv(command), chainId)));
+  chainDraft
+    .command("set")
+    .description("save a design as the draft; refused if someone changed the draft since it was read")
+    .argument("<chain-id>", "the chain's ID")
+    .option("--file <definition.json>", "the design, as JSON")
+    .action(async (chainId: string, options: { file?: string }, command: Command) => printResult(command, await chainsDraftSet(developerSession(), developerEnv(command), chainId, options.file)));
+  chains
+    .command("publish")
+    .description("publish the draft as the chain's next version; a less safe change waits for a person on the confirmation page")
+    .argument("<chain-id>", "the chain's ID")
+    .option("--note <text>", "what changed, up to 200 characters")
+    .action(async (chainId: string, options: { note?: string }, command: Command) => printResult(command, await chainsPublish(developerSession(), developerEnv(command), chainId, options.note)));
+  chains
+    .command("versions")
+    .description("list a chain's published versions")
+    .argument("<chain-id>", "the chain's ID")
+    .action(async (chainId: string, _options: unknown, command: Command) => printResult(command, await chainsVersions(developerSession(), developerEnv(command), chainId)));
+  chains
+    .command("rollback")
+    .description("run an earlier published version again; a less safe one waits for a person on the confirmation page")
+    .argument("<chain-id>", "the chain's ID")
+    .argument("<version>", "the version to run")
+    .action(async (chainId: string, version: string, _options: unknown, command: Command) => printResult(command, await chainsRollback(developerSession(), developerEnv(command), chainId, version)));
+  for (const archive of [true, false]) {
+    chains
+      .command(archive ? "archive" : "unarchive")
+      .description(archive ? "archive a chain: it stops starting runs" : "bring an archived chain back")
+      .argument("<chain-id>", "the chain's ID")
+      .action(async (chainId: string, _options: unknown, command: Command) => printResult(command, await chainsArchive(developerSession(), developerEnv(command), chainId, archive)));
+  }
+  chains
+    .command("share")
+    .description("set who a chain is shared with, from a JSON list of { principal, level }")
+    .argument("<chain-id>", "the chain's ID")
+    .option("--file <shares.json>", "the shares, as a JSON array")
+    .action(async (chainId: string, options: { file?: string }, command: Command) => printResult(command, await chainsShare(developerSession(), developerEnv(command), chainId, options.file)));
   const agents = program.command("agents").description("build, publish, share, run and govern your organization's agents");
   agents
     .command("list")

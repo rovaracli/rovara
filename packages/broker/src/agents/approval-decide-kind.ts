@@ -27,6 +27,7 @@ async function whoMayDecide(deps: ApprovalDependencies, record: AnyApprovalRecor
       case "org_admin": return "an organization owner or admin";
       case "agent_publish":
       case "agent_manager": return "the agent's owner, a maintainer of its project, or an organization owner or admin";
+      case "chain_publish": return "the chain's owner, a maintainer of its project, or an organization owner or admin";
       case "project_settings": return "a maintainer of this project";
       default: return "the people it was asked of";
     }
@@ -50,6 +51,8 @@ const TITLES: Record<string, string> = {
   builtin_adopt: "Use a new version of a built-in agent",
   agent_share: "Share an agent with the whole company",
   guardrails: "Relax the company's agent guardrails",
+  chain_publish: "Publish a chain",
+  chain_rollback: "Roll a chain back",
   connector_widen: "Let a project's connector make changes",
   opt_out: "Let agents comment in a repository whose workflows act on comments",
 };
