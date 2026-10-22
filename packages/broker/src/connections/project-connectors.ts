@@ -204,6 +204,10 @@ const stringsOf = (value: unknown): string[] => (Array.isArray(value) ? value.ma
 const within = (inner: readonly string[], outer: readonly string[]): boolean => inner.every((value) => outer.includes(value));
 
 /**
+ * UNREACHABLE TODAY (review B-M1): `widenings()` returns nothing for a connector with no write tool, and every native schema refuses a write tool, so these
+ * rules run only when a test casts a write tool past the schema. They are kept, and tested that way, for a later plan that lets a native type write; until
+ * then a scope added to a native connector applies at once, as a scope added to any other read-only connector does.
+ *
  * For each native type, whether a stored scope already reaches everything a new scope would, by what that type's scope names. A scope that asks for less
  * than the stored one (more Datadog tags, fewer PagerDuty services, a longer name prefix) is covered; one that asks for more or for something else is not.
  */
