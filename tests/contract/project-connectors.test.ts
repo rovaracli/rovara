@@ -1983,3 +1983,26 @@ describe("Plan 4 Task 12: PUT accepts the seven new types", () => {
     await s.fakeLinear.close();
   });
 });
+
+
+describe("Plan 4 Task 13: sentry on the project connectors", () => {
+  const sentryOf = (id: string, tools: unknown[]) => ({ name: "errors", type: "sentry", credentialRef: id, scopes: [{ alias: "web", projectSlug: "web-app" }], tools });
+
+  it("lists the four tools Sentry's connector offers, all reads", () => {
+    expect(PROJECT_CONNECTOR_TOOLS.sentry).toEqual(["list_issues", "get_issue", "get_latest_event", "list_releases"]);
+  });
+
+  it("accepts a sentry connector approving list_issues, and refuses resolve_issue with Task 12's text, writing no revision", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const s = await install();
+    const id = await s.connection({ type: "sentry", label: "Sentry", access: "read", region: "us", orgSlug: "acme" }, { authToken: "sntrys_PROJECTCONNECTORTOKEN0123" });
+    const refused = await s.put(MIA, "errors", sentryOf(id, [{ name: "list_issues", access: "read" }, { name: "resolve_issue", access: "read" }]));
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.1: resolve_issue is not a sentry tool" });
+    expect(s.revisions()).toHaveLength(1);
+    const saved = await s.put(MIA, "errors", sentryOf(id, [{ name: "list_issues", access: "read" }]));
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body).toMatchObject({ revision: 2, connector: { name: "errors", type: "sentry", connectionId: id } });
+    await s.fakeLinear.close();
+  });
+});
