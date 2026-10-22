@@ -29,6 +29,7 @@ import {
 } from "../../packages/broker/src/developer/decide-session.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
+import { decideKindsFromEnvironment } from "../../packages/broker/src/aws/developer-identity.js";
 import { DEV_ISSUER, MAYA, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
@@ -608,6 +609,22 @@ describe("the sign-in function's kinds ask the broker (hand-off 1)", () => {
     await expect(lambdaInspectInvoker(respond({ statusCode: 200, body: "not json" }), "f")(request)).rejects.toThrow();
     await expect(lambdaInspectInvoker({ send: async () => ({ StatusCode: 200 }) }, "f")(request)).rejects.toThrow();
     await expect(lambdaInspectInvoker({ send: async () => { throw new Error("network"); } }, "f")(request)).rejects.toThrow();
+  });
+});
+
+describe("the sign-in function's kinds come from its environment", () => {
+  const target = { orgId: ORG_A, developerId: BOB, approvalId: "apr_aaaaaaaaaaaaaaaaaaaa" };
+  it("has none (every approval is not found) with no broker function named, and asks the named one otherwise", async () => {
+    const sent: unknown[] = [];
+    const lambda = { send: async (command: unknown) => {
+      sent.push((command as { input: { FunctionName?: string } }).input.FunctionName);
+      return { StatusCode: 200, Payload: new TextEncoder().encode(JSON.stringify({ statusCode: 200, body: JSON.stringify({ status: "open" }) })) };
+    } };
+    expect(decideKindsFromEnvironment({}, lambda)).toEqual({});
+    expect(decideKindsFromEnvironment({ DECIDE_INSPECT_FUNCTION_NAME: "" }, lambda)).toEqual({});
+    const kinds = decideKindsFromEnvironment({ DECIDE_INSPECT_FUNCTION_NAME: "agentx-staging-broker" }, lambda);
+    expect((await kinds.apr!.inspect(target)).status).toBe("open");
+    expect(sent).toEqual(["agentx-staging-broker"]);
   });
 });
 

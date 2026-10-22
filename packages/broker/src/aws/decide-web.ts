@@ -67,7 +67,7 @@ async function decide(context: DecideRequestContext, request: DecideRequest, app
   }
   // The session is claimed from here (one decision at a time). What happens to it next depends on what came of the decision (M-d): a decision
   // that was made spends it; one that was refused decided nothing, so it is given back and the person can try again within its ten minutes;
-  // a failure on our side after the decision began may have partly happened, so it stays spent.
+  // a failure on our side after the decision began may have partly happened, so it stays spent (the catch below classifies what the decision threw).
   let end: DecisionEnd = "refused";
   try {
     if (decision !== "approve" && decision !== "decline") return refusedPage(400, "Nothing was decided", "Choose Approve or Decline. Open the approval again.");
@@ -79,7 +79,6 @@ async function decide(context: DecideRequestContext, request: DecideRequest, app
     if (kind === undefined || inspection.status === "not_found") return notFoundPage();
     if (inspection.status === "forbidden") return forbiddenPage(`Only ${inspection.who} can decide this.`);
     if (inspection.status === "decided") return decidedPage(decidedWords(inspection));
-    end = "failed";
     try {
       const outcome = await kind.decide(target, decision, authority.proof);
       end = "decided";

@@ -13,6 +13,7 @@ import { createRemoteJWKSet, type JWTVerifyGetKey } from "jose";
 import { singleOrgIdForEnv, type OrgId, type ChannelByNameRequest, type ChannelInfoRequest, type ChannelMembersRequest, type DeveloperSignInMethod, type EndDeveloperSessionsRequest, type SlackAuthCheckRequest, type SlackUserByEmailRequest, type TaskChannelPeopleRequest, type TaskPersonProofRequest, type StartIdentityLinkRequest, type UnlinkIdentityRequest } from "@agentx/contracts";
 import { DecideStore } from "../developer/decide-session.js";
 import { brokerDecideKinds, lambdaInspectInvoker } from "../developer/decide-inspect.js";
+import type { DecideKinds } from "../developer/decide-kinds.js";
 import { auditRuntimeFromEnvironment } from "../audit/runtime.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import { ProviderNotConfiguredError, githubSignInProvider, oidcSignInProvider, slackSignInProvider, type SignInProvider } from "../developer/providers.js";
@@ -44,6 +45,16 @@ export type DeveloperIdentityLambdaConfig = DeveloperIdentityConfig & {
   /** Sign up and sign in with GitHub (DEVELOPER_GITHUB_*): set only with the cloud method, a client id and a secret id. */
   githubSettings?: { clientId: string };
 };
+
+/**
+ * Who may decide `apr_` and `spr_` now is the BROKER's question (Plan 3, Task 21a-wiring, hand-off 1): the sign-in function's kinds invoke it
+ * (`decide-inspect`) and fail closed on any error. With no broker function named (`DECIDE_INSPECT_FUNCTION_NAME`), every approval is "not found",
+ * so nothing can be decided.
+ */
+export function decideKindsFromEnvironment(env: NodeJS.ProcessEnv, lambda: { send(command: unknown, options?: unknown): Promise<unknown> }): DecideKinds {
+  const brokerFunction = env.DECIDE_INSPECT_FUNCTION_NAME ?? "";
+  return brokerFunction === "" ? {} : brokerDecideKinds({ invoke: lambdaInspectInvoker(lambda, brokerFunction) });
+}
 
 /** Reads the given environment (F1: never process.env directly), so it can be tested. */
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -262,14 +273,11 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     from: noticeFrom === "" ? undefined : noticeFrom,
     cellUrl: env.ROVARA_WEB_ORIGIN || new URL(config.issuer).origin,
   };
-  // Plan 3, Task 21a: the decide flow (`/v1/auth/decide/*`) exists on a cloud install that names its pool. Who may decide `apr_` and `spr_` now is the
-  // BROKER's question (hand-off 1): the kinds here invoke it (`decide-inspect`) and fail closed on any error. With no broker function named, every
-  // approval is "not found", so nothing can be decided.
-  const brokerFunction = env.DECIDE_INSPECT_FUNCTION_NAME ?? "";
+  // Plan 3, Task 21a: the decide flow (`/v1/auth/decide/*`) exists on a cloud install that names its pool; its kinds ask the broker (decideKindsFromEnvironment).
   const userPoolId = env.DEVELOPER_CLOUD_USER_POOL_ID ?? "";
   const decide = config.cloud === undefined || config.cloudSettings === undefined || userPoolId === "" ? undefined : {
     store: new DecideStore({ documentClient, tableName: required(env, "DEVELOPER_SIGNIN_TABLE_NAME"), now }),
-    kinds: brokerFunction === "" ? {} : brokerDecideKinds({ invoke: lambdaInspectInvoker(new LambdaClient(region), brokerFunction) }),
+    kinds: decideKindsFromEnvironment(env, new LambdaClient(region)),
     cloudIssuer: config.cloudSettings.issuer.replace(/\/+$/, ""),
     cognito: { client: new CognitoIdentityProviderClient(region), userPoolId },
   };

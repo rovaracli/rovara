@@ -1252,6 +1252,18 @@ describe("eligibility asked of the broker fails closed (21a-wiring, hand-off 1)"
     expect(JSON.stringify(started.response)).not.toContain("did not answer");
   });
 
+  it("a ticket start checks eligibility again: a member who lost it since the ticket was minted gets 403 and no state, no Cognito call", async () => {
+    const { h, kind, cognito } = await flow();
+    await signInOnce(h, "cloud", gina.sub);
+    const ticket = await h.decide.mintTicket({ orgId: await orgOf(h, GINA_ID), developerId: GINA_ID, approvalId: APR_A, mintedBy: "token" });
+    kind.eligible.delete(GINA_ID);
+    const response = await request(h, `/v1/auth/decide/start?ticket=${ticket}`);
+    expect(response.statusCode).toBe(403);
+    expect(response.headers.location).toBeUndefined();
+    expect(h.db.find((item) => String(item.pk).startsWith("DECIDE_STATE#"))).toEqual([]);
+    expect(cognito.calls).toEqual([]);
+  });
+
   it("an identify callback whose eligibility can't be asked gives a 503 page and mints no ticket", async () => {
     const { h } = await flow({ kinds: unreachable });
     await signInOnce(h, "cloud", gina.sub);
