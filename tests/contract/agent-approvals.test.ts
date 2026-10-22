@@ -118,7 +118,7 @@ describe("getApproval validates what it reads", () => {
     const record = await createPendingChange(deps, input());
     expect(CHANGE_APPROVAL_TTL_DAYS).toBe(7);
     // Both constants are 7 today; the source says which one a change approval's expiry follows, so the write TTL can move alone.
-    const source = readFileSync("packages/broker/src/agents/approvals.ts", "utf8");
+    const source = readFileSync("packages/broker/src/agents/approvals-store.ts", "utf8");
     expect(source).toContain("CHANGE_APPROVAL_TTL_DAYS");
     expect(source).not.toContain("WRITE_APPROVAL_TTL_DAYS");
     db.set({ ...approvalKey(ORG_A, record.approvalId), entityType: "APPROVAL", orgId: ORG_A, approvalId: record.approvalId, kind: "change", subject: "nope", status: "SOMETHING" });

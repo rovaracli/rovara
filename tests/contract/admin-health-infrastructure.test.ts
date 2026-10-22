@@ -128,7 +128,7 @@ describe("the health route's grants (A13)", () => {
       // Plan 3, Tasks 14b and 20b: the comment-trigger opt-outs, the run cache and the run's own items expire on it too.
       "packages/broker/src/agents/comment-trigger-optouts.ts", "packages/broker/src/agents/write-class.ts", "packages/broker/src/agents/run-cache.ts",
       // Plan 3, Task 21: the approvals' approver items and step counters expire on it too (their open-index items are deleted when they are done).
-      "packages/broker/src/agents/approvals.ts",
+      "packages/broker/src/agents/approvals-store.ts", "packages/broker/src/agents/approvals-movers.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);
