@@ -10,8 +10,9 @@ import {
   validateChainForPublish,
 } from "../../packages/broker/src/chains/validate.js";
 import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
+import type { AgentId } from "../../packages/contracts/src/agent.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
-import { PinnedChainDefinitionSchema, type ChainDefinition, type ChainDefinitionInput, type PinnedChainDefinition } from "../../packages/contracts/src/chains.js";
+import { PinnedChainDefinitionSchema, type ApproverRule, type ChainDefinition, type ChainDefinitionInput, type PinnedChainDefinition } from "../../packages/contracts/src/chains.js";
 import { ChainDefinitionSchema } from "../../packages/contracts/src/chains.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { orgMemberKey } from "../../packages/contracts/src/org.js";
@@ -76,7 +77,7 @@ function setup() {
 
   const create = (name: string, overlay: RecipeOverlay = SCRATCH, extra: { owner?: string; orgId?: OrgId; extends?: "rovara-code" } = {}) =>
     store.create({ orgId: extra.orgId ?? ORG_A, name, owner: { kind: "member", developerId: extra.owner ?? ALICE }, overlay, createdBy: extra.owner ?? ALICE, ...(extra.extends === undefined ? {} : { extends: extra.extends }) });
-  const publish = async (agentId: `agt_${string}`, orgId: OrgId = ORG_A) => {
+  const publish = async (agentId: AgentId, orgId: OrgId = ORG_A) => {
     const agent = (await store.get(orgId, agentId))!;
     return store.publish({ orgId, agentId, expectedDraftRevision: agent.draftRevision, digest: DIGEST, by: ALICE });
   };
@@ -301,9 +302,9 @@ describe("validateChainForPublish", () => {
     /** A one-step chain on a custom agent at `version`. */
     const onAgent = (agentId: string, version: number | "current" = "current"): ChainDefinitionInput => ({
       start: "a",
-      steps: [{ ...agent("a", undefined), agent: { agentId: agentId as `agt_${string}`, version } }],
+      steps: [{ ...agent("a", undefined), agent: { agentId: agentId, version } }],
     });
-    const publishAgain = async (ctx: ReturnType<typeof setup>, agentId: `agt_${string}`) => {
+    const publishAgain = async (ctx: ReturnType<typeof setup>, agentId: AgentId) => {
       const record = (await ctx.store.get(ORG_A, agentId))!;
       const draft = (await ctx.store.getDraft(ORG_A, agentId))!;
       await ctx.store.saveDraft({ orgId: ORG_A, agentId, overlay: { ...SCRATCH, instructions: `v${String(record.latestVersion + 1)}` }, expectedRevision: draft.revision, by: ALICE });
@@ -440,7 +441,7 @@ describe("validateChainForPublish", () => {
       start: "a",
       steps: [
         {
-          kind: "agent", id: "a", name: "a", agent: { agentId: agentId as `agt_${string}`, version },
+          kind: "agent", id: "a", name: "a", agent: { agentId: agentId, version },
           next: { kind: "branch", choices: [{ id: "x", description: "x", to: "$end" }, { id: "y", description: "y", to: "$end" }] },
         },
       ],
@@ -476,7 +477,7 @@ describe("autonomousTriggerProblems", () => {
     return PinnedChainDefinitionSchema.parse({ ...parsed, steps: parsed.steps.map((step) => (step.kind === "agent" ? { ...step, agent: { ...step.agent, version: 1 } } : step)) });
   };
   const RUN_LIMIT = "limits.maxRunUsd: set a run limit and a monthly budget before adding an event or schedule trigger";
-  const gate = (approvers: Array<{ kind: "starter" } | { kind: "project_maintainers" } | { kind: "chain_owner" } | { kind: "members"; developerIds: string[] }>, id = "g"): unknown => ({
+  const gate = (approvers: ApproverRule[], id = "g"): unknown => ({
     kind: "gate", id, name: id, prompt: "ok?", approvers, onApprove: { to: "$end" }, onReject: { to: "$end" },
   });
   const withGate = (...gates: unknown[]): ChainDefinitionInput => ({ start: "a", steps: [agent("a", "g"), ...(gates as never[])], limits: { maxRunUsd: 5 } });
@@ -492,8 +493,9 @@ describe("autonomousTriggerProblems", () => {
   });
 
   it("asks for a run limit, and reports the limit problem once when both are missing", () => {
-    const { limits: _limits, ...unlimited } = INVESTIGATE_THEN_FIX;
-    const pinned = pinnedOf(unlimited as ChainDefinitionInput);
+    const unlimited: ChainDefinitionInput = { ...INVESTIGATE_THEN_FIX };
+    delete unlimited.limits;
+    const pinned = pinnedOf(unlimited);
     expect(text(autonomousTriggerProblems({ monthlyBudgetUsd: 100, pinned }))).toEqual([RUN_LIMIT]);
     expect(text(autonomousTriggerProblems({ pinned }))).toEqual([RUN_LIMIT]);
     const emptyLimits = pinnedOf({ ...INVESTIGATE_THEN_FIX, limits: { maxRunHours: 4 } });
@@ -510,7 +512,8 @@ describe("autonomousTriggerProblems", () => {
   });
 
   it("passes a gate with any other rule beside starter", () => {
-    for (const rule of [{ kind: "project_maintainers" }, { kind: "chain_owner" }, { kind: "members", developerIds: [ALICE] }] as const) {
+    const others: ApproverRule[] = [{ kind: "project_maintainers" }, { kind: "chain_owner" }, { kind: "members", developerIds: [ALICE] }];
+    for (const rule of others) {
       expect(autonomousTriggerProblems({ monthlyBudgetUsd: 10, pinned: pinnedOf(withGate(gate([{ kind: "starter" }, rule]))) })).toEqual([]);
       expect(autonomousTriggerProblems({ monthlyBudgetUsd: 10, pinned: pinnedOf(withGate(gate([rule]))) })).toEqual([]);
     }

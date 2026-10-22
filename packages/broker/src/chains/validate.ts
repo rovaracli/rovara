@@ -1,0 +1,287 @@
+// Chain validation (Plan 4 Task 2). `chainGraphProblems` checks the shape of the graph (where edges lead, what can run, what can finish, loops without a
+// bound) and is pure. `validateChainForPublish` adds what needs the org: the caller's `use` access to each agent, the agent version each step is pinned
+// to, Plan 3's guardrail check of each agent's recipe, and that no coding agent has to choose a branch. `autonomousTriggerProblems` is what an event or
+// schedule trigger needs of a published chain on top of that (a run limit, a budget, a gate someone other than the starter can decide).
+import {
+  agentXError,
+  AgentXError,
+  isBuiltinAgentId,
+  recipeRunner,
+  type ChainDefinition,
+  type ChainStep,
+  type ChainStepId,
+  type OrgId,
+  type PinnedChainDefinition,
+  type ResolvedRecipe,
+  type StepTarget,
+} from "@agentx/contracts";
+import { requireAgentAccess, type AgentAccessDeps, type AgentCaller } from "../agents/access.js";
+import { validateRecipeForOrg, type ServableModels } from "../agents/guardrails.js";
+import { resolveAgent, type AgentRecord } from "../agents/store.js";
+
+/** One thing wrong with a chain: where (`steps.2.next.to`) and what (`no step is called x`). `formatChainProblem` joins them as one line. */
+export interface ChainProblem {
+  path: string;
+  message: string;
+}
+
+export function formatChainProblem(problem: ChainProblem): string {
+  return `${problem.path}: ${problem.message}`;
+}
+
+type DraftStep = ChainDefinition["steps"][number];
+
+// ---- the graph
+
+interface Edge {
+  /** Where the edge is written, for a problem: `steps.1.next`, `steps.1.next.choices.0`, `steps.2.onApprove`. */
+  path: string;
+  to: StepTarget;
+  bounded: boolean;
+}
+
+/** Every edge a step can send the run along; a step that ends the run has none, but see `endsRun`. */
+function edgesOf(step: DraftStep | ChainStep, index: number): Edge[] {
+  const at = `steps.${String(index)}`;
+  if (step.kind === "gate") {
+    return [
+      { path: `${at}.onApprove`, to: step.onApprove.to, bounded: step.onApprove.maxTraversals !== undefined },
+      { path: `${at}.onReject`, to: step.onReject.to, bounded: step.onReject.maxTraversals !== undefined },
+    ];
+  }
+  const next = step.next;
+  if (next.kind === "go") return [{ path: `${at}.next`, to: next.to, bounded: next.maxTraversals !== undefined }];
+  if (next.kind === "branch") {
+    return next.choices.map((choice, choiceIndex) => ({ path: `${at}.next.choices.${String(choiceIndex)}`, to: choice.to, bounded: choice.maxTraversals !== undefined }));
+  }
+  return [];
+}
+
+/**
+ * What is wrong with the shape of a design: a start or an edge that names no step, a branch default that is not a choice (or a choice id used twice),
+ * a step no path from the start reaches, a design no path of which reaches the end, and a loop with no `maxTraversals` on any edge of it.
+ * Pure: it reads only the design.
+ */
+export function chainGraphProblems(def: ChainDefinition): ChainProblem[] {
+  const problems: ChainProblem[] = [];
+  const indexOf = new Map<ChainStepId, number>();
+  def.steps.forEach((step, index) => {
+    if (!indexOf.has(step.id)) indexOf.set(step.id, index);
+  });
+  const startKnown = indexOf.has(def.start);
+  if (!startKnown) problems.push({ path: "start", message: `no step is called ${def.start}` });
+
+  const edges = def.steps.map((step, index) => edgesOf(step, index));
+  def.steps.forEach((step, index) => {
+    for (const edge of edges[index]!) {
+      if (edge.to !== "$end" && !indexOf.has(edge.to)) problems.push({ path: `${edge.path}.to`, message: `no step is called ${edge.to}` });
+    }
+    if (step.kind === "agent" && step.next.kind === "branch") {
+      const next = step.next;
+      const seen = new Set<string>();
+      next.choices.forEach((choice, choiceIndex) => {
+        if (seen.has(choice.id)) problems.push({ path: `steps.${String(index)}.next.choices.${String(choiceIndex)}.id`, message: `${choice.id} is used by more than one choice` });
+        seen.add(choice.id);
+      });
+      if (next.default !== undefined && !next.choices.some((choice) => choice.id === next.default)) {
+        problems.push({ path: `steps.${String(index)}.next.default`, message: "not one of this branch's choices" });
+      }
+    }
+  });
+
+  if (startKnown) problems.push(...reachabilityProblems(def, indexOf, edges));
+  const looping = stepOnUnboundedLoop(def, indexOf, edges);
+  if (looping !== undefined) {
+    problems.push({ path: `steps.${String(looping)}`, message: `${def.steps[looping]!.id} is in a loop with no limit; set maxTraversals on the edge that goes back` });
+  }
+  return problems;
+}
+
+/** Steps no path from the start reaches, and whether any path from the start reaches `$end`. */
+function reachabilityProblems(def: ChainDefinition, indexOf: Map<ChainStepId, number>, edges: Edge[][]): ChainProblem[] {
+  const problems: ChainProblem[] = [];
+  const reached = new Set<number>();
+  const queue = [indexOf.get(def.start)!];
+  let finishes = false;
+  while (queue.length > 0) {
+    const index = queue.pop()!;
+    if (reached.has(index)) continue;
+    reached.add(index);
+    const step = def.steps[index]!;
+    if (step.kind === "agent" && step.next.kind === "end") finishes = true;
+    for (const edge of edges[index]!) {
+      if (edge.to === "$end") finishes = true;
+      else if (indexOf.has(edge.to)) queue.push(indexOf.get(edge.to)!);
+    }
+  }
+  def.steps.forEach((step, index) => {
+    if (!reached.has(index)) problems.push({ path: `steps.${String(index)}`, message: `${step.id} can never run` });
+  });
+  if (!finishes) problems.push({ path: "start", message: "this chain can never finish" });
+  return problems;
+}
+
+/**
+ * The index of a step on a loop that no `maxTraversals` limits, or undefined. Edges with a bound are removed; what is left has a cycle exactly when
+ * Kahn's algorithm cannot remove every step. Steps it leaves can also be merely downstream of a cycle, so the one reported is the first that can
+ * reach itself.
+ */
+function stepOnUnboundedLoop(def: ChainDefinition, indexOf: Map<ChainStepId, number>, edges: Edge[][]): number | undefined {
+  const out: number[][] = def.steps.map((_step, index) =>
+    edges[index]!.flatMap((edge) => (edge.bounded || edge.to === "$end" || !indexOf.has(edge.to) ? [] : [indexOf.get(edge.to)!])),
+  );
+  const inDegree = def.steps.map(() => 0);
+  for (const targets of out) for (const target of targets) inDegree[target] = (inDegree[target] ?? 0) + 1;
+  const ready = inDegree.flatMap((degree, index) => (degree === 0 ? [index] : []));
+  const removed = new Set<number>();
+  while (ready.length > 0) {
+    const index = ready.pop()!;
+    removed.add(index);
+    for (const target of out[index]!) {
+      inDegree[target] = inDegree[target]! - 1;
+      if (inDegree[target] === 0) ready.push(target);
+    }
+  }
+  if (removed.size === def.steps.length) return undefined;
+  for (let index = 0; index < def.steps.length; index += 1) {
+    if (!removed.has(index) && reaches(out, index, index)) return index;
+  }
+  return undefined;
+}
+
+/** Whether `to` can be reached from `from` along at least one edge. */
+function reaches(out: number[][], from: number, to: number): boolean {
+  const seen = new Set<number>();
+  const stack = [...out[from]!];
+  while (stack.length > 0) {
+    const index = stack.pop()!;
+    if (index === to) return true;
+    if (seen.has(index)) continue;
+    seen.add(index);
+    stack.push(...out[index]!);
+  }
+  return false;
+}
+
+// ---- publishing
+
+/** What publishing needs: Plan 3's access dependencies, and the guardrail check's optional source of servable models. */
+export type ChainValidateDeps = AgentAccessDeps & { servableModels?: ServableModels };
+
+type PinnedStep = PinnedChainDefinition["steps"][number];
+
+const UNKNOWN_AGENT = "unknown agent";
+
+/** An AgentXError's text without the code Plan 3 puts in front of it. */
+function plainMessage(error: AgentXError): string {
+  return error.message.startsWith(`${error.code}: `) ? error.message.slice(error.code.length + 2) : error.message;
+}
+
+interface StepPin {
+  /** The version the step runs, absent when the agent could not be pinned. */
+  version?: number;
+  problems: ChainProblem[];
+}
+
+/**
+ * Pins one agent step. The caller needs `use` on the agent (a missing agent and one the caller cannot see read the same: `unknown agent`); a built-in
+ * is pinned to the org's chosen release (or the newest when it has chosen none), a custom agent to its current version; the recipe that version
+ * resolves to must pass the org's guardrails; and a coding agent cannot be followed by a branch, because it has no way to say which.
+ */
+async function pinAgentStep(deps: ChainValidateDeps, caller: AgentCaller, orgId: OrgId, step: Extract<DraftStep, { kind: "agent" }>, index: number): Promise<StepPin> {
+  const at = `steps.${String(index)}.agent`;
+  const { agentId } = step.agent;
+  const problem = (path: string, message: string): StepPin => ({ problems: [{ path, message }] });
+
+  let found;
+  try {
+    found = await requireAgentAccess(deps, caller, agentId, "use");
+  } catch (error) {
+    if (error instanceof AgentXError && error.code === "NOT_FOUND") return problem(at, UNKNOWN_AGENT);
+    if (error instanceof AgentXError && error.code === "FORBIDDEN") return problem(at, plainMessage(error));
+    throw error;
+  }
+
+  const wanted = step.agent.version;
+  let version: number;
+  if (isBuiltinAgentId(agentId)) {
+    const name = deps.store.builtinName(agentId);
+    const pinned = await deps.store.pinnedBuiltinVersion(orgId, agentId);
+    version = wanted === "current" ? pinned : wanted;
+    if (version > deps.store.builtinLatestVersion(agentId)) return problem(`${at}.version`, `${name} has no version ${String(version)}`);
+    // A run cannot use a release above the org's pin until an admin adopts it, so a chain that names one could not start.
+    if (version > pinned) return problem(`${at}.version`, `${name} version ${String(version)} hasn't been adopted by your company yet`);
+  } else {
+    const record = found.agent as AgentRecord;
+    if (record.status === "archived") return problem(at, `${record.name} is archived`);
+    if (wanted === "current") {
+      if (record.currentVersion === undefined) return problem(at, `${record.name} has no published version`);
+      version = record.currentVersion;
+    } else {
+      version = wanted;
+      if (await deps.store.getVersion(orgId, agentId, version) === undefined) return problem(`${at}.version`, `${record.name} has no version ${String(version)}`);
+    }
+  }
+
+  let recipe: ResolvedRecipe;
+  try {
+    recipe = await resolveAgent(deps.store, orgId, agentId, version);
+  } catch (error) {
+    if (error instanceof AgentXError) return problem(at, plainMessage(error));
+    throw error;
+  }
+  const problems: ChainProblem[] = (await validateRecipeForOrg(deps, orgId, recipe)).map((found) => ({ path: `${at}.${found.path}`, message: found.message }));
+  if (step.next.kind === "branch" && recipeRunner(recipe) === "coding") {
+    problems.push({ path: `steps.${String(index)}.next`, message: "a coding agent can't choose a branch; add a step after it to decide" });
+  }
+  return { version, problems };
+}
+
+/**
+ * Checks a design for publishing and pins it: the graph problems, then for each agent step the problems above. `pinned` has every agent version a
+ * number. If `problems` is not empty, a step that could not be pinned keeps the version the person wrote, so `pinned` does not parse as a published
+ * chain (`PinnedChainDefinitionSchema` refuses `"current"`): the caller must publish only when `problems` is empty.
+ * It reads the org's pins and settings and writes nothing.
+ */
+export async function validateChainForPublish(
+  deps: ChainValidateDeps,
+  caller: AgentCaller,
+  orgId: OrgId,
+  def: ChainDefinition,
+): Promise<{ pinned: PinnedChainDefinition; problems: ChainProblem[] }> {
+  if (caller.orgId !== orgId) throw agentXError("FORBIDDEN", "you can't check a chain for another organization");
+  const problems = chainGraphProblems(def);
+  const steps: unknown[] = [];
+  for (const [index, step] of def.steps.entries()) {
+    if (step.kind !== "agent") {
+      steps.push(step);
+      continue;
+    }
+    const pin = await pinAgentStep(deps, caller, orgId, step, index);
+    problems.push(...pin.problems);
+    steps.push(pin.version === undefined ? step : { ...step, agent: { ...step.agent, version: pin.version } });
+  }
+  return { pinned: { ...def, steps: steps as PinnedStep[] }, problems };
+}
+
+// ---- event and schedule triggers
+
+const RUN_LIMIT_MESSAGE = "set a run limit and a monthly budget before adding an event or schedule trigger";
+const APPROVERS_MESSAGE = "no one starts an event or schedule run, so add project maintainers, the chain owner or named people";
+
+/**
+ * What a chain needs to be started by an event or a schedule: a limit on one run and a monthly budget (nobody is watching the spend), and no gate that
+ * only the starter can decide (an event or a schedule has no person to be the starter).
+ */
+export function autonomousTriggerProblems(chain: { monthlyBudgetUsd?: number; pinned: PinnedChainDefinition }): ChainProblem[] {
+  const problems: ChainProblem[] = [];
+  if (chain.pinned.limits?.maxRunUsd === undefined || !(chain.monthlyBudgetUsd !== undefined && chain.monthlyBudgetUsd > 0)) {
+    problems.push({ path: "limits.maxRunUsd", message: RUN_LIMIT_MESSAGE });
+  }
+  chain.pinned.steps.forEach((step, index) => {
+    if (step.kind === "gate" && step.approvers.every((rule) => rule.kind === "starter")) {
+      problems.push({ path: `steps.${String(index)}.approvers`, message: APPROVERS_MESSAGE });
+    }
+  });
+  return problems;
+}
