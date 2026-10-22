@@ -137,6 +137,9 @@ export const AUDIT_ACTIONS = [
   "github.connected",
   "github.disconnected",
   "github.installation_changed",
+  "model_source.saved",
+  "model_source.removed",
+  "model_source.order_changed",
   "audit.read",
   "audit.exported",
   "audit.staff_read",
@@ -167,6 +170,7 @@ export const AUDIT_TARGET_KINDS = [
   "budget",
   "audit",
   "spend_policy",
+  "model_source",
 ] as const;
 
 export const AuditTargetKindSchema = z.enum(AUDIT_TARGET_KINDS);
@@ -220,6 +224,9 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "github.connected": ["accountType", "result"],
   "github.disconnected": ["accountType"],
   "github.installation_changed": ["status", "accountType"],
+  "model_source.saved": ["kind", "change"],
+  "model_source.removed": ["kind"],
+  "model_source.order_changed": ["count"],
   "audit.read": ["fromSeq", "toSeq", "count", "via"],
   "audit.exported": ["fromSeq", "toSeq", "withDetails"],
   "audit.staff_read": ["fromSeq", "toSeq", "count", "via"],

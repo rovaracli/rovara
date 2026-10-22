@@ -129,17 +129,18 @@ describe("the event catalog", () => {
       "connection.saved", "connection.removed", "project_connector.changed", "guardrails.changed",
       "comment_trigger_opt_out.applied", "comment_trigger_opt_out.lapsed", "egress_domain.decided", "agent.published",
       "agent.rolled_back", "builtin.adopted", "chain.published", "chain.rolled_back", "trigger.enabled",
-      "trigger.disabled", "github.connected", "github.disconnected", "github.installation_changed", "audit.read",
+      "trigger.disabled", "github.connected", "github.disconnected", "github.installation_changed", "model_source.saved",
+      "model_source.removed", "model_source.order_changed", "audit.read",
       "audit.exported", "audit.staff_read", "audit.subject_erased", "audit.org_shred_scheduled",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
 
-  it("lists the target kinds: the original list plus spend_policy", () => {
+  it("lists the target kinds: the original list plus spend_policy and model_source", () => {
     expect([...AUDIT_TARGET_KINDS]).toEqual([
       "approval", "spend_request", "task", "pull_request", "org", "member", "project", "agent", "chain", "trigger",
       "connection", "connector", "guardrails", "repository", "domain", "github_installation", "budget", "audit",
-      "spend_policy",
+      "spend_policy", "model_source",
     ]);
   });
 

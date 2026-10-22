@@ -129,6 +129,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/agents/comment-trigger-optouts.ts", "packages/broker/src/agents/write-class.ts", "packages/broker/src/agents/run-cache.ts",
       // Plan 3, Task 21: the approvals' approver items and step counters expire on it too (their open-index items are deleted when they are done).
       "packages/broker/src/agents/approvals-store.ts", "packages/broker/src/agents/approvals-movers.ts",
+      // A company AI source change's request item (Plan 3, Task 24b): kept 7 days so a retry is answered, then deleted by the TTL.
+      "packages/broker/src/model-sources/store.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

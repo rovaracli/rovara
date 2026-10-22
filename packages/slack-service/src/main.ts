@@ -169,7 +169,7 @@ function threadApi(message: SlackRequestMessage): ThreadServiceApi {
 const proxiedModels = modelProxyEnabled ? createProxiedModels({
   controlPlaneUrl,
   signedFetchFor: (message) => createSignedServiceFetch({ region, credentials, thread: message.thread, userId: message.userId }),
-  classifierModel, classifierTimeoutMs: gateClassifierTimeoutMs, log,
+  classifierModel, orchestratorModel: model, classifierTimeoutMs: gateClassifierTimeoutMs, log,
   createClassifier: createHostedClassifier, createRouter: createHostedRequestRouter,
 }) : undefined;
 

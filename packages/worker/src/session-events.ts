@@ -1,7 +1,7 @@
 // What the worker reads from a Pi session's events, shared by a coding task (run-task.ts) and an agent step
 // (agent-run/run-agent-step.ts): the end of a model turn, whether it failed, and the kind of an event for the log.
 import { agentXError } from "@agentx/contracts";
-import { budgetExhaustedFromMarker } from "@agentx/model-runtime";
+import { budgetExhaustedFromMarker, modelNotAllowedFromMarker } from "@agentx/model-runtime";
 import { redactCredentials } from "./events.js";
 
 export interface AssistantOutcome {
@@ -30,6 +30,9 @@ export function failedTurn(outcome: AssistantOutcome | undefined): Error | undef
     // A spent AI budget ends the task with its own category and words, and it can be continued once the budget is raised.
     const exhausted = budgetExhaustedFromMarker(outcome.errorMessage);
     if (exhausted !== undefined) return exhausted;
+    // No AI source serves the step's model: a terminal refusal that keeps the control plane's words, not a fault to retry.
+    const refused = modelNotAllowedFromMarker(outcome.errorMessage);
+    if (refused !== undefined) return agentXError("MODEL_NOT_ALLOWED", refused.text);
     const detail = String(redactCredentials(outcome.errorMessage ?? "no error message")).slice(0, 1_000);
     return agentXError("RUNTIME_UNAVAILABLE", `the model call failed: ${detail}`);
   }

@@ -201,6 +201,7 @@ import {
   modelKey,
   ModelSelectionSchema,
   recipeDigest,
+  type InvocationModelRoute,
   type ModelIdentifier,
   type ModelRef,
   type ModelSelection,
@@ -290,6 +291,7 @@ import { GithubMergeRateLimitError, isWebhookSecretMissing, parseGitHubRepositor
 import { createGitHubAppCredentials } from "./github-credentials.js";
 import { GITHUB_WEBHOOK_SIGNATURE_INVALID, GithubWebhookRefusal, GithubWebhookRetryableError, authorizeLinkedGithubWebhook, handleGithubWebhook, listDueGithubWebhookDeliveries, processGithubWebhookDelivery, reconcileTaskPullRequestFeedback, verifyTaskPullRequestFeedbackCurrent, type ReceivedGithubWebhook } from "./github-webhooks.js";
 import { CatalogCache, CredentialUnavailable } from "@agentx/gateway";
+import { proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
 import { unsupportedThinkingLevels } from "@agentx/model-runtime/thinking-levels";
 import { executeGitHubTool, toGitHubCatalog, type GitHubMcpDependencies } from "../github-mcp.js";
 import { DynamoConnectorLedger, GITHUB_LEDGER } from "./connector-ledger.js";
@@ -342,6 +344,10 @@ import { WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchIte
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../e2e/feature-plan-planning-context.js";
 import { developerIdForSlackUser } from "./admin-actions.js";
 import { chatGptOwner, chatGptTaskSelection } from "../chatgpt/task-model.js";
+import { readChatGptSettings } from "../chatgpt/settings.js";
+import { ModelSourceStore } from "../model-sources/store.js";
+import { sweepModelSources, type ModelSourceSweepDependencies } from "../model-sources/sweep.js";
+import type { ModelSourceRouteDependencies } from "../model-sources/routes.js";
 import { answerSlackChatGpt, isSlackChatGptCommandEvent, isSlackChatGptFinishEvent } from "./slack-chatgpt.js";
 import { chatGptConnections, kmsChatGptSealer, type ChatGptConnections } from "../chatgpt/connections.js";
 import { OrgSecrets, type SecretsClient } from "../connections/org-secrets.js";
@@ -355,7 +361,7 @@ import { changeBudgets, keyIdOf, mintKeyHealing, type OrgBudgetSettings } from "
 import { admitWork, mintOperationKey, type MintOperationKeyInput } from "../spend/admission.js";
 import { blockOperationKeys, forgetKey, registerKey, type LedgerDependencies } from "../spend/ledger.js";
 import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTask, resolvePayer } from "../spend/payer.js";
-import { runSettlementJobs, runSpendSweep, type SettlementJob } from "../spend/settlement-job.js";
+import { SETTLEMENT_BUDGETS_MS, runSettlementJobs, runSpendSweep, type SettlementJob } from "../spend/settlement-job.js";
 import { runApprovalSweep } from "../agents/approvals.js";
 import { memberRemovalHook, onProjectArchived, runMemberMergeDrain } from "../agents/lifecycle.js";
 import { readProjectAi, readSpendPolicy } from "../spend/settings.js";
@@ -364,7 +370,9 @@ import { SkillStore, servedSkills } from "../agents/skills.js";
 import { followMerges, type ProjectMembers } from "../agents/access.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
-import { applyAgentStep, priorStepIds, stepForOperation, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
+import { applyAgentStep, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
+import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
+import { chatGptServing, effectiveSources, routeOnWire, servableModels, servingRoutes, type ModelRoute, type RoutingDependencies } from "../model-sources/routing.js";
 import { readGuardrails } from "../agents/guardrails.js";
 import { DecideStore, DecideReauthRequired, mintConfirmUrl, requireDecideSession, type DecideRequestContext } from "../developer/decide-session.js";
 import type { DecideKinds } from "../developer/decide-kinds.js";
@@ -576,7 +584,7 @@ interface AwsBrokerDependencies {
    * The store, access checks and approvals are built from the broker's State table and sign-in table. `projectMembers` (who holds which role
    * on a project) is Plan 2 Task 21's `createProjectMembers` over those same tables unless a test hands in a stand-in (PF6).
    */
-  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; agentStepRuns?: boolean } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; agentStepRuns?: boolean; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
    * Plan 3, Task 21a (R66): present, the decisions are made on the confirmation page (`/v1/app/approve/{id}`), the decide routes send a token
    * there, and the sign-in function may ask `decide-inspect`. Absent, the page answers NOT_FOUND and nothing can be decided. The `apr_` kind (write,
@@ -766,6 +774,40 @@ async function putInstallBudget(dependencies: AwsBrokerDependencies, identity: A
   return { budget };
 }
 
+/** What an install may set about company AI sources beyond the model proxy itself (Task 24b); the rest of their dependencies come from the broker's own. */
+export type ModelSourceBrokerOptions = Pick<ModelSourceRouteDependencies, "launch" | "checkEndpoint" | "bedrockTrustPrincipals" | "isKnownCatalog">;
+
+/** The company AI sources' record (Task 24b). The install-wide ChatGPT switch sets a new org's default order. */
+function modelSourceStoreOf(dependencies: AwsBrokerDependencies): ModelSourceStore {
+  return new ModelSourceStore({
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+    // Read the way ChatGPT's own code reads it, so what a new org's order says and what the install shows agree.
+    chatgptSwitch: async () => (dependencies.chatgpt === undefined
+      ? await readChatGptSettings({ documentClient: dependencies.documentClient, tableName: dependencies.tableName })
+      : await dependencies.chatgpt.settings()).enabled,
+    ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
+  });
+}
+
+/**
+ * Task 26: what routing a step's model needs: the org's sources, the project's own order, a person's ChatGPT plan and the endpoint hosts' approvals.
+ * Undefined where the install has no agents or no model proxy: nothing is routed there, and keys are minted as they always were.
+ */
+function routingOf(dependencies: AwsBrokerDependencies): RoutingDependencies | undefined {
+  if (dependencies.agents === undefined || dependencies.modelAccess === undefined) return undefined;
+  const settings = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
+  let geography: RoutingDependencies["rovaraGeography"];
+  try { geography = proxyGeographyForRegion(process.env.AWS_REGION ?? "us-east-1"); } catch { geography = undefined; }
+  return {
+    sources: modelSourceStoreOf(dependencies),
+    egress: settings,
+    projectSourceOrder: async (orgId, project) => (await readProjectAi(settings, orgId, project)).sourceOrder,
+    ...(dependencies.chatgpt === undefined ? {} : { chatgpt: chatGptServing(dependencies.chatgpt) }),
+    ...(dependencies.agents.modelSources?.launch === undefined ? {} : { launch: dependencies.agents.modelSources.launch }),
+    ...(geography === undefined ? {} : { rovaraGeography: geography }),
+  };
+}
+
 function egressDepsOf(dependencies: AwsBrokerDependencies): EgressDomainsDependencies {
   return {
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, cloud: dependencies.cloud === true, now: () => new Date(), sync: dependencies.egressDomainsSync ?? (async () => ({ ok: false })),
@@ -856,6 +898,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
   });
   const signInStore = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, now: Date.now });
   const connections = orgConnectionStoreOf(dependencies);
+  const routing = routingOf(dependencies);
   const routeDependencies: AgentRouteDependencies = {
     store: new AgentStore({
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
@@ -876,8 +919,13 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     // The confirmation page is served by the cell, at the origin its access tokens are issued from.
     confirmOrigin: new URL(developer.issuer).origin,
     ...(agents.resolveSkill === undefined ? {} : { resolveSkill: agents.resolveSkill }),
-    ...(agents.servableModels === undefined ? {} : { servableModels: agents.servableModels }),
-    ...(agents.orgSourceOrder === undefined ? {} : { orgSourceOrder: agents.orgSourceOrder }),
+    // Where the install runs the model proxy, the models a recipe may name and the order a project may reorder are the org's own sources' (Task 26).
+    ...(agents.servableModels === undefined ? (routing === undefined ? {} : { servableModels: (orgId: OrgId) => servableModels(routing, orgId) }) : { servableModels: agents.servableModels }),
+    ...(agents.orgSourceOrder === undefined ? (routing === undefined ? {} : { orgSourceOrder: async (orgId: OrgId) => (await modelSourceStoreOf(dependencies).read(orgId)).order }) : { orgSourceOrder: agents.orgSourceOrder }),
+    // Company AI sources need the model proxy that registers their models; without it their routes say so (Task 24b).
+    ...(dependencies.modelAccess === undefined ? {} : {
+      modelSources: { store: modelSourceStoreOf(dependencies), access: dependencies.modelAccess.access, egress: egressDepsOf(dependencies), ...agents.modelSources },
+    }),
     // A run that names a pull request of a project repository reads its head through the GitHub App, with an agent token (pull requests and contents,
     // read only) for the run's org (Task 15, PF16; Task 14b). Where the provider has no such read, nothing is read and the run fails closed.
     pullRequestHead: agents.pullRequestHead ?? (async ({ orgId, repositoryUrl, number, installationId }) => {
@@ -1407,14 +1455,20 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     // Plan 3, Task 30: every 5 minutes, the spend settlement jobs (the sweep of open model keys today; PF13 adds the others to this list).
     if (isSpendSettlementEvent(event)) {
       const ledger = ledgerOf(dependencies);
-      // PF13: one list of independent jobs inside one budget of SPEND_SWEEP_BUDGET_MS. The short ones go first with a share of it each, and
-      // the spend sweep, which takes whatever is left, goes last, so a long sweep can't starve them.
-      const startedAt = Date.now();
+      // PF13: one list of independent jobs, each with its own budget (`SETTLEMENT_BUDGETS_MS`, which together stay under 27 seconds of the function's 30). The short
+      // ones go first and the spend sweep, a resumable cursor, takes what its budget allows, so a long sweep can't starve them.
+      const sources = modelSourceSweepOf(dependencies);
+      // Task 26: a backstop for the checks at the mint, where the install routes models at all.
+      const keyAudit = routingOf(dependencies) === undefined ? undefined : dependencies.modelAccess?.access;
       const jobs: SettlementJob[] = [
-        ...(agents === undefined ? [] : [{ name: "drain-member-merges", run: () => runMemberMergeDrain(agents, { budgetMs: MEMBER_DRAIN_BUDGET_MS }) }]),
+        ...(agents === undefined ? [] : [{ name: "drain-member-merges", run: () => runMemberMergeDrain(agents, { budgetMs: SETTLEMENT_BUDGETS_MS.drain }) }]),
         // Task 21: approvals that expired, writes stuck after a claim, and handlers that never heard the outcome.
-        ...(agents === undefined ? [] : [{ name: "expire-approvals", run: () => runApprovalSweep(agents, { budgetMs: APPROVAL_SWEEP_BUDGET_MS }) }]),
-        ...(ledger === undefined ? [] : [{ name: "sweep-spend", run: () => runSpendSweep(ledger, { budgetMs: Math.max(0, SPEND_SWEEP_BUDGET_MS - (Date.now() - startedAt)) }) }]),
+        ...(agents === undefined ? [] : [{ name: "expire-approvals", run: () => runApprovalSweep(agents, { budgetMs: SETTLEMENT_BUDGETS_MS.approvals }) }]),
+        // Task 24b: with a small budget of its own, before the spend sweep.
+        ...(sources === undefined ? [] : [{ name: "sweep-model-sources", run: () => sweepModelSources(sources, { budgetMs: SETTLEMENT_BUDGETS_MS.sources }) }]),
+        ...(ledger === undefined ? [] : [{ name: "sweep-spend", run: () => runSpendSweep(ledger, { budgetMs: SETTLEMENT_BUDGETS_MS.spend }) }]),
+        // Last: it reads the proxy's keys over several calls and must not take time the sweeps need (Task 26).
+        ...(keyAudit === undefined ? [] : [{ name: "audit-model-keys", run: () => auditModelKeys(keyAudit) }]),
       ];
       if (jobs.length === 0) return json({ skipped: true }, "spend-settlement");
       return json({ jobs: await runSettlementJobs(jobs, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))) }, "spend-settlement");
@@ -4998,7 +5052,7 @@ async function dispatchAgentStep(
   settings: RegisteredProjectRecord,
   projectModel: ModelSelection | undefined,
   chatgptModel: ModelSelection | undefined,
-): Promise<AppliedAgentStep | undefined> {
+): Promise<(AppliedAgentStep & { stepName: string }) | undefined> {
   if (task?.agent === undefined) return undefined;
   const frozen = await readTaskRecipe(dependencies, task.taskId, orgId);
   // The digest is computed from the recipe itself, never taken from the item's own field: the content is what must be the one the task recorded.
@@ -5006,10 +5060,11 @@ async function dispatchAgentStep(
   const guardrails = await readGuardrails(dependencies, orgId);
   const stepIds = priorStepIds({ recipe: frozen.recipe, mode: input.workflowMode, programStepId: input.programStepId, guardrails });
   const priorOperations = stepIds.length === 0 ? [] : await priorStepModels(dependencies, workspace.id, frozen.recipe, stepIds);
-  return applyAgentStep({
+  const applied = applyAgentStep({
     recipe: frozen.recipe, ref: task.agent, mode: input.workflowMode, programStepId: input.programStepId, guardrails, project: workspace.projectName,
     projectModel, projectApproved: settings.definition.models?.approved, chatgptModel, priorOperations,
   });
+  return { ...applied, stepName: stepNameOf(frozen.recipe, input.workflowMode, input.programStepId) };
 }
 
 /** The models the workspace's earlier coding operations ran on, by the recipe step each was; one that recorded none has no model. */
@@ -5023,6 +5078,22 @@ async function priorStepModels(dependencies: AwsBrokerDependencies, workspaceId:
     if (stepId !== undefined && stepIds.includes(stepId)) found.push({ stepId, ...(model.success ? { model: model.data } : {}) });
   }
   return found;
+}
+
+/**
+ * #341 with the org's say (Task 24b): where the install runs the model proxy, the org's source order decides whether ChatGPT is used at all. An org
+ * whose sources cannot be read runs on the default rather than on a plan its admin may have left out of the order.
+ */
+async function chatGptSelectionForOrg(dependencies: AwsBrokerDependencies, orgId: OrgId, owner: string | undefined): ReturnType<typeof chatGptTaskSelection> {
+  if (dependencies.modelAccess === undefined) return chatGptTaskSelection(dependencies.chatgpt, owner);
+  let orgSources: Awaited<ReturnType<ModelSourceStore["orgSources"]>>;
+  try {
+    orgSources = await modelSourceStoreOf(dependencies).orgSources(orgId);
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "model_sources.unreadable", errorName: error instanceof Error ? error.name : "unknown" }));
+    return undefined;
+  }
+  return chatGptTaskSelection(dependencies.chatgpt, owner, Date.now(), orgSources);
 }
 
 /** A task operation, its worker invocation and outbox item: acceptTask's and the first developer task's (R3). */
@@ -5040,12 +5111,24 @@ async function taskOperationParts(
   const resolvedModel = await resolveProjectModel(dependencies, orgId, settings);
   const task = await workspaceTask(dependencies, workspace.id);
   // #341: a task whose owner connected a working ChatGPT plan runs on it; `model` stays the default it falls back to.
+  const planOwner = chatGptOwner(task?.developerId, input.requester.requestedBy, developerIdForSlackUser);
   const planSelection = dependencies.chatgpt === undefined ? undefined
-    : await chatGptTaskSelection(dependencies.chatgpt, chatGptOwner(task?.developerId, input.requester.requestedBy, developerIdForSlackUser));
+    : await chatGptSelectionForOrg(dependencies, orgId, planOwner);
   // Plan 3, Task 16: the recipe the task froze at its start (never the live agent) decides this step's model, instructions and worker settings.
   const applied = await dispatchAgentStep(dependencies, orgId, workspace, task, input, settings, resolvedModel.model, planSelection?.model);
   // A step that picks a model of its own which the person's plan does not serve runs on the model proxy, not on the plan.
-  const chatgpt = applied?.dropChatgpt === true ? undefined : planSelection;
+  let chatgpt = applied?.dropChatgpt === true ? undefined : planSelection;
+  // Task 26: the order of the company's AI sources decides where the model comes from. The plan is kept only if no source listed before it serves its model; the
+  // key the worker is later given is scoped to the route chosen here, and the route is recorded on the operation so the key can be checked again when asked for.
+  const routing = routingOf(dependencies);
+  const routed = routing === undefined ? undefined : await routeStep(routing, {
+    orgId, project: workspace.projectName, agent: task?.agent?.name ?? ROVARA_CODE_NAME, step: applied?.stepName ?? stepNameOf(undefined, input.workflowMode),
+    model: applied?.model ?? resolvedModel.model,
+    ...(chatgpt === undefined || planOwner === undefined ? {} : { plan: { developerId: planOwner, model: chatgpt.model } }),
+  });
+  const payloadModel: ModelSelection | undefined = applied?.model ?? resolvedModel.model ?? (routed?.route == null ? undefined : routed.requested);
+  const leftThePlan = chatgpt !== undefined && routed?.keepChatgpt === false;
+  if (leftThePlan) chatgpt = undefined;
   const operationId = input.operationId ?? randomUUID();
   const fence = workspace.fence + 1;
   const operation = operationRecord({
@@ -5075,7 +5158,11 @@ async function taskOperationParts(
   });
   operation.settingsRevision = settings.definition.revision;
   // The model this operation runs on, kept so a later step that must differ in company from this one can be compared with it.
-  if (applied?.ranModel !== undefined) operation.model = applied.ranModel;
+  const ranModel = leftThePlan ? applied?.model : applied?.ranModel;
+  if (ranModel !== undefined) operation.model = ranModel;
+  if (routed !== undefined) {
+    operation.modelRoute = routed.route?.alias === undefined ? null : { sourceId: routed.route.sourceId, alias: routed.route.alias, model: routed.requested };
+  }
   if (chatgpt !== undefined) {
     operation.chatgptDeveloperId = chatgpt.developerId;
     // #342: where a fallback is told when the task ends.
@@ -5149,8 +5236,10 @@ async function taskOperationParts(
       ...(input.workflowReviewFeedback === undefined ? {} : { workflowReviewFeedback: input.workflowReviewFeedback }),
       ...(input.workflowReviewNote === undefined ? {} : { workflowReviewNote: input.workflowReviewNote }),
       ...(input.workflowReviewers === undefined ? {} : { workflowReviewers: [...input.workflowReviewers] }),
-      ...((applied?.model ?? resolvedModel.model) === undefined ? {} : { model: applied?.model ?? resolvedModel.model }),
+      // Task 26 (review I1): when a route was chosen the worker is told the model it was chosen for, never left to its install setting, which the key may not allow.
+      ...(payloadModel === undefined ? {} : { model: payloadModel }),
       ...(chatgpt === undefined ? {} : { chatgpt: { model: chatgpt.model } }),
+      ...(routed?.wire === undefined ? {} : { modelRoute: routed.wire }),
       ...(applied?.agentStep === undefined ? {} : { agentStep: applied.agentStep }),
       ...(resolvedModel.diagnostic === undefined ? {} : { modelSelectionDiagnostic: resolvedModel.diagnostic }),
       // Spec 051 (P-1): the checks the worker reruns when the agent finishes. The latest revision's readiness, as
@@ -5364,6 +5453,11 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     console.log(JSON.stringify({ component: "broker", event: `model_access.${what}_unreadable`, operationId: claims.operationId, errorName: error instanceof Error ? error.name : "unknown" }));
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   });
+  // Task 26: the route chosen when the operation was built, checked against the live sources now (once: a retry after a lost race keeps it). An operation built
+  // before routing has none, and is keyed as it was.
+  const routing = routingOf(dependencies);
+  const route = routing === undefined || operation.orgId === undefined || operation.modelRoute === undefined ? undefined
+    : await liveRouteOf(routing, operation, operation.orgId, (await requireWorkspace(dependencies, operation.workspaceId)).projectName);
   const loadScope = async (): Promise<ModelKeyScope | undefined> => {
     const current = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
     const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(current.workspaceId));
@@ -5382,6 +5476,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       const stepBudgetUsd = payment === undefined ? undefined : await unreadable("step_budget", () => stepBudgetOf(dependencies, task, current));
       return {
         orgId: task.orgId, developerId: payment === undefined ? task.developerId : payment.origin === "test_run" ? undefined : keyMember(payment.payer), refId: task.taskId,
+        ...(route === undefined ? {} : { route }),
         runLimitUsd, stopAtUsd: task.maxPerRunUsd === undefined ? runLimitUsd : Math.min(runLimitUsd, task.maxPerRunUsd),
         taskKeyIds, budgetBaselineUsd: task.budgetBaselineUsd ?? 0,
         // Task 31: with agents set up, the key is held on every budget the task counts against, recorded on the operation as well as the task, and a refusal
@@ -5409,6 +5504,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     const taskKeyIds = current.modelKeyIds ?? [];
     return {
       orgId: current.orgId, developerId: slack === undefined ? await linkedRequester(dependencies, current.orgId, current.requestedBy) : keyMember(slack.payer), refId: current.id,
+      ...(route === undefined ? {} : { route }),
       runLimitUsd: PER_TASK_BUDGET_USD, stopAtUsd: PER_TASK_BUDGET_USD, taskKeyIds, budgetBaselineUsd: 0,
       recordOn: [{ key: operationKey(current.workspaceId, current.id), knownCount: taskKeyIds.length }],
       ...(slack === undefined ? {} : {
@@ -5440,6 +5536,22 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     console.log(JSON.stringify({ component: "broker", event: "model_access.mint_failed", operationId: operation.id, errorName: error instanceof Error ? error.name : "unknown" }));
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   }
+}
+
+/**
+ * Task 26: the route a key is minted for. The operation recorded it when it was built; it is checked against the live sources each time a key is asked for (a
+ * source taken out of the org's order, removed, or no longer usable stops serving), but a reorder that leaves the source in the order does not end a running
+ * operation. Absent for an operation built before routing, whose key is unscoped as it was.
+ */
+async function liveRouteOf(routing: RoutingDependencies, operation: OperationRecord, orgId: OrgId, project: string): Promise<{ alias: string; sourceId: string } | undefined> {
+  const recorded = operation.modelRoute;
+  if (recorded === undefined) return undefined;
+  if (recorded === null) throw agentXError("MODEL_NOT_ALLOWED", "This task's ChatGPT plan has no backup among your company's AI sources, so no company AI key can be issued for it.");
+  const serving = await servingRoutes(routing, { orgId, project, model: recorded.model });
+  if (!serving.some((route) => route.sourceId === recorded.sourceId && route.alias === recorded.alias)) {
+    throw agentXError("MODEL_NOT_ALLOWED", "The AI source this step was running on is no longer available to your company. Ask an admin to check your AI sources, then continue the task.");
+  }
+  return { alias: recorded.alias, sourceId: recorded.sourceId };
 }
 
 /** What `handleModelAccess` knows of the work a key is for: the input of `mintOperationKey` less the key's lifetime. */
@@ -5484,6 +5596,9 @@ async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, reque
   // Task 29: with agents set up the turn is the bound project's expense, paid by the linked member (or the project when it pays, or when no member is
   // known) and tagged so; without them it is minted as it always was.
   try {
+    // Task 26: the turn's model is routed before anything is admitted or charged; a refusal here costs nothing.
+    const routing = routingOf(dependencies);
+    const routed = routing === undefined ? undefined : await routeTurn(routing, teamOrg, binding.projectName, body.data);
     const slack = dependencies.agents === undefined ? undefined : await slackWorkPayment(dependencies, teamOrg, binding.projectName, requester);
     const developerId = slack === undefined ? await linkedRequester(dependencies, teamOrg, requester) : keyMember(slack.payer);
     // Ruling R50: a turn is admitted like any chat work (which also syncs the proxy, the lazy half of syncBudgets), and its key is
@@ -5494,11 +5609,11 @@ async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, reque
         project: binding.projectName, agentId: ROVARA_CODE_AGENT_ID, agentName: ROVARA_CODE_NAME, path: "CHAT" },
     );
     const maxBudgetUsd = Math.min(PER_TURN_BUDGET_USD, admitted.maxBudgetUsd);
-    const tags = slack === undefined ? undefined : mintTagsFor({ ...slack, origin: "slack" });
+    const tags = slack === undefined ? undefined : routed === undefined ? mintTagsFor({ ...slack, origin: "slack" }) : { ...mintTagsFor({ ...slack, origin: "slack" }), source: routed.route.sourceId };
     const minted = await mintKeyHealing(
       { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
       { orgId: teamOrg, ...(developerId === undefined ? {} : { developerId }), purpose: "turn", refId: body.data.turnId, maxBudgetUsd, ttlSeconds: TURN_KEY_TTL_SECONDS,
-        ...(tags === undefined ? {} : { tags }) },
+        ...(routed === undefined ? {} : { models: routed.models }), ...(tags === undefined ? {} : { tags }) },
     );
     // Task 30: a turn's key reserves nothing (R50) and settles into the counters; one that can't be recorded is given back.
     const ledger = tags === undefined || slack === undefined ? undefined : ledgerOf(dependencies);
@@ -5514,13 +5629,37 @@ async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, reque
         throw error;
       }
     }
-    return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
+    return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt, ...(routed?.wire === undefined ? {} : { route: routed.wire }) }, request.requestId);
   } catch (error) {
     // A spent budget (or a locked trial) is the member's to know about; every other failure is the proxy's, and says nothing of it.
-    if (error instanceof AgentXError && ADMISSION_REFUSALS.has(error.code)) throw error;
+    if (error instanceof AgentXError && (ADMISSION_REFUSALS.has(error.code) || error.code === "MODEL_NOT_ALLOWED")) throw error;
     console.log(JSON.stringify({ component: "broker", event: "model_access.turn_mint_failed", errorName: error instanceof Error ? error.name : "unknown" }));
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   }
+}
+
+/**
+ * Task 26: where a Slack turn's model comes from. The org's assistant model when it set one, else the model the service is configured to answer with
+ * (Rovara's own AI): an org that has neither Rovara in its order nor an assistant model has nothing to answer with and is told to set one. The key may call the
+ * turn's route, and the gate classifier's and router's model when it is one of Rovara's catalog and Rovara is in the org's order (they share the turn's key).
+ */
+async function routeTurn(routing: RoutingDependencies, orgId: OrgId, project: string, body: { model?: ModelIdentifier | undefined; classifierModel?: ModelIdentifier | undefined }): Promise<{ route: ModelRoute; models: string[]; wire?: InvocationModelRoute }> {
+  const sources = await effectiveSources(routing, orgId, project);
+  if (sources === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
+  const assistant = sources.stored.assistantModel;
+  const rovara = sources.order.includes("rovara");
+  if (assistant === undefined && !rovara) {
+    throw agentXError("MODEL_NOT_ALLOWED", "Your company's AI sources don't include Rovara's AI, so Slack has no model to answer with. Ask an admin to set an assistant model.");
+  }
+  const model: ModelIdentifier = assistant ?? body.model ?? { provider: "amazon-bedrock", modelId: inGeography(DEFAULT_BEDROCK_MODELS.orchestrator, routing.rovaraGeography) };
+  const [route] = await servingRoutes(routing, { orgId, project, model });
+  if (route?.alias === undefined) {
+    throw agentXError("MODEL_NOT_ALLOWED", `Slack's model ${model.provider}/${model.modelId} isn't served by any AI source your company can use. Ask an admin to set another assistant model.`);
+  }
+  const classifier: ModelIdentifier = body.classifierModel ?? { provider: "amazon-bedrock", modelId: inGeography(DEFAULT_BEDROCK_MODELS.classifier, routing.rovaraGeography) };
+  const classifierRoute = rovara ? (await servingRoutes(routing, { orgId, project, model: classifier })).find((candidate) => candidate.sourceId === "rovara") : undefined;
+  const wire = routeOnWire(route, model);
+  return { route, models: [...new Set([route.alias, ...(classifierRoute?.alias === undefined ? [] : [classifierRoute.alias])])], ...(wire === undefined ? {} : { wire }) };
 }
 
 /** What one Slack turn's key may spend, and how long it lasts (a turn holds a queue message for at most 15 minutes). */
@@ -10393,11 +10532,28 @@ function isSpendSettlementEvent(event: unknown): event is { source: "agentx.spen
   return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.spend-settlement";
 }
 
-/** The broker's function has 30 seconds; a sweep that has not finished by then stops and the next run resumes from where it was. */
-const SPEND_SWEEP_BUDGET_MS = 20_000;
-/** The member-merge drain's share of that budget (Task 11): the queue is short and each marker is a few reads, so the rest is the spend sweep's. */
-const MEMBER_DRAIN_BUDGET_MS = 5_000;
-const APPROVAL_SWEEP_BUDGET_MS = 4_000;
+/**
+ * The audit of the proxy's scoped keys is the last job and gets the least of the function's time (`SETTLEMENT_BUDGETS_MS`); what it did not reach it says,
+ * and when it throws, what it had done (the counts travel in the error's words) is logged, since the report names only the error.
+ */
+async function auditModelKeys(access: { auditKeys(options?: { budgetMs?: number }): Promise<{ checked: number; blocked: number; truncated: boolean }> }) {
+  const result = await access.auditKeys({ budgetMs: SETTLEMENT_BUDGETS_MS.audit }).catch((error: unknown) => {
+    console.log(JSON.stringify({ component: "broker", event: "model_keys.audit_failed", errorName: error instanceof Error ? error.name : "unknown", message: error instanceof Error && error.name === "AgentXError" ? error.message.slice(0, 300) : undefined }));
+    throw error;
+  });
+  if (result.truncated) console.log(JSON.stringify({ component: "broker", event: "model_keys.audit_truncated", checked: result.checked, blocked: result.blocked }));
+  return result;
+}
+
+/** Task 24b: what the model-source sweep needs, or undefined where the install has no agents or no model proxy (it then has no sources to sweep). */
+function modelSourceSweepOf(dependencies: AwsBrokerDependencies): ModelSourceSweepDependencies | undefined {
+  if (dependencies.agents === undefined || dependencies.modelAccess === undefined) return undefined;
+  return {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+    store: modelSourceStoreOf(dependencies), access: dependencies.modelAccess.access, egress: egressDepsOf(dependencies),
+    log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
+  };
+}
 
 /** Task 30: what the spend ledger needs, or undefined where the install has no agents or no model proxy (it then keeps no ledger). */
 function ledgerOf(dependencies: AwsBrokerDependencies): LedgerDependencies | undefined {
@@ -13337,6 +13493,8 @@ function slackRequestQueue(queueUrl: string): SlackRequestQueue {
 const developer = developerConfiguration();
 const cloudProjectDefaults = cloudProjectDefaultsFromEnvironment(process.env);
 
+const bedrockTrustPrincipals = (process.env.MODEL_SOURCE_TRUST_PRINCIPALS ?? "").split(",").map((arn) => arn.trim()).filter((arn) => arn !== "");
+
 // Sign in with ChatGPT (#338): set only where the control plane has the connection key.
 const chatGptKeyArn = process.env.CHATGPT_CONNECTION_KEY_ARN;
 const chatgpt = chatGptKeyArn === undefined || chatGptKeyArn === "" ? undefined : chatGptConnections({
@@ -13458,7 +13616,8 @@ export const handler = createAwsBrokerHandler({
     : {}),
   ...(developer ? { developer } : {}),
   // Plan 3: the agent routes (`/v1/app/agents*`), on the real project members; they need the developer sign-in.
-  ...(developer ? { agents: {} } : {}),
+  // Rovara's roles that assume a Bedrock source's role (Task 24b), for the trust policy the sources page shows; unset until the control plane names them.
+  ...(developer ? { agents: bedrockTrustPrincipals.length === 0 ? {} : { modelSources: { bedrockTrustPrincipals } } } : {}),
   // Plan 3, Task 21a-wiring: the confirmation page and the decide routes exist on a cloud install with the developer sign-in (the grants on the sign-in
   // table's DECIDE_ keys are cloud only). Hard gate before any deploy: Task 37 confirms Cognito's `amr` first.
   ...(developer && cloudOrgResolver !== undefined ? { decide: {} } : {}),

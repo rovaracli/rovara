@@ -89,7 +89,14 @@ export interface ModelSourceOptions {
   isKnownCatalog?: (model: ModelIdentifier) => boolean;
 }
 
-const LabelSchema = z.string().trim().min(1).max(64);
+/** A name shown on a page and in a terminal: counted in code points, with no control or invisible formatting characters (a label cannot hide or rewrite text around it). */
+function displayName(maxCodePoints: number) {
+  return z.string().trim().min(1)
+    .refine((value) => [...value].length <= maxCodePoints, { message: `must be at most ${String(maxCodePoints)} characters` })
+    .refine((value) => !/[\p{Cc}\p{Cf}]/u.test(value), { message: "must not hold control or invisible characters" });
+}
+
+const LabelSchema = displayName(64);
 
 function catalogSchema(provider: string | undefined, options: ModelSourceOptions) {
   return ModelIdentifierSchema
@@ -133,7 +140,7 @@ function inputShapes(options: ModelSourceOptions) {
     api: z.string().trim().min(1).max(64),
     // `name` is what the endpoint calls the model; `catalog` is the Pi model it behaves like, for prices and limits.
     models: modelsSchema(
-      z.object({ name: z.string().trim().min(1).max(256), catalog: catalogSchema(undefined, options) }).strict(),
+      z.object({ name: displayName(256), catalog: catalogSchema(undefined, options) }).strict(),
       // Unique by the name the endpoint serves and by the catalog model it stands for, since routing matches on either.
       (entry) => [{ provider: "endpoint", modelId: entry.name }, entry.catalog],
     ),
@@ -198,4 +205,29 @@ export function defaultModelSourceOrder(chatgptSwitchOn: boolean): ModelSourceId
 /** The name the proxy serves a source's model under: unique across orgs and sources, and the same for the same model on any route. */
 export function sourceAlias(orgId: OrgId, sourceId: string, model: ModelIdentifier): string {
   return `${orgId}.${sourceId}.${canonicalModelName(model)}`;
+}
+
+// ---- the texts the admin routes show (Task 24b)
+
+/** What every company AI source route answers on an install with no model proxy (private installs today). */
+export const MODEL_SOURCES_NEED_PROXY = "company AI sources need Rovara's model proxy, which this install doesn't run";
+/** Shown beside every Bedrock source until Task 37's live test has passed. */
+export const BEDROCK_NOT_TESTED_NOTE = "NOT TESTED: Bedrock in your own AWS account hasn't been tested yet.";
+/** An endpoint's host was approved, but the DNS firewall does not serve it yet. */
+export const MODEL_SOURCE_STILL_APPLYING = "Rovara is still applying this address; try again in 5 minutes.";
+
+/**
+ * The trust policy an admin pastes into the role a Bedrock source names: the proxy's own roles may assume it, and only with the org's external
+ * id. `principals` are Rovara's role ARNs (the model proxy's task role and the function that probes the policy).
+ */
+export function bedrockTrustPolicy(orgId: OrgId, principals: readonly string[]): Record<string, unknown> {
+  return {
+    Version: "2012-10-17",
+    Statement: [{
+      Effect: "Allow",
+      Principal: { AWS: [...principals] },
+      Action: "sts:AssumeRole",
+      Condition: { StringEquals: { "sts:ExternalId": bedrockExternalId(orgId) } },
+    }],
+  };
 }

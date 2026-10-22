@@ -5,8 +5,8 @@
 import { InvokeCommand, type InvokeCommandOutput } from "@aws-sdk/client-lambda";
 import { AgentXErrorCodeSchema, agentXError, type AgentXError, type OrgId } from "@agentx/contracts";
 import { z } from "zod";
-import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "./access.js";
-import { KeySpendResultSchema, MintedKeyResultSchema, SourceCheckResultSchema, SpendFiguresSchema, SpendResultSchema, type ModelAccessRequest } from "./protocol.js";
+import type { KeyAudit, MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "./access.js";
+import { KeyAuditResultSchema, KeySpendResultSchema, MintedKeyResultSchema, RegisteredSourcesResultSchema, SourceCheckResultSchema, SpendFiguresSchema, SpendResultSchema, type ModelAccessRequest } from "./protocol.js";
 
 const DEFAULT_TIMEOUT_MS = 25_000;
 
@@ -56,12 +56,20 @@ export class ModelAccessInvoker implements ModelAccess {
     return this.parseResult(await this.invoke({ op: "mintKey", args }), MintedKeyResultSchema);
   }
 
+  async auditKeys(options?: { budgetMs?: number }): Promise<KeyAudit> {
+    return this.parseResult(await this.invoke({ op: "auditKeys", args: options?.budgetMs === undefined ? {} : { budgetMs: options.budgetMs } }), KeyAuditResultSchema);
+  }
+
   async upsertSource(input: UpsertSourceInput): Promise<void> {
     await this.invoke({ op: "upsertSource", args: { orgId: input.orgId, source: input.source, ...(input.apiKey === undefined ? {} : { apiKey: input.apiKey }) } });
   }
 
   async removeSource(orgId: OrgId, sourceId: string): Promise<void> {
     await this.invoke({ op: "removeSource", args: { orgId, sourceId } });
+  }
+
+  async listSources(): Promise<Array<{ orgId: OrgId; sourceId: string; hosts?: string[] | undefined }>> {
+    return this.parseResult(await this.invoke({ op: "listSources", args: {} }), RegisteredSourcesResultSchema);
   }
 
   async checkSource(orgId: OrgId, sourceId: string): Promise<SourceCheck> {

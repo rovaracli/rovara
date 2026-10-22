@@ -4,6 +4,15 @@
 import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { sweepSpend, type LedgerDependencies } from "./ledger.js";
 
+/**
+ * What each timed job of the scheduled run may take. The broker's function has 30 seconds; the budgets together stay under 27, so a job that ends a little
+ * late (a page of work finishing, a call returning) still leaves the function its margin. The short jobs go first, the spend sweep takes what is left of the
+ * 27 and resumes from its cursor on the next run, and the key audit is last and has the least. The member-merge drain (Task 11) has 5 seconds and the approvals'
+ * sweep (Task 21) 4, both taken out of what the spend sweep had before they joined (18 seconds).
+ */
+export const SETTLEMENT_BUDGETS_MS = { drain: 5_000, approvals: 4_000, sources: 5_000, spend: 9_000, audit: 4_000 } as const;
+export const SETTLEMENT_TOTAL_LIMIT_MS = 27_000;
+
 export interface SettlementJob {
   name: string;
   run(): Promise<unknown>;

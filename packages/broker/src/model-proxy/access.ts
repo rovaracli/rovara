@@ -29,6 +29,14 @@ export interface MintTags {
 /** The answer to checking a company source: a Bedrock trust policy that is too loose, or a source that did not answer, comes back as `ok: false` with text safe to show. */
 export type SourceCheck = { ok: true; health: "healthy" | "unknown" } | { ok: false; message: string };
 
+/** What the periodic audit of the proxy's scoped keys found: how many it evaluated, and how many it blocked for drifting from their org's own models. */
+export interface KeyAudit {
+  checked: number;
+  blocked: number;
+  /** The audit stopped at its page limit or its time budget with keys unread; the next run starts from the newest again. */
+  truncated: boolean;
+}
+
 export interface UpsertSourceInput {
   orgId: OrgId;
   source: ModelSource;
@@ -74,9 +82,25 @@ export interface ModelAccess {
   upsertSource(input: UpsertSourceInput): Promise<void>;
   /** Removes the source's models and key from the proxy, and its aliases from the org's team. Removing a source the proxy does not know is a no-op. */
   removeSource(orgId: OrgId, sourceId: string): Promise<void>;
+  /**
+   * Every company source the proxy holds a model or a credential for, by org and source id. The sweeper compares it with the records, so a registration
+   * whose record write never landed (or whose removal never finished) is found. Credentials without models count: a registration that stopped half-way.
+   * `hosts` are the hostnames the source's models and credential point at (`api_base`), so the sweeper can tell a key that sits beside a host it was not saved
+   * for. Hostnames only: never a key, and never a path or query.
+   */
+  listSources(): Promise<Array<{ orgId: OrgId; sourceId: string; hosts?: string[] | undefined }>>;
   /** Tests a source: for Bedrock the trust-policy probe first, then a health call per alias. A source the proxy does not know is NOT_FOUND. */
   checkSource(orgId: OrgId, sourceId: string): Promise<SourceCheck>;
+  /**
+   * A key with `models` is minted only for a team whose own models are scoped, and is read back and checked against the request before it is returned
+   * (a key that drifted is revoked and refused with MODEL_PROXY_UNAVAILABLE).
+   */
   mintKey(input: MintKeyInput): Promise<MintedKey>;
+  /**
+   * Reads the proxy's keys and blocks every scoped key that no longer holds to its invariants: models that are only its own org's aliases and Rovara AI
+   * catalog ids, no wildcard, no alias map, a team. A backstop for the checks at the mint; the older unscoped keys are not part of it.
+   */
+  auditKeys(options?: { budgetMs?: number }): Promise<KeyAudit>;
   revokeKey(key: string): Promise<void>;
   /**
    * Blocks a key by its id (the SHA-256 of the key): the proxy refuses it from then on, and its spend stays readable (`keySpend`), which a

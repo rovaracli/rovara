@@ -4,9 +4,9 @@
 // (budget_duration "1mo"). It holds the master key only through the `masterKey` callback, reads it
 // once per call, and never puts it, or a key, in an error. Network failures and 5xx answers are
 // MODEL_PROXY_UNAVAILABLE; a 4xx carries the proxy's message.
-import { randomInt } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 import { AgentXError, INFERENCE_PATHS, agentXError, bedrockExternalId, modelSourceOrgProblem, type OrgId } from "@agentx/contracts";
-import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "./access.js";
+import type { KeyAudit, MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "./access.js";
 import { credentialNameOf, proxyModelsOf, sourceAliasPrefix, sourceUsesKey, type PriceLookup } from "./sources.js";
 
 const BUDGET_DURATION = "1mo";
@@ -24,6 +24,9 @@ const USER_ROLE = "internal_user_viewer";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_MESSAGE_LENGTH = 300;
 const KEY_INFO_AT_ONCE = 10;
+/** The audit reads this many keys a page and stops after this many pages; the next run reads again (blocked and expired keys fall out of it). */
+const AUDIT_PAGE_SIZE = 100;
+export const AUDIT_MAX_PAGES = 30;
 
 /** Assumes a customer's role to test its trust policy. Resolves true when the role was assumed and false when AWS denied it; anything else throws. */
 export interface RoleAssumer {
@@ -47,10 +50,20 @@ export interface ModelProxyClientInput {
 }
 
 /** `served` is false for a Bedrock source that has not passed its probe: its models exist (the probe finds the role through them) but no team may call them. */
-interface ProxyModelEntry { id: string; name: string; org: string | undefined; roleArn: string | undefined; served: boolean }
+interface ProxyModelEntry { id: string; name: string; org: string | undefined; roleArn: string | undefined; served: boolean; /** The hostname the model's `api_base` points at, when it has one. */ host: string | undefined }
 
 type Json = Record<string, unknown>;
 interface Reply { status: number; body: unknown }
+
+/** The lower-case hostname of a URL, or undefined for anything else (a masked or missing value): never a path, query or user info. */
+function hostnameOf(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    return new URL(value).hostname.toLowerCase() || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 const isRecord = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
 const unavailable = (message: string) => agentXError("MODEL_PROXY_UNAVAILABLE", message);
@@ -90,12 +103,21 @@ function scrubbed(error: unknown, secret: string | undefined): unknown {
  */
 function assertKeyModels(orgId: OrgId, models: readonly string[], catalog: readonly string[]): void {
   if (models.length === 0) throw agentXError("CONFIG_INVALID", "a key needs at least one model");
-  const ownPrefix = `${orgId}.`;
-  for (const model of models) {
-    const own = model.startsWith(ownPrefix) && model.length > ownPrefix.length;
-    if (model.includes("*") || !(own || catalog.includes(model))) throw agentXError("CONFIG_INVALID", "a key may name only this organization's models and the Rovara AI catalog");
-  }
+  if (!models.every((model) => ownOrCatalog(orgId, model, catalog))) throw agentXError("CONFIG_INVALID", "a key may name only this organization's models and the Rovara AI catalog");
 }
+
+/** Whether a model name is one of this org's own aliases or an exact Rovara AI catalog id: never a wildcard, an access group or another org's alias. */
+function ownOrCatalog(orgId: string, model: string, catalog: readonly string[]): boolean {
+  const ownPrefix = `${orgId}.`;
+  const own = model.startsWith(ownPrefix) && model.length > ownPrefix.length;
+  return !model.includes("*") && (own || catalog.includes(model));
+}
+
+/** Whether two lists name the same models, whatever the order. */
+const sameModels = (left: readonly unknown[], right: readonly string[]): boolean => left.length === right.length && [...left].sort().join("\n") === [...right].sort().join("\n");
+
+/** LiteLLM's token id for a key: the hex SHA-256 of it, which is also how its info is asked for. */
+const tokenOf = (key: string): string => createHash("sha256").update(key).digest("hex");
 
 function numberOf(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
@@ -174,9 +196,13 @@ export class ModelProxyClient implements ModelAccess {
 
   async mintKey(input: MintKeyInput): Promise<MintedKey> {
     const requestedAt = this.input.now();
-    if (input.models !== undefined) assertKeyModels(input.orgId, input.models, this.teamCatalog());
+    const catalog = input.models === undefined ? [] : this.teamCatalog();
+    if (input.models !== undefined) assertKeyModels(input.orgId, input.models, catalog);
+    const master = await this.master();
+    // validate_mint: a scoped key is only as narrow as its team lets it be, so the team is read first and must itself be limited to the org's own models.
+    if (input.models !== undefined) await this.requireScopedTeam(master, input.orgId, catalog);
     const tags = input.tags === undefined ? {} : Object.fromEntries(Object.entries(input.tags).filter(([, value]) => value !== undefined));
-    const reply = await this.call("POST", "/key/generate", {
+    const reply = await this.request("POST", "/key/generate", master, {
       team_id: input.orgId,
       ...(input.developerId === undefined ? {} : { user_id: input.developerId }),
       max_budget: input.maxBudgetUsd,
@@ -185,9 +211,108 @@ export class ModelProxyClient implements ModelAccess {
       duration: `${String(input.ttlSeconds)}s`,
       metadata: { orgId: input.orgId, ...(input.developerId === undefined ? {} : { developerId: input.developerId }), purpose: input.purpose, refId: input.refId, ...tags },
     });
+    if (reply.status !== 200) throw refusal(reply);
     const key = isRecord(reply.body) ? reply.body.key : undefined;
     if (typeof key !== "string" || key === "") throw unavailable("model proxy answered with no key");
+    if (input.models !== undefined) await this.verifyMinted(master, key, input.orgId, input.models);
     return { key, expiresAt: requestedAt + input.ttlSeconds * 1000 };
+  }
+
+  /** The team's `models` must be non-empty (empty means every model) and hold only the org's own aliases and Rovara AI catalog ids. */
+  private async requireScopedTeam(master: string, orgId: OrgId, catalog: readonly string[]): Promise<void> {
+    const reply = await this.request("GET", `/team/info?team_id=${encodeURIComponent(orgId)}`, master, undefined);
+    if (reply.status !== 200) throw refusal(reply);
+    const info = isRecord(reply.body) ? reply.body.team_info : undefined;
+    const models = isRecord(info) && Array.isArray(info.models) ? info.models : undefined;
+    if (models === undefined || models.length === 0 || !models.every((model) => typeof model === "string" && ownOrCatalog(orgId, model, catalog))) {
+      throw agentXError("CONFIG_INVALID", "this organization's model team is not limited to its own models; ask a Rovara admin to look at it");
+    }
+  }
+
+  /**
+   * verify_minted: the key as the proxy stored it is read back and must be exactly what was asked for (its models, no alias map, its team, its routes).
+   * LiteLLM has stored a wildcard where a list was sent, so a key that differs, or cannot be read back, is revoked and never returned.
+   */
+  private async verifyMinted(master: string, key: string, orgId: OrgId, requested: readonly string[]): Promise<void> {
+    let drifted: boolean;
+    try {
+      const reply = await this.request("GET", `/key/info?key=${encodeURIComponent(tokenOf(key))}`, master, undefined);
+      const info = reply.status === 200 && isRecord(reply.body) ? reply.body.info : undefined;
+      drifted = !isRecord(info) || !Array.isArray(info.models) || !sameModels(info.models, requested) || info.team_id !== orgId
+        || (isRecord(info.aliases) && Object.keys(info.aliases).length > 0) || (info.aliases !== undefined && info.aliases !== null && !isRecord(info.aliases))
+        // The Task 25 spike shows the route list is stored and enforced, not that /key/info echoes it; a key whose info does not list it cannot be shown to be
+        // limited to the inference routes, so it is refused (Task 37 checks the real shape on staging).
+        || !Array.isArray(info.allowed_routes) || !sameModels(info.allowed_routes, KEY_INFERENCE_ROUTES);
+    } catch {
+      drifted = true;
+    }
+    if (!drifted) return;
+    // Best effort: a key that cannot be revoked now still expires, and the audit blocks it; either way it is not returned.
+    await this.request("POST", "/key/delete", master, { keys: [key] }).catch(() => undefined);
+    throw unavailable("the model proxy issued a key that does not match the request");
+  }
+
+  async auditKeys(options: { budgetMs?: number } = {}): Promise<KeyAudit> {
+    const catalog = this.teamCatalog();
+    const master = await this.master();
+    const started = this.input.now();
+    const audit: KeyAudit = { checked: 0, blocked: 0, truncated: false };
+    const overBudget = () => options.budgetMs !== undefined && this.input.now() - started >= options.budgetMs;
+    let drifted = 0;
+    let failed = 0;
+    for (let page = 1; ; page += 1) {
+      // Newest keys first, so a proxy that holds more keys than one run reads still has its recent ones audited; what is left unread is said so.
+      if (page > AUDIT_MAX_PAGES || (page > 1 && overBudget())) {
+        audit.truncated = true;
+        break;
+      }
+      const reply = await this.request("GET", `/key/list?return_full_object=true&sort_by=created_at&sort_order=desc&size=${String(AUDIT_PAGE_SIZE)}&page=${String(page)}`, master, undefined);
+      if (reply.status !== 200) throw refusal(reply);
+      const body = isRecord(reply.body) ? reply.body : {};
+      const entries: unknown[] = Array.isArray(body.keys) ? body.keys : [];
+      // No page is skipped for holding only expired keys: keys have two lifetimes (a turn's, an operation's), so newer expired keys say nothing of older live ones.
+      for (const entry of entries) {
+        const verdict = this.auditVerdict(entry, catalog);
+        if (verdict === undefined) continue;
+        audit.checked += 1;
+        if (!verdict.violation) continue;
+        drifted += 1;
+        // The budget is kept between blocks too: a page can hold a hundred drifted keys. What is left unblocked is said by `truncated`, and the next run starts again.
+        if (overBudget()) { audit.truncated = true; break; }
+        // One key that cannot be blocked does not leave the rest of the page unchecked; the audit fails at the end instead of reporting itself clean.
+        try {
+          await this.blockKey(verdict.token);
+          audit.blocked += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+      if (audit.truncated || page >= (numberOf(body.total_pages) ?? 1)) break;
+    }
+    if (failed > 0) throw unavailable(`the audit could not block ${String(failed)} of ${String(drifted)} drifted keys (checked ${String(audit.checked)}, blocked ${String(audit.blocked)})`);
+    return audit;
+  }
+
+  private isExpired(entry: unknown): boolean {
+    return isRecord(entry) && typeof entry.expires === "string" && Date.parse(entry.expires) <= this.input.now();
+  }
+
+  /** Whether one listed key holds to its invariants; undefined for a key the audit does not cover (older unscoped, blocked, expired, or unreadable). */
+  private auditVerdict(entry: unknown, catalog: readonly string[]): { token: string; violation: boolean } | undefined {
+    if (!isRecord(entry) || typeof entry.token !== "string" || !/^[0-9a-f]{64}$/u.test(entry.token) || entry.blocked === true) return undefined;
+    if (this.isExpired(entry)) return undefined;
+    const models = Array.isArray(entry.models) ? entry.models : [];
+    const routes = Array.isArray(entry.allowed_routes) ? entry.allowed_routes : [];
+    const scopedRoutes = routes.length > 0 && routes.every((route) => typeof route === "string" && KEY_INFERENCE_ROUTES.includes(route));
+    // The older key has no models and the group route; the team's own scoping bounds it. Anything with models, or with the exact routes, is a scoped key.
+    if (models.length === 0 && !scopedRoutes) return undefined;
+    const team = typeof entry.team_id === "string" ? entry.team_id : undefined;
+    const metadataOrg = isRecord(entry.metadata) ? entry.metadata.orgId : undefined;
+    const violation = team === undefined || models.length === 0 || !scopedRoutes
+      || !models.every((model) => typeof model === "string" && ownOrCatalog(team, model, catalog))
+      || (isRecord(entry.aliases) && Object.keys(entry.aliases).length > 0)
+      || (typeof metadataOrg === "string" && metadataOrg !== team);
+    return { token: entry.token, violation };
   }
 
   async revokeKey(key: string): Promise<void> {
@@ -263,6 +388,27 @@ export class ModelProxyClient implements ModelAccess {
     const removed = await this.request("DELETE", `/credentials/${encodeURIComponent(credentialNameOf(orgId, sourceId))}`, master, undefined);
     // A source with no key (Bedrock) has no credential to remove.
     if (removed.status !== 200 && removed.status !== 404) throw refusal(removed);
+  }
+
+  async listSources(): Promise<Array<{ orgId: OrgId; sourceId: string; hosts?: string[] }>> {
+    const master = await this.master();
+    const found = new Map<string, { orgId: OrgId; sourceId: string; hosts: Set<string> }>();
+    const note = (name: unknown, host: string | undefined): void => {
+      // Both a model alias and a credential are named `<orgId>.<sourceId>` first.
+      const match = typeof name === "string" ? /^(org_[0-9a-z]{20})\.(src_[0-9a-z]{20})(?:\.|$)/u.exec(name) : null;
+      if (match === null) return;
+      const key = `${match[1]!}/${match[2]!}`;
+      const entry = found.get(key) ?? { orgId: match[1] as OrgId, sourceId: match[2]!, hosts: new Set<string>() };
+      if (host !== undefined) entry.hosts.add(host);
+      found.set(key, entry);
+    };
+    for (const entry of await this.listModels(master)) if (entry.org !== undefined) note(entry.name, entry.host);
+    const credentials = await this.request("GET", "/credentials", master, undefined);
+    if (credentials.status !== 200) throw refusal(credentials);
+    const listed = isRecord(credentials.body) && Array.isArray(credentials.body.credentials) ? credentials.body.credentials : [];
+    // Only the host of a credential's `api_base` is read; its key is never looked at.
+    for (const entry of listed) if (isRecord(entry)) note(entry.credential_name, hostnameOf(isRecord(entry.credential_values) ? entry.credential_values.api_base : undefined));
+    return [...found.values()].map(({ orgId, sourceId, hosts }) => ({ orgId, sourceId, ...(hosts.size === 0 ? {} : { hosts: [...hosts].sort() }) }));
   }
 
   async checkSource(orgId: OrgId, sourceId: string): Promise<SourceCheck> {
@@ -348,6 +494,7 @@ export class ModelProxyClient implements ModelAccess {
         roleArn: typeof info.rovara_role_arn === "string" ? info.rovara_role_arn : undefined,
         // A Bedrock model is served only once its probe has passed; a missing flag fails closed.
         served: typeof info.rovara_role_arn !== "string" || info.rovara_tested === true,
+        host: hostnameOf(isRecord(item.litellm_params) ? item.litellm_params.api_base : undefined),
       });
     }
     return entries;
@@ -362,12 +509,6 @@ export class ModelProxyClient implements ModelAccess {
     if (!exists) throw refusal(created);
     const updated = await this.request("POST", updatePath, master, updateBody);
     if (updated.status !== 200) throw refusal(updated);
-  }
-
-  private async call(method: "POST", path: string, body: Json): Promise<Reply> {
-    const reply = await this.request(method, path, await this.master(), body);
-    if (reply.status !== 200) throw refusal(reply);
-    return reply;
   }
 
   private async master(): Promise<string> {

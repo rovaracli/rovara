@@ -12,13 +12,18 @@ import {
   type AgentGuardrails,
   type AgentStepPayload,
   type CodingStepKind,
+  type InvocationModelRoute,
   type ModelIdentifier,
   type ModelSelection,
+  type OrgId,
   type PiToolName,
   type ResolvedRecipe,
   type ResolvedStep,
   type StepSettings,
 } from "@agentx/contracts";
+import type { ProxyGeography } from "@agentx/model-runtime/catalog";
+import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
+import { routeModel, routeOnWire, servingRoutes, type ModelRoute, type RoutingDependencies } from "../model-sources/routing.js";
 import type { TaskAgentRef } from "./roster.js";
 
 /** The workflow modes a coding operation runs in; a task started without the workflow has no mode and runs its first turn like an IMPLEMENT. */
@@ -239,4 +244,58 @@ function agentStepOf(recipe: ResolvedRecipe, step: ResolvedStep, ref: { agentId:
     ...(timeoutMinutes === undefined ? {} : { timeoutMs: timeoutMinutes * 60_000 }),
     ...(promptSection === undefined ? {} : { promptSection }),
   };
+}
+
+// ---- the model's route (Task 26)
+
+/** What a step is called in a refusal and in the route's words: the recipe step's name, else the kind the mode runs. */
+export function stepName(recipe: ResolvedRecipe | undefined, mode: DispatchMode | undefined, programStepId?: string): string {
+  return (recipe === undefined ? undefined : stepForOperation(recipe, mode, programStepId)?.name) ?? KIND_LABEL[KIND_OF_MODE[mode ?? "IMPLEMENT"]];
+}
+
+/** A default Bedrock model id (`us.anthropic.claude-...`) in the geography the install's proxy serves: an eu install's catalog holds the eu profiles. */
+export function inGeography(modelId: string, geography: ProxyGeography = "us"): string {
+  return modelId.replace(/^us\./, `${geography}.`);
+}
+
+/** The model a worker runs when nothing names one: the install's default for the worker, which Rovara's catalog serves. */
+export function defaultWorkerModel(geography?: ProxyGeography): ModelIdentifier {
+  return { provider: "amazon-bedrock", modelId: inGeography(DEFAULT_BEDROCK_MODELS.worker, geography) };
+}
+
+export interface RoutedStep {
+  /** Whether the operation still runs on the person's ChatGPT plan: the plan is used only when no source listed before it serves the plan's model. */
+  keepChatgpt: boolean;
+  /** The route the operation's key is scoped to: the model it runs on, or on the proxy if the plan fails. Null when no source can serve that (a plan's backup that nothing serves). */
+  route: ModelRoute | null;
+  /** The model the route was chosen for. */
+  requested: ModelIdentifier;
+  /** What the invocation carries as `modelRoute`: only a route the worker cannot reach by the model's own name. */
+  wire?: InvocationModelRoute;
+}
+
+/**
+ * Task 26: where one coding operation's model comes from. `model` is the model the operation would run on (the step's, else the project's, else the
+ * install's default). A task on a ChatGPT plan keeps the plan only if the plan is the first source in the order that serves the plan's model; its
+ * backup (`model`, used if the plan fails) is routed too, and may be unserved without refusing the task. Any other operation must be served by a source
+ * or it is refused with MODEL_NOT_ALLOWED in the words of the step.
+ */
+export async function routeStep(deps: RoutingDependencies, input: {
+  orgId: OrgId; project: string; agent: string; step: string; model: ModelSelection | undefined;
+  /** The plan's model and whose plan, when the task is on one. */
+  plan?: { developerId: string; model: ModelSelection } | undefined;
+}): Promise<RoutedStep> {
+  const requested: ModelIdentifier = input.model === undefined ? defaultWorkerModel(deps.rovaraGeography) : { provider: input.model.provider, modelId: input.model.modelId };
+  const base = { orgId: input.orgId, project: input.project };
+  let keepChatgpt = false;
+  if (input.plan !== undefined) {
+    const [first] = await servingRoutes(deps, { ...base, payerDeveloperId: input.plan.developerId, model: input.plan.model });
+    keepChatgpt = first?.sourceId === "personal-chatgpt";
+  }
+  // The plan is not in play for the model the proxy serves: it is never asked to serve it, so a route here always has an alias.
+  const route = keepChatgpt
+    ? (await servingRoutes(deps, { ...base, model: requested }))[0] ?? null
+    : await routeModel(deps, { ...base, model: requested, subject: { agent: input.agent, step: input.step } });
+  const wire = route === null ? undefined : routeOnWire(route, requested);
+  return { keepChatgpt, route, requested, ...(wire === undefined ? {} : { wire }) };
 }

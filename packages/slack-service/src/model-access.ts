@@ -1,7 +1,7 @@
 // A Slack turn's model access (Task 13): the proxy's address and a key minted for this turn alone, from the control plane's
 // POST /v1/service/model-access. The orchestrator holds no provider secret; the key stays in memory until shortly before it
 // expires, is asked for once at a time, and is never logged.
-import { ModelRouteSchema, agentXError, type InvocationModelRoute } from "@agentx/contracts";
+import { ModelRouteSchema, agentXError, safeRefusalWords, type InvocationModelRoute } from "@agentx/contracts";
 
 /** Asked for again this long before the key expires, so no request carries one about to lapse. */
 export const TURN_ACCESS_MARGIN_MS = 60_000;
@@ -23,6 +23,8 @@ export interface TurnModelAccessInput {
   orgId?: string;
   /** The Slack event's ID: one turn, one reference on the key. */
   turnId: string;
+  /** The models the turn will call with the key: the control plane routes the orchestrator's and keeps the classifier on Rovara's catalog (Task 26). */
+  models?: { orchestrator?: { provider: string; modelId: string }; classifier?: { provider: string; modelId: string } };
   now?: () => number;
 }
 
@@ -47,7 +49,11 @@ export function turnModelAccessSource(input: TurnModelAccessInput): () => Promis
   const now = input.now ?? Date.now;
   const url = `${input.controlPlaneUrl.replace(/\/$/u, "")}/v1/model-access`;
   // The member comes from the signed Slack user header, so only the org (when known) and the turn go in the body.
-  const body = JSON.stringify({ ...(input.orgId === undefined ? {} : { orgId: input.orgId }), turnId: input.turnId });
+  const body = JSON.stringify({
+    ...(input.orgId === undefined ? {} : { orgId: input.orgId }), turnId: input.turnId,
+    ...(input.models?.orchestrator === undefined ? {} : { model: input.models.orchestrator }),
+    ...(input.models?.classifier === undefined ? {} : { classifierModel: input.models.classifier }),
+  });
   let current: TurnModelAccess | undefined;
   let pending: Promise<TurnModelAccess> | undefined;
   return async () => {
@@ -57,8 +63,11 @@ export function turnModelAccessSource(input: TurnModelAccessInput): () => Promis
         const response = await input.signedFetch(url, { method: "POST", headers: { "content-type": "application/json" }, body });
         if (!response.ok) {
           // Only the code is kept: the control plane's words are not shown to the member.
-          const code = ((await response.json().catch(() => undefined)) as { error?: { code?: unknown } } | undefined)?.error?.code;
-          throw agentXError(code === "FORBIDDEN" ? "FORBIDDEN" : "MODEL_PROXY_UNAVAILABLE", `model access request failed with HTTP ${response.status}`);
+          const error = ((await response.json().catch(() => undefined)) as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
+          // Task 26: no AI source serves the turn's model. Its words say what an admin must do, so the member is shown them; no other refusal's words are kept.
+          const refused = error?.code === "MODEL_NOT_ALLOWED" ? safeRefusalWords(error.message) : undefined;
+          if (refused !== undefined) throw agentXError("MODEL_NOT_ALLOWED", refused);
+          throw agentXError(error?.code === "FORBIDDEN" ? "FORBIDDEN" : "MODEL_PROXY_UNAVAILABLE", `model access request failed with HTTP ${response.status}`);
         }
         current = parseTurnModelAccess(await response.json().catch(() => undefined));
         return current;

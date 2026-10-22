@@ -1,5 +1,5 @@
 // Sign in with ChatGPT (#341): which tasks run on a ChatGPT plan, whose plan, and on which model.
-import type { ModelSelection, OperationRequester } from "@agentx/contracts";
+import type { ModelSelection, OperationRequester, OrgModelSources } from "@agentx/contracts";
 import { catalogModel } from "@agentx/model-runtime/catalog";
 import type { ChatGptConnections } from "./connections.js";
 
@@ -15,6 +15,12 @@ export const CHATGPT_MODEL_PREFERENCE = ["gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-so
  */
 export const CHATGPT_LIMIT_RETRY_MS = 60 * 60_000;
 
+/** Whether a connection can run a task now: connected and working, or at its limit for longer than the retry wait. */
+export function chatGptConnectionUsable(view: { connected: boolean; status?: string | undefined; statusAt?: string | undefined }, now: number): boolean {
+  const limitPassed = view.status === "limit-reached" && view.statusAt !== undefined && Date.parse(view.statusAt) + CHATGPT_LIMIT_RETRY_MS <= now;
+  return view.connected && (view.status === "connected" || limitPassed);
+}
+
 /** The model a task runs on from the plan's allowed list: the preferred one, else the best allowed, among models Pi knows. */
 export function chatGptTaskModel(allowed: readonly string[], preferred?: string): string | undefined {
   const known = allowed.filter((modelId) => catalogModel({ provider: "openai", modelId }) !== undefined);
@@ -25,11 +31,15 @@ export function chatGptTaskModel(allowed: readonly string[], preferred?: string)
 /**
  * The task's ChatGPT model when its owner has a working connection, or undefined when the task runs on the install's
  * default as before: no owner, no connection, a revoked one, a plan at its limit, or a connection that cannot be read.
+ *
+ * ChatGPT needs the install-wide switch on. With `orgSources` (an install that runs the model proxy) the org's order must also have `personal-chatgpt`,
+ * and the org may prefer a model of its own; without it the switch alone decides, as before.
  */
 export async function chatGptTaskSelection(
   connections: ChatGptConnections | undefined,
   ownerDeveloperId: string | undefined,
   now: number = Date.now(),
+  orgSources?: Pick<OrgModelSources, "order" | "chatgptPreferredModel">,
 ): Promise<{ developerId: string; model: ModelSelection } | undefined> {
   if (connections === undefined || ownerDeveloperId === undefined) return undefined;
   let view: Awaited<ReturnType<ChatGptConnections["view"]>>;
@@ -37,16 +47,16 @@ export async function chatGptTaskSelection(
   try {
     // #343: with the admin's switch off, every task runs on the default; connections are kept for when it is on.
     settings = await connections.settings();
-    if (!settings.enabled) return undefined;
+    // The install-wide switch is a hard off for the whole install; with a model proxy the org's order must also have ChatGPT.
+    if (!settings.enabled || (orgSources !== undefined && !orgSources.order.includes("personal-chatgpt"))) return undefined;
     view = await connections.view(ownerDeveloperId);
   } catch (error) {
     // A task never fails because its owner's connection could not be read; it runs on the default.
     console.log(JSON.stringify({ component: "broker", event: "chatgpt.connection_unreadable", errorName: error instanceof Error ? error.name : "unknown" }));
     return undefined;
   }
-  const limitPassed = view.status === "limit-reached" && view.statusAt !== undefined && Date.parse(view.statusAt) + CHATGPT_LIMIT_RETRY_MS <= now;
-  if (!view.connected || (view.status !== "connected" && !limitPassed)) return undefined;
-  const modelId = chatGptTaskModel(view.models ?? [], settings.preferredModel);
+  if (!chatGptConnectionUsable(view, now)) return undefined;
+  const modelId = chatGptTaskModel(view.models ?? [], orgSources?.chatgptPreferredModel ?? settings.preferredModel);
   return modelId === undefined ? undefined : { developerId: ownerDeveloperId, model: { provider: "openai", modelId } };
 }
 

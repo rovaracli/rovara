@@ -2,7 +2,7 @@
 // (docs/learnings/model-sources-spike.md), and a fake STS evaluates a role's trust policy, so the Bedrock probe tests prove something.
 import { INFERENCE_PATHS, ModelSourceSchema, sourceAlias, type AgentXError, type ModelSource } from "@agentx/contracts";
 import type * as NodeCrypto from "node:crypto";
-import { randomInt } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 import { describe, expect, it, vi, type Mock } from "vitest";
 import type { ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
 import { ModelProxyClient, type RoleAssumer } from "../../packages/broker/src/model-proxy/client.js";
@@ -54,6 +54,7 @@ function litellm(options: { health?: (id: string) => { healthy: number; unhealth
   const credentials = new Map<string, StoredCredential>();
   const teams = new Map<string, string[] | undefined>();
   const seen: Seen[] = [];
+  const keys: Array<Record<string, unknown>> = [];
   let counter = 0;
   const fetchFake = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
@@ -69,7 +70,7 @@ function litellm(options: { health?: (id: string) => { healthy: number; unhealth
     const body = entry.body as unknown as Body;
     if (method === "GET" && path === "/model/info") {
       // The real listing returns litellm_params with secrets masked; this fake returns none, which the registry must not need.
-      return json({ data: models.map(({ id, model_name, model_info }) => ({ model_name, litellm_params: { model: "masked" }, model_info: { ...model_info, id } })) });
+      return json({ data: models.map(({ id, model_name, model_info, litellm_params }) => ({ model_name, litellm_params: { model: "masked", ...(typeof litellm_params.api_base === "string" ? { api_base: litellm_params.api_base } : {}) }, model_info: { ...model_info, id } })) });
     }
     if (method === "POST" && path === "/model/new") {
       counter += 1;
@@ -84,7 +85,7 @@ function litellm(options: { health?: (id: string) => { healthy: number; unhealth
       return json({ message: "deleted" });
     }
     if (method === "GET" && path === "/credentials") {
-      return json({ credentials: [...credentials].map(([credential_name, value]) => ({ credential_name, credential_info: value.credential_info, credential_values: { api_key: "sk****" } })) });
+      return json({ credentials: [...credentials].map(([credential_name, value]) => ({ credential_name, credential_info: value.credential_info, credential_values: { api_key: "sk****", ...(typeof value.credential_values.api_base === "string" ? { api_base: value.credential_values.api_base } : {}) } })) });
     }
     if (method === "POST" && path === "/credentials") {
       if (credentials.has(body.credential_name)) return json({ error: { message: "credential already exists" } }, 400);
@@ -111,6 +112,20 @@ function litellm(options: { health?: (id: string) => { healthy: number; unhealth
     if (method === "POST" && path === "/team/update") {
       if (Object.hasOwn(entry.body ?? {}, "models")) teams.set(body.team_id, body.models);
       return json({ team_id: body.team_id });
+    }
+    if (method === "GET" && path === "/team/info") {
+      const id = new URLSearchParams(url.search).get("team_id") ?? "";
+      return teams.has(id) ? json({ team_id: id, team_info: { team_id: id, models: teams.get(id) } }) : json({ error: { message: "team not found" } }, 404);
+    }
+    if (method === "POST" && path === "/key/generate") {
+      counter += 1;
+      const key = `sk-virtual-${String(counter)}`;
+      keys.push({ key, token: createHash("sha256").update(key).digest("hex"), models: entry.body!.models, team_id: entry.body!.team_id, allowed_routes: entry.body!.allowed_routes, aliases: {} });
+      return json({ key });
+    }
+    if (method === "GET" && path === "/key/info") {
+      const found = keys.find((candidate) => candidate.token === new URLSearchParams(url.search).get("key"));
+      return found === undefined ? json({ error: { message: "key not found" } }, 404) : json({ info: found });
     }
     if (method === "GET" && path === "/health") {
       const id = new URLSearchParams(url.search).get("model_id") ?? "";
@@ -437,17 +452,81 @@ describe("removeSource", () => {
   });
 });
 
+describe("listSources", () => {
+  it("lists every org and source the proxy holds a model or a credential for, once each, and nothing else", async () => {
+    const proxy = litellm();
+    await client(proxy).upsertSource({ orgId: ORG, source: anthropicSource(), apiKey: VENDOR_KEY });
+    await client(proxy).upsertSource({ orgId: OTHER_ORG, source: anthropicSource([haiku], SRC_TWO), apiKey: VENDOR_KEY });
+    // A credential whose models never registered (the registration stopped half-way), and a model of the proxy's own that no org owns.
+    proxy.credentials.set(`${ORG}.src_stopped0123456789abc`, { credential_name: `${ORG}.src_stopped0123456789abc`, credential_values: {}, credential_info: {} });
+    proxy.credentials.set("unrelated-credential", { credential_name: "unrelated-credential", credential_values: {}, credential_info: {} });
+    proxy.models.push({ id: "own", model_name: "us.anthropic.claude-sonnet-4-6", litellm_params: {}, model_info: {} });
+    // A source with no key at all (Bedrock) is known by its models alone.
+    await client(proxy).upsertSource({ orgId: ORG, source: bedrockSource(false, "src_bedrock0123456789abc") });
+    const listed = await client(proxy).listSources();
+    expect(listed.map((entry) => `${entry.orgId}/${entry.sourceId}`).sort()).toEqual([`${ORG}/${SRC}`, `${ORG}/src_stopped0123456789abc`, `${OTHER_ORG}/${SRC_TWO}`, `${ORG}/src_bedrock0123456789abc`].sort());
+  });
+
+  it("is a request of its own for the handler and the invoker, and the handler refuses an argument", async () => {
+    const entries = [{ orgId: ORG, sourceId: SRC }];
+    const never = async () => { throw new Error("not used"); };
+    const access: ModelAccess = {
+      upsertOrg: never, upsertMember: never, spend: never, orgSpend: never, keySpend: never, mintKey: never, revokeKey: never, blockKey: never,
+      upsertSource: never, removeSource: never, checkSource: never, listSources: vi.fn(async () => entries), auditKeys: never,
+    };
+    const run = createModelAccessHandler({ access, log: () => undefined });
+    expect(await run({ op: "listSources", args: {} })).toEqual({ ok: true, result: entries });
+    expect(await run({ op: "listSources", args: { orgId: ORG } })).toMatchObject({ ok: false });
+    const lambda = { send: vi.fn(async () => ({ Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: entries })) })) };
+    expect(await new ModelAccessInvoker({ functionName: "fn", lambda: lambda as never }).listSources()).toEqual(entries);
+    lambda.send.mockImplementationOnce(async () => ({ Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: [{ orgId: "nope", sourceId: SRC }] })) }));
+    await expect(new ModelAccessInvoker({ functionName: "fn", lambda: lambda as never }).listSources()).rejects.toThrow("unexpected result");
+  });
+});
+
+describe("listSources: the hosts a registration points at", () => {
+  it("returns the hosts of an endpoint's models and credential, and never a key", async () => {
+    const proxy = litellm();
+    await client(proxy).upsertSource({ orgId: ORG, source: endpointSource(), apiKey: VENDOR_KEY });
+    await client(proxy).upsertSource({ orgId: ORG, source: anthropicSource([haiku], SRC_TWO), apiKey: VENDOR_KEY });
+    const [endpointEntry, keyedEntry] = [(await client(proxy).listSources()).find((entry) => entry.sourceId === SRC)!, (await client(proxy).listSources()).find((entry) => entry.sourceId === SRC_TWO)!];
+    expect(endpointEntry.hosts).toEqual(["llm.example.com"]);
+    expect(keyedEntry.hosts ?? []).toEqual([]);
+    // A credential moved to another host shows next to the models' own.
+    proxy.credentials.get(`${ORG}.${SRC}`)!.credential_values.api_base = "https://evil.example.net/v1";
+    expect([...(await client(proxy).listSources()).find((entry) => entry.sourceId === SRC)!.hosts!].sort()).toEqual(["evil.example.net", "llm.example.com"]);
+    expect(JSON.stringify(await client(proxy).listSources())).not.toContain(VENDOR_KEY);
+  });
+
+  it("carries the hosts through the invoker and refuses a host list that is not hosts", async () => {
+    const entries = [{ orgId: ORG, sourceId: SRC, hosts: ["llm.example.com"] }];
+    const lambda = { send: vi.fn(async () => ({ Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: entries })) })) };
+    expect(await new ModelAccessInvoker({ functionName: "fn", lambda: lambda as never }).listSources()).toEqual(entries);
+    lambda.send.mockImplementationOnce(async () => ({ Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: [{ orgId: ORG, sourceId: SRC, hosts: [1] }] })) }));
+    await expect(new ModelAccessInvoker({ functionName: "fn", lambda: lambda as never }).listSources()).rejects.toThrow("unexpected result");
+  });
+});
+
 describe("mintKey with sources", () => {
   const tags = { taskId: "task-1", operationId: "op-1", stepId: "build", agentId: "agt_1", project: "web", payerKind: "member" as const, payerId: "dev-1", source: SRC, origin: "slack" };
   const mint = (models: string[], extra: Partial<Parameters<ModelAccess["mintKey"]>[0]> = {}) => ({
     orgId: ORG as typeof ORG, developerId: "dev-1", purpose: "task" as const, refId: "task-1", maxBudgetUsd: 2.5, ttlSeconds: 3600, models, tags, ...extra,
   });
 
+  /** A proxy whose org team exists, scoped to the catalog as `upsertOrg` leaves it, with the calls so far forgotten. */
+  async function scoped() {
+    const proxy = litellm();
+    await client(proxy).upsertOrg(ORG, 500);
+    proxy.seen.length = 0;
+    return proxy;
+  }
+  const generated = (proxy: ReturnType<typeof litellm>) => proxy.seen.find((entry) => entry.path === "/key/generate")!.body!;
+
   it("sends models, the exact inference routes and every tag as metadata", async () => {
-    const proxy = litellm({ failOn: (seen) => (seen.path === "/key/generate" ? json({ key: "sk-virtual-1" }) : undefined) });
+    const proxy = await scoped();
     const alias = sourceAlias(ORG, SRC, sonnet);
     await client(proxy).mintKey(mint([alias]));
-    const body = proxy.seen[0]!.body!;
+    const body = generated(proxy);
     expect(body.models).toEqual([alias]);
     expect(body.allowed_routes).toEqual(INFERENCE_PATHS.map((entry) => entry.path));
     expect(body.allowed_routes).toEqual(["/v1/messages", "/v1/responses", "/chat/completions"]);
@@ -458,9 +537,9 @@ describe("mintKey with sources", () => {
   });
 
   it("omits the tags a caller left out, and still carries the required ones", async () => {
-    const proxy = litellm({ failOn: () => json({ key: "sk-virtual-2" }) });
+    const proxy = await scoped();
     await client(proxy).mintKey(mint(["us.anthropic.claude-sonnet-4-6"], { tags: { agentId: "agt_1", payerKind: "agent", payerId: "agt_1", source: "rovara", origin: "api" } }));
-    expect(proxy.seen[0]!.body!.metadata).toEqual({ orgId: ORG, developerId: "dev-1", purpose: "task", refId: "task-1", agentId: "agt_1", payerKind: "agent", payerId: "agt_1", source: "rovara", origin: "api" });
+    expect(generated(proxy).metadata).toEqual({ orgId: ORG, developerId: "dev-1", purpose: "task", refId: "task-1", agentId: "agt_1", payerKind: "agent", payerId: "agt_1", source: "rovara", origin: "api" });
   });
 
   it("refuses anything but this org's own aliases and exact catalog ids, sending nothing", async () => {
@@ -488,10 +567,10 @@ describe("mintKey with sources", () => {
   });
 
   it("accepts this org's own aliases and exact catalog ids, together", async () => {
-    const proxy = litellm({ failOn: () => json({ key: "sk-virtual-4" }) });
+    const proxy = await scoped();
     const models = [sourceAlias(ORG, SRC, sonnet), CATALOG[0]!, CATALOG[1]!];
     await client(proxy).mintKey(mint(models));
-    expect(proxy.seen[0]!.body!.models).toEqual(models);
+    expect(generated(proxy).models).toEqual(models);
   });
 
   it("refuses a keyed mint when the catalog is not configured, since it could not tell a catalog id from a stranger's model", async () => {
@@ -610,7 +689,7 @@ describe("the handler and the invoker carry the new operations", () => {
     const upsertSource = vi.fn(async () => undefined);
     const access: ModelAccess = {
       upsertOrg: never, upsertMember: never, spend: never, orgSpend: never, keySpend: never, mintKey: never, revokeKey: never, blockKey: never,
-      upsertSource, removeSource: vi.fn(async () => undefined), checkSource: vi.fn(async () => ({ ok: true as const, health: "healthy" as const })),
+      upsertSource, removeSource: vi.fn(async () => undefined), checkSource: vi.fn(async () => ({ ok: true as const, health: "healthy" as const })), listSources: never, auditKeys: never,
     };
     return { access, upsertSource };
   }

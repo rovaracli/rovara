@@ -1,8 +1,8 @@
 import { MissingProviderSecret, defaultBedrockModel, type ModelRole } from "./config.js";
 import { openRouterRouting, readProviderKey, requireKeyedModel } from "./config.js";
 import { bedrockClaudeModelIds, catalogModelByName, proxyGeographyOfModelId } from "./catalog.js";
-import { ModelBudgetExhaustedError, budgetExhaustedMarker, budgetScopeOfProxyBody, type ModelBudgetScope } from "./budget.js";
-export { ModelBudgetExhaustedError, budgetExhaustedFromMarker, type ModelBudgetScope } from "./budget.js";
+import { ModelBudgetExhaustedError, ModelNotAllowedError, budgetExhaustedMarker, budgetScopeOfProxyBody, modelNotAllowedMarker, type ModelBudgetScope } from "./budget.js";
+export { ModelBudgetExhaustedError, ModelNotAllowedError, budgetExhaustedFromMarker, modelNotAllowedFromMarker, type ModelBudgetScope } from "./budget.js";
 export { readOpenRouterKey, readProviderKey, openRouterRouting, openRouterModel, requireKeyedModel } from "./config.js";
 import { CHATGPT_PLAN_LIMIT_ERROR, KEYED_MODEL_PROVIDERS, agentXError, isKeyedModelProvider, type InvocationModelRoute, type KeyedModelProvider, type ModelIdentifier } from "@agentx/contracts";
 import { InMemoryCredentialStore, createAssistantMessageEventStream, type Api, type Model, type SimpleStreamOptions, type TranscriptContext, type AssistantMessage, type AssistantMessageEventStream, type AnthropicMessagesCompat, type OpenAICompletionsCompat, type OpenAIResponsesCompat } from "@earendil-works/pi-ai";
@@ -174,7 +174,7 @@ async function createProxiedModelRuntime(selected: ModelIdentifier & { thinkingL
   const requestKey = typeof proxy.apiKey === "function" ? proxy.apiKey : undefined;
   const initialKey = requestKey === undefined ? proxy.apiKey as string : await requestKey().catch((error: unknown) => {
     // A spent budget is the task's to end on, not a proxy fault.
-    if (error instanceof ModelBudgetExhaustedError) throw error;
+    if (error instanceof ModelBudgetExhaustedError || error instanceof ModelNotAllowedError) throw error;
     throw agentXError("RUNTIME_UNAVAILABLE", "the model proxy key could not be obtained");
   });
   const api = "anthropic-messages";
@@ -202,7 +202,7 @@ async function createRoutedModelRuntime(selected: ModelIdentifier & { thinkingLe
   const runtime = await ModelRuntime.create({ refreshOnCreate: false, modelsPath: null, credentials: new InMemoryCredentialStore() });
   const requestKey = typeof proxy.apiKey === "function" ? proxy.apiKey : undefined;
   const initialKey = requestKey === undefined ? proxy.apiKey as string : await requestKey().catch((error: unknown) => {
-    if (error instanceof ModelBudgetExhaustedError) throw error;
+    if (error instanceof ModelBudgetExhaustedError || error instanceof ModelNotAllowedError) throw error;
     throw agentXError("RUNTIME_UNAVAILABLE", "the model proxy key could not be obtained");
   });
   const origin = proxy.baseUrl.replace(/\/+$/u, "");
@@ -373,7 +373,7 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
     } catch (error) {
       const aborted = options?.signal?.aborted === true;
       const message: AssistantMessage = { role: "assistant", api: model.api, provider, model: model.id,
-        content: [], timestamp: Date.now(), stopReason: aborted ? "aborted" : "error", errorMessage: safeError(provider, aborted, failureStatus, chatgpt, exhausted ?? (error instanceof ModelBudgetExhaustedError ? error.scope : undefined), route !== undefined),
+        content: [], timestamp: Date.now(), stopReason: aborted ? "aborted" : "error", errorMessage: error instanceof ModelNotAllowedError && !aborted ? modelNotAllowedMarker(error.text) : safeError(provider, aborted, failureStatus, chatgpt, exhausted ?? (error instanceof ModelBudgetExhaustedError ? error.scope : undefined), route !== undefined),
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
       };
       output.push({ type: "error", reason: aborted ? "aborted" : "error", error: message });

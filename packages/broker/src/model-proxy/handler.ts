@@ -51,7 +51,9 @@ async function perform(access: ModelAccess, request: ModelAccessRequest): Promis
     case "mintKey": return access.mintKey(request.args);
     case "upsertSource": return access.upsertSource(request.args).then(() => null);
     case "removeSource": return access.removeSource(request.args.orgId, request.args.sourceId).then(() => null);
+    case "listSources": return access.listSources();
     case "checkSource": return access.checkSource(request.args.orgId, request.args.sourceId);
+    case "auditKeys": return access.auditKeys(request.args.budgetMs === undefined ? undefined : { budgetMs: request.args.budgetMs });
     case "revokeKey": return access.revokeKey(request.args.key).then(() => null);
     case "blockKey": return access.blockKey(request.args.keyId).then(() => null);
   }

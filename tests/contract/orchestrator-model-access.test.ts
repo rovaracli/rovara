@@ -46,7 +46,7 @@ function fakeModelAccess(failure?: Error, spent: Spent = {}) {
   const orgFigures = () => ({ spentUsd: spent.org ?? 0, limitUsd: 500 });
   const spend = vi.fn(async (): Promise<MemberSpend> => ({ member: { spentUsd: spent.member ?? 0, limitUsd: 29 }, org: orgFigures() }));
   const orgSpend = vi.fn(async () => orgFigures());
-  const access: ModelAccess = { upsertOrg: vi.fn(), upsertMember: vi.fn(), spend, orgSpend, keySpend: vi.fn(), mintKey, revokeKey: vi.fn(), blockKey: vi.fn(), upsertSource: vi.fn(), removeSource: vi.fn(), checkSource: vi.fn() };
+  const access: ModelAccess = { upsertOrg: vi.fn(), upsertMember: vi.fn(), spend, orgSpend, keySpend: vi.fn(), mintKey, revokeKey: vi.fn(), blockKey: vi.fn(), upsertSource: vi.fn(), removeSource: vi.fn(), checkSource: vi.fn(), listSources: vi.fn(), auditKeys: vi.fn() };
   return { access, mintKey, spend, orgSpend };
 }
 
@@ -346,6 +346,49 @@ describe("turnModelAccessSource", () => {
     expect(signed).toHaveBeenCalledTimes(2);
   });
 
+  it("tells the control plane the models the turn will call, so it can route the orchestrator's and keep the classifier on Rovara's catalog (Task 26)", async () => {
+    const signed = vi.fn<typeof fetch>(async () => answer("sk-proxy-a", Date.now() + 900_000));
+    const orchestrator = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" };
+    const classifier = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5-20251001-v1:0" };
+    await turnModelAccessSource({ ...input(signed, Date.now), models: { orchestrator, classifier } })();
+    expect(JSON.parse(bodyText(signed.mock.calls[0]![1]))).toEqual({ orgId: TEST_ORG, turnId: "Ev1", model: orchestrator, classifierModel: classifier });
+    // A service that names none sends none: the control plane assumes the install's defaults.
+    const bare = vi.fn<typeof fetch>(async () => answer("sk-proxy-b", Date.now() + 900_000));
+    await turnModelAccessSource({ ...input(bare, Date.now), models: { classifier } })();
+    expect(JSON.parse(bodyText(bare.mock.calls[0]![1]))).toEqual({ orgId: TEST_ORG, turnId: "Ev1", classifierModel: classifier });
+  });
+
+  describe("a refusal for want of a model (Task 26 review I3)", () => {
+    const TEXT = "Your company's AI sources don't include Rovara's AI, so Slack has no model to answer with. Ask an admin to set an assistant model.";
+    const refused = (status: number, code: string, message: unknown) => vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ error: { code, message } }), { status }));
+    const failure = async (signed: typeof fetch): Promise<{ code: string; message: string }> => {
+      try { await turnModelAccessSource(input(signed, Date.now))(); } catch (error) { return error as { code: string; message: string }; }
+      throw new Error("expected a refusal");
+    };
+
+    it("passes MODEL_NOT_ALLOWED and its words through, so the member is told what to ask for", async () => {
+      expect(await failure(refused(403, "MODEL_NOT_ALLOWED", TEXT))).toMatchObject({ code: "MODEL_NOT_ALLOWED", message: `MODEL_NOT_ALLOWED: ${TEXT}` });
+    });
+
+    it("keeps the words bounded and free of control characters", async () => {
+      const error = await failure(refused(403, "MODEL_NOT_ALLOWED", `Ask\u001b[31m an\u0000 admin ${"x".repeat(900)}`));
+      expect(error.code).toBe("MODEL_NOT_ALLOWED");
+      expect(error.message).not.toMatch(/\p{Cc}/u);
+      expect(error.message.length).toBeLessThanOrEqual(330);
+    });
+
+    it("shows a user mention, a channel mention or a link in the words as plain text", async () => {
+      const error = await failure(refused(403, "MODEL_NOT_ALLOWED", "Ask <@U123ABC> or <!here> in <#C0123|ops>, see <https://evil.example/x|the docs>."));
+      expect(error.message).toBe("MODEL_NOT_ALLOWED: Ask @U123ABC or !here in #C0123|ops, see https://evil.example/x|the docs.");
+    });
+
+    it("still hides every other refusal behind its code alone", async () => {
+      expect(await failure(refused(403, "FORBIDDEN", "secret detail"))).toMatchObject({ code: "FORBIDDEN", message: expect.not.stringContaining("secret detail") as unknown });
+      expect(await failure(refused(503, "MODEL_PROXY_UNAVAILABLE", "secret detail"))).toMatchObject({ code: "MODEL_PROXY_UNAVAILABLE", message: expect.not.stringContaining("secret detail") as unknown });
+      expect(await failure(refused(403, "MODEL_NOT_ALLOWED", 5))).toMatchObject({ code: "MODEL_PROXY_UNAVAILABLE" });
+    });
+  });
+
   it("shares one request between concurrent callers", async () => {
     const signed = vi.fn<typeof fetch>(async () => answer("sk-proxy-a", Date.now() + 900_000));
     const source = turnModelAccessSource(input(signed, Date.now));
@@ -410,6 +453,20 @@ describe("the model access of one Slack message (R32)", () => {
     expect(turns).toEqual([TURN_KEY]);
     expect(h.mintKey).toHaveBeenCalledTimes(1);
     expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, purpose: "turn", refId: message.eventId, maxBudgetUsd: 2, ttlSeconds: 900 });
+  });
+
+  it("sends the orchestrator's and the classifier's models with the turn's one request", async () => {
+    const h = await boundInstall();
+    const bodies: string[] = [];
+    const models = createProxiedModels({
+      controlPlaneUrl: "https://api.example.test",
+      signedFetchFor: (m) => signedFetchTo(h.handler, (body) => bodies.push(JSON.stringify(body)), { thread: `${m.thread.teamId}/${m.thread.channelId}/${m.thread.threadTs}`, user: m.userId }),
+      classifierModel: { provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5-20251001-v1:0" },
+      orchestratorModel: { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" }, classifierTimeoutMs: 8_000,
+      log: () => undefined, createClassifier: createHostedClassifier, createRouter: async () => undefined,
+    });
+    await models.proxyFor(message).then((proxy) => proxy.apiKey());
+    expect(JSON.parse(bodies[0]!)).toMatchObject({ turnId: message.eventId, model: { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" }, classifierModel: { modelId: "us.anthropic.claude-haiku-4-5-20251001-v1:0" } });
   });
 
   it("mints once for a task answer too, and once more for a different message", async () => {

@@ -1,8 +1,8 @@
 // A task's model access (ruling R29): the proxy's address and a key minted for this task alone, from the
 // control plane through the operation's callback capability. The worker holds no provider secret; the key
 // stays in memory until shortly before it expires, is asked for once at a time, and is never logged.
-import { TASK_BUDGET_EXCEEDED_PREFIX, agentXError } from "@agentx/contracts";
-import { ModelBudgetExhaustedError, type ModelBudgetScope } from "@agentx/model-runtime";
+import { TASK_BUDGET_EXCEEDED_PREFIX, agentXError, safeRefusalWords } from "@agentx/contracts";
+import { ModelBudgetExhaustedError, ModelNotAllowedError, type ModelBudgetScope } from "@agentx/model-runtime";
 
 /** Asked for again this long before the key expires, so no request carries one about to lapse. */
 export const MODEL_ACCESS_MARGIN_MS = 60_000;
@@ -58,6 +58,13 @@ async function budgetScopeOf(response: Response): Promise<ModelBudgetScope | und
   return typeof message === "string" && message.startsWith(TASK_BUDGET_EXCEEDED_PREFIX) ? "task" : "member";
 }
 
+/** Task 26: a 403 MODEL_NOT_ALLOWED is the control plane saying no AI source serves the step's model; its words are kept (bounded, printable). */
+async function notAllowedText(response: Response): Promise<string | undefined> {
+  if (response.status !== 403) return undefined;
+  const body = await response.json().catch(() => undefined) as { error?: { code?: unknown; message?: unknown } } | undefined;
+  return body?.error?.code === "MODEL_NOT_ALLOWED" ? safeRefusalWords(body.error.message) : undefined;
+}
+
 /**
  * What the runtime needs of the proxy, without asking for a key: the proxy's origin (the worker's own configuration names it) and
  * the key as often as it is asked for. Nothing is minted until a request actually needs the proxy, so a ChatGPT-plan task whose
@@ -85,6 +92,8 @@ export function modelAccessSource(input: ModelAccessSourceInput): () => Promise<
         if (!response.ok) {
           const exhausted = await budgetScopeOf(response);
           if (exhausted !== undefined) throw new ModelBudgetExhaustedError(exhausted);
+          const refused = await notAllowedText(response);
+          if (refused !== undefined) throw new ModelNotAllowedError(refused);
           throw agentXError("RUNTIME_UNAVAILABLE", `model access request failed with HTTP ${response.status}`);
         }
         current = parseModelAccess(await response.json().catch(() => undefined));

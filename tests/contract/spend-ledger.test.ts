@@ -999,11 +999,13 @@ describe("a key the broker mints", () => {
     t.access.setKeySpent(key, 1.2);
     const run = await t.sweep();
     expect(run.statusCode).toBe(200);
-    // Task 11 added the member-merge drain to the run, ahead of the sweep, and Task 21 the approvals' sweep after it; neither has anything to do here.
+    // The run's jobs, in order (Task 11's drain, Task 21's approvals, Task 24b's source sweep, the spend sweep, Task 26's key audit): none has anything to do with this one.
     expect((JSON.parse(run.body) as { jobs: unknown }).jobs).toEqual([
       expect.objectContaining({ name: "drain-member-merges", ok: true }),
       expect.objectContaining({ name: "expire-approvals", ok: true }),
+      expect.objectContaining({ name: "sweep-model-sources", ok: true }),
       expect.objectContaining({ name: "sweep-spend", ok: true, result: expect.objectContaining({ settled: 1, complete: true }) as unknown }),
+      expect.objectContaining({ name: "audit-model-keys", ok: true }),
     ]);
     for (const sk of ["ORG", "PROJECT#payments", `MEMBER#${DEV_MAYA.developerId}`, "SOURCE#rovara", agentUsageCounter("rovara-code")]) near(t.counter(sk)?.spentUsd, 1.2);
     await t.finish(workspaceId, operationId, "SUCCEEDED", {});
@@ -1022,6 +1024,29 @@ describe("a key the broker mints", () => {
     expect(writes).toEqual([]);
   });
 
+  it("runs the key audit last, with a time budget, and says when it stopped short (Task 26 review I2)", async () => {
+    const t = await brokerSetup();
+    t.access.auditKeys.mockResolvedValueOnce({ checked: 7, blocked: 1, truncated: true });
+    const logged = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const run = await t.sweep();
+      expect(t.access.auditKeys).toHaveBeenCalledWith({ budgetMs: 4_000 });
+      const jobs = (JSON.parse(run.body) as { jobs: Array<{ name: string; ok: boolean; result?: unknown }> }).jobs;
+      expect(jobs.map((job) => job.name)).toEqual(["drain-member-merges", "expire-approvals", "sweep-model-sources", "sweep-spend", "audit-model-keys"]);
+      expect(jobs.at(-1)).toMatchObject({ ok: true, result: { checked: 7, blocked: 1, truncated: true } });
+      expect(logged.mock.calls.map((call) => String(call[0])).some((line) => line.includes("model_keys.audit_truncated"))).toBe(true);
+      // An audit that fails does not stop the sweeps that ran before it, and is reported by its error's name alone.
+      t.access.auditKeys.mockRejectedValueOnce(Object.assign(new Error("secret detail"), { name: "BlockFailed" }));
+      const failed = await t.sweep();
+      expect(JSON.parse(failed.body)).toMatchObject({ jobs: [{ ok: true }, { ok: true }, { ok: true }, { name: "sweep-spend", ok: true }, { name: "audit-model-keys", ok: false, error: "BlockFailed" }] });
+      expect(failed.body).not.toContain("secret detail");
+      // What an audit that threw had done is logged: the counts travel in its error's words.
+      t.access.auditKeys.mockRejectedValueOnce(Object.assign(new Error("MODEL_PROXY_UNAVAILABLE: the audit could not block 1 of 3 drifted keys (checked 9, blocked 2)"), { name: "AgentXError" }));
+      await t.sweep();
+      expect(logged.mock.calls.map((call) => String(call[0])).some((line) => line.includes("model_keys.audit_failed") && line.includes("checked 9, blocked 2"))).toBe(true);
+    } finally { logged.mockRestore(); }
+  });
+
   it("is left alone by the scheduled run on an install without agents or a model proxy", async () => {
     const t = await brokerSetup({ agents: false });
     const run = await t.sweep();
@@ -1036,11 +1061,13 @@ describe("a key the broker mints", () => {
     t.db.injectFault({ command: "GetCommand", match: (input) => JSON.stringify(input).includes("SPEND_SWEEP"), error: { name: "InternalServerError", message: "secret detail" } });
     const run = await t.sweep();
     expect(run.statusCode).toBe(200);
-    // The sweep failing never stops the drain before it, and the drain never hides the sweep's failure.
+    // The sweep failing never stops the jobs before or after it, and they never hide the sweep's failure.
     expect((JSON.parse(run.body) as { jobs: unknown }).jobs).toEqual([
       expect.objectContaining({ name: "drain-member-merges", ok: true }),
       expect.objectContaining({ name: "expire-approvals", ok: true }),
+      expect.objectContaining({ name: "sweep-model-sources", ok: true }),
       { name: "sweep-spend", ok: false, error: "InternalServerError" },
+      expect.objectContaining({ name: "audit-model-keys", ok: true }),
     ]);
     expect(run.body).not.toContain("secret detail");
   });
@@ -1343,5 +1370,16 @@ describe("the spend settlement schedule", () => {
 
   it("is not in the legacy template", () => {
     expect(schedules({}).map(([id]) => id).filter((id) => id.startsWith("SpendSettlement"))).toStrictEqual([]);
+  });
+});
+
+describe("the scheduled run's time", () => {
+  it("keeps every job's budget, taken together, under the function's 30 seconds with a margin (Task 26 re-check m2)", async () => {
+    const { SETTLEMENT_BUDGETS_MS, SETTLEMENT_TOTAL_LIMIT_MS } = await import("../../packages/broker/src/spend/settlement-job.js");
+    expect(Object.values(SETTLEMENT_BUDGETS_MS).reduce((total, budget) => total + budget, 0)).toBeLessThanOrEqual(SETTLEMENT_TOTAL_LIMIT_MS);
+    expect(SETTLEMENT_TOTAL_LIMIT_MS).toBeLessThanOrEqual(27_000);
+    expect(SETTLEMENT_BUDGETS_MS.audit).toBe(4_000);
+    // Task 26's sources and audit budgets are kept; the drain (Task 11) and the approvals' sweep (Task 21) are taken out of the spend sweep's 18 seconds.
+    expect(SETTLEMENT_BUDGETS_MS).toStrictEqual({ drain: 5_000, approvals: 4_000, sources: 5_000, spend: 9_000, audit: 4_000 });
   });
 });

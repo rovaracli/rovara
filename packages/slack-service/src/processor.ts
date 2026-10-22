@@ -1115,7 +1115,8 @@ function shortList(summaries: readonly string[]): string {
 }
 
 function safeMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : "unknown error";
+  // A refusal for want of a model is the control plane's own sentence (Task 26): the member is told what to ask for, without the code in front of it.
+  const message = error instanceof Error && (error as { code?: unknown }).code === "MODEL_NOT_ALLOWED" ? error.message.replace(/^MODEL_NOT_ALLOWED: /u, "") : error instanceof Error ? error.message : "unknown error";
   return message.length > 500 ? `${message.slice(0, 500)}…` : message;
 }
 
