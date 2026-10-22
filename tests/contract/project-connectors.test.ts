@@ -1192,9 +1192,10 @@ describe("what a viewer is told of a connector's status (I2)", () => {
     vi.setSystemTime(Date.now() + 61_000);
     await s.list(CARL);
     expect(asked()).toBeGreaterThan(afterFirst);
-    // Another revision is another key: a change is checked at once.
-    const before = asked();
+    // Another revision is another key: the page for a changed project is checked at once, not from the old revision's answer.
+    await s.list(CARL);
     expect((await s.put(MIA, "linear", linear(id, READ_TOOLS, { attribution: false }), { expectedRevision: 2 })).status).toBe(200);
+    const before = asked();
     await s.list(CARL);
     expect(asked()).toBeGreaterThan(before);
     await s.fakeLinear.close();
