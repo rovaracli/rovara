@@ -7,12 +7,12 @@
 // intake queue. The fakes enforce no IAM: the grants are pinned in audit-ledger-infrastructure.test.ts.
 //
 // Review Focus 1 (forks, re-seals), 2 (lost events) and 5 (cross-org reads) are the groups below; the round trip closes with the CLI.
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { S3Client } from "@aws-sdk/client-s3";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { checkChain, genesisHash, recordHash, verifyBundle, type AuditRecordV1 } from "@rovara/audit-verifier";
+import { checkChain, genesisHash, recordHash, verifyBundle, type AuditBundleV1, type AuditRecordV1 } from "@rovara/audit-verifier";
 import { runCli } from "../../packages/audit-verifier/src/cli.js";
 import {
   AUDIT_FLUSH_DEADLINE_MS,
@@ -72,8 +72,12 @@ const KEYS = "keys";
 const STATE = "state";
 const EXPORTS_BUCKET = "audit-exports-bucket";
 
+/** Temporary directories the rigs made for exported files: removed after each test. */
+const directories: string[] = [];
+
 afterEach(() => {
   vi.useRealTimers();
+  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
 // ---- the rig ----------------------------------------------------------------------------------------------------------------
@@ -91,6 +95,8 @@ interface PumpOptions {
   appender?: AppenderDeps;
   /** A prefix for message ids, so that two queues do not share ids. */
   label?: string;
+  /** Consumers per org, side by side and not in queue order (a visibility timeout that ran out): default 1. */
+  lanes?: number;
 }
 
 interface PumpStats {
@@ -98,17 +104,14 @@ interface PumpStats {
   redelivered: number;
 }
 
-const pumped = new WeakMap<FakeAuditSqs, number>();
-
 /**
  * The appender function's side of the intake queue: the messages the queue holds that have not been delivered yet go to the
  * appender in batches of ten, one org's messages in order and the orgs side by side, as `processAuditBatch` takes them. A message the
  * handler reports as failed is delivered again until it is accepted (SQS would), and a redelivery is a message delivered twice.
  */
-async function pump(queue: FakeAuditSqs, defaultAppender: AppenderDeps, options: PumpOptions = {}): Promise<PumpStats> {
-  const appender = options.appender ?? defaultAppender;
-  const from = pumped.get(queue) ?? 0;
-  pumped.set(queue, queue.queue.length);
+async function pump(queue: FakeAuditSqs, cursors: Map<FakeAuditSqs, number>, appender: AppenderDeps, options: PumpOptions = {}): Promise<PumpStats> {
+  const from = cursors.get(queue) ?? 0;
+  cursors.set(queue, queue.queue.length);
   const label = options.label ?? "m";
   const messages = queue.queue.slice(from).map((message, index): SqsMessage & { n: number } => ({
     n: index, messageId: `${label}-${String(from + index)}`, body: message.body, attributes: { MessageGroupId: message.groupId },
@@ -125,7 +128,11 @@ async function pump(queue: FakeAuditSqs, defaultAppender: AppenderDeps, options:
   };
   const groups = new Map<string, Array<SqsMessage & { n: number }>>();
   for (const message of messages) groups.set(message.attributes.MessageGroupId, [...(groups.get(message.attributes.MessageGroupId) ?? []), message]);
-  await Promise.all([...groups.values()].map(async (group) => {
+  const lanes = [...groups.values()].flatMap((group) => {
+    const count = Math.max(1, options.lanes ?? 1);
+    return Array.from({ length: count }, (_, lane) => group.filter((_message, index) => index % count === lane));
+  });
+  await Promise.all(lanes.map(async (group) => {
     const late: SqsMessage[] = [];
     for (let start = 0; start < group.length; start += 10) {
       const batch = group.slice(start, start + 10);
@@ -286,7 +293,41 @@ function rig(options: { tsa?: boolean } = {}) {
     return event;
   }
 
-  const deliver = (pumpOptions: PumpOptions = {}): Promise<PumpStats> => pump(capture.sqs, appender, pumpOptions);
+  const cursors = new Map<FakeAuditSqs, number>();
+  /** Delivers what `queue` holds that has not been delivered yet. */
+  const pumpQueue = (queue: FakeAuditSqs, pumpOptions: PumpOptions = {}): Promise<PumpStats> => pump(queue, cursors, pumpOptions.appender ?? appender, pumpOptions);
+  const deliver = (pumpOptions: PumpOptions = {}): Promise<PumpStats> => pumpQueue(capture.sqs, pumpOptions);
+  let requests = 0;
+  const requestId = (): string => `suite-req-${String(++requests)}`;
+  const directory = mkdtempSync(join(tmpdir(), "audit-ledger-suite-"));
+  directories.push(directory);
+  const writeFile = (name: string, bytes: Buffer): string => {
+    const path = join(directory, name);
+    writeFileSync(path, bytes);
+    return path;
+  };
+  // The intake queue answers the flush only when the test lets it: `holdFlush()` makes the next send wait, `reached` says it is waiting.
+  const gate: { hold: { markReached: () => void; released: Promise<void> } | undefined } = { hold: undefined };
+  const intake = capture.audit.sqs;
+  capture.audit.sqs = {
+    send: async (command: unknown, sendOptions: unknown) => {
+      const hold = gate.hold;
+      if (hold !== undefined) {
+        gate.hold = undefined;
+        hold.markReached();
+        await hold.released;
+      }
+      return (intake.send as (command: unknown, options: unknown) => Promise<unknown>)(command, sendOptions);
+    },
+  } as unknown as typeof capture.audit.sqs;
+  function holdFlush(): { reached: Promise<void>; release: () => void } {
+    let markReached!: () => void;
+    let release!: () => void;
+    const reached = new Promise<void>((resolve) => { markReached = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    gate.hold = { markReached, released };
+    return { reached, release };
+  }
   const seal = async (n: number): Promise<void> => {
     h.clock.now = at(n);
     await run(h, at(n));
@@ -297,7 +338,7 @@ function rig(options: { tsa?: boolean } = {}) {
   }
   return {
     h, kms, logs, appender, readDeps, exportDeps, exportsBucket, capture, committed, invocations, presigned, pems, hosts, orgStore,
-    act, actWhileQueueHangs, actDetailed, deliver, seal, keyring,
+    act, actWhileQueueHangs, actDetailed, deliver, pump: pumpQueue, seal, keyring, requestId, writeFile, holdFlush,
   };
 }
 type Rig = ReturnType<typeof rig>;
@@ -323,38 +364,55 @@ const countOf = (r: Rig, event: string): number => r.logs.filter((entry) => entr
 // ---- No forks (Review Focus 1) ---------------------------------------------------------------------------------------
 
 describe("no forks (Review Focus 1)", () => {
-  it("500 events over 5 orgs, 10% redelivered and the drain racing the flush for 50: every chain is contiguous and holds each event once", async () => {
+  it("500 events over 5 orgs, 10% redelivered, three consumers per org and the drain racing the flush for exactly 50: every chain is contiguous and holds each event once", async () => {
     const r = rig();
     const orgs = [A, B, C, D, E];
     r.h.clock.now = at(0) - 20 * 60_000;
     // The minute's drain sends to a queue of its own: its copies are messages of their own (as they are once the queue's five-minute
-    // deduplication has lapsed), so the appender sees each event it finds twice.
+    // deduplication has lapsed), so the appender sees each event the drain finds twice.
     const drainQueue = new FakeAuditSqs();
     const drainDeps = { audit: { ...r.capture.audit, sqs: drainQueue.client } };
-    const later = at(0) + 60 * 60_000;
-    const drains: Array<ReturnType<typeof drainAuditPending>> = [];
+    let raced = 0;
     for (let index = 0; index < 500; index += 1) {
-      // Actions 200 to 249: the flush sends, then its delete of the pending item fails, as in a brownout. The item stays for the drain.
-      if (index >= 200 && index < 250) r.h.db.injectFault({ command: "DeleteCommand", error: { name: "InternalServerError" }, times: 1 });
-      // Actions 300 to 349: the drain starts at the same moment as the action, and finds its pending item while the flush is still sending it.
-      if (index >= 300 && index < 350) drains.push(drainAuditPending(drainDeps, later));
-      await r.act(orgs[index % orgs.length]!);
+      const orgId = orgs[index % orgs.length]!;
+      // Actions 100 to 149: the flush sends, then its delete of the pending item fails, as in a brownout. The item stays for the drain.
+      if (index >= 100 && index < 150) r.h.db.injectFault({ command: "DeleteCommand", error: { name: "InternalServerError" }, times: 1 });
+      if (index === 150) {
+        const swept = await drainAuditPending(drainDeps, r.h.clock.now + 60_000);
+        expect(swept).toMatchObject({ examined: 50, sent: 50 });
+      }
+      if (index < 300 || index >= 350) {
+        await r.act(orgId);
+        continue;
+      }
+      // Actions 300 to 349: the flush is held at the queue, with the action committed, until the drain has read and sent the item.
+      const hold = r.holdFlush();
+      const acting = r.act(orgId);
+      await hold.reached;
+      const startedAt = Date.parse(r.committed.at(-1)!.occurredAt);
+      // The drain leaves what is younger than 30 s to the flush that has just run; the item is read from 30 s and 1 ms on (its key must sort before the cutoff).
+      expect(await drainAuditPending(drainDeps, startedAt + 29_999)).toMatchObject({ examined: 0, sent: 0 });
+      expect(await drainAuditPending(drainDeps, startedAt + 30_000)).toMatchObject({ examined: 0, sent: 0 });
+      expect(await drainAuditPending(drainDeps, startedAt + 30_001)).toMatchObject({ examined: 1, sent: 1 });
+      raced += 1;
+      hold.release();
+      await acting;
     }
-    const results = await Promise.all(drains);
-    results.push(await drainAuditPending(drainDeps, later));
+    expect(raced).toBe(50);
     expect(r.committed).toHaveLength(500);
     expect(r.capture.flushed()).toHaveLength(500);
-    expect(results.reduce((total, result) => total + result.sent, 0)).toBeGreaterThanOrEqual(50);
-    expect(drainQueue.queue.length).toBeGreaterThanOrEqual(50);
     expect(r.capture.pendingItems()).toHaveLength(0);
+    // 50 left behind by a failed delete, and 50 sent by the drain while the flush was still on its way: 100 copies, each of a different event.
+    expect(drainQueue.queue).toHaveLength(100);
+    expect(new Set(drainQueue.queue.map((message) => message.dedupId)).size).toBe(100);
 
-    // Both queues are delivered at once, the main one with 10% of its messages delivered twice.
+    // Both queues are delivered at once, the main one by three consumers per org and with 10% of its messages delivered twice.
     const [main, drained] = await Promise.all([
-      pump(r.capture.sqs, r.appender, { redeliver: true, label: "main" }),
-      pump(drainQueue, r.appender, { label: "drain" }),
+      r.pump(r.capture.sqs, { redeliver: true, lanes: 3, label: "main" }),
+      r.pump(drainQueue, { label: "drain" }),
     ]);
     expect(main).toStrictEqual({ delivered: 500, redelivered: 50 });
-    expect(drained).toStrictEqual({ delivered: drainQueue.queue.length, redelivered: 0 });
+    expect(drained).toStrictEqual({ delivered: 100, redelivered: 0 });
 
     for (const orgId of orgs) {
       const records = expectWholeChain(r, orgId, idsOf(r.committed, orgId));
@@ -362,7 +420,7 @@ describe("no forks (Review Focus 1)", () => {
     }
     expect(countOf(r, "audit.appended")).toBe(500);
     // Every delivery after the first of an event is a duplicate: the redeliveries and the drain's copies.
-    expect(countOf(r, "audit.duplicate")).toBe(main.redelivered + drained.delivered);
+    expect(countOf(r, "audit.duplicate")).toBe(150);
     expect(r.h.db.refusals).toStrictEqual([]);
   }, 120_000);
 
@@ -494,14 +552,12 @@ describe("nothing lost (Review Focus 2)", () => {
       expect.objectContaining({ epochId: E0, status: "sealed", resumed: true, records: 60 }),
       expect.objectContaining({ epochId: E1, status: "sealed", resumed: false, records: 40 }),
     ]);
-    for (const orgId of orgs) expect(stateOf(r.h, orgId)!.sealedSeq as number, `${orgId} sealed at the freeze`).toBeGreaterThanOrEqual(frozen[orgId]!);
-    r.h.clock.now = at(2);
-    await run(r.h, at(2));
-
+    // Two epochs after the actions (the dead run's and this one), and no third run: everything is sealed and no org is left marked.
     let total = 0;
     for (const orgId of orgs) {
       const records = expectWholeChain(r, orgId, idsOf(r.committed, orgId));
       total += records.length;
+      expect(stateOf(r.h, orgId)!.sealedSeq as number, `${orgId} sealed at the freeze`).toBeGreaterThanOrEqual(frozen[orgId]!);
       expect(stateOf(r.h, orgId), orgId).toMatchObject({ sealedSeq: records.length });
       expect(markerOf(r, orgId), orgId).toBeUndefined();
     }
@@ -542,7 +598,7 @@ describe("nothing lost (Review Focus 2)", () => {
     expect(eventsOf(r.h, "audit.chain_mismatch")).toStrictEqual([]);
   });
 
-  it("a poison message does not hold the rest of its batch hostage forever, and leaves nothing in the chain", async () => {
+  it("a poison message stops its batch: it and the messages after it are reported, and the later ones append once the poison one is out of the way", async () => {
     const r = rig();
     const first = await r.act(A);
     const second = await r.act(A);
@@ -594,17 +650,9 @@ function rewrite(r: Rig, orgId: string, from: number, to: number): void {
   r.h.db.set({ pk: `AUDIT#${orgId}`, sk: "HEAD", seq: to, hash: prevHash, updatedAt: iso(r.h.clock.now) });
 }
 
-let temporary: string | undefined;
-function writeFile(name: string, bytes: Buffer): string {
-  temporary ??= mkdtempSync(join(tmpdir(), "audit-ledger-suite-"));
-  const path = join(temporary, name);
-  writeFileSync(path, bytes);
-  return path;
-}
-
 function exportedFile(r: Rig, orgId: string, exportId: string, name: string): string {
   const meta = r.h.db.get(`ORG#${orgId}#AUDIT_EXPORT#${exportId}`, "META")!;
-  return writeFile(name, r.exportsBucket.objects.get(String(meta.objectKey))!);
+  return r.writeFile(name, r.exportsBucket.objects.get(String(meta.objectKey))!);
 }
 
 async function exportOf(r: Rig, orgId: string, requestId: string, range: { fromSeq: number; toSeq: number; withDetails?: boolean }): Promise<string> {
@@ -615,7 +663,7 @@ async function exportOf(r: Rig, orgId: string, requestId: string, range: { fromS
 
 function cli(r: Rig, args: string[]): { code: number; out: string } {
   let out = "";
-  const trust = Object.entries(r.pems).flatMap(([label, pem]) => ["--trust", `${label}=${writeFile(`${label}.pem`, Buffer.from(pem))}`]);
+  const trust = Object.entries(r.pems).flatMap(([label, pem]) => ["--trust", `${label}=${r.writeFile(`${label}.pem`, Buffer.from(pem))}`]);
   const code = runCli([...args, ...trust], { stdout: (text) => { out += text; }, stderr: (text) => { out += text; } });
   return { code, out };
 }
@@ -675,6 +723,40 @@ describe("a rewrite cannot be sealed again (Review Focus 1, C3)", () => {
     expect(stateOf(r.h, A)).toBeUndefined();
   });
 
+  it("records rewritten in place after a seal cannot change what the seals say, and an export that reaches the rewritten records fails the CLI's chain check", async () => {
+    const r = rig({ tsa: true });
+    await buildHistory(r, A, 20, 1);
+    await r.seal(0);
+    await buildHistory(r, A, 3, 21);
+    const file = (name: string, bundle: AuditBundleV1) => r.writeFile(name, Buffer.from(JSON.stringify(bundle)));
+    const before = await buildAuditBundle(r.exportDeps, A, { fromSeq: 1, toSeq: 23, withDetails: false });
+    expect(cli(r, [file("before.json", before)])).toMatchObject({ code: 0 });
+    expect(before.unsealed.map((record) => record.seq)).toStrictEqual([21, 22, 23]);
+
+    // The sealed records 10 to 20 are rewritten in the table, and so is the head. The export reads the locked copies of the sealed
+    // range, so what it says of that range is what the seals say, and it still passes.
+    rewrite(r, A, 10, 20);
+    const sealedOnly = await buildAuditBundle(r.exportDeps, A, { fromSeq: 1, toSeq: 23, withDetails: false });
+    expect(sealedOnly.records).toStrictEqual(before.records);
+    expect(sealedOnly.seals).toStrictEqual(before.seals);
+    expect(cli(r, [file("sealed-only.json", sealedOnly)])).toMatchObject({ code: 0 });
+
+    // The rewrite reaches the unsealed records after the seal: the chain from the locked head to the first of them no longer links.
+    rewrite(r, A, 20, 23);
+    const reaching = await buildAuditBundle(r.exportDeps, A, { fromSeq: 1, toSeq: 23, withDetails: false });
+    expect(reaching.records).toStrictEqual(before.records);
+    const failed = cli(r, [file("reaching.json", reaching)]);
+    expect(failed.code).toBe(1);
+    expect(failed.out).toContain("FAIL chain: record 21 fails the link check");
+    // The sealed copies themselves are intact: the seal's head hash and batch root still match the locked records.
+    expect(failed.out).toContain("ok   headHash:");
+    expect(failed.out).toContain("ok   batchRoot:");
+    // The export function does not hand such a bundle out either.
+    const { exportId } = await startAuditExport(r.exportDeps, { orgId: A, actor: { kind: "member", id: "dev_1" } }, { requestId: "reaching", fromSeq: 1, toSeq: 23 });
+    expect(await runAuditExport(r.exportDeps, { orgId: A, exportId })).toBe("failed");
+    expect(r.exportsBucket.keysUnder(`${A}/`)).toStrictEqual([]);
+  });
+
   it("is caught by --extends against an export taken before it: a ledger that re-sealed rewritten history passes its own checks and fails the comparison", async () => {
     // The genuine ledger, and the export an auditor kept.
     const genuine = rig({ tsa: true });
@@ -711,6 +793,51 @@ describe("a rewrite cannot be sealed again (Review Focus 1, C3)", () => {
   }, 60_000);
 });
 
+// ---- Two anchors at once ---------------------------------------------------------------------------------------------------
+
+describe("two anchors at once", () => {
+  it("seals each org once when two runs overlap: no alarm, one version of every object, the state where the last seal put it", async () => {
+    const r = rig();
+    const orgs = [A, B, C];
+    for (const orgId of orgs) await buildHistory(r, orgId, 4, 1);
+    r.h.clock.now = at(0);
+    const [first, second] = await Promise.all([run(r.h, at(0)), run(r.h, at(0) + 1000)]);
+    expect([first.status, second.status]).toContain("sealed");
+    for (const orgId of orgs) {
+      expect(stateOf(r.h, orgId), orgId).toMatchObject({ sealedSeq: 4, lastEpochId: E0 });
+      expect(r.h.s3.versionsOf(sealObjectKey(orgId, 1)), orgId).toHaveLength(1);
+      expect(r.h.s3.versionsOf(recordsObjectKey(orgId, 1)), orgId).toHaveLength(1);
+      expect(r.h.db.find((item) => item.pk === `SEALS#${orgId}`), orgId).toHaveLength(1);
+    }
+    expect(eventsOf(r.h, "audit.chain_mismatch")).toStrictEqual([]);
+    expect(eventsOf(r.h, "audit.object_conflict")).toStrictEqual([]);
+  });
+
+  it("refuses a finalize whose org's sealed state another writer has just moved: the state is not overwritten, the org is blocked, nothing is indexed", async () => {
+    const r = rig();
+    await buildHistory(r, A, 4, 1);
+    await r.seal(0);
+    await buildHistory(r, A, 2, 5);
+    let moved = false;
+    r.h.hooks.before = async (command) => {
+      if (command.constructor.name !== "TransactWriteCommand" || moved) return;
+      const items = command.input.TransactItems as Array<Record<string, { Item?: { pk?: string } }>>;
+      if (!items.some((entry) => entry.Put?.Item?.pk === `SEALED#${A}`)) return;
+      moved = true;
+      // The other anchor's write lands between this run's checks and its finalize.
+      r.h.db.set({ ...stateOf(r.h, A)!, sealedSeq: 2 });
+    };
+    r.h.clock.now = at(1);
+    await Promise.all([run(r.h, at(1)), run(r.h, at(1) + 1000)]);
+    expect(moved).toBe(true);
+    expect(eventsOf(r.h, "audit.chain_mismatch").every((entry) => entry.orgId === A && entry.reason === "finalize_refused")).toBe(true);
+    expect(eventsOf(r.h, "audit.chain_mismatch").length).toBeGreaterThanOrEqual(1);
+    expect(stateOf(r.h, A)).toMatchObject({ sealedSeq: 2 });
+    expect(r.h.db.get(`SEALS#${A}`, "000000000005")).toBeUndefined();
+    expect(r.h.db.get(`EPOCH#${E1}`, `ORG#${A}`)).toMatchObject({ blocked: "chain_mismatch", finalized: false });
+  });
+});
+
 // ---- Cross-org (Review Focus 5) ---------------------------------------------------------------------------------------------
 
 /** Org A has 12 records (6 sealed in epoch 0, 4 in epoch 1, 2 not yet) and org B has 3, all with sealed details, built through hooked actions and the appender. */
@@ -732,11 +859,9 @@ async function twoOrgs(): Promise<Rig> {
 }
 
 const url = (path: string): URL => new URL(path, "https://rovara.test");
-let requests = 0;
-const nextRequestId = (): string => `suite-req-${String(++requests)}`;
 const member = (orgId: string, orgRole: OrgRole, developerId = "dev_1"): AuditOrgCaller => ({ developerId, orgId, orgRole });
 const orgCall = (r: Rig, caller: AuditOrgCaller, method: string, path: string, body?: unknown) =>
-  routeAuditRequest(r.exportDeps, caller, { method, body: body ?? {}, requestId: nextRequestId() }, url(path));
+  routeAuditRequest(r.exportDeps, caller, { method, body: body ?? {}, requestId: r.requestId() }, url(path));
 const ISSUER = "https://staff-idp.example.test";
 const staffCaller: AuditAdminCaller = { issuer: ISSUER, subject: "staff-1", isAdministrator: true };
 
@@ -756,7 +881,7 @@ async function staffCall(r: Rig, method: string, path: string, body?: unknown) {
   const reply = await routeAuditAdminRequest(
     { ledger: r.exportDeps, orgExists: async (orgId) => (await r.orgStore.getOrg(orgId)) !== undefined, erase: eraseDepsOf(r) },
     staffCaller,
-    { method, body: body ?? {}, requestId: nextRequestId() },
+    { method, body: body ?? {}, requestId: r.requestId() },
     url(path),
   );
   if (reply === undefined) throw new Error(`test setup: ${path} is not a staff audit path`);
@@ -769,7 +894,7 @@ const ORIGIN = "https://rovara.test";
 
 function pageOf(r: Rig, who: AuditViewCaller) {
   const handle = createAuditViewPage({ origin: ORIGIN, authenticateSession: async (sessionId) => (sessionId === SESSION ? who : undefined), ledger: r.exportDeps });
-  const call = (request: Omit<AdaptedHttpRequest, "requestId">): Promise<WebResponse> => handle({ requestId: nextRequestId(), ...request }, new URL(request.path, ORIGIN));
+  const call = (request: Omit<AdaptedHttpRequest, "requestId">): Promise<WebResponse> => handle({ requestId: r.requestId(), ...request }, new URL(request.path, ORIGIN));
   return {
     get: (path: string) => call({ method: "GET", path, headers: { cookie: `${SESSION_COOKIE}=${SESSION}` } }),
     post: (fields: Record<string, string>) => call({
@@ -891,6 +1016,31 @@ describe("cross-org reads (Review Focus 5)", () => {
     expect(recorded.every((event) => event.actor.kind === "operator" && event.actor.id === auditOperatorId(ISSUER, "staff-1"))).toBe(true);
   });
 
+  it("the export function given one org's id with another org's export id builds nothing, writes nothing and records nothing", async () => {
+    const r = await twoOrgs();
+    const owner = (orgId: string) => ({ orgId: orgId as never, actor: { kind: "member" as const, id: "dev_1" } });
+    const aExport = (await startAuditExport(r.exportDeps, owner(A), { requestId: "pair", fromSeq: 1, toSeq: 12, withDetails: true })).exportId;
+    const bExport = (await startAuditExport(r.exportDeps, owner(B), { requestId: "pair", fromSeq: 1, toSeq: 3, withDetails: true })).exportId;
+    const itemsBefore = JSON.stringify(r.h.db.find((item) => String(item.pk).includes("#AUDIT_EXPORT#")));
+    const queueMark = r.capture.sqs.queue.length;
+    const opsMark = r.h.operations.length;
+    const kmsMark = r.kms.calls.length;
+    expect(await runAuditExport(r.exportDeps, { orgId: B, exportId: aExport })).toBe("unknown");
+    expect(await runAuditExport(r.exportDeps, { orgId: A, exportId: bExport })).toBe("unknown");
+    expect(r.exportsBucket.objects.size).toBe(0);
+    expect(JSON.stringify(r.h.db.find((item) => String(item.pk).includes("#AUDIT_EXPORT#")))).toBe(itemsBefore);
+    expect(r.capture.sqs.queue.length).toBe(queueMark);
+    // Nothing of the ledger was read or decrypted for either call.
+    expect(r.h.operations.slice(opsMark).filter((operation) => LEDGER_TABLES.has(operation.table))).toStrictEqual([]);
+    expect(r.kms.calls.length).toBe(kmsMark);
+    expect(r.logs.filter((entry) => entry.event === "audit.export_unknown")).toHaveLength(2);
+    // The right pairs still build, each from its own org.
+    expect(await runAuditExport(r.exportDeps, { orgId: A, exportId: aExport })).toBe("ready");
+    expect(await runAuditExport(r.exportDeps, { orgId: B, exportId: bExport })).toBe("ready");
+    expect(r.exportsBucket.keysUnder(`${A}/`)).toHaveLength(1);
+    expect(r.exportsBucket.keysUnder(`${B}/`)).toHaveLength(1);
+  });
+
   it("an event that arrives for a shredded org is still chained, with no key made again and its names unreadable", async () => {
     const r = await twoOrgs();
     r.h.db.set({ pk: `ORG#${A}`, sk: "SHREDDED", at: iso(at(3)) });
@@ -929,8 +1079,8 @@ describe("cross-org reads (Review Focus 5)", () => {
   it("holds when A's person is erased and then A is shredded: B keeps its names, its keys, its exports and its reads", async () => {
     const r = await twoOrgs();
     // The same developer id in both orgs: erasing dev_1 in A is not erasing dev_1 in B.
-    const aId = await exportOf(r, A, "a-before", { fromSeq: 1, toSeq: 12, withDetails: true });
-    const bId = await exportOf(r, B, "b-before", { fromSeq: 1, toSeq: 3, withDetails: true });
+    await exportOf(r, A, "a-before", { fromSeq: 1, toSeq: 12, withDetails: true });
+    await exportOf(r, B, "b-before", { fromSeq: 1, toSeq: 3, withDetails: true });
     expect(r.exportsBucket.keysUnder(`${A}/`)).toHaveLength(1);
     expect(r.exportsBucket.keysUnder(`${B}/`)).toHaveLength(1);
     const erased = await staffCall(r, "POST", `/v1/admin/audit/${A}/erase-subject`, { requestId: "erase-1", developerId: "dev_1", reason: "asked to be forgotten" });
@@ -948,8 +1098,6 @@ describe("cross-org reads (Review Focus 5)", () => {
     expect(JSON.stringify(aAfter)).not.toContain(personName(A, "dev_2"));
     await expect(staffCall(r, "POST", `/v1/admin/audit/${A}/exports`, { requestId: "late", fromSeq: 1, toSeq: 3, reason: "too late" })).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(orgCall(r, member(A, "admin"), "POST", "/v1/app/org/audit/exports", { requestId: "late-2", fromSeq: 1, toSeq: 3 })).rejects.toMatchObject({ code: "NOT_FOUND" });
-    void aId;
-    void bId;
 
     // B is as it was: details open, a new export builds, verifies, and holds nothing of A.
     const kmsMark = r.kms.calls.length;
