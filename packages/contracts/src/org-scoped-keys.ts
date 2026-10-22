@@ -219,6 +219,11 @@ export function principalSharesKey(orgId: OrgId, principal: AgentPrincipal, agen
   return { pk: orgScoped(orgId, `AGENT_SHARES#${principalKey(principal)}`), sk: agentId };
 }
 
+/** The index item that lists, per principal, the chains shared with it (chains have their own partition, so an agent listing never sees them). */
+export function principalChainSharesKey(orgId: OrgId, principal: AgentPrincipal, chainId: ChainId): OrgKey {
+  return { pk: orgScoped(orgId, `CHAIN_SHARES#${principalKey(principal)}`), sk: chainId };
+}
+
 /** The roster item that puts an agent on a project. */
 export function projectAgentKey(orgId: OrgId, project: string, agentId: AgentId): OrgKey {
   return { pk: orgScoped(orgId, `PROJECT_AGENTS#${project}`), sk: agentId };
