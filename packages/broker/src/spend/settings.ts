@@ -310,7 +310,8 @@ export interface OwnerBudgetCheck {
  * the total with it is at most the org's `ownerAgentBudgetCapUsd`, so landing exactly on the cap passes. Lowering the cap changes no
  * existing budget; it only gates later raises. The store makes the same test again inside the write (`ownerCap`), so two raises that
  * together pass the cap can't both apply. The write also checks the spend policy is still at the revision read here, so a cap an admin
- * lowers in between is not raced past.
+ * lowers in between is not raced past. This is the counter alone (the agents' base budgets): Rovara's own moves are checked on it. A person's own
+ * budget change is held to the effective total, top-ups included (`ownerBudgetRefusal` with `effective`, Task 33 fix round 1, I-1).
  */
 export async function checkOwnerBudget(deps: SpendSettingsDependencies, input: { orgId: OrgId; owner: string; deltaUsd: number }): Promise<OwnerBudgetCheck> {
   const [totalUsd, { policy, revision }] = await Promise.all([readOwnerTotal(deps, input.orgId, input.owner), readSpendPolicyWithRevision(deps, input.orgId)]);
@@ -326,18 +327,31 @@ export async function checkOwnerBudget(deps: SpendSettingsDependencies, input: {
  *
  * Task 32 (PF27): an over-the-cap change is not refused: the route asks an org admin with an `owner_cap` request (`requestOwnerCap`) and answers 202,
  * and the admin's approval applies the stored change as an override of the cap. `over` carries the figures the request's words are made of.
+ *
+ * Task 33 fix round 1 (I-1): the cap is on the owner's effective total, base plus this month's top-ups. `effective` reads it (`effectiveOwnerCap` in
+ * spend/requests.ts) with the owner counter's version, and the cap handed to the store carries both (`OwnerCap.seen`), so the write is held to the same
+ * figure and can't race a top-up. Without it (an install with no top-ups) the counter alone is the total.
  */
 export async function ownerBudgetRefusal(
   deps: SpendSettingsDependencies,
   orgId: OrgId,
   before: OwnerShare | undefined,
   after: OwnerShare | undefined,
+  effective?: (owner: string) => Promise<{ totalUsd: number; counterUsd: number; version: number }>,
 ): Promise<{ over: { owner: string; wouldBeUsd: number; capUsd: number } } | { ownerCap: OwnerCap }> {
   const deltaUsd = after === undefined ? 0 : before?.owner === after.owner ? cleanUsd(after.usd - before.usd) : after.usd;
   const owner = after?.owner;
   if (owner === undefined) {
     const { policy, revision } = await readSpendPolicyWithRevision(deps, orgId);
     return { ownerCap: { usd: policy.ownerAgentBudgetCapUsd, policyRevision: revision } };
+  }
+  if (effective !== undefined) {
+    const { policy, revision } = await readSpendPolicyWithRevision(deps, orgId);
+    const read = await effective(owner);
+    const capUsd = policy.ownerAgentBudgetCapUsd;
+    const wouldBeUsd = cleanUsd(read.totalUsd + deltaUsd);
+    if (deltaUsd > 0 && wouldBeUsd > capUsd) return { over: { owner, wouldBeUsd, capUsd } };
+    return { ownerCap: { usd: capUsd, policyRevision: revision, seen: { owner, version: read.version, extraUsd: cleanUsd(read.totalUsd - read.counterUsd) } } };
   }
   const check = await checkOwnerBudget(deps, { orgId, owner, deltaUsd });
   if (check.ok) return { ownerCap: { usd: check.capUsd, policyRevision: check.policyRevision } };

@@ -2165,24 +2165,33 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
   return { task: await taskView(deps, fresh ?? task, { events: 0, details: false }) };
 }
 
+/** The slots a month's request for `scope` may be in: each month, each asker. */
+const monthSlots = (months: readonly string[], scope: string, askers: readonly string[]): Array<{ subject: string; kind: string }> =>
+  months.flatMap((month) => askers.map((asker) => ({ subject: `MONTH#${month}#${scope}#${asker}`, kind: "month" })));
+
 /** Plan 3, Task 32: what the view says of a task waiting for money: the pause and its request, what planning found, a test's offer to continue. */
 async function pauseViewOf(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, operations: readonly Operation[]): Promise<Pick<DeveloperTaskView, "paused" | "planningSoFar" | "testOffer">> {
   const pause = task.budgetPause;
   if (pause === undefined || task.orgId === undefined) return {};
   const scope = Object.fromEntries(Object.entries(pause.scope).filter(([, value]) => typeof value === "string")) as Record<string, string>;
-  // A run's own limit has its task's request; a month's budget has the month's request the pause asked for (Task 33).
-  const month = iso(deps).slice(0, 7);
-  const slotOf: { subject: string; kind: string } | undefined = pause.scope.kind === "task" ? { subject: `TASK#${task.taskId}`, kind: "run_limit" }
-    : pause.scope.kind === "max_per_run" || pause.scope.kind === "planning" ? { subject: `TASK#${task.taskId}`, kind: pause.scope.kind }
-      : pause.scope.kind === "test" ? undefined : { subject: `MONTH#${month}#${scopeKey(pause.scope)}#system`, kind: "month" };
+  // A run's own limit has its task's request. A month's budget has the month's request: the one the pause asked for, else one the task's starter or owner
+  // asked for themselves (Task 33 fix round 1, M-4), looked for by the pause's month first and then this month's (M-3).
+  const months = [...new Set([pause.at.slice(0, 7), iso(deps).slice(0, 7)])];
+  const askers = [...new Set(["system", task.startedBy?.developerId ?? task.developerId, task.developerId])];
+  const slots: Array<{ subject: string; kind: string }> = pause.scope.kind === "task" ? [{ subject: `TASK#${task.taskId}`, kind: "run_limit" }]
+    : pause.scope.kind === "max_per_run" || pause.scope.kind === "planning" ? [{ subject: `TASK#${task.taskId}`, kind: pause.scope.kind }]
+      : pause.scope.kind === "test" ? []
+        : monthSlots(months, scopeKey(pause.scope), askers);
   let spendRequestId: string | undefined;
   let message: string | undefined;
-  if (slotOf !== undefined) {
-    const slot = await get<{ spendRequestId?: string }>(deps, spendRequestSlotKey(task.orgId, slotOf.subject, slotOf.kind));
-    const record = slot?.spendRequestId === undefined ? undefined : await get<{ orgId?: string; status?: string; reason?: string }>(deps, spendRequestKey(task.orgId, slot.spendRequestId));
+  for (const slotOf of slots) {
+    const slot: { spendRequestId?: string } | undefined = await get<{ spendRequestId?: string }>(deps, spendRequestSlotKey(task.orgId, slotOf.subject, slotOf.kind));
+    const id: string | undefined = slot?.spendRequestId;
+    const record: { orgId?: string; status?: string; reason?: string } | undefined = id === undefined ? undefined : await get<{ orgId?: string; status?: string; reason?: string }>(deps, spendRequestKey(task.orgId, id));
     if (record?.orgId === task.orgId && record.status === "PENDING") {
-      spendRequestId = slot!.spendRequestId;
+      spendRequestId = id;
       message = record.reason;
+      break;
     }
   }
   const out: Pick<DeveloperTaskView, "paused" | "planningSoFar" | "testOffer"> = {

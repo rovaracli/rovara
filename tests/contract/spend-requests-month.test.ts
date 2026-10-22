@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  MONTH_APPROVERS, OWNER_TOTAL_CONTRIBUTORS, createSpendRequest, decideSpendRequest, escalateOwnerRequests, ownerEffectiveTotal, requestForPausedTask, spendApprovers,
+  MONTH_APPROVERS, OWNER_TOTAL_CONTRIBUTORS, createSpendRequest, decideSpendRequest, escalateOwnerRequests, ownerEffectiveTotal, requestForPausedTask, routeSpendRequests, spendApprovers,
   type OwnerTotalContributor,
 } from "../../packages/broker/src/spend/requests.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -18,7 +18,7 @@ import {
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { ADA, CARL, DEB, ORG_B, month, person, refusal, setup, type World } from "../support/spend-world.js";
+import { ADA, BEN, CARL, DEB, ORG_B, month, person, refusal, setup, type World } from "../support/spend-world.js";
 
 const MEMBER: BudgetScope = { kind: "member", developerId: MAYA.developerId };
 const monthRequests = (t: World): SpendRequestRecord[] => t.requests().filter((record) => record.kind === "month");
@@ -113,18 +113,20 @@ describe("a pause on a month's budget", () => {
     expect(t.meta(kept.taskId).budgetPause).toBeUndefined();
   });
 
-  it("a 7-day-and-1-second-old request reads EXPIRED; the sweep ends it, its tasks stay paused and its paused items are cleaned up", async () => {
+  it("a 7-day-and-1-second-old request reads EXPIRED; the sweep ends it, its tasks stay paused and stay listed (fix round 1, I-2)", async () => {
     const t = await setup();
     const task = await t.plainTask();
     await t.pauseAndEnd(task, MEMBER);
     const request = monthRequests(t)[0]!;
-    const later = Date.parse(request.createdAt) + 7 * 86_400_000 + 1_000;
+    // A month's request also ends with its month (fix round 1, M-3), whichever is sooner.
+    const later = Date.parse(request.expiresAt) + 1_000;
+    expect(Date.parse(request.expiresAt)).toBeLessThanOrEqual(Date.parse(request.createdAt) + 7 * 86_400_000);
     const shown = await t.api(DEB, "GET", `/v1/app/spend-requests/${request.spendRequestId}`);
     expect(shown.body.spendRequest).toMatchObject({ status: "PENDING" });
     const deps = t.deps(() => later);
     expect(await escalateOwnerRequests(deps, { budgetMs: 5_000 })).toMatchObject({ expired: 1 });
     expect(monthRequests(t)[0]).toMatchObject({ status: "EXPIRED" });
-    expect(pausedUnder(t, MEMBER)).toEqual([]);
+    expect(pausedUnder(t, MEMBER).map((item) => item.sk)).toEqual([task.taskId]);
     expect(t.meta(task.taskId).budgetPause).toMatchObject({ scope: MEMBER });
     // Its owner may ask again.
     const again = await t.api(MAYA, "POST", "/v1/app/spend-requests", { kind: "month", scope: MEMBER, amountUsd: 10, reason: "Still need it." });
@@ -335,7 +337,7 @@ describe("fix round 1 (the Task 33 review)", () => {
     await t.budgeted(40);
     const request = await agentRequest(t, first, 10);
     expect(request.approverRole).toBe("agent_owner");
-    const deps = afterFirstOwnerRead(t, async () => expect((await t.api(ADA, "PUT", "/v1/app/org/spend-policy", { ownerAgentBudgetCapUsd: 95 })).status).toBe(200));
+    const deps = afterFirstOwnerRead(t, async () => expect((await t.api(ADA, "PUT", "/v1/app/org/spend-policy", { ownerAgentBudgetCapUsd: 85 })).status).toBe(200));
     const result = await decideSpendRequest(deps, t.caller(MAYA, "member"), request.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" });
     expect(result).toMatchObject({ rerouted: true, spendRequest: { status: "PENDING", approverRole: "org_admin" } });
     expect(topUp(t, { kind: "agent", agentId: first })).toBe(0);
@@ -373,7 +375,7 @@ describe("fix round 1 (the Task 33 review)", () => {
       }
       return real.send(command);
     } } };
-    const store = new AgentStore({ documentClient: racing.documentClient as never, tableName: "state", now: Date.now });
+    const store = new AgentStore({ documentClient: racing.documentClient, tableName: "state", now: Date.now });
     const { ownerBudgetRefusal } = await import("../../packages/broker/src/spend/settings.js");
     const { effectiveOwnerCap } = await import("../../packages/broker/src/spend/requests.js");
     const answer = await ownerBudgetRefusal(t.deps(), TEST_ORG, undefined, { owner: MAYA.developerId, usd: 15 }, (owner) => effectiveOwnerCap(t.deps(), TEST_ORG, owner));
@@ -466,8 +468,8 @@ describe("fix round 1 (the Task 33 review)", () => {
     expect(await refusal(t.decide(DEB, b.spendRequestId))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(openRecord(t, b.spendRequestId).status).toBe("PENDING");
     expect(topUp(t, { kind: "agent", agentId })).toBe(15);
-    // $5 takes it to the guardrail exactly.
-    await t.decide(DEB, b.spendRequestId, "APPROVE", { amountUsd: 5 });
+    // $5 takes it to the guardrail exactly, which is the owner's to approve again.
+    await t.decide(MAYA, b.spendRequestId, "APPROVE", { amountUsd: 5 });
     expect(await limitOf(t, { kind: "agent", agentId })).toBe(50);
   });
 
@@ -572,12 +574,15 @@ describe("fix round 1 (the Task 33 review)", () => {
     const id = (asked.body.spendRequest as { spendRequestId: string }).spendRequestId;
     expect((await t.api(CARL, "GET", `/v1/app/spend-requests/${id}`)).body.spendRequest).not.toHaveProperty("newLimitUsd");
     expect((await t.api(DEB, "GET", `/v1/app/spend-requests/${id}`)).body.spendRequest).toHaveProperty("newLimitUsd");
+    // An install without R47's placeholder limits, whose org has no monthly limit.
     t.db.set({ ...orgSettingsKey(TEST_ORG, "BUDGET"), entityType: "ORG_BUDGET", memberDefaultMonthlyUsd: 29, memberOverrides: {} });
-    const carl = (await t.api(CARL, "POST", "/v1/app/spend-requests", { kind: "month", scope: { kind: "org" }, amountUsd: 5, reason: "x" })).body as { error: { code: string; message: string } };
-    const ada = (await t.api(ADA, "POST", "/v1/app/spend-requests", { kind: "month", scope: { kind: "org" }, amountUsd: 5, reason: "x" })).body as { error: { code: string; message: string } };
-    expect(carl.error.code).toBe("CONFIG_INVALID");
-    expect(carl.error.message).not.toMatch(/limit/);
-    expect(ada.error.message).toMatch(/no monthly limit/);
+    const legacy = { ...t.deps(), cloud: false };
+    const ask = (who: typeof ADA, role: "owner" | "member") => refusal(routeSpendRequests(legacy, t.caller(who, role), { method: "POST", headers: {}, body: JSON.stringify({ requestId: randomUUID(), kind: "month", scope: { kind: "org" }, amountUsd: 5, reason: "x" }) } as never, new URL("https://x.test/v1/app/spend-requests")));
+    const carl = await ask(BEN, "member");
+    const ada = await ask(ADA, "owner");
+    expect(carl).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(carl!.message).not.toMatch(/limit/);
+    expect(ada!.message).toMatch(/no monthly limit/);
   });
 
   it("M-10: asking again with other figures answers the open request with differs: true", async () => {

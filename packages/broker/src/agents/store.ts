@@ -53,7 +53,7 @@ import {
   type Item, type RequestMark, type TransactItem,
 } from "./table-writes.js";
 import { SkillStore } from "./skills.js";
-import { budgetOwnerOf, ownerShare, ownerTotalItems, withBudgetFields, type BudgetSubject, type OwnerShare } from "../spend/owner-total.js";
+import { budgetOwnerOf, ownerShare, ownerTotalItems, withBudgetFields, type BudgetSubject, type OwnerShare, type OwnerTotalSeen } from "../spend/owner-total.js";
 import { cleanUsd } from "../spend/top-ups.js";
 import { auditBuiltinAdopted, auditGuardrailsChanged, auditOccurrence, auditPublished, auditRolledBack } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
@@ -195,10 +195,14 @@ function checkProfile(name: string, description: string): void {
   if (description.length > AGENT_DESCRIPTION_MAX) throw coded("CONFIG_INVALID", `description: must be at most ${String(AGENT_DESCRIPTION_MAX)} characters`);
 }
 
-/** The cap a write is held to, with the revision of the spend policy it was read from (the write checks the policy is still at it). */
+/**
+ * The cap a write is held to, with the revision of the spend policy it was read from (the write checks the policy is still at it). The cap is on the owner's
+ * effective total (Task 33 fix round 1, I-1): `seen` is that total as read, and the write applies only while the owner counter is still at its version.
+ */
 export interface OwnerCap {
   usd: number;
   policyRevision: number;
+  seen?: OwnerTotalSeen;
 }
 
 /** Why Rovara moved something of a member's to someone else: the person was removed from the org, or merged into another member. */
@@ -817,7 +821,7 @@ export class AgentStore {
       if (stale) await this.rebuildOwnerTotal(orgId, owner);
       else await this.ensureOwnerTotal(orgId, owner);
     }
-    const counters = ownerTotalItems(this.input, orgId, was.share, now.share, cap?.usd);
+    const counters = ownerTotalItems(this.input, orgId, was.share, now.share, cap?.usd, cap?.seen);
     const items = [...counters.items];
     let policyAt: number | undefined;
     if (cap !== undefined && counters.capped.length > 0) {

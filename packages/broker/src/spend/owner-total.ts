@@ -1,6 +1,7 @@
 // Plan 3 Task 28: the one monthly total each person's agent budgets count against. The total is a counter (`OWNER_AGENT_BUDGET#<developer>`)
 // the agent store changes in the same transaction as the agent's own item, so it can't drift from the budgets it adds up. Only an active
-// agent's `monthlyBudgetUsd` counts: not a per-run cap, not a top-up (Task 33 keeps those under the same cap), and not an archived agent.
+// agent's `monthlyBudgetUsd` counts: not a per-run cap, not a top-up, and not an archived agent. The cap itself is on the effective total, the counter plus this
+// month's top-ups (Task 33 fix round 1, I-1): a raise is held to the cap less the top-ups, at the counter's version (`ownerTotalItems`' `seen`).
 import { ownerBudgetKey, type AgentOwner, type OrgId } from "@agentx/contracts";
 import type { AgentRecord, BuiltinSettings } from "../agents/store.js";
 import { addToCounter, type TableInput, type TransactItem } from "../agents/table-writes.js";
@@ -50,8 +51,12 @@ export function ownerShare(subject: BudgetSubject): OwnerShare | undefined {
  * The counter changes that take an agent's share (owners already resolved to their survivors, and their counters already there, see the store's `totalsFor`) from `before` to `after`: one item when the owner stays (nothing when the share does
  * too), two when it moves. A change that raises someone's total is held to `capUsd` when one is given. `capped` lists the indexes, among
  * the returned items, that carry the cap, so the caller can tell which refusal is which.
+ *
+ * Task 33 fix round 1 (I-1): the cap is on the owner's effective total, base plus this month's top-ups. `seen` is that total as the caller read it: the
+ * owner's raise is held to the cap less `extraUsd` (what the counter does not hold), and only while the counter's `version` is still `version`, so a
+ * top-up approved after the read can't be raced past.
  */
-export function ownerTotalItems(table: TableInput, orgId: OrgId, before: OwnerShare | undefined, after: OwnerShare | undefined, capUsd?: number): { items: TransactItem[]; owners: string[]; capped: number[] } {
+export function ownerTotalItems(table: TableInput, orgId: OrgId, before: OwnerShare | undefined, after: OwnerShare | undefined, capUsd?: number, seen?: OwnerTotalSeen): { items: TransactItem[]; owners: string[]; capped: number[] } {
   const items: TransactItem[] = [];
   const owners: string[] = [];
   const capped: number[] = [];
@@ -60,7 +65,9 @@ export function ownerTotalItems(table: TableInput, orgId: OrgId, before: OwnerSh
     const holdsCap = delta > 0 && capUsd !== undefined;
     if (holdsCap) capped.push(items.length);
     owners.push(owner);
-    items.push(withVersionBump(addToCounter(table, ownerBudgetKey(orgId, owner), "totalUsd", delta, holdsCap ? capUsd : undefined)));
+    const held = holdsCap && seen?.owner === owner ? seen : undefined;
+    const counter = withVersionBump(addToCounter(table, ownerBudgetKey(orgId, owner), "totalUsd", delta, holdsCap ? cleanUsd(capUsd - (held?.extraUsd ?? 0)) : undefined));
+    items.push(held === undefined ? counter : atVersion(counter, held.version));
   };
   if (before !== undefined && after !== undefined && before.owner === after.owner) {
     add(after.owner, cleanUsd(after.usd - before.usd));
@@ -69,6 +76,26 @@ export function ownerTotalItems(table: TableInput, orgId: OrgId, before: OwnerSh
     if (after !== undefined) add(after.owner, cleanUsd(after.usd));
   }
   return { items, owners, capped };
+}
+
+/** An owner's effective total as a writer read it (Task 33 fix round 1, I-1): the counter's `version`, and what the total holds beyond the counter (top-ups). */
+export interface OwnerTotalSeen {
+  owner: string;
+  version: number;
+  extraUsd: number;
+}
+
+/** A counter update held to the version it was read at too (a counter from before versions has none, which reads as 0). */
+function atVersion(item: TransactItem, version: number): TransactItem {
+  const update = item.Update;
+  if (update === undefined) return item;
+  return {
+    Update: {
+      ...update,
+      ConditionExpression: `${update.ConditionExpression ?? "attribute_exists(pk)"} AND ${version === 0 ? "(attribute_not_exists(#ownerVersion) OR #ownerVersion = :seenVersion)" : "#ownerVersion = :seenVersion"}`,
+      ExpressionAttributeValues: { ...update.ExpressionAttributeValues, ":seenVersion": version },
+    },
+  };
 }
 
 /**

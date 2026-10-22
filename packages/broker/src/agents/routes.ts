@@ -67,7 +67,7 @@ import type { SkillRecord } from "./skills.js";
 import type { OrgStore } from "../org/store.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
 import { routeSpendRequest } from "../spend/routes.js";
-import { isSpendRequestRoute, requestOwnerCap, routeSpendRequests, type SpendRequestHost } from "../spend/requests.js";
+import { effectiveOwnerCap, isSpendRequestRoute, requestOwnerCap, routeSpendRequests, type SpendRequestHost } from "../spend/requests.js";
 import { isConnectionRoute, routeConnectionRequest, type ConnectionRouteDependencies } from "../connections/routes.js";
 import { isProjectConnectorRoute, registerProjectConnectorApprovals, routeProjectConnectorRequest } from "../connections/project-connectors.js";
 import { routeModelSourceRequest, type ModelSourceRouteDependencies } from "../model-sources/routes.js";
@@ -705,8 +705,9 @@ async function requireWithinTrial(deps: AgentRouteDependencies, orgId: OrgId, la
 }
 
 /**
- * Runs a write that moves an agent's budget from `before` to `after`, held to the cap. A change that would take someone's agent budgets past
- * `ownerAgentBudgetCapUsd` (owners read as their survivors, the way the store counts them) is not made: an org admin is asked with an `owner_cap`
+ * Runs a write that moves an agent's budget from `before` to `after`, held to the cap. A change that would take someone's effective total (their agent
+ * budgets plus this month's top-ups, Task 33 fix round 1, I-1) past `ownerAgentBudgetCapUsd` (owners read as their survivors, the way the store counts
+ * them) is not made: an org admin is asked with an `owner_cap`
  * request holding `change`, and the answer is `202 { status: "NEEDS_ADMIN_APPROVAL", spendRequestId, message }` (PF27). The same happens when the store
  * refuses it for the cap (the total moved after this read), with the figures as they are now. The request's R18 item is `mark`, so a repeat answers 202 again.
  */
@@ -716,7 +717,7 @@ async function holdingCap<T>(
 ): Promise<T | StatusReply> {
   const shares = async () => {
     const survivor = async (share: ReturnType<typeof ownerShare>) => (share === undefined ? undefined : { ...share, owner: await resolveSurvivor(deps, caller.orgId, share.owner) });
-    return ownerBudgetRefusal(deps, caller.orgId, await survivor(ownerShare(before)), await survivor(ownerShare(after)));
+    return ownerBudgetRefusal(deps, caller.orgId, await survivor(ownerShare(before)), await survivor(ownerShare(after)), (owner) => effectiveOwnerCap(deps, caller.orgId, owner));
   };
   const ask = async (over: { owner: string; wouldBeUsd: number; capUsd: number }): Promise<StatusReply> => {
     const newOwner = change.op === "set_owner" ? (change.owner.kind === "member" ? change.owner.developerId : change.accountable?.developerId) : change.op === "set_accountable" ? change.accountable.developerId : undefined;
@@ -732,11 +733,11 @@ async function holdingCap<T>(
   try {
     return await run({ ownerCap: answer.ownerCap });
   } catch (error) {
-    if (isOwnerCapRefusal(error) !== undefined) {
-      const now = await shares();
-      if ("over" in now) return ask(now.over);
-    }
-    throw error;
+    if (isOwnerCapRefusal(error) === undefined) throw error;
+    // The total moved after the read (a raise, a top-up): over the cap now asks an admin; still within it (only the version moved) is written once more.
+    const now = await shares();
+    if ("over" in now) return ask(now.over);
+    return run({ ownerCap: now.ownerCap });
   }
 }
 
