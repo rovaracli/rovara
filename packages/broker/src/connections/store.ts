@@ -2,7 +2,7 @@
 // the hook secrets of Plan 4's event hooks. A record holds the connection's settings, whether a secret has been saved,
 // and what the last check found. It never holds the key or token, or even the secret's name: that name is derived from
 // the org id and the connection id each time, and the value lives only in the org-tagged secret (org-secrets.ts).
-import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { listMcpTools } from "@agentx/gateway";
 import {
   ConnectionIdSchema,
@@ -20,8 +20,9 @@ import {
 } from "@agentx/contracts";
 import { auditConnectionRemoved, auditConnectionSaved, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import { auditPending, auditTransact, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
+import { auditPending, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
+import { commit, type RequestMark } from "../agents/table-writes.js";
 import { isSecretLeaf, orgConnectorSecretName, orgHookSecretName, type OrgSecrets } from "./org-secrets.js";
 
 type Item = Record<string, unknown>;
@@ -35,6 +36,9 @@ export interface OrgConnectionDeps {
   secrets: Pick<OrgSecrets, "read" | "put" | "scheduleDelete">;
   now: () => number;
 }
+
+/** The id of the secret version a connection's own save wrote (kept on the record, never shown); a connection reads exactly that version. */
+const VERSION_FIELD = "secretVersion";
 
 export interface ConnectionCheckRecord {
   ok: boolean;
@@ -97,8 +101,16 @@ function secretHost(connection: OrgConnection): string | undefined {
 
 function strip(item: Item): Item {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the keys
-  const { pk: _pk, sk: _sk, entityType: _type, actorId: _actor, ...rest } = item;
+  const { pk: _pk, sk: _sk, entityType: _type, actorId: _actor, revision: _revision, secretVersion: _version, ...rest } = item;
   return rest;
+}
+
+/** The revision a record was read at; a record written before revisions has none. */
+const revisionOf = (item: Item | undefined): number | undefined => (typeof item?.revision === "number" ? item.revision : undefined);
+
+/** A condition on the revision a write read: a record with none must still have none. */
+function atRevision(revision: number | undefined): { expression: string; values?: Record<string, unknown> } {
+  return revision === undefined ? { expression: "attribute_not_exists(revision)" } : { expression: "revision = :read", values: { ":read": revision } };
 }
 
 async function readItem(deps: OrgConnectionDeps, orgId: OrgId, connectionId: string): Promise<Item | undefined> {
@@ -155,15 +167,30 @@ export class OrgConnectionStore {
   /**
    * Creates the connection, or changes an existing one. The secret is write-only: given, it replaces the saved one; absent,
    * the saved one stays. A saved secret is never sent to another host: pointing a connection at a different site or
-   * endpoint host needs a new secret with it.
+   * endpoint host needs a new secret with it. An MCP endpoint is checked first and the save is refused if it may not be called.
+   * The write is conditional on the revision it read, and carries the request's own item (R18) when `request` is given.
    */
-  async put(input: { orgId: string; connection: unknown; secret?: unknown; /** Who saves it; Rovara's own changes say `"system"`. */ by: string; /** The request's id, when it has one: it makes the audit event's occurrence. */ requestId?: string }): Promise<OrgConnectionRecord> {
+  async put(input: {
+    orgId: string; connection: unknown; secret?: unknown;
+    /** Who saves it; Rovara's own changes say `"system"`. */
+    by: string;
+    /** The request's id, when it has one: it makes the audit event's occurrence. */
+    requestId?: string;
+    /** The request item written with the change (R18); its `requestId` is also the audit occurrence when `requestId` is not given. */
+    request?: RequestMark;
+    /** Change only a connection that exists: a route's PUT never makes up an id. */
+    requireExisting?: boolean;
+    /** Create only: an id that exists is refused, and the write itself is conditional on there being none (a create never overwrites). */
+    requireNew?: boolean;
+  }): Promise<OrgConnectionRecord> {
     const orgId = parseOrg(input.orgId);
     requireActor(input.by);
+    const requestId = input.requestId ?? input.request?.requestId;
     const parsed = OrgConnectionSchema.safeParse(input.connection);
     if (!parsed.success) {
       const first = parsed.error.issues[0];
-      throw coded("CONFIG_INVALID", `connection${first && first.path.length > 0 ? `.${first.path.join(".")}` : ""}: ${first?.message ?? "is not valid"}`);
+      // An unknown field's name is not echoed: a client can put anything, a secret included, where a field name goes.
+      throw coded("CONFIG_INVALID", `connection${first && first.path.length > 0 ? `.${first.path.join(".")}` : ""}: ${first === undefined ? "is not valid" : first.code === "unrecognized_keys" ? "has a field this kind of connection does not take" : first.message}`);
     }
     const connection = parsed.data;
     let secretJson: string | undefined;
@@ -172,14 +199,22 @@ export class OrgConnectionStore {
       if (!secret.success) throw coded("CONFIG_INVALID", `secret: a ${connection.type} connection takes ${Object.keys(ConnectionSecretSchemas[connection.type].shape).join(", ")} and nothing else`);
       secretJson = JSON.stringify(secret.data);
     }
+    if (connection.type === "mcp") {
+      // Refused before anything is written, and with no endpoint check at all the save is refused too: nothing here may be called unchecked.
+      if (this.input.checkEndpoint === undefined) throw coded("CONFIG_INVALID", "this deployment cannot check an MCP endpoint, so it cannot save an MCP connection");
+      await this.input.checkEndpoint(connection.endpoint);
+    }
     const existing = await readItem(this.input, orgId, connection.connectionId);
+    if (existing === undefined && input.requireExisting === true) throw coded("NOT_FOUND", "no connection has that ID");
+    if (existing !== undefined && input.requireNew === true) throw coded("CONFIG_INVALID", "requestId: this request ID was already used; send a new one");
     if (existing !== undefined && existing.type !== connection.type) throw coded("CONFIG_INVALID", "connection.type: a connection's type cannot change; remove it and add a new one");
     const movedHost = existing !== undefined && secretHost(OrgConnectionSchema.parse(pick(existing))) !== secretHost(connection);
     if (movedHost && secretJson === undefined && existing.hasSecret === true) {
       throw coded("CONFIG_INVALID", "connection: the saved secret would be sent to a different host; give the new secret with it");
     }
-    // The secret first: a failed write leaves the record as it was.
-    if (secretJson !== undefined) await this.input.secrets.put(orgId, orgConnectorSecretName(this.input.env, orgId, connection.connectionId), secretJson);
+    // The secret first, as a new version whose id the record keeps, written by the same conditional commit that decides which save won. A save
+    // that loses leaves its version in Secrets Manager but nothing refers to it, so it is never read, whatever order the writes landed in.
+    const secretVersion = secretJson === undefined ? undefined : await this.input.secrets.put(orgId, orgConnectorSecretName(this.input.env, orgId, connection.connectionId), secretJson);
     const at = this.iso();
     // A new secret may belong to another vendor account, so what the last check learned is dropped with the old one.
     const keepsAccount = existing !== undefined && !movedHost && secretJson === undefined;
@@ -189,8 +224,10 @@ export class OrgConnectionStore {
       orgId,
       ...connection,
       hasSecret: secretJson !== undefined || existing?.hasSecret === true,
+      ...(secretVersion !== undefined ? { [VERSION_FIELD]: secretVersion } : typeof existing?.[VERSION_FIELD] === "string" ? { [VERSION_FIELD]: existing[VERSION_FIELD] } : {}),
       ...(keepsAccount && existing.lastCheck !== undefined ? { lastCheck: existing.lastCheck } : {}),
       ...(keepsAccount && typeof existing.actorId === "string" ? { actorId: existing.actorId } : {}),
+      revision: (revisionOf(existing) ?? 0) + 1,
       createdBy: typeof existing?.createdBy === "string" ? existing.createdBy : input.by,
       createdAt: typeof existing?.createdAt === "string" ? existing.createdAt : at,
       updatedBy: input.by,
@@ -199,60 +236,68 @@ export class OrgConnectionStore {
     // The event names the connection and its type, never the label or any part of the secret.
     const event = await tryAuditEvent(this.input, () => auditConnectionSaved({
       orgId, actor: auditActorOf(input.by), occurredAt: at, connectionId: connection.connectionId, connectorType: connection.type,
-      occurrence: input.requestId === undefined ? auditOccurrence(connection.connectionId, at) : auditOccurrence(input.requestId, connection.connectionId),
+      occurrence: requestId === undefined ? auditOccurrence(connection.connectionId, at) : auditOccurrence(requestId, connection.connectionId),
     }));
     const events = event === undefined ? [] : [event];
+    const saved = strip(item) as unknown as OrgConnectionRecord;
+    // The record, the directory entry, the audit item and the request item commit together or not at all (R18). The record is written only
+    // if it is as it was read: a change that landed meanwhile refuses this one instead of being overwritten.
+    const stale = coded("CHANGE_STALE", "that connection changed while you were saving it; try again");
     if (existing === undefined) {
-      await this.input.documentClient.send(new TransactWriteCommand({
-        TransactItems: [
-          { Put: { TableName: this.input.tableName, Item: item, ConditionExpression: "attribute_not_exists(pk)" } },
-          { Put: { TableName: this.input.tableName, Item: { ...connectionsKey(orgId, connection.connectionId), entityType: "ORG_CONNECTION_DIRECTORY", orgId, connectionId: connection.connectionId }, ConditionExpression: "attribute_not_exists(pk)" } },
-          ...events.flatMap((pending) => auditPending(this.input, pending)),
-        ],
-      }));
+      await commit(this.input, [
+        { Put: { TableName: this.input.tableName, Item: item, ConditionExpression: "attribute_not_exists(pk)" } },
+        { Put: { TableName: this.input.tableName, Item: { ...connectionsKey(orgId, connection.connectionId), entityType: "ORG_CONNECTION_DIRECTORY", orgId, connectionId: connection.connectionId }, ConditionExpression: "attribute_not_exists(pk)" } },
+        ...events.flatMap((pending) => auditPending(this.input, pending)),
+      ], (failed) => (failed.has(0) || failed.has(1) ? stale : undefined), input.request, saved);
     } else {
-      await auditTransact(this.input, { Put: { TableName: this.input.tableName, Item: item, ConditionExpression: "attribute_exists(pk)" } }, events);
+      const read = atRevision(revisionOf(existing));
+      await commit(this.input, [
+        { Put: { TableName: this.input.tableName, Item: item, ConditionExpression: `attribute_exists(pk) AND ${read.expression}`, ...(read.values === undefined ? {} : { ExpressionAttributeValues: read.values }) } },
+        ...events.flatMap((pending) => auditPending(this.input, pending)),
+      ], (failed) => (failed.has(0) ? stale : undefined), input.request, saved);
     }
     await flushAuditEvents(this.input, events);
-    return strip(item) as unknown as OrgConnectionRecord;
+    return saved;
   }
 
   /** Removes the connection and schedules its secret for deletion (7 days to recover it). */
-  async remove(input: { orgId: string; connectionId: string; /** Who removed it; Rovara's own removals say `"system"`. */ by: string; /** The request's id, when it has one: it makes the audit event's occurrence. */ requestId?: string }): Promise<void> {
+  async remove(input: {
+    orgId: string; connectionId: string;
+    /** Who removed it; Rovara's own removals say `"system"`. */
+    by: string;
+    /** The request's id, when it has one: it makes the audit event's occurrence. */
+    requestId?: string;
+    /** The request item written with the removal (R18). */
+    request?: RequestMark;
+  }): Promise<void> {
     const orgId = parseOrg(input.orgId);
     requireActor(input.by);
+    const requestId = input.requestId ?? input.request?.requestId;
     const existing = await readItem(this.input, orgId, input.connectionId);
     if (existing === undefined) throw coded("NOT_FOUND", "no connection has that ID");
     if (existing.hasSecret === true) await this.input.secrets.scheduleDelete(orgId, orgConnectorSecretName(this.input.env, orgId, input.connectionId));
     const at = this.iso();
     const event = await tryAuditEvent(this.input, () => auditConnectionRemoved({
       orgId, actor: auditActorOf(input.by), occurredAt: at, connectionId: input.connectionId, connectorType: String(existing.type),
-      occurrence: input.requestId === undefined ? auditOccurrence(input.connectionId, at) : auditOccurrence(input.requestId, input.connectionId),
+      occurrence: requestId === undefined ? auditOccurrence(input.connectionId, at) : auditOccurrence(requestId, input.connectionId),
     }));
     const events = event === undefined ? [] : [event];
-    try {
-      await this.input.documentClient.send(new TransactWriteCommand({
-        TransactItems: [
-          // Of two removes at once only one commits, and only that one records.
-          { Delete: { TableName: this.input.tableName, Key: connectionKey(orgId, input.connectionId), ConditionExpression: "attribute_exists(pk)" } },
-          { Delete: { TableName: this.input.tableName, Key: connectionsKey(orgId, input.connectionId) } },
-          ...events.flatMap((pending) => auditPending(this.input, pending)),
-        ],
-      }));
-    } catch (error) {
-      if (error instanceof Error && error.name === "TransactionCanceledException" && await readItem(this.input, orgId, input.connectionId) === undefined) {
-        throw coded("NOT_FOUND", "no connection has that ID");
-      }
-      throw error;
-    }
+    await commit(this.input, [
+      // Of two removes at once only one commits, and only that one records.
+      { Delete: { TableName: this.input.tableName, Key: connectionKey(orgId, input.connectionId), ConditionExpression: "attribute_exists(pk)" } },
+      { Delete: { TableName: this.input.tableName, Key: connectionsKey(orgId, input.connectionId) } },
+      ...events.flatMap((pending) => auditPending(this.input, pending)),
+    ], (failed) => (failed.has(0) ? coded("NOT_FOUND", "no connection has that ID") : undefined), input.request, { removed: true });
     await flushAuditEvents(this.input, events);
   }
 
   /**
    * Asks the vendor who the saved secret belongs to (Linear `viewer { id }`, Jira `GET <siteUrl>/rest/api/3/myself`) or, for
    * MCP, lists the server's tools. Linear and Jira keep the account id as `actorId`. A message never holds the secret.
+   * What the check learned is written only if the connection is still as it was read: a secret saved meanwhile may belong to another
+   * account, and its record must not take the old one's. With `request`, the result and the request item (R18) commit together.
    */
-  async check(orgId: string, connectionId: string): Promise<CheckResult> {
+  async check(orgId: string, connectionId: string, request?: RequestMark): Promise<CheckResult> {
     const org = parseOrg(orgId);
     const item = await readItem(this.input, org, connectionId);
     if (item === undefined) throw coded("NOT_FOUND", "no connection has that ID");
@@ -264,33 +309,40 @@ export class OrgConnectionStore {
     if (item.hasSecret !== true) {
       result = { ok: false, message: "no secret has been saved for this connection yet" };
     } else {
-      const raw = await this.input.secrets.read(org, orgConnectorSecretName(this.input.env, org, connectionId));
+      const raw = await this.input.secrets.read(org, orgConnectorSecretName(this.input.env, org, connectionId), versionOf(item));
       const secret = raw === undefined ? undefined : parseSecret(connection.type, raw);
       result = secret === undefined
         ? { ok: false, message: "the saved secret could not be read; save it again" }
         : await this.ask(connection, secret);
     }
-    await this.record(org, connectionId, result);
-    return result.message === undefined ? { ok: result.ok } : { ok: result.ok, message: result.message };
+    const answer: CheckResult = result.message === undefined ? { ok: result.ok } : { ok: result.ok, message: result.message };
+    await this.record(org, connectionId, revisionOf(item), result, answer, request);
+    return answer;
   }
 
-  private async record(orgId: OrgId, connectionId: string, result: CheckResult & { actorId?: string }): Promise<void> {
+  private async record(orgId: OrgId, connectionId: string, read: number | undefined, result: CheckResult & { actorId?: string }, answer: CheckResult, request?: RequestMark): Promise<void> {
     const sets = ["lastCheck = :check"];
-    const values: Record<string, unknown> = { ":check": { ok: result.ok, at: this.iso() } };
+    const when = atRevision(read);
+    const values: Record<string, unknown> = { ":check": { ok: result.ok, at: this.iso() }, ...when.values };
     if (result.ok && result.actorId !== undefined) {
       sets.push("actorId = :actor");
       values[":actor"] = result.actorId;
     }
-    await this.input.documentClient.send(new UpdateCommand({
-      TableName: this.input.tableName,
-      Key: connectionKey(orgId, connectionId),
-      UpdateExpression: `SET ${sets.join(", ")}`,
-      ConditionExpression: "attribute_exists(pk)",
-      ExpressionAttributeValues: values,
-    })).catch((error: unknown) => {
-      // The connection was removed while it was being checked: there is nothing to record on.
-      if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error;
-    });
+    const raced = new Error("the connection changed while it was being checked");
+    try {
+      await commit(this.input, [{
+        Update: {
+          TableName: this.input.tableName,
+          Key: connectionKey(orgId, connectionId),
+          UpdateExpression: `SET ${sets.join(", ")}`,
+          ConditionExpression: `attribute_exists(pk) AND ${when.expression}`,
+          ExpressionAttributeValues: values,
+        },
+      }], (failed) => (failed.has(0) ? raced : undefined), request, answer);
+    } catch (error) {
+      // The connection was removed or changed while it was being checked: there is nothing true to record on it, and no request item either.
+      if (error !== raced) throw error;
+    }
   }
 
   private async ask(connection: OrgConnection, secret: ConnectionSecret): Promise<CheckResult & { actorId?: string }> {
@@ -332,6 +384,8 @@ export class OrgConnectionStore {
     try {
       await this.input.checkEndpoint!(connection.endpoint);
     } catch (error) {
+      // A lookup that failed says nothing about the endpoint: it is retryable, so it is neither recorded as a failed check nor remembered as one.
+      if ((error as { code?: unknown } | null)?.code === "RUNTIME_UNAVAILABLE") throw error;
       return { ok: false, message: error instanceof Error ? error.message : "the endpoint is not allowed" };
     }
     try {
@@ -374,9 +428,12 @@ async function readCapped(response: Response, limit: number): Promise<string | u
 /** The connection's settings out of a stored item. */
 function pick(item: Item): unknown {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the bookkeeping fields
-  const { pk: _pk, sk: _sk, entityType: _type, orgId: _org, hasSecret: _has, actorId: _actor, lastCheck: _check, createdBy: _by, createdAt: _at, updatedBy: _ub, updatedAt: _ua, ...settings } = item;
+  const { pk: _pk, sk: _sk, entityType: _type, orgId: _org, hasSecret: _has, actorId: _actor, lastCheck: _check, revision: _revision, secretVersion: _version, createdBy: _by, createdAt: _at, updatedBy: _ub, updatedAt: _ua, ...settings } = item;
   return settings;
 }
+
+/** The secret version a record names (undefined for a record that predates versions: the current one is read). */
+const versionOf = (item: Item): string | undefined => (typeof item[VERSION_FIELD] === "string" ? item[VERSION_FIELD] : undefined);
 
 /** A stored secret, or undefined when it is not the shape its type takes. */
 function parseSecret(type: ConnectionType, raw: string): ConnectionSecret | undefined {
@@ -387,14 +444,14 @@ function parseSecret(type: ConnectionType, raw: string): ConnectionSecret | unde
 }
 
 /** Reads a connection's stored secret as its one value, for the credential registry. */
-export async function readConnectionToken(deps: OrgConnectionDeps, orgId: OrgId, connection: { connectionId: string; type: ConnectionType }): Promise<string | undefined> {
-  const raw = await deps.secrets.read(orgId, orgConnectorSecretName(deps.env, orgId, connection.connectionId));
+export async function readConnectionToken(deps: OrgConnectionDeps, orgId: OrgId, connection: { connectionId: string; type: ConnectionType; secretVersion?: string }): Promise<string | undefined> {
+  const raw = await deps.secrets.read(orgId, orgConnectorSecretName(deps.env, orgId, connection.connectionId), connection.secretVersion);
   const secret = raw === undefined ? undefined : parseSecret(connection.type, raw);
   return secret === undefined ? undefined : connectionSecretToken(connection.type, secret);
 }
 
 /** Reads one connection for the credential registry, with the fields the store keeps back from members. */
-export async function readConnection(deps: OrgConnectionDeps, orgId: OrgId, connectionId: string): Promise<(OrgConnectionRecord & { actorId?: string }) | undefined> {
+export async function readConnection(deps: OrgConnectionDeps, orgId: OrgId, connectionId: string): Promise<(OrgConnectionRecord & { actorId?: string; secretVersion?: string }) | undefined> {
   const item = await readItem(deps, orgId, connectionId);
   return item === undefined ? undefined : (item as unknown as OrgConnectionRecord);
 }
@@ -421,5 +478,27 @@ export class HookSecretStore {
 
   async scheduleDelete(orgId: string, hookId: string): Promise<void> {
     await this.input.secrets.scheduleDelete(orgId, this.name(orgId, hookId));
+  }
+}
+
+/**
+ * What closing an org does to its connections (Plan 3 Task 12, PF11): each connection's secret is scheduled for deletion (7 days to
+ * recover it) and the record removed, as "system", and so is each hook secret the org has. `hookIds` names the org's hooks: Plan 4 supplies it
+ * where it keeps them, since nothing in Secrets Manager can be listed from here. Safe to run again after a stop part-way: what was
+ * removed is gone, a secret already scheduled counts as done, and the rest is removed now.
+ */
+export async function clearOrgConnections(
+  input: { store: OrgConnectionStore; hooks?: HookSecretStore; hookIds?: (orgId: OrgId) => Promise<readonly string[]> },
+  orgId: string,
+): Promise<void> {
+  const org = parseOrg(orgId);
+  for (const connection of await input.store.list(org)) {
+    await input.store.remove({ orgId: org, connectionId: connection.connectionId, by: "system" }).catch((error: unknown) => {
+      // Removed by someone else since the list was read: the same end.
+      if (!(error instanceof Error && (error as { code?: string }).code === "NOT_FOUND")) throw error;
+    });
+  }
+  if (input.hooks !== undefined && input.hookIds !== undefined) {
+    for (const hookId of await input.hookIds(org)) await input.hooks.scheduleDelete(org, hookId);
   }
 }

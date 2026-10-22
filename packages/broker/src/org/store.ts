@@ -449,11 +449,12 @@ export class OrgStore {
 
   /**
    * Closes an org whose sole owner is leaving. In order: its GitHub installations and Slack team bindings are released (both the org's
-   * and the global item), its projects are archived and its egress domains cleared (injected: later tasks supply them), then `closedAt`
-   * is set and the sole member removed without a ban. `emails` are the leaving person's email pointers, which must go so an invite
+   * and the global item), its projects are archived and its egress domains cleared (injected: later tasks supply them), its connections are
+   * cleared (Plan 3 Task 12, PF11: each connection's secret is scheduled for deletion; absent on an install with no org connections), then
+   * `closedAt` is set and the sole member removed without a ban. `emails` are the leaving person's email pointers, which must go so an invite
    * to another org can index them. The org's TRIAL_GITHUB claim stays. Safe to run again after a stop part-way.
    */
-  async closeOrg(orgId: OrgId, deps: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; emails?: string[]; /** Recorded as the actor of `org.closed`. Default: the sole owner. */ by?: AuditActor }): Promise<void> {
+  async closeOrg(orgId: OrgId, deps: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; emails?: string[]; /** Recorded as the actor of `org.closed`. Default: the sole owner. */ by?: AuditActor }): Promise<void> {
     const members = await this.listMembers(orgId);
     if (members.length > 1 || members.some((member) => member.role !== "owner")) throw coded("LAST_OWNER", LAST_OWNER_MESSAGE);
     const meta = await this.get(orgMetaKey(orgId));
@@ -479,6 +480,8 @@ export class OrgStore {
     }
     await deps.archiveProjects(orgId);
     await deps.clearEgress(orgId);
+    // The secrets go before the org closes: a failure here stops the close, and running it again finishes the clearing.
+    await deps.clearConnections?.(orgId);
     const [sole] = members;
     if (sole === undefined) return;
     await this.deleteMemberData(orgId, sole.developerId);

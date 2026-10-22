@@ -114,6 +114,7 @@ import {
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
+import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { createFeedbackReviewWeb } from "./feedback-review-web.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION, TASK_STATUS, createTaskWeb } from "./task-web.js";
@@ -182,7 +183,7 @@ export interface DeveloperRouteDependencies {
    * What closing an org does besides releasing its GitHub and Slack bindings: archive its projects (Task 20) and clear its egress domains
    * (Task 18). They default to `archiveOrgProjects` and `clearOrgEgress`; `POST /v1/app/org/leave` calls them when the last owner leaves.
    */
-  closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void> };
+  closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void> };
   /**
    * Plan 3 Task 11: what follows a project's archive on the agents platform (`onProjectArchived`). Called once the archive has applied, never on a
    * replay; a failure is logged and never undoes or fails the archive. Absent where agents are not set up.
@@ -228,6 +229,8 @@ export interface DeveloperRouteDependencies {
     disconnect(caller: DeveloperCaller, installationId: number): Promise<{ installationId: number; accountLogin: string; message: string }>;
     listRepositories(caller: DeveloperCaller, installationId: number): Promise<{ repositories: Array<{ fullName: string; githubRepositoryId: number; private: boolean; defaultBranch: string }> }>;
   };
+  /** Plan 3 Task 12b: the org's connections, which closing the org clears. Independent of `agents`, which only the connection routes need. */
+  orgConnections?: OrgConnectionStore;
   /** Plan 3, Task 7: what the agent routes (`/v1/app/agents*` and the other Plan 3 paths) need. Without it they answer NOT_FOUND. */
   agents?: AgentRouteDependencies;
 }
@@ -1765,8 +1768,13 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
   // later sign-in with no owner. Its sole owner promotes someone else first.
   if (sole && deps.cloud !== true) throw agentXError("LAST_OWNER", "You are the only owner. Make someone else an owner first.");
   if (sole) {
+    const connections = deps.orgConnections ?? deps.agents?.connections;
+    const clearConnections = deps.closeOrgHooks?.clearConnections ?? (connections === undefined ? undefined : (orgId: OrgId) => clearOrgConnections({ store: connections }, orgId));
     await deps.orgs.closeOrg(caller.orgId, {
-      archiveProjects: deps.closeOrgHooks?.archiveProjects ?? ((orgId) => archiveOrgProjects(archiveDepsOf(deps), orgId, { developerId: caller.developerId })), clearEgress: deps.closeOrgHooks?.clearEgress ?? ((orgId) => clearOrgEgress(egressDepsOf(deps), orgId)), emails,
+      archiveProjects: deps.closeOrgHooks?.archiveProjects ?? ((orgId) => archiveOrgProjects(archiveDepsOf(deps), orgId, { developerId: caller.developerId })), clearEgress: deps.closeOrgHooks?.clearEgress ?? ((orgId) => clearOrgEgress(egressDepsOf(deps), orgId)),
+      // Plan 3 Task 12, PF11: the org's connection secrets are scheduled for deletion with the org.
+      ...(clearConnections === undefined ? {} : { clearConnections }),
+      emails,
       by: { kind: "member", id: caller.developerId },
     });
   } else {

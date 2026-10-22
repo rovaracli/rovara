@@ -9,7 +9,7 @@ import { orgConnectorSecretName } from "./org-secrets.js";
 import { readConnection, readConnectionToken, type OrgConnectionDeps, type OrgConnectionRecord } from "./store.js";
 
 /** A connection is served only when it exists in this org and has a saved secret. */
-async function usable(deps: OrgConnectionDeps, orgId: OrgId, ref: string): Promise<OrgConnectionRecord | undefined> {
+async function usable(deps: OrgConnectionDeps, orgId: OrgId, ref: string): Promise<(OrgConnectionRecord & { secretVersion?: string }) | undefined> {
   const connection = await readConnection(deps, orgId, ref);
   return connection !== undefined && connection.hasSecret ? connection : undefined;
 }
@@ -32,7 +32,7 @@ export function orgCredentialRegistry(deps: OrgConnectionDeps, orgIdValue: strin
   const delegates = new Map<string, { version: string; provider: CredentialProvider<unknown> }>();
 
   /** The stored `{ apiKey | apiToken | token }` as the static-secret shape the provider reads. */
-  const secrets = (connection: OrgConnectionRecord): SecretSource => ({
+  const secrets = (connection: OrgConnectionRecord & { secretVersion?: string }): SecretSource => ({
     async read() {
       const token = await readConnectionToken(deps, orgId, connection);
       return token === undefined ? undefined : JSON.stringify({ apiKey: token });
@@ -62,7 +62,7 @@ export function orgCredentialRegistry(deps: OrgConnectionDeps, orgIdValue: strin
           if (access === "write" && connection.access !== "read_write") {
             throw new CredentialUnavailable(`credential ${ref} is a read-only connection, so AgentX does not use it to write`);
           }
-          const version = `${connection.updatedAt}|${connection.type}`;
+          const version = `${connection.updatedAt}|${connection.type}|${connection.secretVersion ?? ""}`;
           let delegate = delegates.get(ref);
           if (delegate?.version !== version) {
             delegate = { version, provider: staticSecretProvider({ ref, secretName: record.secretName, secrets: secrets(connection), now: deps.now }) };

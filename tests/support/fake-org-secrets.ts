@@ -39,7 +39,7 @@ type Tags = Record<string, string>;
 export type FakeSecretsCommand = SecretsCommand | TagResourceCommand | UntagResourceCommand;
 
 export interface FakeSecretsClient {
-  send(command: FakeSecretsCommand): Promise<{ SecretString?: string; ARN?: string }>;
+  send(command: FakeSecretsCommand): Promise<{ SecretString?: string; ARN?: string; VersionId?: string; DeletedDate?: Date }>;
 }
 
 export interface FakeCall {
@@ -51,9 +51,12 @@ export interface FakeCall {
 }
 
 interface StoredSecret {
+  /** The current version's value (AWSCURRENT). */
   value: string;
   tags: Tags;
   versions: number;
+  /** Every version written, by id: a version stays readable by its VersionId after a newer one becomes current. */
+  history: Array<{ id: string; value: string }>;
   deleteAt?: number;
 }
 
@@ -227,10 +230,14 @@ export class FakeOrgSecrets {
 
   /** Puts a secret in place without any IAM check, as an administrator or a past write would have. */
   seed(name: string, value: string, tags: Tags): void {
-    this.secrets.set(name, { value, tags, versions: 1 });
+    this.secrets.set(name, { value, tags, versions: 1, history: [{ id: this.versionId(), value }] });
   }
 
-  stored(name: string): { value: string; tags: Tags; versions: number; deleteAt?: number } | undefined {
+  private versionId(): string {
+    return `00000000-0000-4000-8000-${String(++this.counter).padStart(12, "0")}`;
+  }
+
+  stored(name: string): { value: string; tags: Tags; versions: number; history: Array<{ id: string; value: string }>; deleteAt?: number } | undefined {
     return this.secrets.get(name);
   }
 
@@ -252,7 +259,7 @@ export class FakeOrgSecrets {
     }
   }
 
-  private handle(session: Session | undefined, command: FakeSecretsCommand): Promise<{ SecretString?: string; ARN?: string }> {
+  private handle(session: Session | undefined, command: FakeSecretsCommand): Promise<{ SecretString?: string; ARN?: string; VersionId?: string; DeletedDate?: Date }> {
     const action = command.constructor.name.replace(/Command$/, "");
     const input = command.input as unknown as Record<string, unknown>;
     return Promise.resolve().then(() => {
@@ -268,8 +275,10 @@ export class FakeOrgSecrets {
         // "If you include tags in the secret, you also need secretsmanager:TagResource."
         if (tags !== undefined) this.authorize(session, "TagResource", name, tags, undefined);
         if (existing !== undefined) throw new AwsError("ResourceExistsException", "the secret already exists");
-        this.secrets.set(name, { value: command.input.SecretString ?? "", tags: tags ?? {}, versions: 1 });
-        return { ARN: this.arnOf(name) };
+        const value = command.input.SecretString ?? "";
+        const id = this.versionId();
+        this.secrets.set(name, { value, tags: tags ?? {}, versions: 1, history: [{ id, value }] });
+        return { ARN: this.arnOf(name), VersionId: id };
       }
       if (command instanceof TagResourceCommand) {
         const tags = tagList(command.input.Tags);
@@ -291,12 +300,21 @@ export class FakeOrgSecrets {
       if (existing.deleteAt !== undefined && !(command instanceof DescribeSecretCommand)) {
         throw new AwsError("InvalidRequestException", "You can't perform this operation on the secret because it was marked for deletion.");
       }
-      if (command instanceof GetSecretValueCommand) return { SecretString: existing.value };
+      if (command instanceof GetSecretValueCommand) {
+        const wanted = command.input.VersionId;
+        if (wanted === undefined) return { SecretString: existing.value };
+        const found = existing.history.find((version) => version.id === wanted);
+        if (found === undefined) throw new AwsError("ResourceNotFoundException", "Secrets Manager can't find the specified secret value for VersionId.");
+        return { SecretString: found.value, VersionId: found.id };
+      }
       if (command instanceof PutSecretValueCommand) {
         existing.value = command.input.SecretString ?? "";
         existing.versions += 1;
-        return {};
+        const id = this.versionId();
+        existing.history.push({ id, value: existing.value });
+        return { VersionId: id };
       }
+      if (command instanceof DescribeSecretCommand) return { ARN: this.arnOf(name), ...(existing.deleteAt === undefined ? {} : { DeletedDate: new Date(existing.deleteAt) }) };
       if (command instanceof DeleteSecretCommand) {
         const days = command.input.RecoveryWindowInDays ?? 30;
         if (command.input.ForceDeleteWithoutRecovery === true || days < 7 || days > 30) throw new AwsError("InvalidParameterException", "invalid recovery window");

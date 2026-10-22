@@ -61,6 +61,7 @@ import type { SkillRecord } from "./skills.js";
 import type { OrgStore } from "../org/store.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
 import { routeSpendRequest } from "../spend/routes.js";
+import { isConnectionRoute, routeConnectionRequest, type ConnectionRouteDependencies } from "../connections/routes.js";
 import {
   applyProjectAiChange, ownerBudgetRefusal, planningLimit, projectSourceOrder, readProjectAiWithRevision, readSpendPolicyWithRevision,
   writeProjectAi, writeSpendPolicy, type ProjectAiChange,
@@ -82,6 +83,8 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
   pullRequestHead?: PullRequestHeadReader;
   /** Task 22 removes this with the refusal it lifts: whether a run of an agent made of agent steps may start (see AgentRunDependencies). */
   agentStepRuns?: boolean;
+  /** Task 12b: the org's connections (`/v1/app/connections*`). Without it (no connection secrets role) those routes answer NOT_FOUND. */
+  connections?: ConnectionRouteDependencies["store"];
   /** Starts a person's run (Task 15). The developer API supplies it, since it holds the task start; without it the route answers NOT_FOUND. */
   startRun?: (caller: AgentCaller, input: { requestId: string; project: string; agent: { agentId: AgentId; version?: number | "draft" }; input: RunInput }) => Promise<{ task: unknown }>;
 }
@@ -829,6 +832,10 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
   // Task 30: the spend reads (`/v1/app/budget`, the org's spend and ledger, a project's and an agent's), before the agent paths they would otherwise match.
   const spend = await routeSpendRequest(deps, caller, request, url);
   if (spend !== undefined) return spend;
+  if (isConnectionRoute(url.pathname)) {
+    if (deps.connections === undefined) throw agentXError("NOT_FOUND", "connections are not set up in this deployment");
+    return routeConnectionRequest({ store: deps.connections, documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller, request, url);
+  }
   if (url.pathname === GUARDRAILS_PATH) {
     if (request.method === "GET") return readGuardrailsWithRevision(deps, caller.orgId);
     if (request.method === "PUT") return putGuardrails(deps, caller, jsonBody(request));
