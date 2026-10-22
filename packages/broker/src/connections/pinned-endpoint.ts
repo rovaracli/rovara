@@ -20,6 +20,7 @@ export type RequestFunction = (url: URL, options: RequestOptions, callback?: (re
 /** Decides, before one MCP request, whether the endpoint may be called, and gives the fetch that request must use. */
 export type McpEndpointGuard = (endpoint: URL) => Promise<typeof fetch>;
 
+const asError = (reason: unknown): Error => (reason instanceof Error ? reason : new Error(typeof reason === "string" ? reason : "the request was aborted"));
 const familyOf = (value: number | string | undefined): 0 | 4 | 6 => (value === 4 || value === "IPv4" ? 4 : value === 6 || value === "IPv6" ? 6 : 0);
 
 /**
@@ -72,9 +73,9 @@ export function pinnedFetch(addresses: readonly string[], options: { request?: R
   const lookup = pinnedLookup(addresses);
   return async (input, init) => {
     const original = input instanceof Request ? input : undefined;
-    const url = new URL(original?.url ?? (input instanceof URL ? input.href : String(input)));
+    const url = new URL(original?.url ?? (input instanceof URL ? input.href : input));
     const signal = init?.signal ?? original?.signal ?? undefined;
-    if (signal?.aborted === true) throw signal.reason ?? new DOMException("This operation was aborted", "AbortError");
+    if (signal?.aborted === true) throw asError(signal.reason ?? new DOMException("This operation was aborted", "AbortError"));
     const method = (init?.method ?? original?.method ?? "GET").toUpperCase();
     const body = method === "GET" || method === "HEAD" ? undefined : await bodyOf(init, original);
     const headers = headersOf(init, original);
@@ -83,7 +84,7 @@ export function pinnedFetch(addresses: readonly string[], options: { request?: R
       (target.protocol === "https:" ? httpsRequest : httpRequest)(target, requestOptions, callback));
     return new Promise<Response>((resolve, reject) => {
       let request: ClientRequest | undefined;
-      const onAbort = () => { const reason: unknown = signal?.reason ?? new DOMException("This operation was aborted", "AbortError"); request?.destroy(reason instanceof Error ? reason : new Error(String(reason))); reject(reason); };
+      const onAbort = () => { const reason = asError(signal?.reason ?? new DOMException("This operation was aborted", "AbortError")); request?.destroy(reason); reject(reason); };
       try {
         request = send(url, { method, headers, lookup: lookup as RequestOptions["lookup"], agent: false }, (response) => {
           signal?.removeEventListener("abort", onAbort);
@@ -100,7 +101,7 @@ export function pinnedFetch(addresses: readonly string[], options: { request?: R
         request.end(body);
       } catch (error) {
         signal?.removeEventListener("abort", onAbort);
-        reject(error);
+        reject(asError(error));
       }
     });
   };

@@ -5365,8 +5365,8 @@ function agentToolsDependencies(dependencies: AwsBrokerDependencies): AgentTools
     readSnapshot: async (task, orgId) => {
       if (task.agent === undefined) return undefined;
       const frozen = await readTaskRecipe(dependencies, task.taskId, orgId);
-      // The digest is computed from the recipe itself, as the dispatch does: a snapshot that is not the one the task recorded serves nothing.
-      if (frozen === undefined || recipeDigest(frozen.recipe) !== task.agent.digest) return undefined;
+      // The digest is computed from the recipe itself, as the dispatch does: a snapshot that is missing, or is not the one the task recorded, serves nothing.
+      if (frozen === undefined || recipeDigest(frozen.recipe) !== task.agent.digest) throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
       return frozen.recipe;
     },
     connectors: ({ orgId, definition }) => resolveConnectors(definition, connectorTypeContext(dependencies, orgId, async () => githubScope(dependencies, orgId)), dependencies.connectorTypes),

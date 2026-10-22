@@ -18,6 +18,7 @@ import {
 } from "../../packages/broker/src/agents/agent-tools-routes.js";
 import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
 import { githubConnectorType } from "../../packages/broker/src/aws/connector-types.js";
+import { linearConnectorType } from "../../packages/broker/src/aws/linear-connector-type.js";
 import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgMemberKey, orgRemovedKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
 import type { ConnectorCatalog, PresentedTool } from "../../packages/contracts/src/connectors.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
@@ -129,7 +130,7 @@ describe("resolveToolGrants", () => {
     ]);
     const h = await createDeveloperTaskBroker();
     const recipe: ResolvedRecipe = { ...EMPTY_RECIPE, steps: [{ id: "triage", name: "Triage", kind: "agent", workspace: "none", settings: { instructions: [] } }], tools: [grant({ name: "slack" }, "read_write")] };
-    const problems = await validateRecipeForOrg({ documentClient: h.db, tableName: "state" } as never, TEST_ORG, recipe);
+    const problems = await validateRecipeForOrg({ documentClient: h.db, tableName: "state" }, TEST_ORG, recipe);
     expect(problems).toContainEqual({ path: "tools.0.connector", message: "slack isn't a connector agents can use; name a connector of the project, or pick a type: github, linear, jira, asana or mcp" });
   });
 
@@ -264,7 +265,7 @@ describe("the facts of a granted tool", () => {
 describe("connectorLabelLister", () => {
   const labels = JSON.stringify({ labels: [{ id: "5d8a1f0e-3b7c-4e2a-9f10-6c2b8d4e7a91", name: "automerge" }, { id: "x1", name: "Bug" }] });
   it("reads the connector's label tool and maps every id and every name to the name", async () => {
-    const run = vi.fn(async (_tool: string, _args: Record<string, unknown>) => labels);
+    const run = vi.fn<(tool: string, args: Record<string, unknown>) => Promise<string | undefined>>(async () => labels);
     const lister = connectorLabelLister({ tools: ["list_issue_labels"], run });
     const table = await lister({ orgId: TEST_ORG, connector: { type: "linear", id: "linear" } });
     expect(run).toHaveBeenCalledWith("list_issue_labels", {});
@@ -320,23 +321,47 @@ const GITHUB_FAKE_TOOLS: McpConnection["tools"] = [
   { name: "pull_request_read", description: "Read a pull request", inputSchema: objectSchema({ owner: { type: "string" }, repo: { type: "string" }, pullNumber: { type: "number" }, method: { type: "string" } }, ["owner", "repo", "pullNumber", "method"]) },
 ];
 
-interface WorldOptions { workflowFiles?: Record<string, string>; pinnedInstallation?: number }
+interface WorldOptions { workflowFiles?: Record<string, string>; pinnedInstallation?: number; labelTool?: boolean }
+
+const UUID_AUTOMERGE = "5d8a1f0e-3b7c-4e2a-9f10-6c2b8d4e7a91";
+const UUID_BUG = "7a1c2d3e-4f50-4a61-8b72-9c83d4e5f607";
 
 async function world(options: WorldOptions = {}) {
   const linear = await startFakeLinearMcp();
-  const { type: linearType } = linearViaFake(linear);
+  let labelListings = 0;
+  const labelTool: McpConnection["tools"][number] = { name: "list_issue_labels", description: "List labels", inputSchema: { type: "object", properties: {} } };
+  /** The fake Linear server, plus (when asked) a label list the recorded fixtures lack. */
+  const linearType = options.labelTool !== true ? linearViaFake(linear).type : {
+    type: "linear",
+    resolve: (config: Parameters<typeof linearConnectorType.resolve>[0], project: Parameters<typeof linearConnectorType.resolve>[1], context: Parameters<typeof linearConnectorType.resolve>[2]) => linearConnectorType.resolve(config, project, {
+      ...context,
+      connect: (async (input: Parameters<typeof connectMcp>[0]) => {
+        const connection = await connectMcp({ ...input, endpoint: linear.url });
+        return {
+          ...connection,
+          tools: [...connection.tools, ...((input.tools).includes("list_issue_labels") ? [labelTool] : [])],
+          call: async (name: string, args: Record<string, unknown>) => {
+            if (name !== "list_issue_labels") return connection.call(name, args);
+            labelListings += 1;
+            return { content: [{ type: "text" as const, text: JSON.stringify({ labels: [{ id: UUID_AUTOMERGE, name: "automerge" }, { id: UUID_BUG, name: "bug" }] }) }] };
+          },
+        };
+      }),
+    }),
+  };
   const githubCalls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
   const githubConnections: Array<{ token: string }> = [];
   const connectGithub = vi.fn(async (input: Parameters<typeof connectMcp>[0]): Promise<McpConnection> => {
     githubConnections.push({ token: input.token });
     return {
-      tools: GITHUB_FAKE_TOOLS.filter((candidate) => input.tools === undefined || (input.tools as readonly string[]).includes(candidate.name)),
+      tools: GITHUB_FAKE_TOOLS.filter((candidate) => input.tools === undefined || (input.tools).includes(candidate.name)),
       call: async (name, args) => { githubCalls.push({ name, arguments: args }); return { content: [{ type: "text", text: JSON.stringify(name === "pull_request_read" ? { number: args.pullNumber } : { number: 7, id: 7 }) }] }; },
       close: async () => undefined,
     };
   });
-  const tokens = vi.fn(async (_repository: unknown, _permissions: unknown, _scope: unknown, _options?: unknown) => "agent-installation-token");
-  const heads = vi.fn(async (_url: string, number: number, _scope: unknown, _options?: unknown) => {
+  const tokens = vi.fn<(repository: unknown, permissions: unknown, scope: unknown, options?: unknown) => Promise<string>>(async () => "agent-installation-token");
+  const heads = vi.fn<(url: string, number: number, scope: unknown, options?: unknown) => Promise<{ headSha: string; state: "open" }>>(async (...args) => {
+    const number = args[1];
     if (number === 404) throw Object.assign(new Error(`pull request ${String(number)} doesn't exist`), { name: "AgentXError", code: "CONFIG_INVALID" });
     return { headSha: "a".repeat(40), state: "open" as const };
   });
@@ -360,11 +385,12 @@ async function world(options: WorldOptions = {}) {
     },
   });
   expect((await call(h.handler, { method: "POST", path: "/v1/admin/credentials", user: ADMIN, body: { ref: "linear-charterarc", type: "static-secret", secretName: "agentx/connectors/linear-charterarc" } })).status).toBe(201);
-  await registerSlackProject(h.handler, { connectors: [LINEAR_CONNECTOR, GITHUB_CONNECTOR] });
+  const linearProject = options.labelTool === true ? { ...LINEAR_CONNECTOR, tools: [...LINEAR_PROJECT_TOOLS, { name: "list_issue_labels", access: "read" }] } : LINEAR_CONNECTOR;
+  await registerSlackProject(h.handler, { connectors: [linearProject, GITHUB_CONNECTOR] });
   if (options.pinnedInstallation !== undefined) {
     const key = projectRevisionKey(TEST_ORG, "payments", 1);
     const record = h.db.get(key) as { definition: { repositories: Array<Record<string, unknown>> } };
-    h.db.set({ ...record, definition: { ...record.definition, repositories: record.definition.repositories.map((repository) => ({ ...repository, installationId: options.pinnedInstallation })) } } as never);
+    h.db.set({ ...record, definition: { ...record.definition, repositories: record.definition.repositories.map((repository) => ({ ...repository, installationId: options.pinnedInstallation })) } });
   }
 
   /** Starts MAYA's task on payments, finishes the preparation, and freezes `recipe` as the task's agent snapshot. */
@@ -407,17 +433,16 @@ async function world(options: WorldOptions = {}) {
     callTool(capability, { requestId: randomUUID(), connector: "github", scope: "demo", tool: upstream, schemaHash: await schemaHash(capability, "github", upstream).catch(() => "b".repeat(64)), arguments: args, ...extra });
   const removeCreator = () => {
     h.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
-    h.db.set({ ...orgRemovedKey(TEST_ORG, MAYA.developerId), entityType: "ORG_REMOVED", orgId: TEST_ORG, developerId: MAYA.developerId, removedAt: new Date().toISOString() } as never);
+    h.db.set({ ...orgRemovedKey(TEST_ORG, MAYA.developerId), entityType: "ORG_REMOVED", orgId: TEST_ORG, developerId: MAYA.developerId, removedAt: new Date().toISOString() });
   };
   return {
-    ...h, linear, githubCalls, githubConnections, connectGithub, tokens, heads, agentRepositoryReader, repositories, readerPins, secrets,
+    ...h, linear, labelListings: () => labelListings, githubCalls, githubConnections, connectGithub, tokens, heads, agentRepositoryReader, repositories, readerPins, secrets,
     startRun, tools, callTool, linearCall, githubCall, schemaHash, removeCreator,
     configure: (next: (base: AgentToolsDependencies) => AgentToolsDependencies) => { configure = next; },
   };
 }
-type World = Awaited<ReturnType<typeof world>>;
 const errorOf = (reply: { body: Record<string, unknown> }) => reply.body.error as { code: string; message: string };
-const bodyOf = (call: { arguments: Record<string, unknown> }) => String(call.arguments.body ?? "");
+const bodyOf = (call: { arguments: Record<string, unknown> }) => (typeof call.arguments.body === "string" ? call.arguments.body : "");
 
 /** A gate that records what it was given and answers as told. */
 function recordingGate(decide: (input: Parameters<AgentWriteGate>[0]) => ReturnType<AgentWriteGate> | Awaited<ReturnType<AgentWriteGate>>) {
@@ -491,15 +516,64 @@ describe("the routes' authorization", () => {
     expect(w.linear.calls).toEqual([]);
   });
 
-  it("an operation of a task with no agent snapshot gets an empty tool list, and cannot call", async () => {
+  it("an operation of a task with no agent gets an empty tool list, and cannot call", async () => {
     const w = await world();
     const run = await w.startRun();
-    w.db.delete(`DEVTASK#${run.taskId}`, "RECIPE");
+    const { agent: _agent, ...withoutAgent } = w.db.get(`DEVTASK#${run.taskId}`, "META") as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- the task as it was before agents
+    w.db.set(withoutAgent);
     const listed = await w.tools(run.capability);
     expect(listed.status).toBe(200);
     expect(listed.body.catalogs).toEqual([]);
     const called = await w.linearCall(run.capability, "get_issue", { id: "CHA-1" });
     expect(called.status).toBe(404);
+    expect(w.linear.calls).toEqual([]);
+  });
+
+  it("an agent task whose snapshot is missing, or is not the one the task recorded, serves nothing and says so", async () => {
+    const w = await world();
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+    const recipe = w.db.get(`DEVTASK#${run.taskId}`, "RECIPE") as Record<string, unknown> & { recipe: ResolvedRecipe };
+    // Someone widened the frozen recipe after the task recorded its digest.
+    w.db.set({ ...recipe, recipe: { ...recipe.recipe, tools: [grant({ type: "linear" }, "read_write"), grant({ type: "github" }, "read_write")] } });
+    for (const reply of [await w.tools(run.capability), await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "hello" })]) {
+      expect(reply.status).toBe(503);
+      expect(errorOf(reply)).toEqual({ code: "RUNTIME_UNAVAILABLE", message: "the agent snapshot of this task can't be read" });
+    }
+    w.db.delete(`DEVTASK#${run.taskId}`, "RECIPE");
+    expect((await w.tools(run.capability)).status).toBe(503);
+    expect(w.linear.calls).toEqual([]);
+  });
+
+  it("refuses an operation that is not the workspace's active one, or is being stopped, on both routes", async () => {
+    const w = await world();
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read")] });
+    const body = { requestId: randomUUID(), connector: "linear", scope: "charterarc", tool: "get_issue", schemaHash: "a".repeat(64), arguments: { id: "CHA-1" } };
+    const operation = w.db.get(`WORKSPACE#${run.workspaceId}`, `OPERATION#${run.operationId}`) as Record<string, unknown>;
+    w.db.set({ ...operation, status: "CANCEL_REQUESTED" });
+    for (const reply of [await w.tools(run.capability), await w.callTool(run.capability, body)]) expect(errorOf(reply).code).toBe("STALE_FENCE");
+    w.db.set(operation);
+    const workspace = w.db.get(`WORKSPACE#${run.workspaceId}`, "META") as Record<string, unknown>;
+    w.db.set({ ...workspace, activeOperationId: randomUUID() });
+    for (const reply of [await w.tools(run.capability), await w.callTool(run.capability, body)]) {
+      expect(reply.status).toBe(409);
+      expect(errorOf(reply).code).toBe("STALE_FENCE");
+    }
+    expect(w.linear.calls).toEqual([]);
+  });
+
+  it("serves nothing for an operation that is not a step of the task's agent", async () => {
+    const w = await world();
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read")] });
+    const operation = w.db.get(`WORKSPACE#${run.workspaceId}`, `OPERATION#${run.operationId}`) as Record<string, unknown>;
+    const stepless = { ...operation };
+    delete stepless.programStepId;
+    for (const without of [{ ...operation, programStepId: "no-such-step" }, stepless]) {
+      w.db.set(without);
+      const listed = await w.tools(run.capability);
+      expect(listed.status).toBe(404);
+      expect(listed.body.catalogs).toBeUndefined();
+      expect((await w.linearCall(run.capability, "get_issue", { id: "CHA-1" })).status).toBe(404);
+    }
     expect(w.linear.calls).toEqual([]);
   });
 });
@@ -554,6 +628,15 @@ describe("GET /v1/internal/agent-tools", () => {
       expect(scope).toEqual({ orgId: TEST_ORG });
     }
     expect(w.githubConnections.every((connection) => connection.token === "agent-installation-token")).toBe(true);
+  });
+
+  it("lists nothing for a connector that is not connected, instead of a tool it cannot run", async () => {
+    const w = await world();
+    w.secrets.read.mockImplementation(async () => undefined);
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+    const listed = await w.tools(run.capability);
+    expect(listed.status).toBe(200);
+    expect(listed.body.catalogs).toEqual([]);
   });
 
   it("ends the task and serves nothing when its creator is no longer a member", async () => {
@@ -612,6 +695,27 @@ describe("POST /v1/internal/agent-tools/call", () => {
     expect(errorOf(unknownTool)).toEqual({ code: "AGENT_TOOL_NOT_GRANTED", message: NOT_GRANTED("triage-bot", "linear", "drop_everything") });
     const unknownConnector = await w.callTool(run.capability, { ...base, connector: "sentry", tool: "get_issue" });
     expect(errorOf(unknownConnector)).toEqual({ code: "AGENT_TOOL_NOT_GRANTED", message: NOT_GRANTED("triage-bot", "sentry", "get_issue") });
+    expect(w.linear.calls).toEqual([]);
+  });
+
+  it("refuses a scope the connector does not have before the gate, and says so in the connector's own words", async () => {
+    const w = await world();
+    const { gate, seen } = recordingGate(() => ({ decision: "run" }));
+    w.configure((base) => ({ ...base, gate }));
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+    const reply = await w.callTool(run.capability, { requestId: randomUUID(), connector: "linear", scope: "elsewhere", tool: "save_comment", schemaHash: "a".repeat(64), arguments: { issueId: "CHA-1", body: "hi" } });
+    expect(reply.status).toBe(404);
+    expect(errorOf(reply).message).toBe("connector scope not found");
+    expect(seen).toEqual([]);
+    expect(w.linear.calls).toEqual([]);
+  });
+
+  it("answers a schema the vendor has changed since the step was shown its tools with the connector's own refusal", async () => {
+    const w = await world();
+    const run = await w.startRun();
+    const reply = await w.callTool(run.capability, { requestId: randomUUID(), connector: "linear", scope: "charterarc", tool: "get_issue", schemaHash: "e".repeat(64), arguments: { id: "CHA-1" } });
+    expect(reply.status).toBe(200);
+    expect(reply.body.result).toMatchObject({ status: "FAILED", reason: "schema_changed" });
     expect(w.linear.calls).toEqual([]);
   });
 
@@ -769,7 +873,7 @@ describe("POST /v1/internal/agent-tools/call", () => {
       const say = () => w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "please shipit now" });
       await say();
       const key = agentGuardrailsKey(TEST_ORG);
-      w.db.set({ ...key, entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, extraCommandWords: ["shipit"] } } as never);
+      w.db.set({ ...key, entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, extraCommandWords: ["shipit"] } });
       await say();
       expect(classes).toEqual(["safe", "consequential"]);
     });
@@ -801,7 +905,7 @@ describe("POST /v1/internal/agent-tools/call", () => {
       const w = await world();
       const key = projectRevisionKey(TEST_ORG, "payments", 1);
       const record = w.db.get(key) as { definition: Record<string, unknown> };
-      w.db.set({ ...record, definition: { ...record.definition, actionPolicy: { rules: [{ tool: "linear__get_issue", outcome: "deny", reason: "closed to agents" }] } } } as never);
+      w.db.set({ ...record, definition: { ...record.definition, actionPolicy: { rules: [{ tool: "linear__get_issue", outcome: "deny", reason: "closed to agents" }] } } });
       const run = await w.startRun();
       const refused = await w.linearCall(run.capability, "get_issue", { id: "CHA-1" });
       expect(refused.status).toBe(403);
@@ -841,6 +945,28 @@ describe("POST /v1/internal/agent-tools/call", () => {
   });
 
   describe("label ids", () => {
+    it("reads the connector's own label list through the call path, once per run, and a trigger label's id makes the call wait", async () => {
+      const w = await world({ labelTool: true });
+      const classes: Array<{ class: string; reason: string }> = [];
+      w.configure((base) => ({ ...base, gate: async (input) => { classes.push(await input.classify()); return { decision: "run" }; } }));
+      const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+      await w.linearCall(run.capability, "save_issue", { title: "x", addLabels: [UUID_AUTOMERGE] });
+      await w.linearCall(run.capability, "save_issue", { title: "y", addLabels: [UUID_BUG] });
+      await w.linearCall(run.capability, "save_issue", { title: "z", addLabels: ["not-listed-id-7a1c2d3e-4f50-4a61-8b72-9c83d4e5f6aa"] });
+      expect(classes.map((entry) => entry.class)).toEqual(["consequential", "safe", "safe"]);
+      expect(classes[0]!.reason).toMatch(/automation/u);
+      expect(w.labelListings()).toBe(1);
+    });
+
+    it("a label id the connector's list does not hold makes the call wait", async () => {
+      const w = await world({ labelTool: true });
+      const classes: string[] = [];
+      w.configure((base) => ({ ...base, gate: async (input) => { classes.push((await input.classify()).class); return { decision: "run" }; } }));
+      const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+      await w.linearCall(run.capability, "save_issue", { title: "x", addLabels: ["9b2c3d4e-5f60-4b71-8c82-9d93e4f5a618"] });
+      expect(classes).toEqual(["consequential"]);
+    });
+
     it("resolves an id given in addLabels through the connector's label list, and a trigger label makes the call wait", async () => {
       const w = await world();
       const UUID = "5d8a1f0e-3b7c-4e2a-9f10-6c2b8d4e7a91";

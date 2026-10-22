@@ -18,7 +18,6 @@ import {
   ConnectorCallRequestSchema,
   ConnectorNameSchema,
   agentXError,
-  type ActionPolicy,
   type AgentXErrorCode,
   type ApprovalRules,
   type Autonomy,
@@ -36,7 +35,7 @@ import { callConnector, discoverConnector, type ConnectorContextBase, type Scope
 import type { ResolvedConnector } from "../aws/connector-types.js";
 import { inertName } from "../developer/task-records.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
-import { parseGitHubRepository, type AgentGitHubScope, type AgentTokenOptions } from "../github-app.js";
+import { parseGitHubRepository, type AgentGitHubScope, type AgentRepositoryLabel, type AgentTokenOptions } from "../github-app.js";
 import { githubAgentToolPermissions, type GitHubAgentTokenPermissions } from "./github-agent-tools.js";
 import { githubLabelLister, type LabelLister } from "./label-names.js";
 import type { RunCache } from "./run-cache.js";
@@ -125,7 +124,7 @@ const GateDecisionSchema = z.discriminatedUnion("decision", [
 export interface AgentGitHubProvider {
   createAgentInstallationToken(repository: { owner: string; name: string }, permissions: GitHubAgentTokenPermissions, scope: AgentGitHubScope, options?: AgentTokenOptions): Promise<string>;
   getAgentPullRequestHead(repositoryUrl: string, number: number, scope: AgentGitHubScope, options?: AgentTokenOptions): Promise<{ headSha: string; state: string }>;
-  listAgentRepositoryLabels?: Parameters<typeof githubLabelLister>[0]["listAgentRepositoryLabels"];
+  listAgentRepositoryLabels?(repositoryUrl: string, scope: AgentGitHubScope, options?: AgentTokenOptions): Promise<AgentRepositoryLabel[]>;
 }
 
 export interface AgentToolsDependencies {
@@ -364,7 +363,11 @@ function attributionOf(task: DeveloperTaskRecord, agentName: string): string {
 /** The label listers for this run: GitHub's, the connectors' own through the call path, and whatever the dependencies add or replace. */
 function labelListersFor(deps: AgentToolsDependencies, run: AgentToolsRun, frame: Frame): Readonly<Record<string, LabelLister>> {
   const listers: Record<string, LabelLister> = {};
-  if (deps.github?.listAgentRepositoryLabels !== undefined) listers["github"] = githubLabelLister({ listAgentRepositoryLabels: deps.github.listAgentRepositoryLabels });
+  const github = deps.github;
+  if (github?.listAgentRepositoryLabels !== undefined) {
+    // The labels of a repository are read with a token held to the installation the project pinned for it.
+    listers["github"] = githubLabelLister({ listAgentRepositoryLabels: (url, scope) => github.listAgentRepositoryLabels!(url, scope, pinOfProjectRepository(frame.project.definition, url)) });
+  }
   for (const type of Object.keys(LABEL_LIST_TOOLS)) {
     listers[type] = async ({ connector: label }) => {
       const connector = frame.connectors.find((entry) => entry.name === label.id && entry.type === type);
@@ -406,6 +409,7 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
   if (connector === undefined) throw notGranted();
   if (connector.type === "github") githubAgentToolPermissions(request.tool);
   if (toolGranted({ grants: frame.recipe.tools, stepTools: frame.stepTools, connector: asGrantConnector(connector), upstreamName: request.tool }) === undefined) throw notGranted();
+  if (!connector.scopes.some((entry) => entry.alias === request.scope)) throw agentXError("NOT_FOUND", "connector scope not found");
   // A call that names a repository (the server binds the right one, so a model has no reason to) names one of the project's, or is refused before any token.
   const named = namedRepository(request.arguments);
   if (connector.type === "github" && named !== undefined && !projectOwnsRepository(frame.project.definition, named)) throw notGranted();
@@ -424,14 +428,14 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
   const guardrails = await deps.guardrails(orgId);
   const classifyInput: ClassifyAgentWriteInput = {
     tool: classifyTool, args: classifyArgs,
-    ...(frame.project.definition.actionPolicy === undefined ? {} : { projectPolicy: frame.project.definition.actionPolicy as ActionPolicy }),
+    ...(frame.project.definition.actionPolicy === undefined ? {} : { projectPolicy: frame.project.definition.actionPolicy }),
     rules: frame.recipe.approvals, autonomy: frame.recipe.autonomy, allowMentions: frame.recipe.allowMentions,
     guardrails, orgId, taskId: task.taskId, project: task.project,
     ...(github === undefined ? {} : { repository: `${github.owner}/${github.name}`, ...(github.installationId === undefined ? {} : { installationId: github.installationId }) }),
   };
   const classifyDeps: ClassifyAgentWriteDependencies = {
     documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }),
-    labelListers: labelListersFor(deps, run, frame), runCache: deps.runCache,
+    labelListers: labelListersFor(deps, run, frame), runCache: (scope) => deps.runCache(scope),
     repositoryReader: deps.repositoryReader ?? (async () => { throw new Error("reading repositories is not set up in this deployment"); }),
   };
   let classification: Promise<WriteClassification> | undefined;
@@ -464,6 +468,24 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
     await recordOwnItems({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, { orgId, taskId: task.taskId, tool: classifyTool, args: classifyArgs, resultText: result.text });
   }
   return { result };
+}
+
+/** The installation the project pinned for the repository at `url`, if it pinned one. */
+function pinOfProjectRepository(definition: ProjectDefinition, url: string): AgentTokenOptions {
+  try {
+    const wanted = parseGitHubRepository(url);
+    const found = definition.repositories.find((repository) => {
+      try {
+        const parsed = parseGitHubRepository(repository.url);
+        return parsed.owner.toLowerCase() === wanted.owner.toLowerCase() && parsed.name.toLowerCase() === wanted.name.toLowerCase();
+      } catch {
+        return false;
+      }
+    });
+    return found === undefined ? {} : pinOf(found);
+  } catch {
+    return {};
+  }
 }
 
 /** `owner/repo` (lower case) when a call's arguments name both; undefined otherwise. */
