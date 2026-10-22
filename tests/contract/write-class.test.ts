@@ -895,7 +895,7 @@ describe("fix round 1: C1, a write is safe only when its name says it records so
   });
 
   it("keeps the record verbs safe", () => {
-    const names = ["create_page", "add_row", "new_page", "insert_row", "save_page", "upsert_page", "write_page", "log_event", "note_down", "comment_on", "reply_to_comment", "post_comment", "append_log", "record_event", "annotate_page"];
+    const names = ["create_note", "add_note", "new_document", "insert_note", "save_draft", "upsert_document", "write_note", "log_comment", "note_down", "comment_on", "reply_to_comment", "post_comment", "append_comment", "record_note", "annotate_document"];
     for (const name of names) expect(classOf(mcp(name), { text: "x" }), name).toBe("safe");
   });
 
@@ -1004,7 +1004,7 @@ describe("fix round 1: I4, labels at any depth", () => {
   });
 
   it("resolves label ids nested in a create's input", () => {
-    const create = mcp("create_widget");
+    const create = mcp("create_note");
     expect(classOf(create, { input: { labelIds: ["lbl-deploy"] } })).toBe("consequential");
     expect(classOf(create, { input: { labelIds: ["lbl-bug"] } })).toBe("safe");
     expect(classOf(create, { input: { nested: { addedLabelIds: ["nobody"] } } })).toBe("consequential");
@@ -1013,7 +1013,7 @@ describe("fix round 1: I4, labels at any depth", () => {
 
   it("uses the same ids in the wrapper's lookup", async () => {
     const w = wrapper();
-    const create = grant("linear", "create_widget");
+    const create = grant("linear", "create_note");
     const names = await classifyAgentWrite(w.deps, { ...w.base, tool: create, args: { input: { labelIds: ["lbl-deploy"] } } });
     expect(names.class).toBe("consequential");
     expect((await classifyAgentWrite(w.deps, { ...w.base, tool: create, args: { input: { labelIds: ["lbl-bug"] } } })).class).toBe("safe");
@@ -1159,7 +1159,7 @@ describe("fix round 1: M4, any name word containing merge is a merge", () => {
     expect(classOf(mcp("automerge_pr"), {})).toBe("merge");
     expect(classOf(mcp("enable_automerge"), {}, { overrides: { mcp: { enable_automerge: "safe" } } })).toBe("merge");
     expect(classOf(grant("mcp", "enable_automerge", { access: "read" }), {})).toBe("consequential");
-    expect(classOf(mcp("create_emergency_contact"), { name: "x" })).toBe("safe");
+    expect(classOf(mcp("create_emergency_note"), { name: "x" })).toBe("safe");
   });
 });
 
@@ -1262,5 +1262,155 @@ describe("fix round 1: pins from the mutation run", () => {
     expect(classOf(tool, { text: "x" })).toBe("safe");
     expect(classOf(tool, { text: "x" }, { projectPolicy: policy({ tool: "createComment", connector: "mcp", outcome: "ask" }) })).toBe("consequential");
     expect(classify(tool, { text: "x" }, { projectPolicy: policy({ tool: "createComment", connector: "mcp", outcome: "deny" }) }).denied).toMatchObject({ rule: 1 });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Fix round 2 (task-20b-recheck-1.md): N1 to N4
+// ---------------------------------------------------------------------------------------------
+
+describe("fix round 2: N1, a create is safe only for a record verb and a record object", () => {
+  it("makes a create of something that moves money, grants access, deploys or pages consequential", () => {
+    const names = [
+      "create_payment", "create_payout", "create_invoice", "create_payment_link", "record_payment", "create_order", "add_collaborator", "add_member", "add_admin",
+      "create_user", "create_api_key", "create_access_token", "add_ssh_key", "save_secret", "create_deployment", "new_deployment", "create_release", "create_build",
+      "create_pipeline", "create_job", "create_schedule", "create_webhook", "create_or_update_file", "create_incident", "create_alert", "create_page", "create_campaign",
+    ];
+    for (const name of names) {
+      expect(classOf(mcp(name), { name: "x", value: "y" }), name).toBe("consequential");
+      expect(classOf(mcp(name, { itemArguments: undefined }), { name: "x", value: "y" }), `${name} undeclared`).toBe("consequential");
+    }
+    expect(classOf(gh("add_collaborator", { itemArguments: [] }), { ...REPO, username: "u", permission: "admin" })).toBe("consequential");
+  });
+
+  it("keeps a create of a record safe", () => {
+    const names = [
+      "create_comment", "create_note", "add_note", "create_label", "add_tag", "create_reaction", "create_draft", "create_document", "create_doc", "create_branch",
+      "create_pull_request", "create_pr", "create_pullrequest", "add_comment", "create_notes", "create_comments", "add_issue_comment", "post_comment",
+    ];
+    for (const name of names) expect(classOf(mcp(name), { text: "x" }), name).toBe("safe");
+  });
+
+  it("makes the object of the tracker words and their forms a record, which still needs the label", () => {
+    expect(classOf(mcp("create_issues", { labelArgument: "labels" }), { title: "t", labels: ["rovara"] })).toBe("safe");
+    expect(classOf(mcp("create_issues", { labelArgument: "labels" }), { title: "t" })).toBe("consequential");
+  });
+
+  it("is a soft cause: a code override may lower it, but not when something hard also raised the call", () => {
+    expect(classOf(mcp("create_payment"), { name: "x" }, { overrides: { mcp: { create_payment: "safe" } } })).toBe("safe");
+    expect(classOf(mcp("create_payment"), { name: "x", to: "a@b.com" }, { overrides: { mcp: { create_payment: "safe" } } })).toBe("consequential");
+  });
+});
+
+describe("fix round 2: N2, any key with label or tag in it is a label path", () => {
+  const ownJira = { ownItems: new Set(["mcp##I-1"]) };
+  const update = mcp("update_issue", { itemArguments: ["id"] });
+
+  it("scans label names under labelNames, label_names, label_name and tags", () => {
+    for (const key of ["labelNames", "label_names", "label_name", "tags", "tagNames", "issueLabels"]) {
+      expect(classOf(mcp("create_note"), { text: "x", [key]: ["deploy"] }), `create ${key}`).toBe("consequential");
+      expect(classOf(mcp("update_issue", { itemArguments: ["id"] }), { id: "I-1", [key]: ["automerge"] }, { ownItems: new Set(["mcp##I-1"]) }), `own ${key}`).toBe("consequential");
+      expect(classOf(mcp("update_issue", { itemArguments: ["id"] }), { id: "I-1", [key]: ["bug"] }, { ownItems: new Set(["mcp##I-1"]) }), `own bug ${key}`).toBe("safe");
+    }
+    expect(classOf(update, { id: "I-1", tags: "bug, automerge" }, ownJira)).toBe("consequential");
+  });
+
+  it("resolves ids under tagIds, label_ids and other keys that hold label or tag ids", () => {
+    for (const key of ["tagIds", "tag_ids", "labelIdList", "issueLabelIds"]) {
+      expect(classOf(mcp("create_note"), { text: "x", [key]: ["lbl-deploy"] }), `${key} deploy`).toBe("consequential");
+      expect(classOf(mcp("create_note"), { text: "x", [key]: ["lbl-bug"] }), `${key} bug`).toBe("safe");
+      expect(classOf(mcp("create_note"), { text: "x", [key]: ["nobody"] }), `${key} unknown`).toBe("consequential");
+    }
+  });
+
+  it("does not take stage as a tag", () => {
+    expect(classOf(mcp("create_note"), { text: "x", stageId: "s1" })).toBe("safe");
+  });
+
+  it("counts the remove and removed forms of any such key as removing labels", () => {
+    for (const key of ["removeTags", "remove_tag_ids", "removedLabelNames", "removeLabelNames", "removeTagIds"]) {
+      expect(classOf(mcp("update_issue", { itemArguments: ["id"] }), { id: "I-9", [key]: ["x"] }), `${key} someone else's`).toBe("consequential");
+      expect(classOf(mcp("update_issue", { itemArguments: ["id"] }), { id: "I-1", [key]: ["wip"] }, { ownItems: new Set(["mcp##I-1"]) }), `${key} own`).toBe("safe");
+    }
+  });
+});
+
+describe("fix round 2: removing a label from an own item is not a trigger", () => {
+  it("does not scan a remove key as labels being added", () => {
+    const tool = mcp("update_issue", { itemArguments: ["id"] });
+    expect(classOf(tool, { id: "I-1", removeLabels: ["automerge"] }, { ownItems: new Set(["mcp##I-1"]) })).toBe("safe");
+    expect(classOf(tool, { id: "I-1", removedLabelIds: ["lbl-deploy"] }, { ownItems: new Set(["mcp##I-1"]) })).toBe("safe");
+  });
+});
+
+describe("fix round 2: N3, team and project keys", () => {
+  it("makes any key with team or project in it consequential", () => {
+    for (const key of ["team", "teamIds", "team_ids", "project", "projectIds", "project_ids", "projects", "teamId", "projectId"]) {
+      expect(classOf(mcp("create_note"), { text: "x", [key]: ["t1"] }), key).toBe("consequential");
+    }
+  });
+
+  it("keeps a declared scope argument exempt", () => {
+    const tool = mcp("create_note", { itemScopeArguments: ["project"] });
+    expect(classOf(tool, { text: "x", project: "p1" })).toBe("safe");
+    expect(classOf(gh("add_issue_comment", { itemArguments: [] }), { ...REPO, issue_number: 1, body: PLAIN })).toBe("safe");
+  });
+
+  it("still lets a Linear change that sets only safe keys be safe", () => {
+    expect(classOf(saveIssue(), { id: "ENG-9", labelIds: ["lbl-bug"], priority: 2 })).toBe("safe");
+    expect(classOf(saveIssue(), { id: "ENG-9", projectId: "p1" })).toBe("consequential");
+  });
+});
+
+describe("fix round 2: N4, a merge set by an argument is a merge", () => {
+  const prOwn = { ownItems: new Set(["github#o/r#9", "mcp##9", "mcp##PR-1"]) };
+
+  it("makes auto-complete, auto-merge and completion options a merge, even on a pull request the run created", () => {
+    const azure = mcp("update_pull_request", { itemArguments: ["id"] });
+    expect(classOf(azure, { id: "PR-1", autoCompleteSetBy: "me", completionOptions: { mergeStrategy: "squash" } }, prOwn)).toBe("merge");
+    expect(classOf(azure, { id: "PR-1", completionOptions: { deleteSourceBranch: true } }, prOwn)).toBe("merge");
+    const github = gh("update_pull_request", { itemArguments: ["n"] });
+    expect(classOf(github, { ...REPO, n: 9, auto_merge: true }, { ownItems: new Set(["github#o/r#9"]) })).toBe("merge");
+    expect(classOf(github, { ...REPO, n: 9, method: "merge" }, { ownItems: new Set(["github#o/r#9"]) })).toBe("merge");
+    expect(classOf(github, { ...REPO, n: 9, enableAutoMerge: true }, { ownItems: new Set(["github#o/r#9"]) })).toBe("merge");
+  });
+
+  it("makes a create that sets auto-complete or auto-merge a merge", () => {
+    const create = mcp("create_pull_request");
+    expect(classOf(create, { title: "t", autoComplete: true })).toBe("merge");
+    expect(classOf(create, { title: "t", auto_merge: true })).toBe("merge");
+    expect(classOf(create, { title: "t", nested: { mergeWhenReady: "yes" } })).toBe("merge");
+  });
+
+  it("makes a method, action or merge method of merge, squash or rebase a merge", () => {
+    const tool = mcp("update_pull_request", { itemArguments: ["n"] });
+    for (const [key, value] of [["method", "merge"], ["method", "SQUASH"], ["action", "rebase"], ["mergeMethod", "squash"], ["merge_method", "rebase"], ["Action", "Merge"]] as Array<[string, string]>) {
+      expect(classOf(tool, { n: 9, [key]: value }, { ownItems: new Set(["mcp##9"]) }), `${key}=${value}`).toBe("merge");
+    }
+    expect(classOf(tool, { n: 9, method: "create", labels: ["bug"] }, { ownItems: new Set(["mcp##9"]) })).toBe("safe");
+    expect(classOf(mcp("create_comment"), { issueId: "1", body: "squash these", method: "comment" })).toBe("safe");
+  });
+
+  it("does not take an unset or false merge key for a merge", () => {
+    const create = mcp("create_pull_request");
+    expect(classOf(create, { title: "t", auto_merge: false })).toBe("safe");
+    expect(classOf(create, { title: "t", autoComplete: null, completionOptions: {} })).toBe("safe");
+  });
+
+  it("stays a merge whatever else the call carries, and an override does not lower it", () => {
+    const create = mcp("create_pull_request");
+    expect(classOf(create, { title: "t", auto_merge: true, assigneeId: "u" }, { overrides: { mcp: { create_pull_request: "safe" } }, autonomy: "suggest" })).toBe("merge");
+  });
+
+  it("looks up nothing for a merge call in the wrapper", async () => {
+    const w = wrapper();
+    const github = gh("update_pull_request", { itemArguments: ["n"] });
+    const result = await classifyAgentWrite(w.deps, { ...w.base, tool: github, args: { ...DEMO, n: 9, auto_merge: true } });
+    expect(result.class).toBe("merge");
+    expect(w.reads).not.toHaveBeenCalled();
+  });
+
+  it("does not make a read a merge", () => {
+    expect(classOf(grant("mcp", "list_pull_requests", { access: "read" }), { auto_merge: true, method: "merge" })).toBe("read");
   });
 });
