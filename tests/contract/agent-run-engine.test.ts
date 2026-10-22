@@ -2327,6 +2327,28 @@ describe("Task 22 review: a plain task's end by the reaper or a stuck cancel blo
     expect(rowsOf(t, plain.taskId)).toEqual([]);
     expect(t.access!.blockKey).toHaveBeenCalledWith(keyIdOf(plain.key));
   });
+
+  it("N1 F: a task record that cannot be read when the end is told leaves the row for another try", async () => {
+    const t = await setup({ proxy: true });
+    const events = endHandler();
+    const plain = await plainTurn(t);
+    const { failActiveOperation } = await import("../../packages/broker/src/aws/outbox-failure.js");
+    await failActiveOperation(t.db, "state", plain.workspaceId, "RUNTIME_UNAVAILABLE: workspace compute was lost");
+    const original = t.db.send.bind(t.db);
+    let down = true;
+    t.db.send = (async (command: { constructor: { name: string }; input?: { Key?: { pk?: string; sk?: string } } }) => {
+      if (down && command.constructor.name === "GetCommand" && command.input?.Key?.pk === `DEVTASK#${plain.taskId}` && command.input.Key.sk === "META") throw new Error("throttled");
+      return original(command as never);
+    }) as never;
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(events).toEqual([]);
+    expect(rowsOf(t, plain.taskId)[0]).toMatchObject({ kind: "operation_end", attempts: 1 });
+    down = false;
+    dueNow(t, plain.taskId);
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(events).toEqual([expect.objectContaining({ taskId: plain.taskId, outcome: "failed" })]);
+    expect(rowsOf(t, plain.taskId)).toEqual([]);
+  });
 });
 
 describe("Task 22 review: a late handler_gave_up never fails a run that moved on (I3)", () => {
