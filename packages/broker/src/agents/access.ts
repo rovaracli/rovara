@@ -334,7 +334,7 @@ async function isOrgMember(deps: OwnedAccessDeps, lookups: Lookups, orgId: OrgId
 }
 
 /** A member's role in the org (a developer merged into another is looked for as the survivor), or undefined for someone who isn't a member. */
-export async function orgRoleOf(deps: AgentAccessDeps, orgId: OrgId, developerId: string): Promise<OrgRole | undefined> {
+export async function orgRoleOf(deps: OwnedAccessDeps, orgId: OrgId, developerId: string): Promise<OrgRole | undefined> {
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgMemberKey(orgId, await resolveSurvivor(deps, orgId, developerId)), ConsistentRead: true })) as { Item?: { role?: unknown } };
   const role = OrgRoleSchema.safeParse(response.Item?.role);
   return role.success ? role.data : undefined;

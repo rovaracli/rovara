@@ -14,7 +14,7 @@ import {
 import { ChainStore, chainDigest, type ChainRecord } from "../../packages/broker/src/chains/store.js";
 import { validateChainForPublish } from "../../packages/broker/src/chains/validate.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
-import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent.js";
+import type { AgentOwner } from "../../packages/contracts/src/agent.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
@@ -23,7 +23,6 @@ import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { orgMemberKey } from "../../packages/contracts/src/org.js";
 import { builtinSettingsKey, chainDirectoryKey, chainKey, chainNameKey, ownerBudgetKey, orgProjectCatalogKey, principalChainSharesKey, principalSharesKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
-import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 
@@ -141,7 +140,7 @@ function setup(options: { audit?: boolean } = {}) {
   const publish = async (chainId: string, orgId: OrgId = ORG_A) => chains.publish(await publishInput(chainId, orgId));
   const edit = async (chainId: string, definition: ChainDefinitionInput = TWO_STEPS, name = "x") => {
     const draft = (await chains.getDraft(ORG_A, chainId))!;
-    const changed = { ...definition, steps: definition.steps.map((step, index) => (index === 0 && step.kind === "agent" ? { ...step, name } : step)) } as ChainDefinitionInput;
+    const changed = { ...definition, steps: definition.steps.map((step, index) => (index === 0 && step.kind === "agent" ? { ...step, name } : step)) };
     return chains.saveDraft({ orgId: ORG_A, chainId, definition: changed, expectedRevision: draft.revision, by: ALICE });
   };
   const events = (orgId: OrgId, chainId: string) => db.find((item) => item.pk === chainKey(orgId, chainId, "META").pk && String(item.sk).startsWith("EVENT#")).sort((a, b) => String(a.sk).localeCompare(String(b.sk)));
@@ -160,7 +159,7 @@ function setup(options: { audit?: boolean } = {}) {
 
 const definitionWith = (agentId: string, version: number | "current"): ChainDefinitionInput => ({
   start: "a",
-  steps: [{ kind: "agent", id: "a", name: "Do", agent: { agentId: agentId as AgentId, version }, next: { kind: "end" } }],
+  steps: [{ kind: "agent", id: "a", name: "Do", agent: { agentId: agentId, version }, next: { kind: "end" } }],
 });
 
 describe("create and read", () => {
@@ -280,7 +279,7 @@ describe("drafts", () => {
   it("refuses a definition that does not parse and a chain that is not there or is another org's", async () => {
     const { create, chains } = setup();
     const chain = await create("Investigate");
-    expect(await code(chains.saveDraft({ orgId: ORG_A, chainId: chain.chainId, definition: { start: "a", steps: [] } as unknown as ChainDefinitionInput, expectedRevision: 1, by: ALICE }))).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringMatching(/^definition\.steps/) as string });
+    expect(await code(chains.saveDraft({ orgId: ORG_A, chainId: chain.chainId, definition: { start: "a", steps: [] }, expectedRevision: 1, by: ALICE }))).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringMatching(/^definition\.steps/) as string });
     expect(await code(chains.saveDraft({ orgId: ORG_B, chainId: chain.chainId, definition: TWO_STEPS, expectedRevision: 1, by: ALICE }))).toEqual({ code: "NOT_FOUND", message: "no chain has that ID" });
     expect((await chains.getDraft(ORG_A, chain.chainId))!.revision).toBe(1);
   });
@@ -424,7 +423,7 @@ describe("publish, versions and rollback", () => {
     const chain = await create("Investigate");
     const input = await publishInput(chain.chainId);
     const draft = (await chains.getDraft(ORG_A, chain.chainId))!;
-    expect(await code(chains.publish({ ...input, pinned: draft.definition as never, digest: chainDigest(draft.definition) }))).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringMatching(/^pinned: /) as string });
+    expect(await code(chains.publish({ ...input, pinned: draft.definition as never, digest: chainDigest(draft.definition as never) }))).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringMatching(/^pinned\.steps\.0\.agent\.version: /) as string });
   });
 
   it("refuses to publish another org's chain or one that is not there", async () => {
@@ -513,7 +512,7 @@ describe("publish checks the agents again, inside the transaction", () => {
   it("publishes a chain that uses one agent in many steps (one check per agent, not per step)", async () => {
     const ctx = setup();
     const { agent } = await ctx.customAgent("Helper");
-    const steps = Array.from({ length: 3 }, (_unused, index) => ({ kind: "agent" as const, id: `s${String(index)}`, name: "Do", agent: { agentId: agent.agentId, version: (index === 0 ? "current" : 1) as number | "current" }, next: index === 2 ? ({ kind: "end" } as const) : ({ kind: "go", to: `s${String(index + 1)}` } as const) }));
+    const steps: ChainDefinitionInput["steps"] = Array.from({ length: 3 }, (_unused, index) => ({ kind: "agent" as const, id: `s${String(index)}`, name: "Do", agent: { agentId: agent.agentId, version: index === 0 ? ("current" as const) : 1 }, next: index === 2 ? ({ kind: "end" } as const) : ({ kind: "go", to: `s${String(index + 1)}` } as const) }));
     const chain = await ctx.create("Many", { definition: { start: "s0", steps } });
     await expect(ctx.publish(chain.chainId)).resolves.toMatchObject({ version: 1 });
   });
@@ -538,7 +537,7 @@ describe("every write leaves one event", () => {
     ];
     // "rolled_back" runs after the step that makes version 2 (a draft and a publish, two events), so it is checked on its own below.
     steps[3] = ["published", 2, steps[3]![2]];
-    const seen = ["created"];
+    const seen: unknown[] = ["created"];
     for (const [kind, count, run] of steps) {
       const before = ctx.events(ORG_A, chain.chainId).length;
       await run();
@@ -695,7 +694,7 @@ describe("audit events", () => {
     expect(audit.recordedBy("chain.published")).toMatchObject([{ target: { kind: "chain", id: chain.chainId }, facts: { version: 1 } }, { facts: { version: 2 } }]);
     expect(audit.recordedBy("chain.rolled_back")).toMatchObject([{ actor: { kind: "member", id: BOB }, facts: { fromVersion: 2, toVersion: 1 } }]);
     expect(audit.recordedBy("chain.owner_changed")).toMatchObject([{ target: { kind: "chain", id: chain.chainId }, facts: { field: "owner" } }]);
-    expect(audit.recordedBy("budget.changed")).toMatchObject([{ facts: { scopeKind: "chain", field: "chain_monthly_limit", fromCents: undefined, toCents: 1200 } }]);
+    expect(audit.recordedBy("budget.changed")).toMatchObject([{ facts: { scopeKind: "chain", field: "chain_monthly_limit", toCents: 1200 } }]);
     expect(audit.logs).toEqual([]);
   });
 });
@@ -877,7 +876,7 @@ describe("listing and owner rules", () => {
     const ctx = setup();
     const own = await ctx.create("Own");
     const shared = await ctx.create("Shared", { owner: { kind: "member", developerId: BOB }, by: BOB });
-    const web = await ctx.create("Web", { owner: WEB_OWNS, accountable: { developerId: BOB }, by: BOB });
+    await ctx.create("Web", { owner: WEB_OWNS, accountable: { developerId: BOB }, by: BOB });
     const hidden = await ctx.create("Hidden", { owner: { kind: "member", developerId: BOB }, by: BOB });
     await setChainShares(ctx.deps, { orgId: ORG_A, chainId: shared.chainId, shares: [{ principal: { kind: "member", developerId: ALICE }, level: "use" }], by: BOB });
     const names = async (who: string, scope: Parameters<typeof listVisibleChains>[2]) => (await listVisibleChains(ctx.deps, caller(who), scope)).map((entry) => `${entry.name}:${entry.access}`).sort();

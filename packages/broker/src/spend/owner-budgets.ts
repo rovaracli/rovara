@@ -4,7 +4,7 @@
 // the first time it is needed and rebuilt from them after a member merge, so the two stores must share one `OwnerBudgets`.
 import { PutCommand, UpdateCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { orgSettingsKey, ownerBudgetKey, type OrgId } from "@agentx/contracts";
-import { NOT_EXISTS, coded, errorName, type TableInput, type TransactItem } from "../agents/table-writes.js";
+import { NOT_EXISTS, coded, errorName, type Aliases, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { budgetOwnerOf, ownerShare, ownerTotalItems, type BudgetSubject, type OwnerShare } from "./owner-total.js";
 import { cleanUsd } from "./top-ups.js";
 
@@ -42,6 +42,22 @@ export interface OwnerTotalItems {
   items: TransactItem[];
   /** Maps the indexes that failed (counting the changed item itself as 0, so the counters start at 1) to what refused. */
   classify: (failed: Set<number>) => TotalsOutcome;
+}
+
+/**
+ * Pins the fields that decide whose total an item's budget is in (its status, owner, accountable maintainer and monthly budget) to what
+ * the writer read, so a change worked out from a stale read is refused whole instead of leaving the total wrong.
+ */
+export function budgetGuard(subject: BudgetSubject): (aliases: Aliases) => string {
+  return (a) => {
+    const same = (attribute: string, value: unknown) => (value === undefined ? `attribute_not_exists(${a.name(attribute)})` : `${a.name(attribute)} = ${a.value(value)}`);
+    return [
+      ...(subject.status === undefined ? [] : [same("status", subject.status)]),
+      ...(subject.owner === undefined ? [] : [same("owner", subject.owner)]),
+      same("monthlyBudgetUsd", subject.monthlyBudgetUsd),
+      same("accountable", subject.accountable),
+    ].join(" AND ");
+  };
 }
 
 export class OwnerBudgets {

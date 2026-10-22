@@ -49,7 +49,7 @@ import {
 import { AGENT_KIND, OwnedStore, type AgentShareLevel, type MoveCause } from "./owned-store.js";
 import { SkillStore } from "./skills.js";
 import { ownerShare, withBudgetFields, type BudgetSubject } from "../spend/owner-total.js";
-import { OwnerBudgets, ownerOverCap, totalsMoved, type OwnerCap } from "../spend/owner-budgets.js";
+import { OwnerBudgets, budgetGuard, ownerOverCap, totalsMoved, type OwnerCap } from "../spend/owner-budgets.js";
 import { cleanUsd } from "../spend/top-ups.js";
 import { auditBuiltinAdopted, auditGuardrailsChanged, auditOccurrence, auditPublished } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
@@ -199,22 +199,6 @@ interface OwnerTotals {
   items: TransactItem[];
   /** Maps the indexes that failed (counting the agent's own item as 0) to the refusal they mean. */
   refuse: (failed: Set<number>) => Error;
-}
-
-/**
- * Pins the fields that decide whose total an agent's budget is in (its status, owner, accountable maintainer and monthly budget) to what
- * the writer read, so a change worked out from a stale read is refused whole instead of leaving the total wrong.
- */
-function budgetGuard(subject: BudgetSubject): (aliases: Aliases) => string {
-  return (a) => {
-    const same = (attribute: string, value: unknown) => (value === undefined ? `attribute_not_exists(${a.name(attribute)})` : `${a.name(attribute)} = ${a.value(value)}`);
-    return [
-      ...(subject.status === undefined ? [] : [same("status", subject.status)]),
-      ...(subject.owner === undefined ? [] : [same("owner", subject.owner)]),
-      same("monthlyBudgetUsd", subject.monthlyBudgetUsd),
-      same("accountable", subject.accountable),
-    ].join(" AND ");
-  };
 }
 
 function checkAmount(label: string, value: number | null | undefined): void {
