@@ -200,3 +200,60 @@ The script is `scratchpad/t32/mutate.py`. It names this worktree, refuses a dirt
 4. **Approving a move confirmation** (`confirm_move`) only records the confirmation; a DENY can't undo a removal or merge. The brief doesn't say what DENY means here.
 5. **broker.ts and developer-tasks.ts grew** by about 95 and 190 lines net; requests.ts is about 1,040 lines (one responsibility). Nothing was split.
 6. **The `paused.message` field** is an addition to the brief's view shape.
+
+## Fix round 1
+
+The fixes answer the first review (`origin/review/task-32-review:review-out/task-32-review.md`: 0 Critical, 4 Important, 7 Minor). They were made in the cloud, on `feat/agents-32`, as new commits only, with no force-push. Public signatures are unchanged. `feat/agents-33` branches from here.
+
+### Commits
+| Commit | What it does |
+|---|---|
+| `7c20568` | test (RED): the review's probes P2, P3, P4, P5, P6 and P8 as tests, plus M-1 to M-7. `maxPaused` now has Ben start the run, because the run's starter may no longer raise its own stop. |
+| `a971a6b` | fix(broker): I-1 to I-4 and M-1 to M-7 (below). |
+| this commit | docs: this section, and two type assertions in the test that eslint removed |
+
+### RED evidence
+- **Command:** `npx vitest run tests/contract/spend-requests-run.test.ts --maxWorkers=2`, on `7c20568`.
+- **Result:** 15 failed and 63 passed, out of 78.
+- **Four tests passed on the old code, as expected.** They are the M-6 tests (M8, M10/M17, M20, M21), which pin behaviour that was already right but that no test covered. Each one fails against its mutant.
+
+### GREEN
+- **`npx tsc -b`:** exit 0. **`npm run typecheck:all`:** 0 errors (baseline 0). **eslint** is clean on every changed file.
+- **`spend-requests-run.test.ts`:** 78 passed.
+- **Related suites:** the 17 files listed above (spend-requests-run, budget-settings, agent-lifecycle, spend-ledger, admission-levels, audit-contracts, agent-run-start, agent-run-engine, payer-place, decide-wiring, decide-presence, budget-exhausted, budgets, agent-approvals, budgets-private-install, org-members, rovara-code-golden): 964 passed. They were run with `--maxWorkers=2` from the repo root. Run from `tests/contract/`, three tests fail (in spend-ledger and agent-approvals) because they read files by relative path. That's not a regression.
+
+### What changed
+- **I-1 (owner_cap re-checked at decide time):**
+  - `recheckedChange` reads the people the stored change names as their survivors and checks them again: the member must still be in the org, then `requireOwnerAllowed` and `requireAccountable` run as the decider.
+  - A target who left ends the request: EXPIRED, `endedBecause: "target_left"`, and the answer is APPROVAL_CLOSED ("The person this change names is no longer a member of your organization, so it can't apply now.").
+  - The mover now rewrites the ids inside `change` (owner, accountable, the `confirm_move` owner) on a merge, and expires a request whose change names a removed member.
+  - `requireAccountable` moved to `agents/access.ts` (exported, same behaviour), so the decide path can use it without an import cycle.
+- **I-2 (one waiting change per agent):**
+  - When a slot already exists and the stored change differs (compared as canonical JSON), the answer is `409 AGENT_REVISION_CONFLICT`: "A change to this agent's budget is already waiting for an admin (spr_…). Wait for it, or ask an admin to decline it."
+  - When the change is the same, the caller's R18 mark is written, holding the same 202 answer.
+- **I-3 (an approval resumes only the pause it was for):**
+  - The task update is conditional on the request's pause (`budgetPause.scope.kind`, and for a held start the `firstDispatch.operationId`). A task with no pause, or a pause of another kind, is conditioned on that state instead. The approval then only raises the limit (`resume: false`).
+  - If only the pause moved between the read and the write, the decision is made once more on the task as it is now. The limits must still be the ones read, or the answer stays AGENT_REVISION_CONFLICT as before.
+  - A person's Continue that removes a stale pause also withdraws that pause's open request in the same transaction: EXPIRED, `endedBecause: "continued"`, audited as `spend_request.expired`. This goes through a new optional dependency, `DeveloperTaskRouteDependencies.withdrawSpendRequests`, which `developerTaskRouteDependencies` wires where agents are set up. A late approval then gets APPROVAL_CLOSED.
+  - `resume: "implement"` requests (Task 34, made at plan approval with no pause) still resume.
+- **I-4 (the run's starter):**
+  - Task requests store `requestedFor: { developerId: startedBy ?? owner }`.
+  - **Ruling as implemented:** for `run_limit` and `planning`, the starter may decide only when they are the payer member. For `max_per_run`, the starter may never decide, even as the agent's owner, unless they are the org's only owner or admin.
+  - `spendApprovers` leaves out a starter who may not decide. If nobody else is left, it falls to the org's other owners and admins, so the request can be decided now instead of after the 24-hour escalation. P6 is now routed to admins.
+- **M-1:** an approved held start writes a `HELD_SPEND_STARTS` item in the approval transaction. The settlement job (`escalateOwnerRequests`, which now returns `heldStarts`) dispatches it again until the run is dispatched, the task closes, or the request's time runs out. A failed first dispatch writes the task event "The budget was approved, but this run couldn't start yet. Rovara will keep trying."
+- **M-2:** approving a closed task's request (whether it was closed before the read or during the write) expires the request (`task_closed`) and answers APPROVAL_CLOSED ("This task was closed, so nobody can decide this now."). Declining one works as usual.
+- **M-3:** `creatorGuard` now runs before the held-start branch of `resumeTaskAfterSpendApproval`.
+- **M-4:** an approval re-checks a `set_budget` change with `requireAgentBudgetAllowed`, the guardrails and trial check now shared with `PUT …/budget`. A refusal leaves the request PENDING.
+- **M-5:**
+  - The due item is keyed at the record's new `dueAt`: createdAt + `OWNER_ANSWER_HOURS` for a `max_per_run` request routed to an owner, else `expiresAt`.
+  - An escalation moves it to `expiresAt` in the same transaction.
+  - The scan stops at the first item that isn't due yet, and logs `spend_request.sweep_incomplete` when its budget runs out.
+- **M-6:** tests for M6, M8, M10, M17, M20 and M21.
+- **M-7:** an `owner_cap` decision with `amountUsd` gets CONFIG_INVALID, and none stores `approvedAmountUsd`.
+- **Contracts (additive):** `SpendRequestRecord.requestedFor`, `dueAt` and `endedBecause`.
+
+### Concerns
+1. **A deadlock is possible.** A `run_limit` or `planning` request whose starter isn't the payer member, in an org where that starter is the only owner or admin, ends with nobody able to decide it: the starter is refused, and nobody else holds the role. Only the `max_per_run` ruling gives a sole admin the exception. The request expires after 7 days. Whether a sole admin should be allowed here too is for the controller to decide.
+2. **The withdrawal covers the plain-task Continue only.** A workflow retry or send-back that removes a stale pause (`capWindowUpdate`) doesn't withdraw the request. The conditional resume (I-3), plus the workflow branch's `budgetPaused` block check, still stops the extra turn, but the request stays listed until it is decided or expires.
+3. **No RED test for M-3.** The broker host's `asOwner` refuses a removed owner before the guard is reached, and owner and creator are the same field (`task.developerId`), so the change is structural. The R60 call-site pin in `org-members` passes.
+4. **The fake DynamoDB can't evaluate `attribute_exists` / `attribute_not_exists` on nested paths.** The held-start condition uses `budgetPause.firstDispatch.operationId = :op` instead, which is stricter anyway.

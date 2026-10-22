@@ -1184,7 +1184,7 @@ describe("fix round 1 (the Task 32 review)", () => {
         }
         return t.db.send(command as never);
       } } };
-      await decideSpendRequest(racing as never, t.caller(BEN), id, { requestId: randomUUID(), decision: "APPROVE" });
+      await decideSpendRequest(racing, t.caller(BEN), id, { requestId: randomUUID(), decision: "APPROVE" });
       expect(recordOf(t, id)).toMatchObject({ status: "APPROVED" });
       expect(t.meta(task.taskId).budgetUsd).toBe(21);
       expect(t.taskOps(task.workspaceId)).toHaveLength(before);
@@ -1333,7 +1333,7 @@ describe("fix round 1 (the Task 32 review)", () => {
       const read: string[] = [];
       const counting = { ...deps, documentClient: { send: (command: { constructor: { name: string }; input: { Key?: { pk?: string } } }) => {
         if (command.constructor.name === "GetCommand" && String(command.input.Key?.pk).includes("SPEND_REQUEST#")) read.push(String(command.input.Key?.pk));
-        return t.db.send(command as never);
+        return t.db.send(command);
       } } };
       expect(await escalateOwnerRequests(counting as never, { budgetMs: 5_000 })).toMatchObject({ escalated: 0, complete: true });
       expect(read).toEqual([]);
