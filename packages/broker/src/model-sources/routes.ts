@@ -281,9 +281,9 @@ async function answerFor(deps: Deps, caller: AgentCaller, sourceId: string, sour
  * cannot be read back, so it stays as the proxy holds it), one it lacks is removed. The record is the truth even when the failure said nothing about
  * whether the write landed. Best effort: the same request again, or a check, finishes what this could not.
  *
- * `dropKey`: the change moved an endpoint to another host and sent a key for it, and did not save. The proxy may now hold that key beside the old host,
- * and it cannot be told which. The source is removed (which deletes its credential) and registered again with no key, and the record says it has none.
- * A key is never kept at a host it was not saved for; the admin sends it again.
+ * `dropKey`: the change sent a key and did not save. The proxy's credential is then this change's key, which the record is not committed to, and the
+ * record's host may be another writer's (a refused save means that writer committed first). The source is removed (which deletes its credential) and
+ * registered again with no key, and the record says it has none. A key is never kept at a host it was not saved for; the admin sends it again.
  */
 async function reconcileRegistration(deps: Deps, caller: AgentCaller, sourceId: string, options: { dropKey?: boolean } = {}): Promise<void> {
   try {
@@ -365,7 +365,7 @@ async function changeSource(deps: Deps, caller: AgentCaller, rawId: string, body
   try {
     await deps.modelSources.store.save({ orgId: caller.orgId, source, mode: "update", keyStored: apiKey !== undefined, by: caller.developerId, request: mark, expect: { revision: before.revision } });
   } catch (error) {
-    await reconcileRegistration(deps, caller, previous.sourceId, { dropKey: hostChanged && apiKey !== undefined });
+    await reconcileRegistration(deps, caller, previous.sourceId, { dropKey: apiKey !== undefined });
     throw error;
   }
   return host === undefined ? { sourceId: previous.sourceId } : { sourceId: previous.sourceId, ...await requestHost(deps, caller, previous.sourceId, host) };

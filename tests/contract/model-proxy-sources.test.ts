@@ -70,7 +70,7 @@ function litellm(options: { health?: (id: string) => { healthy: number; unhealth
     const body = entry.body as unknown as Body;
     if (method === "GET" && path === "/model/info") {
       // The real listing returns litellm_params with secrets masked; this fake returns none, which the registry must not need.
-      return json({ data: models.map(({ id, model_name, model_info }) => ({ model_name, litellm_params: { model: "masked" }, model_info: { ...model_info, id } })) });
+      return json({ data: models.map(({ id, model_name, model_info, litellm_params }) => ({ model_name, litellm_params: { model: "masked", ...(typeof litellm_params.api_base === "string" ? { api_base: litellm_params.api_base } : {}) }, model_info: { ...model_info, id } })) });
     }
     if (method === "POST" && path === "/model/new") {
       counter += 1;
@@ -85,7 +85,7 @@ function litellm(options: { health?: (id: string) => { healthy: number; unhealth
       return json({ message: "deleted" });
     }
     if (method === "GET" && path === "/credentials") {
-      return json({ credentials: [...credentials].map(([credential_name, value]) => ({ credential_name, credential_info: value.credential_info, credential_values: { api_key: "sk****" } })) });
+      return json({ credentials: [...credentials].map(([credential_name, value]) => ({ credential_name, credential_info: value.credential_info, credential_values: { api_key: "sk****", ...(typeof value.credential_values.api_base === "string" ? { api_base: value.credential_values.api_base } : {}) } })) });
     }
     if (method === "POST" && path === "/credentials") {
       if (credentials.has(body.credential_name)) return json({ error: { message: "credential already exists" } }, 400);
@@ -480,6 +480,29 @@ describe("listSources", () => {
     const lambda = { send: vi.fn(async () => ({ Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: entries })) })) };
     expect(await new ModelAccessInvoker({ functionName: "fn", lambda: lambda as never }).listSources()).toEqual(entries);
     lambda.send.mockImplementationOnce(async () => ({ Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: [{ orgId: "nope", sourceId: SRC }] })) }));
+    await expect(new ModelAccessInvoker({ functionName: "fn", lambda: lambda as never }).listSources()).rejects.toThrow("unexpected result");
+  });
+});
+
+describe("listSources: the hosts a registration points at", () => {
+  it("returns the hosts of an endpoint's models and credential, and never a key", async () => {
+    const proxy = litellm();
+    await client(proxy).upsertSource({ orgId: ORG, source: endpointSource(), apiKey: VENDOR_KEY });
+    await client(proxy).upsertSource({ orgId: ORG, source: anthropicSource([haiku], SRC_TWO), apiKey: VENDOR_KEY });
+    const [endpointEntry, keyedEntry] = [(await client(proxy).listSources()).find((entry) => entry.sourceId === SRC)!, (await client(proxy).listSources()).find((entry) => entry.sourceId === SRC_TWO)!];
+    expect(endpointEntry.hosts).toEqual(["llm.example.com"]);
+    expect(keyedEntry.hosts ?? []).toEqual([]);
+    // A credential moved to another host shows next to the models' own.
+    proxy.credentials.get(`${ORG}.${SRC}`)!.credential_values.api_base = "https://evil.example.net/v1";
+    expect([...(await client(proxy).listSources()).find((entry) => entry.sourceId === SRC)!.hosts!].sort()).toEqual(["evil.example.net", "llm.example.com"]);
+    expect(JSON.stringify(await client(proxy).listSources())).not.toContain(VENDOR_KEY);
+  });
+
+  it("carries the hosts through the invoker and refuses a host list that is not hosts", async () => {
+    const entries = [{ orgId: ORG, sourceId: SRC, hosts: ["llm.example.com"] }];
+    const lambda = { send: vi.fn(async () => ({ Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: entries })) })) };
+    expect(await new ModelAccessInvoker({ functionName: "fn", lambda: lambda as never }).listSources()).toEqual(entries);
+    lambda.send.mockImplementationOnce(async () => ({ Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: [{ orgId: ORG, sourceId: SRC, hosts: [1] }] })) }));
     await expect(new ModelAccessInvoker({ functionName: "fn", lambda: lambda as never }).listSources()).rejects.toThrow("unexpected result");
   });
 });

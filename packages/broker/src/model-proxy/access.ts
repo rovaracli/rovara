@@ -85,8 +85,10 @@ export interface ModelAccess {
   /**
    * Every company source the proxy holds a model or a credential for, by org and source id. The sweeper compares it with the records, so a registration
    * whose record write never landed (or whose removal never finished) is found. Credentials without models count: a registration that stopped half-way.
+   * `hosts` are the hostnames the source's models and credential point at (`api_base`), so the sweeper can tell a key that sits beside a host it was not saved
+   * for. Hostnames only: never a key, and never a path or query.
    */
-  listSources(): Promise<Array<{ orgId: OrgId; sourceId: string }>>;
+  listSources(): Promise<Array<{ orgId: OrgId; sourceId: string; hosts?: string[] | undefined }>>;
   /** Tests a source: for Bedrock the trust-policy probe first, then a health call per alias. A source the proxy does not know is NOT_FOUND. */
   checkSource(orgId: OrgId, sourceId: string): Promise<SourceCheck>;
   /**

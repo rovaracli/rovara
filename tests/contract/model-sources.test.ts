@@ -24,7 +24,7 @@ import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { releaseOrgModelSources } from "../../packages/broker/src/model-sources/release.js";
-import { sweepModelSources } from "../../packages/broker/src/model-sources/sweep.js";
+import { MODEL_SOURCE_SWEEP_BUDGET_MS, sweepModelSources } from "../../packages/broker/src/model-sources/sweep.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { listEgressItems, putEgressDomains } from "../../packages/broker/src/org/egress-domains.js";
 import { developerOrgKey, orgMemberKey, orgMetaKey } from "../../packages/contracts/src/org.js";
@@ -1084,11 +1084,13 @@ describe("what a task does with the org's order", () => {
 /** What the model proxy holds for each endpoint source, kept the way it keeps it: a key stays until a new one is sent or the source is removed. */
 function trackProxy(s: Awaited<ReturnType<typeof setup>>) {
   const proxy = new Map<string, { host: string; key: string | undefined }>();
-  s.access.upsertSource.mockImplementation(async ({ source, apiKey }) => {
-    if (source.kind === "endpoint") proxy.set(source.sourceId, { host: new URL(source.baseUrl).hostname, key: apiKey ?? proxy.get(source.sourceId)?.key });
-  });
+  const apply = ({ source, apiKey }: { source: { kind: string; sourceId: string; baseUrl?: string }; apiKey?: string | undefined }): void => {
+    if (source.kind === "endpoint") proxy.set(source.sourceId, { host: new URL(source.baseUrl!).hostname, key: apiKey ?? proxy.get(source.sourceId)?.key });
+  };
+  s.access.upsertSource.mockImplementation(async (input) => { apply(input); });
   s.access.removeSource.mockImplementation(async (_org, id) => { proxy.delete(id); });
-  return proxy;
+  /** What an `upsertSource` does to the proxy, for a test that wraps one. */
+  return Object.assign(proxy, { apply });
 }
 
 /** Holds the first `count` writes of the record until all of them are ready, so each has read the record as it was before any of them. */
@@ -1312,7 +1314,8 @@ describe("the sweeper", () => {
     expect((await s.write(DANA, "PUT", `/v1/app/org/model-sources/${id}`, { source: endpoint({ baseUrl: "https://other.example.org/v1" }) })).status).toBeGreaterThanOrEqual(500);
     expect(await approvedUnion(s.egressDeps())).toEqual([HOST]);
     await sweeper(s, { t: T0 })();
-    expect(await approvedUnion(s.egressDeps())).toEqual([]);
+    // The old host leaves the union; the host the record names is the live one, so it is asked for (approved at once on a private install).
+    expect(await approvedUnion(s.egressDeps())).toEqual(["other.example.org"]);
   });
 
   it("removes a registration no record names only after seeing it twice, ten minutes apart, so an add in flight is not undone", async () => {
@@ -1456,5 +1459,275 @@ describe("turning ChatGPT into an order the install allows (I6)", () => {
     expect((await s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order: ["rovara", "personal-chatgpt", id] })).status).toBe(200);
     expect((await s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order: ["rovara", id] })).status).toBe(200);
     expect((await s.write(DANA, "PUT", "/v1/app/org/model-sources-order", { order: ["rovara", "personal-chatgpt", id] })).status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Fix round 2 (re-check of the review)
+// ---------------------------------------------------------------------------------------------------------------------
+
+describe("a key sent by a change that did not save never stays at another writer's host (I1, round 2)", () => {
+  it("drops the key when a same-host key change loses to a host move", async () => {
+    const s = await setup({ cloud: false });
+    const proxy = trackProxy(s);
+    const id = (await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint(), apiKey: KEY })).body.sourceId as string;
+    // A rotates the key and keeps the host. Before A's proxy write lands, B's whole host move (key, record, egress) completes.
+    const register = s.access.upsertSource.getMockImplementation()!;
+    s.access.upsertSource.mockImplementationOnce(async (input) => {
+      const moved = await s.write(OWEN, "PUT", `/v1/app/org/model-sources/${id}`, { source: endpoint({ baseUrl: "https://other.example.org/v1" }), apiKey: OTHER_KEY });
+      expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+      await register(input);
+    });
+    const rotated = await s.write(DANA, "PUT", `/v1/app/org/model-sources/${id}`, { source: endpoint({ label: "Rotated" }), apiKey: "sk-ant-planted-third-key-1111111111111111" });
+    expect([rotated.status, errorOf(rotated).code]).toEqual([409, "IDEMPOTENCY_CONFLICT"]);
+    expect(new URL((s.doc()!.sources[0] as { baseUrl: string }).baseUrl).hostname).toBe("other.example.org");
+    // Neither key stays: the proxy has the record's host and no key, and the record says so.
+    expect(proxy.get(id)).toEqual({ host: "other.example.org", key: undefined });
+    expect(s.doc()!.credentials).toEqual([]);
+    expect(s.everything()).not.toContain("planted-third-key");
+  });
+});
+
+describe("the sweeper compares each endpoint's host in the proxy with the record's (round 2)", () => {
+  const T0 = Date.parse("2026-10-22T10:00:00.000Z");
+  const minutes = (n: number) => n * 60_000;
+  const EVIL = "evil.example.net";
+
+  function sweeperOf(s: Awaited<ReturnType<typeof setup>>, clock: { t: number }, store = s.store()) {
+    return () => sweepModelSources({ documentClient: s.db, tableName: "state", now: () => clock.t, store, access: s.access, egress: s.egressDeps() }, { budgetMs: 5_000 });
+  }
+  const listing = (s: Awaited<ReturnType<typeof setup>>, sourceId: string, hosts: string[] | undefined) =>
+    s.access.listSources.mockImplementation(async () => [{ orgId: TEST_ORG, sourceId, ...(hosts === undefined ? {} : { hosts }) }]);
+  const mismatchItem = (id: string) => ({ pk: "MODEL_SOURCES_SWEEP", sk: `MISMATCH#${TEST_ORG}#${id}` });
+
+  async function withKey() {
+    const s = await setup({ cloud: false });
+    const id = (await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint(), apiKey: KEY })).body.sourceId as string;
+    return { s, id };
+  }
+
+  it("drops the key and registers the source again without one when a host differs twice, ten minutes apart", async () => {
+    const { s, id } = await withKey();
+    listing(s, id, [EVIL]);
+    const clock = { t: T0 };
+    const sweep = sweeperOf(s, clock);
+    s.access.removeSource.mockClear();
+    s.access.upsertSource.mockClear();
+    await sweep();
+    clock.t = T0 + minutes(5);
+    await sweep();
+    expect(s.access.removeSource).not.toHaveBeenCalled();
+    clock.t = T0 + minutes(11);
+    const report = await sweep();
+    expect(report.rebound).toBe(1);
+    expect(s.access.removeSource).toHaveBeenCalledWith(TEST_ORG, id);
+    expect(s.access.upsertSource).toHaveBeenCalledTimes(1);
+    expect(s.access.upsertSource.mock.calls[0]![0].apiKey).toBeUndefined();
+    expect(s.access.upsertSource.mock.calls[0]![0].source).toMatchObject({ sourceId: id, baseUrl: `https://${HOST}/v1` });
+    // Removal first (it deletes the credential), then the keyless registration, then the record says there is no key.
+    expect(s.access.removeSource.mock.invocationCallOrder[0]!).toBeLessThan(s.access.upsertSource.mock.invocationCallOrder[0]!);
+    expect(s.doc()!.credentials).toEqual([]);
+    expect(s.db.get(mismatchItem(id))).toBeUndefined();
+  });
+
+  it("acts on a model's host or a credential's host alike, and leaves a source alone whose hosts all match or are unknown", async () => {
+    const { s, id } = await withKey();
+    const clock = { t: T0 };
+    const sweep = sweeperOf(s, clock);
+    s.access.removeSource.mockClear();
+    for (const hosts of [[HOST], [HOST, HOST], [], undefined]) {
+      listing(s, id, hosts);
+      clock.t += minutes(11);
+      await sweep();
+      expect(s.db.get(mismatchItem(id)), JSON.stringify(hosts)).toBeUndefined();
+    }
+    expect(s.access.removeSource).not.toHaveBeenCalled();
+    // One bad host among good ones is a mismatch.
+    listing(s, id, [HOST, EVIL]);
+    clock.t += minutes(1);
+    await sweep();
+    expect(s.db.get(mismatchItem(id))).toBeDefined();
+  });
+
+  it("forgets a mismatch that went away, so it cannot count towards a later one", async () => {
+    const { s, id } = await withKey();
+    const clock = { t: T0 };
+    const sweep = sweeperOf(s, clock);
+    listing(s, id, [EVIL]);
+    await sweep();
+    expect(s.db.get(mismatchItem(id))).toBeDefined();
+    // The change that was in flight finished: the proxy now has the record's host.
+    listing(s, id, [HOST]);
+    clock.t = T0 + minutes(5);
+    await sweep();
+    expect(s.db.get(mismatchItem(id))).toBeUndefined();
+    listing(s, id, [EVIL]);
+    clock.t = T0 + minutes(12);
+    s.access.removeSource.mockClear();
+    await sweep();
+    expect(s.access.removeSource).not.toHaveBeenCalled();
+  });
+
+  it("does not act on a mismatch when a consistent read just before finds the record at the proxy's host", async () => {
+    const { s, id } = await withKey();
+    const clock = { t: T0 };
+    listing(s, id, [EVIL]);
+    await sweeperOf(s, clock)();
+    // The change that moves the record to the proxy's host commits between the sweep's first read of the record and its last look.
+    const store = s.store();
+    const read = store.readIfAny.bind(store);
+    let reads = 0;
+    store.readIfAny = async (org) => {
+      reads += 1;
+      if (reads === 2) await s.store().save({ orgId: TEST_ORG, source: { ...(await s.store().read(TEST_ORG)).sources[0]!, baseUrl: `https://${EVIL}/v1` } as never, mode: "update", by: DANA.developerId });
+      return read(org);
+    };
+    clock.t = T0 + minutes(11);
+    s.access.removeSource.mockClear();
+    await sweeperOf(s, clock, store)();
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(s.access.removeSource).not.toHaveBeenCalled();
+    expect(s.doc()!.credentials).toEqual([id]);
+  });
+
+  it("ignores hosts of a source that is not an endpoint", async () => {
+    const s = await setup({ cloud: false });
+    const id = await s.add(DANA, anthropic());
+    listing(s, id, [EVIL]);
+    const clock = { t: T0 };
+    const sweep = sweeperOf(s, clock);
+    await sweep();
+    clock.t = T0 + minutes(30);
+    s.access.removeSource.mockClear();
+    await sweep();
+    expect(s.access.removeSource).not.toHaveBeenCalled();
+  });
+});
+
+describe("the sweeper's remaining cares (round 2)", () => {
+  const T0 = Date.parse("2026-10-22T10:00:00.000Z");
+  const minutes = (n: number) => n * 60_000;
+  const STRAY = "src_zzzzzzzzzzzzzzzzzzzz";
+
+  it("looks at the record again, consistently, before it removes a stray", async () => {
+    const s = await setup();
+    s.access.listSources.mockImplementation(async () => [{ orgId: TEST_ORG, sourceId: STRAY }]);
+    const clock = { t: T0 };
+    const make = (store = s.store()) => () => sweepModelSources({ documentClient: s.db, tableName: "state", now: () => clock.t, store, access: s.access, egress: s.egressDeps() }, { budgetMs: 5_000 });
+    await make()();
+    // The retry of the add that registered it commits its record just after the sweep's first read.
+    const store = s.store();
+    const read = store.readIfAny.bind(store);
+    let reads = 0;
+    store.readIfAny = async (org) => {
+      reads += 1;
+      if (reads === 2) await s.store().save({ orgId: TEST_ORG, source: { sourceId: STRAY, kind: "anthropic", label: "Retried", models: [{ catalog: sonnet }] } as never, mode: "create", keyStored: true, by: DANA.developerId });
+      return read(org);
+    };
+    clock.t = T0 + minutes(11);
+    s.access.removeSource.mockClear();
+    await make(store)();
+    expect(s.access.removeSource).not.toHaveBeenCalled();
+    expect(s.db.get({ pk: "MODEL_SOURCES_SWEEP", sk: `ORPHAN#${TEST_ORG}#${STRAY}` })).toBeUndefined();
+  });
+
+  it("never wipes the host a live endpoint's record names, even when the egress item it listed is stale", async () => {
+    const s = await setup({ cloud: false });
+    const id = (await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint() })).body.sourceId as string;
+    // A change committed the new host to the record; its own egress request lands right after the sweeper lists the items (still the old host).
+    const source = (await s.store().read(TEST_ORG)).sources[0]!;
+    await s.store().save({ orgId: TEST_ORG, source: { ...source, baseUrl: "https://other.example.org/v1" } as never, mode: "update", by: DANA.developerId });
+    let landed = false;
+    const egress: EgressDomainsDependencies = {
+      ...s.egressDeps(),
+      documentClient: {
+        send: async (command: unknown) => {
+          const answer = await s.db.send(command as never);
+          const input = (command as { constructor: { name: string }; input: { ExpressionAttributeValues?: Record<string, unknown> } });
+          if (!landed && input.constructor.name === "QueryCommand" && input.input.ExpressionAttributeValues?.[":pk"] === "EGRESS_DOMAINS") {
+            landed = true;
+            await putEgressDomains(s.egressDeps(), TEST_ORG, { kind: "model-source", sourceId: id }, ["other.example.org"], { developerId: DANA.developerId });
+          }
+          return answer;
+        },
+      },
+    };
+    await sweepModelSources({ documentClient: s.db, tableName: "state", now: () => T0, store: s.store(), access: s.access, egress }, { budgetMs: 5_000 });
+    expect(landed).toBe(true);
+    expect((await s.egressOf(id))!.domains.map((entry) => [entry.domain, entry.status])).toEqual([["other.example.org", "approved"]]);
+    expect(await approvedUnion(s.egressDeps())).toEqual(["other.example.org"]);
+  });
+
+  it("reads the record again before it decides which host a live endpoint keeps", async () => {
+    const s = await setup({ cloud: false });
+    const id = (await s.write(DANA, "POST", "/v1/app/org/model-sources", { source: endpoint() })).body.sourceId as string;
+    // The item lists a stale host beside the live one, so the sweeper acts.
+    await putEgressDomains(s.egressDeps(), TEST_ORG, { kind: "model-source", sourceId: id }, [HOST, "stale.example.org"], { developerId: DANA.developerId });
+    const store = s.store();
+    const read = store.readIfAny.bind(store);
+    let reads = 0;
+    store.readIfAny = async (org) => {
+      reads += 1;
+      if (reads === 2) {
+        // A change commits another host and asks for it, between the sweeper's first read of the record and its second.
+        await s.store().save({ orgId: TEST_ORG, source: { ...(await s.store().read(TEST_ORG)).sources[0]!, baseUrl: "https://other.example.org/v1" } as never, mode: "update", by: DANA.developerId });
+        await putEgressDomains(s.egressDeps(), TEST_ORG, { kind: "model-source", sourceId: id }, ["other.example.org"], { developerId: DANA.developerId });
+      }
+      return read(org);
+    };
+    // What the sweeper itself writes to egress items (the change's own writes above go around it).
+    let sweeperWrites = 0;
+    const egress: EgressDomainsDependencies = {
+      ...s.egressDeps(),
+      documentClient: { send: async (command: unknown) => {
+        if ((command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand" && JSON.stringify((command as { input: unknown }).input).includes("EGRESS_DOMAINS")) sweeperWrites += 1;
+        return s.db.send(command as never);
+      } },
+    };
+    await sweepModelSources({ documentClient: s.db, tableName: "state", now: () => T0, store, access: s.access, egress }, { budgetMs: 5_000 });
+    expect((await s.egressOf(id))!.domains.map((entry) => [entry.domain, entry.status])).toEqual([["other.example.org", "approved"]]);
+    // It saw the live host in the fresh record and found the item already right: it wrote nothing, so it wiped nothing.
+    expect(sweeperWrites).toBe(0);
+  });
+
+  it("deletes an org's record only at the revision it released, and releases what was added meanwhile", async () => {
+    const s = await setup();
+    const first = await s.add(DANA, anthropic());
+    const added = "src_mmmmmmmmmmmmmmmmmmmm";
+    let racing = true;
+    s.access.removeSource.mockImplementation(async () => {
+      if (!racing) return;
+      racing = false;
+      await s.store().save({ orgId: TEST_ORG, source: { sourceId: added, kind: "anthropic", label: "Late", models: [{ catalog: sonnet }] } as never, mode: "create", keyStored: true, by: DANA.developerId });
+    });
+    await releaseOrgModelSources({ store: s.store(), access: s.access, egress: s.egressDeps() }, TEST_ORG);
+    expect(s.doc()).toBeUndefined();
+    expect(s.access.removeSource.mock.calls.map(([, id]) => id).sort()).toEqual([first, first, added].sort());
+    expect(s.db.get({ pk: "MODEL_SOURCES_ORGS", sk: TEST_ORG })).toBeUndefined();
+  });
+
+  it("bounds its list calls by its time budget, so the spend sweep keeps its time", async () => {
+    const s = await setup({ cloud: false });
+    s.access.listSources.mockImplementation(() => new Promise(() => undefined));
+    const started = Date.now();
+    const report = await sweepModelSources({ documentClient: s.db, tableName: "state", now: Date.now, store: s.store(), access: s.access, egress: s.egressDeps() }, { budgetMs: 40 });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(report).toMatchObject({ complete: false, failed: 0 });
+  });
+
+  it("is given 5 seconds in the settlement run, and a hung proxy list costs it no more", async () => {
+    expect(MODEL_SOURCE_SWEEP_BUDGET_MS).toBe(5_000);
+    vi.useFakeTimers();
+    try {
+      const s = await setup();
+      s.access.listSources.mockImplementation(() => new Promise(() => undefined));
+      const run = s.handler({ source: "agentx.spend-settlement" });
+      await vi.advanceTimersByTimeAsync(MODEL_SOURCE_SWEEP_BUDGET_MS);
+      const jobs = (JSON.parse((await run).body) as { jobs: Array<{ name: string; ok: boolean; result?: { complete: boolean } }> }).jobs;
+      expect(jobs.map((job) => job.name)).toEqual(["sweep-model-sources", "sweep-spend", "audit-model-keys"]);
+      expect(jobs[0]).toMatchObject({ ok: true, result: { complete: false } });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -16,7 +16,7 @@ export interface FakeModelAccess extends ModelAccess {
   upsertSource: Mock<(input: UpsertSourceInput) => Promise<void>>;
   removeSource: Mock<(orgId: OrgId, sourceId: string) => Promise<void>>;
   checkSource: Mock<(orgId: OrgId, sourceId: string) => Promise<SourceCheck>>;
-  listSources: Mock<() => Promise<Array<{ orgId: OrgId; sourceId: string }>>>;
+  listSources: Mock<() => Promise<Array<{ orgId: OrgId; sourceId: string; hosts?: string[] | undefined }>>>;
   auditKeys: Mock<() => Promise<KeyAudit>>;
   mintKey: Mock<(input: MintKeyInput) => Promise<MintedKey>>;
   revokeKey: Mock<(key: string) => Promise<void>>;

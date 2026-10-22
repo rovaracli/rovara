@@ -50,10 +50,20 @@ export interface ModelProxyClientInput {
 }
 
 /** `served` is false for a Bedrock source that has not passed its probe: its models exist (the probe finds the role through them) but no team may call them. */
-interface ProxyModelEntry { id: string; name: string; org: string | undefined; roleArn: string | undefined; served: boolean }
+interface ProxyModelEntry { id: string; name: string; org: string | undefined; roleArn: string | undefined; served: boolean; /** The hostname the model's `api_base` points at, when it has one. */ host: string | undefined }
 
 type Json = Record<string, unknown>;
 interface Reply { status: number; body: unknown }
+
+/** The lower-case hostname of a URL, or undefined for anything else (a masked or missing value): never a path, query or user info. */
+function hostnameOf(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    return new URL(value).hostname.toLowerCase() || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 const isRecord = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
 const unavailable = (message: string) => agentXError("MODEL_PROXY_UNAVAILABLE", message);
@@ -380,20 +390,25 @@ export class ModelProxyClient implements ModelAccess {
     if (removed.status !== 200 && removed.status !== 404) throw refusal(removed);
   }
 
-  async listSources(): Promise<Array<{ orgId: OrgId; sourceId: string }>> {
+  async listSources(): Promise<Array<{ orgId: OrgId; sourceId: string; hosts?: string[] }>> {
     const master = await this.master();
-    const found = new Map<string, { orgId: OrgId; sourceId: string }>();
-    const note = (name: unknown): void => {
+    const found = new Map<string, { orgId: OrgId; sourceId: string; hosts: Set<string> }>();
+    const note = (name: unknown, host: string | undefined): void => {
       // Both a model alias and a credential are named `<orgId>.<sourceId>` first.
       const match = typeof name === "string" ? /^(org_[0-9a-z]{20})\.(src_[0-9a-z]{20})(?:\.|$)/u.exec(name) : null;
-      if (match !== null) found.set(`${match[1]!}/${match[2]!}`, { orgId: match[1] as OrgId, sourceId: match[2]! });
+      if (match === null) return;
+      const key = `${match[1]!}/${match[2]!}`;
+      const entry = found.get(key) ?? { orgId: match[1] as OrgId, sourceId: match[2]!, hosts: new Set<string>() };
+      if (host !== undefined) entry.hosts.add(host);
+      found.set(key, entry);
     };
-    for (const entry of await this.listModels(master)) if (entry.org !== undefined) note(entry.name);
+    for (const entry of await this.listModels(master)) if (entry.org !== undefined) note(entry.name, entry.host);
     const credentials = await this.request("GET", "/credentials", master, undefined);
     if (credentials.status !== 200) throw refusal(credentials);
     const listed = isRecord(credentials.body) && Array.isArray(credentials.body.credentials) ? credentials.body.credentials : [];
-    for (const entry of listed) if (isRecord(entry)) note(entry.credential_name);
-    return [...found.values()];
+    // Only the host of a credential's `api_base` is read; its key is never looked at.
+    for (const entry of listed) if (isRecord(entry)) note(entry.credential_name, hostnameOf(isRecord(entry.credential_values) ? entry.credential_values.api_base : undefined));
+    return [...found.values()].map(({ orgId, sourceId, hosts }) => ({ orgId, sourceId, ...(hosts.size === 0 ? {} : { hosts: [...hosts].sort() }) }));
   }
 
   async checkSource(orgId: OrgId, sourceId: string): Promise<SourceCheck> {
@@ -479,6 +494,7 @@ export class ModelProxyClient implements ModelAccess {
         roleArn: typeof info.rovara_role_arn === "string" ? info.rovara_role_arn : undefined,
         // A Bedrock model is served only once its probe has passed; a missing flag fails closed.
         served: typeof info.rovara_role_arn !== "string" || info.rovara_tested === true,
+        host: hostnameOf(isRecord(item.litellm_params) ? item.litellm_params.api_base : undefined),
       });
     }
     return entries;
