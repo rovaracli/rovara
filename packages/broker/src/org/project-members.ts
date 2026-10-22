@@ -15,7 +15,7 @@ import {
   INDEX_EXPIRY_ATTRIBUTE, MEMBER_GRANT_SK_PREFIX, OrgRoleSchema, PROJECT_REVISION_SK_PREFIX, agentXError, memberGrantsPk, orgMemberKey, orgPk, orgProjectCatalogPk, projectMemberKey, projectMetaKey, projectPk,
   type AuditEventInput, type OrgId, type OrgKey, type OrgRole, type ProjectRole,
 } from "@agentx/contracts";
-import { auditProjectMemberChanged, auditProjectMemberRemoved } from "../audit/events.js";
+import { auditOccurrence, auditProjectMemberChanged, auditProjectMemberRemoved } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
 import { effectiveProjectRole, grantRoleOf, grantedByOf, type GrantedBy } from "../developer/project-roles.js";
@@ -335,7 +335,7 @@ export async function setProjectMember(
     const { write, fromRole } = await grantWrite(deps, { orgId, project, developerId, role: input.role, grantedBy: { developerId: input.actor.developerId }, now: deps.now });
     // A change to the role the person already has is no change: the request is remembered and nothing is recorded.
     const event = fromRole === input.role ? undefined : await tryAuditEvent(deps, () => auditProjectMemberChanged({
-      orgId, actor: { kind: "member", id: input.actor.developerId }, occurredAt: deps.now().toISOString(), occurrence: input.requestId,
+      orgId, actor: { kind: "member", id: input.actor.developerId }, occurredAt: deps.now().toISOString(), occurrence: auditOccurrence(input.requestId, project, developerId, input.role),
       projectName: project, memberId: developerId, ...(fromRole === undefined ? {} : { fromRole }), toRole: input.role,
     }));
     if (await commitWithRequest(deps, [write, requestWrite(deps, orgId, project, input.requestId, { ...expected, response })], event)) return response;
@@ -358,7 +358,7 @@ export async function removeProjectMember(
     const revoke = await revokeWrite(deps, orgId, project, developerId);
     const response = { developerId, removed: revoke !== undefined };
     const event = revoke?.role === undefined ? undefined : await tryAuditEvent(deps, () => auditProjectMemberRemoved({
-      orgId, actor: { kind: "member", id: input.actor.developerId }, occurredAt: deps.now().toISOString(), occurrence: input.requestId,
+      orgId, actor: { kind: "member", id: input.actor.developerId }, occurredAt: deps.now().toISOString(), occurrence: auditOccurrence(input.requestId, project, developerId),
       projectName: project, memberId: developerId, role: revoke.role!,
     }));
     if (await commitWithRequest(deps, [...(revoke === undefined ? [] : [revoke.write]), requestWrite(deps, orgId, project, input.requestId, { ...expected, response })], event)) return response;

@@ -17,7 +17,6 @@ import {
   orgMemberKey,
   orgMetaKey,
   orgPk,
-  trialGithubKey,
   type GithubInstallationRecord,
   type OrgId,
   type OrgRecord,
@@ -29,7 +28,7 @@ import { auditPending, tryAuditEvent } from "../audit/outbox.js";
 import { parseGitHubRepository, type GitHubAppCredentialProviderOptions, type GitHubInstallation, type GitHubInstallationRepository, type GitHubTokenScope } from "../github-app.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import {
-  GITHUB_ISSUER, conditionFailed, consumeState, errorName, exchangeCode, failedIndexes, isOwnerOrAdmin, log, readState, revokeUserToken, sha256Hex, userGet,
+  GITHUB_ISSUER, conditionFailed, consumeState, errorName, exchangeCode, expectedTrialResult, failedIndexes, isOwnerOrAdmin, log, readState, revokeUserToken, sha256Hex, userGet,
   type ConnectStateItem, type GithubConnectApp, type GithubConnectionDependencies, type PendingBinding,
 } from "./github-connect-support.js";
 import { DELIVERY_RETENTION_MS, auditItem, ownerNameOf, recordInstallRequest } from "./github-install-requests.js";
@@ -248,13 +247,6 @@ async function userCanReach(deps: GithubConnectionDependencies, token: string, i
     if (installations.length < 100) return false;
   }
   return false;
-}
-
-/** What unlocking the org's trial with this GitHub account will answer: `connected_trial_used` when the account already started another org's trial. */
-async function expectedTrialResult(deps: GithubConnectionDependencies, org: OrgRecord | undefined, githubUserId: string): Promise<"connected" | "connected_trial_used"> {
-  if (org?.plan !== "trial" || org.trialUnlockedAt !== undefined) return "connected";
-  const claim = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: trialGithubKey(githubUserId), ConsistentRead: true })) as { Item?: { orgId?: unknown } };
-  return claim.Item !== undefined && claim.Item.orgId !== org.orgId ? "connected_trial_used" : "connected";
 }
 
 /**

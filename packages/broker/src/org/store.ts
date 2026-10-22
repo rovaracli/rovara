@@ -123,8 +123,8 @@ export class OrgStore {
   }
 
   /** The three writes every membership needs: the member record, the developer pointer and, given an email, the email pointer. Order matters to `refuse`. */
-  private membershipItems(input: { orgId: OrgId; developerId: string; role: OrgRole; email?: string | undefined }): TransactItem[] {
-    const joinedAt = this.iso();
+  private membershipItems(input: { orgId: OrgId; developerId: string; role: OrgRole; email?: string | undefined; joinedAt?: string }): TransactItem[] {
+    const joinedAt = input.joinedAt ?? this.iso();
     const member: OrgMembershipRecord = { orgId: input.orgId, developerId: input.developerId, role: input.role, joinedAt };
     return [
       this.put(orgMemberKey(input.orgId, input.developerId), "ORG_MEMBER", member as unknown as Item),
@@ -172,24 +172,40 @@ export class OrgStore {
     }
   }
 
+  /** The `member.joined` event of a join that is not an invite: one occurrence per membership, which `joinedAt` tells apart from a later return. */
+  private async joinEvent(input: { orgId: OrgId; developerId: string; role: OrgRole; joinedAt: string; via: string }): Promise<AuditEventInput | undefined> {
+    return tryAuditEvent(this.deps(), () => auditMemberJoined({
+      orgId: input.orgId, actor: { kind: "member", id: input.developerId }, occurredAt: input.joinedAt, occurrence: auditOccurrence(input.developerId, input.joinedAt),
+      memberId: input.developerId, role: input.role, via: input.via,
+    }));
+  }
+
   async createOrgWithOwner(input: { name: string; developerId: string; email?: string }): Promise<OrgId> {
     const orgId = this.newId();
-    const org: OrgRecord = { orgId, name: input.name, createdAt: this.iso(), createdBy: input.developerId, plan: "trial" };
+    const joinedAt = this.iso();
+    const org: OrgRecord = { orgId, name: input.name, createdAt: joinedAt, createdBy: input.developerId, plan: "trial" };
+    const event = await this.joinEvent({ orgId, developerId: input.developerId, role: "owner", joinedAt, via: "org_created" });
     await this.transact(
       [
         this.put(orgMetaKey(orgId), "ORG", org as unknown as Item),
-        ...this.membershipItems({ orgId, developerId: input.developerId, role: "owner", email: input.email }),
+        ...this.membershipItems({ orgId, developerId: input.developerId, role: "owner", email: input.email, joinedAt }),
+        ...this.pendingFor(event),
       ],
       (failed) => (failed.has(2) || failed.has(3) ? alreadyInOrg() : undefined),
     );
+    await this.flush(event);
     return orgId;
   }
 
+  /** A person joining an org without an invite: a single-org install's sign-in. */
   async addMember(input: { orgId: OrgId; developerId: string; role: OrgRole; email?: string }): Promise<void> {
+    const joinedAt = this.iso();
+    const event = await this.joinEvent({ orgId: input.orgId, developerId: input.developerId, role: input.role, joinedAt, via: "sign_in" });
     await this.transact(
-      this.membershipItems(input),
+      [...this.membershipItems({ ...input, joinedAt }), ...this.pendingFor(event)],
       (failed) => (failed.has(0) || failed.has(1) || failed.has(2) ? alreadyInOrg() : undefined),
     );
+    await this.flush(event);
   }
 
   /**
@@ -343,7 +359,7 @@ export class OrgStore {
     const guard = current === "owner" ? await this.otherOwnerGuard(orgId, developerId) : [];
     const at = this.iso();
     const event = await tryAuditEvent(this.deps(), () => auditMemberRoleChanged({
-      orgId, actor: input.by ?? SYSTEM_ACTOR, occurredAt: at, occurrence: input.requestId ?? auditOccurrence(developerId, at, role),
+      orgId, actor: input.by ?? SYSTEM_ACTOR, occurredAt: at, occurrence: auditOccurrence(input.requestId ?? at, developerId, role),
       memberId: developerId, fromRole: current, toRole: role,
     }));
     await this.transact(

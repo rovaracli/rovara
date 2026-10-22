@@ -1010,6 +1010,19 @@ describe("the audit ledger in templates", () => {
           expect((alarm.Properties.AlarmActions as unknown[])).toHaveLength(1);
         });
 
+        it("also counts audit.record_failed and audit.record_invalid on the sign-in function's log, into the same metric and alarm (Task 18, fix round 1)", () => {
+          const signInLogs = one(synthesis.template, "AWS::Logs::LogGroup", "DeveloperSignInFunctionLogs")[0];
+          const [, filter] = one(synthesis.template, "AWS::Logs::MetricFilter", "AuditLedgerAuditSignInRecordFailedMetric");
+          expect(filter.Properties).toStrictEqual({
+            LogGroupName: { Ref: signInLogs },
+            FilterPattern: '{ ($.event = "audit.record_failed") || ($.event = "audit.record_invalid") }',
+            MetricTransformations: [{ MetricName: "AuditRecordFailed", MetricNamespace: environmentNaming(env).metricsNamespace, MetricValue: "1" }],
+          });
+          // One alarm reads that metric: there is no second alarm for the sign-in function.
+          const alarms = ofType(synthesis.template, "AWS::CloudWatch::Alarm").filter(([, alarm]) => alarm.Properties.MetricName === "AuditRecordFailed");
+          expect(alarms.map(([id]) => withoutHash(id))).toStrictEqual(["AuditLedgerAuditRecordFailedAlarm"]);
+        });
+
         it("counts audit.pending_stuck and audit.drain_failed (a drain that cannot read the outbox) and alarms at one", () => {
           const logGroupId = one(synthesis.template, "AWS::Logs::LogGroup", "BrokerLogs")[0];
           const [, filter] = one(synthesis.template, "AWS::Logs::MetricFilter", "AuditLedgerAuditPendingStuckMetric");

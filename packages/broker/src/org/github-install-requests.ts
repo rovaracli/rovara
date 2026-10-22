@@ -42,7 +42,7 @@ import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent } from "../audit/outbox.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import {
-  GITHUB_ISSUER, conditionFailed, consumeState, errorName, exchangeCode, failedIndexes, isOwnerOrAdmin, log, readState, revokeUserToken, userGet,
+  GITHUB_ISSUER, conditionFailed, consumeState, errorName, exchangeCode, expectedTrialResult, failedIndexes, isOwnerOrAdmin, log, readState, revokeUserToken, userGet,
   type GithubConnectionDependencies,
 } from "./github-connect-support.js";
 
@@ -299,9 +299,9 @@ export async function bindRequestedInstallation(
   });
   // The connection is recorded in the bind's own transaction. Both GitHub logins are personal data: the requester's belongs to the person
   // who asked (erased with them), the approver's and the account's to the org.
-  const event = await tryAuditEvent(deps, () => auditGithubConnected({
+  const event = await tryAuditEvent(deps, async () => auditGithubConnected({
     orgId: request.orgId, actor: { kind: "member", id: request.developerId }, occurredAt: at, occurrence: deliveryId,
-    installationId: String(installation.id), accountType: "Organization", result: "connected",
+    installationId: String(installation.id), accountType: "Organization", result: await expectedTrialResult(deps, await deps.orgs.getOrg(request.orgId), requesterId),
     details: [
       { subject: request.developerId, fields: { requesterGithubLogin: requester.login } },
       { subject: "org", fields: { accountLogin: current.account.login, approverGithubLogin: sender.login } },

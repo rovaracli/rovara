@@ -420,7 +420,11 @@ export class DeveloperSignInStore {
                 ConditionExpression: `attribute_not_exists(pk) OR (developerId = :d AND attribute_not_exists(unlinkedFrom))${own ? " OR attribute_exists(unlinkedFrom)" : ""}`,
                 ExpressionAttributeValues: { ":d": developerId },
               }
-              : { ConditionExpression: current === undefined ? "attribute_not_exists(pk)" : "attribute_exists(unlinkedFrom)" }),
+              // Over a tombstone, only the tombstone that was read: the item keeps `unlinkedFrom` when the identity links to its own developer, so a
+              // second link racing the first would pass `attribute_exists(unlinkedFrom)` and record the link again. Its `developerId` has moved.
+              : current === undefined
+                ? { ConditionExpression: "attribute_not_exists(pk)" }
+                : { ConditionExpression: "attribute_exists(unlinkedFrom) AND developerId = :prev", ExpressionAttributeValues: { ":prev": current.developerId } }),
           } },
           { Put: { TableName: this.input.tableName, Item: { ...developerIdentityKey(developerId, identityKey), ...body } } },
           ...this.pendingFor(event),

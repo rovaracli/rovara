@@ -246,7 +246,7 @@ export async function setEgressOwnerActive(deps: EgressDomainsDependencies, orgI
 /**
  * Staff decide one pending domain: `pending` becomes `approved` or `rejected`, audited with the operator's identity. With a ledger the decision
  * is also recorded in the audit chain, in the same transaction: `auditActor` names the staff member by their pseudonym (never the subject), and
- * `requestId` is the request's id, which with the domain makes the occurrence.
+ * `requestId` is the request's id, which with the domain and the owner makes the occurrence.
  */
 export async function decideEgressDomain(
   deps: EgressDomainsDependencies,
@@ -271,6 +271,9 @@ export async function decideEgressDomain(
 }
 
 /** The project or model source a domain belongs to, for the details of its decision (a name is personal data and stays out of the chain). */
+/** The owner as an occurrence part: one request id and domain on another owner is another decision. */
+const ownerKey = (owner: EgressOwner): string => (owner.kind === "project" ? `project:${owner.project}` : `model-source:${owner.sourceId}`);
+
 const ownerLabel = (owner: EgressOwner): Record<string, string> => (owner.kind === "project" ? { project: owner.project } : { modelSource: owner.sourceId });
 
 /** The audit event of a staff decision: none on an install with no ledger, and none (logged, without a value) when it cannot be built. */
@@ -286,7 +289,7 @@ function decisionEvents(
     return [auditEgressDecided({
       orgId: input.orgId, actor: input.auditActor ?? { kind: "system", id: "rovara" }, occurredAt: at,
       // Without a request id (a caller outside the staff route), the domain's own request time makes the occurrence: it is decided once per request.
-      occurrence: auditOccurrence(input.requestId ?? requestedAt, input.domain), domain: input.domain, decision: input.decision,
+      occurrence: auditOccurrence(input.requestId ?? requestedAt, input.domain, ownerKey(input.owner)), domain: input.domain, decision: input.decision,
       details: [{ subject: "org", fields: { ...ownerLabel(input.owner), ...(reason === undefined ? {} : { reason }) } }],
     })];
   } catch (error) {

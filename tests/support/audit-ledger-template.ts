@@ -62,6 +62,7 @@ export function withoutAuditLedger(template: unknown): unknown {
     "AWS::Logs::MetricFilter AuditLedgerAuditPendingStuckMetric",
     "AWS::Logs::MetricFilter AuditLedgerAuditRecordFailedMetric",
     "AWS::Logs::MetricFilter AuditLedgerAuditShredFailedMetric",
+    "AWS::Logs::MetricFilter AuditLedgerAuditSignInRecordFailedMetric",
     "AWS::Logs::MetricFilter AuditLedgerAuditTimestampFailedMetric",
     "AWS::S3::Bucket AuditLedgerAuditExportsBucket",
     "AWS::S3::Bucket AuditLedgerAuditLedgerBucket",

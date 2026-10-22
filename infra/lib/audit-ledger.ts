@@ -557,6 +557,9 @@ export class AuditLedger extends Construct {
         }),
       ],
     });
+    // The sign-in function logs `audit.record_invalid` when an event it built is dropped (the link or the join then commits with no event),
+    // and nothing redelivers that one. Its log group feeds the same metric as the broker's, so the one alarm covers both emitters.
+    this.countedLogEvents(props.naming, signIn.logGroup, "AuditSignInRecordFailed", "AuditRecordFailed", AUDIT_RECORD_FAILED_EVENTS);
   }
 
   /**

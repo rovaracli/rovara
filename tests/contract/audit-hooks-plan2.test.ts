@@ -32,7 +32,6 @@ import {
   type OrgId,
 } from "../../packages/contracts/src/index.js";
 import { auditOccurrence } from "../../packages/broker/src/audit/events.js";
-import { AUDIT_SHRED_SETTLE_MS } from "../../packages/broker/src/audit/erase.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { decideEgressDomain, putEgressDomains, type EgressDomainsDependencies } from "../../packages/broker/src/org/egress-domains.js";
 import { removeProjectMember, setProjectMember, type ProjectMemberChangeDependencies } from "../../packages/broker/src/org/project-members.js";
@@ -55,8 +54,6 @@ import { call, issuer as brokerIssuer, loadSlackBroker } from "../support/slack-
 // The first import of the broker module transforms its whole dependency graph, which can pass vitest's 10 s hook default.
 beforeAll(loadSlackBroker, 60_000);
 afterEach(() => { vi.useRealTimers(); });
-
-void AUDIT_SHRED_SETTLE_MS;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The shared pieces
@@ -131,12 +128,30 @@ describe("member.role_changed", () => {
     expect(writes(transaction!, `ORG#${TEST_ORG}`, `MEMBER#${MAYA.developerId}`)).toBe(true);
     expect(writes(transaction!, `DEVELOPER_ORG#${MAYA.developerId}`)).toBe(true);
     expect(pendingIn(transaction!)).toEqual([{
-      eventId: auditEventId("member.role_changed", requestId), orgId: TEST_ORG, action: "member.role_changed",
+      eventId: auditEventId("member.role_changed", auditOccurrence(requestId, MAYA.developerId, "admin")), orgId: TEST_ORG, action: "member.role_changed",
       actor: { kind: "member", id: OMAR.developerId }, target: { kind: "member", id: MAYA.developerId },
       occurredAt: expect.any(String) as string, facts: { fromRole: "member", toRole: "admin" },
     }]);
     expect(capture.flushed().map((event) => event.action)).toEqual(["member.role_changed"]);
     expect(capture.pending()).toEqual([]);
+  });
+
+  it("one request id on different targets or roles records each change (the request id alone is not the occurrence)", async () => {
+    const capture = capturingAuditDeps();
+    const h = await orgBroker(capture);
+    const carl = person(h, "Carl", "member");
+    const requestId = randomUUID();
+    const change = (who: Developer, role: string) => h.dev(OMAR, "PUT", `/v1/app/org/members/${who.developerId}/role`, { requestId, role });
+    expect((await change(MAYA, "admin")).status).toBe(200);
+    expect((await change(carl, "admin")).status).toBe(200);
+    expect((await change(MAYA, "owner")).status).toBe(200);
+    const events = capture.recordedBy("member.role_changed");
+    expect(events.map((event) => [event.target, event.facts])).toEqual([
+      [{ kind: "member", id: MAYA.developerId }, { fromRole: "member", toRole: "admin" }],
+      [{ kind: "member", id: carl.developerId }, { fromRole: "member", toRole: "admin" }],
+      [{ kind: "member", id: MAYA.developerId }, { fromRole: "admin", toRole: "owner" }],
+    ]);
+    expect(new Set(events.map((event) => event.eventId)).size).toBe(3);
   });
 
   it("records nothing for a change to the role the person already has, and nothing for a refused change", async () => {
@@ -369,6 +384,44 @@ describe("member.joined", () => {
     expect(db.get(orgMemberKey(TEST_ORG, "dev-new"))).toMatchObject({ role: "admin" });
   });
 
+  it("an org made with its owner, and a person joining a single-org install, are recorded as joins in the transaction that makes them", async () => {
+    const capture = capturingAuditDeps();
+    const db = new FakeDynamoDb();
+    capture.attach(db);
+    const transactions = recordTransactions(db);
+    const store = new OrgStore({ documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => T0, audit: capture.audit, newOrgId: () => TEST_ORG });
+    const at = new Date(T0).toISOString();
+    const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "dev-owner" });
+    await store.addMember({ orgId, developerId: "dev-new", role: "member" });
+
+    const audited = auditedTransactions(transactions);
+    expect(audited).toHaveLength(2);
+    expect(writes(audited[0]!, `ORG#${orgId}`, "META")).toBe(true);
+    expect(writes(audited[1]!, `ORG#${orgId}`, "MEMBER#dev-new")).toBe(true);
+    expect(capture.recordedBy("member.joined")).toEqual([
+      {
+        eventId: auditEventId("member.joined", auditOccurrence("dev-owner", at)), orgId, action: "member.joined", actor: { kind: "member", id: "dev-owner" },
+        target: { kind: "member", id: "dev-owner" }, occurredAt: at, facts: { role: "owner", via: "org_created" },
+      },
+      {
+        eventId: auditEventId("member.joined", auditOccurrence("dev-new", at)), orgId, action: "member.joined", actor: { kind: "member", id: "dev-new" },
+        target: { kind: "member", id: "dev-new" }, occurredAt: at, facts: { role: "member", via: "sign_in" },
+      },
+    ]);
+  });
+
+  it("a join that is refused (already in an org) records nothing", async () => {
+    const capture = capturingAuditDeps();
+    const db = new FakeDynamoDb();
+    capture.attach(db);
+    const store = new OrgStore({ documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => T0, audit: capture.audit });
+    const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "dev-owner" });
+    const before = capture.recorded().length;
+    await expect(store.addMember({ orgId, developerId: "dev-owner", role: "member" })).rejects.toMatchObject({ code: "ALREADY_IN_ORG" });
+    await expect(store.createOrgWithOwner({ name: "Second", developerId: "dev-owner" })).rejects.toMatchObject({ code: "ALREADY_IN_ORG" });
+    expect(capture.recorded().length).toBe(before);
+  });
+
   it("records nothing for an invite that is used, expired or refused, and a second acceptance records nothing", async () => {
     const capture = capturingAuditDeps();
     const { store } = await inviteWorld(capture);
@@ -482,6 +535,21 @@ describe("identity.linked and identity.unlinked", () => {
     seedMembership(db, githubId, { orgId: TEST_ORG, role: "member" });
     expect(await store.linkIdentity({ ...githubLink, developerId: githubId })).toEqual({ developerId: githubId, created: true });
     expect(capture.recordedBy("identity.linked")).toEqual([expect.objectContaining({ actor: { kind: "member", id: githubId }, orgId: TEST_ORG })]);
+  });
+
+  it("two sign-ins of an identity over its own tombstone, racing, record one link", async () => {
+    const capture = capturingAuditDeps();
+    const { db, store } = signInWorld(capture, { github: "unlinked" });
+    db.set({ pk: `DEVELOPER#${githubId}`, sk: "META", entityType: "DEVELOPER", developerId: githubId, provider: "github", issuer: GITHUB_ISSUER, subject: "4711", displayName: "Octo", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    seedMembership(db, githubId, { orgId: TEST_ORG, role: "member" });
+    // The other sign-in links the identity to its own developer between this one's read and its write; the item keeps the tombstone's unlinkedFrom.
+    db.injectFault({
+      command: "TransactWriteCommand",
+      match: () => { db.set({ ...db.get(signInIdentityKey(githubId))!, developerId: githubId }); return false; },
+      error: { name: "TransactionCanceledException" },
+    });
+    expect(await store.linkIdentity({ ...githubLink, developerId: githubId })).toEqual({ developerId: githubId, created: false });
+    expect(capture.recorded()).toEqual([]);
   });
 
   it("the link and its audit item are written together or not at all", async () => {
@@ -729,6 +797,17 @@ describe("github.connected: bindRequestedInstallation", () => {
     });
   });
 
+  it("records connected_trial_used when the requester's GitHub account already started another organization's trial, as a confirmation does", async () => {
+    const capture = capturingAuditDeps();
+    const w = githubWorld(capture);
+    w.requested();
+    w.db.set({ ...trialGithubKey(String(REQUESTER_GITHUB_ID)), entityType: "TRIAL_GITHUB", orgId: ORG_B, claimedAt: 1 });
+    expect(await bindRequestedInstallation(w.deps, "d-trial", w.created())).toBe("bound");
+    expect(capture.recordedBy("github.connected")).toEqual([expect.objectContaining({ facts: { accountType: "Organization", result: "connected_trial_used" } })]);
+    // The binding stands either way.
+    expect(w.db.get(githubInstallationKey(601))).toMatchObject({ orgId: TEST_ORG });
+  });
+
   it("records nothing when the delivery is ignored, a replay, or refused, and a redelivery of the bound one records nothing more", async () => {
     const capture = capturingAuditDeps();
     const w = githubWorld(capture);
@@ -962,7 +1041,7 @@ describe("egress_domain.decided", () => {
     const [event, ...more] = capture.recordedBy("egress_domain.decided");
     expect(more).toEqual([]);
     expect(event).toEqual({
-      eventId: auditEventId("egress_domain.decided", auditOccurrence(requestId, "a.acme.dev")), orgId: TEST_ORG, action: "egress_domain.decided",
+      eventId: auditEventId("egress_domain.decided", auditOccurrence(requestId, "a.acme.dev", "project:web")), orgId: TEST_ORG, action: "egress_domain.decided",
       actor: { kind: "operator", id: operator }, target: { kind: "domain", name: "a.acme.dev" }, occurredAt: EGRESS_DECIDED_AT, facts: { decision: "approved" },
       details: [{ subject: "org", fields: { project: "web" } }],
     });
@@ -987,6 +1066,18 @@ describe("egress_domain.decided", () => {
       await decideEgressDomain(w.deps, { orgId: TEST_ORG, owner: WEB, domain, decision: "approved", operatorId: "staff-subject", requestId, auditActor: { kind: "operator", id: operator } });
     }
     expect(new Set(capture.recordedBy("egress_domain.decided").map((event) => event.eventId)).size).toBe(2);
+  });
+
+  it("one request id and domain on another owner is another decision", async () => {
+    const capture = capturingAuditDeps();
+    const w = await egressWorld(capture);
+    const docs: EgressOwner = { kind: "project", project: "docs" };
+    await putEgressDomains(w.deps, TEST_ORG, docs, ["a.acme.dev"], { developerId: "dev-maya" });
+    const requestId = randomUUID();
+    for (const owner of [WEB, docs]) {
+      await decideEgressDomain(w.deps, { orgId: TEST_ORG, owner, domain: "a.acme.dev", decision: "approved", operatorId: "staff-subject", requestId, auditActor: { kind: "operator", id: operator } });
+    }
+    expect(capture.recordedBy("egress_domain.decided").map((event) => event.details)).toEqual([[{ subject: "org", fields: { project: "web" } }], [{ subject: "org", fields: { project: "docs" } }]]);
   });
 
   it("records nothing for a domain that is not pending, and a second decision on the same domain records nothing more", async () => {
@@ -1040,7 +1131,7 @@ describe("egress_domain.decided", () => {
       expect(event.actor).toEqual({ kind: "operator", id: auditOperatorId(brokerIssuer, "staff-subject") });
       expect(JSON.stringify(event)).not.toContain("staff-subject");
     }
-    expect(events.find((event) => event.facts?.decision === "approved")!.eventId).toBe(auditEventId("egress_domain.decided", auditOccurrence(requestId, "a.acme.dev")));
+    expect(events.find((event) => event.facts?.decision === "approved")!.eventId).toBe(auditEventId("egress_domain.decided", auditOccurrence(requestId, "a.acme.dev", "project:web")));
   });
 });
 
@@ -1086,7 +1177,7 @@ describe("project_member.changed and project_member.removed", () => {
     expect(writes(transaction!, `ORG#${TEST_ORG}#MEMBER#${SAM}`)).toBe(true);
     expect(transaction!.some((item) => keyText(item.Put?.Item?.sk).startsWith("MEMBER_REQUEST#"))).toBe(true);
     expect(capture.recordedBy("project_member.changed")).toEqual([{
-      eventId: auditEventId("project_member.changed", requestId), orgId: TEST_ORG, action: "project_member.changed", actor: { kind: "member", id: PRIYA },
+      eventId: auditEventId("project_member.changed", auditOccurrence(requestId, "payments", SAM, "viewer")), orgId: TEST_ORG, action: "project_member.changed", actor: { kind: "member", id: PRIYA },
       target: { kind: "project", name: "payments" }, occurredAt: "2026-10-21T12:00:00.000Z", related: [SAM], facts: { toRole: "viewer" },
     }]);
     expect(capture.pending()).toEqual([]);
@@ -1110,6 +1201,17 @@ describe("project_member.changed and project_member.removed", () => {
     expect(capture.recordedBy("project_member.changed")).toHaveLength(1);
   });
 
+  it("one request id used on another project records that project's change too", async () => {
+    const capture = capturingAuditDeps();
+    const w = memberWorld(capture);
+    seedProject(w.db, "billing");
+    const requestId = randomUUID();
+    for (const project of ["payments", "billing"]) await setProjectMember(w.deps, TEST_ORG, project, { requestId, developerId: SAM, role: "viewer", actor: { developerId: PRIYA } });
+    expect(capture.recordedBy("project_member.changed").map((event) => event.target)).toEqual([{ kind: "project", name: "payments" }, { kind: "project", name: "billing" }]);
+    for (const project of ["payments", "billing"]) await removeProjectMember(w.deps, TEST_ORG, project, { requestId: randomUUID(), developerId: SAM, actor: { developerId: PRIYA } });
+    expect(capture.recordedBy("project_member.removed")).toHaveLength(2);
+  });
+
   it("a removal records the role taken away, in the transaction that deletes the grant", async () => {
     const capture = capturingAuditDeps();
     const w = memberWorld(capture);
@@ -1120,7 +1222,7 @@ describe("project_member.changed and project_member.removed", () => {
     const [transaction] = auditedTransactions(w.transactions);
     expect(transaction!.some((item) => item.Delete?.Key?.pk === `ORG#${TEST_ORG}#MEMBER#${SAM}`)).toBe(true);
     expect(capture.recordedBy("project_member.removed")).toEqual([{
-      eventId: auditEventId("project_member.removed", requestId), orgId: TEST_ORG, action: "project_member.removed", actor: { kind: "member", id: PRIYA },
+      eventId: auditEventId("project_member.removed", auditOccurrence(requestId, "payments", SAM)), orgId: TEST_ORG, action: "project_member.removed", actor: { kind: "member", id: PRIYA },
       target: { kind: "project", name: "payments" }, occurredAt: "2026-10-21T12:00:00.000Z", related: [SAM], facts: { role: "contributor" },
     }]);
   });
@@ -1175,6 +1277,9 @@ describe("a refusal keeps its meaning when the transaction carries an audit item
     const store = new OrgStore({ documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => Date.parse("2026-10-21T00:00:00.000Z"), audit: capture.audit });
     const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
     await store.addMember({ orgId, developerId: "dev-2", role: "owner" });
+    // The two joins that made the org are recorded too; what a test looks at is what comes after them.
+    const setup = capture.recorded().length;
+    const afterSetup = () => capture.recorded().slice(setup);
     const beforeTransaction = (change: () => void) => {
       let armed = true;
       const real = db.send.bind(db) as (command: unknown) => Promise<unknown>;
@@ -1183,11 +1288,11 @@ describe("a refusal keeps its meaning when the transaction carries an audit item
         return real(command);
       };
     };
-    return { capture, db, store, orgId, beforeTransaction };
+    return { capture, db, store, orgId, beforeTransaction, afterSetup };
   }
 
   it("a demotion of the last other owner between the read and the transaction is LAST_OWNER for a role change and for a removal, and nothing is recorded", async () => {
-    const { capture, db, store, orgId, beforeTransaction } = await ownersWorld();
+    const { db, store, orgId, beforeTransaction, afterSetup } = await ownersWorld();
     beforeTransaction(() => db.set({ ...db.get(orgMemberKey(orgId, "dev-2"))!, role: "member" }));
     await expect(store.setRole({ orgId, developerId: "owner", role: "member", by: { kind: "member", id: "owner" }, requestId: randomUUID() })).rejects.toMatchObject({ code: "LAST_OWNER" });
     expect(db.get(orgMemberKey(orgId, "owner"))).toMatchObject({ role: "owner" });
@@ -1196,28 +1301,87 @@ describe("a refusal keeps its meaning when the transaction carries an audit item
     second.beforeTransaction(() => second.db.set({ ...second.db.get(orgMemberKey(second.orgId, "dev-2"))!, role: "member" }));
     await expect(second.store.removeMember({ orgId: second.orgId, developerId: "owner", emails: [], ban: false, by: { kind: "member", id: "owner" } })).rejects.toMatchObject({ code: "LAST_OWNER" });
     expect(second.db.get(orgMemberKey(second.orgId, "owner"))).toBeDefined();
-    expect([...capture.recorded(), ...second.capture.recorded()]).toEqual([]);
+    expect([...afterSetup(), ...second.afterSetup()]).toEqual([]);
   });
 
   it("a promotion between the read and the removal is CHANGE_STALE, and nothing is removed or recorded", async () => {
-    const { capture, db, store, orgId, beforeTransaction } = await ownersWorld();
+    const { db, store, orgId, beforeTransaction, afterSetup } = await ownersWorld();
     await store.addMember({ orgId, developerId: "dev-3", role: "member" });
+    const joined = afterSetup().length;
     beforeTransaction(() => db.set({ ...db.get(orgMemberKey(orgId, "dev-3"))!, role: "admin" }));
     await expect(store.removeMember({ orgId, developerId: "dev-3", emails: [], ban: false, expectedRole: "member", by: { kind: "member", id: "owner" } })).rejects.toMatchObject({ code: "CHANGE_STALE" });
     expect(db.get(orgMemberKey(orgId, "dev-3"))).toMatchObject({ role: "admin" });
-    expect(capture.recorded()).toEqual([]);
+    expect(afterSetup()).toHaveLength(joined);
   });
 
   it("an invite into an org that has closed is INVITE_INVALID, the invite is not burnt, and nothing is recorded", async () => {
-    const { capture, db, store, orgId } = await ownersWorld();
+    const { capture, db, store, orgId, afterSetup } = await ownersWorld();
     const { token } = await store.createInvite({ orgId, createdBy: "owner", role: "member" });
     db.set({ ...db.get(orgMetaKey(orgId))!, closedAt: "2026-10-20T00:00:00.000Z" });
     await expect(store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "dev-new" })).rejects.toMatchObject({ code: "INVITE_INVALID", message: expect.stringContaining("closed") as string });
-    expect(capture.recorded()).toEqual([]);
+    expect(afterSetup()).toEqual([]);
     db.set({ ...db.get(orgMetaKey(orgId))!, closedAt: undefined });
     delete db.get(orgMetaKey(orgId))!.closedAt;
     expect(await store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "dev-new" })).toMatchObject({ orgId });
-    expect(capture.recordedBy("member.joined")).toHaveLength(1);
+    expect(capture.recordedBy("member.joined").filter((event) => event.facts?.via === "invite")).toHaveLength(1);
+  });
+});
+
+describe("answers as today when the intake queue never answers (the remaining sites)", () => {
+  it("a removal and a leave", async () => {
+    const capture = hangingAuditDeps();
+    const h = await orgBroker(capture);
+    const carl = person(h, "Carl", "admin");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    expect((await settle(h.dev(OMAR, "DELETE", `/v1/app/org/members/${carl.developerId}`))).status).toBe(200);
+    expect((await settle(h.dev(MAYA, "POST", "/v1/app/org/leave", { requestId: randomUUID() }))).status).toBe(200);
+    expect(h.db.get(orgMemberKey(TEST_ORG, carl.developerId))).toBeUndefined();
+    expect(h.db.get(orgMemberKey(TEST_ORG, MAYA.developerId))).toBeUndefined();
+    expect(capture.pending().map((event) => event.action).sort()).toEqual(["member.left", "member.removed"]);
+  });
+
+  it("closing an org", async () => {
+    const capture = hangingAuditDeps();
+    const db = new FakeDynamoDb();
+    capture.attach(db);
+    db.set({ ...orgMetaKey(TEST_ORG), entityType: "ORG", orgId: TEST_ORG, name: "Acme", createdAt: "x", createdBy: "dev-owner", plan: "team" });
+    db.set({ ...orgMemberKey(TEST_ORG, "dev-owner"), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: "dev-owner", role: "owner", joinedAt: "x" });
+    db.set({ ...developerOrgKey("dev-owner"), entityType: "DEVELOPER_ORG", orgId: TEST_ORG, role: "owner", joinedAt: "x" });
+    const store = new OrgStore({ documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => Date.parse("2026-10-21T00:00:00.000Z"), audit: capture.audit });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await settle(store.closeOrg(TEST_ORG, { archiveProjects: async () => undefined, clearEgress: async () => undefined }));
+    expect(db.get(orgMetaKey(TEST_ORG))?.closedAt).toBeDefined();
+    expect(db.find((item) => item.pk === "AUDIT_SHRED_DUE")).toHaveLength(1);
+    expect(capture.pending().map((event) => event.action).sort()).toEqual(["audit.org_shred_scheduled", "org.closed"]);
+  });
+
+  it("accepting an invite, creating an org and joining one", async () => {
+    const capture = hangingAuditDeps();
+    const db = new FakeDynamoDb();
+    capture.attach(db);
+    const store = new OrgStore({ documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => Date.parse("2026-10-21T00:00:00.000Z"), audit: capture.audit });
+    const orgId = await (async () => { vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }); return settle(store.createOrgWithOwner({ name: "Acme", developerId: "dev-owner" })); })();
+    const { token } = await settle(store.createInvite({ orgId, createdBy: "dev-owner", role: "member" }));
+    expect(await settle(store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "dev-new" }))).toMatchObject({ orgId });
+    await settle(store.addMember({ orgId, developerId: "dev-third", role: "member" }));
+    expect(db.get(orgMemberKey(orgId, "dev-new"))).toBeDefined();
+    expect(capture.pending().map((event) => event.facts?.via).sort()).toEqual(["invite", "org_created", "sign_in"]);
+  });
+
+  it("binding a requested installation, disconnecting one, and GitHub's own change", async () => {
+    const capture = hangingAuditDeps();
+    const w = githubWorld(capture);
+    w.requested();
+    w.bound(501);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    expect(await settle(bindRequestedInstallation(w.deps, "d-hang", w.created()))).toBe("bound");
+    await settle(disconnectGithubInstallation(w.deps, { developerId: GH_OWNER, orgId: TEST_ORG, orgRole: "owner" }, 501));
+    w.bound(502);
+    expect(await settle(applyInstallationLifecycle(w.deps, "d-hang-2", { kind: "installation", action: "deleted", installationId: 502 }))).toBe("applied");
+    expect(w.db.get(githubInstallationKey(601))).toMatchObject({ orgId: TEST_ORG });
+    expect(w.db.get(githubInstallationKey(501))).toBeUndefined();
+    expect(w.db.get(githubInstallationKey(502))).toMatchObject({ status: "removed" });
+    expect(capture.pending().map((event) => event.action).sort()).toEqual(["github.connected", "github.disconnected", "github.installation_changed"]);
   });
 });
 

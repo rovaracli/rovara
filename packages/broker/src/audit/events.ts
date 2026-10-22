@@ -1,5 +1,5 @@
 // Pure builders for every audited action. Each takes the action's facts plus the `occurrence` that makes this occurrence
-// unique (what to pass is pinned per builder below and in the plan's Task 6 table), and returns an AuditEventInput whose
+// unique (what to pass is pinned per builder below and in the plan's Task 6 table; Task 18 amended the table for role changes, project members and egress decisions, which add their target to the client's request id), and returns an AuditEventInput whose
 // id is `auditEventId(action, occurrence, ...parts)`: a retry of one occurrence gets the same id, a later occurrence with
 // the same facts gets a different one. Personal data (names, emails, logins, repository and project names, domains,
 // reasons) goes only in `details`, or in a name-keyed target `{ kind, name }`, which the appender pseudonymizes.
@@ -105,12 +105,15 @@ export function auditPullRequestMerged(input: AuditBuilderBase & { pullRequestId
 
 // Members ----------------------------------------------------------------------------------------------------------------
 
-/** `occurrence`: the invite's token hash, or `auditOccurrence(developerId, joinedAt)`. */
+/** `occurrence`: the invite's token hash, or `auditOccurrence(developerId, joinedAt)` for a join that is not an invite (an org made with its owner, a single-org install's sign-in). */
 export function auditMemberJoined(input: AuditBuilderBase & { memberId: string; role: string; via: string }): AuditEventInput {
   return build("member.joined", input, { kind: "member", id: input.memberId }, { role: input.role, via: input.via });
 }
 
-/** `occurrence`: the request's `requestId`. */
+/**
+ * `occurrence`: `auditOccurrence(requestId, memberId, toRole)`. The request id is chosen by the client and a role change stores no request record,
+ * so the id alone could be reused to leave a later change unrecorded; with the target and the new role, each change is its own occurrence.
+ */
 export function auditMemberRoleChanged(input: AuditBuilderBase & { memberId: string; fromRole: string; toRole: string }): AuditEventInput {
   return build("member.role_changed", input, { kind: "member", id: input.memberId }, { fromRole: input.fromRole, toRole: input.toRole });
 }
@@ -125,12 +128,15 @@ export function auditMemberLeft(input: AuditBuilderBase & { memberId: string; ro
   return build("member.left", input, { kind: "member", id: input.memberId }, { role: input.role });
 }
 
-/** `occurrence`: the request's `requestId`. The project is name-keyed; the member is related by id. */
+/**
+ * `occurrence`: `auditOccurrence(requestId, project, memberId, toRole)`. A request id is remembered per project, so the same id can reach another
+ * project; the project, the person and the role make each change its own occurrence. The project is name-keyed; the member is related by id.
+ */
 export function auditProjectMemberChanged(input: AuditBuilderBase & { projectName: string; memberId: string; fromRole?: string; toRole: string }): AuditEventInput {
   return build("project_member.changed", { ...input, related: [input.memberId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { fromRole: input.fromRole, toRole: input.toRole });
 }
 
-/** `occurrence`: the request's `requestId`. */
+/** `occurrence`: `auditOccurrence(requestId, project, memberId)`, for the reason given on `auditProjectMemberChanged`. */
 export function auditProjectMemberRemoved(input: AuditBuilderBase & { projectName: string; memberId: string; role: string }): AuditEventInput {
   return build("project_member.removed", { ...input, related: [input.memberId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { role: input.role });
 }
@@ -140,7 +146,11 @@ export function auditIdentityLinked(input: AuditBuilderBase & { memberId: string
   return build("identity.linked", input, { kind: "member", id: input.memberId }, { provider: input.provider });
 }
 
-/** `occurrence`: `auditOccurrence(identityKey, unlink requestId)`. */
+/**
+ * `occurrence`: `auditOccurrence(identityKey, unlink time)`. The unlink request carries no request id (`UnlinkIdentityRequestSchema`), so the time of
+ * the unlink stands in. A retry of the same unlink cannot record twice: the transaction deletes the developer's reverse item under
+ * `attribute_not_exists(unlinkedFrom)`, so it commits once, and the retry finds the method no longer linked and is refused (NOT_FOUND) before any event is built.
+ */
 export function auditIdentityUnlinked(input: AuditBuilderBase & { memberId: string; provider: string }): AuditEventInput {
   return build("identity.unlinked", input, { kind: "member", id: input.memberId }, { provider: input.provider });
 }
@@ -204,7 +214,10 @@ export function auditOptOutLapsed(input: AuditBuilderBase & { repositoryName: st
   return build("comment_trigger_opt_out.lapsed", input, { kind: "repository", name: input.repositoryName }, { scope: input.scope });
 }
 
-/** `occurrence`: the request's `requestId`. The domain is a name-keyed target. */
+/**
+ * `occurrence`: `auditOccurrence(requestId, domain, owner)`. The decision body carries a `requestId`; one id could name another domain or owner, so
+ * both are part of the occurrence. The domain is a name-keyed target.
+ */
 export function auditEgressDecided(input: AuditBuilderBase & { domain: string; decision: string }): AuditEventInput {
   return build("egress_domain.decided", input, { kind: "domain", name: input.domain }, { decision: input.decision });
 }
