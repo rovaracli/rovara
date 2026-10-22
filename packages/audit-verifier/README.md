@@ -67,3 +67,17 @@ whitespace); the program prints the statement and an `openssl dgst -sha256` line
 > What it does not prove: that the records are true or complete. Rovara writes them, so an action Rovara never recorded, or recorded wrongly, does not show up as tampering. Records after the last seal are not sealed yet; this export says how many.
 >
 > It is tamper-evident, not tamper-proof. Someone with enough access could still change Rovara's live copy, but the change would show when checked against the sealed copy, the timestamps and your earlier exports. Keep every export you take.
+
+## Developing this package
+
+It builds and tests on its own. Node 22 and a clean install are all it needs:
+
+```
+npm ci
+npm test              # compiles the sources and tests, then runs them with node --test
+npm run build         # compiles to dist/
+npm run check:public  # fails if anything private, or any import but node: and relative files, got in
+```
+
+`npm pack` runs the build and then `check-public.mjs --built`, which loads every file in `dist/` from a
+copy with no `node_modules` and refuses any import that is not a `node:` module or a relative file.
