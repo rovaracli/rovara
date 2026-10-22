@@ -37,13 +37,13 @@ async function sentryGet(ctx: NativeToolContext<SentryRunScope>, path: string, q
   const search = new URLSearchParams(query).toString();
   const response = await ctx.fetch(`${path}${search === "" ? "" : `?${search}`}`, { headers: { authorization: `Bearer ${ctx.credential.token}`, accept: "application/json" } });
   if (response.status === 200) {
-    if (response.json === undefined) throw new NativeToolRefusal("Sentry answered something this connector cannot read");
+    if (response.json === undefined) throw new NativeToolRefusal("Sentry answered something this connector cannot read", "vendor_error");
     return response.json;
   }
-  if (response.status === 401 || response.status === 403) throw new NativeToolRefusal(SENTRY_TOKEN_REFUSED);
-  if (response.status === 404) throw new NativeToolRefusal("Sentry has no such project or issue");
-  if (response.status === 429) throw new NativeToolRefusal("Sentry is limiting requests; try again later");
-  throw new NativeToolRefusal(`Sentry answered HTTP ${String(response.status)}`);
+  if (response.status === 401 || response.status === 403) throw new NativeToolRefusal(SENTRY_TOKEN_REFUSED, "vendor_error");
+  if (response.status === 404) throw new NativeToolRefusal("Sentry has no such project or issue", "vendor_error");
+  if (response.status === 429) throw new NativeToolRefusal("Sentry is limiting requests; try again later", "vendor_error");
+  throw new NativeToolRefusal(`Sentry answered HTTP ${String(response.status)}`, "vendor_error");
 }
 
 /** An issue of the scope's project, or a refusal: the organization's issue endpoint answers for any project the token can see. */

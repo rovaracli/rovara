@@ -4,6 +4,7 @@ import { connectMcp, McpUnauthorized, type McpConnection, type McpToolAnnotation
 import { CredentialUnavailable } from "./credentials.js";
 import {
   GuardRejection,
+  ToolRefusal,
   type Access,
   type CatalogTool,
   type ConnectorContext,
@@ -319,11 +320,14 @@ export async function executeTool<Scope>(
       ? publicResult(request, "FAILED", `${label} is not connected for this project: ${error.message}. An administrator must fix its credential.`, "not_connected")
       : error instanceof DefinitionChanged
         ? publicResult(request, "FAILED", error.message, "schema_changed")
-        : error instanceof PolicyFailure || error instanceof GuardRejection
-          ? publicResult(request, "FAILED", error.message, "policy_denied")
-          : writeAttempted
-            ? publicResult(request, "UNKNOWN", `${label} write outcome is unknown. Inspect ${label} before issuing another request. Do not automatically retry.`)
-            : publicResult(request, "FAILED", `${label} MCP request failed before any write. Check ${connector.permissionsHint} and MCP availability.`, "vendor_error");
+        // A native connector's own words (the connection already scrubbed the token from them) are the call's failure.
+        : error instanceof ToolRefusal
+          ? publicResult(request, "FAILED", error.message, error.reason)
+          : error instanceof PolicyFailure || error instanceof GuardRejection
+            ? publicResult(request, "FAILED", error.message, "policy_denied")
+            : writeAttempted
+              ? publicResult(request, "UNKNOWN", `${label} write outcome is unknown. Inspect ${label} before issuing another request. Do not automatically retry.`)
+              : publicResult(request, "FAILED", `${label} MCP request failed before any write. Check ${connector.permissionsHint} and MCP availability.`, "vendor_error");
   } finally { await connection?.close().catch(() => undefined); }
   if (durable) {
     record = { ...record, updatedAt: new Date().toISOString(), result: response };

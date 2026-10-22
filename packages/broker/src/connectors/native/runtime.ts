@@ -4,7 +4,7 @@
 // unchanged. Routing values (the Sentry organization, the project) are arguments the engine binds from the connection and the scope and removes from what the
 // model sees; a tool receives them as its scope and can reach nothing else. Every call is validated against the tool's schema first.
 import { agentXError, connectionSecretToken, type ConnectionType, type ObservabilityConnectionType, type OrgConnection, type SecretConnectionType } from "@agentx/contracts";
-import type { Binder, ConnectorDefinition, CredentialProvider, IssuedCredential, McpConnection, McpToolResult, ToolApproval, connectMcp } from "@agentx/gateway";
+import { ToolRefusal, type Binder, ConnectorDefinition, CredentialProvider, IssuedCredential, McpConnection, McpToolResult, ToolApproval, connectMcp } from "@agentx/gateway";
 import type { z } from "zod";
 import { connectorLedgerKeys } from "../../aws/connector-ledger.js";
 import type { ConnectorScope, ConnectorType } from "../../aws/connector-types.js";
@@ -35,7 +35,8 @@ export interface NativeTool<Scope> {
 
 /** A tool declining the call (an issue outside its project, a vendor 404): its message, in fixed words, goes to the model as the error. */
 export class NativeToolRefusal extends Error {
-  constructor(message: string) { super(message); this.name = "NativeToolRefusal"; }
+  /** `policy_denied` for a call the connector's own rules refuse (an item outside the scope); `vendor_error` for what the vendor said (a status). */
+  constructor(message: string, readonly reason: "policy_denied" | "vendor_error" = "policy_denied") { super(message); this.name = "NativeToolRefusal"; }
 }
 
 /** The arguments the server binds on every call, and how they become the scope a tool runs with. */
@@ -160,7 +161,9 @@ export function nativeConnection<Scope>(
         const answer = await tool.run(own, { scope: ctx.routing.scopeOf(values), credential: ctx.credential, fetch: ctx.fetch });
         return { content: [{ type: "text", text: redact(truncated(answer.text)) }], ...(answer.structured === undefined ? {} : { structuredContent: answer.structured }) };
       } catch (error) {
-        if (error instanceof NativeToolRefusal || error instanceof VendorFetchError) return failure(redact(error.message));
+        // The words we wrote (a refusal, a fixed vendor-failure text) reach the model through the engine; anything else is named only by the tool.
+        if (error instanceof NativeToolRefusal) throw new ToolRefusal(redact(error.message), error.reason);
+        if (error instanceof VendorFetchError) throw new ToolRefusal(redact(error.message), "vendor_error");
         return failure(`${tool.name} failed`);
       }
     },
