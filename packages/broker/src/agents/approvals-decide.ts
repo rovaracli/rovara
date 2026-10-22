@@ -179,6 +179,8 @@ export async function runApprovalDecision(deps: ApprovalDependencies, caller: Ap
   }
   if (!await mayDecideApproval(deps, caller, record)) throw agentXError("FORBIDDEN", forbiddenText(record));
   if (record.status !== "PENDING") throw agentXError("APPROVAL_CLOSED", "this request was already decided");
+  // The sweep ends an approval whose time ran out only when it reaches it; until then the record is still PENDING, but it can no longer be decided (re-check N1).
+  if (Date.parse(record.expiresAt) <= deps.now()) throw agentXError("APPROVAL_CLOSED", "this request has expired");
   const run = executor ?? executorFor(record);
   if (record.kind === "write" && body.decision === "APPROVE" && deps.writeGate === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "writes by agents are not set up in this deployment");
   if (body.decision === "APPROVE" && run === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "this kind of approval can't be decided in this deployment");
@@ -198,7 +200,7 @@ export async function runApprovalDecision(deps: ApprovalDependencies, caller: Ap
     kind: record.kind, decision: body.decision, subjectKind: record.subject.kind, ...(record.kind === "write" ? { class: record.class } : {}),
   })]);
   const items: TransactItem[] = [
-    updateRecord(deps, record, fields, "pending"),
+    updateRecord(deps, record, fields, "pending", at),
     ...dueItems(deps, record, [record.expiresAt], status === "EXECUTING" || handler ? iso(now + RETRY_MS) : undefined),
     ...counterDrop(deps, record),
     ...approverDrops(deps, record),

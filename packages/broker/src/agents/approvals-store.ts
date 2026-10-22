@@ -676,7 +676,7 @@ export const approverDrops = (deps: Pick<ApprovalStoreDependencies, "tableName">
 }));
 
 /** An update of the record's fields, conditional on `when` (an expression over the aliases); undefined values are left out. */
-export function updateRecord(deps: Pick<ApprovalStoreDependencies, "tableName">, record: AnyApprovalRecord, set: Record<string, unknown>, when: Array<[attribute: string, value: unknown]> | "pending"): TransactItem {
+export function updateRecord(deps: Pick<ApprovalStoreDependencies, "tableName">, record: AnyApprovalRecord, set: Record<string, unknown>, when: Array<[attribute: string, value: unknown]> | "pending", openAt?: string): TransactItem {
   const names: Record<string, string> = { "#status": "status" };
   const values: Record<string, unknown> = {};
   const sets: string[] = [];
@@ -689,6 +689,12 @@ export function updateRecord(deps: Pick<ApprovalStoreDependencies, "tableName">,
   if (when === "pending") {
     conditions.push("#status = :pending");
     values[":pending"] = "PENDING";
+    // A decision's claim also needs the approval to be unexpired at that moment (ISO times compare as text), so it and the sweep's expiry can't both win across the boundary.
+    if (openAt !== undefined) {
+      conditions.push("#expiresAt > :openAt");
+      names["#expiresAt"] = "expiresAt";
+      values[":openAt"] = openAt;
+    }
   } else {
     when.forEach(([attribute, value], index) => {
       const alias = attribute === "status" ? "#status" : `#w${String(index)}`;

@@ -1075,6 +1075,45 @@ describe("a decision racing an expiry", () => {
   });
 });
 
+describe("a decision after the approval's time (re-check N1)", () => {
+  it("refuses APPROVAL_CLOSED at expiresAt + 1 ms, calls no vendor, and lets the later sweep mark it EXPIRED", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    const expiresAt = Date.parse((await w.record(id)).expiresAt);
+    w.clock.now = expiresAt + 1;
+    expect(await code(w.approve(BOB, id))).toEqual({ code: "APPROVAL_CLOSED", message: "this request has expired" });
+    expect(w.vendor.state.runs).toBe(0);
+    expect(await w.record(id)).toMatchObject({ status: "PENDING" });
+    // A decline is a decision too, and is refused the same way.
+    expect(await code(w.decline(BOB, id))).toMatchObject({ code: "APPROVAL_CLOSED" });
+    await w.sweep();
+    expect(await w.record(id)).toMatchObject({ status: "EXPIRED" });
+    expect(w.vendor.state.runs).toBe(0);
+  });
+
+  it("still accepts a decision at the last moment (now equal to expiresAt minus 1 ms)", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.clock.now = Date.parse((await w.record(id)).expiresAt) - 1;
+    expect((await w.approve(BOB, id)).status).toBe("APPROVED_DONE");
+  });
+
+  it("makes the claim itself conditional on the time: a record read before expiry loses to the clock at the claim", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    const stale = await w.record(id);
+    // The decision read the record while it was open, and the clock passed expiresAt before the claim was made.
+    const { runApprovalDecision } = await import("../../packages/broker/src/agents/approvals.js");
+    const late = { ...w.deps, now: () => Date.parse(stale.expiresAt) + 1 };
+    // The in-memory check would catch this too, so read the time only once: the early read says open, the claim says closed.
+    let reads = 0;
+    const flipping = { ...late, now: () => (reads++ === 0 ? Date.parse(stale.expiresAt) - 1000 : Date.parse(stale.expiresAt) + 1) };
+    await expect(runApprovalDecision(flipping, w.caller(BOB), stale, { requestId: REQ(950), decision: "APPROVE" })).rejects.toMatchObject({ code: "APPROVAL_CLOSED" });
+    expect(w.vendor.state.runs).toBe(0);
+    expect(await w.record(id)).toMatchObject({ status: "PENDING" });
+  });
+});
+
 describe("the index the sweep reads", () => {
   it("drops an item that does not agree with its own key, and one whose record is gone", async () => {
     const w = world();
