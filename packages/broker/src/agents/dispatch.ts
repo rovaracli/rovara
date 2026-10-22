@@ -116,6 +116,22 @@ function promptSectionOf(recipe: ResolvedRecipe, step: ResolvedStep | undefined,
   return layers.reduce((text, layer) => `${text}\n\nFrom ${layer.agentName}:\n${layer.text}`, header);
 }
 
+/**
+ * The start's check of the project's approved list: every model a step names, and its fallback, must be one the project lists (when it lists any).
+ * `requireRecipeAllowed` has already checked the company's guardrails; this is the project's half, so a model the project would never let run
+ * is refused before anything is charged instead of failing the task's first step. A step that names no model runs on the project's own.
+ */
+export function requireStepModelsApproved(recipe: ResolvedRecipe, ref: { name: string }, project: string, approved: ReadonlyArray<ModelIdentifier> | undefined): void {
+  if (approved === undefined) return;
+  for (const step of recipe.steps) {
+    const { model, fallbackModel } = settingsOf(step);
+    for (const named of [model, fallbackModel]) {
+      if (named === undefined || named === null || approved.some((entry) => sameModel(entry, named))) continue;
+      throw agentXError("MODEL_NOT_ALLOWED", `${ref.name}'s ${step.name} step uses ${label(named)}, which isn't allowed on ${project}. Ask the agent's owner to pick another model.`);
+    }
+  }
+}
+
 /** The most a prompt section may be: the payload's own limit (the worker body and the outbox item are bounded by it). */
 export const PROMPT_SECTION_MAX_BYTES = 65_536;
 
@@ -142,14 +158,18 @@ export function applyAgentStep(input: ApplyAgentStepInput): AppliedAgentStep {
   const settings = settingsOf(step);
   const stepName = step?.name ?? KIND_LABEL[KIND_OF_MODE[input.mode ?? "IMPLEMENT"]];
 
+  // The company's forbidden models and cross-company rule apply to every agent with a snapshot, Rovara Code's own model included (ruled intended).
+  // Work with no agent (a Slack thread operation, an install without `agents`) has no snapshot and is not checked here.
   const forbidden = new Set(input.guardrails.forbiddenModels.map(canonicalModelName));
   const usable = (model: ModelIdentifier): boolean => !forbidden.has(canonicalModelName(model))
     && (input.projectApproved === undefined || input.projectApproved.some((approved) => sameModel(approved, model)));
   const notAllowed = (model: ModelIdentifier) => agentXError("MODEL_NOT_ALLOWED", `${ref.name}'s ${stepName} step uses ${label(model)}, which isn't allowed on ${input.project}. Ask the agent's owner to pick another model.`);
-  const servedByPlan = (model: ModelIdentifier): boolean => input.chatgptModel !== undefined && modelCompany(model) === "openai" && model.modelId === input.chatgptModel.modelId;
+  // The person's plan model is a model like any other: one the company forbids is not used, and the operation runs on the proxy instead.
+  const planModel = input.chatgptModel !== undefined && !forbidden.has(canonicalModelName(input.chatgptModel)) ? input.chatgptModel : undefined;
+  const servedByPlan = (model: ModelIdentifier): boolean => planModel !== undefined && modelCompany(model) === "openai" && model.modelId === planModel.modelId;
   /** The model the operation would really run on if `chosen` were picked: the person's plan unless the step picked a model of its own that the plan does not serve. */
   const ranOn = (chosen: ModelSelection | undefined, own: boolean): ModelSelection | undefined =>
-    input.chatgptModel !== undefined && !(own && chosen !== undefined && !servedByPlan(chosen)) ? input.chatgptModel : chosen;
+    planModel !== undefined && !(own && chosen !== undefined && !servedByPlan(chosen)) ? planModel : chosen;
 
   const ownModel = settings.model ?? undefined;
   const fallback = settings.fallbackModel ?? undefined;
@@ -184,8 +204,8 @@ export function applyAgentStep(input: ApplyAgentStepInput): AppliedAgentStep {
     provider: chosen.provider, modelId: chosen.modelId,
     ...(level !== undefined ? { thinkingLevel: level } : chosen.thinkingLevel === undefined ? {} : { thinkingLevel: chosen.thinkingLevel }),
   };
-  const dropChatgpt = input.chatgptModel !== undefined && own && chosen !== undefined && !servedByPlan(chosen);
-  const ranModel = dropChatgpt ? model : input.chatgptModel ?? model;
+  const dropChatgpt = input.chatgptModel !== undefined && (planModel === undefined || (own && chosen !== undefined && !servedByPlan(chosen)));
+  const ranModel = dropChatgpt ? model : planModel ?? model;
 
   const promptSection = promptSectionOf(recipe, step, ref, stepName);
   if (promptSection !== undefined && Buffer.byteLength(promptSection, "utf8") > PROMPT_SECTION_MAX_BYTES) {

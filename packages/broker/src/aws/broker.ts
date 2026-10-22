@@ -200,6 +200,7 @@ import {
   DISPLAY_NAME_MAX_ENCODED_LENGTH,
   modelKey,
   ModelSelectionSchema,
+  recipeDigest,
   type ModelIdentifier,
   type ModelRef,
   type ModelSelection,
@@ -4800,7 +4801,8 @@ async function dispatchAgentStep(
 ): Promise<AppliedAgentStep | undefined> {
   if (task?.agent === undefined) return undefined;
   const frozen = await readTaskRecipe(dependencies, task.taskId, orgId);
-  if (frozen === undefined || frozen.digest !== task.agent.digest) throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
+  // The digest is computed from the recipe itself, never taken from the item's own field: the content is what must be the one the task recorded.
+  if (frozen === undefined || recipeDigest(frozen.recipe) !== task.agent.digest) throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
   const guardrails = await readGuardrails(dependencies, orgId);
   const stepIds = priorStepIds({ recipe: frozen.recipe, mode: input.workflowMode, programStepId: input.programStepId, guardrails });
   const priorOperations = stepIds.length === 0 ? [] : await priorStepModels(dependencies, workspace.id, frozen.recipe, stepIds);
@@ -4810,14 +4812,15 @@ async function dispatchAgentStep(
   });
 }
 
-/** The models the workspace's earlier coding operations ran on, by the recipe step each was (only those that recorded one). */
-async function priorStepModels(dependencies: AwsBrokerDependencies, workspaceId: string, recipe: ResolvedRecipe, stepIds: readonly string[]): Promise<Array<{ stepId: string; model: ModelSelection }>> {
-  const found: Array<{ stepId: string; model: ModelSelection }> = [];
+/** The models the workspace's earlier coding operations ran on, by the recipe step each was; one that recorded none has no model. */
+async function priorStepModels(dependencies: AwsBrokerDependencies, workspaceId: string, recipe: ResolvedRecipe, stepIds: readonly string[]): Promise<Array<{ stepId: string; model?: ModelSelection }>> {
+  const found: Array<{ stepId: string; model?: ModelSelection }> = [];
   for (const item of await queryAllItems(dependencies, `WORKSPACE#${workspaceId}`, "OPERATION#")) {
     if (item.entityType !== "OPERATION" || item.kind !== "task" || item.workflowMode === undefined) continue;
     const model = ModelSelectionSchema.safeParse(item.model);
     const stepId = stepForOperation(recipe, item.workflowMode as DispatchMode, typeof item.programStepId === "string" ? item.programStepId : undefined)?.id;
-    if (model.success && stepId !== undefined && stepIds.includes(stepId)) found.push({ stepId, model: model.data });
+    // An operation that recorded no model ran on one nobody knows (the worker's default): it is kept, so the comparison fails closed instead of passing.
+    if (stepId !== undefined && stepIds.includes(stepId)) found.push({ stepId, ...(model.success ? { model: model.data } : {}) });
   }
   return found;
 }
@@ -9577,6 +9580,8 @@ async function sendTerminalResult(
   transactItems: TransactItems,
   workspaceUpdate: TransactItems[number],
   send: (items: TransactItems) => Promise<unknown>,
+  /** Filled with the refusal's words when the task's first operation is refused (Plan 3, Task 16), for the failure the caller records. */
+  startRefusal: { text?: string } = {},
 ): Promise<OperationStatus> {
   const pointer = operation.kind === "prepare" ? taskPointer : undefined;
   const withoutTask: TransactItems = pointer === undefined ? transactItems : [...transactItems, { Update: {
@@ -9599,7 +9604,10 @@ async function sendTerminalResult(
       // setup_failed, its instructions are cleared and its slot is released (#213), instead of
       // the task waiting in STARTING forever. The error name only: its message could quote the task.
       console.log(JSON.stringify({ component: "broker", event: "developer.first_task_queue_failed", taskId: pointer.taskId, operationId: operation.id, error: partsError instanceof Error ? partsError.name : "unknown" }));
-      await send(failedPrepareItems(dependencies, workspace, operation, now));
+      // Plan 3, Task 16: a model the company or the project does not allow is the owner's to fix, and the refusal's words say how.
+      // Only that error is quoted: its message names the agent, the step and the model, never the task.
+      if (partsError instanceof AgentXError && partsError.code === "MODEL_NOT_ALLOWED") startRefusal.text = refusalText(partsError);
+      await send(failedPrepareItems(dependencies, workspace, operation, now, startRefusal.text));
       return "FAILED";
     }
   }
@@ -9632,12 +9640,15 @@ function firstTaskQueueRetry(taskId: string, operationId: string, error: Error):
   return agentXError("RUNTIME_UNAVAILABLE", "the task's first instructions could not be queued yet; send the result again");
 }
 
+/** A refusal's words without the `CODE: ` the error class puts in front of them: what the owner is told. */
+const refusalText = (error: AgentXError): string => error.message.startsWith(`${error.code}: `) ? error.message.slice(error.code.length + 2) : error.message;
+
 /** The error a prepare is recorded with when its task's first instructions could not be queued (final review I1). */
 const FIRST_TASK_QUEUE_FAILED = "the task's first instructions could not be queued; close this task and start a new one";
 
 /** A prepare that the worker reported SUCCEEDED but that was recorded FAILED because its first task could not be queued. */
 const isQueueFailedPrepare = (operation: OperationRecord, reported: unknown): boolean =>
-  operation.kind === "prepare" && operation.status === "FAILED" && operation.error === FIRST_TASK_QUEUE_FAILED && reported === "SUCCEEDED";
+  operation.kind === "prepare" && operation.status === "FAILED" && (operation.error === FIRST_TASK_QUEUE_FAILED || operation.startRefused === true) && reported === "SUCCEEDED";
 
 /** C18: a prepare the stuck-setup sweep failed; the worker's late result is answered, not refused. */
 const isSweptPrepare = (operation: OperationRecord): boolean =>
@@ -9647,15 +9658,15 @@ const isSweptPrepare = (operation: OperationRecord): boolean =>
  * A developer task's prepare recorded as FAILED (final review I1): the operation, the workspace
  * released as PREPARATION_FAILED, and the raw instructions cleared from an existing pointer.
  */
-function failedPrepareItems(dependencies: AwsBrokerDependencies, workspace: WorkspaceInstance, operation: OperationRecord, now: string): TransactItems {
+function failedPrepareItems(dependencies: AwsBrokerDependencies, workspace: WorkspaceInstance, operation: OperationRecord, now: string, refusal?: string): TransactItems {
   return [
     { Update: {
       TableName: dependencies.tableName,
       Key: operationKey(operation.workspaceId, operation.id),
-      UpdateExpression: "SET #status = :status, updatedAt = :now, #error = :error",
+      UpdateExpression: `SET #status = :status, updatedAt = :now, #error = :error${refusal === undefined ? "" : ", startRefused = :refused"}`,
       ConditionExpression: "fence = :fence",
       ExpressionAttributeNames: { "#status": "status", "#error": "error" },
-      ExpressionAttributeValues: { ":status": "FAILED", ":now": now, ":error": FIRST_TASK_QUEUE_FAILED, ":fence": operation.fence },
+      ExpressionAttributeValues: { ":status": "FAILED", ":now": now, ":error": refusal ?? FIRST_TASK_QUEUE_FAILED, ":fence": operation.fence, ...(refusal === undefined ? {} : { ":refused": true }) },
     } },
     { Update: {
       TableName: dependencies.tableName,
@@ -10084,7 +10095,7 @@ function workflowDispatchBackoffMinutes(attempts: number): number {
  * plain reason in one transaction, so the owner sees Retry reviews (or Retry opening the pull request) instead of a task silently waiting. Both writes
  * hold only while the row still has the attempts this run read; a row someone else moved is left to them.
  */
-async function recordWorkflowDispatchFailure(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord): Promise<void> {
+async function recordWorkflowDispatchFailure(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord, finalReason?: string): Promise<void> {
   const previous = item.attempts ?? 0;
   const attempts = previous + 1;
   const now = new Date().toISOString();
@@ -10092,7 +10103,8 @@ async function recordWorkflowDispatchFailure(dependencies: AwsBrokerDependencies
   const sameRow = { ConditionExpression: "attribute_exists(pk) AND (attempts = :previous OR (attribute_not_exists(attempts) AND :previous = :zero))",
     ExpressionAttributeValues: { ":previous": previous, ":zero": 0 } };
   try {
-    if (attempts < WORKFLOW_DISPATCH_MAX_ATTEMPTS) {
+    // A refusal that cannot change by trying again (`finalReason`) skips the retries and blocks the task with its own words.
+    if (finalReason === undefined && attempts < WORKFLOW_DISPATCH_MAX_ATTEMPTS) {
       const nextAttemptAt = new Date(Date.parse(now) + workflowDispatchBackoffMinutes(attempts) * 60_000).toISOString();
       await dependencies.documentClient.send(new UpdateCommand({
         TableName: dependencies.tableName, Key: key,
@@ -10106,11 +10118,12 @@ async function recordWorkflowDispatchFailure(dependencies: AwsBrokerDependencies
     const workflow = task?.workflow;
     const deleteRow = { Delete: { TableName: dependencies.tableName, Key: key, ...sameRow } };
     // The stage and state the row was due in, and the plain reason the owner sees when AgentX gives up on it.
-    const [stage, state, reason] = item.kind === "CHECKS"
+    const [stage, state, usualReason] = item.kind === "CHECKS"
       ? ["VERIFY", "WAITING", WORKFLOW_BLOCK_REASONS.checksUnconfirmed] as const
       : item.kind === "REVIEW" ? ["REVIEW", "WAITING", WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE] as const
       : item.kind === "IMPLEMENT" ? ["IMPLEMENT", "READY", WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE] as const
       : ["PULL_REQUEST", "READY", WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE] as const;
+    const reason = finalReason ?? usualReason;
     // A fix AgentX gave up pushing: the task waits for the merge, blocked, naming the pull request.
     const updating = item.kind === "UPDATE" && workflow !== undefined ? nextWorkflowPullRequestUpdate(workflow) : undefined;
     if (workflow === undefined || workflow.revision !== item.workflowRevision || workflow.stage !== stage || workflow.state !== state || task?.closedAt !== undefined
@@ -10476,6 +10489,13 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
         }
       }
       return "RETRY";
+    }
+    // Plan 3, Task 16: the company or the project no longer allows the model this step needs. Trying again cannot change that, so the task is
+    // blocked at once with the refusal's own words, which the owner can read.
+    if (error instanceof AgentXError && error.code === "MODEL_NOT_ALLOWED") {
+      console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_refused", taskId: item.taskId, kind: item.kind, error: error.code }));
+      await recordWorkflowDispatchFailure(dependencies, item, refusalText(error));
+      return "STALE";
     }
     console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_failed", taskId: item.taskId, kind: item.kind, attempt: (item.attempts ?? 0) + 1,
       error: error instanceof AgentXError ? error.code : error instanceof Error ? error.name : "unknown" }));
@@ -11760,6 +11780,7 @@ async function recordTerminalResult(
   const now = new Date().toISOString();
   const terminalStatus = status as OperationStatus;
   let recordedStatus: OperationStatus = terminalStatus;
+  const startRefusal: { text?: string } = {};
   // #154: the worker's error can quote a command's output, so it is redacted before it is stored,
   // and redactAndCap redacts before it caps.
   const error = typeof input.error === "string" ? redactAndCap(input.error, TERMINAL_ERROR_MAX).text : undefined;
@@ -11889,7 +11910,7 @@ async function recordTerminalResult(
       const cancelledGraph = graphCancellation === undefined ? []
         : await cancelledGraphWorkflowItems(dependencies, pointer, graphCancellation.target, now);
       recordedStatus = await sendTerminalResult(dependencies, workspace, operation, pointer, terminalStatus, now,
-        [...transactItems, ...completed, ...workflow, ...cancelledGraph, ...cancelledE2E], workspaceUpdate, send);
+        [...transactItems, ...completed, ...workflow, ...cancelledGraph, ...cancelledE2E], workspaceUpdate, send, startRefusal);
       evidenceJobs = [...workflow, ...cancelledGraph, ...cancelledE2E].flatMap((item) => {
         const row = item.Put?.Item as Partial<PlanEvidenceJob> | undefined;
         return row?.pk === PLAN_EVIDENCE_PK && row.taskId !== undefined && row.artifactId !== undefined ? [planEvidenceEvent(row.taskId, row.artifactId)] : [];
@@ -11952,13 +11973,13 @@ async function recordTerminalResult(
     if (taskPointer !== undefined) {
       await recordPrepareFailureEvent(dependencies.documentClient, dependencies.tableName, {
         workspaceId: operation.workspaceId, operationId: operation.id, fence: operation.fence, status: recordedStatus,
-        error: recordedStatus !== terminalStatus ? FIRST_TASK_QUEUE_FAILED : error, at: now,
+        error: recordedStatus !== terminalStatus ? startRefusal.text ?? FIRST_TASK_QUEUE_FAILED : error, at: now,
         // The setup itself finished; it was the task's start that failed.
         ...(recordedStatus !== terminalStatus ? { lead: "The task could not start" } : {}),
       });
     }
   }
-  if (recordedStatus !== terminalStatus) return { ...operation, status: recordedStatus, updatedAt: now, error: FIRST_TASK_QUEUE_FAILED };
+  if (recordedStatus !== terminalStatus) return { ...operation, status: recordedStatus, updatedAt: now, error: startRefusal.text ?? FIRST_TASK_QUEUE_FAILED };
   return { ...operation, status: terminalStatus, updatedAt: now, ...(result === undefined ? {} : { result }), ...(error === undefined ? {} : { error }) };
 }
 
@@ -12021,7 +12042,7 @@ async function repeatPrepareFailureEvent(dependencies: AwsBrokerDependencies, op
   }
   await recordPrepareFailureEvent(dependencies.documentClient, dependencies.tableName, {
     workspaceId: operation.workspaceId, operationId: operation.id, fence: operation.fence, status: operation.status, error: operation.error, at: operation.updatedAt,
-    ...(operation.error === FIRST_TASK_QUEUE_FAILED ? { lead: "The task could not start" } : {}),
+    ...(operation.error === FIRST_TASK_QUEUE_FAILED || operation.startRefused === true ? { lead: "The task could not start" } : {}),
   });
 }
 

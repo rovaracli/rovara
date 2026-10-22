@@ -1540,6 +1540,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
         ...(run?.runLimitUsd === undefined ? {} : { runLimitUsd: run.runLimitUsd }),
         ...(run?.resultContract === undefined ? {} : { resultContract: run.resultContract }),
         repositories: project.definition.repositories.map((repository) => ({ name: repository.name, url: repository.url })),
+        ...(project.definition.models === undefined ? {} : { projectApproved: project.definition.models.approved }),
       });
       if (request.workflow === true && prepared.runner === "agent_steps") {
         throw agentXError("CONFIG_INVALID", `${prepared.ref.name} doesn't write code, so it can't run as a coding workflow`);

@@ -47,6 +47,8 @@ export interface OperationRecord extends Operation {
   settingsRevision?: number;
   /** Plan 3, Task 16: the model a task operation of an agent ran on (the person's ChatGPT plan model when it did), kept for the cross-company check of a later step. */
   model?: ModelSelection;
+  /** A prepare recorded FAILED because the task's first operation was refused (a model not allowed); its `error` is the refusal's words. */
+  startRefused?: true;
   /** #341: the developer whose ChatGPT plan this task runs on; its chatgpt-token callback answers only their token. */
   chatgptDeveloperId?: string;
   /** #342: why this task stopped using its owner's ChatGPT plan, as its worker said; set once. */

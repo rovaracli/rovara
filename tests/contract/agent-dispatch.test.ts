@@ -2,7 +2,7 @@
 // operation the broker builds afterwards reads that snapshot, finds the step the operation is, and applies the step's model, instructions,
 // tools, skills and time limit. This file tests the rules as plain functions (`stepForOperation`, `applyAgentStep`) and then through the
 // broker: the prompt and invocation of a real operation, the model forbidden mid-task, ChatGPT-plan tasks, and a worker too old for the fields.
-import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import { applyAgentStep, crossCompanyTargets, priorStepIds, stepForOperation, PROMPT_SECTION_MAX_BYTES, type ApplyAgentStepInput, type DispatchMode } from "../../packages/broker/src/agents/dispatch.js";
@@ -20,6 +20,8 @@ import type { ModelSelection } from "../../packages/contracts/src/models.js";
 import { AGENT_WORKER_OUTDATED, AgentStepPayloadSchema, type WorkerInvocation } from "../../packages/contracts/src/protocol.js";
 import type { ChatGptConnectionView } from "../../packages/contracts/src/index.js";
 import type { ChatGptConnections } from "../../packages/broker/src/chatgpt/connections.js";
+import { createCandidateManifest } from "../../packages/contracts/src/task-workflow.js";
+import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker, registerSlackProject } from "../support/slack-broker.js";
@@ -148,6 +150,19 @@ describe("applyAgentStep: ChatGPT", () => {
     expect(apply({ recipe, mode: "REVIEW", projectModel: SONNET }).dropChatgpt).toBe(false);
   });
 
+  it("leaves the plan when the company forbids the plan's model, and runs on the step's or the project's model instead", () => {
+    const recipe = recipeOf([build(), review({ model: HAIKU })]);
+    const forbidSol = guardrails({ forbiddenModels: [SOL] });
+    const implementing = apply({ recipe, mode: "IMPLEMENT", projectModel: SONNET, chatgptModel: SOL, guardrails: forbidSol });
+    expect(implementing.dropChatgpt).toBe(true);
+    expect(implementing.model).toEqual(SONNET);
+    expect(implementing.ranModel).toEqual(SONNET);
+    // The same plan model on another route is the same model.
+    expect(apply({ recipe, mode: "IMPLEMENT", projectModel: SONNET, chatgptModel: SOL, guardrails: guardrails({ forbiddenModels: [{ provider: "openrouter", modelId: "openai/gpt-6.1-sol" }] }) }).dropChatgpt).toBe(true);
+    // A plan model nobody forbids stays.
+    expect(apply({ recipe, mode: "IMPLEMENT", projectModel: SONNET, chatgptModel: SOL, guardrails: guardrails({ forbiddenModels: [GPT55] }) }).dropChatgpt).toBe(false);
+  });
+
   it("records the plan's model as the one the operation ran on while it stays on the plan, and the step's otherwise", () => {
     const recipe = recipeOf([build(), review({ model: HAIKU })]);
     expect(apply({ recipe, mode: "IMPLEMENT", projectModel: SONNET, chatgptModel: SOL }).ranModel).toEqual(SOL);
@@ -205,6 +220,12 @@ describe("applyAgentStep: a different AI company", () => {
     expect(staying.dropChatgpt).toBe(true);
     // Without the plan the same step runs on the project's model, which already differs from the build's.
     expect(apply({ recipe: onPlan, mode: "REVIEW", guardrails: rule, priorOperations: prior, projectModel: SONNET }).model).toEqual(SONNET);
+  });
+
+  it("fails closed when the earlier operation of the step recorded no model: the step's own model is not shown to differ", () => {
+    const text = "Custom coder needs its Review step from a different AI company than its Build step, and none is allowed on payments. Ask an admin to add one.";
+    expect(refusal(() => apply({ recipe, mode: "REVIEW", priorOperations: [{ stepId: "build" }], projectModel: SONNET }))).toEqual({ code: "MODEL_NOT_ALLOWED", message: text });
+    expect(refusal(() => apply({ recipe, mode: "REVIEW", priorOperations: [{ stepId: "build" }, { stepId: "build", model: SONNET }] }))?.code).toBe("MODEL_NOT_ALLOWED");
   });
 
   it("does not stop a step with nothing recorded to compare with, and says which earlier steps it compares with", () => {
@@ -312,6 +333,8 @@ describe("applyAgentStep: what the worker is told", () => {
 // ---- through the broker
 
 const SERVABLE = [SONNET, HAIKU, GPT55, SOL, { provider: "anthropic", modelId: "claude-opus-4-6" }];
+const REQUIRED_CHECK = { id: "required-1", label: "npm test", command: { cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 } };
+const PASSING_CHECKS = { status: "verified", source: "project", preambleVersion: "1", preambleSha256: "c".repeat(64), checks: [{ id: "readiness:0", label: "npm test", source: "project", before: "passed", after: "passed", class: "passing", output: "", durationMs: 12 }], extraTry: "not_needed", agentClaim: "success" };
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 const PROJECT_MODELS = { default: SONNET, approved: [SONNET, HAIKU, GPT55, SOL] };
 
@@ -366,13 +389,19 @@ async function setup(options: SetupOptions = {}) {
   const operations = (workspaceId: string) => h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION");
   const invocationOf = (operationId: string) => h.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation as { callbackCapability: string; payload: Record<string, unknown> };
   /** Starts a run of `agentId`, finishes its preparation and returns the planning operation it makes. */
-  const start = async (agentId: AgentId, extra: Record<string, unknown> = {}) => {
+  /** Starts a run of `agentId` and stops there: its preparation has not finished. */
+  const begin = async (agentId: AgentId, extra: Record<string, unknown> = {}) => {
     const reply = await call("POST", "/v1/dev/tasks", { project: "payments", instructions: "Fix the retry bug", agent: { agentId }, workflow: true, workflowPath: "QUICK", client: "test-client", ...extra });
     expect(reply.status, JSON.stringify(reply.body)).toBe(200);
     const taskId = (reply.body.task as { taskId: string }).taskId;
     const meta = () => h.db.get(`DEVTASK#${taskId}`, "META") as unknown as DeveloperTaskRecord;
     const { workspaceId } = meta();
-    await h.finish(workspaceId, String(operations(workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    const prepareId = String(operations(workspaceId).find((item) => item.kind === "prepare")!.id);
+    return { taskId, workspaceId, meta, prepareId, finishPrepare: () => h.finish(workspaceId, prepareId, "SUCCEEDED", PREPARED) };
+  };
+  const start = async (agentId: AgentId, extra: Record<string, unknown> = {}) => {
+    const { taskId, meta, workspaceId, finishPrepare } = await begin(agentId, extra);
+    await finishPrepare();
     const planning = operations(workspaceId).find((item) => item.workflowMode === "PLAN")!;
     /** Ends the operation that is running, as a worker's failed run would, so the workspace takes the next one. */
     const endActive = async () => {
@@ -393,7 +422,7 @@ async function setup(options: SetupOptions = {}) {
     const current = await readGuardrailsWithRevision({ documentClient: h.db, tableName: "state" }, TEST_ORG);
     await store.putGuardrails({ orgId: TEST_ORG, guardrails: { ...current.guardrails, ...change }, expectedRevision: current.revision, by: MAYA.developerId });
   };
-  return { ...h, store, call, agentOf, start, operations, invocationOf, setGuardrails };
+  return { ...h, store, call, agentOf, begin, start, operations, invocationOf, setGuardrails };
 }
 
 describe("a custom coding agent's operations", () => {
@@ -473,11 +502,24 @@ describe("a custom coding agent's operations", () => {
   it("fails closed when the task's snapshot is not the one the task recorded", async () => {
     const t = await setup();
     const run = await t.start(await t.agentOf(CODER));
-    const item = t.db.get(`DEVTASK#${run.taskId}`, "RECIPE") as { recipe: ResolvedRecipe; digest: string };
-    t.db.set({ ...item, digest: "f".repeat(64) });
+    t.db.set({ ...run.meta(), agent: { ...run.meta().agent!, digest: "f".repeat(64) } });
     await expect(run.accept("IMPLEMENT", "build")).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     t.db.delete({ pk: `DEVTASK#${run.taskId}`, sk: "RECIPE" });
     await expect(run.accept("IMPLEMENT", "build")).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+
+  it("binds the snapshot's content to the digest the task recorded: a recipe edited under an unchanged digest field is refused", async () => {
+    const t = await setup();
+    const run = await t.start(await t.agentOf(CODER));
+    const item = t.db.get(`DEVTASK#${run.taskId}`, "RECIPE") as { recipe: ResolvedRecipe; digest: string };
+    const edited = structuredClone(item.recipe);
+    (edited.steps.find((step) => step.id === "review")!.settings as Record<string, unknown>).tools = ["bash"];
+    // The stored digest field still names the original recipe, as the task's record does: only the content changed.
+    t.db.set({ ...item, recipe: edited });
+    await expect(run.accept("REVIEW", "review")).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    // The item's own digest field changed to match the content is no better: the task's record is what it must equal.
+    t.db.set({ ...item, recipe: edited, digest: recipeDigest(edited) });
+    await expect(run.accept("REVIEW", "review")).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
   });
 
   it("pins the recipe's skills on the steps that read them and grants the skills capability only to those operations", async () => {
@@ -589,6 +631,118 @@ describe("a ChatGPT-plan task", () => {
       code: "MODEL_NOT_ALLOWED",
       message: "MODEL_NOT_ALLOWED: Plain coder needs its Review step from a different AI company than its Build step, and none is allowed on payments. Ask an admin to add one.",
     });
+  });
+});
+
+describe("a step model the project does not approve, refused at the start", () => {
+  const OPUS: ModelSelection = { provider: "anthropic", modelId: "claude-opus-4-6" };
+  const text = (agent: string, step: string, model: ModelSelection) => `${agent}'s ${step} step uses ${model.provider}/${model.modelId}, which isn't allowed on payments. Ask the agent's owner to pick another model.`;
+  const withBuild = (settings: Record<string, unknown>): RecipeOverlay => ({ ...CODER, sequence: CODER.sequence!.map((step) => (step.id === "build" ? { ...step, settings } : step)) });
+
+  it("refuses a step's model that is not on the project's list, before any charge or write, with the exact text", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf(withBuild({ model: OPUS }), "Unapproved coder");
+    const reply = await t.call("POST", "/v1/dev/tasks", { project: "payments", instructions: "Fix it", agent: { agentId }, workflow: true, workflowPath: "QUICK", client: "test-client" });
+    expect(reply.status).toBe(403);
+    expect(reply.body.error).toEqual({ code: "MODEL_NOT_ALLOWED", message: text("Unapproved coder", "Build", OPUS) });
+    expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toEqual([]);
+    expect(t.db.find((item) => item.entityType === "DEVELOPER_LIMIT" || item.entityType === "SLACK_LIMIT")).toEqual([]);
+    expect(t.db.find((item) => item.entityType === "OUTBOX")).toEqual([]);
+  });
+
+  it("refuses a fallback that is not on the list either, and starts a run whose models are all on it", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf(withBuild({ model: SONNET, fallbackModel: OPUS }), "Fallback coder");
+    const reply = await t.call("POST", "/v1/dev/tasks", { project: "payments", instructions: "Fix it", agent: { agentId }, workflow: true, workflowPath: "QUICK", client: "test-client" });
+    expect(reply.status).toBe(403);
+    expect(reply.body.error).toEqual({ code: "MODEL_NOT_ALLOWED", message: text("Fallback coder", "Build", OPUS) });
+    expect((await t.begin(await t.agentOf(CODER))).taskId).toBeDefined();
+  });
+
+  it("checks nothing against a project that lists no models, and nothing for Rovara Code", async () => {
+    const open = await setup({ models: false });
+    expect((await open.begin(await open.agentOf(withBuild({ model: OPUS })))).taskId).toBeDefined();
+    const listed = await setup();
+    expect((await listed.begin("rovara-code")).taskId).toBeDefined();
+  });
+});
+
+describe("a refusal at dispatch is final and tells the owner", () => {
+  const REFUSAL = "Strict coder's Review step uses anthropic/claude-haiku-4-5, which isn't allowed on payments. Ask the agent's owner to pick another model.";
+  const noFallback = recipeWithReview({ model: HAIKU, tools: ["read", "grep"] });
+
+  it("blocks the task with the refusal's own words and removes the dispatch row, when a guardrail tightens before the first review", async () => {
+    const t = await setup();
+    const run = await t.start(await t.agentOf(noFallback, "Strict coder"));
+    const record = run.meta() as unknown as Record<string, unknown> & { workflow: Record<string, unknown> };
+    t.db.set({ ...record, workflow: { ...record.workflow, checkPolicy: { required: [REQUIRED_CHECK], optional: [], selectedOptionalIds: [] } } });
+    const plan = "# Plan\n\n1. Fix retry handling.\n2. Add a regression test.\n";
+    await finishPlanningWithMarkdown(t, run.workspaceId, String(run.planning.id), plan);
+    const approved = await t.dev(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/workflow/decision`, {
+      requestId: randomUUID(), expectedRevision: (run.meta().workflow as unknown as { revision: number }).revision, decision: "APPROVE", reason: "Approved", artifactDigest: createHash("sha256").update(plan).digest("hex"),
+    });
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    const implementing = t.operations(run.workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
+    await t.setGuardrails({ forbiddenModels: [HAIKU] });
+    const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: "d".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);
+    await t.finish(run.workspaceId, String(implementing.id), "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories, checks: PASSING_CHECKS } });
+    const workflow = run.meta().workflow as unknown as { state: string; stage: string; blockReason?: string };
+    expect(workflow).toMatchObject({ stage: "REVIEW", state: "BLOCKED", blockReason: REFUSAL });
+    expect(t.db.find((item) => item.pk === "WORKFLOW_DISPATCH")).toEqual([]);
+    expect(t.operations(run.workspaceId).filter((item) => item.workflowMode === "REVIEW")).toEqual([]);
+  });
+
+  it("ends the preparation FAILED with the refusal's words when the first operation is refused, answers the worker's repeated result, and keeps the instructions cleared", async () => {
+    const t = await setup();
+    const planRefusal = "Plain coder's Plan step uses anthropic/claude-sonnet-4-6, which isn't allowed on payments. Ask the agent's owner to pick another model.";
+    const started = await t.begin(await t.agentOf(CODER, "Plain coder"));
+    await t.setGuardrails({ forbiddenModels: [SONNET] });
+    await started.finishPrepare();
+    const prepare = t.operations(started.workspaceId).find((item) => item.id === started.prepareId)!;
+    expect(prepare).toMatchObject({ status: "FAILED", error: planRefusal });
+    expect(t.operations(started.workspaceId).filter((item) => item.workflowMode === "PLAN")).toEqual([]);
+    const pointer = t.db.find((item) => item.pk === `WORKSPACE#${started.workspaceId}` && item.entityType === "DEVELOPER_TASK_POINTER")[0]!;
+    expect(pointer.pendingPrompt).toBeUndefined();
+    expect(t.db.get(`WORKSPACE#${started.workspaceId}`, "META")).toMatchObject({ status: "PREPARATION_FAILED" });
+    expect(JSON.stringify(t.db.find((item) => item.entityType === "EVENT"))).toContain(planRefusal);
+    // The worker sends its result again: the prepare stays as recorded.
+    await expect(started.finishPrepare()).resolves.toBeDefined();
+    expect(t.operations(started.workspaceId).find((item) => item.id === started.prepareId)).toMatchObject({ status: "FAILED", error: planRefusal });
+  });
+});
+
+describe("the cross-company rule when the earlier step ran on a model nobody recorded", () => {
+  it("refuses the review with the cross-company text rather than letting it pass", async () => {
+    const t = await setup({ models: false });
+    const plain: RecipeOverlay = { instructions: "Rules.", sequence: [
+      { id: "plan", name: "Plan", kind: "plan" }, { id: "build", name: "Build", kind: "build" }, { id: "check", name: "Check", kind: "check" },
+      { id: "review", name: "Review", kind: "review", reviewers: ["code", "security"], onFindings: { backTo: "build", maxRounds: 2 }, settings: { model: HAIKU, fallbackModel: GPT55 } },
+    ] };
+    const run = await t.start(await t.agentOf(plain, "Open coder"));
+    const implementing = await run.accept("IMPLEMENT", "build");
+    // The project lists no models and the build step names none: the build ran on the worker's default, which nothing recorded.
+    expect(implementing.operation).not.toHaveProperty("model");
+    await t.setGuardrails({ requireCrossCompanyReview: true });
+    await expect(run.accept("REVIEW", "review")).rejects.toMatchObject({
+      code: "MODEL_NOT_ALLOWED",
+      message: "MODEL_NOT_ALLOWED: Open coder needs its Review step from a different AI company than its Build step, and none is allowed on payments. Ask an admin to add one.",
+    });
+  });
+});
+
+describe("a ChatGPT plan model the company forbids", () => {
+  it("is not used: the operation runs on the proxy with the project's model, with no token grant", async () => {
+    const t = await setup({ chatgpt: { [MAYA.developerId]: { connected: true, status: "connected", models: ["gpt-6.1-sol"] } } });
+    const noModels: RecipeOverlay = { instructions: "Rules.", sequence: [{ id: "plan", name: "Plan", kind: "plan" }, { id: "build", name: "Build", kind: "build" }] };
+    const run = await t.start(await t.agentOf(noModels));
+    expect(run.planInvocation.payload.chatgpt).toEqual({ model: SOL });
+    await t.setGuardrails({ forbiddenModels: [SOL] });
+    const implementing = await run.accept("IMPLEMENT", "build");
+    expect(implementing.invocation.payload).not.toHaveProperty("chatgpt");
+    expect(implementing.invocation.payload.model).toEqual(SONNET);
+    expect(implementing.operation.model).toEqual(SONNET);
+    expect(implementing.operation.chatgptDeveloperId).toBeUndefined();
+    expect((JSON.parse(Buffer.from(implementing.invocation.callbackCapability.split(".")[0]!, "base64url").toString("utf8")) as { actions: string[] }).actions).not.toContain("chatgpt-token");
   });
 });
 

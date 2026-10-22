@@ -30,6 +30,7 @@ import {
   runRequestKey,
   type AgentId,
   type AgentRunState,
+  type ModelIdentifier,
   type OrgId,
   type Payer,
   type ProjectRole,
@@ -43,6 +44,7 @@ import {
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { effectiveMaxPerRun } from "../spend/settings.js";
 import type { AgentCaller } from "./access.js";
+import { requireStepModelsApproved } from "./dispatch.js";
 import { readGuardrails } from "./guardrails.js";
 import { resolveAgentForAutonomousRun, resolveAgentForTask, type RosterDependencies, type TaskAgentRef } from "./roster.js";
 import { putNew, type TableInput, type TransactItem } from "./table-writes.js";
@@ -177,6 +179,8 @@ export interface PrepareRunInput {
   resultContract?: ResultContract;
   /** The project's repositories, from the revision the task starts on. */
   repositories: ReadonlyArray<{ name: string; url: string }>;
+  /** The models the project approves (`definition.models.approved`), from the same revision; absent when it lists none. */
+  projectApproved?: ReadonlyArray<ModelIdentifier>;
 }
 
 /** The refusal for a result contract on a recipe that is not made of agent steps (G1). */
@@ -203,10 +207,13 @@ export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunIn
   }
   const { recipe, digest, ref } = resolved;
   const runner = recipeRunner(recipe);
-  // TASK 22 REMOVES THIS REFUSAL (with `agentStepRuns`): nothing runs an agent step yet, so no such run may take a slot.
+  // TASK 22 REMOVES THIS REFUSAL (with `agentStepRuns`): nothing runs an agent step yet, so such a run is refused here. Resolving the agent above may
+  // have pinned a built-in's version for the org (an idempotent write); no task, workspace slot, charge or run record is written.
   if (runner === "agent_steps" && deps.agentStepRuns !== true) {
     throw agentXError("AGENT_UNAVAILABLE", `${ref.name} can't run yet: Rovara doesn't run agents that work in steps in this version.`);
   }
+  // The project's half of the model checks (the company's guardrails were checked while the agent was resolved): refused before any charge.
+  requireStepModelsApproved(recipe, ref, input.project, input.projectApproved);
   // A coding run is asked the text as written; an agent-step run keeps its input as state, so it must be a run input.
   if (runner === "agent_steps") {
     const valid = RunInputSchema.safeParse(input.input);
