@@ -58,8 +58,9 @@ describe("agentx whoami and logout (FR-011)", () => {
     expect(h.out.join("")).toBe([
       `Signed in to AgentX environment staging (${URL_}) as Maya Chen, with Slack (U0MAYA001).`,
       "Projects you can use:",
-      "  payments-api  (you are in its Slack channel C0PAY0001)",
-      "  solo  (an admin granted you access)",
+      // This control plane sends no project roles (an older one), so each line says only how the project is reached.
+      "  payments-api: through C0PAY0001",
+      "  solo: you have access",
       "",
     ].join("\n"));
   });

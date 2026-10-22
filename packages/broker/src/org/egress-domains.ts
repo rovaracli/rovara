@@ -12,12 +12,15 @@ import {
   EGRESS_DOMAINS_PK,
   EGRESS_SYNC_KEY,
   EGRESS_SYNC_PENDING_WARNING,
+  ALLOWED_DOMAIN_MESSAGE,
   EgressDomainsItemSchema,
   agentXError,
   egressDomainsKey,
   egressNotPendingMessage,
   egressOrgSkPrefix,
   egressPendingWarning,
+  isAllowedDomain,
+  projectMetaKey,
   egressRejectedWarning,
   type EgressAuditAction,
   type EgressDomainEntry,
@@ -33,8 +36,10 @@ export interface EgressDomainsDependencies {
   /** Rovara Cloud: a new domain waits for staff. Anywhere else it is approved when it is saved. */
   cloud: boolean;
   now: () => Date;
-  /** Pushes the approved union to the DNS firewall (Task 19's `syncCellAllowList`). `{ ok: false }` leaves the marker dirty for the schedule. */
-  sync: () => Promise<{ ok: boolean }>;
+  /** Waits before a retry; tests pass a quick one. */
+  sleep?: (milliseconds: number) => Promise<void>;
+  /** Pushes the approved union to the DNS firewall (Task 19's `syncCellAllowList`, wired by the broker). `{ ok: false }` leaves the marker dirty for the schedule. */
+  sync: () => Promise<{ ok: boolean; domains?: number }>;
 }
 
 type Reader = Pick<EgressDomainsDependencies, "documentClient" | "tableName">;
@@ -55,7 +60,18 @@ interface Plan<T> {
   result: T;
 }
 
-const cancelled = (error: unknown) => error instanceof Error && error.name === "TransactionCanceledException";
+/** How a cancelled transaction reads: a condition on the item failed (someone changed it), or something else did (a concurrent transaction on the shared sync marker, throttling). */
+function cancellation(error: unknown): "changed" | "other" | undefined {
+  if (!(error instanceof Error) || error.name !== "TransactionCanceledException") return undefined;
+  const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+  // A cancellation that names no reasons is taken for a failed condition, the safe reading.
+  return reasons === undefined || reasons.some((reason) => reason.Code === "ConditionalCheckFailed") ? "changed" : "other";
+}
+
+const defaultSleep = (milliseconds: number) => new Promise<void>((resolve) => { setTimeout(resolve, milliseconds); });
+
+/** The attempts a write gets: one retry after the item changed under it, and a few more for cancellations that were not about the item. */
+const MAX_ATTEMPTS = 4;
 
 function parseItem(raw: unknown): EgressDomainsItem | undefined {
   if (raw === undefined) return undefined;
@@ -76,18 +92,25 @@ async function readItem(deps: Reader, key: OrgKey): Promise<EgressDomainsItem | 
 
 /**
  * Reads the item, plans the change, and writes it with its audit items in one transaction that holds only while the item is as it was read.
- * A refused condition reads again and plans again, once; a second refusal is IDEMPOTENCY_CONFLICT. `updatedAt` always moves forward, so two
- * writes in one millisecond are never taken for one.
+ * A refused condition (the item changed) reads again and plans again, once; a second refusal is IDEMPOTENCY_CONFLICT. A cancellation for any
+ * other reason (a concurrent transaction on the shared sync marker, throttling) is retried quietly and, if it persists, is RUNTIME_UNAVAILABLE:
+ * it says nothing about the allowed domains having changed. `updatedAt` always moves forward, so two writes in one millisecond are never taken for one.
  */
 async function mutate<T>(
   deps: EgressDomainsDependencies,
   key: OrgKey,
-  planFor: (current: EgressDomainsItem | undefined, at: string) => Plan<T>,
+  planFor: (current: EgressDomainsItem | undefined, at: string, ownerActive: boolean) => Plan<T>,
+  /** The owner's own record (a project's META), whose archived status decides whether a NEW item starts active. Read on each attempt and guarded in the transaction. */
+  ownerRecord?: OrgKey,
 ): Promise<{ result: T; dirty: boolean; changed: boolean }> {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  let changedUnderUs = 0;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     const current = await readItem(deps, key);
     const at = new Date(Math.max(deps.now().getTime(), current === undefined ? 0 : Date.parse(current.updatedAt) + 1)).toISOString();
-    const plan = planFor(current, at);
+    // A new item for an archived owner starts inactive. The status is checked again in the transaction itself, so an archive or a restore that lands
+    // between this read and the write refuses the write and the next attempt reads it afresh (the archive's own flip finds no item to flip).
+    const archived = ownerRecord !== undefined && current === undefined && await readOwnerArchived(deps, ownerRecord);
+    const plan = planFor(current, at, !archived);
     if (plan.next === undefined) return { result: plan.result, dirty: false, changed: false };
     const condition = current === undefined
       ? { ConditionExpression: "attribute_not_exists(pk)" }
@@ -98,20 +121,35 @@ async function mutate<T>(
     const marker = plan.dirty ? [{
       Update: {
         TableName: deps.tableName, Key: EGRESS_SYNC_KEY,
-        UpdateExpression: "SET dirtyAt = :dirtyAt, entityType = :entity",
-        ExpressionAttributeValues: { ":dirtyAt": at, ":entity": "EGRESS_SYNC" },
+        // `dirtySeq` counts changes, so the sync clears exactly the changes it read: `dirtyAt` can repeat across two items in one millisecond.
+        UpdateExpression: "SET dirtyAt = :dirtyAt, entityType = :entity, dirtySeq = if_not_exists(dirtySeq, :zero) + :one",
+        ExpressionAttributeValues: { ":dirtyAt": at, ":entity": "EGRESS_SYNC", ":zero": 0, ":one": 1 },
       },
     }] : [];
     const write = plan.next === "delete"
       ? { Delete: { TableName: deps.tableName, Key: key, ...condition } }
       : { Put: { TableName: deps.tableName, Item: { ...key, entityType: "EGRESS_DOMAINS", ...plan.next }, ...condition } };
-    const room = TRANSACTION_ACTIONS - 1 - marker.length;
+    const ownerCheck = ownerRecord !== undefined && current === undefined ? [{
+      ConditionCheck: {
+        TableName: deps.tableName, Key: ownerRecord,
+        ConditionExpression: archived ? "#status = :archived" : "attribute_not_exists(pk) OR #status <> :archived",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: { ":archived": "archived" },
+      },
+    }] : [];
+    const room = TRANSACTION_ACTIONS - 1 - marker.length - ownerCheck.length;
     try {
-      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [write, ...marker, ...audits.slice(0, room)] }));
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [write, ...marker, ...ownerCheck, ...audits.slice(0, room)] }));
     } catch (error) {
-      if (cancelled(error) && attempt === 0) continue;
-      if (cancelled(error)) throw agentXError("IDEMPOTENCY_CONFLICT", EGRESS_CONFLICT_MESSAGE);
-      throw error;
+      const reason = cancellation(error);
+      if (reason === undefined) throw error;
+      if (reason === "changed") {
+        changedUnderUs += 1;
+        if (changedUnderUs >= 2) throw agentXError("IDEMPOTENCY_CONFLICT", EGRESS_CONFLICT_MESSAGE);
+      }
+      // Not about the item (a concurrent transaction on the shared sync marker, throttling): a short, jittered wait makes the retry likelier to hold.
+      if (reason === "other" && attempt < MAX_ATTEMPTS - 1) await (deps.sleep ?? defaultSleep)(Math.round(50 * (attempt + 1) * (0.5 + Math.random())));
+      continue;
     }
     // More audit items than one transaction holds (replacing most of a 50-domain list): the change stands, the rest follow.
     for (let start = room; start < audits.length; start += TRANSACTION_ACTIONS) {
@@ -119,7 +157,12 @@ async function mutate<T>(
     }
     return { result: plan.result, dirty: plan.dirty, changed: true };
   }
-  throw agentXError("IDEMPOTENCY_CONFLICT", EGRESS_CONFLICT_MESSAGE);
+  throw agentXError("RUNTIME_UNAVAILABLE", "the allowed domains could not be saved just now; try again");
+}
+
+async function readOwnerArchived(deps: Reader, key: OrgKey): Promise<boolean> {
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: { status?: unknown } };
+  return response.Item?.status === "archived";
 }
 
 /** Asks the firewall to follow; a failure (or a throw) leaves the marker dirty for the schedule, and the caller is told. */
@@ -136,7 +179,7 @@ async function syncNow(deps: EgressDomainsDependencies): Promise<{ warning?: str
 const log = (event: string, fields: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", event: `egress.${event}`, ...fields }));
 
 /**
- * Makes the owner's domains exactly `domains` (callers validate each host with `AllowedDomainSchema` first). A domain already stored keeps its
+ * Makes the owner's domains exactly `domains`. It validates each one itself with `isAllowedDomain` and refuses the lot (CONFIG_INVALID) if any fails. A domain already stored keeps its
  * status; a new one is `pending` on cloud and `approved` (audited `auto_approved`) elsewhere; one no longer listed is dropped (audited
  * `removed`). A release is `putEgressDomains(..., [])`. Syncs when the served domains changed; `{ ok: false }` is `warning`.
  */
@@ -149,7 +192,11 @@ export async function putEgressDomains(
 ): Promise<{ warning?: string; pending: string[] }> {
   const who: Actor = actor === undefined ? SYSTEM_ACTOR : { kind: "developer", id: actor.developerId };
   const wanted = [...new Set(domains)];
-  const { result, dirty } = await mutate(deps, egressDomainsKey(orgId, owner), (current, at): Plan<string[]> => {
+  // Whatever the caller, a domain the firewall must never serve (`*`, a bare TLD, a public suffix, a trailing dot, upper case, not ASCII) is refused
+  // here, before anything is stored or any staff member is asked about it. The value is not repeated: a refusal reaches logs and screens.
+  const refused = wanted.findIndex((domain) => !isAllowedDomain(domain));
+  if (refused !== -1) throw agentXError("CONFIG_INVALID", `allowedDomains.${String(refused)}: ${ALLOWED_DOMAIN_MESSAGE}`);
+  const { result, dirty } = await mutate(deps, egressDomainsKey(orgId, owner), (current, at, ownerActive): Plan<string[]> => {
     const stored = current?.domains ?? [];
     const entries: EgressDomainEntry[] = [];
     const audits: AuditDraft[] = [];
@@ -169,21 +216,21 @@ export async function putEgressDomains(
     }
     const pending = entries.filter((entry) => entry.status === "pending").map((entry) => entry.domain);
     if (audits.length === 0) return { audits, dirty: false, result: pending };
-    const active = current?.active ?? true;
+    const active = current?.active ?? ownerActive;
     return { next: { orgId, owner, active, domains: entries, updatedAt: at }, audits, dirty: served && active, result: pending };
-  });
+  }, owner.kind === "project" ? projectMetaKey(orgId, owner.project) : undefined);
   if (!dirty) return { pending: result };
   log("domains_changed", { orgId, owner });
   return { ...await syncNow(deps), pending: result };
 }
 
-/** Archive (false) and restore (true) flip `active`: an inactive item leaves the union and keeps its approvals. An owner with no item has nothing to flip. */
-export async function setEgressOwnerActive(deps: EgressDomainsDependencies, orgId: OrgId, owner: EgressOwner, active: boolean): Promise<void> {
+/** Archive (false) and restore (true) flip `active`: an inactive item leaves the union and keeps its approvals. An owner with no item has nothing to flip. `warning` is set when the firewall could not be told at once (the schedule finishes it). */
+export async function setEgressOwnerActive(deps: EgressDomainsDependencies, orgId: OrgId, owner: EgressOwner, active: boolean): Promise<{ warning?: string }> {
   const { dirty } = await mutate(deps, egressDomainsKey(orgId, owner), (current, at): Plan<undefined> => {
     if (current === undefined || current.active === active) return { audits: [], dirty: false, result: undefined };
     return { next: { ...current, active, updatedAt: at }, audits: [], dirty: current.domains.some((entry) => entry.status === "approved"), result: undefined };
   });
-  if (dirty) await syncNow(deps);
+  return dirty ? syncNow(deps) : {};
 }
 
 /** Staff decide one pending domain: `pending` becomes `approved` or `rejected`, audited with the operator's identity. */
@@ -222,6 +269,11 @@ async function pagesOf(deps: Reader, prefix: string): Promise<EgressDomainsItem[
     start = page.LastEvaluatedKey;
   } while (start !== undefined);
   return items;
+}
+
+/** Every egress item of every org (the scheduled reconcile reads them to compare each project's item with its META). */
+export async function listEgressItems(deps: Reader): Promise<EgressDomainsItem[]> {
+  return pagesOf(deps, EGRESS_ALL_ORGS_SK_PREFIX);
 }
 
 /** The approved domains of every active item, sorted and without repeats: what the DNS firewall layer serves. */

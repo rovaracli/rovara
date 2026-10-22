@@ -16,9 +16,11 @@ import {
   type TransactWriteCommandInput,
 } from "@aws-sdk/lib-dynamodb";
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { SESv2Client } from "@aws-sdk/client-sesv2";
 import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import { Route53ResolverClient } from "@aws-sdk/client-route53resolver";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { STSClient } from "@aws-sdk/client-sts";
 import {
@@ -64,6 +66,7 @@ import {
   retiredClaimIds,
   canonicalPlanJson,
   canonicalJson,
+  githubNotConnectedMessage,
   type PlanDocument,
   type PlanEvidenceBundle,
   WORKFLOW_REGRESSED_CHECK_MAX,
@@ -200,13 +203,13 @@ import {
   type ModelRef,
   type ModelSelection,
   type ProjectModelOptions,
-  GithubOwnerSchema,
   EgressApproveBodySchema,
   EgressRejectBodySchema,
   OrgIdSchema,
   OrgRoleSchema,
-  type OrgRecord,
   type OrgRole,
+  type ProjectRole,
+  projectAllows,
   PROJECT_REVISION_SK_PREFIX,
   orgMemberKey,
   orgProjectCatalogKey,
@@ -217,6 +220,7 @@ import {
   slackMemberLimitKey,
   slackOrganizationLimitKey,
   projectPk,
+  projectCreateRequestKey,
   projectRevisionKey,
   projectSelectionKey,
   singleOrgIdForEnv,
@@ -260,7 +264,8 @@ import { recordPrepareFailureEvent } from "./operation-events.js";
 import { releaseFailedPreparation, slackThreadKey } from "./failed-preparation.js";
 import { releaseFailedCancelWorkspace } from "./failed-cancel-release.js";
 import { assertNoUntrustedRoutingFields, authorizeWorkspace } from "../authorization.js";
-import type { GitHubAppCredentialProvider } from "../github-app.js";
+import type { GitHubAppCredentialProvider, GitHubTokenScope } from "../github-app.js";
+import type { InstallationLifecycleEvent } from "../org/github-connection.js";
 import { GithubMergeRateLimitError, isWebhookSecretMissing } from "../github-app.js";
 import { createGitHubAppCredentials } from "./github-credentials.js";
 import { GITHUB_WEBHOOK_SIGNATURE_INVALID, GithubWebhookRefusal, GithubWebhookRetryableError, authorizeLinkedGithubWebhook, handleGithubWebhook, listDueGithubWebhookDeliveries, processGithubWebhookDelivery, reconcileTaskPullRequestFeedback, verifyTaskPullRequestFeedbackCurrent, type ReceivedGithubWebhook } from "./github-webhooks.js";
@@ -274,7 +279,12 @@ import { resolveConnectors, BUILT_IN_CONNECTOR_TYPES, type ConnectorType, type C
 import { CredentialRegistry, secretsManagerSource, type ConnectorCredentials, type ConnectorCredentialsConfiguration } from "./credentials.js";
 import { developerTokenVerifier } from "../developer/verify-token.js";
 import { DeveloperSignInStore, type DeveloperRecord } from "../developer/store.js";
-import { startGithubConnect, type GithubConnectionDependencies } from "../org/github-connection.js";
+import {
+  applyInstallationLifecycle, disconnectGithubInstallation, installationBindingCheck, listGithubInstallations, listInstallationRepositories, requireRepositoriesConnected, requireRepositoryConnected, startGithubConnect,
+  type GithubConnectionDependencies, type RepositoryGateDependencies,
+} from "../org/github-connection.js";
+import { bindRequestedInstallation, cancelInstallRequest, drainInstallNoticeOutbox, listInstallRequests, sendInstallRequestReminders } from "../org/github-install-requests.js";
+import { sendGithubConnectedNotice, sendGithubRequestReminder, type IdentityNoticeDependencies } from "../developer/identity-notice.js";
 import { unlockTrial } from "../org/trial.js";
 import { isGithubInstallPath, routeGithubInstall } from "./github-install-web.js";
 import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, readDecisionDetail } from "../developer/owner-answers.js";
@@ -284,10 +294,11 @@ import { PLAN_EVIDENCE_PK, attachEvidence, planCitesCode, planEvidenceDueKey, pl
 import { resolvePlanEvidence } from "../developer/plan-evidence.js";
 import { WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
 import { approvedFeedbackFixes, withFeedbackFixes, withStatusLines } from "../developer/pull-request-feedback-section.js";
-import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, requireAllowedGithubOwner, type CloudProjectDefaults, type CreateProjectInput } from "../org/cloud-projects.js";
+import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, type CloudProjectDefaults, type CreateProjectInput } from "../org/cloud-projects.js";
 import { installEnvironmentName, orgResolverFromEnvironment, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
 import { OrgStore } from "../org/store.js";
 import { decideEgressDomain, listPendingEgress, type EgressDomainsDependencies } from "../org/egress-domains.js";
+import { runEgressDomainsSync, syncCellAllowList } from "./egress-domains-sync.js";
 import { requireProject } from "./project-records.js";
 import { admitProjectSetupRuntime, projectSetupBindingDigest, projectSetupRuntimeKey, ProjectSetupRuntimeRecordSchema } from "./project-setup-runtime-catalog.js";
 import { projectSetupTerminalAuthorityChecks } from "./project-setup-terminal-conditions.js";
@@ -304,12 +315,12 @@ import {
   type CallbackClaims, type OperationRecord,
 } from "./cancellation.js";
 import { requireCreatorStillMember, requireWorkspaceCreatorStillMember, type CreatorCheckDependencies } from "../developer/creator-member.js";
-import { requireNewWorkAllowed } from "../developer/project-roles.js";
+import { effectiveProjectRole, grantRoleOf, requireNewWorkAllowed, viewerCannotStartTasksMessage } from "../developer/project-roles.js";
 import { aiToolTurn, completedTurn, developerFooter, E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON, githubWorkflowPullRequestKey, inertName, OUTCOME, partyOfTask, taskKey, taskOwnerKey, taskOwnerSubject, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type GithubWorkflowPullRequestRecord, type StoredEvent } from "../developer/task-records.js";
 import { readWorkspaceLimits } from "../developer/limits.js";
 import { WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem, type WorkflowDispatchRecord, type WorkflowE2EReadinessMarker, AWS_TEMPORARY_MESSAGE, GATED_TASK_PULL_REQUEST_ACTION_REFUSAL, GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, UNEXPECTED_REQUEST_MESSAGE, hashJson, isConditional, isTemporaryAwsError, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, planDocumentInstructions, workerPrompt } from "./broker-shared.js";
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../e2e/feature-plan-planning-context.js";
-import { developerIdForSlackUser, grantProjectAccess } from "./admin-actions.js";
+import { developerIdForSlackUser } from "./admin-actions.js";
 import { chatGptOwner, chatGptTaskSelection } from "../chatgpt/task-model.js";
 import { answerSlackChatGpt, isSlackChatGptCommandEvent, isSlackChatGptFinishEvent } from "./slack-chatgpt.js";
 import { chatGptConnections, kmsChatGptSealer, type ChatGptConnections } from "../chatgpt/connections.js";
@@ -327,7 +338,7 @@ import type { AgentRouteDependencies } from "../agents/routes.js";
 import { DecideStore, DecideReauthRequired, type DecideRequestContext } from "../developer/decide-session.js";
 import type { DecideKinds } from "../developer/decide-kinds.js";
 import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
-import { authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "./developer-routes.js";
+import { authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import { ADMISSION_REFUSALS, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
@@ -367,7 +378,7 @@ import { dropWatchedBatch, listWatchedBatches, recordWatchedBatchThread, startSl
 import { batchResults, parseStartBody, requireBatchProject, showBatch, startBatch, stopBatchById } from "./eval-batch-admin.js";
 import { swebenchDeploymentFromParameters } from "./swebench-settings.js";
 import { slackWorkflowCaller } from "./slack-workflow-caller.js";
-import { can, resolveTaskAccess, type TaskAccess, type TaskAction } from "../developer/task-access.js";
+import { WORK_ACTIONS, can, requireProjectWorkRole, resolveTaskAccess, type TaskAccess, type TaskAction } from "../developer/task-access.js";
 import { resolveTaskDispatchPeople, taskAccessFence } from "../developer/task-people.js";
 
 const MAX_ARTIFACT_BYTES = 5_000_000;
@@ -410,8 +421,13 @@ interface MembershipRecord {
   entityType: "MEMBERSHIP";
   ownerKey: string;
   projectName: string;
-  role: "developer" | "administrator";
+  /** `developer` for a maintainer or contributor, `viewer` for a viewer (Plan 2, Task 21), `administrator` for the operator's own. */
+  role: "developer" | "viewer" | "administrator";
   grantId: string;
+  /** Task 21: the project role, who made the grant (a person of the org, or the operator console) and when. Rows from before it have none. */
+  projectRole?: ProjectRole;
+  grantedBy?: unknown;
+  grantedAt?: string;
 }
 
 interface ProjectModelSelectionRecord {
@@ -474,9 +490,9 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "appSlug" | "oauthClient" | "installation" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
-  projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }) => Promise<E2ESourceSnapshot> };
+  projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
   projectSetupRuntimeCatalogId?: string;
   /** Separate server-selected namespace for the already qualified portable feature verifier. */
@@ -485,10 +501,12 @@ interface AwsBrokerDependencies {
   githubFetch?: typeof fetch;
   /** Reads the GitHub webhook HMAC key from the configured GitHub App secret; `refresh` asks for a fresh read of the secret. */
   githubWebhookSecret?: (options?: { refresh?: boolean }) => Promise<string>;
+  /** Plan 2, Task 14: how the owners of an org are emailed when a GitHub organization is connected through a request. Absent, nobody is. */
+  githubConnectedNotice?: IdentityNoticeDependencies;
   /** How long a PR description update (D2) may take before it gives up without writing; 5 seconds when absent. */
   descriptionUpdateMaxMs?: number;
   /** Refuses, with CONFIG_INVALID, a repository its credential cannot reach; checked at registration. */
-  checkRepositoryAccess?: (repository: { credentialRef: string; url: string }) => Promise<void>;
+  checkRepositoryAccess?: (repository: { credentialRef: string; url: string }, scope: GitHubTokenScope) => Promise<void>;
   codeBuild: CodeBuildGateway;
   slack?: SlackServiceConfiguration;
   /** Spec 025 developer sign-in; absent when the deployment has none, and /v1/dev/* answers NOT_FOUND. */
@@ -527,7 +545,10 @@ interface AwsBrokerDependencies {
   decide?: { kinds: DecideKinds };
   /** The install's environment name, which its single org id derives from; defaults to the developer sign-in's, then AGENTX_ENV, then "default". */
   environmentName?: string;
-  githubMcp?: GitHubMcpDependencies;
+  /** The GitHub MCP connector's own settings, and the issuer of its tokens: told whose work each is for (Plan 2, Task 15). */
+  githubMcp?: Omit<GitHubMcpDependencies, "credentials"> & {
+    credentials(repository: { url: string; credentialRef: string }, access: "read" | "write", scope: GitHubTokenScope): Promise<{ owner: string; repo: string; token: string }>;
+  };
   catalogs: CatalogCache<ScopeDiscovery>;
   credentialRegistry?: CredentialRegistry;
   /**
@@ -609,6 +630,36 @@ async function orgOfRecord(
 }
 
 /**
+ * Plan 2, Task 15: whose work a GitHub token is minted for. A cloud install's work belongs to an org, whose GitHub connection must hold the
+ * installation at the moment of the mint (the provider checks it); anywhere else the token is the install's own (`private-install`), which has
+ * no bindings. A cloud caller whose org is unknown mints nothing.
+ */
+function githubScope(dependencies: Pick<AwsBrokerDependencies, "cloud">, orgId: OrgId | undefined): GitHubTokenScope {
+  if (dependencies.cloud !== true) return { system: "private-install" };
+  if (orgId === undefined) throw agentXError("GITHUB_NOT_CONNECTED", "Rovara can't tell which organization this GitHub access is for; sign in again and retry");
+  return { orgId };
+}
+
+/** `githubScope` for a record that names its org, or an owner or developer who resolves to one (a task, a workspace). */
+async function githubScopeOf(dependencies: AwsBrokerDependencies, record: { orgId?: unknown; ownerKey?: unknown; developerId?: unknown }): Promise<GitHubTokenScope> {
+  if (dependencies.cloud !== true) return { system: "private-install" };
+  return { orgId: await orgOfRecord(dependencies, record) };
+}
+
+/** `githubScope` for the workspace an operation runs in. */
+async function githubScopeOfWorkspace(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<GitHubTokenScope> {
+  if (dependencies.cloud !== true) return { system: "private-install" };
+  const item = await getItem<Record<string, unknown>>(dependencies, workspaceKey(workspaceId));
+  if (item === undefined) throw agentXError("NOT_FOUND", "workspace not found");
+  return githubScopeOf(dependencies, item);
+}
+
+/** The GitHub MCP settings with their token issuer bound to one scope, as the connector framework (which knows no org) calls it. */
+function githubMcpFor(mcp: NonNullable<AwsBrokerDependencies["githubMcp"]>, scope: () => Promise<GitHubTokenScope>): GitHubMcpDependencies {
+  return { ...mcp, credentials: async (repository, access) => mcp.credentials(repository, access, await scope()) };
+}
+
+/**
  * Ruling R60: what the removed-creator check reads with. A task that names no org is placed by the org resolver; one whose owner has
  * no org at all is a legacy task and the check skips it.
  */
@@ -666,26 +717,6 @@ async function putInstallBudget(dependencies: AwsBrokerDependencies, identity: A
   );
   console.log(JSON.stringify({ component: "broker", event: "admin.org_budget_changed", orgId, overrides: Object.keys(budget.memberOverrides).length }));
   return { budget };
-}
-
-const SetGithubOwnerBodySchema = z.object({ orgId: OrgIdSchema, githubOwner: GithubOwnerSchema }).strict();
-
-/**
- * Ruling R55: `PUT /v1/admin/org/github-owner`. An operator (admin pool) sets the one GitHub account or organization whose repositories
- * an owner or admin of a cloud org may register as projects. Cloud installs only: any other install has one org and registers its
- * projects with the administrator's `project add`.
- */
-async function putOrgGithubOwner(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, body: unknown): Promise<{ org: { orgId: OrgId; githubOwner: string } }> {
-  if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
-  if (dependencies.cloud !== true) throw agentXError("CONFIG_INVALID", "this install has one organization; register its projects with agentx project add");
-  const parsed = SetGithubOwnerBodySchema.safeParse(body);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
-  }
-  await orgStoreOf(dependencies).setGithubOwner(parsed.data.orgId, parsed.data.githubOwner);
-  console.log(JSON.stringify({ component: "broker", event: "admin.org_github_owner_changed", orgId: parsed.data.orgId, githubOwner: parsed.data.githubOwner }));
-  return { org: { orgId: parsed.data.orgId, githubOwner: parsed.data.githubOwner } };
 }
 
 function egressDepsOf(dependencies: AwsBrokerDependencies): EgressDomainsDependencies {
@@ -783,17 +814,61 @@ function githubConnectionOf(dependencies: AwsBrokerDependencies): GithubConnecti
   return {
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, cloud: dependencies.cloud === true,
     origin: new URL(dependencies.developer.issuer).origin,
-    app: { appSlug: () => app.appSlug!(), oauthClient: () => app.oauthClient!(), installation: (id) => app.installation!(id) },
+    app: {
+      appSlug: () => app.appSlug!(), oauthClient: () => app.oauthClient!(), installation: (id) => app.installation!(id),
+      ...(app.organizationMembership === undefined ? {} : { orgMembership: (installationId, org, login) => app.organizationMembership!(installationId, org, login, { system: "webhook" }) }),
+      ...(app.listInstallationRepositories === undefined ? {} : { listInstallationRepositories: (installationId, scope) => app.listInstallationRepositories!(installationId, scope) }),
+    },
     identities: signIn, orgs: orgStoreOf(dependencies),
+    ...(dependencies.githubConnectedNotice === undefined ? {} : {
+      notifyGithubConnected: async (notice) => { await sendGithubConnectedNotice(dependencies.githubConnectedNotice!, notice); },
+      remindGithubRequester: async (reminder) => { await sendGithubRequestReminder(dependencies.githubConnectedNotice!, reminder); },
+    }),
     unlockTrial: (input) => unlockTrial({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, input),
     ...(dependencies.githubFetch === undefined ? {} : { fetch: dependencies.githubFetch }),
   };
 }
 
 /** `POST /v1/app/github/connect`'s dependency for the developer routes; absent where there is no connection to offer. */
-function githubConnectRoute(dependencies: AwsBrokerDependencies): { githubConnect?: { start: (caller: DeveloperCaller) => Promise<{ installUrl: string; expiresAt: string }> } } {
+function githubConnectRoute(dependencies: AwsBrokerDependencies): { githubConnect?: NonNullable<DeveloperRouteDependencies["githubConnect"]> } {
   const connection = githubConnectionOf(dependencies);
-  return connection === undefined ? {} : { githubConnect: { start: (caller) => startGithubConnect(connection, caller) } };
+  return connection === undefined ? {} : {
+    githubConnect: {
+      start: (caller) => startGithubConnect(connection, caller),
+      listRequests: (caller) => listInstallRequests(connection, caller.orgId),
+      cancelRequest: (caller, githubUserId) => cancelInstallRequest(connection, caller, githubUserId),
+      listInstallations: (caller) => listGithubInstallations(connection, caller.orgId),
+      disconnect: (caller, installationId) => disconnectGithubInstallation(connection, caller, installationId),
+      listRepositories: async (caller, installationId) => {
+        // Private repositories' names are an owner's or admin's to see, as creating a project from one is.
+        if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can list the repositories GitHub gives Rovara");
+        return listInstallationRepositories(connection, caller.orgId, installationId);
+      },
+    },
+  };
+}
+
+/**
+ * Plan 2, Task 15: what the repository checks need on a cloud install: the binding table and the App's own lookups. Undefined elsewhere (a
+ * private install has no bindings, so nothing is checked) and where the provider cannot say which installation covers a repository (a test
+ * double), as `githubConnectionOf` is for the connect flow.
+ */
+function repositoryGateOf(dependencies: AwsBrokerDependencies): RepositoryGateDependencies | undefined {
+  const app = dependencies.githubPullRequests;
+  if (dependencies.cloud !== true || app.installationForRepository === undefined) return undefined;
+  return {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, cloud: true,
+    app: {
+      installationForRepository: (owner, name, options) => app.installationForRepository!(owner, name, options),
+      ...(app.getRepositoryIdentity === undefined ? {} : { repositoryIdentity: (url, scope) => app.getRepositoryIdentity!(url, scope) }),
+    },
+  };
+}
+
+/** `requireRepositoriesConnected` for the task routes, absent where there is no gate. */
+function repositoriesGateRoute(dependencies: AwsBrokerDependencies): { requireRepositoriesConnected?: NonNullable<DeveloperRouteDependencies["requireRepositoriesConnected"]> } {
+  const gate = repositoryGateOf(dependencies);
+  return gate === undefined ? {} : { requireRepositoriesConnected: (orgId, definition) => requireRepositoriesConnected(gate, orgId, definition) };
 }
 
 function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">): OrgStore {
@@ -911,7 +986,7 @@ function adminChangeHandlers(dependencies: AwsBrokerDependencies): AdminChangeHa
       }
       // C8: the vendor preflight runs here, at planning, and never again at apply: neither in the
       // apply's re-plan (preflight: false, final review M1) nor in its registration.
-      const preflight = await registrationChecks(dependencies, identity, definition, options?.preflight !== false);
+      const preflight = await registrationChecks(dependencies, { orgId: requireOrgId(identity.orgId), ownerKey: identity.ownerKey }, definition, options?.preflight !== false);
       return { definition, warnings: registrationWarnings(toolBudget(approvedToolCount(definition)).warning, preflight) };
     },
     registerRevision: async (identity, definition, runtimeBinding) => {
@@ -1111,7 +1186,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   const agents = agentRouteDependencies(dependencies);
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
-  return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
+  return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
     // Spec 025 E14: a Slack Confirm or Cancel press, invoked directly by the ingress (never through API Gateway).
     if (isAdminChangePressEvent(event)) {
       if (adminChanges === undefined) return json({ error: { code: "NOT_FOUND", message: "admin changes are not set up in this deployment" } }, "slack-ingress", 404);
@@ -1120,6 +1195,32 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "admin_change.press_failed", changeId: event.changeId, error: error instanceof AgentXError ? error.code : error instanceof Error ? error.name : "unknown" }));
         return json({ outcome: "failed", changeId: event.changeId }, "slack-ingress", 500);
+      }
+    }
+    // Plan 2, Task 14 Step 6: the hourly sweep that reminds a requester once, two days after they asked their GitHub admin.
+    if (isGithubInstallRequestReminderEvent(event)) {
+      try {
+        const connection = githubConnectionOf(dependencies);
+        if (connection === undefined) return json({ reminded: 0, cleared: 0, notices: 0 }, "github-install-request-reminders");
+        // The same hourly run also drains the owners' notices and trial unlocks that a bind left behind. Each is tried even if the other fails.
+        const reminders = await sendInstallRequestReminders(connection).then((result) => ({ ok: true as const, result }), (error: unknown) => ({ ok: false as const, error }));
+        const outbox = await drainInstallNoticeOutbox(connection).then((result) => ({ ok: true as const, result }), (error: unknown) => ({ ok: false as const, error }));
+        if (!reminders.ok) throw reminders.error;
+        if (!outbox.ok) throw outbox.error;
+        return json({ ...reminders.result, notices: outbox.result.drained }, "github-install-request-reminders");
+      } catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "github.install_request_reminders_failed", error: error instanceof Error ? error.name : "unknown" }));
+        return json({ error: "reminders_failed" }, "github-install-request-reminders", 500);
+      }
+    }
+    // Plan 2, Task 19: every 5 minutes, the legacy backfill (once) and then the cell's DNS allowlist follows the approved egress domains.
+    if (isEgressDomainsSyncEvent(event)) {
+      try {
+        const outcome = await runEgressDomainsSync(egressDepsOf(dependencies));
+        return json(outcome, "egress-domains-sync", outcome.ok ? 200 : 500);
+      } catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "egress.sync_run_failed", error: error instanceof Error ? error.name : "unknown" }));
+        return json({ error: "egress_sync_failed" }, "egress-domains-sync", 500);
       }
     }
     if (isGithubWebhookRecoveryEvent(event)) {
@@ -1274,7 +1375,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
           workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
-          registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : url => dependencies.githubPullRequests.getRepositoryIdentity!(url),
+          registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : (url, orgId) => dependencies.githubPullRequests.getRepositoryIdentity!(url, githubScope(dependencies, orgId)),
+          ...repositoriesGateRoute(dependencies),
           refreshTaskFeedback: taskId => refreshTaskFeedbackForOwnerDecision(dependencies, taskId) }, request, url) as { statusCode: number; headers: Record<string, string>; body: string };
       }
       // The /v1/dev route has no API Gateway authorizer, so what it carries goes to the developer API or nowhere.
@@ -1316,6 +1418,18 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
               verifyRepository: (repositoryUrl, webhookScope) => dependencies.githubPullRequests.verifyWebhookRepository(repositoryUrl, webhookScope),
             }),
             process: (workflowEvent, deliveryId) => processGithubWorkflowEvent(dependencies, workflowEvent, deliveryId),
+            // Plan 2, Task 14: an approved request to a GitHub admin arrives as `installation.created` naming the requester.
+            installationCreated: async (deliveryId, payload) => {
+              const connection = githubConnectionOf(dependencies);
+              return connection === undefined ? "ignored" : bindRequestedInstallation(connection, deliveryId, payload);
+            },
+            // Plan 2, Task 15: GitHub's own changes to an installation an org bound (uninstalled, suspended, repositories changed).
+            ...(dependencies.cloud === true ? {
+              installationLifecycle: (deliveryId: string, event: InstallationLifecycleEvent) => applyInstallationLifecycle({
+                documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+                log: (entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry })),
+              }, deliveryId, event),
+            } : {}),
             now: () => new Date().toISOString(),
           });
           let result;
@@ -1331,7 +1445,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
             result = await deliver(renewed);
           }
           if (result.status === "IN_PROGRESS") return json({ delivery: result.status, deliveryId: result.deliveryId }, request.requestId, 503);
-          return json({ delivery: result.status, deliveryId: result.deliveryId }, request.requestId);
+          // An installation lifecycle delivery is accepted for processing, whatever it changed (or ignored).
+          return json({ delivery: result.status, deliveryId: result.deliveryId }, request.requestId, result.lifecycle === true ? 202 : 200);
         } catch (error) {
           if (error instanceof GithubWebhookRefusal) return json({ error: { code: "FORBIDDEN", message: error.message } }, request.requestId, 403);
           if (error instanceof GithubWebhookRetryableError) return json({ error: { code: "RUNTIME_UNAVAILABLE", message: "GitHub webhook processing will be retried" } }, request.requestId, 503);
@@ -1428,10 +1543,12 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           return json(await putProjectModel(dependencies, identity, parseBody(request.body)), request.requestId);
         }
         if (request.method === "POST" && serviceUrl.pathname === "/v1/evals/swebench") {
+          await requireSlackRequesterMayWork(dependencies, identity, identity.slack?.binding.projectName ?? "");
           return json(await startSwebenchRun(swebenchDependencies(dependencies), swebenchSlackContext(dependencies, identity), parseBody(request.body)), request.requestId);
         }
         // Spec 052 FR-002 and Task 6: the Slack batch form, and the watcher's thread and posts for one batch.
         if (request.method === "POST" && serviceUrl.pathname === "/v1/evals/batches") {
+          await requireSlackRequesterMayWork(dependencies, identity, identity.slack?.binding.projectName ?? "");
           return json(await startSlackBatch(swebenchDependencies(dependencies), swebenchSlackContext(dependencies, identity), parseBody(request.body)), request.requestId);
         }
         const watchedBatch = /^\/v1\/evals\/batches\/([0-9a-f-]{36})\/(thread|watch|drop)$/.exec(serviceUrl.pathname);
@@ -1466,15 +1583,20 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
           workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
           workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
-          registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : url => dependencies.githubPullRequests.getRepositoryIdentity!(url),
-          createProject: (caller, input, org) => createCloudProject(dependencies, caller, input, org),
+          registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : (url, orgId) => dependencies.githubPullRequests.getRepositoryIdentity!(url, githubScope(dependencies, orgId)),
+          createProject: (caller, input) => createCloudProject(dependencies, caller, input),
           ...githubConnectRoute(dependencies),
           ...(agents === undefined ? {} : { agents }),
+          ...repositoriesGateRoute(dependencies),
           projectSettings: {
             registerRevision: async (actor, input) => { await registerProjectFor(dependencies, actor, input, { creatorMembership: "none" }); },
+            // Plan 2, Task 15: an added repository must be reached by the org's own GitHub connection (the installation GitHub says covers it, bound and active).
+            ...(repositoryGateOf(dependencies) === undefined ? {} : {
+              requireRepositoryConnected: (orgId: OrgId, owner: string, repository: string) => requireRepositoryConnected(repositoryGateOf(dependencies)!, orgId, owner, repository),
+            }),
             ...(dependencies.cloudProjects === undefined ? {} : { githubCredentialRef: dependencies.cloudProjects.githubCredentialRef }),
             ...(dependencies.githubPullRequests.getRepositoryIdentity === undefined ? {} : {
-              repositoryIdentity: (url: string) => dependencies.githubPullRequests.getRepositoryIdentity!(url),
+              repositoryIdentity: (url: string, orgId: OrgId) => dependencies.githubPullRequests.getRepositoryIdentity!(url, githubScope(dependencies, orgId)),
             }),
           },
           refreshTaskFeedback: taskId => refreshTaskFeedbackForOwnerDecision(dependencies, taskId) }, request, url);
@@ -1528,7 +1650,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         const requestBody = z.object({ repositoryUrl: z.string().url().max(500), ref: z.string().min(1).max(255) }).strict().parse(body);
         const urlParts = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i.exec(requestBody.repositoryUrl);
         if (!urlParts?.[1] || !urlParts[2]) throw agentXError("CONFIG_INVALID", "setup repository must be a canonical GitHub repository URL");
-        const snapshot = await dependencies.projectSetupSource.capture({ repositoryUrl: requestBody.repositoryUrl, ref: requestBody.ref });
+        const snapshot = await dependencies.projectSetupSource.capture({ repositoryUrl: requestBody.repositoryUrl, ref: requestBody.ref }, githubScope(dependencies, identity.orgId));
         const candidate = snapshot.candidate;
         const sourceRepository = candidate.repositories.length === 1 ? candidate.repositories[0] : undefined;
         const expectedRepositoryId = `${urlParts[1]}/${urlParts[2]}`;
@@ -1648,10 +1770,6 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Ruling R47: an operator sets the budgets of a private or single-org install's one org. A cloud install's orgs set their own.
       if (request.method === "PUT" && url.pathname === "/v1/admin/org/budget") {
         return json(await putInstallBudget(dependencies, identity, body), request.requestId);
-      }
-      // Ruling R55: an operator names the one GitHub owner a cloud org may create projects for.
-      if (request.method === "PUT" && url.pathname === "/v1/admin/org/github-owner") {
-        return json(await putOrgGithubOwner(dependencies, identity, body), request.requestId);
       }
       // Plan 2, Task 18: Rovara staff decide the domains projects ask for.
       if (request.method === "GET" && url.pathname === "/v1/admin/egress/pending") {
@@ -1898,7 +2016,7 @@ async function routeWorkspaceRequest(
     if (!parsed?.success) {
       const types = dependencies.connectorTypes ?? BUILT_IN_CONNECTOR_TYPES;
       const discovery = await discoverLegacyGitHubScope({
-        connectors: resolveConnectors(project.definition, connectorTypeContext(dependencies, await orgOfRecord(dependencies, workspace)), types),
+        connectors: resolveConnectors(project.definition, connectorTypeContext(dependencies, await orgOfRecord(dependencies, workspace), identityGithubScope(dependencies, identity)), types),
         githubTypeKnown: Object.hasOwn(types, "github"),
         connectorName: github.name, repository: repository.name, projectName: workspace.projectName,
         context: connectorContext(identity, workspace, project), catalogs: dependencies.catalogs,
@@ -1907,7 +2025,7 @@ async function routeWorkspaceRequest(
     }
     const attribution = attributionText(identity, github);
     const result = await executeGitHubTool(parsed.data, gitHubContext(identity, workspace, project, github, repository), {
-      ...withoutDeploymentAttribution(dependencies.githubMcp),
+      ...withoutDeploymentAttribution(githubMcpFor(dependencies.githubMcp, identityGithubScope(dependencies, identity))),
       ...(attribution === undefined ? {} : { attribution }),
       onAttributionDropped: attributionDroppedLog(workspace.projectName, revision, github.name, repository.name, parsed.data.requestId),
       store: new DynamoConnectorLedger(dependencies.documentClient, dependencies.tableName, workspace.id, GITHUB_LEDGER, github.name),
@@ -1919,7 +2037,7 @@ async function routeWorkspaceRequest(
   const connectorRoute = /^\/v1\/workspaces\/([0-9a-f-]+)\/connectors\/([a-z][a-z0-9-]{0,19})\/(tools|call)$/.exec(url.pathname);
   if (connectorRoute?.[1] && connectorRoute[2] && ((request.method === "GET" && connectorRoute[3] === "tools") || (request.method === "POST" && connectorRoute[3] === "call"))) {
     const { workspace, project } = await authorizeWorkspaceConnectors(dependencies, identity, connectorRoute[1]);
-    const connector = resolveConnectors(project.definition, connectorTypeContext(dependencies, await orgOfRecord(dependencies, workspace)), dependencies.connectorTypes)
+    const connector = resolveConnectors(project.definition, connectorTypeContext(dependencies, await orgOfRecord(dependencies, workspace), identityGithubScope(dependencies, identity)), dependencies.connectorTypes)
       .find((entry) => entry.name === connectorRoute[2]);
     if (!connector) throw agentXError("NOT_FOUND", "connector not found");
     const parsed = request.method === "POST" ? ConnectorCallRequestSchema.safeParse(body) : undefined;
@@ -2018,6 +2136,8 @@ async function routeWorkspaceRequest(
 async function authorizeWorkspaceConnectors(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, workspaceId: string) {
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
   if (identity.slack && identity.slack.binding.projectName !== workspace.projectName) throw agentXError("FORBIDDEN", "Slack channel is no longer bound to this project");
+  // Connector tools can write to the outside world: a project viewer in the thread does not use them.
+  await requireSlackRequesterMayWork(dependencies, identity, workspace.projectName);
   await requireProjectAuthority(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName, { taskCreator: () => workspaceTaskOwner(dependencies, workspace.id) });
   // The policy and the scopes it may address come from the project's latest registered revision,
   // so enabling, narrowing or revoking a tool reaches an existing thread at once.
@@ -2040,14 +2160,17 @@ async function authorizeGitHubConnector(dependencies: AwsBrokerDependencies, ide
  * install-wide registry. A cloud install uses the org registry of the org the workspace, task or caller belongs to
  * (`orgId`), and none when it has no org or no org connections are configured: it never falls back to credentials that
  * belong to the whole install.
+ *
+ * Plan 2, Task 15: `scope` says whose work a GitHub token the connectors mint is for; it is asked only when one is minted. Without it the
+ * scope is `orgId`'s (`githubScope`), so a cloud caller whose org is unknown mints nothing.
  */
-export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "githubMcp" | "credentialRegistry" | "orgConnections" | "cloud">, orgId?: OrgId): ConnectorTypeContext {
+export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "githubMcp" | "credentialRegistry" | "orgConnections" | "cloud">, orgId?: OrgId, scope?: () => Promise<GitHubTokenScope>): ConnectorTypeContext {
   let credentialRegistry: ConnectorCredentials | undefined = dependencies.credentialRegistry;
   if (dependencies.cloud === true) {
     credentialRegistry = dependencies.orgConnections !== undefined && orgId !== undefined ? orgCredentialRegistry(dependencies.orgConnections, orgId) : undefined;
   }
   return {
-    ...(dependencies.githubMcp ? { githubMcp: dependencies.githubMcp } : {}),
+    ...(dependencies.githubMcp ? { githubMcp: githubMcpFor(dependencies.githubMcp, scope ?? (async () => githubScope(dependencies, orgId))) } : {}),
     ...(credentialRegistry ? { credentialRegistry } : {}),
   };
 }
@@ -2058,6 +2181,11 @@ function connectorContext(identity: AuthenticatedIdentity, workspace: WorkspaceI
 
 type GitHubConnector = NonNullable<ReturnType<typeof githubConnectorOf>>;
 type GitHubRepository = GitHubConnector["repositories"][number];
+
+/** The scope for an authenticated caller's own request: their org (on a cloud install). */
+function identityGithubScope(dependencies: Pick<AwsBrokerDependencies, "cloud">, identity: Pick<AuthenticatedIdentity, "orgId">): () => Promise<GitHubTokenScope> {
+  return async () => githubScope(dependencies, identity.orgId);
+}
 
 /** Only the connector decides attribution: a deployment-level value must not survive attribution: false. */
 function withoutDeploymentAttribution(dependencies: GitHubMcpDependencies): Omit<GitHubMcpDependencies, "attribution"> {
@@ -2101,9 +2229,9 @@ function parseRegistrationInput(value: unknown): { definition: ProjectDefinition
 }
 
 /** Registration's refusals and preflight, for a new revision; registerProject and a change plan share them. */
-async function registrationChecks(dependencies: AwsBrokerDependencies, identity: { ownerKey: string; orgId?: OrgId | undefined }, definition: ProjectDefinition, wantsPreflight: boolean): Promise<PreflightOutcome | undefined> {
+async function registrationChecks(dependencies: AwsBrokerDependencies, identity: RegistrationActor, definition: ProjectDefinition, wantsPreflight: boolean): Promise<PreflightOutcome | undefined> {
   const budget = toolBudget(approvedToolCount(definition));
-  const context = connectorTypeContext(dependencies, identity.orgId);
+  const context = connectorTypeContext(dependencies, identity.orgId, async () => githubScope(dependencies, identity.orgId));
   const connectors = () => resolveConnectors(definition, context, dependencies.connectorTypes);
   const nameProblems = presentedNameProblems(definition);
   if (nameProblems.length > 0) throw agentXError("CONFIG_INVALID", nameProblems.join("; "));
@@ -2115,7 +2243,7 @@ async function registrationChecks(dependencies: AwsBrokerDependencies, identity:
   if (credentialProblems.length > 0) throw agentXError("CONFIG_INVALID", credentialProblems.join("; "));
   // A repository the GitHub App cannot reach would otherwise fail only at prepare (#123).
   for (const repository of definition.repositories) {
-    await dependencies.checkRepositoryAccess?.(repository);
+    await dependencies.checkRepositoryAccess?.(repository, githubScope(dependencies, identity.orgId));
   }
   if (!wantsPreflight) return undefined;
   const result = await preflightConnectors(connectors(), definition, identity.ownerKey);
@@ -2147,7 +2275,8 @@ async function registerProject(
  * Plan 2, Task 11: a project's META item (status, description, who created it and when) is written in the transaction that registers its
  * first revision. With `requireNewName` the name must be new in the org: a catalog entry already there (an archived project, or one from
  * before META existed) is PROJECT_NAME_TAKEN, and so is a transaction whose revision, META or catalog condition fails (a TransactionConflict, or a failed setup row, is not: those
- * answer as a retryable conflict and as the admission's own error). Without it, registration stays
+ * answer as a retryable conflict and as the admission's own error). `extraItems` are the caller's own transaction items, written with the
+ * project (and only then). Without `requireNewName`, registration stays
  * idempotent and writes META only for a project new to the org, leaving a project that predates META without one (it reads as active,
  * created by "unknown").
  */
@@ -2155,7 +2284,7 @@ export async function registerProjectFor(
   dependencies: AwsBrokerDependencies,
   actor: RegistrationActor,
   value: unknown,
-  options: { creatorMembership: "administrator" | "developer" | "none"; requireNewName?: boolean; description?: string; checked?: { preflight?: PreflightOutcome } },
+  options: { creatorMembership: "administrator" | "developer" | "none"; requireNewName?: boolean; description?: string; extraItems?: Array<Record<string, unknown>>; checked?: { preflight?: PreflightOutcome } },
 ): Promise<RegistrationResult> {
   const checked = options.checked;
   const orgId = actor.orgId;
@@ -2200,7 +2329,7 @@ export async function registerProjectFor(
     }
   }
   const budget = toolBudget(approvedToolCount(definition));
-  const connectors = () => resolveConnectors(definition, connectorTypeContext(dependencies, orgId), dependencies.connectorTypes);
+  const connectors = () => resolveConnectors(definition, connectorTypeContext(dependencies, orgId, async () => githubScope(dependencies, actor.orgId)), dependencies.connectorTypes);
   const respond = (project: Omit<RegisteredProjectRecord, "pk" | "sk">, duplicate: boolean, preflight: PreflightOutcome | undefined) => {
     const warnings = registrationWarnings(budget.warning, preflight);
     return {
@@ -2290,8 +2419,10 @@ export async function registerProjectFor(
     registeredAt: now,
     ...(setupApprovalBinding === undefined ? {} : { setupApproval: setupApprovalBinding }),
   };
+  // The creator of a project on Rovara Cloud is its first maintainer (Plan 2, Task 21). The operator's own registration keeps its administrator row.
   const membership = options.creatorMembership === "none" ? undefined
-    : membershipRecord(orgId, actor.ownerKey, definition.name, options.creatorMembership === "administrator" ? "administrator" : "developer");
+    : options.creatorMembership === "administrator" ? membershipRecord(orgId, actor.ownerKey, definition.name, "administrator")
+      : membershipRecord(orgId, actor.ownerKey, definition.name, "developer", { projectRole: "maintainer", grantedBy: { developerId: actor.ownerKey }, grantedAt: now });
   const metaKey = projectMetaKey(orgId, definition.name);
   const metaItem = {
     ...metaKey, entityType: "PROJECT_META", name: definition.name, status: "active",
@@ -2335,6 +2466,8 @@ export async function registerProjectFor(
           ...(snapshot.catalog?.latestRevision === undefined ? {} : { ":observed": snapshot.catalog.latestRevision }) },
       } }] : []),
       ...(setupAdmissionRows?.transactionItems ?? []),
+      // The caller's own writes that must land with the project (Task 16: the creation request's record), after every item above.
+      ...(options.extraItems ?? []),
       ] }));
       return respond(withoutKeys(record), false, preflight);
     } catch (error) {
@@ -2395,51 +2528,112 @@ function cloudProjectAnswer(registered: RegistrationResult): CloudProjectCreated
   };
 }
 
+const PROJECT_CREATE_REQUEST_SECONDS = 86_400;
+
+/** A request body's identity for a replay: the repository without regard to case, and the other fields as given. */
+function projectCreateBodyHash(input: CreateProjectInput): string {
+  return createHash("sha256").update(canonicalJson({
+    repository: `${input.owner}/${input.repositoryName}`.toLowerCase(),
+    ...(input.name === undefined ? {} : { name: input.name }),
+    ...(input.description === undefined ? {} : { description: input.description }),
+    ...(input.setupCommand === undefined ? {} : { setupCommand: input.setupCommand }),
+    ...(input.testCommand === undefined ? {} : { testCommand: input.testCommand }),
+  }), "utf8").digest("hex");
+}
+
 /**
- * Ruling R55: `POST /v1/dev/projects`, after the route has checked the install, the caller's role and the requested owner. The
- * repository must be visible to the install's GitHub App, and GitHub's own spelling of its owner is checked again against the org's
- * allowed owner. It registers through registerProjectFor, as the admin route does, then grants the creator access like any developer.
+ * What a failed read of GitHub means to the person who asked for a repository: a redirect (a renamed or transferred repository, which the
+ * lookup refuses with `redirect: "error"`) is theirs to fix, a network failure is not. Node's fetch rejects both with TypeError("fetch failed")
+ * and tells them apart by the cause; any other error is passed on as it is.
  */
-async function createCloudProject(dependencies: AwsBrokerDependencies, caller: DeveloperCaller, input: CreateProjectInput, org: Pick<OrgRecord, "githubOwner">): Promise<CloudProjectCreated> {
+function githubReadFailure(error: unknown, owner: string, name: string): never {
+  if (error instanceof TypeError) {
+    const cause = error.cause instanceof Error ? error.cause.message : undefined;
+    if (cause === "unexpected redirect") throw agentXError("CONFIG_INVALID", `GitHub moved or renamed ${owner}/${name}; use its current owner/name`);
+    if (error.message === "fetch failed") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub could not be reached just now; try again in a moment");
+  }
+  throw error;
+}
+
+/**
+ * The project an earlier identical creation request made, as that request was answered (`duplicate: true`), or undefined when no unexpired
+ * record of the request exists. The same request id with another body is IDEMPOTENCY_CONFLICT. A record past its day is no record: the id
+ * is free again (the creation's transaction replaces it).
+ */
+async function replayedProjectCreation(
+  dependencies: AwsBrokerDependencies,
+  orgId: OrgId,
+  requestKey: { pk: string; sk: string },
+  bodyHash: string,
+  nowMs: number,
+): Promise<CloudProjectCreated | undefined> {
+  const recorded = await getItem<{ bodyHash?: unknown; projectName?: unknown; expiresAt?: unknown }>(dependencies, requestKey);
+  if (recorded === undefined || typeof recorded.expiresAt !== "number" || recorded.expiresAt < Math.floor(nowMs / 1000) || typeof recorded.projectName !== "string") return undefined;
+  if (recorded.bodyHash !== bodyHash) throw agentXError("IDEMPOTENCY_CONFLICT", "this requestId was already used to create a different project");
+  const made = await getItem<RegisteredProjectRecord>(dependencies, projectRevisionKey(orgId, recorded.projectName, 1));
+  return made === undefined ? undefined : cloudProjectAnswer({ project: withoutKeys(made), duplicate: true });
+}
+
+/**
+ * Plan 2, Task 16: `POST /v1/app/projects`, after the route has checked the install, the caller's role and the body.
+ *
+ * Order: a replay of the request (the same `requestId` and body answers the project it made; another body is IDEMPOTENCY_CONFLICT), whether the
+ * org's own GitHub connection reaches the repository (`requireRepositoryConnected`: the installation GitHub says covers it must be bound to the
+ * org and active), GitHub's own description of the repository, the registration as a new name in the org (`registerProjectFor`), which writes
+ * the project, its META, the caller's grant and the request's record in one transaction. The revision's repository entry pins the installation
+ * and GitHub's repository id.
+ */
+async function createCloudProject(dependencies: AwsBrokerDependencies, caller: DeveloperCaller, input: CreateProjectInput): Promise<CloudProjectCreated> {
+  const orgId = caller.orgId;
+  const requestKey = projectCreateRequestKey(orgId, input.requestId);
+  const bodyHash = projectCreateBodyHash(input);
+  const nowMs = Date.now();
+  const replayed = () => replayedProjectCreation(dependencies, orgId, requestKey, bodyHash, nowMs);
+  const earlier = await replayed();
+  if (earlier !== undefined) return earlier;
   const defaults = dependencies.cloudProjects;
   const lookUp = dependencies.githubPullRequests.getRepositoryIdentity;
-  if (defaults === undefined || lookUp === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "creating projects is not set up in this deployment; ask Rovara support");
-  const identity = await lookUp.call(dependencies.githubPullRequests, `https://github.com/${input.owner}/${input.repositoryName}.git`).catch((error: unknown) => {
-    if (error instanceof TypeError) {
-      // GitHub answers a renamed or transferred repository with a redirect, which the lookup refuses (redirect: "error"): Node's fetch
-      // rejects with TypeError("fetch failed") whose cause says so. DNS and connection failures reject the same way, with other causes.
-      const cause = error.cause instanceof Error ? error.cause.message : undefined;
-      if (cause === "unexpected redirect") throw agentXError("CONFIG_INVALID", `GitHub moved or renamed ${input.owner}/${input.repositoryName}; use its current owner/name`);
-      if (error.message === "fetch failed") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub could not be reached just now; try again in a moment");
-    }
-    throw error;
-  });
-  if (identity === undefined) throw agentXError("CONFIG_INVALID", `the GitHub App cannot see ${input.owner}/${input.repositoryName}; check the name, or ask Rovara support to install the GitHub App on it`);
+  const gate = repositoryGateOf(dependencies);
+  if (defaults === undefined || lookUp === undefined || gate === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "creating projects is not set up in this deployment; ask Rovara support");
+  const { owner, repositoryName } = input;
+  const connection = await requireRepositoryConnected(gate, orgId, owner, repositoryName).catch((error: unknown) => githubReadFailure(error, owner, repositoryName));
+  const identity = await lookUp.call(dependencies.githubPullRequests, `https://github.com/${owner}/${repositoryName}.git`, githubScope(dependencies, orgId)).catch((error: unknown) => githubReadFailure(error, owner, repositoryName));
+  if (identity === undefined) throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(`${owner}/${repositoryName}`));
+  // The pin is the id the connection was checked for: a repository deleted and recreated between the two reads is not that repository.
+  if (identity.repositoryId !== connection.githubRepositoryId) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub described ${owner}/${repositoryName} differently a moment ago; try again`);
   const spelledOwner = identity.fullName.split("/")[0];
   if (spelledOwner === undefined || identity.defaultBranch === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not describe that repository; try again");
-  requireAllowedGithubOwner(org, spelledOwner);
-  const definition = cloudProjectDefinition({ input, repository: { fullName: identity.fullName, defaultBranch: identity.defaultBranch }, githubCredentialRef: defaults.githubCredentialRef });
-  const registered = await registerProjectFor(
-    dependencies,
-    { orgId: caller.orgId, ownerKey: caller.developerId },
-    { definition, runtimeBinding: defaults.runtimeBinding },
-    { creatorMembership: "none" },
-  ).catch((error: unknown) => {
-    // Only the immutable-revision refusal is a name clash; the catalog-contention refusals keep their own words.
-    if (error instanceof AgentXError && error.code === "PROJECT_REVISION_MISMATCH" && error.message.includes("are immutable")) {
-      throw agentXError("PROJECT_REVISION_MISMATCH", `a project named ${definition.name} already exists with other settings (another repository, or settings that changed); choose another --name`);
+  // GitHub's spelling of the owner is the one the connection was checked for (a renamed owner would have redirected, which is refused above).
+  if (spelledOwner.toLowerCase() !== owner.toLowerCase()) throw agentXError("FORBIDDEN", `GitHub describes ${owner}/${repositoryName} under ${spelledOwner}; use its current owner/name`);
+  const definition = cloudProjectDefinition({ input, repository: { fullName: identity.fullName, defaultBranch: identity.defaultBranch }, githubCredentialRef: defaults.githubCredentialRef, connection });
+  const createdAt = new Date(nowMs).toISOString();
+  const expiresAt = Math.floor(nowMs / 1000) + PROJECT_CREATE_REQUEST_SECONDS;
+  let registered: RegistrationResult;
+  try {
+    registered = await registerProjectFor(
+      dependencies,
+      { orgId, ownerKey: caller.developerId },
+      { definition, runtimeBinding: defaults.runtimeBinding },
+      {
+        creatorMembership: "developer", requireNewName: true, ...(input.description === undefined ? {} : { description: input.description }),
+        extraItems: [{ Put: {
+          TableName: dependencies.tableName,
+          // `indexExpiresAt` is the State table's TTL attribute: the record goes when its day is over.
+          Item: { ...requestKey, entityType: "PROJECT_CREATE_REQUEST", bodyHash, projectName: definition.name, createdAt, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: expiresAt },
+          ConditionExpression: "attribute_not_exists(pk) OR expiresAt < :now",
+          ExpressionAttributeValues: { ":now": Math.floor(nowMs / 1000) },
+        } }],
+      },
+    );
+  } catch (error) {
+    // An identical request in flight may have won the name a moment ago: its record is then there, and this one answers the same project.
+    if (error instanceof AgentXError && error.code === "PROJECT_NAME_TAKEN") {
+      const raced = await replayed();
+      if (raced !== undefined) return raced;
     }
     throw error;
-  });
-  // The grant is idempotent, so an identical request after a failed grant repairs it.
-  await grantProjectAccess(
-    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, limitDefaults: { member: 0, organization: 0 }, now: Date.now },
-    caller.orgId,
-    { issuer: dependencies.developer?.issuer ?? dependencies.issuer, subject: caller.developerId },
-    definition.name,
-    caller.developerId,
-  );
-  console.log(JSON.stringify({ component: "broker", event: "developer.project_created", orgId: caller.orgId, project: definition.name, duplicate: registered.duplicate }));
+  }
+  console.log(JSON.stringify({ component: "broker", event: "developer.project_created", orgId, project: definition.name, duplicate: registered.duplicate }));
   return cloudProjectAnswer(registered);
 }
 
@@ -2855,6 +3049,7 @@ async function newWorkspacePreparation(
     targetOwnerKey,
     projectName,
     existingMembership?.role ?? "developer",
+    grantDetailsOf(existingMembership),
   );
   return {
     workspace,
@@ -2867,6 +3062,30 @@ async function newWorkspacePreparation(
       { Put: { TableName: dependencies.tableName, Item: membership } },
     ],
   };
+}
+
+/**
+ * The project role of the Slack person behind a thread request (Plan 2, Task 21): their live org role, their own grant on the bound project
+ * (a viewer's included, which wins) and, failing both, the bound channel they are speaking in, which makes them a contributor.
+ */
+async function slackRequesterRole(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity): Promise<ProjectRole> {
+  const slack = identity.slack;
+  if (slack === undefined) return "contributor";
+  const orgId = requireOrgId(identity.orgId);
+  const developerId = developerIdForSlackUser(slack.requester.userId);
+  return effectiveProjectRole(
+    { developerId, orgRole: (await readOrgMember(dependencies, orgId, developerId))?.role ?? "member" },
+    await getMembership(dependencies, orgId, developerId, slack.binding.projectName), true,
+  ) ?? "contributor";
+}
+
+/**
+ * Viewers only view (Plan 2, Task 21): a Slack person in their own thread (not a teammate in a shared task's thread, who was checked when the
+ * identity was made) who holds the viewer role cannot change the project or start work. Called by every Slack service route that does either.
+ */
+async function requireSlackRequesterMayWork(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, projectName: string): Promise<void> {
+  if (identity.slack === undefined || identity.sharedTask !== undefined) return;
+  if (await slackRequesterRole(dependencies, identity) === "viewer") throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(projectName));
 }
 
 /** The service routes' caller must be the Slack orchestrator's role. */
@@ -3532,6 +3751,10 @@ async function ensureThreadWorkspace(
     }
     return sharedThreadWorkspace(dependencies, identity, identity.sharedTask, input.includeSharedTask === true, include, includeSettingsRevision);
   }
+  // Viewers only view (Plan 2, Task 21): a follow-up in a thread that already has its workspace drives the agent too, so it is refused for
+  // an explicit viewer. Everyone else keeps today's behaviour.
+  const requesterRole = await slackRequesterRole(dependencies, identity);
+  if (requesterRole === "viewer") throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(slack.binding.projectName));
   const threadWorkspace = await getThreadWorkspace(dependencies, identity.ownerKey);
   if (threadWorkspace) {
     if (threadWorkspace.status === "CLOSED" && threadWorkspace.closedAt) {
@@ -3546,6 +3769,12 @@ async function ensureThreadWorkspace(
     if (existing.status === "CLOSED" && existing.closedAt) {
       return { outcome: "CLOSED", workspaceId: existing.id, closedAt: existing.closedAt };
     }
+    // Plan 2, Task 15: a follow-up in a thread that has its workspace can wake the machine, so it needs the org's GitHub connection too.
+    const followUpGate = repositoryGateOf(dependencies);
+    if (followUpGate !== undefined) {
+      const bound = await requireLatestProject(dependencies, requireOrgId(identity.orgId), slack.binding.projectName);
+      await requireRepositoriesConnected(followUpGate, requireOrgId(identity.orgId), bound.definition);
+    }
     if (existing.status === "UNPREPARED" && !lazyPreparation) {
       // An older Slack service cannot parse UNPREPARED and expects compute now: prepare it at once.
       const prepared = await startThreadPreparation(dependencies, identity, requestId, existing, input.includeOpenTaskCount === true);
@@ -3559,9 +3788,13 @@ async function ensureThreadWorkspace(
 
   // New threads use the latest revision; an existing thread keeps the revision its workspace was prepared with.
   const project = await requireLatestProject(dependencies, requireOrgId(identity.orgId), slack.binding.projectName);
-  // Plan 2, Task 11: a new thread is new work, so an archived project refuses it. A person in the bound channel is a contributor;
-  // threads that already have a workspace were answered above and keep going.
-  await requireNewWorkAllowed(dependencies, requireOrgId(identity.orgId), slack.binding.projectName, "contributor", "task");
+  // Plan 2, Task 11: a new thread is new work, so an archived project refuses it. The requester's role is their real one (Task 21): an
+  // explicit grant (a viewer's included) wins, an org owner or admin maintains, and otherwise the bound channel makes them a contributor.
+  // Threads that already have a workspace were answered above and keep going.
+  await requireNewWorkAllowed(dependencies, requireOrgId(identity.orgId), slack.binding.projectName, requesterRole, "task");
+  // Plan 2, Task 15: a new thread is new work that needs the org's GitHub connection (cloud installs), before any budget or charge.
+  const gate = repositoryGateOf(dependencies);
+  if (gate !== undefined) await requireRepositoriesConnected(gate, requireOrgId(identity.orgId), project.definition);
   if (lazyPreparation) {
     return createUnpreparedThreadWorkspace(dependencies, identity, requestId, project, include, includeSettingsRevision);
   }
@@ -3629,7 +3862,7 @@ async function createUnpreparedThreadWorkspace(
         Item: { pk: `OWNER#${identity.ownerKey}`, sk: `PROJECT#${projectName}`, entityType: "DEFAULT_WORKSPACE", workspaceId: workspace.id },
         ConditionExpression: "attribute_not_exists(pk)",
       } },
-      { Put: { TableName: dependencies.tableName, Item: membershipRecord(requireOrgId(identity.orgId), identity.ownerKey, projectName, existingMembership?.role ?? "developer") } },
+      { Put: { TableName: dependencies.tableName, Item: membershipRecord(requireOrgId(identity.orgId), identity.ownerKey, projectName, existingMembership?.role ?? "developer", grantDetailsOf(existingMembership)) } },
       { Put: {
         TableName: dependencies.tableName,
         Item: { pk: `IDEMPOTENCY#${identity.ownerKey}#THREAD`, sk: `REQUEST#${requestId}`, entityType: "IDEMPOTENCY", workspaceId: workspace.id },
@@ -3698,6 +3931,7 @@ async function prepareThreadWorkspace(
 ): Promise<SlackThreadPrepareResult> {
   const slack = identity.slack;
   if (!slack || !dependencies.slack) throw agentXError("FORBIDDEN", "a Slack thread identity is required");
+  await requireSlackRequesterMayWork(dependencies, identity, slack.binding.projectName);
   const input = object(value, "thread workspace preparation");
   const requestId = uuid(input.requestId, "requestId");
   // C11: a shared task's workspace is the developer's; the thread never prepares it.
@@ -4142,7 +4376,8 @@ async function threadIntegrations(project: ProjectDefinition, include: Integrati
   const repositories = github?.repositories.map((repository) => repository.name) ?? [];
   let connectors: ThreadConnector[] | undefined;
   if (include.connectors) {
-    const resolved = resolveConnectors(project, connectorTypeContext(dependencies, orgId), dependencies.connectorTypes);
+    // Only whether each connector is connected is read here: no token is minted, so asking for a scope is a bug.
+    const resolved = resolveConnectors(project, connectorTypeContext(dependencies, orgId, () => Promise.reject(agentXError("RUNTIME_UNAVAILABLE", "listing a thread's connectors mints no GitHub token"))), dependencies.connectorTypes);
     const visible = include.allConnectorTypes ? resolved : resolved.filter((connector) => connector.type === "github");
     connectors = await Promise.all(visible.map(async (connector) => ({
       name: connector.name,
@@ -4720,7 +4955,7 @@ async function codingPlanFeatureE2EContext(dependencies: AwsBrokerDependencies, 
     if (!dependencies.projectSetupSource) return { status: "unknown" as const, reason: "trusted source capture for the exact prepared commit is unavailable" };
     if (expectedRepositoryId === undefined) return { status: "unknown" as const, reason: "the registered repository has no supported immutable source identity" };
     try {
-      const captured = await dependencies.projectSetupSource.capture({ repositoryUrl: repository.url, ref: prepared.baseCommitSha });
+      const captured = await dependencies.projectSetupSource.capture({ repositoryUrl: repository.url, ref: prepared.baseCommitSha }, await githubScopeOf(dependencies, task));
       if (!isExactFeatureE2ESourceSnapshot(captured, expectedRepositoryId, prepared.baseCommitSha)) {
         return { status: "unknown" as const, reason: "trusted capture did not match the task's prepared repository commit" };
       }
@@ -4955,6 +5190,7 @@ async function acceptTask(
   assertNoUntrustedRoutingFields(value);
   const request = OperationRequestSchema.parse(value);
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
+  await requireSlackRequesterMayWork(dependencies, identity, workspace.projectName);
   await requireProjectAuthority(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName, { taskCreator: () => workspaceTaskOwner(dependencies, workspace.id) });
   const requestHash = hashJson({ conversationId: request.conversationId, prompt: request.prompt,
     ...(options.workflowReviewNote === undefined ? {} : { workflowReviewNote: options.workflowReviewNote }),
@@ -5066,6 +5302,7 @@ async function acceptPullRequest(
   // Ruling R60: before any access check, so a removed creator's task says why instead of "project not found".
   await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspaceId);
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
+  await requireSlackRequesterMayWork(dependencies, identity, workspace.projectName);
   await requireProjectAuthority(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName, { taskCreator: () => workspaceTaskOwner(dependencies, workspace.id) });
   const candidate = options.workflowCandidate;
   if (candidate !== undefined && (candidate.repositoryId !== request.repository || !/^[a-f0-9]{40}$/.test(candidate.treeSha)
@@ -5258,6 +5495,7 @@ async function acceptPullRequestLifecycle(
   // Ruling R60: before any access check, as for acceptPullRequest.
   await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspaceId);
   const workspace = await requireOwnedWorkspace(dependencies, identity, workspaceId);
+  await requireSlackRequesterMayWork(dependencies, identity, workspace.projectName);
   await requireProjectAuthority(dependencies, requireOrgId(identity.orgId), identity.ownerKey, workspace.projectName, { taskCreator: () => workspaceTaskOwner(dependencies, workspace.id) });
   const candidate = options.workflowCandidate;
   if (candidate !== undefined && (request.action !== "append" || !/^[a-f0-9]{64}$/.test(candidate.candidateDigest)
@@ -5297,7 +5535,8 @@ async function acceptPullRequestLifecycle(
   if (candidate !== undefined && existingRecord?.expectedHeadCommit !== candidate.expectedHeadCommit) {
     throw agentXError("STALE_FENCE", "the pull request's recorded head is not the one the task recorded");
   }
-  const remote = await dependencies.githubPullRequests.getPullRequest(repository.url, request.pullRequestNumber);
+  const scope = await githubScopeOf(dependencies, workspace);
+  const remote = await dependencies.githubPullRequests.getPullRequest(repository.url, request.pullRequestNumber, scope);
   const record = existingRecord ?? await adoptLegacyPullRequest(
     dependencies,
     workspaceId,
@@ -5332,7 +5571,7 @@ async function acceptPullRequestLifecycle(
         : { body: (await attributedBody(dependencies, identity, request.body)) ?? request.body }),
       ...(request.action === "close" ? { state: "closed" as const } : {}),
       ...(request.action === "reopen" ? { state: "open" as const } : {}),
-    });
+    }, scope);
     const result: PullRequestLifecycleResult = PullRequestLifecycleResultSchema.parse({
       action: request.action,
       repository: record.repository,
@@ -5923,6 +6162,8 @@ async function authorizeSlackTaskAction(dependencies: AwsBrokerDependencies, tas
   // a fresh read+role check. The separately invoked mutation route still requires an open task.
   const access = await resolveTaskAccess(routeDeps, caller, taskId, "read");
   if (!can(access.role, event.taskAction)) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+  // The button's press is gated like the action behind it: a project viewer (an owner lowered to viewer included) is not offered work.
+  if (WORK_ACTIONS.includes(event.taskAction)) await requireProjectWorkRole(routeDeps, access.task, caller);
   if (access.task.share?.teamId !== thread.teamId || access.task.share.channelId !== thread.channelId || access.task.share.threadTs !== thread.threadTs) {
     throw agentXError("FORBIDDEN", "this task belongs to another Slack thread");
   }
@@ -6099,6 +6340,8 @@ async function slackTaskAccess(
     // A verified Slack message/service call in the task's exact linked thread is the legacy
     // commenter proof. The caller validates that exact thread before using this result.
     if (sidecar !== undefined || action !== "comment" || task.share === undefined) throw error;
+    // A project viewer only views (Plan 2, Task 21): their explicit grant beats the thread fallback. Anyone with no grant keeps it.
+    if (grantRoleOf(await getMembership(dependencies, caller.orgId, caller.developerId, task.project)) === "viewer") throw error;
     return { caller, routeDeps, access: { task, role: "commenter", ownerActorIds: [taskOwnerKey(task.developerId, task.taskId)] } };
   }
 }
@@ -7687,6 +7930,7 @@ async function workflowE2ECurrentAuthorityIsValid(
         developer: dependencies.developer, now: Date.now },
       { orgId, developerId: task.developerId, orgRole: creatorOrgMember?.role ?? "member", ...(creator.slackUserId === undefined ? {} : { slackUserId: creator.slackUserId }) }, task.project);
     } catch { return reject("current-creator-project-access-unavailable"); }
+    if (!projectAllows(creatorAccess.role, "start_tasks")) return reject("current-creator-can-only-view-project");
     const creatorMembershipKey = projectMemberKey(orgId, task.developerId, task.project);
     const creatorMembership = await getItem<Record<string, unknown>>(dependencies, creatorMembershipKey);
     const creatorAuthority = await workflowE2ECreatorAuthorityProof(dependencies, task, creatorMembership, creatorAccess, creatorOrgMember);
@@ -7802,7 +8046,7 @@ async function workflowE2ECurrentAuthorityIsValid(
   }
 }
 
-async function workflowE2ECreatorAuthorityProof(
+export async function workflowE2ECreatorAuthorityProof(
   dependencies: AwsBrokerDependencies,
   task: DeveloperTaskRecord,
   membership: Record<string, unknown> | undefined,
@@ -8139,7 +8383,7 @@ async function verifyTaskFeedbackForWorkerStart(dependencies: AwsBrokerDependenc
     documentClient: dependencies.documentClient, tableName: dependencies.tableName,
     repositoryFullName: parsed[1]!, number: Number(parsed[2]), loadTask: id => getItem<DeveloperTaskRecord>(dependencies, taskKey(id)),
     repositoryUrl: webhookRepositoryUrl(dependencies),
-    getCurrentFeedback: (url, number) => getFeedback.call(dependencies.githubPullRequests, url, number),
+    getCurrentFeedback: (url, number, orgId) => getFeedback.call(dependencies.githubPullRequests, url, number, githubScope(dependencies, orgId)),
   });
 }
 
@@ -8494,7 +8738,8 @@ async function reconcilePullRequestUpdate(
   if (record.expectedHeadCommit !== expected.expectedHeadCommit) {
     throw agentXError("STALE_FENCE", "pull request record changed before callback reconciliation");
   }
-  const remote = await dependencies.githubPullRequests.getPullRequest(record.repositoryUrl, record.number);
+  const scope = await githubScopeOfWorkspace(dependencies, operation.workspaceId);
+  const remote = await dependencies.githubPullRequests.getPullRequest(record.repositoryUrl, record.number, scope);
   // GitHub moves a pull request's head a moment after a push to its branch, and the worker calls back right after its
   // push: a pull request still at the head before the push holds the update when its branch, which GitHub reads from
   // Git itself, already points at the pushed commit.
@@ -8502,7 +8747,7 @@ async function reconcilePullRequestUpdate(
     const getBranchHead = dependencies.githubPullRequests.getBranchHead;
     if (remote.headCommit !== expected.expectedHeadCommit || getBranchHead === undefined) return false;
     try {
-      return await getBranchHead.call(dependencies.githubPullRequests, record.repositoryUrl, record.headBranch) === input.commit;
+      return await getBranchHead.call(dependencies.githubPullRequests, record.repositoryUrl, record.headBranch, scope) === input.commit;
     } catch {
       return false;
     }
@@ -8559,7 +8804,8 @@ async function describeFeedbackFixes(dependencies: AwsBrokerDependencies, operat
       (key, maxBytes) => (late() ? Promise.resolve(undefined) : readObjectText(dependencies, key, maxBytes)), `private/${task.ownerKey}/${task.workspaceId}/feedback-reviews/`);
     if (late()) return;
     // The description as GitHub has it now, read just before the write, so a person's edit since is kept.
-    const current = (await dependencies.githubPullRequests.getPullRequest(record.repositoryUrl, record.number)).body;
+    const scope = await githubScopeOf(dependencies, task);
+    const current = (await dependencies.githubPullRequests.getPullRequest(record.repositoryUrl, record.number, scope)).body;
     const workflow = task.workflow;
     const pushedChecked = workflow.candidate?.digest === candidateDigest && workflow.verification?.candidateDigest === candidateDigest;
     const status = pushedChecked ? withStatusLines(current, workflowPullRequestStatusLines(workflow)) : undefined;
@@ -8572,7 +8818,7 @@ async function describeFeedbackFixes(dependencies: AwsBrokerDependencies, operat
       log("workflow.pull_request_description_abandoned");
       return;
     }
-    await dependencies.githubPullRequests.updatePullRequest(record.repositoryUrl, record.number, { body: next.body });
+    await dependencies.githubPullRequests.updatePullRequest(record.repositoryUrl, record.number, { body: next.body }, scope);
   };
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -8654,6 +8900,7 @@ async function reconcilePullRequest(
   // A workflow publication opens only on the checked tree. GitHub, not the worker, says what the branch holds: its head
   // must be the reported commit, and that commit's tree the checked one, before the pull request opens from the branch.
   const github = dependencies.githubPullRequests;
+  const scope = await githubScopeOfWorkspace(dependencies, operation.workspaceId);
   const expectedTree = expected.expectedTreeSha;
   const expectedCommit = expected.expectedCommitSha;
   const expectedBase = expected.expectedBaseCommit;
@@ -8671,7 +8918,7 @@ async function reconcilePullRequest(
       if (current === expectedBase) return true;
       if (seen.has(current)) continue;
       seen.add(current);
-      for (const parent of await github.getCommitParents(expected.repositoryUrl, current)) {
+      for (const parent of await github.getCommitParents(expected.repositoryUrl, current, scope)) {
         if (!/^[a-f0-9]{40,64}$/u.test(parent)) return false;
         pending.push(parent);
       }
@@ -8687,8 +8934,8 @@ async function reconcilePullRequest(
       await blockUncheckedPublication(dependencies, operation);
       throw agentXError("CALLBACK_FORBIDDEN", "the pushed commit is not the checked commit");
     }
-    const head = await github.getBranchHead(expected.repositoryUrl, expected.headBranch);
-    if (head !== input.commit || await github.getCommitTree(expected.repositoryUrl, input.commit) !== expectedTree || !await onPinnedBase(input.commit)) {
+    const head = await github.getBranchHead(expected.repositoryUrl, expected.headBranch, scope);
+    if (head !== input.commit || await github.getCommitTree(expected.repositoryUrl, input.commit, scope) !== expectedTree || !await onPinnedBase(input.commit)) {
       await blockUncheckedPublication(dependencies, operation);
       throw agentXError("CALLBACK_FORBIDDEN", "the pushed commit is not the checked code");
     }
@@ -8716,7 +8963,7 @@ async function reconcilePullRequest(
     title: expected.title,
     ...(body === undefined ? {} : { body }),
     ...(draft === undefined ? {} : { draft }),
-  });
+  }, scope);
   // The branch could move between the check and the open (a force-push): the opened pull request's own head must still
   // be the checked commit, or it is closed again and nothing is recorded.
   if (expectedTree !== undefined) {
@@ -8727,8 +8974,8 @@ async function reconcilePullRequest(
     // closed pull request and a second one on retry. A head that still can't be read is closed, as one that differs is.
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        headCommit = (await github.getPullRequest(expected.repositoryUrl, pullRequest.number)).headCommit;
-        headTree = headCommit === input.commit ? await github.getCommitTree!(expected.repositoryUrl, headCommit) : undefined;
+        headCommit = (await github.getPullRequest(expected.repositoryUrl, pullRequest.number, scope)).headCommit;
+        headTree = headCommit === input.commit ? await github.getCommitTree!(expected.repositoryUrl, headCommit, scope) : undefined;
         headOnBase = headCommit === input.commit && await onPinnedBase(headCommit);
         break;
       } catch (error) {
@@ -8739,7 +8986,7 @@ async function reconcilePullRequest(
       }
     }
     if (headCommit !== input.commit || headTree !== expectedTree || !headOnBase) {
-      await github.updatePullRequest(expected.repositoryUrl, pullRequest.number, { state: "closed" }).catch((error: unknown) => {
+      await github.updatePullRequest(expected.repositoryUrl, pullRequest.number, { state: "closed" }, scope).catch((error: unknown) => {
         console.log(JSON.stringify({ component: "broker", event: "workflow.unchecked_pull_request_close_failed", operationId: operation.id, number: pullRequest.number, error: error instanceof Error ? error.name : "unknown" }));
       });
       await blockUncheckedPublication(dependencies, operation);
@@ -8777,6 +9024,7 @@ async function reconcilePullRequest(
       original.repositoryUrl,
       original.number,
       { state: "closed" },
+      scope,
     );
     const linkedOriginal: PullRequestRecord = {
       ...original,
@@ -9043,7 +9291,7 @@ async function validateWorkflowProgressChunk(
     const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
     const repository = project.definition.repositories.find((entry) => entry.name === invocation.graph.items[0]?.repository);
     if (repository === undefined) throw agentXError("CALLBACK_FORBIDDEN", "the approved work breakdown repository is no longer registered");
-    firstBaseTree = await dependencies.githubPullRequests.getCommitTree(repository.url, baseCommit);
+    firstBaseTree = await dependencies.githubPullRequests.getCommitTree(repository.url, baseCommit, await githubScopeOf(dependencies, task));
   }
   let latestSequence = history.at(-1)?.sequence ?? 0;
   if (latestSequence !== (invocation.sequenceStart ?? 0) + history.filter((entry) => entry.operationId === operation.id).length) {
@@ -9466,13 +9714,13 @@ export async function processGithubWorkflowEvent(
     ...(event.headSha === undefined ? {} : { expectedHeadSha: event.headSha }),
     loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
     repositoryUrl: webhookRepositoryUrl(dependencies),
-    getCurrentFeedback: async (url, number) => options === undefined
-      ? dependencies.githubPullRequests.getPullRequestFeedback!.call(dependencies.githubPullRequests, url, number)
-      : { pullRequest: await dependencies.githubPullRequests.getPullRequestMergeObservation!.call(dependencies.githubPullRequests, url, number, options.budget), comments: [], threads: [] },
+    getCurrentFeedback: async (url, number, orgId) => options === undefined
+      ? dependencies.githubPullRequests.getPullRequestFeedback!.call(dependencies.githubPullRequests, url, number, githubScope(dependencies, orgId))
+      : { pullRequest: await dependencies.githubPullRequests.getPullRequestMergeObservation!.call(dependencies.githubPullRequests, url, number, options.budget, githubScope(dependencies, orgId)), comments: [], threads: [] },
     ...(options === undefined ? {} : { observationMode: options.observationMode }),
     recordedHead: async (workspaceId, repositoryId, number) => (await getItem<PullRequestRecord>(dependencies, pullRequestKey(workspaceId, repositoryId, number)))?.expectedHeadCommit,
     ...(dependencies.githubPullRequests.getCommitParents === undefined ? {} : {
-      commitParents: (url: string, commit: string) => dependencies.githubPullRequests.getCommitParents!(url, commit),
+      commitParents: (url: string, commit: string, orgId: OrgId | undefined) => dependencies.githubPullRequests.getCommitParents!(url, commit, githubScope(dependencies, orgId)),
     }),
     // A fix push taken for failed but landed: recorded as its result would have, together or not at all.
     saveLandedPushes: async (taskId, expectedRevision, workflow, pushes) => {
@@ -9709,6 +9957,14 @@ export async function retryGithubWebhookAsAdministrator(dependencies: AwsBrokerD
   return { deliveryId, status: "RETRY_QUEUED" as const };
 }
 
+function isGithubInstallRequestReminderEvent(event: unknown): event is { kind: "github-install-request-reminders" } {
+  return event !== null && typeof event === "object" && (event as { kind?: unknown }).kind === "github-install-request-reminders";
+}
+
+function isEgressDomainsSyncEvent(event: unknown): event is { source: "agentx.egress-domains-sync" } {
+  return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.egress-domains-sync";
+}
+
 function isGithubWebhookRecoveryEvent(event: unknown): event is { source: "agentx.github-webhook-recovery" } {
   return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.github-webhook-recovery";
 }
@@ -9905,6 +10161,10 @@ export async function requireWorkflowE2ECreatorAuthority(dependencies: AwsBroker
       throw agentXError("TASK_ACCESS_DENIED", "the original creator no longer has current access to this task's project");
     }
     throw agentXError("RUNTIME_UNAVAILABLE", "the original creator's current project access is unavailable");
+  }
+  // A creator lowered to viewer still passes the access check (a viewer sees the project) but takes no part in running work: say so.
+  if (!projectAllows(creatorAccess.role, "start_tasks")) {
+    throw agentXError("TASK_ACCESS_DENIED", "the original creator can now only view this task's project and can no longer run its checks");
   }
   const creatorMembership = await getItem<Record<string, unknown>>(dependencies, projectMemberKey(orgId, task.developerId, task.project));
   const creatorAuthority = await workflowE2ECreatorAuthorityProof(dependencies, task, creatorMembership, creatorAccess, creatorOrgMember);
@@ -10392,9 +10652,10 @@ async function completedPullRequestUpdateItems(
   const record = await getItem<PullRequestRecord>(dependencies, pullRequestKey(task.workspaceId, maintenance.repository, maintenance.pullRequestNumber));
   // GitHub, not the worker, says what the pull request now holds. A failed push may still have landed (a CodeBuild gate
   // after the push, a lost result): then GitHub's head is AgentX's fast-forward of the recorded head, on the reviewed tree.
+  const scope = await githubScopeOf(dependencies, task);
   let current: Awaited<ReturnType<typeof getFeedback>>;
   try {
-    current = await getFeedback.call(gateway, repository.url, maintenance.pullRequestNumber);
+    current = await getFeedback.call(gateway, repository.url, maintenance.pullRequestNumber, scope);
   } catch (error) {
     if (pushedCommit === undefined) return failed(cause);
     throw error;
@@ -10407,9 +10668,9 @@ async function completedPullRequestUpdateItems(
   if (head === maintenance.expectedHeadCommit && current.pullRequest.state === "open"
     && gateway.getBranchHead !== undefined && gateway.getCommitTree !== undefined) {
     try {
-      const branchHead = await gateway.getBranchHead(repository.url, maintenance.headBranch);
+      const branchHead = await gateway.getBranchHead(repository.url, maintenance.headBranch, scope);
       if (branchHead !== head && /^[a-f0-9]{40}$/.test(branchHead)) {
-        headTree = await gateway.getCommitTree(repository.url, branchHead);
+        headTree = await gateway.getCommitTree(repository.url, branchHead, scope);
         head = branchHead;
       }
     } catch {
@@ -10422,7 +10683,7 @@ async function completedPullRequestUpdateItems(
   const ownFastForward = async (): Promise<boolean> => {
     if (record?.expectedHeadCommit === head) return true;
     try {
-      return gateway.getCommitParents !== undefined && JSON.stringify(await gateway.getCommitParents(repository.url, head)) === JSON.stringify([maintenance.expectedHeadCommit]);
+      return gateway.getCommitParents !== undefined && JSON.stringify(await gateway.getCommitParents(repository.url, head, scope)) === JSON.stringify([maintenance.expectedHeadCommit]);
     } catch {
       return false;
     }
@@ -10546,7 +10807,7 @@ async function completedWorkflowItems(
     if (candidateRepository === undefined || getFeedback === undefined) {
       throw agentXError("RUNTIME_UNAVAILABLE", "cannot verify the published pull request against the checked candidate");
     }
-    const publishedFeedback = await getFeedback.call(dependencies.githubPullRequests, repository.url, published.data.number);
+    const publishedFeedback = await getFeedback.call(dependencies.githubPullRequests, repository.url, published.data.number, await githubScopeOf(dependencies, task));
     if (publishedFeedback.pullRequest.number !== published.data.number
       || publishedFeedback.pullRequest.url !== published.data.url
       || publishedFeedback.pullRequest.state !== "open"
@@ -10802,7 +11063,7 @@ async function completedWorkflowItems(
             for (const repository of candidate.repositories) {
               const url = project.definition.repositories.find((entry) => entry.name === repository.repositoryId)?.url;
               if (url === undefined) throw new Error("candidate repository is not registered");
-              await dependencies.githubPullRequests.getCommitTree(url, repository.baseCommitSha as string);
+              await dependencies.githubPullRequests.getCommitTree(url, repository.baseCommitSha as string, await githubScopeOf(dependencies, task));
             }
           } catch (error) {
             verificationFailure = WORKFLOW_BLOCK_REASONS.startUnconfirmed;
@@ -11144,7 +11405,7 @@ async function storePlanAnswer(
       ...planEvidenceSources(project, { workflow, preparedBase: task.preparedBase }),
       readFile: async (url, path, commit, options) => {
         if (github.getFileAtCommit === undefined) throw new Error("reading files from GitHub is not configured");
-        return github.getFileAtCommit(url, path, commit, options);
+        return github.getFileAtCommit(url, path, commit, await githubScopeOf(dependencies, task), options);
       },
     });
   } catch {
@@ -11914,6 +12175,7 @@ async function putProjectModel(
   const projectName = identity.slack?.binding.projectName;
   const requester = identity.slack?.requester;
   if (!projectName || !requester) throw agentXError("FORBIDDEN", "Slack project binding and requester are required");
+  await requireSlackRequesterMayWork(dependencies, identity, projectName);
   const requested = ProjectModelSelectionRequestSchema.parse(value);
   const orgId = requireOrgId(identity.orgId);
   const project = await requireLatestProject(dependencies, orgId, projectName);
@@ -12049,7 +12311,8 @@ export async function requireProjectAuthority(
   options: { taskCreator?: () => Promise<string | undefined> } = {},
 ): Promise<{ kind: "grant"; membership: MembershipRecord } | { kind: "org-role"; role: "owner" | "admin" }> {
   const membership = await getMembership(dependencies, orgId, ownerKey, projectName);
-  if (membership) return { kind: "grant", membership };
+  // A viewer's row is no authority to work on a project's task paths (Plan 2, Task 21): it falls through to the org role, then NOT_FOUND.
+  if (membership && grantRoleOf(membership) !== "viewer") return { kind: "grant", membership };
   const creator = await options.taskCreator?.();
   const member = await readOrgMember(dependencies, orgId, creator ?? ownerKey);
   if (member?.role === "owner" || member?.role === "admin") return { kind: "org-role", role: member.role };
@@ -12229,8 +12492,18 @@ function workspaceItem(orgId: OrgId, workspace: WorkspaceInstance) {
   };
 }
 
-function membershipRecord(orgId: OrgId, ownerKey: string, projectName: string, role: MembershipRecord["role"]): MembershipRecord {
-  return { ...projectMemberKey(orgId, ownerKey, projectName), entityType: "MEMBERSHIP", ownerKey, projectName, role, grantId: randomUUID() };
+function membershipRecord(orgId: OrgId, ownerKey: string, projectName: string, role: MembershipRecord["role"], details: Pick<MembershipRecord, "projectRole" | "grantedBy" | "grantedAt"> = {}): MembershipRecord {
+  return { ...projectMemberKey(orgId, ownerKey, projectName), entityType: "MEMBERSHIP", ownerKey, projectName, role, grantId: randomUUID(), ...details };
+}
+
+/** What a row being written again keeps of the grant it replaces: the project role, who made it and when (Plan 2, Task 21). */
+function grantDetailsOf(existing: MembershipRecord | undefined): Pick<MembershipRecord, "projectRole" | "grantedBy" | "grantedAt"> {
+  if (existing === undefined) return {};
+  return {
+    ...(existing.projectRole === undefined ? {} : { projectRole: existing.projectRole }),
+    ...(existing.grantedBy === undefined ? {} : { grantedBy: existing.grantedBy }),
+    ...(existing.grantedAt === undefined ? {} : { grantedAt: existing.grantedAt }),
+  };
 }
 
 function githubRepositoryFullName(repositoryUrl: string): string {
@@ -12327,7 +12600,7 @@ async function exchangeRepositoryCredential(
     credentialRef,
     repositoryUrl: input.repositoryUrl,
     access,
-  });
+  }, await githubScopeOfWorkspace(dependencies, workspaceId));
 }
 
 /** A stored mode is a selector, not continuing authority: reload the current task and project before issuing push credentials. */
@@ -12532,14 +12805,19 @@ const ec2Sessions = new SessionManager({
     },
   },
 });
-const github = createGitHubAppCredentials(secretsManager);
+const cloudOrgResolver = orgResolverFromEnvironment(process.env, orgStoreOf({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") }));
+// Plan 2, Task 15: on a cloud install every token for an org is minted only while that org's GitHub connection holds the installation.
+const github = createGitHubAppCredentials(
+  secretsManager,
+  cloudOrgResolver === undefined ? undefined : { requireInstallationBound: installationBindingCheck({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") }) },
+);
 const githubCredentials = github.provider;
 const repositoryGrantSigningKey = createHmac("sha256", requiredEnvironment("CALLBACK_SIGNING_KEY"))
   .update("agentx:repository-grants:v3")
   .digest();
 const repositoryGrants = new RepositoryGrantService(
   repositoryGrantSigningKey,
-  (credentialRef, repositoryUrl, access) => githubCredentials.resolve(credentialRef, repositoryUrl, access),
+  (credentialRef, repositoryUrl, access, scope) => githubCredentials.resolve(credentialRef, repositoryUrl, access, scope),
 );
 
 const lambdaClient = new LambdaClient(awsClientConfiguration);
@@ -12580,7 +12858,6 @@ function slackRequestQueue(queueUrl: string): SlackRequestQueue {
 }
 const developer = developerConfiguration();
 const cloudProjectDefaults = cloudProjectDefaultsFromEnvironment(process.env);
-const cloudOrgResolver = orgResolverFromEnvironment(process.env, orgStoreOf({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") }));
 
 // Sign in with ChatGPT (#338): set only where the control plane has the connection key.
 const chatGptKeyArn = process.env.CHATGPT_CONNECTION_KEY_ARN;
@@ -12603,6 +12880,15 @@ const modelAccess = modelAccessFunctionName === undefined || modelAccessFunction
 const cloudWatch = new CloudWatchClient(awsClientConfiguration);
 const sqs = new SQSClient(awsClientConfiguration);
 
+const githubNoticeSender = process.env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";
+
+// Plan 2, Task 19: set only on Rovara Cloud, where the foundation's DNS firewall has a "ProjectAllowList" for the approved egress domains.
+// Absent, a change reports that it will apply within 5 minutes and the scheduled run (which needs the list too) is not created.
+const projectAllowListId = process.env.AGENT_PROJECT_ALLOW_LIST_ID;
+const egressDomainsSync = projectAllowListId === undefined || projectAllowListId === ""
+  ? undefined
+  : () => syncCellAllowList({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), resolver: new Route53ResolverClient(awsClientConfiguration), listId: projectAllowListId, now: () => new Date() });
+
 export const handler = createAwsBrokerHandler({
   documentClient,
   s3,
@@ -12614,7 +12900,7 @@ export const handler = createAwsBrokerHandler({
   callbackSigningKey: requiredEnvironment("CALLBACK_SIGNING_KEY"),
   repositoryGrants,
   githubPullRequests: githubCredentials,
-  projectSetupSource: { capture: ({ repositoryUrl, ref }) => githubCredentials.captureE2ESourceSnapshot(repositoryUrl, ref) },
+  projectSetupSource: { capture: ({ repositoryUrl, ref }, scope) => githubCredentials.captureE2ESourceSnapshot(repositoryUrl, ref, scope) },
   ...(process.env.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID
     ? { projectSetupRuntimeCatalogId: process.env.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID }
     : {}),
@@ -12622,8 +12908,16 @@ export const handler = createAwsBrokerHandler({
     ? { e2eFeatureRuntimeCatalogId: process.env.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID }
     : {}),
   githubWebhookSecret: github.webhookSecret,
-  checkRepositoryAccess: (repository) => githubCredentials.checkRepository(repository),
-  githubMcp: { credentials: (repository, access) => githubCredentials.issueCredentials(repository, access) },
+  // Plan 2, Task 14: the sender and region are the cloud sign-in's SES identity (empty: no sender, no notice).
+  ...(githubNoticeSender === "" ? {} : {
+    githubConnectedNotice: {
+      ses: new SESv2Client(process.env.DEVELOPER_NOTICE_EMAIL_REGION || process.env.AWS_REGION ? { region: process.env.DEVELOPER_NOTICE_EMAIL_REGION || process.env.AWS_REGION as string } : {}),
+      from: githubNoticeSender,
+      log: (entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry })),
+    },
+  }),
+  checkRepositoryAccess: (repository, scope) => githubCredentials.checkRepository(repository, scope),
+  githubMcp: { credentials: (repository, access, scope) => githubCredentials.issueCredentials(repository, access, scope) },
   connectorCredentials: {
     secrets: secretsManagerSource(secretsManager, process.env.CONNECTOR_SECRET_PREFIX),
     githubApp: { ref: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF"), secretName: github.privateKeySecretArn },
@@ -12640,6 +12934,7 @@ export const handler = createAwsBrokerHandler({
   ...(developer ? { developer } : {}),
   ...(chatgpt ? { chatgpt } : {}),
   ...(modelAccess ? { modelAccess } : {}),
+  ...(egressDomainsSync === undefined ? {} : { egressDomainsSync }),
   cloud: cloudOrgResolver !== undefined,
   ...(orgConnections === undefined ? {} : { orgConnections }),
   // Ruling R55: a cloud org's projects run on the foundation's EC2 workers, with the built-in GitHub App.

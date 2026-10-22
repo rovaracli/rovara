@@ -88,39 +88,6 @@ describe("AgentX administration workflow", () => {
     expect(fetchImplementation).not.toHaveBeenCalled();
   });
 
-  const ORG_ID = "org_aaaaaaaaaaaaaaaaaaaa";
-  // Ruling R55
-  it("sends the org and owner to the administrator route and says what is set", async () => {
-    const context = await administratorContext("agentx-cli-github-owner-");
-    const bodies: unknown[] = [];
-    const fetchImplementation = vi.fn<typeof fetch>(async (input, init) => {
-      expect(new URL(requestUrl(input)).pathname).toBe("/v1/admin/org/github-owner");
-      expect(init?.method).toBe("PUT");
-      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer access-secret");
-      bodies.push(JSON.parse(typeof init?.body === "string" ? init.body : "null") as unknown);
-      return Response.json({ org: { orgId: ORG_ID, githubOwner: "acme-corp" } });
-    });
-    let output = "";
-    const exitCode = await executeCli([...context.globals, "admin", "org", "github-owner", "set", "--org", ORG_ID, "--owner", "Acme-Corp"], {
-      fetchImplementation, tokenStore: context.tokens, stdout: { write(text) { output += text; } }, stderr: { write(text) { throw new Error(text); } },
-    });
-    expect(exitCode).toBe(0);
-    expect(bodies).toEqual([{ orgId: ORG_ID, githubOwner: "Acme-Corp" }]);
-    expect(output).toBe(`Organization ${ORG_ID} may now create projects for repositories under the GitHub owner acme-corp.\n`);
-  });
-
-  it("refuses a missing flag before calling the control plane", async () => {
-    const context = await administratorContext("agentx-cli-github-owner-");
-    const fetchImplementation = vi.fn<typeof fetch>(async () => Response.json({}));
-    for (const args of [["admin", "org", "github-owner", "set", "--org", ORG_ID], ["admin", "org", "github-owner", "set", "--owner", "acme"]]) {
-      let errors = "";
-      const exitCode = await executeCli([...context.globals, ...args], { fetchImplementation, tokenStore: context.tokens, stdout: { write() {} }, stderr: { write(text) { errors += text; } } });
-      expect(exitCode).not.toBe(0);
-      expect(errors).toContain("CONFIG_INVALID");
-    }
-    expect(fetchImplementation).not.toHaveBeenCalled();
-  });
-
   it("admin workspace cancel keeps WORKSPACE_BUSY and its try-again message when the cancel raced its task (final review I2)", async () => {
     const context = await administratorContext("agentx-cli-cancel-");
     const workspaceId = randomUUID();

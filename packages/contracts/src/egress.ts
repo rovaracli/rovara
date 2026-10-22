@@ -34,8 +34,22 @@ export function egressOrgSkPrefix(orgId: OrgId): string {
 /** The sort-key prefix every org's items share; the sync marker's `SYNC` does not match it. */
 export const EGRESS_ALL_ORGS_SK_PREFIX = "ORG#";
 
-/** The marker Task 19's sync reads: `{ dirtyAt, syncedAt? }`. Every write that changes the union sets `dirtyAt`. */
+/**
+ * The marker Task 19's sync reads. Every write that changes the union sets `dirtyAt` and adds one to `dirtySeq`; the sync, once the firewall
+ * holds the union it read, sets `syncedAt`, `syncedSeq` (the `dirtySeq` it read) and `syncedListId`, and only if `dirtySeq` is still that. The marker is
+ * dirty while `dirtySeq` is greater than `syncedSeq` (absent reads as 0). `dirtyAt` is for people: two changes in one millisecond share it.
+ */
 export const EGRESS_SYNC_KEY: OrgKey = { pk: EGRESS_DOMAINS_PK, sk: "SYNC" };
+
+export const EgressSyncMarkerSchema = z.object({
+  dirtyAt: z.string(),
+  dirtySeq: z.number().int().nonnegative(),
+  syncedAt: z.string().optional(),
+  syncedSeq: z.number().int().nonnegative().optional(),
+  /** The firewall list the last sync filled: a marker that last filled another list reads as dirty, so a replaced (empty) list is filled again. */
+  syncedListId: z.string().optional(),
+});
+export type EgressSyncMarker = z.infer<typeof EgressSyncMarkerSchema>;
 
 export const EgressDomainStatusSchema = z.enum(["pending", "approved", "rejected"]);
 export type EgressDomainStatus = z.infer<typeof EgressDomainStatusSchema>;

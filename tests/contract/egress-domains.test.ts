@@ -183,6 +183,87 @@ describe("a settings save on Rovara Cloud", () => {
     expect((await h.staff("GET", "/v1/admin/egress/pending")).body).toMatchObject({ pending: [{ domain: "old.acme.dev" }] });
   });
 
+  it("takes the last domain out of the union even when the egress write failed on the save that removed it (Task 18 Minor 2)", async () => {
+    const h = await install();
+    await h.put(["a.acme.dev"]);
+    await h.decide("approve", "a.acme.dev");
+    expect(await approvedUnion(h.deps)).toEqual(["a.acme.dev"]);
+    // The revision with no domains is stored, then the egress write fails.
+    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
+    const failed = await h.dev(OMAR, "PUT", "/v1/app/projects/web/settings", { requestId: randomUUID(), expectedRevision: 2, allowedDomains: [] });
+    expect(failed.status).toBe(503);
+    expect(await approvedUnion(h.deps)).toEqual(["a.acme.dev"]);
+    // The next save, whatever it changes, reconciles the item with the project, which now has no domains.
+    const saved = await h.dev(OMAR, "PUT", "/v1/app/projects/web/settings", { requestId: randomUUID(), expectedRevision: 3, description: "words" });
+    expect(saved.status).toBe(200);
+    expect(h.item()!.domains).toEqual([]);
+    expect(await approvedUnion(h.deps)).toEqual([]);
+  });
+
+  it("does not put an archived project's first domains in the union (Task 18 Minor 7)", async () => {
+    const h = await install();
+    h.db.set({ ...(h.db.get(projectMetaKey(TEST_ORG, "web")) as object), status: "archived" });
+    // A settings save on an archived project is refused (Task 20); the egress write itself still starts an archived project's item inactive.
+    const refused = await h.put(["a.acme.dev"]);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatchObject({ code: "PROJECT_ARCHIVED" });
+    expect(h.item()).toBeUndefined();
+    await putEgressDomains(h.deps, TEST_ORG, WEB, ["a.acme.dev"], { developerId: OMAR.developerId });
+    expect(h.item()).toMatchObject({ active: false });
+    await h.decide("approve", "a.acme.dev");
+    expect(await approvedUnion(h.deps)).toEqual([]);
+    // Restoring brings it back.
+    await setEgressOwnerActive(h.deps, TEST_ORG, WEB, true);
+    expect(await approvedUnion(h.deps)).toEqual(["a.acme.dev"]);
+  });
+
+  it("creates an archived project's first item inactive even when the archive lands after the project was read (Task 19 review, Minor 4)", async () => {
+    const h = await install();
+    let archived = false;
+    const racing = { send: async (input: unknown) => {
+      const answer = await h.db.send(input as never);
+      // The first read of the project's META says active; the archive lands right after it.
+      if (!archived && input instanceof GetCommand && input.input.Key?.sk === "META") {
+        archived = true;
+        h.db.set({ ...(h.db.get(projectMetaKey(TEST_ORG, "web")) as object), status: "archived" });
+      }
+      return answer;
+    } };
+    await putEgressDomains({ ...h.deps, documentClient: racing }, TEST_ORG, WEB, ["a.acme.dev"], { developerId: "dev-1" });
+    expect(archived).toBe(true);
+    expect(h.item()).toMatchObject({ active: false });
+    expect(await approvedUnion(h.deps)).toEqual([]);
+    // The other way: an item for a project that is archived when read, restored before the write, is created active.
+    const restored = await install();
+    restored.db.set({ ...(restored.db.get(projectMetaKey(TEST_ORG, "web")) as object), status: "archived" });
+    let flipped = false;
+    const racingBack = { send: async (input: unknown) => {
+      const answer = await restored.db.send(input as never);
+      if (!flipped && input instanceof GetCommand && input.input.Key?.sk === "META") {
+        flipped = true;
+        restored.db.set({ ...(restored.db.get(projectMetaKey(TEST_ORG, "web")) as object), status: "active" });
+      }
+      return answer;
+    } };
+    await putEgressDomains({ ...restored.deps, documentClient: racingBack }, TEST_ORG, WEB, ["a.acme.dev"], { developerId: "dev-1" });
+    expect(restored.item()).toMatchObject({ active: true });
+  });
+
+  it("backs off a little, with jitter, before retrying a cancellation that was not about the item, and only a few times (Task 19 review, Minor 5)", async () => {
+    const sleeps: number[] = [];
+    const { db, deps } = plain({ cloud: true });
+    const slow = { ...deps, sleep: async (milliseconds: number) => { sleeps.push(milliseconds); } };
+    db.injectFault({ command: "TransactWriteCommand", times: 2, error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "TransactionConflict" }] } });
+    await putEgressDomains(slow, TEST_ORG, WEB, ["a.acme.dev"], { developerId: "dev-1" });
+    expect(sleeps).toHaveLength(2);
+    for (const milliseconds of sleeps) { expect(milliseconds).toBeGreaterThan(0); expect(milliseconds).toBeLessThanOrEqual(500); }
+    // Never more than three waits, then it gives up.
+    sleeps.length = 0;
+    db.injectFault({ command: "TransactWriteCommand", times: 10, error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ThrottlingError" }] } });
+    await expect(putEgressDomains(slow, TEST_ORG, WEB, ["a.acme.dev", "b.acme.dev"], { developerId: "dev-1" })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(sleeps).toHaveLength(3);
+  });
+
   it("never shows another org's items: the same project name in another org is its own item", async () => {
     const h = await install();
     seedProject(h.db, OTHER_ORG);
@@ -293,7 +374,7 @@ describe("egress items", () => {
     expect(h.audits().map((audit) => audit.action).sort()).toEqual(["approved", "requested", "requested"]);
     expect(h.sync).toHaveBeenCalledTimes(2);
     // An owner with no item has nothing to flip.
-    await expect(setEgressOwnerActive(h.deps, TEST_ORG, SOURCE, false)).resolves.toBeUndefined();
+    await expect(setEgressOwnerActive(h.deps, TEST_ORG, SOURCE, false)).resolves.toEqual({});
     expect(h.item(TEST_ORG, SOURCE)).toBeUndefined();
   });
 
@@ -414,6 +495,31 @@ describe("egress items", () => {
     const first = (db.get(egressDomainsKey(TEST_ORG, WEB)) as unknown as EgressDomainsItem).updatedAt;
     await decideEgressDomain(deps, { orgId: TEST_ORG, owner: WEB, domain: "a.acme.dev", decision: "approved", operatorId: "staff-1" });
     expect((db.get(egressDomainsKey(TEST_ORG, WEB)) as unknown as EgressDomainsItem).updatedAt > first).toBe(true);
+  });
+
+  it("count every change that serves differently on the sync marker, so two changes in one millisecond are two (Task 18 Minor 5)", async () => {
+    const { db, deps } = plain({ cloud: false, now: () => new Date("2026-10-21T10:00:00.000Z") });
+    await putEgressDomains(deps, TEST_ORG, WEB, ["a.acme.dev"], { developerId: "dev-1" });
+    expect(db.get(EGRESS_SYNC_KEY)).toMatchObject({ dirtySeq: 1, dirtyAt: "2026-10-21T10:00:00.000Z" });
+    await putEgressDomains(deps, OTHER_ORG, WEB, ["b.beta.dev"], { developerId: "dev-2" });
+    // The same millisecond, so `dirtyAt` repeats; the counter does not.
+    expect(db.get(EGRESS_SYNC_KEY)).toMatchObject({ dirtySeq: 2, dirtyAt: "2026-10-21T10:00:00.000Z" });
+    // A change that serves nothing differently (a request waiting for staff) leaves the marker alone.
+    await putEgressDomains({ ...deps, cloud: true }, TEST_ORG, SOURCE, ["m.model.dev"], { developerId: "dev-1" });
+    expect(db.get(EGRESS_SYNC_KEY)).toMatchObject({ dirtySeq: 2 });
+  });
+
+  it("retry a transaction that was cancelled for a reason other than the item changing, without calling it a changed list (Task 18 Minor 6)", async () => {
+    const { db, deps } = plain({ cloud: true });
+    // A concurrent transaction on the shared sync marker cancels this one once; the retry holds.
+    db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "None" }, { Code: "TransactionConflict" }] } });
+    await expect(putEgressDomains(deps, TEST_ORG, WEB, ["a.acme.dev"], { developerId: "dev-1" })).resolves.toMatchObject({ pending: ["a.acme.dev"] });
+    expect((db.get(egressDomainsKey(TEST_ORG, WEB)) as unknown as EgressDomainsItem).domains).toHaveLength(1);
+    // Cancelled every time, it is not a lost race: the caller is not told to reload.
+    db.injectFault({ command: "TransactWriteCommand", times: 10, error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ThrottlingError" }] } });
+    const refused = await putEgressDomains(deps, TEST_ORG, WEB, ["a.acme.dev", "b.acme.dev"], { developerId: "dev-1" }).catch((error: unknown) => error);
+    expect(refused).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect((refused as Error).message).not.toContain("the allowed domains changed");
   });
 
   it("write more audit items than one transaction holds, all of them", async () => {

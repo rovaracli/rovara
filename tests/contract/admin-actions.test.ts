@@ -77,7 +77,7 @@ describe("grants (FR-013.1)", () => {
     expect(await grantProjectAccess(d, TEST_ORG, ADMIN, "payments", id)).toEqual({ granted: true, already: false });
     const firstGrant = d.db.get(projectMemberKey(TEST_ORG, id, "payments")) as { grantId: string };
     expect(firstGrant).toMatchObject({ entityType: "MEMBERSHIP", ownerKey: id, projectName: "payments", role: "developer",
-      grantedBy: ADMIN, grantedAt: "2026-10-02T09:00:00.000Z" });
+      projectRole: "contributor", grantedBy: { system: "admin" }, grantedByAdmin: ADMIN, grantedAt: "2026-10-02T09:00:00.000Z" });
     expect(firstGrant.grantId).toMatch(/^[0-9a-f-]{36}$/u);
     expect(await grantProjectAccess(d, TEST_ORG, ADMIN, "payments", id)).toEqual({ granted: true, already: true });
     expect(await projectGrant(d, TEST_ORG, "payments", id)).toEqual({ role: "developer", grantedAt: "2026-10-02T09:00:00.000Z" });

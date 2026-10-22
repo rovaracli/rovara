@@ -200,7 +200,7 @@ import type { TaskDocumentKind, TaskDocumentView, TaskFreshness } from "./task-w
 import type { PageCommentInput, PageDecisionInput, PageSuggestionInput, TaskPageState } from "./task-web-api.js";
 import { pageCommentViews, type CommentViewContext, type PageCommentView } from "./plan-page/comments.js";
 import type { PlanAnchor } from "./plan-page/render-plan.js";
-import { can, pageAccess, resolveTaskAccess, type TaskAccess, type TaskAction } from "../developer/task-access.js";
+import { WORK_ACTIONS, can, pageAccess, projectWorkAllowed, requireProjectWorkRole, resolveTaskAccess, type TaskAccess, type TaskAction } from "../developer/task-access.js";
 import { getTaskPeoplePresentation, resolveTaskDispatchPeople, taskAccessFence } from "../developer/task-people.js";
 import { getTaskPeople as readTaskPeople, getTaskPeopleCapabilities as readTaskPeopleCapabilities, type TaskPersonCheck } from "../developer/task-people.js";
 import { confirmTaskPeopleProposal as confirmPeopleProposal, getTaskPeopleProposal as readPeopleProposal, getTaskPeopleProposalMetadata as readPeopleProposalMetadata, proposeTaskOwnership, proposeTaskPeopleRole,
@@ -270,7 +270,13 @@ export interface DeveloperTaskRouteDependencies {
   /** Atomic conditions for current managed-E2E authority, attached to publication admission. */
   workflowE2EPublicationChecks?(input: { task: DeveloperTaskRecord; operations: readonly unknown[] }): Promise<TransactItems | undefined>;
   /** Resolves only a URL loaded from the task's immutable registered project revision. */
-  registeredRepositoryIdentity?(url: string): Promise<{ repositoryId: number; fullName: string } | undefined>;
+  registeredRepositoryIdentity?(url: string, orgId: OrgId): Promise<{ repositoryId: number; fullName: string } | undefined>;
+  /**
+   * Rovara Cloud (Plan 2, Task 15): refuses, with GITHUB_NOT_CONNECTED, a project whose repositories the org's GitHub connection does not
+   * reach (the installation uninstalled, suspended, disconnected, or no longer the one the repository's entry pins). Absent where
+   * there are no bindings (a private install). Called at a task's start, before any budget, limit or machine time.
+   */
+  requireRepositoriesConnected?(orgId: OrgId, definition: { repositories: ReadonlyArray<{ url: string; installationId?: number | undefined }> }): Promise<void>;
 }
 
 /** Ruling R60: refuses a task whose creator is no longer a member of its org, before any other access check (see developer/creator-member.ts). */
@@ -307,7 +313,7 @@ async function e2ePublicationContext(deps: DeveloperTaskRouteDependencies, calle
   if (candidateBase !== subject.baseCommitSha) return unknown("candidate_commit_tree_or_base_mismatch");
   const registeredRepository = project.definition.repositories.find((item) => item.name === candidateRepository.repositoryId);
   if (registeredRepository === undefined || deps.registeredRepositoryIdentity === undefined) return unknown("registered_repository_identity_unavailable");
-  const identity = await deps.registeredRepositoryIdentity(registeredRepository.url);
+  const identity = await deps.registeredRepositoryIdentity(registeredRepository.url, deps.orgId);
   if (identity === undefined || identity.repositoryId !== subject.repositoryId) return unknown("registered_repository_id_mismatch");
   const url = new URL(registeredRepository.url);
   const pathParts = url.pathname.split("/").filter(Boolean);
@@ -559,9 +565,12 @@ async function authorizeTaskActor(
   caller: DeveloperCaller,
   taskId: string,
   action: TaskAction,
+  options: { readOnly?: boolean } = {},
 ): Promise<AuthorizedTask> {
   const access = await authorizeTaskAction(deps, caller, taskId, "read");
   if (!can(access.role, action)) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+  // The same gate resolveTaskAccess applies to its work actions: an answer that only reads a record (the feedback review page) is exempt.
+  if (options.readOnly !== true && WORK_ACTIONS.includes(action)) await requireProjectWorkRole(deps, access.task, caller);
   return access;
 }
 
@@ -601,9 +610,10 @@ async function resumeParkedTaskDispatch(
   access: AuthorizedTask,
   request: { requestId: string; expectedRevision?: number | undefined; candidateDigest?: string | undefined },
 ): Promise<{ task: DeveloperTaskView } | undefined> {
-  if (access.peopleRevision !== undefined) {
+  // A task with no People sidecar is paused at revision 0 (only a project viewer's creator is, Plan 2, Task 21).
+  {
     const resumed = await resumeTaskDispatch(deps, {
-      task: access.task, peopleRevision: access.peopleRevision, actorId: access.actorId,
+      task: access.task, peopleRevision: access.peopleRevision ?? 0, actorId: access.actorId,
       requestId: request.requestId, payloadHash: hashJson(request),
       reauthorize: async () => { await authorizeTaskAction(deps, caller, access.task.taskId, "retry"); },
     });
@@ -779,7 +789,7 @@ const FEEDBACK_BUNDLE_TOTAL_MAX_BYTES = 8_000_000;
 
 /** Return a private review only after current task ownership and every stored digest are verified. */
 export async function getWorkflowFeedbackReview(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<Record<string, unknown>> {
-  const task = (await authorizeTaskActor(deps, caller, taskId, "feedback")).task;
+  const task = (await authorizeTaskActor(deps, caller, taskId, "feedback", { readOnly: true })).task;
   const workflow = task.workflow;
   const review = workflow?.feedbackReview;
   const decision = workflow?.feedbackDecisions?.find(item => item.reviewDigest === review?.reviewRef?.sha256);
@@ -1488,6 +1498,16 @@ async function startTask(deps: DeveloperTaskRouteDependencies, caller: Developer
     log(deps, { event: "developer.task_start_revision_changed", checked: access.revision, latest: project.definition.revision });
     throw agentXError("WORKSPACE_BUSY", "the project changed while starting; try again with the same request_id");
   }
+  // Plan 2, Task 15: the org's GitHub connection must still reach every repository of the project. Before the budget, the limits and any
+  // write, so a task that cannot run costs nothing and leaves nothing behind.
+  if (deps.requireRepositoriesConnected !== undefined) {
+    try {
+      await deps.requireRepositoriesConnected(deps.orgId, project.definition);
+    } catch (error) {
+      if (error instanceof AgentXError) return refused(error);
+      throw error;
+    }
+  }
   // The budget comes first (ruling R23: soft caps, so this is a floor, not a promise): before the limit's counters are read
   // and before any write. A proxy that cannot answer fails the start with nothing recorded; a refusal is audited like any other.
   let admitted: { maxBudgetUsd: number } | undefined;
@@ -1730,7 +1750,17 @@ async function actionableWorkspace(deps: DeveloperTaskRouteDependencies, task: D
   if (workspace.status === "PREPARATION_FAILED") throw agentXError("CONFIG_INVALID", NEVER_STARTED);
   // A close in flight is not work to wait for or cancel: say so, not TASK_BUSY.
   if (workspace.status === "CLOSING") throw agentXError("CONFIG_INVALID", CLOSING_TASK);
+  // Plan 2, Task 15: work on an existing task needs the org's GitHub connection too, so a continue, a retry, a review or a publication of a
+  // project whose installation was uninstalled or disconnected is refused here, before anything is written or any machine woken.
+  await requireTaskRepositoriesConnected(deps, task);
   return workspace;
+}
+
+/** The project revision the task started on must still be reachable through its org's GitHub connection (cloud installs). */
+async function requireTaskRepositoriesConnected(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): Promise<void> {
+  if (deps.requireRepositoriesConnected === undefined) return;
+  const project = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
+  if (project !== undefined) await deps.requireRepositoriesConnected(deps.orgId, project.definition);
 }
 
 /**
@@ -1784,11 +1814,17 @@ function capWindowUpdate(baseline: number | undefined): { clause: string; values
 
 async function continueTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "continue");
-  const access = await authorizeLegacyTaskAction(deps, caller, taskId, "control");
+  const access = await authorizeLegacyTaskAction(deps, caller, taskId, "work");
   const { task } = access;
   // Ruling R60, first: before the busy, workspace and model-proxy refusals, so the removal's reason wins.
   await creatorGuard(deps, task);
   if (task.workflow !== undefined) throw agentXError("WORKSPACE_BUSY", GATED_TASK_TURN_REFUSAL);
+  // A plain task whose dispatch was parked (its creator was a project viewer) comes back by continuing it now that they may work again.
+  const resumed = await resumeTaskDispatch(deps, {
+    task, peopleRevision: access.peopleRevision ?? 0, actorId: access.actorId, requestId: request.requestId, payloadHash: hashJson(request),
+    reauthorize: async () => { await authorizeTaskAction(deps, caller, taskId, "work"); },
+  });
+  if (resumed) return { task: await taskView(deps, task, { events: 0, details: false }) };
   const turns = turnTable(deps);
   await actionableWorkspace(deps, task);
   // Ruling R38: a Continue starts a new window of the task's own cap, at what its keys have spent so far. A proxy that cannot
@@ -1814,7 +1850,7 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
       accessFence(deps, access),
     ], { sharedTask: task.shared === true });
   } catch (error) {
-    if (isConditional(error)) await authorizeTaskAction(deps, caller, taskId, "control");
+    if (isConditional(error)) await authorizeTaskAction(deps, caller, taskId, "work");
     return busyOrClosing(deps, task, error);
   }
   const view = await taskView(deps, task, { events: 0, details: false });
@@ -2638,10 +2674,10 @@ async function queueWorkflowCoding(
       ], { sharedTask: task.shared === true, workflowMode: "IMPLEMENT", ...selectedCheckCommands(input.next), ...taskBaseOption(task, input.next), ...(input.next.programStepId === undefined ? {} : { programStepId: input.next.programStepId }), ...(input.workflowDependencies === undefined ? {} : { workflowDependencies: input.workflowDependencies }) });
     });
   } catch (error) {
-    if (isConditional(error)) await authorizeTaskAction(deps, caller, task.taskId, "control");
+    if (isConditional(error)) await authorizeTaskAction(deps, caller, task.taskId, "work");
     return busyOrClosing(deps, task, error);
   }
-  const fresh = (await authorizeTaskAction(deps, caller, task.taskId, "control")).task;
+  const fresh = (await authorizeTaskAction(deps, caller, task.taskId, "work")).task;
   const view = await taskView(deps, fresh, { events: 0, details: false });
   await syncIndex(deps, fresh, view.status, view.updatedAt);
   return { task: view };
@@ -2678,7 +2714,7 @@ async function retryWorkflowImplementation(
  */
 export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "workflow-send-back");
-  const access = await authorizeTaskAction(deps, caller, taskId, "control");
+  const access = await authorizeTaskAction(deps, caller, taskId, "work");
   const { task } = access;
   const workflow = task.workflow;
   if (workflow === undefined) throw agentXError("NOT_FOUND", "this task does not have a workflow record");
@@ -2836,7 +2872,7 @@ async function startAcceptedStep(deps: DeveloperTaskRouteDependencies, taskId: s
 /** Re-drive only the task's current terminal revision and, when present, its exact manifest candidate. */
 async function retryTaskCanvasCloseout(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ status: "retry_requested"; workflowRevision: number; manifestDigest?: string }> {
   const request = parse(CanvasCloseoutRetryRequestSchema, value, deps, "canvas-closeout-retry");
-  const access = await authorizeTaskActor(deps, caller, taskId, "retry");
+  const access = await authorizeTaskActor(deps, caller, taskId, "close");
   const { task } = access;
   const closeout = task.workflow?.canvasCloseout;
   const attempt = task.workflow?.canvasCloseoutAttempt;
@@ -2873,7 +2909,7 @@ async function retryTaskCanvasCloseout(deps: DeveloperTaskRouteDependencies, cal
     return { status: "retry_requested", workflowRevision, ...(request.manifestDigest === undefined ? {} : { manifestDigest: request.manifestDigest }) };
   } catch (error) {
     if (!isConditional(error)) throw error;
-    const fresh = (await authorizeTaskActor(deps, caller, taskId, "retry")).task;
+    const fresh = (await authorizeTaskActor(deps, caller, taskId, "close")).task;
     if (fresh.canvasCloseoutRetry?.requestId === request.requestId && fresh.canvasCloseoutRetry.workflowRevision === workflowRevision
       && fresh.canvasCloseoutRetry.manifestDigest === request.manifestDigest
       && fresh.canvasCloseoutRetry.dispatchAttempt >= retry.dispatchAttempt) {
@@ -3324,7 +3360,7 @@ export async function getTaskPageState(deps: DeveloperTaskRouteDependencies, cal
     return latest === 0 ? [] : [{ anchor: anchor as PlanAnchor, version: latest }];
   });
   const counter = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: commentCounterKey(taskId), ConsistentRead: true })) as { Item?: { seq?: unknown } };
-  const permissions = pageAccess(access);
+  const permissions = pageAccess(access, await projectWorkAllowed(deps, task, caller));
   return {
     revision: workflow?.revision ?? 0, waiting: workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING" && task.closedAt === undefined,
     stage: taskPageStep(workflow, task.closedAt !== undefined), documents, commentSeq: typeof counter.Item?.seq === "number" ? counter.Item.seq : 0,
@@ -3450,6 +3486,8 @@ async function currentSuggestions(deps: DeveloperTaskRouteDependencies, task: De
  */
 export async function createPageComment(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, input: PageCommentInput): Promise<{ comment: PageCommentView; duplicate: boolean; askRefused?: "limited" }> {
   const actor = await pageActor(deps, caller, taskId);
+  // Asking AgentX is agent work: refused to a viewer (an owner lowered to viewer included) before the comment is posted.
+  if (input.ask && can(actor.role, "ask")) await requireProjectWorkRole(deps, actor.task, caller);
   const { parentId, ...rest } = input;
   const created = await createTaskComment(deps, actor, { ...rest, ...(parentId === undefined ? {} : { parentId }) });
   let comment = created.comment;
@@ -3741,7 +3779,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
     ...(acceptedFindings.length === 0 ? {} : { acceptedFindings }),
     ...(visibleWorkflowDependenciesProgress === undefined ? {} : { workflowDependenciesProgress: visibleWorkflowDependenciesProgress }),
     pullRequests: (workflow?.pullRequests ?? []).map((pullRequest) => ({ url: pullRequest.url, number: pullRequest.number, state: pullRequest.state })),
-    history, access: pageAccess(access), ...(capabilities.peopleRevision === undefined ? {} : { peopleRevision: capabilities.peopleRevision }), canManagePeople: capabilities.canManagePeople,
+    history, access: pageAccess(access, await projectWorkAllowed(deps, task, caller)), ...(capabilities.peopleRevision === undefined ? {} : { peopleRevision: capabilities.peopleRevision }), canManagePeople: capabilities.canManagePeople,
     canTakeOwnership: capabilities.canTakeOwnership, comments, suggestions: shownSuggestions, askAvailable: await commentAnswersAvailable(deps, task),
     ...await pageDecidingView(deps, { task, caller, comments, suggestions: shownSuggestions, citations, claimIds }),
   };
@@ -5719,7 +5757,7 @@ const REUSED_REQUEST = "this request_id was already used for another action on t
  */
 async function shareTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ShareDeveloperTaskRequestSchema, value, deps, "share");
-  let access = await authorizeLegacyTaskAction(deps, caller, taskId, "control");
+  let access = await authorizeLegacyTaskAction(deps, caller, taskId, "work");
   let task = access.task;
   const turns = turnTable(deps);
   const idempotencyKey = shareIdempotencyKey(task, request.requestId);
@@ -5746,7 +5784,7 @@ async function shareTask(deps: DeveloperTaskRouteDependencies, caller: Developer
     }), accessFence(deps, access)];
     try {
       await deps.actions.transact(items);
-      access = await authorizeTaskAction(deps, caller, taskId, "control");
+      access = await authorizeTaskAction(deps, caller, taskId, "work");
       task = access.task;
       return answer();
     } catch (error) {
@@ -5755,7 +5793,7 @@ async function shareTask(deps: DeveloperTaskRouteDependencies, caller: Developer
       const concurrent = await get<{ payloadHash: string }>(deps, idempotencyKey);
       if (concurrent !== undefined) return shareTask(deps, caller, taskId, value);
       // The notifier (or a close) changed the task meanwhile: decide again from a fresh read.
-      access = await authorizeTaskAction(deps, caller, taskId, "control");
+      access = await authorizeTaskAction(deps, caller, taskId, "work");
       task = access.task;
     }
   }

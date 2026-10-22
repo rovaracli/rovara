@@ -1,5 +1,5 @@
 // agentx whoami and agentx logout (FR-011).
-import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, AppProjectDetailSchema, ProjectSettingsResponseSchema, type AppProjectDetail, type ProjectSettingsBody, type ProjectSettingsResponse, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, StartIdentityLinkAppResponseSchema, UnlinkIdentityAppResponseSchema, UnlinkableSignInMethodSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, AppProjectDetailSchema, ProjectArchiveResponseSchema, ProjectSettingsResponseSchema, type AppProjectDetail, type ProjectSettingsBody, type ProjectSettingsResponse, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, StartIdentityLinkAppResponseSchema, UnlinkIdentityAppResponseSchema, UnlinkableSignInMethodSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProject, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerTokenKey, removeDeveloperEnvironment, resolveDeveloperEnvironment } from "./config.js";
 import { developerAccessToken, type DeveloperSessionDeps } from "./session.js";
@@ -100,6 +100,27 @@ function refusalMessage(body: unknown): string | undefined {
 /** How a developer signed in, for whoami: "Rovara sign-in" and "GitHub" are Rovara Cloud's. */
 const SIGN_IN_METHOD_TEXT = { slack: "Slack", oidc: "your company sign-in", cloud: "Rovara sign-in", github: "GitHub" } as const;
 
+/** The channels a Slack-channel role comes through: `#name` when it has a public name, else the channel's ID. */
+const channelText = (project: DeveloperProject) => project.channels.map((channel) => (channel.name === undefined ? channel.channelId : `#${sanitizeServerText(channel.name)}`)).join(", ");
+
+/**
+ * What a person is in one project, and why (Plan 2, Task 21): "maintainer (you created it)", "<role> (added by <name>)", "maintainer (as org
+ * owner|admin)" or "contributor (through #<channel>)". A control plane from before project roles sends none, and the line says only how.
+ */
+function projectRoleText(project: DeveloperProject, developer: DeveloperProjectsResponse["developer"]): string {
+  if (project.role === undefined) return project.access === "granted" ? "you have access" : `through ${channelText(project)}`;
+  const { role } = project;
+  switch (project.roleSource) {
+    case "org_role": return `${role} (as org ${developer.orgRole === "owner" || developer.orgRole === "admin" ? developer.orgRole : "owner or admin"})`;
+    case "channel": return `${role} (through ${channelText(project)})`;
+    default: {
+      if (project.addedBy === undefined) return `${role} (added by an admin)`;
+      if (project.addedBy.developerId === developer.id) return role === "maintainer" ? `${role} (you created it)` : `${role} (added by you)`;
+      return `${role} (added by ${sanitizeServerText(project.addedBy.name)})`;
+    }
+  }
+}
+
 export function whoamiText(result: { env: string; url: string; projects: DeveloperProjectsResponse; identities?: LinkedIdentity[] }): string {
   const { developer, projects, notices } = result.projects;
   const method = SIGN_IN_METHOD_TEXT[developer.provider];
@@ -116,17 +137,14 @@ export function whoamiText(result: { env: string; url: string; projects: Develop
     // Only Rovara Cloud signs people in with these two. There an owner or admin creates the org's projects; a member asks one.
     if (developer.provider === "cloud" || developer.provider === "github") {
       lines.push(developer.orgRole === "owner" || developer.orgRole === "admin"
-        ? "You cannot use any project yet. Create one with: agentx project create --repository <owner/name>"
+        ? "Connect GitHub with agentx github connect, then: agentx project create --repository <owner/name>"
         : "You cannot use any project yet: ask your org's owner to create one.");
     } else {
       lines.push("You cannot use any project yet: join a project's Slack channel, or ask an admin for access.");
     }
   } else {
     lines.push("Projects you can use:");
-    for (const project of projects) {
-      const how = project.access === "granted" ? "an admin granted you access" : `you are in its Slack channel ${project.channels.map((channel) => channel.channelId).join(", ")}`;
-      lines.push(`  ${project.name}  (${how})`);
-    }
+    for (const project of projects) lines.push(`  ${sanitizeServerText(project.name)}: ${projectRoleText(project, developer)}`);
   }
   if (notices.includes("slack_unavailable")) lines.push("Slack could not be reached, so projects you use through a Slack channel are not listed; try again later.");
   return `${lines.join("\n")}\n`;
@@ -198,17 +216,22 @@ export function linkText(result: { provider: "cloud" | "github"; authorizeUrl: s
     + "When the page says it was added, run agentx whoami to see it. Only a sign-in method you removed from this account can be added back.\n";
 }
 
-/** `agentx project create` (ruling R55): the signed-in owner or admin of a cloud org creates a project from a repository. */
+/**
+ * `agentx project create` (Plan 2, Task 16): the signed-in owner or admin of a cloud org creates a project from a repository their org's
+ * GitHub connection reaches. `requestId` makes a retry of the same command answer the same project instead of a second one.
+ */
 export async function createDeveloperProject(
   deps: DeveloperSessionDeps,
   env: string | undefined,
-  input: { repository: string; name?: string; setupCommand?: string; testCommand?: string },
+  input: { requestId: string; repository: string; name?: string; description?: string; setupCommand?: string; testCommand?: string },
 ): Promise<{ env: string; url: string; created: DeveloperCreateProjectResponse }> {
-  const { env: resolved, url, body } = await developerRequest(deps, env, "/v1/dev/projects", DeveloperCreateProjectResponseSchema, {
+  const { env: resolved, url, body } = await developerRequest(deps, env, "/v1/app/projects", DeveloperCreateProjectResponseSchema, {
     method: "POST",
     body: {
+      requestId: input.requestId,
       repository: input.repository,
       ...(input.name === undefined ? {} : { name: input.name }),
+      ...(input.description === undefined ? {} : { description: input.description }),
       ...(input.setupCommand === undefined ? {} : { setupCommand: input.setupCommand }),
       ...(input.testCommand === undefined ? {} : { testCommand: input.testCommand }),
     },
@@ -283,6 +306,35 @@ export function projectSettingsText(result: ProjectSettingsResponse): string {
   const saved = `Saved ${clean(result.project.name)}: it is at revision ${String(result.project.latestRevision)}.\n`;
   return saved + result.warnings.map((warning) => `Note: ${clean(warning)}\n`).join("");
 }
+
+/** What `agentx project archive` asks before it archives: what stops, and what keeps going. */
+export const archiveProjectQuestion = (name: string) =>
+  `Archive ${clean(name)}? Nobody can start new tasks in it until it is restored. Tasks already running keep going, but lose access to this project's approved extra domains.`;
+
+/**
+ * `agentx project archive <name>` and `agentx project restore <name>` (Plan 2, Task 20): a maintainer of the project, through
+ * `POST /v1/app/projects/{name}/archive|restore`. Repeating one on a project already in that state is harmless; a fresh request id each time.
+ */
+export async function changeDeveloperProjectArchive(
+  deps: DeveloperSessionDeps,
+  env: string | undefined,
+  name: string,
+  change: "archive" | "restore",
+  requestId: string,
+): Promise<{ env: string; url: string; project: AppProjectDetail; warnings: string[] }> {
+  const { env: resolved, url, body } = await developerRequest(deps, env, `/v1/app/projects/${encodeURIComponent(name)}/${change}`, ProjectArchiveResponseSchema, {
+    method: "POST",
+    body: { requestId },
+    explain: true,
+  });
+  return { env: resolved, url, project: body.project, warnings: body.warnings };
+}
+
+const warningLines = (warnings: readonly string[]) => warnings.map((warning) => `Note: ${clean(warning)}\n`).join("");
+export const archiveProjectText = (result: { project: AppProjectDetail; warnings: readonly string[] }) =>
+  `Archived ${clean(result.project.name)}. To bring it back, run: agentx project restore ${clean(result.project.name)}\n${warningLines(result.warnings)}`;
+export const restoreProjectText = (result: { project: AppProjectDetail; warnings: readonly string[] }) =>
+  `Restored ${clean(result.project.name)}. People can start tasks in it again, and its approved domains are allowed again.\n${warningLines(result.warnings)}`;
 
 /** How the logout went at the server: revoked, not answered at all, or answered without confirming. */
 export interface DeveloperLogoutResult {

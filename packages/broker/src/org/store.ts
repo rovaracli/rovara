@@ -146,22 +146,6 @@ export class OrgStore {
     }
   }
 
-  /** Ruling R55: sets the org's allowed GitHub owner (already lower case). An org that does not exist is NOT_FOUND; nothing is created. */
-  async setGithubOwner(orgId: OrgId, githubOwner: string): Promise<void> {
-    try {
-      await this.input.documentClient.send(new UpdateCommand({
-        TableName: this.input.tableName,
-        Key: orgMetaKey(orgId),
-        UpdateExpression: "SET githubOwner = :owner",
-        ConditionExpression: "attribute_exists(pk)",
-        ExpressionAttributeValues: { ":owner": githubOwner },
-      }));
-    } catch (error) {
-      if (errorName(error) === "ConditionalCheckFailedException") throw coded("NOT_FOUND", "no organization has that ID");
-      throw error;
-    }
-  }
-
   async createOrgWithOwner(input: { name: string; developerId: string; email?: string }): Promise<OrgId> {
     const orgId = this.newId();
     const org: OrgRecord = { orgId, name: input.name, createdAt: this.iso(), createdBy: input.developerId, plan: "trial" };

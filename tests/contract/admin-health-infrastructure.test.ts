@@ -112,7 +112,10 @@ describe("the health route's grants (A13)", () => {
       // Retired and quarantined recovery rows only; active retries remove the due/lease fields without TTL.
       "packages/broker/src/aws/workflow-merge-recovery.ts",
       // The GitHub connect state row (Plan 2, Task 12): single-use, minutes long, and deleted by the TTL a retention period after it lapses.
-      "packages/broker/src/org/github-connection.ts",
+      // Plan 2, Tasks 13 to 15: the delivery ids and the notice outbox rows expire on it too.
+      "packages/broker/src/org/github-connection.ts", "packages/broker/src/org/github-install-requests.ts",
+      // Plan 2, Task 21: a project's member-change request records (replay keys) expire on it after a day.
+      "packages/broker/src/org/project-members.ts",
       // The agent request items (Plan 3, Task 7): one per marked write, kept 7 days so a retry is answered, then deleted by the TTL.
       // table-writes.ts writes them for the agent store and the skill store; store.ts reads them back.
       "packages/broker/src/agents/store.ts", "packages/broker/src/agents/table-writes.ts",
@@ -126,12 +129,17 @@ describe("the health route's grants (A13)", () => {
     const brokerUses = broker.split("\n").filter((line) => /indexExpiresAt\(|INDEX_EXPIRY_ATTRIBUTE\]/.test(line));
     expect(brokerUses).toEqual([
       "        slackUserId: user.data, channelId: thread.data.channelId, threadTs: thread.data.threadTs, message, at, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(at) },",
+      // Plan 2, Task 16: a project creation request's record, which expires with its day (it holds the same instant as its expiresAt).
+      "          Item: { ...requestKey, entityType: \"PROJECT_CREATE_REQUEST\", bodyHash, projectName: definition.name, createdAt, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: expiresAt },",
       "      [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(operation.createdAt),",
     ]);
     // Task 19: a refused Slack press's private note, delivered within the hour and then dead weight.
     const refusal = broker.slice(broker.indexOf("async function recordSlackWorkflowRefusal("), broker.indexOf("async function answerSlackWorkflowEvent("));
     expect(refusal).toContain('entityType: "WORKFLOW_ACTION_REFUSAL"');
     expect(refusal).toContain(brokerUses.shift());
+    const projectCreation = broker.slice(broker.indexOf("async function createCloudProject("), broker.indexOf("async function createProjectSetupAdmissionRows("));
+    expect(projectCreation).toContain('entityType: "PROJECT_CREATE_REQUEST"');
+    expect(projectCreation).toContain(brokerUses.shift());
     const channelOperation = broker.slice(broker.indexOf("function channelOperation("), broker.indexOf("function requesterOf("));
     expect(channelOperation).toContain('entityType: "CHANNEL_OPERATION"');
     expect(channelOperation).toContain(brokerUses[0]);

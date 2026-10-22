@@ -1179,8 +1179,8 @@ describe("native developer task workflow", () => {
     expect((await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/pull-requests`, { requestId: randomUUID(), title: "manual" })).status).not.toBe(200);
     const p = publish!.publication as { repository: string; repositoryUrl: string; headBranch: string; baseBranch: string; title: string; body?: string };
     await harness.callback(workspaceId, publish!.id, "pull-request", { repository: p.repository, repositoryUrl: p.repositoryUrl, headBranch: p.headBranch, baseBranch: p.baseBranch, commit: "d".repeat(40), title: p.title, ...(p.body === undefined ? {} : { body: p.body }) });
-    expect(gh.getCommitTree).toHaveBeenCalledWith(p.repositoryUrl, "d".repeat(40));
-    expect(gh.reconcilePullRequest).toHaveBeenCalledWith(expect.objectContaining({ draft: true, headBranch: p.headBranch }));
+    expect(gh.getCommitTree).toHaveBeenCalledWith(p.repositoryUrl, "d".repeat(40), { system: "private-install" });
+    expect(gh.reconcilePullRequest).toHaveBeenCalledWith(expect.objectContaining({ draft: true, headBranch: p.headBranch }), { system: "private-install" });
     await harness.finish(workspaceId, publish!.id, "SUCCEEDED", { result: { repository: "demo", number: 42, url: "https://github.com/example/demo/pull/42", headBranch: p.headBranch, baseBranch: "main", commit: "d".repeat(40), checks: [], reconciled: false } });
     expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", pullRequests: [{ number: 42, headSha: "d".repeat(40) }] });
     expect(dispatchRows(harness)).toEqual([]);
@@ -1326,10 +1326,10 @@ describe("native developer task workflow", () => {
       const p = publish!.publication as { repository: string; repositoryUrl: string; headBranch: string; baseBranch: string; title: string; body?: string };
       await expect(harness.callback(workspaceId, publish!.id, "pull-request", { repository: p.repository, repositoryUrl: p.repositoryUrl, headBranch: p.headBranch, baseBranch: p.baseBranch, commit: "d".repeat(40), title: p.title, ...(p.body === undefined ? {} : { body: p.body }) }))
         .rejects.toThrow(/CALLBACK_FORBIDDEN/);
-      expect(gh.getBranchHead).toHaveBeenCalledWith(p.repositoryUrl, p.headBranch);
+      expect(gh.getBranchHead).toHaveBeenCalledWith(p.repositoryUrl, p.headBranch, { system: "private-install" });
       if (opened) {
-        expect(gh.reconcilePullRequest).toHaveBeenCalledWith(expect.objectContaining({ draft: true }));
-        expect(gh.updatePullRequest).toHaveBeenCalledWith(p.repositoryUrl, 42, { state: "closed" });
+        expect(gh.reconcilePullRequest).toHaveBeenCalledWith(expect.objectContaining({ draft: true }), { system: "private-install" });
+        expect(gh.updatePullRequest).toHaveBeenCalledWith(p.repositoryUrl, 42, { state: "closed" }, { system: "private-install" });
       } else {
         expect(gh.reconcilePullRequest).not.toHaveBeenCalled();
       }
@@ -2651,7 +2651,7 @@ describe("the draft pull request AgentX opens (final review)", () => {
     const p = publish.publication as { repository: string; repositoryUrl: string; headBranch: string; baseBranch: string; title: string; body?: string };
     await expect(harness.callback(workspaceId, publish.id, "pull-request", { repository: p.repository, repositoryUrl: p.repositoryUrl, headBranch: p.headBranch, baseBranch: p.baseBranch, commit: "d".repeat(40), title: p.title, ...(p.body === undefined ? {} : { body: p.body }) }))
       .rejects.toThrow(/CALLBACK_FORBIDDEN/);
-    expect(gh.getCommitParents).toHaveBeenCalledWith(p.repositoryUrl, "d".repeat(40));
+    expect(gh.getCommitParents).toHaveBeenCalledWith(p.repositoryUrl, "d".repeat(40), { system: "private-install" });
     expect(gh.reconcilePullRequest).not.toHaveBeenCalled();
     expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "PULL_REQUEST", state: "BLOCKED" });
   });
@@ -2668,7 +2668,7 @@ describe("the draft pull request AgentX opens (final review)", () => {
     const p = publish.publication as { repository: string; repositoryUrl: string; headBranch: string; baseBranch: string; title: string; body?: string };
     await expect(harness.callback(workspaceId, publish.id, "pull-request", { repository: p.repository, repositoryUrl: p.repositoryUrl, headBranch: p.headBranch, baseBranch: p.baseBranch, commit: "d".repeat(40), title: p.title, ...(p.body === undefined ? {} : { body: p.body }) }))
       .rejects.toThrow(/CALLBACK_FORBIDDEN/);
-    expect(gh.updatePullRequest).toHaveBeenCalledWith(p.repositoryUrl, 42, { state: "closed" });
+    expect(gh.updatePullRequest).toHaveBeenCalledWith(p.repositoryUrl, 42, { state: "closed" }, { system: "private-install" });
   });
 
   it("after a failed publication, the page says so until the next try, and the owner's retry moves the step on", async () => {

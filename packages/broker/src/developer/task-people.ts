@@ -24,6 +24,8 @@ export interface TaskPersonCheck {
   identity: TaskPersonIdentity;
   eligible: boolean;
   channelMember: boolean;
+  /** Plan 2, Task 21: the person holds the viewer role in the task's project. They may see the task but take no part in it. */
+  projectViewer?: true;
 }
 
 export type CheckTaskPerson = (task: DeveloperTaskRecord, developerId: string, admission?: TaskPeopleDisplayAdmission) => Promise<TaskPersonCheck>;
@@ -337,6 +339,9 @@ async function currentPeopleForCaller(
 function effectiveRoleFromProof(explicit: PersonEntry | undefined, proof: TaskPersonCheck): TaskRole | null {
   if (explicit?.role === "denied" || !proof.eligible) return null;
   if (explicit?.role === "owner") return proof.channelMember ? "owner" : null;
+  // A project viewer only views, whatever the owner granted and whatever the channel would give them. The cap never grants: outside the
+  // task's channel, with no entry of their own, they read nothing, exactly as anyone else outside it.
+  if (proof.projectViewer === true) return explicit !== undefined || proof.channelMember ? "viewer" : null;
   if (explicit?.role === "commenter" || explicit?.role === "viewer") return explicit.role;
   return proof.channelMember ? "commenter" : null;
 }
@@ -383,7 +388,7 @@ async function viewOf(deps: TaskPeopleDependencies, task: DeveloperTaskRecord, p
   const takeoverProof = enabled(deps) && open(task) && people.orphaned && callerRole !== null
     ? await checked(deps, task, caller.developerId, admission)
     : undefined;
-  const canTakeOwnership = takeoverProof?.eligible === true && takeoverProof.channelMember;
+  const canTakeOwnership = takeoverProof?.eligible === true && takeoverProof.channelMember && takeoverProof.projectViewer !== true;
   const thread = task.share === undefined ? undefined : SlackThreadSchema.safeParse({
     teamId: task.share.teamId, channelId: task.share.channelId, threadTs: task.share.threadTs,
   });
@@ -541,7 +546,7 @@ export async function resolveTaskPeopleAccess(
   const proof = people.orphaned ? await checked(deps, task, developerId) : undefined;
   return {
     role, peopleRevision: people.revision, ownerActorIds: owners, orphaned: people.orphaned,
-    canTakeOwnership: people.orphaned && role !== null && proof?.eligible === true && proof.channelMember,
+    canTakeOwnership: people.orphaned && role !== null && proof?.eligible === true && proof.channelMember && proof.projectViewer !== true,
   };
 }
 
@@ -564,7 +569,8 @@ export async function resolveTaskDispatchPeople(
     if (person.role !== "owner") continue;
     try {
       const proof = await checkedFresh(deps, task, person.developerId);
-      if (proof.eligible && proof.channelMember) owners.push(taskOwnerKey(person.developerId, task.taskId));
+      // An owner lowered to a project viewer keeps the task (to view and cancel) but is no authority for new work on it.
+      if (proof.eligible && proof.channelMember && proof.projectViewer !== true) owners.push(taskOwnerKey(person.developerId, task.taskId));
     } catch {
       unknown = true;
     }
@@ -607,7 +613,7 @@ export async function getTaskPeopleCapabilities(
   let canTakeOwnership = false;
   if (enabled(deps) && open(task) && current.orphaned) {
     const proof = await checked(deps, task, caller.developerId);
-    canTakeOwnership = proof.eligible && proof.channelMember;
+    canTakeOwnership = proof.eligible && proof.channelMember && proof.projectViewer !== true;
   }
   return {
     peopleRevision: current.revision,
@@ -706,7 +712,8 @@ export async function takeTaskOwnership(
   const mapping = await personByDeveloper(deps, taskId, caller.developerId);
   if (mapping === undefined) return denied();
   const proof = await checked(deps, task, caller.developerId);
-  if (!proof.eligible || !proof.channelMember || !samePrincipal(mapping.identity, proof.identity)) return denied();
+  // A project viewer only views: they never take a task over.
+  if (!proof.eligible || !proof.channelMember || proof.projectViewer === true || !samePrincipal(mapping.identity, proof.identity)) return denied();
   const existing = people.people.find((person) => person.developerId === caller.developerId);
   if (existing?.role === "denied") return denied();
   const beforeRole = existing?.role ?? "commenter";

@@ -2,10 +2,10 @@
 // callback answers with one of these. Every value that came from GitHub or from a name a person chose is escaped; the policy allows
 // only this page's own style and a form back to the same origin. Nothing here is a secret: the confirmation token travels in a cookie.
 import { randomBytes } from "node:crypto";
-import { GITHUB_INSTALLATION_TAKEN_MESSAGE } from "@agentx/contracts";
+import { GITHUB_INSTALLATION_TAKEN_MESSAGE, githubInstallRequestCopy } from "@agentx/contracts";
 import { escapeHtml, safeResponse, type WebResponse } from "../aws/web-session.js";
 
-export type ConnectPageKind = "confirm" | "connected" | "connected_trial_used" | "cancelled" | "requested" | "not_linked" | "not_yours" | "not_allowed" | "taken" | "expired";
+export type ConnectPageKind = "confirm" | "connected" | "connected_trial_used" | "cancelled" | "requested" | "not_linked" | "not_yours" | "not_allowed" | "unattributed" | "taken" | "expired";
 
 export interface ConnectPageData {
   /** The GitHub account (login) the installation is on. */
@@ -14,6 +14,8 @@ export interface ConnectPageData {
   orgName?: string;
   /** The connect attempt's id (the state's hash), posted back by the confirm form. */
   connectId?: string;
+  /** An owner of the Rovara organization, named in the message to give the GitHub admin (the waiting page). */
+  ownerName?: string;
 }
 
 /** The form's address: the same origin as the page, which the policy's `form-action 'self'` also requires. */
@@ -40,8 +42,10 @@ function copyFor(kind: ConnectPageKind, data: ConnectPageData): PageCopy {
       };
     case "cancelled":
       return { status: 200, title: "Nothing was connected", body: ["Run agentx github connect again if you change your mind."] };
-    case "requested":
-      return { status: 200, title: "Waiting for your GitHub admin", body: ["An admin of your GitHub organization needs to approve Rovara on GitHub."] };
+    case "requested": {
+      const waiting = githubInstallRequestCopy("waiting", { orgName: data.orgName, ownerName: data.ownerName });
+      return { status: 200, title: waiting.title, body: waiting.lines };
+    }
     case "not_linked":
       return {
         status: 403, title: "Sign in to Rovara with this GitHub account first",
@@ -58,6 +62,12 @@ function copyFor(kind: ConnectPageKind, data: ConnectPageData): PageCopy {
       return {
         status: 403, title: "Nothing was connected",
         body: [`The Rovara organization ${org} was closed, or you are no longer its owner or admin. Ask an owner or admin of ${org} to run agentx github connect.`],
+      };
+    case "unattributed":
+      // GitHub's "request" callback came back with no user authorization code, so Rovara cannot say who asked and records nothing.
+      return {
+        status: 403, title: "Rovara couldn't confirm who asked",
+        body: ["GitHub did not tell Rovara who sent the request, so Rovara recorded nothing and will not connect anything when it is approved. Ask your GitHub admin to run agentx github connect."],
       };
     case "expired":
       return { status: 410, title: "This connect link has expired. Run agentx github connect again.", body: [] };

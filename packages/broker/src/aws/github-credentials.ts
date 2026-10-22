@@ -2,7 +2,7 @@
 // (GITHUB_APP_CREDENTIAL_REF, GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_SECRET_ARN) and the same secret.
 import { GetSecretValueCommand, type SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { agentXError } from "@agentx/contracts";
-import { appIdFromSecret, GitHubAppCredentialProvider, isWebhookSecretMissing, privateKeyFromSecret, webhookSecretFromSecret } from "../github-app.js";
+import { appIdFromSecret, GitHubAppCredentialProvider, type GitHubAppCredentialProviderOptions, isWebhookSecretMissing, privateKeyFromSecret, webhookSecretFromSecret } from "../github-app.js";
 import { requiredEnvironment } from "./lambda.js";
 
 export interface GitHubAppCredentials {
@@ -19,7 +19,11 @@ export interface GitHubAppCredentials {
 
 const REREAD_INTERVAL_MS = 30_000;
 
-export function createGitHubAppCredentials(secretsManager: Pick<SecretsManagerClient, "send">): GitHubAppCredentials {
+export function createGitHubAppCredentials(
+  secretsManager: Pick<SecretsManagerClient, "send">,
+  /** Rovara Cloud: refuses every token for an org whose GitHub connection does not hold the installation (Plan 2, Task 15). Absent elsewhere. */
+  cloud?: Pick<GitHubAppCredentialProviderOptions, "requireInstallationBound">,
+): GitHubAppCredentials {
   const privateKeySecretArn = requiredEnvironment("GITHUB_APP_PRIVATE_KEY_SECRET_ARN");
   const appIdSetting = process.env.GITHUB_APP_ID ?? "";
   let appSecret: Promise<string> | undefined;
@@ -72,6 +76,7 @@ export function createGitHubAppCredentials(secretsManager: Pick<SecretsManagerCl
     getPrivateKey: () => loadSecret().then(privateKeyFromSecret),
     // The slug and the OAuth client come from the same secret; a forced read is spaced out like the webhook secret's.
     getAppSecret: (options) => (options?.refresh === true ? reread() : loadSecret()),
+    ...(cloud?.requireInstallationBound === undefined ? {} : { requireInstallationBound: cloud.requireInstallationBound }),
   });
   const webhookSecret = async (options?: { refresh?: boolean }): Promise<string> => {
     if (options?.refresh === true) return webhookSecretFromSecret(await reread());

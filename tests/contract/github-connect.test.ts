@@ -459,14 +459,27 @@ describe("the callback and the confirmation", () => {
     expect(w.logs).toContainEqual(expect.objectContaining({ event: "github.connect_trial_unlock_failed", error: "ThrottlingException" }));
   });
 
-  it("setup_action=request is requested, with no token exchange and nothing written but the used state", async () => {
+  it("setup_action=request records the request (Task 14): requested, the user token revoked once, no installation written, the state used", async () => {
+    const w = standard();
+    const started = await start(w);
+    const result = await completeGithubConnect(w.deps, { setup_action: "request", state: started.state, installation_id: "501", code: "code1" });
+    expect(result.outcome).toBe("requested");
+    expect(installationItems(w.db)).toEqual([]);
+    expect(w.db.get(githubConnectStateKey(started.stateHash))).toHaveProperty("consumedAt");
+    expect(w.db.get({ pk: "GITHUB_INSTALL_REQUEST#4242", sk: "META" })).toMatchObject({ orgId: TEST_ORG, developerId: OWNER, githubUserId: "4242", status: "waiting" });
+    expect(revokes(w)).toBe(1);
+  });
+
+  it("setup_action=request with no code attributes nothing: its own outcome (not expired), no token exchange, nothing recorded or written but the used state", async () => {
     const w = standard();
     const started = await start(w);
     const result = await completeGithubConnect(w.deps, { setup_action: "request", state: started.state, installation_id: "501" });
-    expect(result.outcome).toBe("requested");
+    expect(result.outcome).toBe("unattributed");
     expect(w.fetch.calls).toEqual([]);
     expect(installationItems(w.db)).toEqual([]);
+    expect(w.db.find((item) => String(item.pk).startsWith("GITHUB_INSTALL_REQUEST"))).toEqual([]);
     expect(w.db.get(githubConnectStateKey(started.stateHash))).toHaveProperty("consumedAt");
+    expect(w.logs).toContainEqual(expect.objectContaining({ event: "github.install_request_unattributed", reason: "no_code" }));
   });
 
   it("a code GitHub refuses, a missing code or a bad installation id is expired and binds nothing", async () => {
@@ -518,7 +531,8 @@ describe("the callback and the confirmation", () => {
     const paths: Array<[string, (w: World, state: string) => Promise<unknown>, number]> = [
       ["confirm", (w, state) => completeGithubConnect(w.deps, callbackQuery(state)), 1],
       ["not_yours", (w, state) => completeGithubConnect(w.deps, callbackQuery(state, { installation_id: "999" })), 1],
-      ["request", (w, state) => completeGithubConnect(w.deps, { setup_action: "request", state }), 0],
+      ["request without a code", (w, state) => completeGithubConnect(w.deps, { setup_action: "request", state }), 0],
+      ["request with a code", (w, state) => completeGithubConnect(w.deps, { setup_action: "request", state, code: "code1" }), 1],
       ["refused code", (w, state) => completeGithubConnect(w.deps, callbackQuery(state, { code: "nope" })), 0],
     ];
     for (const [, run, expected] of paths) {
@@ -694,9 +708,13 @@ describe("through the broker", () => {
     b.linkGithub();
     const { installUrl } = (await b.dev(OMAR, "POST", "/v1/app/github/connect")).body as { installUrl: string };
     const state = new URL(installUrl).searchParams.get("state")!;
-    const requested = await b.publicCall("GET", `/v1/github/install/callback?setup_action=request&state=${state}`);
+    const requested = await b.publicCall("GET", `/v1/github/install/callback?setup_action=request&code=code1&state=${state}`);
     expect(requested.body).toContain("<h1>Waiting for your GitHub admin</h1>");
-    expect(requested.body).toContain("An admin of your GitHub organization needs to approve Rovara on GitHub.");
+    expect(requested.body).toContain("You asked an admin of your GitHub organization to approve Rovara.");
+    expect(requested.body).toContain("The request stays open for 7 days.");
+    expect(requested.body).toContain("Tell them: for Rovara org Acme &lt;img src=x onerror=alert(1)&gt; (owner ");
+    expect(requested.body).not.toContain("<img");
+    expect(b.db.get({ pk: "GITHUB_INSTALL_REQUEST#4242", sk: "META" })).toMatchObject({ orgId: TEST_ORG, developerId: OMAR.developerId, status: "waiting" });
   });
 });
 
@@ -750,7 +768,7 @@ describe("agentx github connect", () => {
   const ISSUER = `${CELL}/v1/auth`;
   const entry = { url: CELL, issuer: ISSUER, tokenEndpoint: `${ISSUER}/token`, revocationEndpoint: `${ISSUER}/revoke` };
 
-  async function cli(answer: (method: string, path: string, count: number) => Response | undefined) {
+  async function cli(answer: (method: string, path: string, count: number, requests: number) => Response | undefined, github: { pollMs?: number; waitMs?: number } = {}) {
     const home = await mkdtemp(join(tmpdir(), "rovara-github-cli-"));
     dirs.push(home);
     await saveDeveloperEnvironment(home, "staging", entry);
@@ -760,21 +778,24 @@ describe("agentx github connect", () => {
     const err: string[] = [];
     const calls: Array<{ method: string; path: string; body: unknown }> = [];
     let lists = 0;
+    let polls = 0;
     const fetchImplementation = vi.fn<typeof fetch>(async (input, init) => {
       const path = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url).pathname;
       const method = init?.method ?? "GET";
       calls.push({ method, path, body: typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined });
       if (path === "/v1/app/github/installations") lists += 1;
-      return answer(method, path, lists) ?? new Response("unexpected", { status: 500 });
+      if (path === "/v1/app/github/requests") polls += 1;
+      return answer(method, path, lists, polls) ?? new Response("unexpected", { status: 500 });
     });
     const opened: string[] = [];
+    const printedBeforeOpen: string[] = [];
     const run = (argv: string[]) => executeCli(argv, {
       fetchImplementation, tokenStore, environments: { home },
       stdout: { write: (text: string) => out.push(text) }, stderr: { write: (text: string) => err.push(text) },
-      login: { openBrowser: async (url: string) => { opened.push(url); } },
-      githubConnect: { pollMs: 1, waitMs: 2_000 },
+      login: { openBrowser: async (url: string) => { opened.push(url); printedBeforeOpen.push(err.join("")); } },
+      githubConnect: { pollMs: 1, waitMs: 2_000, ...github },
     });
-    return { run, out, err, calls, opened };
+    return { run, out, err, calls, opened, printedBeforeOpen };
   }
   const INSTALL_URL = "https://github.com/apps/rovara-cloud/installations/new?state=s";
   const started = Response.json({ installUrl: INSTALL_URL, expiresAt: "2026-10-21T12:15:00.000Z", requestId: "r" });
@@ -792,6 +813,95 @@ describe("agentx github connect", () => {
     expect(h.out.join("")).toBe("Connected acme.\n");
     expect(h.err.join("")).toContain(INSTALL_URL);
     expect(h.calls.filter((call) => call.path === "/v1/app/github/installations").length).toBeGreaterThanOrEqual(3);
+  });
+
+  // Plan 2, Task 14: "Ask my GitHub admin". The CLI prints what to write if GitHub asks for a message, then reports the request's state changes once.
+  const ME = Response.json({ developer: { id: "dev-me", name: "Me", orgRole: "admin" }, org: { orgId: TEST_ORG, name: "Acme", plan: "team" }, identities: [], requestId: "r" });
+  const startedNamed = () => Response.json({ installUrl: INSTALL_URL, expiresAt: "2026-10-21T12:15:00.000Z", orgName: "Acme", ownerName: "Olive", requestId: "r" });
+  const request = (status: string, over: Record<string, unknown> = {}) => Response.json({ requests: [{ githubLogin: "rhea", status, requestedAt: "2026-10-21T12:00:00.000Z", expiresAt: "2026-10-28T12:00:00.000Z", requestedBy: { developerId: "dev-me", name: "Me" }, ...over }], requestId: "r" });
+  const noInstallations = () => listed([]);
+
+  it("prints the message to give the GitHub admin before it opens the browser", async () => {
+    const h = await cli((method, path, _installations, count) => {
+      if (method === "POST") return startedNamed();
+      if (path === "/v1/app/me") return ME.clone();
+      if (path === "/v1/app/github/requests") return count < 2 ? Response.json({ requests: [], requestId: "r" }) : request("connected", { accountLogin: "acme" });
+      return noInstallations();
+    });
+    expect(await h.run(["github", "connect"])).toBe(0);
+    const err = h.err.join("");
+    expect(err).toContain("If GitHub asks for a message to your admin, write: for Rovara org Acme (owner Olive)");
+    // Printed before the browser opens, so the person has it when GitHub's page asks.
+    expect(h.opened).toEqual([INSTALL_URL]);
+    expect(h.printedBeforeOpen[0]).toContain("If GitHub asks for a message to your admin, write: for Rovara org Acme (owner Olive)");
+  });
+
+  it("reports a waiting request once while it polls, then the approval, and ends connected", async () => {
+    const h = await cli((method, path, installations, count) => {
+      if (method === "POST") return startedNamed();
+      if (path === "/v1/app/me") return ME.clone();
+      if (path === "/v1/app/github/requests") return count < 4 ? (count < 2 ? Response.json({ requests: [], requestId: "r" }) : request("waiting")) : request("connected", { accountLogin: "acme" });
+      return noInstallations();
+    });
+    expect(await h.run(["github", "connect"])).toBe(0);
+    const err = h.err.join("");
+    expect(err.match(/Waiting for your GitHub admin/g)).toHaveLength(1);
+    expect(err).toContain("Tell them: for Rovara org Acme (owner Olive).");
+    expect(err).toContain("Your GitHub admin approved Rovara. acme is now connected to Acme.");
+    expect(h.out.join("")).toBe("Connected acme.\n");
+  });
+
+  it("says it is still waiting when the wait ends with the request open, and that is not a failure", async () => {
+    const h = await cli((method, path, _installations, count) => {
+      if (method === "POST") return startedNamed();
+      if (path === "/v1/app/me") return ME.clone();
+      if (path === "/v1/app/github/requests") return count < 2 ? Response.json({ requests: [], requestId: "r" }) : request("waiting");
+      return noInstallations();
+    }, { waitMs: 20 });
+    expect(await h.run(["github", "connect"])).toBe(0);
+    expect(h.err.join("")).toContain("Still waiting for your GitHub admin; check later with agentx github list.");
+    expect(h.out.join("")).toBe("");
+  });
+
+  it("ends with the copy for a request that expired, was declined or needs a reinstall", async () => {
+    for (const [status, words] of [
+      ["expired", "Your request wasn't approved within 7 days, or your GitHub admin declined it. Run agentx github connect to ask again."],
+      ["reinstall_needed", "acme was connected to Rovara before, so an approval can't reconnect it on its own."],
+    ] as const) {
+      const h = await cli((method, path, installations, count) => {
+        if (method === "POST") return startedNamed();
+        if (path === "/v1/app/me") return ME.clone();
+        if (path === "/v1/app/github/requests") return count < 2 ? Response.json({ requests: [], requestId: "r" }) : request(status, { accountLogin: "acme" });
+        return noInstallations();
+      });
+      expect(await h.run(["github", "connect"])).not.toBe(0);
+      expect(h.err.join("")).toContain(words);
+    }
+  });
+
+  it("does not report another member's request as its own", async () => {
+    const h = await cli((method, path, installations) => {
+      if (method === "POST") return startedNamed();
+      if (path === "/v1/app/me") return ME.clone();
+      if (path === "/v1/app/github/requests") return request("connected", { accountLogin: "other", requestedBy: { developerId: "someone-else", name: "Else" } });
+      return installations < 4 ? noInstallations() : listed([{ installationId: 501, accountLogin: "acme" }]);
+    });
+    expect(await h.run(["github", "connect"])).toBe(0);
+    expect(h.out.join("")).toBe("Connected acme.\n");
+    expect(h.err.join("")).not.toContain("approved Rovara");
+  });
+
+  it("polls no requests when /v1/app/me fails, so another member's request never ends this person's wait", async () => {
+    const h = await cli((method, path, installations) => {
+      if (method === "POST") return startedNamed();
+      if (path === "/v1/app/me") return Response.json({ error: { code: "RUNTIME_UNAVAILABLE", message: "down" } }, { status: 503 });
+      if (path === "/v1/app/github/requests") return request("connected", { accountLogin: "other", requestedBy: { developerId: "someone-else", name: "Else" } });
+      return installations < 4 ? noInstallations() : listed([{ installationId: 501, accountLogin: "acme" }]);
+    });
+    expect(await h.run(["github", "connect"])).toBe(0);
+    expect(h.out.join("")).toBe("Connected acme.\n");
+    expect(h.err.join("")).not.toContain("approved Rovara");
+    expect(h.calls.filter((call) => call.path === "/v1/app/github/requests")).toEqual([]);
   });
 
   it("prints the link and opens nothing with --no-browser", async () => {

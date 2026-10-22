@@ -2,10 +2,47 @@
 // maintainer of every project in their org, with no grant. An archived project, or a role that may not start tasks, refuses only the
 // places that start new work (a task start, Slack-started work, the setup check): work that exists keeps going.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, projectAllows, projectMetaKey, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
+import { ProjectRoleSchema, agentXError, projectAllows, projectMetaKey, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
+import { ownerKeyForSubject } from "../aws/lambda.js";
 
-/** What a project's grant row says about its holder's role. Plan 3's member roles extend what is read here. */
-export interface GrantItem { role?: unknown }
+/**
+ * What a project's grant row says, as stored (Plan 2, Task 21). A new row has `role` (`developer` for a maintainer or contributor,
+ * `viewer` for a viewer), `projectRole` and `grantedBy`; the two older shapes have fewer of these and read as `grantRoleOf` and
+ * `grantedByOf` say.
+ */
+export interface GrantItem { role?: unknown; projectRole?: unknown; grantedBy?: unknown }
+
+/** Who made a grant: a person of the org, or the operator console. */
+export type GrantedBy = { developerId: string } | { system: "admin" };
+
+/**
+ * The project role a grant row gives, or undefined when it gives none. `role: viewer` is a viewer. `role: developer` is its `projectRole`,
+ * and a contributor when the row has none (the shape before project roles). Any other `role`, an `administrator` row among them, gives no
+ * project role: those rows are the operator's. A row that contradicts itself (`developer` with `projectRole: viewer`) reads as the less
+ * privileged role.
+ */
+export function grantRoleOf(grant: GrantItem | undefined): ProjectRole | undefined {
+  if (grant === undefined) return undefined;
+  if (grant.role === "viewer") return "viewer";
+  if (grant.role !== "developer") return undefined;
+  const stored = ProjectRoleSchema.safeParse(grant.projectRole);
+  return stored.success ? stored.data : "contributor";
+}
+
+/**
+ * Who made a grant. `{ developerId }` as stored; the older `{ issuer, subject }` of the operator console reads as the developer that sign-in
+ * identity is (`ownerKeyForSubject`); a row with none, or any other shape, reads as the operator console.
+ */
+export function grantedByOf(grant: GrantItem | undefined): GrantedBy {
+  const by = grant?.grantedBy;
+  if (typeof by !== "object" || by === null) return { system: "admin" };
+  const fields = by as Record<string, unknown>;
+  if (typeof fields.developerId === "string" && fields.developerId !== "") return { developerId: fields.developerId };
+  if (typeof fields.issuer === "string" && typeof fields.subject === "string") {
+    try { return { developerId: ownerKeyForSubject(fields.issuer, fields.subject) }; } catch { return { system: "admin" }; }
+  }
+  return { system: "admin" };
+}
 
 /** A project's META item (Plan 2, Task 11); a project registered before Plan 2 has none. */
 export interface ProjectMetaItem {
@@ -21,12 +58,13 @@ export interface ProjectMetaItem {
 }
 
 /**
- * Org owners and admins maintain every project in their org; otherwise the grant's role (until members have project roles, a
- * `developer` grant reads as contributor); otherwise a contributor with channel access; otherwise none.
+ * Org owners and admins maintain every project in their org; otherwise the grant's role (`grantRoleOf`), which an explicit grant keeps
+ * even when the person is also in the project's Slack channel; otherwise a contributor with channel access; otherwise none.
  */
 export function effectiveProjectRole(caller: { orgRole: OrgRole; developerId: string }, grant: GrantItem | undefined, channelAccess: boolean): ProjectRole | undefined {
   if (caller.orgRole === "owner" || caller.orgRole === "admin") return "maintainer";
-  if (grant?.role === "developer") return "contributor";
+  const granted = grantRoleOf(grant);
+  if (granted !== undefined) return granted;
   return channelAccess ? "contributor" : undefined;
 }
 
@@ -41,6 +79,7 @@ export async function readProjectMeta(deps: ProjectMetaReader, orgId: OrgId, pro
 /** What a viewer is told when they try to start a task. */
 export const viewerCannotStartTasksMessage = (project: string) => `You can view \`${project}\` but not start tasks in it. Ask a maintainer to make you a contributor.`;
 export const projectArchivedMessage = (project: string) => `\`${project}\` is archived; ask a maintainer to restore it before starting new work.`;
+export const projectArchivedSettingsMessage = (project: string) => `\`${project}\` is archived; restore it before changing its settings.`;
 
 /**
  * Called only where new work starts. An archived project refuses every kind (PROJECT_ARCHIVED); a task start also needs the role to

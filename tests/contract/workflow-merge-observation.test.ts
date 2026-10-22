@@ -89,7 +89,7 @@ function fixture(options: { partial?: boolean; feedbackReview?: boolean } = {}) 
 describe("merge-only task pull request reconciliation", () => {
   it("keeps omitted observation mode on the existing feedback collection path", async () => {
     const f = fixture();
-    const getCurrentFeedback = (url: string, number: number) => f.input.getCurrentFeedback(url, number);
+    const getCurrentFeedback = (url: string, number: number) => f.input.getCurrentFeedback(url, number, undefined);
     const { observationMode: _mode, ...feedbackInput } = f.input;
     void _mode;
     expect(await reconcileTaskPullRequestFeedback({ ...feedbackInput,

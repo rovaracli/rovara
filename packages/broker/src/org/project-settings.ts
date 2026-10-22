@@ -14,6 +14,7 @@ import {
   agentXError,
   canonicalJson,
   githubInstallationKey,
+  githubNotConnectedMessage,
   orgPk,
   parseCommandLine,
   projectAllows,
@@ -27,6 +28,7 @@ import {
   type ProjectSettingsBody,
   type StoredProjectDefinition,
 } from "@agentx/contracts";
+import { projectArchivedSettingsMessage, readProjectMeta } from "../developer/project-roles.js";
 import { cloudRepositoryEntry } from "./cloud-projects.js";
 import { egressStatusWarnings, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "./egress-domains.js";
 
@@ -55,18 +57,18 @@ export interface ProjectSettingsDependencies<Caller extends ProjectSettingsCalle
   /** The credential an added repository uses: the foundation's built-in GitHub App credential. */
   githubCredentialRef?: string;
   /** GitHub's own view of a repository (its spelling and default branch), through the App. Absent when GitHub cannot be asked. */
-  repositoryIdentity?(url: string): Promise<RepositoryIdentity | undefined>;
+  repositoryIdentity?(url: string, orgId: OrgId): Promise<RepositoryIdentity | undefined>;
   /**
    * Whether the org's GitHub connection reaches a repository; throws GITHUB_NOT_CONNECTED when not. Defaults to
    * `requireRepositoryConnectedByRecords`; Plan 2, Task 15's `requireRepositoryConnected` replaces it.
    */
-  requireRepositoryConnected?(orgId: OrgId, owner: string, repository: string): Promise<unknown>;
+  requireRepositoryConnected?(orgId: OrgId, owner: string, repository: string): Promise<{ installationId: number; githubRepositoryId?: number }>;
 }
 
 export const SETTINGS_STALE_MESSAGE = "someone changed this project's settings; reload and try again";
 
 /** What a refusal to reach a repository through the org's GitHub connection says (ruling: Plan 2, Task 15's wording). */
-export const githubNotConnectedMessage = (fullName: string) => `Rovara can't reach ${fullName} through your organization's GitHub connection. Connect it with: agentx github connect`;
+export { githubNotConnectedMessage };
 
 const withoutCode = (error: AgentXError) => error.message.replace(new RegExp(`^${error.code}: `), "");
 const invalid = (message: string) => agentXError("CONFIG_INVALID", message);
@@ -148,10 +150,10 @@ function resolveRepository(repositories: readonly Repository[], entry: string): 
   return repositories.find((repository) => repository.name.toLowerCase() === wanted || fullNameOf(repository).toLowerCase() === wanted);
 }
 
-async function identityOf(deps: Pick<ProjectSettingsDependencies, "repositoryIdentity">, fullName: string): Promise<RepositoryIdentity | undefined> {
+async function identityOf(deps: Pick<ProjectSettingsDependencies, "repositoryIdentity">, orgId: OrgId, fullName: string): Promise<RepositoryIdentity | undefined> {
   if (deps.repositoryIdentity === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "adding a repository is not set up in this deployment; ask Rovara support");
   try {
-    return await deps.repositoryIdentity(`https://github.com/${fullName}.git`);
+    return await deps.repositoryIdentity(`https://github.com/${fullName}.git`, orgId);
   } catch (error) {
     if (error instanceof TypeError) {
       // GitHub answers a renamed or transferred repository with a redirect the lookup refuses; a failed connection rejects the same way.
@@ -186,16 +188,22 @@ async function changedRepositories(
     if (!removed.includes(repository)) removed.push(repository);
   }
   // Every added repository must be reached through the org's own GitHub connection before GitHub is asked anything about it.
-  const connected = deps.requireRepositoryConnected ?? ((orgId, owner, repository) => requireRepositoryConnectedByRecords(deps, orgId, owner, repository));
-  for (const { owner, name } of added) await connected(caller.orgId, owner, name);
+  const connected: NonNullable<ProjectSettingsDependencies["requireRepositoryConnected"]> = deps.requireRepositoryConnected ?? ((orgId, owner, repository) => requireRepositoryConnectedByRecords(deps, orgId, owner, repository));
+  const connections = new Map<number, { installationId: number; githubRepositoryId: number }>();
+  for (const { index, owner, name } of added) {
+    const answer = await connected(caller.orgId, owner, name);
+    // What the connection answered is pinned on the entry (Task 16), as for a created project; the by-records default answers no repository id, so pins nothing.
+    if (answer.githubRepositoryId !== undefined) connections.set(index, { installationId: answer.installationId, githubRepositoryId: answer.githubRepositoryId });
+  }
   const entries: Repository[] = [];
   for (const { index, owner, name } of added) {
-    const identity = await identityOf(deps, `${owner}/${name}`);
+    const identity = await identityOf(deps, caller.orgId, `${owner}/${name}`);
     if (identity === undefined) throw invalid(`addRepositories.${String(index)}: the GitHub App cannot see ${owner}/${name}; check the name`);
     if (identity.defaultBranch === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not describe that repository; try again");
     const githubCredentialRef = deps.githubCredentialRef;
     if (githubCredentialRef === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "adding a repository is not set up in this deployment; ask Rovara support");
-    entries.push(cloudRepositoryEntry({ repositoryName: name, repository: { fullName: identity.fullName, defaultBranch: identity.defaultBranch }, githubCredentialRef }));
+    const connection = connections.get(index);
+    entries.push(cloudRepositoryEntry({ repositoryName: name, repository: { fullName: identity.fullName, defaultBranch: identity.defaultBranch }, githubCredentialRef, ...(connection === undefined ? {} : { connection }) }));
   }
   return { repositories: [...current.filter((repository) => !removed.includes(repository)), ...entries], removed };
 }
@@ -218,6 +226,8 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   if (role === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
   if (!projectAllows(role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can change its settings");
   if (!deps.cloud) throw agentXError("FORBIDDEN", "ask an administrator to change this project with agentx admin project register");
+  // An archived project's settings are as they were when it was archived; restoring it is how they change again (Task 20).
+  if ((await readProjectMeta(deps, caller.orgId, name))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", projectArchivedSettingsMessage(name));
   const body = parseProjectSettingsBody(rawBody);
 
   const latest = await latestRevision(deps, caller.orgId, name);
@@ -294,7 +304,7 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
     }
   }
   if (body.description !== undefined) await writeDescription(deps, caller.orgId, name, body.description);
-  warnings.push(...await recordEgress(deps.egress, caller, name, body.allowedDomains !== undefined, parsed.data.network?.allowedDomains ?? []));
+  warnings.push(...await recordEgress(deps.egress, caller, name, parsed.data.network?.allowedDomains ?? []));
   console.log(JSON.stringify({
     component: "broker", event: "developer.project_settings_changed", orgId: caller.orgId, project: name, revision: changed ? parsed.data.revision : current.revision,
     changed: SETTING_FIELDS.filter((field) => body[field] !== undefined),
@@ -305,14 +315,15 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
 /**
  * Makes the project's egress item match the domains the project now has, and answers what the person is told: each domain still waiting for
  * Rovara, each one Rovara refused, and that the firewall will follow within 5 minutes when it could not be told at once. It runs on every
- * save of a project that has domains, not only one that changes them, so a project whose domains were stored before approvals existed (and
- * so are in no item, serving nothing) asks for them on its next save. Domains every project already has are not asked about.
+ * save, whatever the save changed: a project whose domains were stored before approvals existed asks for them on its next save, and a save
+ * after one whose egress write failed (say, the one that removed the last domain) takes the old item's domains out of the union. With no item
+ * and no domains it reads once and writes nothing. Domains every project already has are not asked about.
  */
-async function recordEgress(egress: EgressDomainsDependencies, caller: ProjectSettingsCaller, project: string, domainsGiven: boolean, domains: readonly string[]): Promise<string[]> {
-  if (!domainsGiven && domains.length === 0) return [];
+async function recordEgress(egress: EgressDomainsDependencies, caller: ProjectSettingsCaller, project: string, domains: readonly string[]): Promise<string[]> {
   const owner = { kind: "project", project } as const;
   const asked = domains.filter((domain) => !DEFAULT_AGENT_ALLOW_DOMAINS.includes(domain));
   const { warning } = await putEgressDomains(egress, caller.orgId, owner, asked, { developerId: caller.developerId });
+  if (asked.length === 0) return warning === undefined ? [] : [warning];
   return [...egressStatusWarnings(await readEgressDomains(egress, caller.orgId, owner), asked), ...(warning === undefined ? [] : [warning])];
 }
 

@@ -33,6 +33,7 @@ export async function routeGithubInstall(deps: GithubConnectionDependencies | un
       ...(result.accountLogin === undefined ? {} : { accountLogin: result.accountLogin }),
       ...(result.orgName === undefined ? {} : { orgName: result.orgName }),
       ...(result.connectId === undefined ? {} : { connectId: result.connectId }),
+      ...(result.ownerName === undefined ? {} : { ownerName: result.ownerName }),
     });
     return result.confirmToken === undefined ? page : { ...page, headers: { ...page.headers, "set-cookie": connectCookie(result.confirmToken) } };
   }

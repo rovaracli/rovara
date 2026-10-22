@@ -93,3 +93,6 @@ export function errorStatus(code: AgentXErrorCode): number {
 export function agentXError(code: AgentXErrorCode, message: string): AgentXError {
   return new AgentXError(code, message, errorStatus(code));
 }
+
+/** What a refusal to reach a repository through the org's GitHub connection says (GITHUB_NOT_CONNECTED, Plan 2). */
+export const githubNotConnectedMessage = (fullName: string) => `Rovara can't reach ${fullName} through your organization's GitHub connection. Connect it with: agentx github connect`;

@@ -69,6 +69,39 @@ export const AppProjectDetailSchema = AppProjectSummarySchema.extend({
 });
 export type AppProjectDetail = z.infer<typeof AppProjectDetailSchema>;
 
+/** The answer to archiving or restoring a project (Plan 2, Task 20): the project as the app now shows it, and a warning when the firewall could not be told at once. */
+export const ProjectArchiveResponseSchema = z.object({ project: AppProjectDetailSchema, warnings: z.array(z.string()) });
+export type ProjectArchiveResponse = z.infer<typeof ProjectArchiveResponseSchema>;
+
+/** Where a person's role in a project comes from: a grant on the project, or their org role (an owner or admin maintains every project). */
+export const ProjectMemberSourceSchema = z.enum(["grant", "org_role"]);
+export type ProjectMemberSource = z.infer<typeof ProjectMemberSourceSchema>;
+
+/** One person in a project (Plan 2, Task 21), as `GET /v1/app/projects/{name}/members` lists them. `grantedBy` is absent when the operator console made the grant. */
+export const ProjectMemberSchema = z.object({
+  developerId: z.string(),
+  name: z.string(),
+  email: z.string().optional(),
+  role: ProjectRoleSchema,
+  source: ProjectMemberSourceSchema,
+  grantedBy: z.object({ developerId: z.string(), name: z.string() }).optional(),
+});
+export type ProjectMember = z.infer<typeof ProjectMemberSchema>;
+
+export const ProjectMembersResponseSchema = z.object({ members: z.array(ProjectMemberSchema) });
+export type ProjectMembersResponse = z.infer<typeof ProjectMembersResponseSchema>;
+
+/** `PUT /v1/app/projects/{name}/members/{developerId}`: a maintainer gives a member of the org a role in the project. */
+export const PutProjectMemberBodySchema = z.object({ requestId: z.string().uuid(), role: ProjectRoleSchema }).strict();
+export type PutProjectMemberBody = z.infer<typeof PutProjectMemberBodySchema>;
+export const ProjectMemberChangeResponseSchema = z.object({ member: z.object({ developerId: z.string(), role: ProjectRoleSchema }) });
+export type ProjectMemberChangeResponse = z.infer<typeof ProjectMemberChangeResponseSchema>;
+
+/** `DELETE /v1/app/projects/{name}/members/{developerId}`: the body carries only the request id; `removed` is false when the person had no grant. */
+export const RemoveProjectMemberBodySchema = z.object({ requestId: z.string().uuid() }).strict();
+export const ProjectMemberRemoveResponseSchema = z.object({ developerId: z.string(), removed: z.boolean() });
+export type ProjectMemberRemoveResponse = z.infer<typeof ProjectMemberRemoveResponseSchema>;
+
 export const AppProjectsResponseSchema = z.object({ projects: z.array(AppProjectSummarySchema) });
 export type AppProjectsResponse = z.infer<typeof AppProjectsResponseSchema>;
 
@@ -88,8 +121,11 @@ function hostLabelsOf(value: string): string[] | undefined {
   return labels.length >= 2 && labels.every((label) => DNS_LABEL.test(label)) && TOP_LEVEL_LABEL.test(labels.at(-1)!) ? labels : undefined;
 }
 
-/** Whether a lower-cased entry is a hostname, or `*.` and a hostname, that is not a public suffix and does not sit over one. */
-function isAllowedDomain(value: string): boolean {
+/**
+ * Whether a lower-cased entry is a hostname, or `*.` and a hostname, that is not a public suffix and does not sit over one. It is the one check
+ * between a domain and the DNS firewall: upper case, a trailing dot, `*`, a bare TLD and anything not ASCII (punycode is) all fail it.
+ */
+export function isAllowedDomain(value: string): boolean {
   const labels = hostLabelsOf(value);
   if (labels === undefined) return false;
   const host = labels.join(".");

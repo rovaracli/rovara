@@ -979,7 +979,7 @@ describe("broker-backed feedback review data", () => {
     fixture.harness.db.set({ ...task, workflow: { ...task.workflow, revision: Number(task.workflow.revision) + 1 } });
     await expect(fixture.harness.callback(task.workspaceId, String(operation.id), "feedback-approval", invocation.payload?.workflowFeedbackApproval))
       .rejects.toThrow(/feedback approval|GitHub PR feedback changed|no longer current/i);
-    expect(fixture.githubRead).toHaveBeenCalledWith("https://github.com/example/demo.git", 42);
+    expect(fixture.githubRead).toHaveBeenCalledWith("https://github.com/example/demo.git", 42, { system: "private-install" });
   });
 
   it("authorizes the exact freshly eligible co-owner at worker start while retaining the creator-bound approval", async () => {

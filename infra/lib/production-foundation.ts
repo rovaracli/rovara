@@ -218,6 +218,8 @@ export class ProductionFoundationStack extends Stack {
         vpcId: vpc.ref,
         extraAllowDomains: parseExtraAllowDomains(this.node.tryGetContext(EGRESS_ALLOW_DOMAINS_CONTEXT_KEY)),
       });
+      // The control plane's broker keeps this list equal to the approved egress domains (it takes the id as a parameter, like the VPC's).
+      new CfnOutput(this, "ProjectAllowListId", { value: dnsFirewall.projectAllowListId });
       new EgressAlarms(this, "EgressAlarms", {
         env: naming.env,
         resourcePrefix: naming.resourcePrefix,

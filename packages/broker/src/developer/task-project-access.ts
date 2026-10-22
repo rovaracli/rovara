@@ -30,7 +30,7 @@ export interface ProjectAuthorityWitness {
 export type ProjectAuthorityResult =
   | { kind: "allowed"; revision: number; policy: DeveloperTaskPolicy; access: "granted" | "channel"; channelIds: string[]; witness?: ProjectAuthorityWitness }
   | { kind: "needs-membership"; channelIds: string[] }
-  | { kind: "denied"; reason: "project-access" | "tasks-disabled"; visibleChannelIds: string[] }
+  | { kind: "denied"; reason: "project-access" | "tasks-disabled" | "project-viewer"; visibleChannelIds: string[] }
   | { kind: "not-found" }
   | { kind: "unavailable" };
 
@@ -81,6 +81,11 @@ export function evaluateProjectAuthority(input: {
   const channelIds = [...new Set(matchingBindings.map((binding) => binding.channelId))].sort();
   const membership = input.memberships.find((row) => row.projectName === input.project && row.role === "developer");
   const developerGrant = membership !== undefined;
+  // A project viewer (an explicit grant of the viewer role) only views: the grant beats the channel, so the person gets neither the
+  // authority to start or take part in work nor the channel's commenter role. The people path reads this refusal as "eligible, capped at viewer".
+  if (!developerGrant && input.memberships.some((row) => row.projectName === input.project && row.role === "viewer")) {
+    return { kind: "denied", reason: "project-viewer", visibleChannelIds: [] };
+  }
 
   let access: "granted" | "channel" | undefined;
   let binding: ProjectChannelBinding | undefined;

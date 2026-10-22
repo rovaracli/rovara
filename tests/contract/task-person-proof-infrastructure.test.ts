@@ -202,24 +202,26 @@ describe("the named TEST proof-only installation gate", () => {
     const legacyVariables = legacyBrokers[0]![1].Properties!.Environment as { Variables: Record<string, unknown> };
     expect(legacyVariables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED, "legacy has no workflow flag").toBeUndefined();
 
+    // Plan 2 Task 14 (merge 3): the legacy template gains the GitHub install-request reminder schedule and its notice-failed metric filter
+    // (legacy-templates snapshot, +45 lines, additions only), so the legacy digests moved with them; the legacy broker policy is unchanged.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "05adbf1e0e5254feba9ad5c33c71bf8f6e31a9556f960cc7bc3fc06b4dfd21a5",
-        withoutRoute: "32976755ee2330391e53d9e6a5a3fdf7c6a67326bbc542865ba231ac15344afe",
+        withRoute: "dca11b5b6bbe601f96ad508bc64b7a7b385e9289d9917373f3273122e394af35",
+        withoutRoute: "f519c253f039211d8aef26d454a131293e9051e3d4731999c850ba32a4c3d4dc",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "e9d7c2e539d5015a1fd535ac277eaaa440b824dac4196f9e86fe760b48f39d12",
-        withoutRoute: "6e3ad0118904bedebe4edfc6d4e1beb6a1e9d965d0c87167191f883c353ab658",
+        withRoute: "67b635ea5e49ab57b2538074e496ff04bdf2e140fd88d1f6b984e4b9972c32cd",
+        withoutRoute: "603fe305ceae707114b5c75fb79b8cdf5eec3a8383c3898e896cc0de51452b2e",
       },
       {
         label: "legacy",
         template: legacy,
-        withRoute: "b279f85a0f09a9fd78a25b85706b79bf1394184fd09597efa8cd466f93adb826",
-        withoutRoute: "dcd26742aba45c87a5f82cd0a6039801147e4e6cd02ee337cf28e7f01987a32b",
+        withRoute: "c8cb994acace74871d428c118ced239332c2c06f6f53e88ee4394adcbd34a994",
+        withoutRoute: "5a11a45cb6ccb2325312658e0bfba2f4ba6f36280d0848a36cbd6db37244427f",
       },
     ] as const;
     for (const { label, template, withRoute, withoutRoute } of digestCases) {

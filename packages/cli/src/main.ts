@@ -19,6 +19,7 @@ import {
   OrgRoleSchema,
   agentXError,
   type ProjectDefinition,
+  type ProjectRole,
 } from "@agentx/contracts";
 import { DEFAULT_DIRECT_MODELS } from "@agentx/model-runtime/config";
 import { CloudFormationClient } from "@aws-sdk/client-cloudformation";
@@ -29,7 +30,6 @@ import { Command, Option } from "commander";
 import { authorizeCredential, expectedAccountEmail, secretsManagerAuthorizeSecrets, type AuthorizeSecrets } from "./admin/authorize.js";
 import { budgetText, parseBudgetUsd, setOrgBudget } from "./admin/budget.js";
 import { decideEgress, decisionText, listPendingEgress, parseOwnerArgument, pendingText } from "./admin/egress.js";
-import { githubOwnerText, setOrgGithubOwner } from "./admin/github-owner.js";
 import { listCredentials, registerCredential } from "./admin/credential.js";
 import { requestRuntimeInstallChallenge, submitRuntimeInstallProposal } from "./admin/runtime-installation.js";
 import { cliRuntimeBinding, registerProject } from "./admin/register.js";
@@ -43,8 +43,9 @@ import { disableEvalChannel, enableEvalChannel, parseMaxCostUsd, showEvalChannel
 import { exportTurns, parseSince } from "./admin/turns.js";
 import { loginWithPkce, openSystemBrowser, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
-import { changeDeveloperProjectSettings, createDeveloperProject, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
+import { archiveProjectQuestion, archiveProjectText, changeDeveloperProjectArchive, changeDeveloperProjectSettings, createDeveloperProject, restoreProjectText, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
+import { projectAddMember, projectAddMemberText, projectMembers, projectMembersText, projectRemoveMember, projectRemoveMemberText } from "./developer/project-members.js";
 import { orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
 import { LOOPBACK_HOSTS, developerLogin } from "./developer/login.js";
@@ -64,7 +65,7 @@ import { runInit, type InitCliDependencies, type InitOptions } from "./init/comm
 import { cliCommandLine, currentCliInvocation, type CliInvocation } from "./init/cli-command.js";
 import { StoppedByOperator, isCtrlCAtPrompt } from "./stopped.js";
 import { runGithubOauthSet, type GithubOauthServices } from "./github/oauth.js";
-import { githubConnect, githubConnectText } from "./developer/github.js";
+import { githubConnect, githubConnectText, githubDisconnect, githubDisconnectText, githubList, githubListText } from "./developer/github.js";
 import { secretsManagerInitSecrets, type FinishFlags, type SecretFlags } from "./init/context.js";
 import { githubRestApi } from "./init/github-app.js";
 import { processPrompter } from "./init/prompts.js";
@@ -574,7 +575,25 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         ...(options.browser ? { openBrowser: dependencies.login?.openBrowser ?? openSystemBrowser } : {}),
         ...(dependencies.githubConnect ?? {}),
       });
-      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, account: result.account, installationId: result.installationId }, true) : githubConnectText(result));
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, status: result.status, account: result.account, installationId: result.installationId }, true) : githubConnectText(result));
+    });
+
+  githubCommand
+    .command("list")
+    .description("the GitHub accounts connected to your organization, and any request still waiting for a GitHub admin")
+    .action(async (_options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await githubList(developerSession(), developerEnv(command));
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, installations: result.installations, waiting: result.waiting }, true) : githubListText(result));
+    });
+  githubCommand
+    .command("disconnect")
+    .description("stop using a connected GitHub account (owners and admins). Its repositories stop working in Rovara; uninstall the app in GitHub's settings to remove its access there too")
+    .argument("<account>", "the GitHub account's login, as agentx github list shows it")
+    .action(async (account: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await githubDisconnect(developerSession(), developerEnv(command), account);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, installationId: result.installationId, accountLogin: result.accountLogin, message: result.message }, true) : githubDisconnectText(result));
     });
 
   registerSigninCommands(program, {
@@ -854,22 +873,6 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         ...(orgMonthlyUsd === undefined ? {} : { orgMonthlyUsd }), ...(memberDefaultMonthlyUsd === undefined ? {} : { memberDefaultMonthlyUsd }),
       }, services.fetchImplementation);
       services.stdout.write(globals.json ? formatSuccess(result, true) : budgetText(result.budget));
-    });
-
-  const adminOrg = admin.command("org").description("organizations on Rovara Cloud");
-  adminOrg
-    .command("github-owner")
-    .description("the one GitHub account or organization whose repositories an organization's owners and admins may create projects for")
-    .command("set")
-    .description("set an organization's allowed GitHub owner (Rovara Cloud operators only)")
-    .option("--org <org-id>", "the organization's ID")
-    .option("--owner <login>", "the GitHub account or organization login, such as acme-corp")
-    .action(async (options: { org?: string; owner?: string }, command: Command) => {
-      const globals = globalOptions(command);
-      if (options.org === undefined || options.owner === undefined) throw agentXError("CONFIG_INVALID", "name the organization and the GitHub owner: --org <org-id> --owner <login>");
-      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
-      const result = await setOrgGithubOwner({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, orgId: options.org, githubOwner: options.owner }, services.fetchImplementation);
-      services.stdout.write(globals.json ? formatSuccess(result, true) : githubOwnerText(result.org));
     });
 
   const adminEgress = admin.command("egress").description("domains projects ask to reach; on Rovara Cloud a new one is served only after Rovara staff approve it");
@@ -1225,16 +1228,19 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   projectCommand
     .command("create")
     .description("create a project from a GitHub repository, on Rovara Cloud (an owner or admin of your organization)")
-    .option("--repository <owner/name>", "the GitHub repository, which must be under your organization's connected GitHub owner")
+    .option("--repository <owner/name>", "the GitHub repository, which your organization's GitHub connection must reach (agentx github connect)")
     .option("--name <name>", "the project's name (default: the repository's)")
+    .option("--description <text>", "what the project is, up to 280 characters")
     .option("--setup-command <command>", "the setup command, or \"\" for none")
     .option("--test-command <command>", "the test command, or \"\" for none")
-    .action(async (options: { repository?: string; name?: string; setupCommand?: string; testCommand?: string }, command: Command) => {
+    .action(async (options: { repository?: string; name?: string; description?: string; setupCommand?: string; testCommand?: string }, command: Command) => {
       const globals = globalOptions(command);
       if (options.repository === undefined) throw agentXError("CONFIG_INVALID", "name the repository: --repository <owner/name>");
       const result = await createDeveloperProject(developerSession(), developerEnv(command), {
+        requestId: randomUUID(),
         repository: options.repository,
         ...(options.name === undefined ? {} : { name: options.name }),
+        ...(options.description === undefined ? {} : { description: options.description }),
         ...(options.setupCommand === undefined ? {} : { setupCommand: options.setupCommand }),
         ...(options.testCommand === undefined ? {} : { testCommand: options.testCommand }),
       });
@@ -1252,6 +1258,59 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const globals = globalOptions(command);
       const result = await showDeveloperProject(developerSession(), developerEnv(command), name);
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project }, true) : projectShowText(result.project));
+    });
+  // Plan 2, Task 20: a maintainer archives a project (asking first) and restores it.
+  projectCommand
+    .command("archive")
+    .description("archive a project (a maintainer of the project): no new tasks can start in it; running work keeps going. Asks first")
+    .argument("<name>", "the project's name")
+    .option("--yes", "archive without asking", false)
+    .action(async (name: string, options: { yes: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const confirm = changeConfirmer(options.yes);
+      if (!await confirm(archiveProjectQuestion(name))) throw agentXError("CONFIRMATION_DECLINED", `you did not archive ${name}; nothing changed`);
+      const result = await changeDeveloperProjectArchive(developerSession(), developerEnv(command), name, "archive", randomUUID());
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project, warnings: result.warnings }, true) : archiveProjectText(result));
+    });
+  projectCommand
+    .command("restore")
+    .description("restore an archived project (a maintainer of the project)")
+    .argument("<name>", "the project's name")
+    .action(async (name: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await changeDeveloperProjectArchive(developerSession(), developerEnv(command), name, "restore", randomUUID());
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project, warnings: result.warnings }, true) : restoreProjectText(result));
+    });
+  // Plan 2, Task 21: the people in a project and their roles. Anyone who can see the project lists them; a maintainer changes them.
+  projectCommand
+    .command("members")
+    .description("list the people in a project: each person's role (maintainer, contributor or viewer) and who added them")
+    .argument("<name>", "the project's name")
+    .action(async (name: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await projectMembers(developerSession(), developerEnv(command), name);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, members: result.members }, true) : projectMembersText({ ...result, project: name }));
+    });
+  projectCommand
+    .command("add-member")
+    .description("give someone in your organization a role in a project, or change it (a maintainer of the project)")
+    .argument("<name>", "the project's name")
+    .argument("<email-or-id>", "the person's email or developer ID, from agentx org members")
+    .addOption(new Option("--role <role>", "what they may do: maintainer (manage the project and its people), contributor (start tasks) or viewer (look only)").choices(["maintainer", "contributor", "viewer"]).makeOptionMandatory())
+    .action(async (name: string, who: string, options: { role: ProjectRole }, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await projectAddMember(developerSession(), developerEnv(command), name, who, options.role);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, member: { developerId: result.member.developerId, role: result.role } }, true) : projectAddMemberText(result));
+    });
+  projectCommand
+    .command("remove-member")
+    .description("take away someone's role in a project (a maintainer of the project); org owners and admins keep maintaining every project")
+    .argument("<name>", "the project's name")
+    .argument("<email-or-id>", "the person's email or developer ID, from agentx project members")
+    .action(async (name: string, who: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await projectRemoveMember(developerSession(), developerEnv(command), name, who);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, developerId: result.member.developerId, removed: result.removed }, true) : projectRemoveMemberText(result));
     });
   const collect = (value: string, previous: string[]) => [...previous, value];
   projectCommand
