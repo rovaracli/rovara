@@ -234,6 +234,31 @@ describe("assuming the customer's role (confused deputy)", () => {
     expect(throttled).toMatchObject({ name: "CredentialUnavailable", message: "AWS could not be reached to assume the role; try again" });
   });
 
+  it("reuses a session while it has more than a minute left, and assumes again after that, for another role, or once the engine says the credential failed", async () => {
+    const r = await ready();
+    const issue = () => r.definition.credentials.issue(scopeOf(r.connector, "prod"), "read");
+    const first = await issue();
+    expect(await issue()).toEqual(first);
+    expect(r.fake.assumed).toHaveLength(1);
+    // 14 minutes later (a minute left of 15): assumed again.
+    await r.fake.aws.sleep(14 * 60_000 + 1);
+    const later = await issue();
+    expect(later).not.toEqual(first);
+    expect(r.fake.assumed).toHaveLength(2);
+    // The new session is reused in turn, until the engine says it failed.
+    await r.fake.aws.sleep(60_000);
+    expect(await issue()).toEqual(later);
+    expect(r.fake.assumed).toHaveLength(2);
+    await r.definition.credentials.invalidate?.(scopeOf(r.connector, "prod"));
+    expect(await issue()).not.toEqual(later);
+    expect(r.fake.assumed).toHaveLength(3);
+    // A role edited since is a new session: the key holds the role.
+    for (const item of r.db.items.values()) if (item["entityType"] === "ORG_CONNECTION") item["roleArn"] = "arn:aws:iam::123456789012:role/rovara-read-2";
+    r.fake.aws.assumeRole = async (input) => { r.fake.assumed.push(input); return { accessKeyId: "ASIAOTHER", secretAccessKey: "other-secret-0123456789", sessionToken: "other-token-0123456789", expiration: new Date(START_MS + 99_999_999_999) }; };
+    expect(JSON.parse((await issue()).token)).toMatchObject({ a: "ASIAOTHER" });
+    expect(r.fake.assumed[3]!.RoleArn).toBe("arn:aws:iam::123456789012:role/rovara-read-2");
+  });
+
   it("never lets the session's keys reach the model, even if an alarm's text quotes them", async () => {
     const r = await run("list_alarms", {}, { aws: { alarms: [{ name: "pay-errors", state: "ALARM" }], reasonOverride: (c) => `see ${c.sessionToken} and ${c.secretAccessKey}` } });
     const text = textOf(r.result);
