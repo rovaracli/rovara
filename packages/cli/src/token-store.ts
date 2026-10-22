@@ -67,16 +67,10 @@ export class SystemCredentialTokenStore implements TokenStore {
   async set(key: string, tokens: StoredTokens): Promise<void> {
     const serialized = JSON.stringify(parseStoredTokens(JSON.stringify(tokens)));
     if (process.platform === "darwin") {
-      await execFileAsync("security", [
-        "add-generic-password",
-        "-U",
-        "-s",
-        this.service,
-        "-a",
-        key,
-        "-w",
-        serialized,
-      ]);
+      // The token goes to `security -i` on stdin, never into argv, where `ps` would show it to every process of this user.
+      await spawnWithInput("security", ["-i"], buildSecurityAddCommand(this.service, key, serialized), {
+        failOnStderr: true,
+      });
       return;
     }
     if (process.platform === "linux") {
@@ -125,7 +119,40 @@ function parseStoredTokens(serialized: string): StoredTokens {
   };
 }
 
-async function spawnWithInput(command: string, args: string[], input: string): Promise<void> {
+// `security -i` reads one command per line into a 4096-byte buffer. A longer line is cut at the buffer edge: the cut
+// prefix still runs and stores a truncated secret. Measured on macOS: a 4095-character line stored intact, longer ones
+// stored a truncated value. Stay well under it and refuse instead of truncating.
+const MAX_SECURITY_COMMAND_CHARS = 4000;
+
+// Builds the `add-generic-password` line for `security -i`. Inside double quotes a backslash makes the next
+// character literal, so escaping `\` and `"` is enough. The value is JSON with every non-ASCII character escaped as
+// \uXXXX, so it is plain printable ASCII: no raw newline can end the line early, and `find-generic-password -w`
+// prints it back as text (it prints non-ASCII data as hex).
+function buildSecurityAddCommand(service: string, account: string, serialized: string): string {
+  const value = serialized.replace(/[^\x20-\x7e]/g, (unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  const line = `add-generic-password -U -s ${quoteSecurityWord(service)} -a ${quoteSecurityWord(account)} -w ${quoteSecurityWord(value)}`;
+  if (line.length > MAX_SECURITY_COMMAND_CHARS) {
+    throw agentXError(
+      "CONFIG_INVALID",
+      "the sign-in token is too long to store in the macOS Keychain; it was not stored. Sign in again, or report this to your administrator.",
+    );
+  }
+  return `${line}\n`;
+}
+
+function quoteSecurityWord(word: string): string {
+  if (!/^[\x20-\x7e]*$/u.test(word)) {
+    throw agentXError("CONFIG_INVALID", "the credential store name contains characters that cannot be stored safely");
+  }
+  return `"${word.replace(/[\\"]/gu, "\\$&")}"`;
+}
+
+async function spawnWithInput(
+  command: string,
+  args: string[],
+  input: string,
+  options: { failOnStderr?: boolean } = {},
+): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["pipe", "ignore", "pipe"] });
     let stderr = "";
@@ -133,8 +160,14 @@ async function spawnWithInput(command: string, args: string[], input: string): P
       stderr += chunk.toString("utf8");
     });
     child.on("error", reject);
-    child.on("exit", (code) => {
-      if (code === 0) resolve();
+    child.stdin.on("error", () => undefined); // a dead child is reported by its exit status
+    child.on("close", (code) => {
+      // Interactive `security` can print an error for one command and still exit 0, so any stderr is a failure.
+      // Its error text can quote the rejected command, token included, so that text is not passed on.
+      if (options.failOnStderr) {
+        if (code === 0 && stderr.trim().length === 0) resolve();
+        else reject(new Error(`${command} failed (exit ${code}); its output is withheld because it can echo the secret`));
+      } else if (code === 0) resolve();
       else reject(new Error(`${command} exited ${code}: ${stderr}`));
     });
     child.stdin.end(input);

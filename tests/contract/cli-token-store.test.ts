@@ -185,12 +185,14 @@ describe("SystemCredentialTokenStore.set on macOS", () => {
     await expect(new SystemCredentialTokenStore("dev.rovara.kc-test.unit").set("acct", { accessToken: "t", expiresAt: 1 })).rejects.toThrow();
   });
 
-  it("does not echo the token in the failure message", async () => {
+  it("does not echo the token in the failure message, even when security echoes the rejected command", async () => {
     process.env.FAKE_EXIT = "1";
-    process.env.FAKE_STDERR = "security: boom";
+    // Real `security -i` quotes the text of a command it cannot parse, token included.
+    process.env.FAKE_STDERR = 'security: unknown command "SECRET-ACCESS-123"';
     const error = await new SystemCredentialTokenStore("dev.rovara.kc-test.unit")
       .set("acct", { accessToken: "SECRET-ACCESS-123", expiresAt: 1 })
       .catch((caught: unknown) => caught as Error);
+    expect(error).toBeInstanceOf(Error);
     expect(String((error as Error).message)).not.toContain("SECRET-ACCESS-123");
   });
 });
@@ -261,19 +263,27 @@ describe.skipIf(!realKeychain)("SystemCredentialTokenStore on the real macOS Key
   });
 
   it("round-trips awkward tokens, never shows them in security's argv, and deletes the item", async () => {
-    // A wrapper records the argv of the real `security` call, then runs it with the same stdin.
+    // A wrapper records the argv of the real `security` call, holds the write's stdin back for 3 s so `ps` can be sampled while
+    // the real process is alive, then runs the real `security` with the same stdin.
     const wrapper = join(fakeDir, "security");
     writeFileSync(
       wrapper,
-      `#!/bin/sh\nprintf '%s\\n' "$*" >> "${fakeDir}/real-argv.txt"\nexec /usr/bin/security "$@"\n`,
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> "${fakeDir}/real-argv.txt"\nif [ "$1" = "-i" ]; then (sleep 3; cat) | /usr/bin/security "$@"; else exec /usr/bin/security "$@"; fi\n`,
     );
     chmodSync(wrapper, 0o755);
 
     const store = new SystemCredentialTokenStore(service);
-    await store.set(account, nasty);
-    const argvLog = readFileSync(join(fakeDir, "real-argv.txt"), "utf8");
-    expect(argvLog.trim()).toBe("-i");
+    const marker = `PSCHECK${Math.random().toString(36).slice(2, 12)}`;
+    const pending = store.set(account, { accessToken: marker, expiresAt: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const processes = execFileSync("ps", ["-axo", "args="], { encoding: "utf8" });
+    expect(processes).toContain("/usr/bin/security -i");
+    expect(processes).not.toContain(marker);
+    await pending;
+    expect(readFileSync(join(fakeDir, "real-argv.txt"), "utf8").trim()).toBe("-i");
+    await expect(store.get(account)).resolves.toEqual({ accessToken: marker, expiresAt: 1 });
 
+    await store.set(account, nasty);
     await expect(store.get(account)).resolves.toEqual(nasty);
 
     // Update in place with the longest value that is allowed.
