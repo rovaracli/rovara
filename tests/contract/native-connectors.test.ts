@@ -2,8 +2,10 @@
 // approved tools, validates every call's arguments against the tool's schema, and answers text of a bounded size. `vendorFetch` is the only way a tool
 // reaches its vendor: one allowed host, https, no redirect, a bounded answer, and no credential in a failure. `safeLookup` refuses a non-public address when
 // the connection is made. No test here reaches a network.
+import { PassThrough } from "node:stream";
 import { ToolRefusal, discoverTools, executeTool, type ConnectorDefinition, type Ledger } from "@agentx/gateway";
 import { describe, expect, it, vi } from "vitest";
+import { lookupFetch, pinnedLookup } from "../../packages/broker/src/connections/pinned-endpoint.js";
 import { NATIVE_TEXT_LIMIT, NativeToolRefusal, nativeConnection, type NativeTool } from "../../packages/broker/src/connectors/native/runtime.js";
 import { VendorFetchError, safeLookup, safeVendorFetch, vendorFetch, vendorFetcher } from "../../packages/broker/src/connectors/native/vendor-fetch.js";
 
@@ -202,6 +204,18 @@ describe("vendorFetch", () => {
   it("gives up on a vendor that does not answer, with a fixed message", async () => {
     const hang = fakeFetch((_url, init) => new Promise<Response>((_resolve, reject) => { init?.signal?.addEventListener("abort", () => reject(init.signal!.reason as Error)); }));
     await expect(vendorFetch({ url: URL_OK, allowedHosts: HOSTS, timeoutMs: 20, fetch: hang.fn })).rejects.toThrow("the vendor did not answer in time");
+  });
+
+  it("gives up on a vendor that sends headers and then stalls the body, with the same fixed message (review M-3)", async () => {
+    const request = ((_url: URL, _options: unknown, callback?: (response: unknown) => void) => ({
+      on: () => undefined,
+      destroy: () => undefined,
+      end: () => { callback?.(Object.assign(new PassThrough(), { statusCode: 200, headers: { "content-type": "application/json" }, statusMessage: "" })); },
+    })) as never;
+    const stalled = lookupFetch(pinnedLookup(["52.1.2.3"]), { request });
+    const started = Date.now();
+    await expect(vendorFetch({ url: URL_OK, allowedHosts: HOSTS, timeoutMs: 50, fetch: stalled })).rejects.toThrow("the vendor did not answer in time");
+    expect(Date.now() - started).toBeLessThan(5_000);
   });
 
   it("vendorFetcher reads a path against its base, and reaches nothing else", async () => {
