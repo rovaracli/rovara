@@ -216,6 +216,7 @@ import {
   type AdminChangePressEvent,
   AUDIT_SDK_REQUEST_TIMEOUT_MS,
   auditOperatorId,
+  auditPullRequestId,
   INDEX_EXPIRY_ATTRIBUTE,
   indexExpiresAt,
   WORKFLOW_RESOLVE_FINDINGS_MAX,
@@ -251,7 +252,7 @@ import { isAuditViewPath } from "../audit/view-page.js";
 import { AuditKeyring } from "../audit/keyring.js";
 import { auditPending, auditTransact, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import { auditPullRequestId, auditPullRequestOpened } from "../audit/events.js";
+import { auditPullRequestOpened } from "../audit/events.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
 import { releaseFailedPreparation, slackThreadKey } from "./failed-preparation.js";
 import { releaseFailedCancelWorkspace } from "./failed-cancel-release.js";
@@ -8463,10 +8464,24 @@ async function reconcilePullRequest(
     }
   }
   // A worker that asks again (its answer was lost) is the same occurrence: on a ledger it keeps the first attempt's time, so the
-  // retry overwrites that attempt's pending audit item instead of adding a second one (R1-1).
+  // retry overwrites that attempt's pending audit item instead of adding a second one (R1-1). The audit's reads and builder run
+  // together, so a read that fails is logged and the callback goes on without an event.
   const recordKey = pullRequestKey(operation.workspaceId, expected.repository, pullRequest.number);
-  const earlier = dependencies.audit === undefined ? undefined : await getItem<PullRequestRecord>(dependencies, recordKey);
-  const openedAt = earlier?.createdByOperationId === operation.id ? earlier.updatedAt : new Date().toISOString();
+  let openedAt = new Date().toISOString();
+  const opened = await tryAuditEvent(dependencies, async () => {
+    const earlier = await getItem<PullRequestRecord>(dependencies, recordKey);
+    if (earlier?.createdByOperationId === operation.id) openedAt = earlier.updatedAt;
+    const repository = parseGitHubRepository(expected.repositoryUrl);
+    const repositoryFullName = `${repository.owner}/${repository.name}`;
+    const requester = operation.requestedBy;
+    return auditPullRequestOpened({
+      orgId: await orgOfRecord(dependencies, await getItem<Record<string, unknown>>(dependencies, workspaceKey(operation.workspaceId)) ?? {}),
+      actor: requester === undefined ? { kind: "system", id: "rovara" } : { kind: "member", id: "kind" in requester ? requester.developerId : developerIdForSlackUser(requester.userId) },
+      occurredAt: openedAt, occurrence: operation.id,
+      pullRequestId: auditPullRequestId(repositoryFullName, pullRequest.number), number: pullRequest.number,
+      details: [{ subject: "org", fields: { repository: repositoryFullName } }],
+    });
+  });
   const record: PullRequestRecord = {
     ...recordKey,
     entityType: "PULL_REQUEST",
@@ -8487,18 +8502,6 @@ async function reconcilePullRequest(
       : {}),
     updatedAt: openedAt,
   };
-  const opened = await tryAuditEvent(dependencies, async () => {
-    const repository = parseGitHubRepository(expected.repositoryUrl);
-    const repositoryFullName = `${repository.owner}/${repository.name}`;
-    const requester = operation.requestedBy;
-    return auditPullRequestOpened({
-      orgId: await orgOfRecord(dependencies, await getItem<Record<string, unknown>>(dependencies, workspaceKey(operation.workspaceId)) ?? {}),
-      actor: requester === undefined ? { kind: "system", id: "rovara" } : { kind: "member", id: "kind" in requester ? requester.developerId : developerIdForSlackUser(requester.userId) },
-      occurredAt: openedAt, occurrence: operation.id,
-      pullRequestId: auditPullRequestId(repositoryFullName, pullRequest.number), number: pullRequest.number,
-      details: [{ subject: "org", fields: { repository: repositoryFullName } }],
-    });
-  });
   if (expected.mode === "replace" && expected.targetPullRequestNumber !== undefined) {
     const original = await requirePullRequest(
       dependencies,

@@ -3,7 +3,6 @@
 // id is `auditEventId(action, occurrence, ...parts)`: a retry of one occurrence gets the same id, a later occurrence with
 // the same facts gets a different one. Personal data (names, emails, logins, repository and project names, domains,
 // reasons) goes only in `details`, or in a name-keyed target `{ kind, name }`, which the appender pseudonymizes.
-import { createHash } from "node:crypto";
 import { auditEventId, type AuditAction, type AuditActor, type AuditDetailPart, type AuditEventInput, type AuditProof, type AuditTarget } from "@agentx/contracts";
 
 export interface AuditBuilderBase {
@@ -93,15 +92,6 @@ export function auditSpendPolicyChanged(input: AuditBuilderBase & { field: strin
 }
 
 // Pull requests ----------------------------------------------------------------------------------------------------------
-
-/**
- * The opaque id both pull request events name their target by: `pr_` and the first 32 hex of the SHA-256 of the lowercased
- * `owner/name` and the number. The repository's name is personal data and never part of an id the chain holds; it goes in
- * `details`. The same pull request has the same id wherever it is recorded (opened, merged).
- */
-export function auditPullRequestId(repositoryFullName: string, number: number): string {
-  return `pr_${createHash("sha256").update(`${repositoryFullName.toLowerCase()}#${String(number)}`).digest("hex").slice(0, 32)}`;
-}
 
 /** `occurrence`: the publish operation id. `pullRequestId` is an opaque id; the repository name goes in `details`. */
 export function auditPullRequestOpened(input: AuditBuilderBase & { pullRequestId: string; number: number }): AuditEventInput {

@@ -5,7 +5,7 @@
 // R23), so a remainder is always clamped at 0 and nothing here promises an exact cap. LiteLLM's spend is the
 // authoritative figure (ruling R22).
 import { createHash } from "node:crypto";
-import { DeleteCommand, GetCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
   DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, TASK_BUDGET_EXCEEDED_PREFIX,
@@ -13,7 +13,7 @@ import {
 } from "@agentx/contracts";
 import { auditBudgetChanged, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import { auditPending, auditTransact, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
+import { auditTransact, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
 import type { MintKeyInput, MintedKey, ModelAccess, SpendFigures } from "../model-proxy/access.js";
 import type { OrgStore } from "./store.js";
 import { admitMachineTime, admitTrial } from "./trial.js";
@@ -96,17 +96,19 @@ export function withLimits(limits: { orgMonthlyUsd: number | undefined; memberDe
 /** The member's monthly limit, or undefined when they have none (ruling R47). */
 export const memberLimitOf = (settings: OrgBudgetSettings, developerId: string): number | undefined => settings.memberOverrides[developerId] ?? settings.memberDefaultMonthlyUsd;
 
-/** The most pending items one transaction takes beside the write they belong to (a transaction holds 100 items). */
-const AUDIT_EVENTS_PER_TRANSACTION = 98;
-const TRANSACTION_ITEMS_MAX = 100;
+/**
+ * The most `budget.changed` events one change may record. They commit in the same transaction as the settings, which holds
+ * 100 items: the write and at most 98 pending items (one item is left spare).
+ */
+export const BUDGET_CHANGE_EVENTS_MAX = 98;
 
 const toCents = (usd: number | undefined): number | undefined => usd === undefined ? undefined : Math.round(usd * 100);
 
 /**
  * One `budget.changed` event for each limit this write changes: the org's, the members' default, and each member whose own
- * limit was added, changed or removed (from what they had to what they have now, a removed one falling back to the default).
- * A member whose only change is the default is covered by the default's event. Each event has its own id, from the write's
- * time and writer plus the limit it is about.
+ * limit moved (from what they had to what they have now, a removed override falling back to the default; an override that
+ * equals the default figure, added or removed, moves nothing). A member whose only change is the default is covered by the
+ * default's event. Each event has its own id, from the write's time and writer plus the limit it is about.
  */
 function budgetChangeEvents(input: { orgId: OrgId; before: OrgBudgetSettings; after: OrgBudgetSettings; updatedBy: string; at: string; actor: AuditActor }): AuditEventInput[] {
   const { orgId, before, after, updatedBy, at, actor } = input;
@@ -120,39 +122,49 @@ function budgetChangeEvents(input: { orgId: OrgId; before: OrgBudgetSettings; af
   if (before.orgMonthlyUsd !== after.orgMonthlyUsd) events.push(event("org", "org_monthly_limit", orgId, before.orgMonthlyUsd, after.orgMonthlyUsd));
   if (before.memberDefaultMonthlyUsd !== after.memberDefaultMonthlyUsd) events.push(event("org", "member_default_limit", orgId, before.memberDefaultMonthlyUsd, after.memberDefaultMonthlyUsd));
   for (const developerId of [...new Set([...Object.keys(before.memberOverrides), ...Object.keys(after.memberOverrides)])].sort()) {
-    if (before.memberOverrides[developerId] === after.memberOverrides[developerId]) continue;
-    events.push(event("member", "member_monthly_limit", developerId, memberLimitOf(before, developerId), memberLimitOf(after, developerId), [developerId]));
+    const from = memberLimitOf(before, developerId);
+    const to = memberLimitOf(after, developerId);
+    if (from === to) continue;
+    events.push(event("member", "member_monthly_limit", developerId, from, to, [developerId]));
   }
   return events;
 }
 
 /**
+ * The events a change would record: none on an install with no ledger, and none (the failure logged) when the settings to
+ * compare with cannot be read or an event cannot be built. `before` is read here when the caller has not.
+ */
+function plannedBudgetEvents(deps: BudgetDependencies, input: { orgId: OrgId; before?: OrgBudgetSettings | undefined; after: OrgBudgetSettings; updatedBy: string; at: string; actor?: AuditActor | undefined }): Promise<AuditEventInput[]> {
+  return tryAuditEvents(deps, async () => budgetChangeEvents({
+    ...input, before: input.before ?? await readBudgets(deps, input.orgId), actor: input.actor ?? { kind: "member", id: input.updatedBy },
+  }));
+}
+
+/**
+ * A change that would record more events than fit in the settings' own transaction is refused, not split: the events must
+ * commit with the change or not at all. The message names a count and no value.
+ */
+function refuseUnrecordableChange(events: readonly AuditEventInput[]): void {
+  if (events.length > BUDGET_CHANGE_EVENTS_MAX) {
+    throw agentXError("CONFIG_INVALID", `body: this change would change ${String(events.length)} limits at once and at most ${String(BUDGET_CHANGE_EVENTS_MAX)} can be recorded in one request; change fewer in each`);
+  }
+}
+
+/**
  * Writes the settings whole. The caller has validated them; `syncBudgets` then tells the proxy. On an install with a ledger the
  * write is one transaction with a `budget.changed` pending item for each limit it changes, and the events are sent after the
- * commit. `options.before` is the settings the caller has just read (read here when absent); `options.actor` is who changed
- * them (the member `updatedBy` when absent). A change that names more limits than one transaction holds commits the first
- * 98 events with the write and puts the rest in transactions of their own right after: they cannot join it, and a failure
- * there is logged (`audit.record_failed`, which alarms) rather than failing a change that has been made.
+ * commit. A change of more than `BUDGET_CHANGE_EVENTS_MAX` limits is refused with CONFIG_INVALID before anything is written.
+ * `options.before` is the settings the caller has just read (read here when absent); `options.actor` is who changed them (the
+ * member `updatedBy` when absent).
  */
 export async function writeBudgets(
   deps: BudgetDependencies, orgId: OrgId, settings: OrgBudgetSettings, updatedBy: string, at: string,
   options: { before?: OrgBudgetSettings; actor?: AuditActor } = {},
 ): Promise<void> {
   const item = { ...orgSettingsKey(orgId, "BUDGET"), entityType: "ORG_BUDGET", ...settings, updatedBy, updatedAt: at };
-  const events = await tryAuditEvents(deps, async () => budgetChangeEvents({
-    orgId, after: settings, updatedBy, at, before: options.before ?? await readBudgets(deps, orgId), actor: options.actor ?? { kind: "member", id: updatedBy },
-  }));
-  await auditTransact(deps, { Put: { TableName: deps.tableName, Item: item } }, events.slice(0, AUDIT_EVENTS_PER_TRANSACTION));
-  const overflow = events.slice(AUDIT_EVENTS_PER_TRANSACTION);
-  for (let start = 0; start < overflow.length; start += TRANSACTION_ITEMS_MAX) {
-    try {
-      const items = overflow.slice(start, start + TRANSACTION_ITEMS_MAX).flatMap((event) => auditPending(deps, event));
-      if (items.length > 0) await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
-    } catch (error) {
-      deps.audit?.log({ event: "audit.record_failed", level: "error", reason: "budget_events_not_recorded", count: overflow.length - start, error: error instanceof Error ? error.name : "unknown" });
-      break;
-    }
-  }
+  const events = await plannedBudgetEvents(deps, { orgId, before: options.before, after: settings, updatedBy, at, actor: options.actor });
+  refuseUnrecordableChange(events);
+  await auditTransact(deps, { Put: { TableName: deps.tableName, Item: item } }, events);
   await flushAuditEvents(deps, events);
 }
 
@@ -237,6 +249,8 @@ export async function changeBudgets(
     orgMonthlyUsd: orgMonthlyUsd ?? before.orgMonthlyUsd,
     memberDefaultMonthlyUsd: memberDefaultMonthlyUsd ?? before.memberDefaultMonthlyUsd,
   }, memberOverrides ?? before.memberOverrides);
+  // Refused before anything is written or the proxy is told, as writeBudgets would refuse it.
+  refuseUnrecordableChange(await plannedBudgetEvents(deps, { orgId: input.orgId, before, after, updatedBy: input.updatedBy, at: input.at, actor: input.actor }));
   await writeBudgets(deps, input.orgId, after, input.updatedBy, input.at, { before, ...(input.actor === undefined ? {} : { actor: input.actor }) });
   await syncBudgets(deps, input.orgId, [...Object.keys(before.memberOverrides), ...Object.keys(after.memberOverrides)]);
   return after;

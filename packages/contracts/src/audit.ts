@@ -228,6 +228,15 @@ export function auditOperatorId(issuer: string, subject: string): string {
   return `op_${sha256Hex(`${issuer}\n${subject}`).slice(0, 24)}`;
 }
 
+/**
+ * The opaque id both pull request events name their target by: `pr_` and the first 32 hex of the SHA-256 of the lowercased
+ * `owner/name` and the number. The repository's name is personal data and never part of an id the chain holds; it goes in
+ * an event's `details`. The same pull request has the same id wherever it is recorded (opened, merged).
+ */
+export function auditPullRequestId(repositoryFullName: string, number: number): string {
+  return `pr_${sha256Hex(`${repositoryFullName.toLowerCase()}#${String(number)}`).slice(0, 32)}`;
+}
+
 const ActorId = z.string().min(1).max(100);
 
 export const AuditActorSchema = z.discriminatedUnion("kind", [

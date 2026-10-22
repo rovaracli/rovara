@@ -6,17 +6,20 @@ import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import {
   AUDIT_FLUSH_DEADLINE_MS,
   auditEventId,
+  auditPullRequestId,
   budgetSyncedKey,
   orgSettingsKey,
+  WORKFLOW_BLOCK_REASONS,
   type AuditEventInput,
 } from "../../packages/contracts/src/index.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow.js";
+import { githubWorkflowPullRequestKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { reconcileTaskPullRequestFeedback } from "../../packages/broker/src/aws/github-webhooks.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
-import { auditOccurrence, auditPullRequestId } from "../../packages/broker/src/audit/events.js";
+import { auditOccurrence } from "../../packages/broker/src/audit/events.js";
 import { tryAuditEvent } from "../../packages/broker/src/audit/outbox.js";
-import { writeBudgets, readBudgets, type OrgBudgetSettings } from "../../packages/broker/src/org/budget.js";
+import { changeBudgets, writeBudgets, readBudgets, type OrgBudgetSettings } from "../../packages/broker/src/org/budget.js";
 import { adminCall, createAdminBroker } from "../support/admin-broker.js";
 import { capturingAuditDeps, hangingAuditDeps, type AuditCapture } from "../support/audit-capture.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
@@ -239,6 +242,18 @@ describe("a publication callback records pull_request.opened", () => {
     expect(capture.recorded()).toEqual([]);
     expect(capture.logs).toEqual([expect.objectContaining({ event: "audit.record_invalid", reason: "builder_failed" })]);
   });
+
+  it("opens the pull request without an event when the audit's own read of the earlier record fails, and logs the error's name only", async () => {
+    const capture = capturingAuditDeps();
+    const h = await harness(capture);
+    const start = await startPublish(h);
+    h.db.injectFault({ command: "GetCommand", match: (input) => String((input.Key as { sk?: string } | undefined)?.sk).startsWith("PULL_REQUEST#demo#000000000007"), error: { name: "InternalServerError", message: "secret@example.com" } });
+    const response = await sendCallback(h, start);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(pullRequestRecord(h)).toBeDefined();
+    expect(capture.recorded()).toEqual([]);
+    expect(capture.logs).toEqual([{ event: "audit.record_invalid", level: "error", reason: "builder_failed", error: "InternalServerError" }]);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -449,6 +464,93 @@ describe("a task with several pull requests records each merge once", () => {
   });
 });
 
+describe("a save that records landed fix pushes and merges together", () => {
+  const COUNT = 32;
+  const H1 = "1".repeat(40);
+  const H2 = "2".repeat(40);
+  const T1 = "3".repeat(40);
+  const T2 = "4".repeat(40);
+  const repositories = Array.from({ length: COUNT }, (_, index) => index === 0 ? "demo" : `repo${String(index).padStart(2, "0")}`);
+  // The first half were merged by GitHub at the fix's head; the second half show the fix's push, which was taken for failed.
+  const mergedCount = COUNT / 2;
+  const isMerged = (index: number) => index < mergedCount;
+
+  async function blockedAfterPush(capture: AuditCapture) {
+    const now = "2026-10-05T12:00:00.000Z";
+    const taskId = "550e8400-e29b-41d4-a716-446655440012";
+    const workspaceId = "550e8400-e29b-41d4-a716-446655440013";
+    const gateway = {
+      getPullRequestFeedback: vi.fn(async (url: string, number: number) => ({
+        pullRequest: { number, url: `${url.replace(/\.git$/, "")}/pull/${String(number)}`, state: isMerged(number - 1) ? "merged" as const : "open" as const,
+          headBranch: "feature", baseBranch: "main", headCommit: H2, headTreeSha: T2, title: "t", body: "" },
+        comments: [], threads: [],
+      })),
+      getCommitParents: vi.fn(async () => [H1]),
+    };
+    const h = await createDeveloperTaskBroker({ audit: capture, register: false, brokerExtra: { githubPullRequests: gateway } });
+    await registerSlackProject(h.handler, { extraRepositories: repositories.slice(1).map((name) => ({ name, url: `https://github.com/example/${name}.git`, path: `repo/${name}`, defaultBranch: "main", credentialRef: "github-app" })) });
+    const first = createCandidateManifest(repositories.map((repositoryId) => ({ repositoryId, commitSha: H1, treeSha: T1 })));
+    const fix = createCandidateManifest(repositories.map((repositoryId) => ({ repositoryId, commitSha: H2, treeSha: T2 })));
+    const url = (index: number) => `https://github.com/example/${repositories[index]!}/pull/${String(index + 1)}`;
+    const workflow = WorkflowSnapshotSchema.parse({
+      ...createWorkflowSnapshot({ taskId, ownerId: "a".repeat(64), now }), candidate: fix, stage: "WAIT_FOR_MERGE", state: "BLOCKED",
+      blockReason: WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed, pullRequestUpdateFailure: { numbers: repositories.map((_, index) => index + 1), cause: "PUSH_REFUSED" },
+      verification: { candidateDigest: fix.digest, producer: "broker", environmentId: "fixture", recordedAt: now, results: [{ checkId: "unit", status: "PASS" }] },
+      reviews: ["CRITIC", "SECURITY"].map((role) => ({ operationId: taskId, candidateDigest: fix.digest, role, provider: "fixture", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: now })),
+      pullRequests: repositories.map((repositoryId, index) => ({ repositoryId, number: index + 1, url: url(index), headSha: H1, headTreeSha: T1, candidateDigest: first.digest, required: true, state: "OPEN" })),
+    });
+    h.db.set({ ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, project: "payments", startingRevision: 1, workspaceId, ownerKey: "owner", developerId: MAYA.developerId, workflow });
+    repositories.forEach((repositoryId, index) => {
+      h.db.set({ ...githubWorkflowPullRequestKey(`example/${repositoryId}`, index + 1), entityType: "GITHUB_WORKFLOW_PR", repositoryFullName: `example/${repositoryId}`, repositoryId,
+        number: index + 1, url: url(index), taskId, workspaceId, candidateDigest: first.digest, createdAt: now });
+      h.db.set({ pk: `WORKSPACE#${workspaceId}`, sk: `PULL_REQUEST#${repositoryId}#${String(index + 1).padStart(12, "0")}`, entityType: "PULL_REQUEST", workspaceId, repository: repositoryId,
+        repositoryUrl: `https://github.com/example/${repositoryId}.git`, number: index + 1, url: url(index), state: "open", expectedHeadCommit: H1, updatedAt: now });
+    });
+    // What the transactions carry, as sent.
+    const transactions: Array<Array<{ Put?: { Item: Record<string, unknown> } }>> = [];
+    const send = h.db.send;
+    h.db.send = async (command) => {
+      if (command.constructor.name === "TransactWriteCommand") transactions.push((command as unknown as { input: { TransactItems: Array<{ Put?: { Item: Record<string, unknown> } }> } }).input.TransactItems);
+      return send(command);
+    };
+    // No developer configuration: nothing starts a feedback review after the reconcile.
+    const dependencies = { ...h.brokerInput, developer: undefined };
+    const deliver = async () => (await import("../../packages/broker/src/aws/broker.js")).processGithubWorkflowEvent(dependencies as never,
+      { kind: "PULL_REQUEST", action: "synchronize", installationId: 1, repositoryId: 1, fullName: "example/demo", number: 1 }, randomUUID());
+    const saved = () => (h.db.get(taskKey(taskId)) as { workflow: { stage: string; state: string; candidate: { digest: string }; pullRequests: Array<{ state: string; candidateDigest: string }> } }).workflow;
+    const pendingIn = (transaction: Array<{ Put?: { Item: Record<string, unknown> } }>) => transaction.filter((item) => String(item.Put?.Item.pk).startsWith("AUDIT_PENDING#"));
+    return { h, deliver, saved, transactions, pendingIn, fix };
+  }
+
+  it("commits the fix pushes, the task update and the merge events in one transaction within the item limit", async () => {
+    const capture = capturingAuditDeps();
+    capture.queueDown();
+    const { deliver, saved, transactions, pendingIn, fix } = await blockedAfterPush(capture);
+    await deliver();
+    expect(saved()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(saved().pullRequests.filter((pr) => pr.state === "MERGED")).toHaveLength(mergedCount);
+    expect(saved().pullRequests.every((pr) => pr.candidateDigest === fix.digest)).toBe(true);
+    const landed = transactions.filter((transaction) => transaction.length > 1);
+    expect(landed).toHaveLength(1);
+    // The task update, a link update and a record update for each landed push, and one pending item for each merge.
+    expect(landed[0]).toHaveLength(1 + 2 * (COUNT - mergedCount) + mergedCount);
+    expect(landed[0]!.length).toBeLessThanOrEqual(100);
+    expect(pendingIn(landed[0]!)).toHaveLength(mergedCount);
+    expect(capture.pending().map((event) => event.action)).toEqual(Array(mergedCount).fill("pull_request.merged"));
+    expect(new Set(capture.pending().map((event) => event.eventId)).size).toBe(mergedCount);
+  });
+
+  it("commits them together or not at all: a cancelled transaction leaves no event, and the retry records each merge once", async () => {
+    const capture = capturingAuditDeps();
+    capture.queueDown();
+    const { h, deliver, saved } = await blockedAfterPush(capture);
+    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("AUDIT_PENDING#"), error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }] } });
+    await deliver();
+    expect(saved()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(capture.pendingItems()).toHaveLength(mergedCount);
+  });
+});
+
 // ---------------------------------------------------------------------------------------------------------------------
 // writeBudgets: budget.changed
 // ---------------------------------------------------------------------------------------------------------------------
@@ -571,25 +673,77 @@ describe("a budget change records budget.changed in writeBudgets' transaction", 
     expect(capture.pending()).toHaveLength(1);
   });
 
-  it("keeps every event of a change that names more members than one transaction holds", async () => {
-    const { capture, deps, stored } = setup();
-    capture.queueDown();
-    const overrides = Object.fromEntries(Array.from({ length: 150 }, (_, index) => [`dev${String(index).padStart(3, "0")}`, 100 + index]));
-    await writeBudgets(deps, TEST_ORG, settings(undefined, undefined, overrides), MAYA_ID, AT);
-    expect(Object.keys(stored()!.memberOverrides as object)).toHaveLength(150);
-    expect(capture.pendingItems()).toHaveLength(150);
-    expect(new Set(capture.pending().map((event) => event.eventId)).size).toBe(150);
+  it("records no event for a member limit set to, or put back to, the default figure", async () => {
+    const { db, capture, deps } = setup();
+    db.set({ ...orgSettingsKey(TEST_ORG, "BUDGET"), entityType: "ORG_BUDGET", orgMonthlyUsd: 500, memberDefaultMonthlyUsd: 29, memberOverrides: { [OMAR_ID]: 29 } });
+    // Maya gets an override equal to the default; Omar's override equal to the default goes away: neither limit moves.
+    await writeBudgets(deps, TEST_ORG, settings(500, 29, { [MAYA_ID]: 29 }), MAYA_ID, AT);
+    expect(capture.recorded()).toEqual([]);
+    // An override that does move the figure still records, to and from the default.
+    await writeBudgets(deps, TEST_ORG, settings(500, 29, { [MAYA_ID]: 50 }), MAYA_ID, "2026-10-21T11:00:00.000Z");
+    await writeBudgets(deps, TEST_ORG, settings(500, 29), MAYA_ID, "2026-10-21T12:00:00.000Z");
+    expect(facts(capture.recordedBy("budget.changed"))).toEqual([
+      { scopeKind: "member", field: "member_monthly_limit", fromCents: 2900, toCents: 5000 },
+      { scopeKind: "member", field: "member_monthly_limit", fromCents: 5000, toCents: 2900 },
+    ]);
   });
 
-  it("logs, without a value, the events it could not record past the first transaction, and still writes the settings", async () => {
-    const { db, capture, deps, stored } = setup();
-    capture.queueDown();
-    db.injectFault({ command: "TransactWriteCommand", match: (input) => !JSON.stringify(input).includes('"updatedBy"'), error: { name: "InternalServerError" } });
-    const overrides = Object.fromEntries(Array.from({ length: 120 }, (_, index) => [`dev${String(index).padStart(3, "0")}`, 100 + index]));
-    await writeBudgets(deps, TEST_ORG, settings(undefined, undefined, overrides), MAYA_ID, AT);
-    expect(stored()).toBeDefined();
-    expect(capture.logs).toContainEqual({ event: "audit.record_failed", level: "error", reason: "budget_events_not_recorded", count: 22, error: "InternalServerError" });
-    expect(capture.pendingItems()).toHaveLength(98);
+  describe("a change that would record more events than one transaction holds is refused", () => {
+    const overrides = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, index) => [`dev${String(index).padStart(3, "0")}`, 100 + index]));
+
+    it("commits a change of exactly 98 events with all of them", async () => {
+      const { db, capture, deps, stored } = setup();
+      capture.queueDown();
+      const mark = db.commandNames().length;
+      await writeBudgets(deps, TEST_ORG, settings(undefined, undefined, overrides(98)), MAYA_ID, AT);
+      expect(Object.keys(stored()!.memberOverrides as object)).toHaveLength(98);
+      expect(capture.pendingItems()).toHaveLength(98);
+      expect(db.commandNames().slice(mark).filter((name) => name === "TransactWriteCommand")).toHaveLength(1);
+    });
+
+    it("counts events and not overrides: an org limit and 97 overrides are 98 events", async () => {
+      const { capture, deps } = setup();
+      capture.queueDown();
+      await writeBudgets(deps, TEST_ORG, settings(1000, undefined, overrides(97)), MAYA_ID, AT);
+      expect(capture.pendingItems()).toHaveLength(98);
+    });
+
+    it("refuses 99 events with CONFIG_INVALID, writing and recording nothing, and names no value", async () => {
+      const { capture, deps, stored } = setup();
+      capture.queueDown();
+      const error = await rejection(writeBudgets(deps, TEST_ORG, settings(undefined, undefined, overrides(99)), MAYA_ID, AT));
+      expect(error.code).toBe("CONFIG_INVALID");
+      expect(error.message).not.toContain("dev0");
+      expect(stored()).toBeUndefined();
+      expect(capture.pendingItems()).toEqual([]);
+      expect(capture.logs).toEqual([]);
+      // 1 org limit and 98 overrides are 99 events too.
+      expect((await rejection(writeBudgets(deps, TEST_ORG, settings(1000, undefined, overrides(98)), MAYA_ID, AT))).code).toBe("CONFIG_INVALID");
+      expect(stored()).toBeUndefined();
+    });
+
+    it("lets a change of any size through on an install with no ledger", async () => {
+      const db = new FakeDynamoDb();
+      await writeBudgets({ documentClient: db, tableName: "state", access: fakeModelAccess() }, TEST_ORG, settings(undefined, undefined, overrides(150)), MAYA_ID, AT);
+      expect(Object.keys(db.get(orgSettingsKey(TEST_ORG, "BUDGET"))!.memberOverrides as object)).toHaveLength(150);
+    });
+
+    it("refuses in changeBudgets before the settings are written or the proxy is told", async () => {
+      const { db, capture, stored } = setup();
+      const access = fakeModelAccess();
+      const orgs = { orgForDeveloper: async () => ({ orgId: TEST_ORG }), getOrg: async () => ({ plan: "team" }) };
+      const deps = { documentClient: db, tableName: "state", access, audit: capture.audit, orgs } as unknown as Parameters<typeof changeBudgets>[0];
+      const refused = await rejection(changeBudgets(deps, { orgId: TEST_ORG, body: { requestId: randomUUID(), memberOverrides: overrides(99) }, updatedBy: MAYA_ID, at: AT }));
+      expect(refused.code).toBe("CONFIG_INVALID");
+      expect(refused.message).not.toContain("dev0");
+      expect(stored()).toBeUndefined();
+      expect(access.upsertOrg).not.toHaveBeenCalled();
+      expect(access.upsertMember).not.toHaveBeenCalled();
+      expect(capture.recorded()).toEqual([]);
+      // 98 is changed as usual.
+      await changeBudgets(deps, { orgId: TEST_ORG, body: { requestId: randomUUID(), memberOverrides: overrides(98) }, updatedBy: MAYA_ID, at: AT });
+      expect(capture.recordedBy("budget.changed")).toHaveLength(98);
+    });
   });
 });
 

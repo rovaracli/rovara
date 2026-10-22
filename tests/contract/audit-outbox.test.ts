@@ -715,9 +715,7 @@ describe("I4: the builders", () => {
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {
-    // Helpers that build an id part, not an event.
-    const helpers = new Set(["auditOccurrence", "auditPullRequestId"]);
-    const exported = Object.keys(builders).filter((name) => name.startsWith("audit") && !helpers.has(name)).sort();
+    const exported = Object.keys(builders).filter((name) => name.startsWith("audit") && name !== "auditOccurrence").sort();
     const covered = [...new Set(cases.map(([name]) => name.replace(/ \(.*\)$/, "")))].sort();
     expect(covered).toStrictEqual(exported);
   });
