@@ -26,6 +26,7 @@ import {
   developerTaskPolicy,
   formatCommandLine,
   memberGrantsPk,
+  orgMemberKey,
   orgProjectCatalogPk,
   projectAllows,
   workspaceProjectIndexValue,
@@ -1311,15 +1312,20 @@ export function developerTaskRouteDependencies(
       targetProjectAccess: async (subject, project, freshMemberOf) => {
         const revision = await latestDefinition(deps, caller.orgId, project);
         if (revision === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${project}\` doesn't exist in this AgentX`);
-        const [memberships, allBindings] = await Promise.all([
+        const [memberships, allBindings, subjectOrg] = await Promise.all([
           queryAll<{ projectName: string; role?: string }>(deps, memberGrantsPk(caller.orgId, subject.developerId), MEMBER_GRANT_SK_PREFIX),
           bindingsOf(deps, caller.orgId),
+          deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgMemberKey(caller.orgId, subject.developerId), ConsistentRead: true })) as Promise<{ Item?: { role?: string } }>,
         ]);
+        // An org owner or admin is a maintainer of every project in the org with no grant, as `checkProjectAccess` counts them (final review I1).
+        const orgMember = subjectOrg.Item === undefined ? undefined : { ...orgMemberKey(caller.orgId, subject.developerId), ...(subjectOrg.Item.role === undefined ? {} : { role: subjectOrg.Item.role }) };
         const result = evaluateProjectAuthority({
+          orgId: caller.orgId, developerId: subject.developerId,
           project,
           revision: { revision: revision.revision, definition: { developerTasks: revision.developerTasks } },
           memberships,
           bindings: allBindings,
+          ...(orgMember === undefined ? {} : { orgMember }),
           freshMemberOf,
           ...(subject.slackUserId === undefined ? {} : { slackUserId: subject.slackUserId }),
         });

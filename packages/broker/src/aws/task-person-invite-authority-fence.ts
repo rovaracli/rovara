@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX } from "@agentx/contracts";
+import { orgMemberKey, orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX } from "@agentx/contracts";
 import type { ProjectAuthorityWitness } from "../developer/task-project-access.js";
 
 export type TaskPersonProjectAuthorityWitness = ProjectAuthorityWitness & {
@@ -18,6 +18,8 @@ export type TaskPersonInviteStateCondition =
     developerTasks?: unknown;
   }
   | { kind: "developer-grant"; pk: string; sk: string; projectName: string; role: "developer" }
+  /** The org member row of an owner or admin with no grant: the row must still be the person's and still hold the owner or admin role. */
+  | { kind: "org-role"; pk: string; sk: string; developerId: string }
   | { kind: "channel-binding"; pk: string; sk: string; teamId: string; channelId: string; projectName: string; updatedAt: string };
 
 function projectRevisionCondition(witness: TaskPersonProjectAuthorityWitness, project: string): TaskPersonInviteStateCondition | undefined {
@@ -45,6 +47,13 @@ function positiveRowCondition(
   if (witness.access === "granted") {
     const membership = witness.membership;
     const orgId = orgOfProjectPk(witness.projectRevision.pk);
+    if (membership === undefined && witness.orgMember !== undefined) {
+      const expectedOrgMember = orgId === undefined ? undefined : orgMemberKey(orgId, witness.developerId);
+      if (witness.binding !== undefined || expectedOrgMember === undefined || witness.orgMember.pk !== expectedOrgMember.pk
+        || witness.orgMember.sk !== expectedOrgMember.sk || (witness.orgMember.role !== "owner" && witness.orgMember.role !== "admin")) return undefined;
+      return { kind: "org-role", pk: expectedOrgMember.pk, sk: expectedOrgMember.sk, developerId: witness.developerId };
+    }
+    if (witness.orgMember !== undefined) return undefined;
     const expected = orgId === undefined ? undefined : projectMemberKey(orgId, witness.developerId, project);
     if (membership === undefined || witness.binding !== undefined || expected === undefined
       || membership.pk !== expected.pk || membership.sk !== expected.sk
