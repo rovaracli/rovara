@@ -972,7 +972,7 @@ describe("a folder or file chosen by a tool flag (round 3, B3)", () => {
   });
 
   it.each<[string]>([
-    ["make -C $DIR"], ["make -C ${{ matrix.dir }} all"], ["make -C ../x"], ["make -f $MK"], ["npm --prefix ${{ inputs.p }} test"], ["pnpm -C ../up i"], ["yarn --cwd $D build"], ["make -C"], ["npm --prefix"],
+    ["make -C $DIR"], ["make -C ${{ matrix.dir }} all"], ["make -C ../x"], ["make -f $MK"], ["npm --prefix ${{ inputs.p }} test"], ["pnpm -C ../up i"], ["yarn --cwd $D build"], ["make -C"], ["npm --prefix"], ["make -f"], ["make --file"], ["make -C tools -f"],
   ])("fails closed for %s", async (run) => {
     expect(await scan({ [WORKFLOW]: block(run) })).toMatchObject(closedScan);
   });
@@ -1038,6 +1038,11 @@ describe("a script that runs what its caller passes (round 3, B6)", () => {
     expect(await scan({ [WORKFLOW]: workflowWith(steps("- run: echo hi"), "env:\n  BASH_ENV: ./a.sh\n"), "a.sh": "bash \"$1\"\n" })).toMatchObject(closedScan);
   });
 
+  it("fails closed for an argument that points into a submodule, though it looks like a bare word", async () => {
+    const modules = "[submodule \"ci\"]\n\tpath = vendor/ci\n";
+    expect(await scan({ [WORKFLOW]: caller("./a.sh vendor/ci/tool"), "a.sh": "#!/bin/bash\nbash \"$1\"\n", ".gitmodules": modules })).toMatchObject(closedScan);
+  });
+
   it("is not triggered by a script that only mentions a parameter as an argument", async () => {
     const files = { [WORKFLOW]: caller("./a.sh deploy"), "a.sh": "#!/bin/bash\necho \"got $1\"\n", deploy: "x" };
     expect((await scan(files)).files).toEqual([WORKFLOW, "a.sh"].sort());
@@ -1050,10 +1055,10 @@ describe("a script that runs what its caller passes (round 3, B6)", () => {
 
 describe("environment variables that load files (round 3, B7)", () => {
   const env = (name: string, value: string) => workflowWith(steps("- run: npm test"), `env:\n  ${name}: ${JSON.stringify(value)}\n`);
-  const FILES = { "hook.js": "one", "pre.py": "p", "lib.so": "l", "x.rb": "r", "ph.pl": "q", "package.json": "{}" };
+  const FILES = { "hook.js": "one", "hook.mjs": "m", "pre.py": "p", "lib.so": "l", "x.rb": "r", "ph.pl": "q", "package.json": "{}" };
 
   it.each<[string, string, string]>([
-    ["NODE_OPTIONS", "--require ./hook.js", "hook.js"], ["NODE_OPTIONS", "-r ./hook.js --max-old-space-size=4096", "hook.js"], ["NODE_OPTIONS", "--import ./hook.js", "hook.js"], ["NODE_OPTIONS", "--require=./hook.js", "hook.js"],
+    ["NODE_OPTIONS", "--require ./hook.js", "hook.js"], ["NODE_OPTIONS", "-r ./hook.js --max-old-space-size=4096", "hook.js"], ["NODE_OPTIONS", "--import hook.mjs", "hook.mjs"], ["NODE_OPTIONS", "--require hook.js", "hook.js"], ["NODE_OPTIONS", "-r hook.js", "hook.js"], ["NODE_OPTIONS", "--require=./hook.js", "hook.js"],
     ["PYTHONSTARTUP", "./pre.py", "pre.py"], ["LD_PRELOAD", "./lib.so", "lib.so"], ["RUBYOPT", "-r ./x.rb", "x.rb"], ["RUBYOPT", "-I ./x.rb", "x.rb"], ["PERL5OPT", "-I ./ph.pl", "ph.pl"],
   ])("hashes the file %s=%s names, in an env map", async (name, value, path) => {
     const files = { [WORKFLOW]: env(name, value), ...FILES };
