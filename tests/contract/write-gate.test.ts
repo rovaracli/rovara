@@ -244,7 +244,7 @@ describe("decideWrite", () => {
     // A repeat of one of the ten is not a new approval.
     expect(await w.waiting(3)).toBe(ids[2]);
     // Another step has its own ten.
-    expect((await w.ask(11, { stepId: "other" })).outcome).toBe("wait");
+    expect((await w.ask(12, { stepId: "other" })).outcome).toBe("wait");
     await w.decline(BOB, ids[0]!);
     expect((await w.ask(11)).outcome).toBe("wait");
   });
@@ -297,6 +297,12 @@ describe("decideWrite", () => {
     // Fail closed: no way to list the repositories is a refusal.
     delete w.deps.projectRepositories;
     expect((await decideWrite(w.deps, w.input({ tool: issue, call: call("web") }))).outcome).toBe("refuse");
+  });
+
+  it("refuses a scope the connector does not have", async () => {
+    const w = world();
+    expect((await w.ask(1, { call: { scope: "ops", schemaHash: SCHEMA, arguments: { id: "ENG-12", stateId: "s1" } } })).outcome).toBe("refuse");
+    expect(w.db.find((item) => item.entityType === "APPROVAL")).toHaveLength(0);
   });
 
   it("refuses a connector, scope or tool the project does not have now", async () => {
@@ -617,16 +623,32 @@ describe("a crash after the claim, and the sweep that finishes it", () => {
     const id = await w.waiting(1);
     w.vendor.state.neverFinishes = true;
     await w.approve(BOB, id).catch(() => undefined);
-    for (let attempt = 2; attempt <= 5; attempt += 1) {
+    for (let attempt = 2; attempt <= 4; attempt += 1) {
       w.clock.now += 6 * MINUTE;
       await w.sweep();
-      expect(await w.record(id), `attempt ${String(attempt)}`).toMatchObject({ attempts: attempt });
+      expect(await w.record(id), `attempt ${String(attempt)}`).toMatchObject({ status: "EXECUTING", attempts: attempt });
     }
+    // The fifth attempt that leaves it unconfirmed ends it at once.
+    w.clock.now += 6 * MINUTE;
+    await w.sweep();
+    expect(await w.record(id)).toMatchObject({ status: "APPROVED_FAILED", attempts: 5, failure: "Rovara couldn't confirm that this ran. Check linear before asking again." });
+    w.clock.now += 6 * MINUTE;
+    await w.sweep();
+    expect(w.handled).toEqual([{ kind: "write", status: "APPROVED_FAILED", approvalId: id }]);
+    expect(w.vendor.state.runs).toBe(5);
+  });
+
+  it("ends a record that already used its attempts without driving it again", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.vendor.state.neverFinishes = true;
+    await w.approve(BOB, id).catch(() => undefined);
+    // The process died on its fifth attempt before it could say so.
+    w.db.set({ ...w.db.get(approvalKey(ORG_A, id))!, attempts: 5 });
     w.clock.now += 6 * MINUTE;
     await w.sweep();
     expect(await w.record(id)).toMatchObject({ status: "APPROVED_FAILED", failure: "Rovara couldn't confirm that this ran. Check linear before asking again." });
-    expect(w.handled).toEqual([{ kind: "write", status: "APPROVED_FAILED", approvalId: id }]);
-    expect(w.vendor.state.runs).toBe(5);
+    expect(w.vendor.state.runs).toBe(1);
   });
 
   it("lets only one of two sweeps take a stuck record", async () => {
@@ -974,6 +996,19 @@ describe("the audit trail", () => {
     w.clock.now += 8 * DAY;
     await w.sweep();
     expect(w.audit!.recordedBy("approval.expired")).toMatchObject([{ target: { id: second }, facts: { kind: "write", subjectKind: "agent_run" } }]);
+  });
+
+  it("leaves the audit items pending when the queue is down, from the same transactions as the decision and the execution", async () => {
+    const w = world({ audit: true });
+    const id = await w.waiting(1);
+    w.audit!.queueDown();
+    await w.approve(BOB, id);
+    expect(w.audit!.pending().map((event) => event.action).sort()).toEqual(["approval.decided", "write.executed"]);
+    const second = await w.waiting(2);
+    w.clock.now += 8 * DAY;
+    await w.sweep();
+    expect(second).toBeDefined();
+    expect(w.audit!.pending().map((event) => event.action)).toContain("approval.expired");
   });
 
   it("puts the audit items in the same transaction as the decision", async () => {
