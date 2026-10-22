@@ -15,7 +15,7 @@ import {
   requireDecideSession,
   type DecideRequestContext,
 } from "../../packages/broker/src/developer/decide-session.js";
-import type { ConfirmView, DecideInspection, DecideKind, DecideTarget } from "../../packages/broker/src/developer/decide-kinds.js";
+import type { ConfirmView, DecideInspection, DecideKind, DecideKinds, DecideTarget } from "../../packages/broker/src/developer/decide-kinds.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import type { HttpApiV2Event } from "../../packages/broker/src/aws/lambda.js";
@@ -317,7 +317,7 @@ const GH_GINA = { id: 77, login: "gh-gina", name: "Gina Park", emails: [{ email:
 const GH_ID = ownerKeyForSubject("https://github.com", "77");
 
 /** The sign-in function with the decide flow on, Gina and Hugo signed in once with their email code. */
-async function flow(options: { oidcUsers?: FakeOidcUser[]; cognito?: FakeCognitoUser[]; github?: boolean; eligible?: string[]; orgId?: OrgId | undefined; notice?: Array<Record<string, unknown>> } = {}) {
+async function flow(options: { oidcUsers?: FakeOidcUser[]; cognito?: FakeCognitoUser[]; github?: boolean; eligible?: string[]; orgId?: OrgId | undefined; notice?: Array<Record<string, unknown>>; kinds?: DecideKinds } = {}) {
   const kind = fakeKind(new Set(options.eligible ?? [GINA_ID, GH_ID]));
   kind.orgId = options.orgId;
   const sent: Array<Record<string, unknown>> = options.notice ?? [];
@@ -325,7 +325,7 @@ async function flow(options: { oidcUsers?: FakeOidcUser[]; cognito?: FakeCognito
   const h = identityHarness({
     cloud: {}, singleOrg: false, oidcUsers: options.oidcUsers ?? [gina, hugo, ginaCognito],
     ...(options.github === true ? { github: { users: [GH_GINA] } } : {}),
-    decide: { kinds: { apr: kind, spr: kind }, cognito },
+    decide: { kinds: options.kinds ?? { apr: kind, spr: kind }, cognito },
     notice: { ses: { send: async (command: unknown) => { sent.push((command as { input: Record<string, unknown> }).input); return {}; } }, from: "Rovara <signin@rovara.dev>", cellUrl: "https://rovara.example" },
   });
   return { h, kind, sent, cognito };
@@ -1227,5 +1227,52 @@ describe("fix round 1: an earlier real session, the ticket in logs, and each mem
     // Bob still gets his, and Alice keeps hers on other approvals.
     await s.store.mintTicket({ orgId: ORG, developerId: BOB, approvalId: APR_A, mintedBy: "token" });
     await s.store.mintTicket({ orgId: ORG, developerId: ALICE, approvalId: APR_B, mintedBy: "token" });
+  });
+});
+
+
+describe("eligibility asked of the broker fails closed (21a-wiring, hand-off 1)", () => {
+  /** The kinds the sign-in function has: they ask the broker, which can fail to answer. */
+  const unreachable: DecideKinds = (() => {
+    const kind: DecideKind = { inspect: async () => { throw new Error("the broker did not answer"); }, decide: async () => { throw new Error("not here"); } };
+    return { apr: kind, spr: kind };
+  })();
+
+  it("a ticket start whose eligibility can't be asked gives a 503 page and calls Cognito for nothing, makes no state and no link", async () => {
+    const { h, cognito, sent } = await flow({ github: true, cognito: [], oidcUsers: [ginaCognito], kinds: unreachable });
+    await signInOnce(h, "github", "77");
+    const links = h.db.find((item) => String(item.pk).startsWith("SIGNIN_IDENTITY#")).length;
+    const started = await startDecide(h, GH_ID);
+    expect(started.response.statusCode).toBe(503);
+    expect(started.response.headers.location).toBeUndefined();
+    expect(cognito.calls).toEqual([]);
+    expect(sent).toEqual([]);
+    expect(h.db.find((item) => String(item.pk).startsWith("DECIDE_STATE#") || String(item.pk).startsWith("DECIDE_SESSION#"))).toEqual([]);
+    expect(h.db.find((item) => String(item.pk).startsWith("SIGNIN_IDENTITY#"))).toHaveLength(links);
+    expect(JSON.stringify(started.response)).not.toContain("did not answer");
+  });
+
+  it("an identify callback whose eligibility can't be asked gives a 503 page and mints no ticket", async () => {
+    const { h } = await flow({ kinds: unreachable });
+    await signInOnce(h, "cloud", gina.sub);
+    let response = await request(h, `/v1/auth/decide/identify?return=${encodeURIComponent(`/v1/app/approve/${APR_A}`)}`);
+    const pkce = cookieValueOf(response, DECIDE_PKCE_COOKIE);
+    if (response.statusCode === 200) {
+      const link = /href="([^"]*method=cloud)"/.exec(response.body)?.[1];
+      response = await request(h, link!.replaceAll("&amp;", "&"), `${DECIDE_PKCE_COOKIE}=${pkce}`);
+    }
+    const callback = await request(h, h.oidc.approve(response.headers.location!, gina.sub), `${DECIDE_PKCE_COOKIE}=${pkce}`);
+    expect(callback.statusCode).toBe(503);
+    expect(h.db.find((item) => String(item.pk).startsWith("DECIDE_TICKET#"))).toEqual([]);
+    expect(callback.headers.location).toBeUndefined();
+  });
+
+  it("a token whose member's eligibility can't be asked gets an error and no ticket", async () => {
+    const s = setup();
+    s.context.kinds = unreachable;
+    const refused = await refusal(requireDecideSession(s.context, { method: "POST", path: `/v1/app/approvals/${APR_A}/decide`, headers: { authorization: "Bearer alice" }, body: "{}" }));
+    expect(refused).toBeDefined();
+    expect(refused?.code).not.toBe("REAUTH_REQUIRED");
+    expect(s.db.find((item) => String(item.pk).startsWith("DECIDE_TICKET#"))).toEqual([]);
   });
 });

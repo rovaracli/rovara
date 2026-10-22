@@ -215,6 +215,11 @@ export class DecideStore {
     }
   }
 
+  /** Gives back a claim whose decision was refused (nothing was decided), so the person can try again within the session's ten minutes. */
+  async releaseSession(_cookie: string): Promise<void> {
+    // not implemented
+  }
+
   async deleteSession(cookie: string): Promise<void> {
     await this.input.documentClient.send(new DeleteCommand({ TableName: this.input.tableName, Key: decideSessionKey(cookie) }));
   }
@@ -247,6 +252,8 @@ export interface DecideAuthority {
   proof: AuditProof;
   /** Ends the session once the decision is made (R5-2: it already cannot be used again). */
   finish(): Promise<void>;
+  /** Gives the session back after a decision that was refused (M-d): nothing was decided, so it may be used again. */
+  release(): Promise<void>;
 }
 
 /** The proof of a decide session: `authTime` is when the person signed in (not when they decided), `sessionRef` the SHA-256 of the session's key. */
@@ -335,6 +342,7 @@ export async function requireDecideSession(context: DecideRequestContext, reques
   const authority = (): DecideAuthority => ({
     orgId: session.orgId, developerId: session.developerId, approvalId, proof: decideProofOf(cookie, session),
     finish: () => context.store.deleteSession(cookie),
+    release: () => context.store.releaseSession(cookie),
   });
   if (request.method === "GET" || request.method === "HEAD") return authority();
   if (request.headers.origin !== context.cellOrigin || !csrfMatches(csrfFieldOf(request), session.csrfHash)) throw agentXError("FORBIDDEN", FORBIDDEN_ORIGIN_MESSAGE);

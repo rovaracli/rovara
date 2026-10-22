@@ -774,3 +774,100 @@ describe("the decide flow's grants and pool (Plan 3, Task 21a-presence, cloud in
     expect(JSON.stringify(cloud)).not.toContain("AccessLogSettings");
   });
 });
+
+describe("the sign-in function asks the broker whether a member may decide (Plan 3, Task 21a-wiring, hand-off 1, cloud installs)", () => {
+  let cloud: TemplateJson;
+  beforeAll(() => { cloud = controlPlane(buildAgentXApp({ agentxEnv: "staging", agentxCloud: true }), "agentx-staging-control-plane"); }, 300_000);
+  const BROKER_NAME = "agentx-staging-broker";
+  const variablesOf = (template: TemplateJson, prefix: string) => (template.Resources[functionId(template, prefix)]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+  const invokeGrants = (template: TemplateJson, role: string) => statementsOfRole(template, role).filter((statement) => allows(statement, "lambda:InvokeFunction"));
+
+  /** The logical IDs a value points at: Ref, Fn::GetAtt and the ${Name} parts of Fn::Sub. */
+  function pointsAt(value: unknown, known: Set<string>, found = new Set<string>()): Set<string> {
+    if (Array.isArray(value)) { for (const item of value) pointsAt(item, known, found); return found; }
+    if (typeof value !== "object" || value === null) return found;
+    for (const [key, inner] of Object.entries(value)) {
+      if (key === "Ref" && typeof inner === "string" && known.has(inner)) found.add(inner);
+      else if (key === "Fn::GetAtt") { const target = Array.isArray(inner) ? inner[0] : String(inner).split(".")[0]; if (typeof target === "string" && known.has(target)) found.add(target); }
+      else if (key === "Fn::Sub") {
+        const text = Array.isArray(inner) ? inner[0] : inner;
+        if (typeof text === "string") for (const match of text.matchAll(/\$\{([A-Za-z0-9]+)(?:\.[A-Za-z0-9]+)?\}/g)) if (known.has(match[1]!)) found.add(match[1]!);
+        if (Array.isArray(inner)) pointsAt(inner[1], known, found);
+      } else pointsAt(inner, known, found);
+    }
+    return found;
+  }
+  /** A resource cycle CloudFormation would refuse at deploy ("Circular dependency between resources"), as the path of logical IDs; undefined when there is none. */
+  function cycleIn(template: TemplateJson): string[] | undefined {
+    const known = new Set(Object.keys(template.Resources));
+    const edges = new Map<string, string[]>();
+    for (const [id, resource] of Object.entries(template.Resources)) {
+      const dependsOn = [(resource as unknown as { DependsOn?: string | string[] }).DependsOn ?? []].flat();
+      edges.set(id, [...new Set([...pointsAt(resource.Properties, known), ...dependsOn.filter((name) => known.has(name))])].filter((name) => name !== id));
+    }
+    const state = new Map<string, "open" | "done">();
+    const walk = (id: string, path: string[]): string[] | undefined => {
+      if (state.get(id) === "done") return undefined;
+      if (state.get(id) === "open") return [...path.slice(path.indexOf(id)), id];
+      state.set(id, "open");
+      for (const next of edges.get(id) ?? []) { const found = walk(next, [...path, id]); if (found !== undefined) return found; }
+      state.set(id, "done");
+      return undefined;
+    };
+    for (const id of known) { const found = walk(id, []); if (found !== undefined) return found; }
+    return undefined;
+  }
+
+  it("names the broker function (agentx-<env>-broker) on a cloud install, so neither function refers to the other's generated name", () => {
+    const broker = cloud.Resources[functionId(cloud, "Broker")]!;
+    expect(broker.Properties.FunctionName).toBe(BROKER_NAME);
+    expect(variablesOf(cloud, "DeveloperSignInFunction").DECIDE_INSPECT_FUNCTION_NAME).toBe(BROKER_NAME);
+    // The broker still reaches the sign-in function by its ARN, as before.
+    expect(variablesOf(cloud, "Broker").DEVELOPER_IDENTITY_FUNCTION_ARN).toBeDefined();
+  });
+
+  it("has no circular dependency between the two functions, their roles and their policies", () => {
+    expect(cycleIn(cloud)).toBeUndefined();
+    // The check itself finds a cycle: a function whose environment names the other, which already names it.
+    const broken = structuredClone(cloud);
+    const brokerId = functionId(broken, "Broker");
+    const identityId = functionId(broken, "DeveloperSignInFunction");
+    (broken.Resources[identityId]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables.BROKER_ARN = { "Fn::GetAtt": [brokerId, "Arn"] };
+    expect(cycleIn(broken)).toBeDefined();
+  });
+
+  it("gives DeveloperIdentity exactly one invoke grant: lambda:InvokeFunction on the broker's ARN, unqualified, and nothing else of Lambda for it", () => {
+    const grantsOf = invokeGrants(cloud, "DeveloperSignInFunctionServiceRole");
+    // The model-access function it already invokes (budgets sync) is a different, existing statement.
+    const toBroker = grantsOf.filter((statement) => globRegExp(asGlob(statement.Resource)).test(`arn:aws:lambda:us-east-1:111122223333:function:${BROKER_NAME}`));
+    expect(toBroker).toHaveLength(1);
+    expect(toBroker[0]!.Effect).toBe("Allow");
+    expect(actionsOf(toBroker[0]!)).toEqual(["lambda:InvokeFunction"]);
+    expect(asGlob(toBroker[0]!.Resource)).toBe(`arn:*:lambda:*:*:function:${BROKER_NAME}`);
+    expect(toBroker[0]!.Condition).toBeUndefined();
+    // Not the broker's version or alias, and no wildcard that reaches another function.
+    expect(asGlob(toBroker[0]!.Resource)).not.toContain("*:" + BROKER_NAME + "*");
+    for (const statement of grantsOf) expect(globRegExp(asGlob(statement.Resource)).test("arn:aws:lambda:us-east-1:111122223333:function:some-other-function")).toBe(false);
+  });
+
+  it("gives the broker no new grant for it, and keeps each of its managed-policy groups as small as before", () => {
+    // The sign-in function's request is answered by the broker's existing role: no statement of the broker mentions the sign-in function's invoke.
+    const brokerLambda = statementsOfRole(cloud, "BrokerServiceRole").filter((statement) => allows(statement, "lambda:InvokeFunction"));
+    for (const statement of brokerLambda) expect(JSON.stringify(statement.Resource)).not.toContain(BROKER_NAME);
+  });
+
+  it("keeps the sign-in function's role policies under IAM's 10,240-character inline limit", () => {
+    const statements = statementsOfRole(cloud, "DeveloperSignInFunctionServiceRole");
+    const size = JSON.stringify({ Version: "2012-10-17", Statement: statements }).length;
+    expect(size).toBeLessThan(10_240);
+  });
+
+  it("adds none of it to a named environment without the cloud, or to the legacy deployment", () => {
+    for (const template of [named, legacy]) {
+      expect(JSON.stringify(template)).not.toContain("DECIDE_INSPECT_FUNCTION_NAME");
+      expect(JSON.stringify(template)).not.toContain(`:function:${BROKER_NAME}`);
+      const broker = template.Resources[functionId(template, "Broker")]!;
+      expect(broker.Properties).not.toHaveProperty("FunctionName");
+    }
+  });
+});
