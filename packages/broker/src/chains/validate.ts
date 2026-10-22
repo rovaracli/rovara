@@ -16,7 +16,7 @@ import {
   type StepTarget,
 } from "@agentx/contracts";
 import { requireAgentAccess, type AgentAccessDeps, type AgentCaller } from "../agents/access.js";
-import { validateRecipeForOrg, type ServableModels } from "../agents/guardrails.js";
+import { readGuardrailsWithRevision, validateRecipeForOrg, type ServableModels } from "../agents/guardrails.js";
 import { resolveAgent, type AgentRecord } from "../agents/store.js";
 
 /** One thing wrong with a chain: where (`steps.2.next.to`) and what (`no step is called x`). `formatChainProblem` joins them as one line. */
@@ -174,7 +174,7 @@ interface StepPin {
  * is pinned to the org's chosen release (or the newest when it has chosen none), a custom agent to its current version; the recipe that version
  * resolves to must pass the org's guardrails; and a coding agent cannot be followed by a branch, because it has no way to say which.
  */
-async function pinAgentStep(deps: ChainValidateDeps, caller: AgentCaller, orgId: OrgId, step: Extract<DraftStep, { kind: "agent" }>, index: number): Promise<StepPin> {
+async function pinAgentStep(deps: ChainValidateDeps, caller: AgentCaller, orgId: OrgId, step: Extract<DraftStep, { kind: "agent" }>, index: number, disabledBuiltins: readonly string[]): Promise<StepPin> {
   const at = `steps.${String(index)}.agent`;
   const { agentId } = step.agent;
   const problem = (path: string, message: string): StepPin => ({ problems: [{ path, message }] });
@@ -192,6 +192,8 @@ async function pinAgentStep(deps: ChainValidateDeps, caller: AgentCaller, orgId:
   let version: number;
   if (isBuiltinAgentId(agentId)) {
     const name = deps.store.builtinName(agentId);
+    // A built-in the org's admins turned off cannot start new work, and a chain that uses it would not publish.
+    if (disabledBuiltins.includes(agentId)) return problem(at, `${name} is turned off in your company. Ask an admin to turn it on.`);
     const pinned = await deps.store.pinnedBuiltinVersion(orgId, agentId);
     version = wanted === "current" ? pinned : wanted;
     if (version > deps.store.builtinLatestVersion(agentId)) return problem(`${at}.version`, `${name} has no version ${String(version)}`);
@@ -227,6 +229,7 @@ async function pinAgentStep(deps: ChainValidateDeps, caller: AgentCaller, orgId:
  * Checks a design for publishing and pins it: the graph problems, then for each agent step the problems above. `pinned` has every agent version a
  * number. If `problems` is not empty, a step that could not be pinned keeps the version the person wrote, so `pinned` does not parse as a published
  * chain (`PinnedChainDefinitionSchema` refuses `"current"`): the caller must publish only when `problems` is empty.
+ * `guardrailsRevision` is the revision of the org's guardrails this was checked against (0 while it has never changed them), for `ChainStore.publish`.
  * It reads the org's pins and settings and writes nothing.
  */
 export async function validateChainForPublish(
@@ -234,8 +237,10 @@ export async function validateChainForPublish(
   caller: AgentCaller,
   orgId: OrgId,
   def: ChainDefinition,
-): Promise<{ pinned: PinnedChainDefinition; problems: ChainProblem[] }> {
+): Promise<{ pinned: PinnedChainDefinition; problems: ChainProblem[]; guardrailsRevision: number }> {
   if (caller.orgId !== orgId) throw agentXError("FORBIDDEN", "you can't check a chain for another organization");
+  // The guardrails are read once; `publish` must commit at this revision, so a change to them in between is a publish to make again.
+  const guardrails = await readGuardrailsWithRevision(deps, orgId);
   const problems = chainGraphProblems(def);
   const steps: unknown[] = [];
   for (const [index, step] of def.steps.entries()) {
@@ -243,11 +248,11 @@ export async function validateChainForPublish(
       steps.push(step);
       continue;
     }
-    const pin = await pinAgentStep(deps, caller, orgId, step, index);
+    const pin = await pinAgentStep(deps, caller, orgId, step, index, guardrails.guardrails.disabledBuiltins);
     problems.push(...pin.problems);
     steps.push(pin.version === undefined ? step : { ...step, agent: { ...step.agent, version: pin.version } });
   }
-  return { pinned: { ...def, steps: steps as PinnedStep[] }, problems };
+  return { pinned: { ...def, steps: steps as PinnedStep[] }, problems, guardrailsRevision: guardrails.revision };
 }
 
 // ---- event and schedule triggers

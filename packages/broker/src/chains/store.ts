@@ -305,7 +305,9 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion> {
    * the org's guardrails are as they were read, with none of the built-ins turned off.
    */
   async publish(input: {
-    orgId: OrgId; chainId: ChainId; expectedDraftRevision: number; pinned: PinnedChainDefinition; digest: string; note?: string; by: string;
+    orgId: OrgId; chainId: ChainId; expectedDraftRevision: number; pinned: PinnedChainDefinition; digest: string;
+    /** The revision of the org's guardrails the validation read (`validateChainForPublish`): the write commits only while they are still at it. */
+    guardrailsRevision: number; note?: string; by: string;
     expectedCurrentVersion?: number | null; request?: RequestMark;
     /** Whether the publish made anything less safe than what ran before, which a person confirmed (`less_safe`), or nothing (`safe`, the default); the audit event says which. */
     safety?: "safe" | "less_safe";
@@ -320,7 +322,7 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion> {
     const [problem] = chainGraphProblems(pinned);
     if (problem !== undefined) throw coded("CONFIG_INVALID", formatChainProblem(problem));
     if (chainDigest(pinned) !== input.digest) throw coded("CONFIG_INVALID", "digest: must be the SHA-256 of the pinned definition");
-    const checks = await this.pinChecks(input.orgId, draft.definition, pinned);
+    const checks = await this.pinChecks(input.orgId, draft.definition, pinned, input.guardrailsRevision);
 
     const n = chain.latestVersion;
     const version = n + 1;
@@ -379,7 +381,7 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion> {
    * The condition checks that make the pins of a publish hold at the moment it commits, one per item (a transaction cannot touch an item
    * twice), and the refusal of a built-in the org has turned off. Throws before anything is written when a pin is plainly wrong.
    */
-  private async pinChecks(orgId: OrgId, draft: ChainDefinition, pinned: PinnedChainDefinition): Promise<TransactItem[]> {
+  private async pinChecks(orgId: OrgId, draft: ChainDefinition, pinned: PinnedChainDefinition, guardrailsRevision: number): Promise<TransactItem[]> {
     interface Wanted { current: Set<number>; named: Set<number> }
     const custom = new Map<string, Wanted>();
     const builtins = new Map<string, Wanted>();
@@ -420,17 +422,19 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion> {
         for (const version of wanted.named) if (version > orgPin) throw agentMoved();
         items.push(this.builtinCheck(orgId, agentId, current, wanted.named));
       }
-      // The guardrails are as they were when the built-ins were checked, so none was turned off in between.
-      items.push({
-        ConditionCheck: {
-          TableName: this.input.tableName,
-          Key: agentGuardrailsKey(orgId),
-          ...(guardrails.revision === 0
-            ? { ConditionExpression: NOT_EXISTS }
-            : { ConditionExpression: "#revision = :revision", ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":revision": guardrails.revision } }),
-        },
-      });
+      // The guardrails changed after the validation read them, so what it found may no longer hold.
+      if (guardrails.revision !== guardrailsRevision) throw agentMoved();
     }
+    // Every publish commits at the guardrails the validation read (their forbidden models and limits judged each agent's recipe).
+    items.push({
+      ConditionCheck: {
+        TableName: this.input.tableName,
+        Key: agentGuardrailsKey(orgId),
+        ...(guardrailsRevision === 0
+          ? { ConditionExpression: NOT_EXISTS }
+          : { ConditionExpression: "#revision = :revision", ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":revision": guardrailsRevision } }),
+      },
+    });
     return items;
   }
 

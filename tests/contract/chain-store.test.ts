@@ -569,14 +569,17 @@ describe("publish checks the agents again, inside the transaction", () => {
     await expect(ctx.chains.publish(await ctx.publishInput(chain.chainId))).resolves.toMatchObject({ version: 1 });
   });
 
-  it("refuses when a built-in is turned off between the read and the write", async () => {
+  it("refuses when a built-in is turned off between the validation and the write, and validation then says so", async () => {
     const ctx = setup();
     const chain = await ctx.create("Reviewing");
     const input = await ctx.publishInput(chain.chainId);
     ctx.hooks.push(async () => { await ctx.agents.putGuardrails({ orgId: ORG_A, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, disabledBuiltins: ["root-cause-analyst"] }, expectedRevision: 0, by: DAN }); });
     expect(await code(ctx.chains.publish(input))).toMatchObject({ code: "CHAIN_REVISION_CONFLICT" });
     expect(await ctx.chains.listVersions(ORG_A, chain.chainId)).toEqual([]);
-    expect(await code(ctx.chains.publish(await ctx.publishInput(chain.chainId)))).toEqual({ code: "AGENT_UNAVAILABLE", message: "Root-cause analyst is turned off in your company. Ask an admin to turn it on." });
+    // Validated again, the step says it (the store's own refusal is the backstop for a caller that did not look).
+    const checked = await validateChainForPublish(ctx.agentDeps, caller(ALICE), ORG_A, (await ctx.chains.getDraft(ORG_A, chain.chainId))!.definition);
+    expect(checked.problems).toEqual([{ path: "steps.0.agent", message: "Root-cause analyst is turned off in your company. Ask an admin to turn it on." }]);
+    expect(await code(ctx.chains.publish({ ...input, guardrailsRevision: checked.guardrailsRevision }))).toEqual({ code: "AGENT_UNAVAILABLE", message: "Root-cause analyst is turned off in your company. Ask an admin to turn it on." });
   });
 
   it("refuses a hand-built pin that names an agent version that does not exist", async () => {
