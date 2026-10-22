@@ -1,8 +1,9 @@
 import { McpConnectorSchema, type CredentialType, type McpConnectorConfig } from "@agentx/contracts";
-import { genericScopes, mcpConnector, type ConnectorDefinition, type CredentialProvider, type GenericScope, type PresentationApproval, type ToolApproval } from "@agentx/gateway";
+import { connectMcp, genericScopes, mcpConnector, type ConnectorDefinition, type CredentialProvider, type GenericScope, type PresentationApproval, type ToolApproval } from "@agentx/gateway";
 import type { z } from "zod";
 import { connectorLedgerKeys } from "./connector-ledger.js";
 import type { ConnectorScope, ConnectorType, ResolvedConnector } from "./connector-types.js";
+import { guardedConnect } from "../connections/pinned-endpoint.js";
 import { hostPinProblem, tokenUrlProblem, type HostPin } from "./credentials.js";
 
 /**
@@ -81,6 +82,8 @@ export function presetConnectorType<Config extends PresetConfig, Scope>(preset: 
         }
         return tokenUrlProblem(ref, record.tokenUrl, described.tokenEndpoint);
       };
+      // The generic MCP type's endpoint is one a person typed: it is checked again before every request and the connection is pinned to what was checked.
+      const connect = preset.type === "mcp" && context.endpointGuard !== undefined ? guardedConnect(context.connect ?? connectMcp, context.endpointGuard) : context.connect;
       const connector: ResolvedConnector<Scope> = {
         name: stored.name,
         type: preset.type,
@@ -102,7 +105,7 @@ export function presetConnectorType<Config extends PresetConfig, Scope>(preset: 
             ...(described.tokenEndpoint ? { tokenEndpoint: described.tokenEndpoint } : {}),
           }));
         },
-        ...(context.connect ? { connect: context.connect } : {}),
+        ...(connect ? { connect } : {}),
       };
       return connector;
     },

@@ -1,5 +1,6 @@
 import { GitHubConnectorSchema, githubConnectorOf, type CredentialType, type ProjectDefinition, type RepositoryDefinition } from "@agentx/contracts";
 import { githubConnector, type ConnectorDefinition, type ConnectorPolicy, type PresentationApproval, type connectMcp } from "@agentx/gateway";
+import type { McpEndpointGuard } from "../connections/pinned-endpoint.js";
 import type { GitHubMcpDependencies } from "../github-mcp.js";
 import { GITHUB_LEDGER } from "./connector-ledger.js";
 import { asanaConnectorType } from "./asana-connector-type.js";
@@ -40,6 +41,11 @@ export interface ConnectorTypeContext {
   credentialRegistry?: ConnectorCredentials;
   /** A vendor connection override, for a connector type with no deployment connect of its own. Only test types use this today. */
   connect?: typeof connectMcp;
+  /**
+   * Plan 3 Task 19: checks a company's MCP endpoint before every request and pins the connection to the addresses it checked (`mcpEndpointGuard`). Only
+   * the generic `mcp` type, whose endpoint a person typed, goes through it; a vendor's own endpoint (Linear, Jira, Asana, GitHub) does not.
+   */
+  endpointGuard?: McpEndpointGuard;
 }
 
 /** A stored connectors entry. Only its name and type are known before its type validates the rest. */

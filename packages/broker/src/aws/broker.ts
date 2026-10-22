@@ -285,7 +285,7 @@ import { recordPrepareFailureEvent } from "./operation-events.js";
 import { releaseFailedPreparation, slackThreadKey } from "./failed-preparation.js";
 import { releaseFailedCancelWorkspace } from "./failed-cancel-release.js";
 import { assertNoUntrustedRoutingFields, authorizeWorkspace } from "../authorization.js";
-import type { GitHubAppCredentialProvider, GitHubTokenScope } from "../github-app.js";
+import type { AgentTokenOptions, GitHubAppCredentialProvider, GitHubTokenScope } from "../github-app.js";
 import type { InstallationLifecycleEvent } from "../org/github-connection.js";
 import { GithubMergeRateLimitError, isWebhookSecretMissing, parseGitHubRepository } from "../github-app.js";
 import { createGitHubAppCredentials } from "./github-credentials.js";
@@ -353,6 +353,7 @@ import { chatGptConnections, kmsChatGptSealer, type ChatGptConnections } from ".
 import { OrgSecrets, type SecretsClient } from "../connections/org-secrets.js";
 import { orgCredentialRegistry } from "../connections/registry.js";
 import { dnsResolveHost, checkEndpointUrl } from "../connections/endpoint-check.js";
+import { mcpEndpointGuard, type McpEndpointGuard } from "../connections/pinned-endpoint.js";
 import { OrgConnectionStore, type OrgConnectionDeps, type OrgConnectionStoreInput } from "../connections/store.js";
 import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
@@ -370,7 +371,9 @@ import { SkillStore, servedSkills } from "../agents/skills.js";
 import { followMerges, type ProjectMembers } from "../agents/access.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
-import { applyAgentStep, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
+import { approvalsNotWiredGate, callAgentTool, listAgentTools, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
+import { taskRunCache } from "../agents/run-cache.js";
+import { applyAgentStep, givesAgentTools, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
 import { chatGptServing, effectiveSources, routeOnWire, servableModels, servingRoutes, type ModelRoute, type RoutingDependencies } from "../model-sources/routing.js";
 import { readGuardrails } from "../agents/guardrails.js";
@@ -537,7 +540,7 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "getRepositoryIdentity" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
@@ -617,6 +620,16 @@ interface AwsBrokerDependencies {
   turnRecordsTableName?: string;
   /** Connector types this deployment serves; the built-in types when absent. */
   connectorTypes?: Record<string, ConnectorType>;
+  /**
+   * Plan 3 Task 19 (Task 12b's acceptance item): checks a company's MCP endpoint before every request and connects only to the addresses the check
+   * returned. Set on Rovara Cloud, where the broker runs outside any VPC; absent on a private install, whose endpoints its own network rules govern.
+   */
+  mcpEndpointGuard?: McpEndpointGuard;
+  /**
+   * Plan 3 Task 19: the agent tool routes (`/v1/internal/agent-tools*`). `configure` receives the dependencies the broker builds and returns the ones to use: Task 21
+   * replaces the write gate there (`gate`), and a test replaces a check or a lister with its own.
+   */
+  agentTools?: { configure?: (base: AgentToolsDependencies) => AgentToolsDependencies };
   /** Spec 025 C14: the Slack threads table, read for a shared thread's waiting messages; absent in legacy. */
   slackThreadsTableName?: string;
   /** Spec 025 phase 25d: the admin read routes' injected probes and clock; the defaults serve production. */
@@ -1745,6 +1758,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (request.method === "GET" && url.pathname === "/v1/internal/model-access") return await handleModelAccess(dependencies, request);
       // Plan 3 Task 9: the pinned skills of the operation's task snapshot, authorized by the operation's `agent-skills` capability.
       if (request.method === "GET" && url.pathname === "/v1/internal/agent-skills") return await handleAgentSkills(dependencies, request);
+      // Plan 3 Task 19: the connector tools an agent step is granted, and one call of them; authorized by the operation's `agent-tools` capability.
+      if (request.method === "GET" && url.pathname === "/v1/internal/agent-tools") return json(await handleAgentTools(dependencies, request, "list"), request.requestId);
+      if (request.method === "POST" && url.pathname === "/v1/internal/agent-tools/call") return json(await handleAgentTools(dependencies, request, "call"), request.requestId);
       const callback = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/(events|artifacts|result|candidate-export|e2e-admission|e2e-evidence|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status)$/.exec(
         url.pathname,
       );
@@ -2311,7 +2327,7 @@ async function routeWorkspaceRequest(
       ...(attribution === undefined ? {} : { attribution }),
       onAttributionDropped: attributionDroppedLog(workspace.projectName, revision, github.name, repository.name, parsed.data.requestId),
       store: new DynamoConnectorLedger(dependencies.documentClient, dependencies.tableName, workspace.id, GITHUB_LEDGER, github.name),
-      onDefinitionChanged: () => dependencies.catalogs.delete(connectorCatalogKey(workspace.projectName, revision, github.name, repository.name)),
+      onDefinitionChanged: () => dependencies.catalogs.delete(connectorCatalogKey(requireOrgId(identity.orgId), workspace.projectName, revision, github.name, repository.name)),
     });
     return json({ result }, request.requestId);
   }
@@ -2446,7 +2462,7 @@ async function authorizeGitHubConnector(dependencies: AwsBrokerDependencies, ide
  * Plan 2, Task 15: `scope` says whose work a GitHub token the connectors mint is for; it is asked only when one is minted. It is required, so
  * every caller names the scope its token is for and none inherits one by default.
  */
-export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "githubMcp" | "credentialRegistry" | "orgConnections" | "cloud">, orgId: OrgId | undefined, scope: () => Promise<GitHubTokenScope>): ConnectorTypeContext {
+export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "githubMcp" | "credentialRegistry" | "orgConnections" | "cloud" | "mcpEndpointGuard">, orgId: OrgId | undefined, scope: () => Promise<GitHubTokenScope>): ConnectorTypeContext {
   let credentialRegistry: ConnectorCredentials | undefined = dependencies.credentialRegistry;
   if (dependencies.cloud === true) {
     credentialRegistry = dependencies.orgConnections !== undefined && orgId !== undefined ? orgCredentialRegistry(dependencies.orgConnections, orgId) : undefined;
@@ -2454,11 +2470,12 @@ export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "
   return {
     ...(dependencies.githubMcp ? { githubMcp: githubMcpFor(dependencies.githubMcp, scope) } : {}),
     ...(credentialRegistry ? { credentialRegistry } : {}),
+    ...(dependencies.mcpEndpointGuard ? { endpointGuard: dependencies.mcpEndpointGuard } : {}),
   };
 }
 
 function connectorContext(identity: AuthenticatedIdentity, workspace: WorkspaceInstance, project: RegisteredProjectRecord): ConnectorContextBase {
-  return { workspaceId: workspace.id, ownerKey: identity.ownerKey, settingsRevision: project.definition.revision, ...slackRequesterOf(identity) };
+  return { orgId: requireOrgId(identity.orgId), workspaceId: workspace.id, ownerKey: identity.ownerKey, settingsRevision: project.definition.revision, ...slackRequesterOf(identity) };
 }
 
 type GitHubConnector = NonNullable<ReturnType<typeof githubConnectorOf>>;
@@ -5216,6 +5233,8 @@ async function taskOperationParts(
       candidateExport: input.workflowMode === "IMPLEMENT", workflowE2E: input.workflowE2EAdmission !== undefined, modelAccess: dependencies.modelAccess !== undefined,
       // The worker reads the step's skills through the broker, which serves only the snapshot's, so the capability is granted only when the step has some.
       agentSkills: (applied?.agentStep?.skills?.length ?? 0) > 0,
+      // The connector tools of an agent step whose recipe grants some (Task 19); the broker serves only the granted ones.
+      agentTools: givesAgentTools(applied),
     }),
     payload: {
       conversationId: input.conversationId,
@@ -5428,6 +5447,75 @@ async function handleAgentSkills(dependencies: AwsBrokerDependencies, request: A
   if (!pinned.success) throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
   const store = new SkillStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now });
   return json({ skills: await servedSkills(store, orgId, pinned.data) }, request.requestId);
+}
+
+/**
+ * Plan 3 Task 19: the connector tools of an agent step (`GET /v1/internal/agent-tools`, `POST /v1/internal/agent-tools/call`). The capability is checked like a
+ * callback's (signature, expiry, scope, fence); a refused one is 401. The operation must be the workspace's active one and not finished or being cancelled (a
+ * call is never begun after a stop), and its task must belong to the same org: any disagreement serves nothing. What a step may use, and every check before a
+ * vendor is asked, is `agents/agent-tools-routes.ts`.
+ */
+async function handleAgentTools(dependencies: AwsBrokerDependencies, request: AdaptedHttpRequest, kind: "list" | "call") {
+  const token = request.headers["x-agentx-callback-capability"];
+  if (!token) throw agentXError("AUTH_REQUIRED", "callback capability is required");
+  let claims: CallbackClaims;
+  try { claims = verifyCapability(dependencies, token, "agent-tools"); }
+  catch { throw agentXError("AUTH_REQUIRED", "invalid callback capability"); }
+  const operation = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
+  if (operation.fence !== claims.fence) throw agentXError("STALE_FENCE", "callback fence is stale");
+  if (TERMINAL.has(operation.status) || operation.status === "CANCEL_REQUESTED") throw agentXError("STALE_FENCE", "a finished or stopped step cannot use agent tools");
+  const workspace = await requireWorkspace(dependencies, operation.workspaceId);
+  if (workspace.activeOperationId !== operation.id) throw agentXError("STALE_FENCE", "operation no longer owns the workspace");
+  const task = await workspaceTask(dependencies, workspace.id);
+  const orgId = operation.orgId;
+  if (orgId === undefined || task === undefined || task.orgId !== orgId || task.workspaceId !== workspace.id || (workspace.orgId !== undefined && workspace.orgId !== orgId)) {
+    throw agentXError("NOT_FOUND", "no agent task belongs to this operation");
+  }
+  const stepId = (operation as { programStepId?: unknown }).programStepId;
+  const run: AgentToolsRun = { orgId, task, workspace, operation: { id: operation.id, ...(typeof stepId === "string" ? { programStepId: stepId } : {}) } };
+  const tools = agentToolsDependencies(dependencies);
+  return kind === "list" ? listAgentTools(tools, run) : callAgentTool(tools, run, parseBody(request.body));
+}
+
+/** What the agent tool routes run on, built from the broker's own tables and checks; `agentTools.configure` may change any of it. */
+function agentToolsDependencies(dependencies: AwsBrokerDependencies): AgentToolsDependencies {
+  const github = dependencies.githubPullRequests;
+  const table = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now };
+  const base: AgentToolsDependencies = {
+    ...table,
+    ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
+    requireCreatorStillMember: (task) => requireCreatorStillMember(creatorCheckOf(dependencies), task),
+    requireProjectAuthority: (orgId, ownerKey, project, options) => requireProjectAuthority(dependencies, orgId, ownerKey, project, options),
+    latestProject: (orgId, project) => requireLatestProject(dependencies, orgId, project),
+    readSnapshot: async (task, orgId) => {
+      if (task.agent === undefined) return undefined;
+      const frozen = await readTaskRecipe(dependencies, task.taskId, orgId);
+      // The digest is computed from the recipe itself, as the dispatch does: a snapshot that is missing, or is not the one the task recorded, serves nothing.
+      if (frozen === undefined || recipeDigest(frozen.recipe) !== task.agent.digest) throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
+      return frozen.recipe;
+    },
+    connectors: ({ orgId, definition }) => resolveConnectors(definition, connectorTypeContext(dependencies, orgId, async () => githubScope(dependencies, orgId)), dependencies.connectorTypes),
+    catalogs: dependencies.catalogs,
+    ledger: (workspaceId, connector) => new DynamoConnectorLedger(dependencies.documentClient, dependencies.tableName, workspaceId, connector.ledger, connector.name),
+    guardrails: async (orgId) => {
+      const guardrails = await readGuardrails(dependencies, orgId);
+      return { extraCommandWords: guardrails.extraCommandWords, extraTriggerLabels: guardrails.extraTriggerLabels };
+    },
+    runCache: (scope) => taskRunCache(table, scope),
+    ...(github.createAgentInstallationToken === undefined || github.getAgentPullRequestHead === undefined ? {} : {
+      github: {
+        createAgentInstallationToken: (repository, permissions, scope, options) => github.createAgentInstallationToken!(repository, permissions, scope, options),
+        getAgentPullRequestHead: (url, number, scope, options) => github.getAgentPullRequestHead!(url, number, scope, options),
+        ...(github.listAgentRepositoryLabels === undefined ? {} : { listAgentRepositoryLabels: (url: string, scope: { orgId: OrgId }, options?: AgentTokenOptions) => github.listAgentRepositoryLabels!(url, scope, options) }),
+      },
+    }),
+    ...(github.agentRepositoryReader === undefined ? {} : {
+      repositoryReader: ({ orgId, repositoryUrl, installationId }: { orgId: OrgId; repositoryUrl: string; installationId?: number }) =>
+        github.agentRepositoryReader!(repositoryUrl, { orgId }, ...(installationId === undefined ? [] : [{ installationId }])),
+    }),
+    gate: approvalsNotWiredGate,
+  };
+  return dependencies.agentTools?.configure?.(base) ?? base;
 }
 
 /**
@@ -13625,6 +13713,8 @@ export const handler = createAwsBrokerHandler({
   ...(modelAccess ? { modelAccess } : {}),
   ...(egressDomainsSync === undefined ? {} : { egressDomainsSync }),
   cloud: cloudOrgResolver !== undefined,
+  // Task 12b's acceptance item: on Rovara Cloud every request to a company's MCP endpoint is checked again and connects only to what was checked.
+  ...(cloudOrgResolver === undefined ? {} : { mcpEndpointGuard: mcpEndpointGuard() }),
   ...(orgConnections === undefined ? {} : { orgConnections }),
   // Ruling R55: a cloud org's projects run on the foundation's EC2 workers, with the built-in GitHub App.
   ...(cloudProjectDefaults === undefined ? {} : { cloudProjects: cloudProjectDefaults }),

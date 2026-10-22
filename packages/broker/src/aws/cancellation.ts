@@ -123,7 +123,7 @@ export interface CallbackClaims {
   workspaceId: string;
   operationId: string;
   fence: number;
-  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "e2e-admission" | "e2e-evidence" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-access" | "agent-skills">;
+  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "e2e-admission" | "e2e-evidence" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-access" | "agent-skills" | "agent-tools">;
   expiresAt: number;
 }
 
@@ -237,6 +237,8 @@ export interface CapabilityOptions {
   modelAccess?: boolean;
   /** Plan 3 Task 9: read the skills of the operation's task snapshot (`GET /v1/internal/agent-skills`). */
   agentSkills?: boolean;
+  /** Plan 3 Task 19: list the connector tools the step's agent is granted and call them (`/v1/internal/agent-tools`); granted to an agent step whose recipe has tool grants. */
+  agentTools?: boolean;
 }
 
 export function issueCapability(
@@ -264,6 +266,7 @@ export function issueCapability(
         ? ["pull-request" as const, "pull-request-update" as const, "codebuild" as const]
         : []),
       ...(options.agentSkills === true ? ["agent-skills" as const] : []),
+      ...(options.agentTools === true ? ["agent-tools" as const] : []),
     ],
     expiresAt: Math.floor(Date.now() / 1_000) + 32_400,
   };
