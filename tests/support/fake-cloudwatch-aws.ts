@@ -19,6 +19,8 @@ export interface FakeCloudWatchOptions {
   /** Each role Rovara may assume, and the one external id its trust policy requires. */
   roles?: Record<string, { externalId: string }>;
   ownAccountId?: string | undefined;
+  /** Roles whose trust policy has no external id condition: they are assumed with any external id, or none (a customer's shortcut). */
+  anyExternalId?: readonly string[];
   alarms?: readonly FakeAlarm[];
   /** DescribeAlarms answers every alarm whatever prefix or state was asked, as a misbehaving service could. */
   leakAlarms?: boolean;
@@ -120,7 +122,8 @@ export function fakeCloudWatchAws(options: FakeCloudWatchOptions = {}) {
       assumed.push(input);
       const trust = input.RoleArn === undefined ? undefined : roles[input.RoleArn];
       // The role's trust policy requires its external id; no external id, or another one, is refused as STS does.
-      if (trust === undefined || input.ExternalId !== trust.externalId) throw awsError("AccessDenied", `User is not authorized to perform: sts:AssumeRole on ${String(input.RoleArn)} (the vendor's own message)`);
+      const open = input.RoleArn !== undefined && (options.anyExternalId ?? []).includes(input.RoleArn);
+      if (!open && (trust === undefined || input.ExternalId !== trust.externalId)) throw awsError("AccessDenied", `User is not authorized to perform: sts:AssumeRole on ${String(input.RoleArn)} (the vendor's own message)`);
       const credentials = credentialsFor(issued.length + 1);
       issued.push(credentials);
       return credentials;

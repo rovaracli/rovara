@@ -548,6 +548,14 @@ describe("query_logs", () => {
       ["SOURCE first", { query: "SOURCE logGroups(namePrefix: ['/ecs/other']) | fields @message", fromMinutesAgo: 30 }],
       ["source after a pipe", { query: "fields @message | source logGroups(namePrefix: ['/ecs/other'])", fromMinutesAgo: 30 }],
       ["source on a new line", { query: "fields @message\n  SOURCE logGroups(namePrefix: ['/ecs/other'])", fromMinutesAgo: 30 }],
+      // Any line break, or none at all, review M-1: a comment may end at a carriage return or a Unicode line break, and the command may follow anything.
+      ["source after a comment ended by a carriage return", { query: "# c\rSOURCE logGroups(namePrefix: ['/ecs/other']) | fields @message", fromMinutesAgo: 30 }],
+      ["source after U+2028", { query: "# c\u2028SOURCE logGroups(namePrefix: ['/ecs/other']) | fields @message", fromMinutesAgo: 30 }],
+      ["source after U+2029", { query: "# c\u2029SOURCE logGroups(namePrefix: ['/ecs/other']) | fields @message", fromMinutesAgo: 30 }],
+      ["source after U+0085", { query: "# c\u0085SOURCE logGroups(namePrefix: ['/ecs/other']) | fields @message", fromMinutesAgo: 30 }],
+      ["source in the middle of a line", { query: "x SOURCE logGroups(namePrefix: ['/ecs/other'])", fromMinutesAgo: 30 }],
+      ["source and logGroups split by a line break", { query: "fields @message | SOURCE\r\n\u2028logGroups (namePrefix: ['/ecs/other'])", fromMinutesAgo: 30 }],
+      ["mixed case", { query: "x SoUrCe LOGGROUPS(namePrefix: ['/ecs/other'])", fromMinutesAgo: 30 }],
     ];
     for (const [label, args] of cases) {
       const r = await run("query_logs", args, { aws: { logGroups: GROUPS } });
@@ -557,6 +565,10 @@ describe("query_logs", () => {
     // The word in an ordinary filter is fine.
     const fine = await run("query_logs", { query: "fields @message | filter @message like /source/", fromMinutesAgo: 30 }, { aws: { logGroups: GROUPS } });
     expect(fine.result.status).toBe("SUCCEEDED");
+    for (const query of ["fields @source | filter @message like /source/", "fields @message | filter @message like /source logGroups/", "stats count(*) by source"]) {
+      const ok = await run("query_logs", { query, fromMinutesAgo: 30 }, { aws: { logGroups: GROUPS } });
+      expect(ok.result.status, query).toBe("SUCCEEDED");
+    }
   });
 
   it("is refused as an unavailable tool on a scope with no prefixes", async () => {
@@ -609,7 +621,7 @@ describe("the connection check", () => {
   it("assumes the role with the caller's external id, asks who it is with the assumed credentials, then reads one alarm", async () => {
     const { fake, result } = await check();
     expect(result).toEqual({ ok: true });
-    expect(fake.assumed.map((call) => call.ExternalId)).toEqual([`rovara-${ORG_A}`]);
+    expect(fake.assumed.map((call) => call.ExternalId)[0]).toBe(`rovara-${ORG_A}`);
     expect(fake.names()).toEqual(["GetCallerIdentityCommand", "DescribeAlarmsCommand"]);
     expect(fake.callsOf("DescribeAlarmsCommand")[0]!.input["MaxRecords"]).toBe(1);
     for (const call of fake.calls) expect(call.accessKeyId).toBe(fake.issued[0]!.accessKeyId);
@@ -622,7 +634,7 @@ describe("the connection check", () => {
     const record = { ...(await s.store.get(ORG_A, CON))!, externalId: "rovara-org_cccccccccccccccccccc" };
     const result = await cloudwatchConnectionCheck(fake.aws)({ orgId: ORG_A, connection: record as never, secret: undefined, fetch: fetch });
     expect(result).toEqual({ ok: true });
-    expect(fake.assumed.map((call) => call.ExternalId)).toEqual([`rovara-${ORG_A}`]);
+    expect(fake.assumed.map((call) => call.ExternalId)[0]).toBe(`rovara-${ORG_A}`);
   });
 
   it("fails with a message to act on when the role cannot be assumed, and when it cannot read alarms, quoting nothing AWS said", async () => {
@@ -637,6 +649,50 @@ describe("the connection check", () => {
     const down = await failureOf(check({ fail: { GetCallerIdentityCommand: awsError("TimeoutError", "connect ETIMEDOUT 52.1.2.3") } }));
     expect(down?.code).toBe("RUNTIME_UNAVAILABLE");
     expect(down?.message).not.toContain("52.1.2.3");
+  });
+
+  it("tries the role once more with a random wrong external id, with the same role, session policy and duration, and passes when AWS refuses it (review I-1)", async () => {
+    const { fake, result } = await check();
+    expect(result).toEqual({ ok: true });
+    expect(fake.assumed).toHaveLength(2);
+    const [real, probe] = fake.assumed as [typeof fake.assumed[number], typeof fake.assumed[number]];
+    expect(real.ExternalId).toBe(`rovara-${ORG_A}`);
+    expect(probe.ExternalId).toMatch(/^rovara-org_[a-z0-9]{10,}$/u);
+    expect(probe.ExternalId).not.toBe(real.ExternalId);
+    expect({ ...probe, ExternalId: undefined }).toEqual({ ...real, ExternalId: undefined });
+    expect(probe).toMatchObject({ RoleArn: CUSTOMER_ROLE, DurationSeconds: 900 });
+    expect(probe.Policy).toBe(real.Policy);
+    // The probe's session is never used: every call goes out with the first session.
+    for (const call of fake.calls) expect(call.accessKeyId).toBe(fake.issued[0]!.accessKeyId);
+    // A fresh random id each time, from the deployment's source when it gives one.
+    const again = await check();
+    expect(again.fake.assumed[1]!.ExternalId).not.toBe(probe.ExternalId);
+    const fixed = fakeCloudWatchAws({ roles: ROLES(), alarms: [] });
+    fixed.aws.random = () => "fixedprobe0123456789";
+    const s = await connected();
+    await cloudwatchConnectionCheck(fixed.aws)({ orgId: ORG_A, connection: (await s.store.get(ORG_A, CON))! as never, secret: undefined, fetch: fetch });
+    expect(fixed.assumed[1]!.ExternalId).toBe("rovara-org_fixedprobe0123456789");
+  });
+
+  it("fails the check, in fixed words, when the role's trust policy accepts a wrong external id, and uses nothing of that session (review I-1)", async () => {
+    const { fake, result } = await check({ anyExternalId: [CUSTOMER_ROLE] });
+    expect(result).toEqual({ ok: false, message: `this role's trust policy must require the external id rovara-${ORG_A}` });
+    expect(fake.assumed).toHaveLength(2);
+    expect(fake.calls).toEqual([]);
+    expect(JSON.stringify(result)).not.toMatch(/ASIA|fakeSecret|FwoG/u);
+  });
+
+  it("throws a retryable RUNTIME_UNAVAILABLE, recording nothing, when the second attempt fails for any reason but a refusal (review I-1)", async () => {
+    for (const name of ["ThrottlingException", "TimeoutError", "ServiceUnavailable"]) {
+      const fake = fakeCloudWatchAws({ roles: ROLES(), alarms: [] });
+      const real = fake.aws.assumeRole.bind(fake.aws);
+      let count = 0;
+      fake.aws.assumeRole = async (input) => { count += 1; if (count === 2) throw awsError(name, "secret detail 0123456789"); return real(input); };
+      const s = await connected();
+      const failure = await failureOf(cloudwatchConnectionCheck(fake.aws)({ orgId: ORG_A, connection: (await s.store.get(ORG_A, CON))! as never, secret: undefined, fetch: fetch }));
+      expect(failure?.code, name).toBe("RUNTIME_UNAVAILABLE");
+      expect(failure?.message, name).not.toContain("secret detail");
+    }
   });
 
   it("refuses a role in the deployment's own account without calling AWS", async () => {
@@ -654,7 +710,7 @@ describe("the connection check", () => {
     const s = await connected({ checks: { cloudwatch: cloudwatchConnectionCheck(fake.aws) } });
     expect(await s.store.check(ORG_A, CON)).toEqual({ ok: true });
     expect((await s.store.get(ORG_A, CON))?.lastCheck?.ok).toBe(true);
-    expect(fake.assumed.map((call) => call.ExternalId)).toEqual([`rovara-${ORG_A}`]);
+    expect(fake.assumed.map((call) => call.ExternalId)[0]).toBe(`rovara-${ORG_A}`);
   });
 });
 
@@ -830,7 +886,8 @@ describe("the deployed broker's connection check", () => {
     const id = (created.body["connection"] as { connectionId: string }).connectionId;
     const checked = await call("POST", `/v1/app/connections/${id}/check`, {});
     expect(checked.body, JSON.stringify(checked.body)).toMatchObject({ ok: true });
-    expect(aws.assumed.map((input) => input.ExternalId)).toEqual([cloudwatchExternalId(TEST_ORG)]);
+    expect(aws.assumed.map((input) => input.ExternalId)[0]).toBe(cloudwatchExternalId(TEST_ORG));
+    expect(aws.assumed).toHaveLength(2);
     expect(aws.names()).toEqual(["GetCallerIdentityCommand", "DescribeAlarmsCommand"]);
   });
 });
